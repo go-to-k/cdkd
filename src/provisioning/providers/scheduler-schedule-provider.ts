@@ -328,7 +328,13 @@ export class SchedulerScheduleProvider implements ResourceProvider {
         // and `cdkd deploy` takes `[stacks...]`, so the appended logical id was
         // parsed as a STACK NAME. The head of
         // `ResourceUpdateNotSupportedError` already names the resource.
-        `GroupName addresses the schedule (${previousGroupName ?? 'default'} -> ${groupName ?? 'default'}); ` +
+        // `from <a> to <b>`, not ` -> `: pasted, that is `-` plus a `>`
+        // redirect onto the group name after it (go-to-k/cdkd#4239). Masked
+        // where it is built, like the debug line below: a secret-derived group
+        // reaches this refusal RESOLVED on the desired side (go-to-k/cdkd#4275).
+        // `DeployEngine` also masks a thrown message; this does not rely on it.
+        `GroupName addresses the schedule (from ${mask(previousGroupName ?? 'default')} ` +
+          `to ${mask(groupName ?? 'default')}); ` +
           `re-run with \`cdkd deploy --replace\` to recreate it in the new group ` +
           `(--replace is a boolean flag and takes no resource id; it applies to every ` +
           `resource in the run whose in-place update is refused)`

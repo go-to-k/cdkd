@@ -261,6 +261,26 @@ describe('SchedulerScheduleProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('a pasted GroupName refusal, or the group pair dragged from its brackets, redirects nothing (go-to-k/cdkd#4239)', async () => {
+      // Both groups are template-chosen and printed bare; each names a paste
+      // harness decoy, so the pre-fix ` -> ` spelling truncated `bucket`.
+      const error = await provider
+        .update('Sched', 'my-sched', TYPE, { ...BASE_PROPS, GroupName: 'bucket' }, {
+          ...BASE_PROPS,
+          GroupName: 'name',
+        })
+        .catch((e: unknown) => e);
+      const message = error instanceof Error ? error.message : String(error);
+      const pair = /\(([^()]* to [^()]*)\)/.exec(message)?.[1];
+      expect(pair).toBe('from name to bucket');
+      withPasteDir((dir) => {
+        expect(spansThatRun(message, dir)).toEqual([]);
+        expect(spansThatRun(pair!, dir)).toEqual([]);
+        // CONTROL: the pre-fix spelling of the same pair truncates the decoy.
+        expect(spansThatRun('name -> bucket', dir)).not.toEqual([]);
+      });
+    }, 60_000);
+
     it('treats a custom-group -> default-group move as a GroupName change too', async () => {
       const { GroupName: _drop, ...noGroup } = BASE_PROPS;
       await expect(

@@ -192,7 +192,12 @@ const baseOpts = { statePrefix: 'cdkd', verbose: false, force: true };
 //
 // Went 11 -> 10 in go-to-k/cdkd#4214: the nested-child refusal names the child
 // through `plainOrDescribed`, beside its `--revert-failed` remedy.
-const EXPECTED_STACK_NAME_RENDERS = 10;
+//
+// Went 10 -> 5 in go-to-k/cdkd#3760's rollback rows: the plan header, the
+// prompt and both completion lines name the stack through `stackRegionShown`,
+// and the nested-child plan preview through `plainOrDescribed`, since each is
+// printed in a run that can end in a `Re-run with:` row.
+const EXPECTED_STACK_NAME_RENDERS = 5;
 
 /**
  * Bare `safe` references in the same file -- 1 declaration plus every render of
@@ -236,7 +241,11 @@ const EXPECTED_STACK_NAME_RENDERS = 10;
 // Snapshot delete labels name their journal values through `logicalIdShown` /
 // `resourceTypeShown` / `plainOrDescribed`, beside `--revert-failed` and
 // `--skip-final-snapshot`.
-const EXPECTED_SAFE_REFERENCES = 54;
+//
+// Went 54 -> 50 in go-to-k/cdkd#3760's rollback rows: the plan header, the
+// prompt and both completion lines name their region through
+// `stackRegionShown`.
+const EXPECTED_SAFE_REFERENCES = 50;
 
 /**
  * Bare `safeRoleArn` references -- 1 declaration plus the role-ARN renders of
@@ -928,29 +937,50 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
       const reverseLine = (lines: string[]): string | undefined =>
         lines.find((l) => l.includes('reverse-replace R'));
 
-      it('shows NEW -> OLD, from the stamped field', async () => {
+      it('shows from NEW to OLD, from the stamped field', async () => {
         installReplacementStack({
           oldResourceRetained: false,
           previousType: 'AWS::SSM::Parameter',
           previousResourceType: 'AWS::SSM::Parameter',
         });
         expect(reverseLine(await runForPlan())).toContain(
-          '(AWS::SQS::Queue -> AWS::SSM::Parameter)'
+          '(from AWS::SQS::Queue to AWS::SSM::Parameter)'
         );
       });
 
-      it('shows NEW -> OLD for a LEGACY journal too (previous record only)', async () => {
+      it('shows from NEW to OLD for a LEGACY journal too (previous record only)', async () => {
         installReplacementStack({ oldResourceRetained: false, previousType: 'AWS::SSM::Parameter' });
         expect(reverseLine(await runForPlan())).toContain(
-          '(AWS::SQS::Queue -> AWS::SSM::Parameter)'
+          '(from AWS::SQS::Queue to AWS::SSM::Parameter)'
         );
       });
+
+      it('a pasted Type-change row, or the pair dragged from its brackets, redirects nothing (go-to-k/cdkd#4239)', async () => {
+        // Pasted, ` -> ` was `-` plus a `>` redirect onto the OLD type, so the
+        // pair alone created a file named after it, even for a real type. The
+        // whole row is inert either way: its `(` stops both shells first.
+        installReplacementStack({
+          oldResourceRetained: false,
+          previousType: 'AWS::SSM::Parameter',
+          previousResourceType: 'AWS::SSM::Parameter',
+        });
+        const line = reverseLine(await runForPlan())!;
+        const pair = /\(([^()]* to [^()]*)\)/.exec(line)?.[1];
+        expect(pair).toBe('from AWS::SQS::Queue to AWS::SSM::Parameter');
+        withPasteDir((dir) => {
+          expect(spansThatRun(line, dir)).toEqual([]);
+          expect(spansThatRun(pair!, dir)).toEqual([]);
+          // CONTROL: the pre-fix spelling of the same pair truncates a file.
+          expect(spansThatRun('AWS::SQS::Queue -> AWS::SSM::Parameter', dir)).not.toEqual([]);
+        });
+      }, 60_000);
 
       it('CONTROL: an ordinary replacement shows the single type, no arrow', async () => {
         installReplacementStack({ oldResourceRetained: false });
         const line = reverseLine(await runForPlan());
         expect(line).toContain('(AWS::SQS::Queue)');
         expect(line).not.toContain('->');
+        expect(line).not.toContain('(from ');
       });
 
       it('an unroutable op is labelled REFUSED with the reason, never as a skip or a reverse', async () => {
@@ -990,7 +1020,14 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
         const lines = await plannedLines();
         const failed = lines.find((l) => l.includes('failed Type change is a replacement'));
         expect(failed).toBeDefined();
-        expect(failed).toContain('(AWS::SQS::Queue -> AWS::SNS::Topic)');
+        expect(failed).toContain('(from AWS::SQS::Queue to AWS::SNS::Topic)');
+        // go-to-k/cdkd#4239: the pair dragged from the brackets redirects nothing.
+        const pair = /\(([^()]* to [^()]*)\)/.exec(failed!)?.[1];
+        expect(pair).toBe('from AWS::SQS::Queue to AWS::SNS::Topic');
+        withPasteDir((dir) => {
+          expect(spansThatRun(pair!, dir)).toEqual([]);
+          expect(spansThatRun(failed!, dir)).toEqual([]);
+        });
         expect(lines.some((l) => /FAILED update — remote state unknown/.test(l))).toBe(false);
       });
     });
@@ -1796,7 +1833,10 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
       expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
       expect(line).not.toMatch(INVISIBLE);
     }
-    expect(lines.some((l) => l.includes('Rollback plan for "Gho st'))).toBe(true);
+    expect(
+      lines.some((l) => l.includes('Rollback plan for a stack name that is not a plain identifier (us-east-1):'))
+    ).toBe(true);
+    expect(lines.join('\n')).not.toContain('Gho st');
   });
 
   it('the CONFIRMATION PROMPT itself is sanitized', async () => {
@@ -1839,7 +1879,8 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     const prompt = String(readlineQuestion.mock.calls[0]![0]);
     expect(prompt).not.toMatch(CTRL);
     expect(prompt).not.toMatch(INVISIBLE);
-    expect(prompt).toContain('Roll back "Gho st');
+    expect(prompt).toContain('Roll back a stack name that is not a plain identifier (us-east-1)?');
+    expect(prompt).not.toContain('Gho');
   });
 
   it('the previewState LOOKUPS stay keyed on the RAW logicalId', async () => {
@@ -1963,10 +2004,13 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     const prompt = String(readlineQuestion.mock.calls[0]?.[0] ?? '');
 
     expect(forgedRowCount(lines)).toBe(0);
-    expect(lines.some((l) => l.includes('Rollback plan for S ("us- east-1'))).toBe(true);
+    expect(
+      lines.some((l) => l.includes('Rollback plan for S (a region that is not a plain identifier):'))
+    ).toBe(true);
     expect(prompt).not.toMatch(CTRL);
     expect(prompt).not.toMatch(INVISIBLE);
-    expect(prompt).toContain('("us- east-1');
+    expect(prompt).toContain('Roll back S (a region that is not a plain identifier)?');
+    expect(prompt).not.toContain('us-');
   });
 
   it('the multi-journal CANDIDATE LIST cannot inject a row', async () => {
@@ -2307,6 +2351,47 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
       `Failed to release lock for a stack name that is not a plain identifier (us-east-1): ${WITHHELD}`
     );
   });
+
+  it.each([
+    ['a padded stack name', `S${FORGED}`, 'us-east-1'],
+    ['a padded region', 'S', `us${FORGED}`],
+  ])(
+    'a run that prints a Re-run with: row names %s on no other line (go-to-k/cdkd#3760)',
+    async (_label, name, region) => {
+      // The persist warning prints the run's labelled `Re-run with:` row (the
+      // name WITHHELD from it as a hole); the replay then completes, so the plan
+      // header, the prompt and the completion line all print in the same run.
+      // Each one used to display the padded value, which wraps on screen into
+      // the counterfeit row the withheld hole invites the operator to copy.
+      const { getLogger } = await import('../../../../src/utils/logger.js');
+      const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+      const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+      setStdinIsTty(true);
+      readlineQuestion.mockResolvedValue('y');
+      const backend = installOneCreateSegment(name);
+      backend.listStacks.mockResolvedValue([{ stackName: name, region }]);
+      backend.saveState.mockRejectedValue(new Error('AccessDenied'));
+      await rollbackCommand(name, { ...baseOpts, force: false, stackRegion: region });
+
+      const prompt = String(readlineQuestion.mock.calls.at(-1)?.[0] ?? '');
+      const infos = info.mock.calls.map((c) => String(c[0]));
+      const warns = warn.mock.calls.map((c) => String(c[0]));
+      // The premise: this run printed the labelled row, and reached every line
+      // under test.
+      expect(warns.some((l) => l.includes('\nRe-run with: cdkd rollback '))).toBe(true);
+      expect(infos.some((l) => l.startsWith('\nRollback plan for '))).toBe(true);
+      expect(infos.some((l) => l.startsWith('\nRollback of '))).toBe(true);
+      expect(prompt).toMatch(/^Roll back /);
+      // Nothing in the run carries the forged label but cdkd's own row.
+      const all = [...infos, ...warns, prompt].join('\n');
+      expect(all).not.toContain('cdkd destroy');
+      expect(all.match(/Re-run with:/g)).toHaveLength(1);
+      expect(infos).toContain(
+        '  (The stack name or region is not a plain identifier, so it is described, not named; ' +
+          "list the records as stored with 'cdkd state list --long'.)"
+      );
+    }
+  );
 
   it('rerunRollback names a plain stack and withholds a padded or newline one (go-to-k/cdkd#3773)', () => {
     // The PADDED name is the one that exercises `plainIdent`: it renders
@@ -2797,6 +2882,44 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     expect(lines.some((l) => l.includes('Db'))).toBe(true);
     // The r9 segment has no child record: the plan says the revert will fail.
     expect(lines.some((l) => l.includes('no journal record for this run'))).toBe(true);
+  });
+
+  it('the nested-child plan line describes a padded stack name (go-to-k/cdkd#3760)', async () => {
+    // The child's name embeds the parent's journal-key name, and the line
+    // prints in the same run as a failed-persist `Re-run with:` row, so a
+    // padded name could wrap into a counterfeit row there.
+    const padded = `S${' '.repeat(60)}Re-run with: cdkd destroy --all --force #`;
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as ReturnType<typeof vi.fn>;
+    info.mockClear();
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: padded, region: 'us-east-1' }]),
+      getState: vi.fn().mockImplementation(async (name: string) =>
+        name === padded ? { ...parentState, state: { ...parentState.state, stackName: padded } } : null
+      ),
+      loadRollbackJournal: vi.fn().mockImplementation(async (name: string) =>
+        name === padded
+          ? {
+              journalVersion: 1,
+              stackName: padded,
+              region: 'us-east-1',
+              segments: [
+                { runId: 'r1', timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [updateOp('old')] },
+              ],
+            }
+          : null
+      ),
+    });
+
+    await rollbackCommand(padded, { ...baseOpts }).catch(() => undefined);
+
+    const lines = info.mock.calls.map((c) => String(c[0]));
+    expect(
+      lines.some((l) =>
+        l.includes('(nested stack a nested stack name that is not a plain identifier: no journal record')
+      )
+    ).toBe(true);
+    expect(lines.join('\n')).not.toContain('cdkd destroy');
   });
 
   it('--skip-final-snapshot reaches the nested context a child revert replays through', async () => {
@@ -3552,8 +3675,19 @@ describe('rollbackCommand — a stack name in prose is never inside cdkd quotes 
     }
   });
 
-  /** The sites whose block carries a remedy, so a non-plain name is described there. */
-  const DESCRIBING_SITES: ReadonlySet<string> = new Set(['divergent record region', 'nothing to roll back']);
+  /**
+   * The sites that describe a non-plain name: the two whose block carries a
+   * remedy, and the four printed in a run that can end in a `Re-run with:` row
+   * (go-to-k/cdkd#3760).
+   */
+  const DESCRIBING_SITES: ReadonlySet<string> = new Set([
+    'divergent record region',
+    'nothing to roll back',
+    'plan header',
+    'prompt',
+    'state removed',
+    'complete',
+  ]);
 
   it('every payload name is JSON-bounded or described, and no pasted span of a message that shows it runs a command', async () => {
     const rendered: Array<{ value: string; site: string; message: string }> = [];

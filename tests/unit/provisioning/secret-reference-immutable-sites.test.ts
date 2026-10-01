@@ -565,6 +565,10 @@ describe('Scheduler Schedule GroupName stays refused (go-to-k/cdkd#4275)', () =>
       )
     );
     expect(result).toContain('GroupName addresses the schedule');
+    // The resolved group is masked where the refusal is built, not only by
+    // the engine's thrown-message mask.
+    expect(result).toContain('to ***)');
+    expect(result).not.toContain(NAME);
     expect(mockSend).not.toHaveBeenCalled();
   });
 });

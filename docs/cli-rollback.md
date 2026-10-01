@@ -90,7 +90,11 @@ roll back in the first place.
    disagrees with the region of the key it is stored under, while it still
    lists resources, is refused here, before anything is replayed — see
    [State management](state-management.md#directory-layout).
-4. Print the plan, one block per journal segment, newest first.
+4. Print the plan, one block per journal segment, newest first. A stack name
+   or region that is not a plain identifier (which only a hand-written state
+   key can be) is described rather than shown in the plan header, the
+   confirmation prompt and the completion lines, with a pointer to
+   `cdkd state list --long`.
 5. Confirm (skipped by `--force` / `-y`).
 6. Replay the segments newest-first, saving state after each operation and
    popping each segment once it finishes cleanly.
@@ -266,7 +270,7 @@ warns loudly on that arm only, and the plan labels these items
 **Type changes.** A replacement that changed the resource's `Type` is reversed
 through both types: the old resource is re-created by its own type's provider
 and the new one deleted by its own, and the plan shows the pair as
-`NEW -> OLD`. An operation whose old type the journal cannot name is shown as
+`from NEW to OLD`. An operation whose old type the journal cannot name is shown as
 `(REFUSED)` and fails on replay with the journal kept — see
 [Type changes on an existing logical id](cli-deploy-safety.md#type-changes-on-an-existing-logical-id).
 `--revert-failed` skips a failed `Type` change with a warning: that operation
