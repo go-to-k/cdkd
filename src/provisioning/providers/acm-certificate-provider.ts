@@ -17,7 +17,8 @@ import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { isPlainImportValue, normalizeAwsTagsToCfn, VALUE_NOT_SHOWN } from '../import-helpers.js';
+import { logicalIdShown } from '../composite-id.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { acquireIdempotencyToken, type IdempotencyToken } from './idempotency-token.js';
 import type {
@@ -728,8 +729,11 @@ export class ACMCertificateProvider implements ResourceProvider {
     if (input.knownPhysicalId) {
       const arn = input.knownPhysicalId;
       if (!arn.startsWith('arn:')) {
+        // Names the `--resource` flag, so the logical id and the supplied id
+        // are shown only when plain (go-to-k/cdkd#4273): inside cdkd's own
+        // `'...'`, a `'` in the id closed the quote and the rest ran when pasted.
         throw new Error(
-          `--resource override for ${input.logicalId} must be an ARN (got '${arn}'). ACM certificates have no human-readable physical id.`
+          `--resource override for ${logicalIdShown(input.logicalId)} must be an ARN (got ${isPlainImportValue(arn) ? `'${arn}'` : VALUE_NOT_SHOWN}). ACM certificates have no human-readable physical id.`
         );
       }
       try {

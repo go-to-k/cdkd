@@ -43,6 +43,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ACMCertificateProvider } from '../../../src/provisioning/providers/acm-certificate-provider.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 import { resetIdempotencyTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import {
@@ -1237,6 +1243,37 @@ describe('ACMCertificateProvider', () => {
         provider.import!(makeInput({ knownPhysicalId: 'just-a-name' }))
       ).rejects.toThrow(/must be an ARN/);
     });
+
+    it('shows no payload logical id or supplied id beside the --resource flag (go-to-k/cdkd#4273)', async () => {
+      // Pre-fix the refusal printed the logical id raw and the supplied id
+      // inside cdkd's own `'...'` on the line naming `--resource`.
+      for (const { value } of PASTE_PAYLOADS) {
+        const messages: string[] = [];
+        for (const input of [
+          makeInput({ logicalId: value, knownPhysicalId: 'just-a-name' }),
+          makeInput({ knownPhysicalId: value }),
+        ]) {
+          const err: unknown = await provider.import!(input).then(
+            () => undefined,
+            (e: unknown) => e
+          );
+          expect(err, value).toBeInstanceOf(Error);
+          messages.push((err as Error).message);
+        }
+        expect(messages[0], value).toContain(
+          "--resource override for a logical id that is not a plain identifier must be an ARN (got 'just-a-name')."
+        );
+        expect(messages[1], value).toContain(
+          'must be an ARN (got (not shown: it is not a plain identifier)).'
+        );
+        withPasteDir((dir) => {
+          for (const message of messages) {
+            expectNoCommandBesideDisplay(message, value);
+            expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+          }
+        });
+      }
+    }, 120_000);
 
     it('returns null when an ARN override does not exist on AWS', async () => {
       mockSend.mockRejectedValueOnce(

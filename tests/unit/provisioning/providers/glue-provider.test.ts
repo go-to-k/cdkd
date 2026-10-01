@@ -68,6 +68,12 @@ import {
 } from '../../../../src/provisioning/providers/glue-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../../utils/paste-harness.js';
+import {
   cfnRefValueFromPhysicalId,
   refStateLookupFromResource,
 } from '../../../../src/deployment/intrinsic-function-resolver.js';
@@ -987,6 +993,95 @@ describe('GlueProvider import', () => {
     expect(result).toBeNull();
     expect(mockGlueSend).not.toHaveBeenCalled();
   });
+
+  it('does not let a comma in a database name split the ambiguity list (go-to-k/cdkd#4273)', async () => {
+    mockGlueSend
+      .mockResolvedValueOnce({ Table: { Name: 'b' } })
+      .mockResolvedValueOnce({ Table: { Name: 'a|b' } });
+    mockLoggerWarn.mockClear();
+    await provider.import(makeTableInput({ knownPhysicalId: 'a|b', properties: { DatabaseName: 'x,y' } }));
+    const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain("'a|b' in (not shown: it is not a plain identifier)");
+    expect(warned).not.toContain('in x,y');
+  });
+
+  it('still shows a separator-bearing supplied id inside its quotes (go-to-k/cdkd#4273)', async () => {
+    // `|` is literal inside cdkd's `'...'`, and an empty-segment composite is
+    // the case whose message exists to show which half is missing.
+    for (const id of ['mydb|', '|mydb']) {
+      mockLoggerWarn.mockClear();
+      await provider.import(makeTableInput({ knownPhysicalId: id, properties: { DatabaseName: 'mydb' } }));
+      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain(`cannot resolve a database for physical id '${id}'.`);
+    }
+  });
+
+  it('shows no payload logical id or supplied id beside the --resource remedies (go-to-k/cdkd#4273)', async () => {
+    // The unpairable and ambiguous Table warnings end in a `--resource`
+    // remedy. Pre-fix they printed the logical id raw at the head and inside
+    // the fragment's own `'...'`, and the supplied id inside cdkd's `'...'`,
+    // so a `'` closed the quote and the rest of a pasted line ran.
+    const warned = async (input: Record<string, unknown>, found: number): Promise<string> => {
+      mockLoggerWarn.mockClear();
+      if (found === 2) {
+        mockGlueSend
+          .mockResolvedValueOnce({ Table: { Name: 'b' } })
+          .mockResolvedValueOnce({ Table: { Name: 'a|b' } });
+      }
+      await expect(provider.import(makeTableInput(input))).resolves.toBeNull();
+      const lines = mockLoggerWarn.mock.calls.map((c) => String(c[0]));
+      expect(lines, JSON.stringify(input)).toHaveLength(1);
+      return lines[0]!;
+    };
+    for (const { value } of PASTE_PAYLOADS) {
+      const unpairedById = await warned({ logicalId: value, knownPhysicalId: 'orders' }, 0);
+      const unpairedBySupplied = await warned({ knownPhysicalId: value }, 0);
+      const ambiguousById = await warned(
+        { logicalId: value, knownPhysicalId: 'a|b', properties: { DatabaseName: 'mydb' } },
+        2
+      );
+      expect(unpairedById, value).toContain(
+        "AWS::Glue::Table a logical id that is not a plain identifier: cannot resolve a database for physical id 'orders'."
+      );
+      expect(unpairedById, value).toContain("--resource '<logicalId>=<databaseName>|<tableName>'");
+      expect(unpairedBySupplied, value).toContain(
+        'for physical id (not shown: it is not a plain identifier).'
+      );
+      expect(ambiguousById, value).toContain(
+        'AWS::Glue::Table a logical id that is not a plain identifier: cannot be imported'
+      );
+      expect(ambiguousById, value).toContain(
+        "--resource '<logicalId>=<databaseName>|<databaseName>|<rest of the name>'"
+      );
+      // The ambiguous warning lists the readings it found; a payload in the
+      // supplied id reaches that list as a table name, a payload DatabaseName
+      // as a database name.
+      const ambiguousByTable = await warned(
+        { knownPhysicalId: `a|${value}`, properties: { DatabaseName: 'mydb' } },
+        2
+      );
+      const ambiguousByDatabase = await warned(
+        { knownPhysicalId: 'a|b', properties: { DatabaseName: value } },
+        2
+      );
+      for (const message of [ambiguousByTable, ambiguousByDatabase]) {
+        expect(message, value).toContain('names more than one existing table (');
+        expect(message, value).toContain('(not shown: it is not a plain identifier)');
+      }
+      withPasteDir((dir) => {
+        for (const message of [
+          unpairedById,
+          unpairedBySupplied,
+          ambiguousById,
+          ambiguousByTable,
+          ambiguousByDatabase,
+        ]) {
+          expectNoCommandBesideDisplay(message, value);
+          expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+        }
+      });
+    }
+  }, 120_000);
 });
 
 describe('GlueProvider update', () => {
