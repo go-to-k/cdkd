@@ -3,9 +3,7 @@
 ## 5-f. Filing what you find mid-lane
 
 **A finding about the TOOLING is a ROW in `docs/tooling-backlog.md`, not an
-issue** — hooks, gates, `.claude/rules/**`, `.claude/skills/**`, CI fences and
-the integ harness are unreachable from the CLI; build a fence only on a SECOND
-occurrence.
+issue** (AGENTS.md's Tooling Policy: a fence only on a SECOND occurrence).
 
 **N sites of one root cause is ONE issue and ONE PR, never N issues** — each
 split pays the full fixed cost (claim through merge) for the same edit. Sweep
@@ -14,8 +12,19 @@ every site? A residue is `next` only on external input
 (`.claude/rules/session-report.md`'s reason (a); never (b), its files being
 loaded) — then file an umbrella naming every site, and say which this lane DID
 close. **NOT external input**: an umbrella already owning the population, "a
-different shape", a scope-creep trip, or a file shared with another code path
-(one an open PR this session did not open holds IS (a)) — each is a SEPARATE PR, still `now`.
+different shape", a scope-creep trip, or a file shared with another code path —
+each is a SEPARATE PR, still `now`. A file an open PR this session did not open
+holds IS (a), and is not this PR's to edit: before a sweep touches a file the
+claim did not name, ask LIVE (#4273):
+
+```bash
+# <file> is the REPO-RELATIVE path (exact match). `files` stops at 100 per PR,
+# so a longer PR is printed too: read it with `gh api --paginate
+# repos/go-to-k/cdkd/pulls/<N>/files`.
+gh pr list --state open --limit 200 --json number,files,changedFiles \
+  -q '.[] | select(any(.files[]; .path == "<file>")
+        or .changedFiles > (.files | length)) | .number'
+```
 
 **Scope creep reaches an unreviewable PR one small, real step at a time**
 (go-to-k/cdkd#2514). Tripwires: a SECOND unrequested widening, or a PR TITLE
@@ -43,9 +52,8 @@ ISSUE, not a sibling site.
 # Search the CONCEPT, not this instance's spelling:
 gh issue list --state open --limit 200 --search '<root-cause concept>' \
   --json number,title
-# Then the body window the index misses: an umbrella names its sites in the
-# body, not the title. `(.body // "")` is load-bearing -- one body-less issue
-# makes `test` abort the whole jq program.
+# Then BODIES, where an umbrella names its sites. `(.body // "")` is
+# load-bearing: one body-less issue aborts the whole jq program.
 gh issue list --state open --limit 200 --json number,title,body \
   --jq '.[] | select((.body // "") | test("<shared symbol / call / assumption>";"i"))
         | "\(.number)\t\(.title)"'
@@ -86,9 +94,9 @@ gh issue create -t 'fix(provider): ...' \
 **A `next` reason must still be true when someone reads it.** Write it as a
 condition a reader can CHECK (`PR #N holds this file`, `the fix belongs in
 <repo>`), never as a state of the lane ("the files are cold", "the session
-ended"). Check it before writing EITHER value: a fix that must edit a file
-an open PR this session did not open holds (§2's `gh pr list ... files`; a fork PR,
-its hunks) is `next` (a), naming THAT PR's number (#3959). A PR of THIS run is not
+ended"). Check it before writing EITHER value, the held-file query above once
+per file the fix edits: one an open PR this session did not open holds (a fork
+PR, its hunks) is `next` (a), naming THAT PR (#3959). A PR of THIS run is not
 external input: `now`, queued behind that lane — say so in the lane report
 (#4263 / #4264 were both filed `next` on this run's own #4269 / #4271).
 

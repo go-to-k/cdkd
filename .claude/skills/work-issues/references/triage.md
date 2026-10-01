@@ -34,7 +34,9 @@ claim comment still applies.
 ```bash
 git fetch origin -q                    # REQUIRED before the ref probe below
 git worktree list
-gh pr list --state open --json number,title,headRefName,files  # holds GROW: re-run per claim (#3573)
+gh pr list --state open --limit 200 --json number,title,headRefName,files,changedFiles  # holds GROW: re-run per claim (#3573)
+# `files` stops at 100 per PR: where changedFiles is larger, page the rest with
+# `gh api --paginate repos/go-to-k/cdkd/pulls/<N>/files`.
 
 # A lane between its first push and its `gh pr create` has no PR, no local
 # branch and possibly no worktree — the probe the others MISS:
