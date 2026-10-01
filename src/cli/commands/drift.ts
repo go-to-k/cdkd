@@ -6320,9 +6320,11 @@ async function runRevert(
             // for a NoEcho or Base64 value (see `acceptRefusalReason`), which
             // is why the last sentence speaks of this refusal, not the mask.
             // The first two write the mask into `properties` as well, so the
-            // `export.ts`, `rollback-executor.ts` and `deploy-engine.ts`
-            // messages, which omit the `Fn::Base64` writer, are wrong for that
-            // population too; they are issue #2881's remaining checklist items.
+            // sibling refusals reach that population too: `export.ts`'s
+            // blocker, `rollback-executor.ts`'s `refuseMaskedReplayBaseline`
+            // and `deploy-engine-masking.ts`'s `refuseRedactedAttributeReads`
+            // name the `Fn::Base64` writer with a remedy of their own (issue
+            // #2881).
             totalUnresolvable++;
             logger.error(
               `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +

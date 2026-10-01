@@ -49,16 +49,18 @@ import type { RedactedAttributeRead } from '../../../src/deployment/intrinsic-fu
 
 const remedyFor = (
   reads: readonly RedactedAttributeRead[],
-  resources: Record<string, { resourceType?: string }> = {}
+  resources: Record<string, { resourceType?: string }> = {},
+  causeScoped?: boolean
 ): string =>
   (
     DeployEngine as unknown as {
       maskedRecordRemedyFor(
         reads: readonly RedactedAttributeRead[],
-        resources: Record<string, { resourceType?: string }>
+        resources: Record<string, { resourceType?: string }>,
+        causeScoped?: boolean
       ): string;
     }
-  ).maskedRecordRemedyFor(reads, resources);
+  ).maskedRecordRemedyFor(reads, resources, causeScoped);
 
 /** What `noteAttributeSecrecy` pushes for a masked `Fn::GetAtt`. */
 const attr = (logicalId: string, attributeName: string): RedactedAttributeRead => ({
@@ -317,6 +319,20 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     expect(remedy).toContain('Ref Foo (state key X)');
     expect(remedy).toContain('the command is withheld');
     expect(remedy).not.toContain('--resource Ref Foo (state key X)=<physicalId>');
+    // THE LEAD-IN FOLLOWS THE CALLER (issue #2881). `refuseMaskedOutputReads`
+    // (no flag) numbers no causes, so its lead-in stays unconditional;
+    // `refuseRedactedAttributeReads` (flag set) numbers three and scopes it to
+    // cause (3), since a re-import clears neither a NoEcho nor an
+    // `Fn::Base64` mask.
+    expect(remedy).toContain('Re-import the record that HOLDS the mask for ');
+    expect(remedy).not.toContain('cause (3)');
+    const scoped = remedyFor(
+      [attr('Ref Foo (state key X)', 'SomeAttr')],
+      { 'Ref Foo (state key X)': { resourceType: 'AWS::SQS::Queue' } },
+      true
+    );
+    expect(scoped).toContain('If cause (3) applies, re-import the record that HOLDS the mask for ');
+    expect(scoped).not.toMatch(/(^|\. )Re-import the record that HOLDS the mask/);
     // THE PROPOSITION THIS ROW WAS WRITTEN FOR, untouched: the start-anchored
     // regex captured `Foo` out of the rendering and advised force-overwriting
     // an innocent record. Routing on `logicalId` makes that unreachable, and
@@ -360,6 +376,12 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
       // NOT the cross-stack arm: the record IS in this stack, and telling the
       // user to act on a producer stack would be plainly false.
       expect(remedy).not.toContain('ANOTHER stack');
+      // "Cause (1) above" points into a numbered list only the cause-scoped
+      // caller prints (issue #2881).
+      expect(remedy).not.toContain('Cause (1) above');
+      expect(remedyFor([attr('Cr', 'Secret')], { Cr: { resourceType } }, true)).toContain(
+        'Cause (1) above is the one that applies to it.'
+      );
     }
   );
 

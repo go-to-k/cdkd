@@ -515,6 +515,14 @@ describe('rewriteResourceReferences', () => {
     // pin that a re-word defeats fences the shouting, not the statement.
     expect(warned).not.toMatch(/deploy'? will refuse/i);
     expect(warned).not.toMatch(/deploy will refuse/i);
+    // The re-import remedy is scoped to the one population it reaches (issue
+    // #2881): a custom resource's `import()` records no attributes, and the
+    // SSM provider's records `Value` only for a plain literal, so a NoEcho
+    // value or an `Fn::Base64` encoding of a secret survives a re-import.
+    expect(warned).toContain("re-import the record that holds the mask (only for a mask 'cdkd import' wrote");
+    expect(warned).toContain(
+      'a re-import does not recover a NoEcho custom-resource value or the Fn::Base64 encoding of a secret'
+    );
   });
 
   it('REFUSES a {Ref: orphan} whose recovery key is the redaction mask, without --force', async () => {
