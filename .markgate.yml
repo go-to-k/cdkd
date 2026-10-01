@@ -127,11 +127,13 @@ gates:
       # Split out of deploy-engine.ts (#4200); moving code must not take it
       # out of scope. `deploy-value-equality.ts` decides whether a
       # create-only change lowers to UPDATE or REPLACES (deletes) the resource.
+      - "src/deployment/deploy-engine-heal.ts"
       - "src/deployment/deploy-engine-masking.ts"
       - "src/deployment/deploy-engine-name-collision.ts"
       - "src/deployment/deploy-engine-observed-capture.ts"
       - "src/deployment/deploy-engine-options.ts"
       - "src/deployment/deploy-engine-outputs.ts"
+      - "src/deployment/deploy-engine-replacement.ts"
       - "src/deployment/deploy-engine-rollback.ts"
       - "src/deployment/deploy-value-equality.ts"
       - "src/deployment/label-routing.ts"

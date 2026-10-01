@@ -27,7 +27,7 @@ const base: ReplacementNameChange = {
   physicalId: 'my-fn',
 };
 
-/** The sentence as `deploy-engine.ts` throws it, remedy included. */
+/** The sentence as `deploy-engine-replacement.ts` throws it, remedy included. */
 function thrown(change: ReplacementNameChange): string {
   return (
     `Fn (AWS::Lambda::Function) requires replacement, but the create-first attempt collided: ` +
