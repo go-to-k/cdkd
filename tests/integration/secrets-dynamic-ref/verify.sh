@@ -820,8 +820,10 @@ if [[ "${DEPLOY_OUT_LEAK}" == *"${EXPECTED_SECURE}"* ]] || [[ "${DEPLOY_OUT_LEAK
   echo "FAIL: the probe deploy's --verbose log carries the SecureString value or the username in plaintext somewhere (issue #2728)" >&2
   exit 1
 fi
-# Issue #4266: the assembled reference is refused BEFORE its lookup, so its
-# id, the password inside, is never sent to AWS. The `Pw` lookup's own echo is
+# Issue #4266: the assembled reference is refused BEFORE its lookup, so it is
+# never looked up. (Its password is in the JSON key, which the request does
+# not carry; Phase 1b3b's `ssm-secure` arm holds it in the name the request
+# sends.) The `Pw` lookup's own echo is
 # the sentinel that `--verbose` echoes reach this log at all; the assembled
 # one (the key position masked) must be absent.
 if [[ "${DEPLOY_OUT_LEAK}" != *"Resolving dynamic reference: secretsmanager:${SECRET_NAME}:SecretString:password"* ]]; then
