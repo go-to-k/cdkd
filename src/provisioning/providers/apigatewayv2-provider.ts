@@ -24,7 +24,13 @@ import {
   GetAuthorizerCommand,
   UpdateAuthorizerCommand,
   GetApiCommand,
+  GetApisCommand,
+  GetAuthorizersCommand,
+  GetIntegrationsCommand,
   NotFoundException,
+  type CreateApiCommandOutput,
+  type CreateAuthorizerCommandOutput,
+  type CreateIntegrationCommandOutput,
   type ProtocolType,
   type IpAddressType,
   type IntegrationType,
@@ -47,7 +53,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { markRedactedCause } from '../../deployment/retryable-errors.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
@@ -74,6 +80,48 @@ import {
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import { injectiveKey } from '../../state/record-keys.js';
+import { pasteableAwsCommand, type PasteableAwsCommand } from '../replacement-protection-advice.js';
+import { collectOrphanIds, reportPossibleOrphans } from './apigateway-orphan-report.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  isInsideWindow,
+  withoutServerErrorRetries,
+} from './ambiguous-create.js';
+
+/**
+ * Retry-safety state for the three API Gateway v2 creates that mint their id
+ * and carry no idempotency token, `CreateApi`, `CreateIntegration` and
+ * `CreateAuthorizer` (issue
+ * [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
+ * `apigateway-orphan-report.ts`. Module-scoped: a provider instance is per
+ * registry, and one process can build several.
+ */
+const createApiLatch = new AmbiguousCreateLatch('apigatewayv2:CreateApi');
+const createIntegrationLatch = new AmbiguousCreateLatch('apigatewayv2:CreateIntegration');
+const createAuthorizerLatch = new AmbiguousCreateLatch('apigatewayv2:CreateAuthorizer');
+/**
+ * Resources this process created and recorded, never reported as orphan
+ * candidates. A child is keyed by `(apiId, id)`: its id is unique only inside
+ * its API.
+ */
+const apisCreatedByThisProcess = new RecentIdSet();
+const integrationsCreatedByThisProcess = new RecentIdSet();
+const authorizersCreatedByThisProcess = new RecentIdSet();
+
+/** `MaxResults` of each list page; a string in the v2 API. */
+const ORPHAN_LIST_PAGE_SIZE = '100';
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetApiGatewayV2CreateRetryStateForTests(): void {
+  createApiLatch.resetForTests();
+  createIntegrationLatch.resetForTests();
+  createAuthorizerLatch.resetForTests();
+  apisCreatedByThisProcess.resetForTests();
+  integrationsCreatedByThisProcess.resetForTests();
+  authorizersCreatedByThisProcess.resetForTests();
+}
 
 /** The ApiGatewayV2 types whose delete addresses the child through `ApiId`. */
 const API_ID_ADDRESSED_TYPES: ReadonlySet<string> = new Set([
@@ -115,6 +163,7 @@ function stageSinks(
  */
 export class ApiGatewayV2Provider implements ResourceProvider {
   private client: ApiGatewayV2Client | undefined;
+  private createClient: ApiGatewayV2Client | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ApiGatewayV2Provider');
 
@@ -268,6 +317,42 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   }
 
   /**
+   * The client `CreateApi`, `CreateIntegration` and `CreateAuthorizer` go
+   * through: SDK retries on, except a 5xx (`withoutServerErrorRetries`, issue
+   * #2080). Separate so every other call keeps the full SDK retry.
+   */
+  private getCreateClient(): ApiGatewayV2Client {
+    if (!this.createClient) {
+      this.createClient = withoutServerErrorRetries(
+        new ApiGatewayV2Client({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
+    }
+    return this.createClient;
+  }
+
+  /**
+   * ` --region <r>` for an orphan report's pasteable commands (issue #2080),
+   * from the client the lookup listed through: without it a stack deployed
+   * outside the operator's default region pastes a read against the wrong
+   * region, and its NotFound reads as "no orphan". Empty when the region
+   * cannot be read -- the report must never fail the create.
+   */
+  private async orphanCommandRegionArg(
+    aws: ReturnType<typeof pasteableAwsCommand>
+  ): Promise<PasteableAwsCommand> {
+    let region: string | undefined;
+    try {
+      region = await this.getClient().config.region();
+    } catch {
+      region = undefined;
+    }
+    return region ? aws` --region ${region}` : aws``;
+  }
+
+  /**
    * A `create()` / `update()` failure wrap quoting the caught error's text
    * masked (issue #2177): AWS quotes a rejected request value back (a stage
    * name, an integration URI, an authorizer URI) off the RESOLVED `properties`
@@ -276,19 +361,14 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * the mask CHANGED is stamped `markRedactedCause`, so the retry classifiers
    * read that chain rather than a masked text a secret cut retry wording out
    * of (the issue #4244 class). A method, so `gen-update-wrap-coverage` sees
-   * the catch that throws it as a wrap. Same logic as `wrapMaskedAwsError`
-   * (`src/deployment/retryable-errors.ts`, added by PR #4257): delegate to it
-   * once that is on `main`.
+   * the catch that throws it as a wrap; the logic is `wrapMaskedAwsError`'s.
    */
   private wrapMaskedError(
     log: MaskedLogSinks,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    const raw = error instanceof Error ? error.message : String(error);
-    const masked = log.mask(raw);
-    const wrapped = build(masked);
-    return masked === raw ? wrapped : markRedactedCause(wrapped);
+    return wrapMaskedAwsError(log.mask, error, build);
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -514,31 +594,79 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     }
 
     try {
-      const response = await this.getClient().send(
-        new CreateApiCommand({
-          Name: name,
-          ProtocolType: protocolType as ProtocolType,
-          Description: properties['Description'] as string | undefined,
-          CorsConfiguration: properties['CorsConfiguration'] as
-            | {
-                AllowCredentials?: boolean;
-                AllowHeaders?: string[];
-                AllowMethods?: string[];
-                AllowOrigins?: string[];
-                ExposeHeaders?: string[];
-                MaxAge?: number;
-              }
-            | undefined,
-          DisableExecuteApiEndpoint: properties['DisableExecuteApiEndpoint'] as boolean | undefined,
-          Version: properties['Version'] as string | undefined,
-          RouteSelectionExpression: properties['RouteSelectionExpression'] as string | undefined,
-          ApiKeySelectionExpression: properties['ApiKeySelectionExpression'] as string | undefined,
-          IpAddressType: properties['IpAddressType'] as IpAddressType | undefined,
-          Tags: this.cfnTagsToRecord(properties['Tags']),
-        })
-      );
+      // Issue #2080: after an earlier ambiguous attempt, name the API it may
+      // have made before a second CreateApi is sent. Detection only -- see
+      // `apigateway-orphan-report.ts`.
+      const orphanWindow = createApiLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await this.orphanCommandRegionArg(aws);
+        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+          action: 'CreateApi',
+          listAction: 'GetApis',
+          subject: `an API named ${log.value(name)} (protocol ${log.value(protocolType)})`,
+          noun: 'API(s)',
+          list: () =>
+            collectOrphanIds(
+              async (token) => {
+                const page = await this.getClient().send(
+                  new GetApisCommand({
+                    MaxResults: ORPHAN_LIST_PAGE_SIZE,
+                    ...(token && { NextToken: token }),
+                  })
+                );
+                return { items: page.Items ?? [], next: page.NextToken };
+              },
+              (a) =>
+                a.ApiId &&
+                a.Name === name &&
+                a.ProtocolType === protocolType &&
+                isInsideWindow(a.CreatedDate, orphanWindow) &&
+                !apisCreatedByThisProcess.has(a.ApiId)
+                  ? a.ApiId
+                  : undefined
+            ),
+          inspect: (id) => aws`aws apigatewayv2 get-api --api-id ${id}${regionArg}`.render(),
+          remove: (id) => aws`aws apigatewayv2 delete-api --api-id ${id}${regionArg}`.render(),
+        });
+      }
+      const attemptStartMs = Date.now();
+      let response: CreateApiCommandOutput;
+      try {
+        response = await this.getCreateClient().send(
+          new CreateApiCommand({
+            Name: name,
+            ProtocolType: protocolType as ProtocolType,
+            Description: properties['Description'] as string | undefined,
+            CorsConfiguration: properties['CorsConfiguration'] as
+              | {
+                  AllowCredentials?: boolean;
+                  AllowHeaders?: string[];
+                  AllowMethods?: string[];
+                  AllowOrigins?: string[];
+                  ExposeHeaders?: string[];
+                  MaxAge?: number;
+                }
+              | undefined,
+            DisableExecuteApiEndpoint: properties['DisableExecuteApiEndpoint'] as
+              | boolean
+              | undefined,
+            Version: properties['Version'] as string | undefined,
+            RouteSelectionExpression: properties['RouteSelectionExpression'] as string | undefined,
+            ApiKeySelectionExpression: properties['ApiKeySelectionExpression'] as
+              | string
+              | undefined,
+            IpAddressType: properties['IpAddressType'] as IpAddressType | undefined,
+            Tags: this.cfnTagsToRecord(properties['Tags']),
+          })
+        );
+      } catch (error) {
+        createApiLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
 
       const apiId = response.ApiId!;
+      apisCreatedByThisProcess.add(apiId);
       const apiEndpoint = response.ApiEndpoint!;
       log.debug(`Successfully created API Gateway V2 Api ${logicalId}: ${apiId}`);
 
@@ -824,34 +952,83 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     this.warnTlsConfigIgnoredIfPublic(logicalId, properties, log);
 
     try {
-      const response = await this.getClient().send(
-        new CreateIntegrationCommand({
-          ApiId: apiId,
-          IntegrationType: integrationType as IntegrationType,
-          IntegrationUri: properties['IntegrationUri'] as string | undefined,
-          IntegrationMethod: properties['IntegrationMethod'] as string | undefined,
-          PayloadFormatVersion: properties['PayloadFormatVersion'] as string | undefined,
-          TimeoutInMillis: properties['TimeoutInMillis'] as number | undefined,
-          RequestParameters: properties['RequestParameters'] as Record<string, string> | undefined,
-          Description: properties['Description'] as string | undefined,
-          ConnectionId: properties['ConnectionId'] as string | undefined,
-          ConnectionType: properties['ConnectionType'] as ConnectionType | undefined,
-          ContentHandlingStrategy: properties['ContentHandlingStrategy'] as
-            | ContentHandlingStrategy
-            | undefined,
-          CredentialsArn: properties['CredentialsArn'] as string | undefined,
-          IntegrationSubtype: properties['IntegrationSubtype'] as string | undefined,
-          PassthroughBehavior: properties['PassthroughBehavior'] as PassthroughBehavior | undefined,
-          RequestTemplates: properties['RequestTemplates'] as Record<string, string> | undefined,
-          ResponseParameters: this.toSdkResponseParameters(properties['ResponseParameters'], log),
-          TemplateSelectionExpression: properties['TemplateSelectionExpression'] as
-            | string
-            | undefined,
-          TlsConfig: properties['TlsConfig'] as TlsConfigInput | undefined,
-        })
-      );
+      const integrationUri = properties['IntegrationUri'] as string | undefined;
+      // Issue #2080: after an earlier ambiguous attempt, name the integration
+      // it may have made before a second CreateIntegration is sent. Detection
+      // only -- see `apigateway-orphan-report.ts`.
+      const orphanWindow = createIntegrationLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await this.orphanCommandRegionArg(aws);
+        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+          action: 'CreateIntegration',
+          listAction: 'GetIntegrations',
+          subject: `an integration of type ${log.value(integrationType)}${integrationUri !== undefined ? ` to ${log.value(integrationUri)}` : ''} in API ${log.value(apiId)}`,
+          noun: 'integration(s)',
+          list: () =>
+            collectOrphanIds(
+              async (token) => {
+                const page = await this.getClient().send(
+                  new GetIntegrationsCommand({
+                    ApiId: apiId,
+                    MaxResults: ORPHAN_LIST_PAGE_SIZE,
+                    ...(token && { NextToken: token }),
+                  })
+                );
+                return { items: page.Items ?? [], next: page.NextToken };
+              },
+              (i) =>
+                i.IntegrationId &&
+                i.IntegrationType === integrationType &&
+                (i.IntegrationUri ?? '') === (integrationUri ?? '') &&
+                !integrationsCreatedByThisProcess.has(injectiveKey(apiId, i.IntegrationId))
+                  ? i.IntegrationId
+                  : undefined
+            ),
+          inspect: (id) =>
+            aws`aws apigatewayv2 get-integration --api-id ${apiId} --integration-id ${id}${regionArg}`.render(),
+        });
+      }
+      const attemptStartMs = Date.now();
+      let response: CreateIntegrationCommandOutput;
+      try {
+        response = await this.getCreateClient().send(
+          new CreateIntegrationCommand({
+            ApiId: apiId,
+            IntegrationType: integrationType as IntegrationType,
+            IntegrationUri: integrationUri,
+            IntegrationMethod: properties['IntegrationMethod'] as string | undefined,
+            PayloadFormatVersion: properties['PayloadFormatVersion'] as string | undefined,
+            TimeoutInMillis: properties['TimeoutInMillis'] as number | undefined,
+            RequestParameters: properties['RequestParameters'] as
+              | Record<string, string>
+              | undefined,
+            Description: properties['Description'] as string | undefined,
+            ConnectionId: properties['ConnectionId'] as string | undefined,
+            ConnectionType: properties['ConnectionType'] as ConnectionType | undefined,
+            ContentHandlingStrategy: properties['ContentHandlingStrategy'] as
+              | ContentHandlingStrategy
+              | undefined,
+            CredentialsArn: properties['CredentialsArn'] as string | undefined,
+            IntegrationSubtype: properties['IntegrationSubtype'] as string | undefined,
+            PassthroughBehavior: properties['PassthroughBehavior'] as
+              | PassthroughBehavior
+              | undefined,
+            RequestTemplates: properties['RequestTemplates'] as Record<string, string> | undefined,
+            ResponseParameters: this.toSdkResponseParameters(properties['ResponseParameters'], log),
+            TemplateSelectionExpression: properties['TemplateSelectionExpression'] as
+              | string
+              | undefined,
+            TlsConfig: properties['TlsConfig'] as TlsConfigInput | undefined,
+          })
+        );
+      } catch (error) {
+        createIntegrationLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
 
       const integrationId = response.IntegrationId!;
+      integrationsCreatedByThisProcess.add(injectiveKey(apiId, integrationId));
       log.debug(`Successfully created API Gateway V2 Integration ${logicalId}: ${integrationId}`);
 
       return {
@@ -1077,39 +1254,83 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     }
 
     try {
-      const response = await this.getClient().send(
-        new CreateAuthorizerCommand({
-          ApiId: apiId,
-          AuthorizerType: authorizerType as AuthorizerType,
-          Name: name,
-          IdentitySource: (properties['IdentitySource'] as string | string[] | undefined)
-            ? typeof properties['IdentitySource'] === 'string'
-              ? [properties['IdentitySource']]
-              : (properties['IdentitySource'] as string[])
-            : undefined,
-          JwtConfiguration: properties['JwtConfiguration'] as
-            | { Audience?: string[]; Issuer?: string }
-            | undefined,
-          AuthorizerUri: properties['AuthorizerUri'] as string | undefined,
-          // REQUEST-only create-time scalar (IAM role ARN API Gateway assumes
-          // to invoke the REQUEST Lambda authorizer). AWS rejects it on JWT
-          // authorizers and CDK only emits it for REQUEST; passing undefined
-          // when absent is a no-op, so no AuthorizerType gate is needed here.
-          AuthorizerCredentialsArn: properties['AuthorizerCredentialsArn'] as string | undefined,
-          AuthorizerPayloadFormatVersion: properties['AuthorizerPayloadFormatVersion'] as
-            | string
-            | undefined,
-          AuthorizerResultTtlInSeconds: properties['AuthorizerResultTtlInSeconds'] as
-            | number
-            | undefined,
-          EnableSimpleResponses: properties['EnableSimpleResponses'] as boolean | undefined,
-          IdentityValidationExpression: properties['IdentityValidationExpression'] as
-            | string
-            | undefined,
-        })
-      );
+      // Issue #2080: after an earlier ambiguous attempt, name the authorizer
+      // it may have made before a second CreateAuthorizer is sent. Detection
+      // only -- see `apigateway-orphan-report.ts`.
+      const orphanWindow = createAuthorizerLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await this.orphanCommandRegionArg(aws);
+        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+          action: 'CreateAuthorizer',
+          listAction: 'GetAuthorizers',
+          subject: `an authorizer named ${log.value(name)} (type ${log.value(authorizerType)}) in API ${log.value(apiId)}`,
+          noun: 'authorizer(s)',
+          list: () =>
+            collectOrphanIds(
+              async (token) => {
+                const page = await this.getClient().send(
+                  new GetAuthorizersCommand({
+                    ApiId: apiId,
+                    MaxResults: ORPHAN_LIST_PAGE_SIZE,
+                    ...(token && { NextToken: token }),
+                  })
+                );
+                return { items: page.Items ?? [], next: page.NextToken };
+              },
+              (a) =>
+                a.AuthorizerId &&
+                a.Name === name &&
+                a.AuthorizerType === authorizerType &&
+                !authorizersCreatedByThisProcess.has(injectiveKey(apiId, a.AuthorizerId))
+                  ? a.AuthorizerId
+                  : undefined
+            ),
+          inspect: (id) =>
+            aws`aws apigatewayv2 get-authorizer --api-id ${apiId} --authorizer-id ${id}${regionArg}`.render(),
+        });
+      }
+      const attemptStartMs = Date.now();
+      let response: CreateAuthorizerCommandOutput;
+      try {
+        response = await this.getCreateClient().send(
+          new CreateAuthorizerCommand({
+            ApiId: apiId,
+            AuthorizerType: authorizerType as AuthorizerType,
+            Name: name,
+            IdentitySource: (properties['IdentitySource'] as string | string[] | undefined)
+              ? typeof properties['IdentitySource'] === 'string'
+                ? [properties['IdentitySource']]
+                : (properties['IdentitySource'] as string[])
+              : undefined,
+            JwtConfiguration: properties['JwtConfiguration'] as
+              | { Audience?: string[]; Issuer?: string }
+              | undefined,
+            AuthorizerUri: properties['AuthorizerUri'] as string | undefined,
+            // REQUEST-only create-time scalar (IAM role ARN API Gateway assumes
+            // to invoke the REQUEST Lambda authorizer). AWS rejects it on JWT
+            // authorizers and CDK only emits it for REQUEST; passing undefined
+            // when absent is a no-op, so no AuthorizerType gate is needed here.
+            AuthorizerCredentialsArn: properties['AuthorizerCredentialsArn'] as string | undefined,
+            AuthorizerPayloadFormatVersion: properties['AuthorizerPayloadFormatVersion'] as
+              | string
+              | undefined,
+            AuthorizerResultTtlInSeconds: properties['AuthorizerResultTtlInSeconds'] as
+              | number
+              | undefined,
+            EnableSimpleResponses: properties['EnableSimpleResponses'] as boolean | undefined,
+            IdentityValidationExpression: properties['IdentityValidationExpression'] as
+              | string
+              | undefined,
+          })
+        );
+      } catch (error) {
+        createAuthorizerLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
 
       const authorizerId = response.AuthorizerId!;
+      authorizersCreatedByThisProcess.add(injectiveKey(apiId, authorizerId));
       log.debug(`Successfully created API Gateway V2 Authorizer ${logicalId}: ${authorizerId}`);
 
       return {

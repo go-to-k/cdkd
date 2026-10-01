@@ -23,11 +23,18 @@ import {
   UpdateAuthorizerCommand,
   DeleteAuthorizerCommand,
   GetAuthorizerCommand,
+  GetAuthorizersCommand,
+  GetDeploymentsCommand,
   TagResourceCommand,
   UntagResourceCommand,
   NotFoundException,
 } from '@aws-sdk/client-api-gateway';
-import type { CacheClusterSize, CanarySettings } from '@aws-sdk/client-api-gateway';
+import type {
+  CacheClusterSize,
+  CanarySettings,
+  CreateAuthorizerCommandOutput,
+  CreateDeploymentCommandOutput,
+} from '@aws-sdk/client-api-gateway';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -59,13 +66,50 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
-import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { pasteableAwsCommand, type PasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { injectiveKey } from '../../state/record-keys.js';
+import { collectOrphanIds, reportPossibleOrphans } from './apigateway-orphan-report.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  isInsideWindow,
+  withoutServerErrorRetries,
+} from './ambiguous-create.js';
+
+/**
+ * Retry-safety state for the two API Gateway creates that mint their id and
+ * carry no idempotency token, `CreateAuthorizer` and `CreateDeployment`
+ * (issue [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
+ * `apigateway-orphan-report.ts`. Module-scoped: a provider instance is per
+ * registry, and one process can build several.
+ */
+const createAuthorizerLatch = new AmbiguousCreateLatch('apigateway:CreateAuthorizer');
+const createDeploymentLatch = new AmbiguousCreateLatch('apigateway:CreateDeployment');
+/**
+ * Children this process created and recorded, never reported as orphan
+ * candidates. Keyed by `(restApiId, id)`: a child id is unique only inside
+ * its REST API.
+ */
+const authorizersCreatedByThisProcess = new RecentIdSet();
+const deploymentsCreatedByThisProcess = new RecentIdSet();
+
+/** `limit` of each orphan-lookup list page (the API's maximum). */
+const ORPHAN_LIST_PAGE_SIZE = 500;
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetApiGatewayCreateRetryStateForTests(): void {
+  createAuthorizerLatch.resetForTests();
+  createDeploymentLatch.resetForTests();
+  authorizersCreatedByThisProcess.resetForTests();
+  deploymentsCreatedByThisProcess.resetForTests();
+}
 
 /** Shape of an `AWS::ApiGateway::Method` physicalId (issue #1657). */
 const APIGW_METHOD_ID_FORMAT: CompositeIdFormat = {
@@ -203,6 +247,48 @@ export class ApiGatewayProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.apiGatewayClient = awsClients.apiGateway;
+  }
+
+  private createClient: Promise<APIGatewayClient> | undefined;
+
+  /**
+   * The client `CreateAuthorizer` and `CreateDeployment` go through: SDK
+   * retries on, except a 5xx (`withoutServerErrorRetries`, issue #2080).
+   * Separate so every other call keeps the full SDK retry, and built in the
+   * shared client's REGION (read from it, as `config.region()` resolves it) so
+   * the create cannot land in another region than the calls around it. The
+   * PROMISE is cached, so two creates on a cold provider build one client; a
+   * rejected region read is not cached, so the next create retries it.
+   */
+  private getCreateClient(): Promise<APIGatewayClient> {
+    this.createClient ??= this.apiGatewayClient.config.region().then(
+      (region) =>
+        withoutServerErrorRetries(new APIGatewayClient({ ...ambientClientDefaults(), region })),
+      (error: unknown) => {
+        this.createClient = undefined;
+        throw error;
+      }
+    );
+    return this.createClient;
+  }
+
+  /**
+   * ` --region <r>` for an orphan report's pasteable commands (issue #2080),
+   * from the client the lookup listed through: without it a stack deployed
+   * outside the operator's default region pastes a read against the wrong
+   * region, and its NotFound reads as "no orphan". Empty when the region
+   * cannot be read -- the report must never fail the create.
+   */
+  private async orphanCommandRegionArg(
+    aws: ReturnType<typeof pasteableAwsCommand>
+  ): Promise<PasteableAwsCommand> {
+    let region: string | undefined;
+    try {
+      region = await this.apiGatewayClient.config.region();
+    } catch {
+      region = undefined;
+    }
+    return region ? aws` --region ${region}` : aws``;
   }
 
   /**
@@ -632,26 +718,71 @@ export class ApiGatewayProvider implements ResourceProvider {
     try {
       const providerArns = properties['ProviderARNs'] as string[] | undefined;
 
-      const response = await this.apiGatewayClient.send(
-        new CreateAuthorizerCommand({
-          restApiId,
-          name,
-          type: type as 'TOKEN' | 'REQUEST' | 'COGNITO_USER_POOLS',
-          authType: properties['AuthType'] as string | undefined,
-          providerARNs: providerArns,
-          authorizerUri: properties['AuthorizerUri'] as string | undefined,
-          authorizerCredentials: properties['AuthorizerCredentials'] as string | undefined,
-          identitySource: properties['IdentitySource'] as string | undefined,
-          identityValidationExpression: properties['IdentityValidationExpression'] as
-            | string
-            | undefined,
-          authorizerResultTtlInSeconds: properties['AuthorizerResultTtlInSeconds'] as
-            | number
-            | undefined,
-        })
-      );
+      // Issue #2080: after an earlier ambiguous attempt, name the authorizer
+      // it may have made before a second CreateAuthorizer is sent. Detection
+      // only -- see `reportPossibleOrphans`.
+      const orphanWindow = createAuthorizerLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await this.orphanCommandRegionArg(aws);
+        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+          action: 'CreateAuthorizer',
+          listAction: 'GetAuthorizers',
+          subject: `an authorizer named ${log.value(name)} (type ${log.value(type)}) in REST API ${log.value(restApiId)}`,
+          noun: 'authorizer(s)',
+          list: () =>
+            collectOrphanIds(
+              async (position) => {
+                const page = await this.apiGatewayClient.send(
+                  new GetAuthorizersCommand({
+                    restApiId,
+                    limit: ORPHAN_LIST_PAGE_SIZE,
+                    ...(position && { position }),
+                  })
+                );
+                return { items: page.items ?? [], next: page.position };
+              },
+              (a) =>
+                a.id &&
+                a.name === name &&
+                a.type === type &&
+                !authorizersCreatedByThisProcess.has(injectiveKey(restApiId, a.id))
+                  ? a.id
+                  : undefined
+            ),
+          inspect: (id) =>
+            aws`aws apigateway get-authorizer --rest-api-id ${restApiId} --authorizer-id ${id}${regionArg}`.render(),
+        });
+      }
+      const createClient = await this.getCreateClient();
+      const attemptStartMs = Date.now();
+      let response: CreateAuthorizerCommandOutput;
+      try {
+        response = await createClient.send(
+          new CreateAuthorizerCommand({
+            restApiId,
+            name,
+            type: type as 'TOKEN' | 'REQUEST' | 'COGNITO_USER_POOLS',
+            authType: properties['AuthType'] as string | undefined,
+            providerARNs: providerArns,
+            authorizerUri: properties['AuthorizerUri'] as string | undefined,
+            authorizerCredentials: properties['AuthorizerCredentials'] as string | undefined,
+            identitySource: properties['IdentitySource'] as string | undefined,
+            identityValidationExpression: properties['IdentityValidationExpression'] as
+              | string
+              | undefined,
+            authorizerResultTtlInSeconds: properties['AuthorizerResultTtlInSeconds'] as
+              | number
+              | undefined,
+          })
+        );
+      } catch (error) {
+        createAuthorizerLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
 
       const authorizerId = response.id!;
+      authorizersCreatedByThisProcess.add(injectiveKey(restApiId, authorizerId));
       log.debug(`Successfully created API Gateway Authorizer ${logicalId}: ${authorizerId}`);
 
       return {
@@ -1108,14 +1239,57 @@ export class ApiGatewayProvider implements ResourceProvider {
     }
 
     try {
-      const response = await this.apiGatewayClient.send(
-        new CreateDeploymentCommand({
-          restApiId,
-          description: properties['Description'] as string | undefined,
-        })
-      );
+      const description = properties['Description'] as string | undefined;
+      // Issue #2080: after an earlier ambiguous attempt, name the deployment
+      // it may have made before a second CreateDeployment is sent. Detection
+      // only -- see `reportPossibleOrphans`.
+      const orphanWindow = createDeploymentLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await this.orphanCommandRegionArg(aws);
+        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+          action: 'CreateDeployment',
+          listAction: 'GetDeployments',
+          subject: `a deployment of REST API ${log.value(restApiId)}${description !== undefined ? ` described ${log.value(description)}` : ''}`,
+          noun: 'deployment(s)',
+          list: () =>
+            collectOrphanIds(
+              async (position) => {
+                const page = await this.apiGatewayClient.send(
+                  new GetDeploymentsCommand({
+                    restApiId,
+                    limit: ORPHAN_LIST_PAGE_SIZE,
+                    ...(position && { position }),
+                  })
+                );
+                return { items: page.items ?? [], next: page.position };
+              },
+              (d) =>
+                d.id &&
+                (d.description ?? '') === (description ?? '') &&
+                isInsideWindow(d.createdDate, orphanWindow) &&
+                !deploymentsCreatedByThisProcess.has(injectiveKey(restApiId, d.id))
+                  ? d.id
+                  : undefined
+            ),
+          inspect: (id) =>
+            aws`aws apigateway get-deployment --rest-api-id ${restApiId} --deployment-id ${id}${regionArg}`.render(),
+          remove: (id) =>
+            aws`aws apigateway delete-deployment --rest-api-id ${restApiId} --deployment-id ${id}${regionArg}`.render(),
+        });
+      }
+      const createClient = await this.getCreateClient();
+      const attemptStartMs = Date.now();
+      let response: CreateDeploymentCommandOutput;
+      try {
+        response = await createClient.send(new CreateDeploymentCommand({ restApiId, description }));
+      } catch (error) {
+        createDeploymentLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
 
       const deploymentId = response.id!;
+      deploymentsCreatedByThisProcess.add(injectiveKey(restApiId, deploymentId));
       log.debug(`Successfully created API Gateway Deployment ${logicalId}: ${deploymentId}`);
 
       return {
