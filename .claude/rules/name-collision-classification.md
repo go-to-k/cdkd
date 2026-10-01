@@ -3,6 +3,7 @@ description: the two name-collision predicates and the rule for admitting a name
 paths:
   - 'src/deployment/retryable-errors.ts'
   - 'src/deployment/deploy-engine.ts'
+  - 'src/deployment/deploy-engine-update.ts'
   - 'src/deployment/deploy-engine-name-collision.ts'
   - 'src/deployment/deploy-engine-replacement.ts'
   - 'src/deployment/rollback-executor.ts'

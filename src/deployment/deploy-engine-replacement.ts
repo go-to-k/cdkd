@@ -310,7 +310,7 @@ export async function replaceDeleteFirstAndRecreate(
     // because `provisionResource`'s catch masks the whole chain further up
     // the stack. NOT "one frame up" as the twin's note says — that wording
     // is exact only there; this throw sits in
-    // `replaceDeleteFirstAndRecreate`, called from `provisionResourceBody`,
+    // `replaceDeleteFirstAndRecreate`, called from `provisionUpdate`,
     // which `provisionResource` invokes through `withResourceDeadline`. The
     // `cause` is what keeps the AWS
     // rejection behind the sentence readable — `extractDeploymentEventError`

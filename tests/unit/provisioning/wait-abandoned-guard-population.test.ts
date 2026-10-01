@@ -133,7 +133,7 @@ function tsFiles(dir: string): string[] {
  * round scored it over the whole function on the theory that one guard is a
  * preceding early return. Two reviewers independently measured what it cost —
  * deleting the guard conjunct from three of the four governed sites left the
- * test GREEN, because `deploy-engine.ts`'s two sites share one 2051-line
+ * test GREEN, because `deploy-engine.ts`'s two sites then shared one 2051-line
  * method carrying three mentions of the identifier, and `destroy-runner.ts`'s
  * arrow carries the name in a COMMENT. The fence's whole job is catching a
  * dropped guard, so the widening cost exactly the thing it exists for. It also
@@ -317,10 +317,12 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
     const byFile = [...new Set(governed.map((s) => s.file))].sort();
     expect(byFile).toEqual([
       'cli/commands/destroy-runner.ts',
-      'deployment/deploy-engine.ts',
+      'deployment/deploy-engine-delete.ts',
+      'deployment/deploy-engine-update.ts',
       'provisioning/cloud-control-provider.ts',
     ]);
-    // FOUR governed sites: `deploy-engine.ts` x2, plus one each in
+    // FOUR governed sites: the engine's DELETE and UPDATE arms (one each, in
+    // their #4200 mixin modules), plus one each in
     // `destroy-runner.ts` and `cloud-control-provider.ts`. A FIFTH guard exists
     // — `cleanupFailedCreateRemnant`'s early return — and is deliberately NOT
     // in this population: its partner classifier is the REGEX helper
@@ -335,7 +337,8 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
         'NOT resolve this by editing the expected list, which drops the site from the ' +
         'population permanently.'
     ).toHaveLength(4);
-    expect(governed.filter((s) => s.file === 'deployment/deploy-engine.ts')).toHaveLength(2);
+    expect(governed.filter((s) => s.file === 'deployment/deploy-engine-delete.ts')).toHaveLength(1);
+    expect(governed.filter((s) => s.file === 'deployment/deploy-engine-update.ts')).toHaveLength(1);
     expect(governed.filter((s) => s.file === 'cli/commands/destroy-runner.ts')).toHaveLength(1);
   });
 
@@ -395,7 +398,7 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
       //
       // ONE guard per probe, not one file per probe. Per-file was the previous
       // revision and review measured what it hid: `deploy-engine.ts`'s two
-      // sites share one method, so blanking BOTH could red for a reason
+      // sites then shared one method, so blanking BOTH could red for a reason
       // unrelated to either — under scope-scored `guarded` it red only because
       // of a COMMENT mentioning the identifier, and deleting one real guard
       // left both sites scoring guarded. Sites are matched by INDEX in file
@@ -539,8 +542,9 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
     // Round 8 measured this arm deletable-green: `createSourceFile` does not
     // throw, so an unparseable file yields ZERO candidate expressions, which is
     // byte-identical to a file with no classifier in it. Silently dropping the
-    // real `deploy-engine.ts` that way would take two governed sites out of the
-    // population and leave every assertion above passing.
+    // real `deploy-engine-update.ts` or `deploy-engine-delete.ts` that way
+    // would take a governed site out of the population and leave every
+    // assertion above passing.
     expect(() => candidateExpressions('const x = (;;', 'broken.ts')).toThrow(/scan REFUSED/);
     // Control: the same helper on VALID source does not throw, so the case is
     // about the diagnostics rather than about the helper being broken.

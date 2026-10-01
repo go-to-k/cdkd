@@ -123,7 +123,7 @@ change, not blocked on:
 | Your PR touches | Verification |
 | --- | --- |
 | Deletion logic — `src/provisioning/providers/**`, destroy commands, rollback / retry code | An integration test that completes deploy **and destroy** cleanly. **Gated** (`integ-destroy`) |
-| Cross-cutting deploy/destroy code — `src/deployment/deploy-engine.ts`, `src/analyzer/dag-builder.ts`, intrinsic resolution, provider registration | A broad multi-resource test in addition to any feature-specific one |
+| Cross-cutting deploy/destroy code — `src/deployment/deploy-engine.ts` and its `deploy-engine-*.ts` mixins, `src/analyzer/dag-builder.ts`, intrinsic resolution, provider registration | A broad multi-resource test in addition to any feature-specific one |
 | Local execution — `src/local/**`, `src/cli/commands/local-*.ts` | A `local-*` test — Docker-based, most need no AWS account |
 | A state schema version bump in `src/types/state.ts` | The `schema-v<N>-to-v<N+1>-migration` round-trip test. **Gated** (`integ-schema-migration`) |
 | None of the above | No integration test — unit tests and CI are enough |
