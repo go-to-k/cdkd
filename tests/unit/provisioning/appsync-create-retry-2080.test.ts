@@ -15,13 +15,16 @@ const { mockSend, warnSpy, debugSpy, sentVia, baseStrategy } = vi.hoisted(() => 
   },
 }));
 
+/** The region every mocked client answers; a test can make it unreadable (issue #4307). */
+let clientRegion: () => Promise<string> = () => Promise.resolve('us-east-1');
+
 vi.mock('@aws-sdk/client-appsync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-appsync')>();
   return {
     ...actual,
     AppSyncClient: vi.fn().mockImplementation(() => {
       const config = {
-        region: () => Promise.resolve('us-east-1'),
+        region: () => clientRegion(),
         retryStrategy: async (): Promise<unknown> => baseStrategy,
       };
       return {
@@ -215,9 +218,32 @@ describe('AppSyncProvider CreateGraphqlApi retry safety (issue #2080, detection 
     const line = warnLines().find((l) => l.includes('earlier CreateGraphqlApi attempt'));
     expect(line).toContain('api1');
     // No creation date to attribute by, so a READ command only, never a delete.
-    expect(line).toContain('aws appsync get-graphql-api --api-id api1');
+    expect(line).toContain('aws appsync get-graphql-api --api-id api1 --region us-east-1');
     expect(line).not.toContain('delete-graphql-api');
     expect(line).toContain('does not adopt or delete');
+  });
+
+  it('an unreadable client region drops only the --region fragment, never the report (issue #4307)', async () => {
+    aws.loseNextCreateResponse = transient500();
+    // Only the FIRST read after the lookup listed the APIs fails: the
+    // report's own. The create that follows reads the region too.
+    let failed = false;
+    clientRegion = () => {
+      if (!failed && aws.calls.includes('ListGraphqlApisCommand')) {
+        failed = true;
+        return Promise.reject(new Error('region unavailable'));
+      }
+      return Promise.resolve('us-east-1');
+    };
+    try {
+      await createWithRetry();
+    } finally {
+      clientRegion = () => Promise.resolve('us-east-1');
+    }
+
+    const line = warnLines().find((l) => l.includes('earlier CreateGraphqlApi attempt'));
+    expect(line).toContain('aws appsync get-graphql-api --api-id api1');
+    expect(line).not.toContain('--region');
   });
 
   it('does not report an API this process recorded, one of another name, or one of another type', async () => {

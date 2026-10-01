@@ -15,13 +15,16 @@ const { mockSend, warnSpy, debugSpy, sentVia, baseStrategy } = vi.hoisted(() => 
   },
 }));
 
+/** The region every mocked client answers; a test can make it unreadable (issue #4307). */
+let clientRegion: () => Promise<string> = () => Promise.resolve('us-east-1');
+
 vi.mock('@aws-sdk/client-cognito-identity-provider', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-cognito-identity-provider')>();
   return {
     ...actual,
     CognitoIdentityProviderClient: vi.fn().mockImplementation(() => {
       const config = {
-        region: () => Promise.resolve('us-east-1'),
+        region: () => clientRegion(),
         retryStrategy: async (): Promise<unknown> => baseStrategy,
       };
       return {
@@ -242,11 +245,38 @@ describe('CognitoUserPoolProvider CreateUserPool retry safety (issue #2080, dete
     await createWithRetry();
 
     const line = orphanLine()!;
-    const read = line.indexOf('aws cognito-idp describe-user-pool --user-pool-id us-east-1_pool1');
-    const del = line.indexOf('aws cognito-idp delete-user-pool --user-pool-id us-east-1_pool1');
+    const read = line.indexOf(
+      'aws cognito-idp describe-user-pool --user-pool-id us-east-1_pool1 --region us-east-1'
+    );
+    const del = line.indexOf(
+      'aws cognito-idp delete-user-pool --user-pool-id us-east-1_pool1 --region us-east-1'
+    );
     expect(read).toBeGreaterThan(-1);
     expect(del).toBeGreaterThan(read);
     expect(line.slice(read, del)).toContain('Only after confirming');
+  });
+
+  it('an unreadable client region drops only the --region fragment, never the report (issue #4307)', async () => {
+    aws.loseNextCreateResponse = transient500();
+    // Only the FIRST read after the lookup listed the pools fails: the
+    // report's own. The create that follows reads the region too.
+    let failed = false;
+    clientRegion = () => {
+      if (!failed && aws.calls.includes('ListUserPoolsCommand')) {
+        failed = true;
+        return Promise.reject(new Error('region unavailable'));
+      }
+      return Promise.resolve('us-east-1');
+    };
+    try {
+      await createWithRetry();
+    } finally {
+      clientRegion = () => Promise.resolve('us-east-1');
+    }
+
+    const line = orphanLine()!;
+    expect(line).toContain('aws cognito-idp describe-user-pool --user-pool-id us-east-1_pool1');
+    expect(line).not.toContain('--region');
   });
 
   it('reports the same way for a cdkd-generated name as for a template-supplied one', async () => {

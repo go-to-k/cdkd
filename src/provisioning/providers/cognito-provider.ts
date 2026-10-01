@@ -2151,11 +2151,22 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
     const shown = candidates.slice(0, MAX_REPORTED_ORPHAN_POOLS);
     const aws = pasteableAwsCommand(log.mask);
+    // `--region` from the client that listed the pools (issue #4307): without
+    // it the commands run in the user's shell-default region, where a describe
+    // answers NotFound and reads as "no orphan". An unreadable region renders
+    // no fragment rather than failing the warning.
+    let listedRegion: string | undefined;
+    try {
+      listedRegion = await this.getClient().config.region();
+    } catch {
+      listedRegion = undefined;
+    }
+    const region = listedRegion ? aws` --region ${listedRegion}` : aws``;
     const inspect = shown
-      .map((id) => aws`aws cognito-idp describe-user-pool --user-pool-id ${id}`.render())
+      .map((id) => aws`aws cognito-idp describe-user-pool --user-pool-id ${id}${region}`.render())
       .join(' ; ');
     const deletion = shown
-      .map((id) => aws`aws cognito-idp delete-user-pool --user-pool-id ${id}`.render())
+      .map((id) => aws`aws cognito-idp delete-user-pool --user-pool-id ${id}${region}`.render())
       .join(' ; ');
     log.warn(
       `An earlier CreateUserPool attempt for ${logicalId} failed without a definite answer, and Cognito may have created a pool then that no cdkd state records. ${candidates.length} user pool(s) named ${v(poolName)} were created between ${since} and ${until}: ${shown.join(', ')}${candidates.length > shown.length ? ', ...' : ''}. cdkd does not adopt or delete them: a pool name does not prove which deploy created it. Creating a new pool now, so the new pool and the candidate(s) above will ALL be named ${v(poolName)} -- Cognito allows duplicate names. First inspect each candidate (its user count, creation date and tags): ${inspect}. Only after confirming a pool is this deploy's orphan and not another deploy's, delete it: ${deletion}.${incomplete}`

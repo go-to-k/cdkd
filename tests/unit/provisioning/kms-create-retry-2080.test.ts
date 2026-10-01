@@ -15,13 +15,16 @@ const { mockSend, warnSpy, debugSpy, sentVia, baseStrategy } = vi.hoisted(() => 
   },
 }));
 
+/** The region every mocked client answers; a test can make it unreadable (issue #4307). */
+let clientRegion: () => Promise<string> = () => Promise.resolve('us-east-1');
+
 vi.mock('@aws-sdk/client-kms', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-kms')>();
   return {
     ...actual,
     KMSClient: vi.fn().mockImplementation(() => {
       const config = {
-        region: () => Promise.resolve('us-east-1'),
+        region: () => clientRegion(),
         retryStrategy: async (): Promise<unknown> => baseStrategy,
       };
       return {
@@ -284,7 +287,25 @@ describe('KMSProvider CreateKey retry safety (issue #2080)', () => {
       // The delete command is for AFTER a failed deploy: run mid-retry it
       // would push the key to PendingDeletion and force a second key.
       expect(line).toContain('do not delete it while the deploy is still retrying');
-      expect(line).toContain('aws kms schedule-key-deletion --key-id key-001');
+      expect(line).toContain(
+        'aws kms schedule-key-deletion --key-id key-001 --region us-east-1 --pending-window-in-days 7'
+      );
+    });
+
+    it('an unreadable client region drops only the --region fragment, never the warning (issue #4307)', async () => {
+      clientRegion = () => Promise.reject(new Error('region unavailable'));
+      try {
+        aws.failNext.set('EnableKeyRotationCommand', [transient500()]);
+        await createWithRetry();
+      } finally {
+        clientRegion = () => Promise.resolve('us-east-1');
+      }
+
+      const line = warnSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('key-001'));
+      expect(line).toContain(
+        'aws kms schedule-key-deletion --key-id key-001 --pending-window-in-days 7'
+      );
+      expect(line).not.toContain('--region');
     });
 
     it('a later create with DIFFERENT inputs does not inherit the held key, and names it', async () => {
@@ -364,6 +385,9 @@ describe('KMSProvider CreateKey retry safety (issue #2080)', () => {
         .map((c) => String(c[0]))
         .find((l) => l.includes('reading it back failed'));
       expect(line).toContain('key-001');
+      expect(line).toContain(
+        'aws kms schedule-key-deletion --key-id key-001 --region us-east-1 --pending-window-in-days 7'
+      );
     });
 
     it('a later create asking for LESS follow-up (rotation off) does not inherit a key that has it on', async () => {
@@ -430,8 +454,10 @@ describe('KMSProvider CreateKey retry safety (issue #2080)', () => {
       expect(line).toContain('key-001');
       expect(line).toContain('does not adopt or delete');
       // READ first; deletion only after confirming (a candidate may be foreign).
-      const read = line.indexOf('aws kms describe-key --key-id key-001');
-      const del = line.indexOf('aws kms schedule-key-deletion --key-id key-001');
+      const read = line.indexOf('aws kms describe-key --key-id key-001 --region us-east-1');
+      const del = line.indexOf(
+        'aws kms schedule-key-deletion --key-id key-001 --region us-east-1 --pending-window-in-days 7'
+      );
       expect(read).toBeGreaterThan(-1);
       expect(del).toBeGreaterThan(read);
       expect(line.slice(read, del)).toContain('Only after confirming');

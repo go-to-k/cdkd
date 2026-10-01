@@ -2885,10 +2885,21 @@ export class AppSyncProvider implements ResourceProvider {
     }
     const shown = candidates.slice(0, MAX_REPORTED_ORPHAN_APIS);
     const aws = pasteableAwsCommand(mask);
+    // `--region` from the client that listed the APIs (issue #4307): without
+    // it the command runs in the user's shell-default region, where it answers
+    // NotFound and reads as "no orphan". An unreadable region renders no
+    // fragment rather than failing the warning.
+    let listedRegion: string | undefined;
+    try {
+      listedRegion = await this.getClient().config.region();
+    } catch {
+      listedRegion = undefined;
+    }
+    const region = listedRegion ? aws` --region ${listedRegion}` : aws``;
     this.logger.warn(
       mask(
         `An earlier CreateGraphqlApi attempt for ${logicalId} failed without a definite answer (at ${since}), and AppSync may have created an API then that no cdkd state records. ${candidates.length} GraphQL API(s) named ${name} exist that this deploy did not record: ${shown.join(', ')}${candidates.length > shown.length ? ', ...' : ''}. AppSync reports no creation time, so any of them may instead be this stack's own recorded API, another stack's, or older than this deploy; cdkd does not adopt or delete them. Creating a new API. Inspect each before deleting anything: ${shown
-          .map((apiId) => aws`aws appsync get-graphql-api --api-id ${apiId}`.render())
+          .map((apiId) => aws`aws appsync get-graphql-api --api-id ${apiId}${region}`.render())
           .join(' ; ')}${incomplete}`
       )
     );
