@@ -626,7 +626,10 @@ export class DeploymentEventsReader {
       );
       // The index key stays in the delete even when the listing lacked it, so
       // an index written after the listing is still removed; only the REPORT
-      // depends on the listing, and it under-claims in that race.
+      // depends on the listing. That race under-claims (false); the opposite
+      // one -- a concurrent prune deleting the index between our listing and
+      // our delete -- reports the peer's removal as ours, a true claim about
+      // the bucket with only the attribution off.
       await this.backend.deleteRawObjects([...toDelete, indexKey]);
       return { deletedRunIds: runIdsDesc, remainingRunIds: [], indexDeleted: indexExisted };
     }

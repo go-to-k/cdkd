@@ -154,7 +154,10 @@ export async function purgeEventsAfterDestroy(
     const purge = await reader.pruneRuns(stackName, region, { all: true });
     // `indexDeleted` is true only when an index EXISTED in the prune's listing
     // (issue #2624) — not merely because the idempotent `DeleteObjects`
-    // succeeded — so a stack with no history at all prints nothing here.
+    // succeeded — so a prefix with no history prints nothing here. In a live
+    // destroy that is rare: `eventRecorder.finalize()` runs first and writes
+    // this run's record plus `index.json`, so the prefix is empty only when
+    // those writes did not land.
     if (purge.deletedRunIds.length > 0 || purge.indexDeleted) {
       logger.info(
         `  Purged deployment-event history for ${displaySafe(stackName)} (${displaySafe(region)}). Where the state ` +
