@@ -2640,7 +2640,10 @@ describe('reportDriftBaselineGaps', () => {
       ...(reason !== undefined ? { observedBaselineRefusalReason: reason } : {}),
     };
   }
-  function refusedWarnings(resources: Record<string, unknown>): string[] {
+  function refusedWarnings(
+    resources: Record<string, unknown>,
+    template?: Record<string, unknown>
+  ): string[] {
     const logger = makeLogger();
     reportDriftBaselineGaps(
       {
@@ -2651,7 +2654,9 @@ describe('reportDriftBaselineGaps', () => {
         outputs: {},
         lastModified: 0,
       },
-      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>,
+      undefined,
+      template
     );
     return logger.warn.mock.calls.map((c) => String(c[0]));
   }
@@ -2694,14 +2699,66 @@ describe('reportDriftBaselineGaps', () => {
     expect(messages[0]).toMatch(/^4 of 4 resource\(s\) had their baseline REFUSED/);
     expect(messages[0]).toMatch(/The remedy depends on why each one was refused\.$/);
     expect(messages.slice(1)).toEqual([
-      '2 of them: Deploy a change to each one to restore its baseline.',
+      '2 of them — deploy a change to each one to restore its baseline.',
       '  Clearable',
       '  Clearable2',
-      expect.stringMatching(/^1 of them: Deploying a change does NOT clear this refusal/),
+      expect.stringMatching(/^1 of them — for each one: Deploying a change does NOT clear this refusal/),
       '  Sticky',
-      expect.stringMatching(/^1 of them: This refusal was recorded without a reason/),
+      expect.stringMatching(/^1 of them — for each one: This refusal was recorded without a reason/),
       '  Legacy',
     ]);
+  });
+
+  // With the template export migrates against, a REASON-LESS refusal is
+  // classified the way the next deploy reads it (issue #3465):
+  // `resourcesNamingDeclaredParameter` over that template, failing closed.
+  const PARAM_TEMPLATE = {
+    Parameters: { Env: { Type: 'String', Default: 'dev' } },
+    Resources: {
+      ReadsParam: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'Env' } } },
+      Plain: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'literal' } },
+    },
+  };
+
+  it('classifies a reason-less refusal whose template definition names a declared parameter as sticky (issue #3465)', () => {
+    const messages = refusedWarnings({ ReadsParam: refusedRecord() }, PARAM_TEMPLATE);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatch(/For each one: Deploying a change does NOT clear this refusal/);
+    expect(messages[0]).not.toMatch(/recorded without a reason/);
+    expect(messages[1]).toBe('  ReadsParam');
+  });
+
+  it('classifies a reason-less refusal whose template definition names no parameter as deploy-clearable (issue #3465)', () => {
+    const messages = refusedWarnings({ Plain: refusedRecord() }, PARAM_TEMPLATE);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatch(/Deploy a change to each one to restore its baseline\.$/);
+    expect(messages[0]).not.toMatch(/recorded without a reason/);
+    expect(messages[1]).toBe('  Plain');
+  });
+
+  it('splits reason-less refusals by the template, each beside its own class (issue #3465)', () => {
+    const messages = refusedWarnings(
+      {
+        ReadsParam: refusedRecord(),
+        Plain: refusedRecord(),
+        Clearable: refusedRecord('incomplete-resolution'),
+        Sticky: refusedRecord('unverifiable-parameter'),
+      },
+      PARAM_TEMPLATE
+    );
+    expect(messages.slice(1)).toEqual([
+      '2 of them — deploy a change to each one to restore its baseline.',
+      '  Plain',
+      '  Clearable',
+      expect.stringMatching(/^2 of them — for each one: Deploying a change does NOT clear/),
+      '  ReadsParam',
+      '  Sticky',
+    ]);
+  });
+
+  it('fails CLOSED into the sticky class on an unreadable template, as the deploy does (issue #3465)', () => {
+    const messages = refusedWarnings({ Plain: refusedRecord() }, { Resources: 'not-a-map' });
+    expect(messages[0]).toMatch(/For each one: Deploying a change does NOT clear this refusal/);
   });
 
   it('caps the ids per remedy group, each group under its OWN cap (issue #3465)', () => {
@@ -4891,11 +4948,12 @@ describe('buildImportPlan — nested-stack rows (issue #464 PR B1)', () => {
     expect(result.blocked[0]!.logicalId).toBe('Param');
     expect(result.blocked[0]!.reason).toMatch(/redaction mask/);
     expect(result.phase1Imports).toEqual([]);
-    // TWO POPULATIONS reach this blocker since issue #2847, and naming only
-    // the NoEcho one was a measured defect at the deploy engine's twin before
-    // it was one here. This blocker tests `properties`, while
-    // `CloudControlProvider.import` masks only `attributes`, so arm (2) is
-    // about a mask COPIED here from another record — by `cdkd orphan --force`,
+    // THREE POPULATIONS reach this blocker since issue #2881 (two since issue
+    // #2847, and naming only the NoEcho one was a measured defect at the
+    // deploy engine's twin before it was one here). This blocker tests
+    // `properties`, while `CloudControlProvider.import` masks only
+    // `attributes`, so arm (3) is about a mask COPIED here from another
+    // record — by `cdkd orphan --force`,
     // or by `cdkd import` resolving an `Fn::GetAtt` or a `Ref` over an
     // already-masked value. Neither has a custom resource anywhere near it,
     // and every remedy the original sentence offered was custom-resource-only.

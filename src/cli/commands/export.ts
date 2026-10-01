@@ -73,6 +73,7 @@ import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
 import { getLogger } from '../../utils/logger.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
+import { resourcesNamingDeclaredParameter } from '../../analyzer/parameter-dependence.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import { describeTypeWithThrottleRetry } from '../../provisioning/describe-type.js';
 import { isAwsCliLiteral } from '../../provisioning/replacement-protection-advice.js';
@@ -3012,13 +3013,18 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         // are visible to sibling stacks (children are accessed via the
         // parent's `Outputs.<ChildLogicalId>` propagation, not directly),
         // so scanning the root is sufficient.
-        reportDriftBaselineGaps(state, logger, {
-          stackName: resolvedStackName,
-          // A LEGACY record (`migrationPending`) was loaded from a key with no
-          // region: `pickStackRegion` hands back the synth region only so the
-          // legacy probe can run, and a command carrying it matches no record.
-          region: migrationPending ? undefined : targetRegion,
-        });
+        reportDriftBaselineGaps(
+          state,
+          logger,
+          {
+            stackName: resolvedStackName,
+            // A LEGACY record (`migrationPending`) was loaded from a key with no
+            // region: `pickStackRegion` hands back the synth region only so the
+            // legacy probe can run, and a command carrying it matches no record.
+            region: migrationPending ? undefined : targetRegion,
+          },
+          template
+        );
         if (allSynthStacks.length > 0) {
           const crossRefs = scanCrossStackReferences(allSynthStacks, resolvedStackName);
           if (crossRefs.length > 0) {
@@ -3247,11 +3253,16 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       // AWS reality before the migration. Surface that as a warning so
       // they can re-run `cdkd state refresh-observed` first if drift
       // matters.
-      reportDriftBaselineGaps(state, logger, {
-        stackName: resolvedStackName,
-        // See the nested-tree call above: a legacy record's key has no region.
-        region: migrationPending ? undefined : targetRegion,
-      });
+      reportDriftBaselineGaps(
+        state,
+        logger,
+        {
+          stackName: resolvedStackName,
+          // See the nested-tree call above: a legacy record's key has no region.
+          region: migrationPending ? undefined : targetRegion,
+        },
+        template
+      );
 
       // Cross-stack consumer scan. After this stack moves to CFn, its
       // outputs live in CFn (not cdkd state). Since issue #1697 cdkd's
@@ -6747,7 +6758,13 @@ export function reportDriftBaselineGaps(
    * entirely. Optional only so the unit cases can omit it; both command call
    * sites pass it, and without it the body is the fallback.
    */
-  loaded?: { stackName: string; region: string | undefined }
+  loaded?: { stackName: string; region: string | undefined },
+  /**
+   * The template export migrates against — the synthesized one, or the
+   * `--template` the user passed. It classifies a REASON-LESS refused baseline
+   * exactly (issue #3465); without it that class keeps the hedged remedy.
+   */
+  template?: Record<string, unknown>
 ): void {
   const stackName = loaded?.stackName ?? state.stackName;
   // A region is only a region if it is a NON-EMPTY string, and the guard is
@@ -7016,19 +7033,38 @@ export function reportDriftBaselineGaps(
   if (refused.length > 0) {
     // "Deploy a change" is the remedy for one refusal class only (issue
     // #3465): an unverifiable-parameter refusal survives every in-place
-    // update, and a reason-less one may. `refusedBaselineRemedy` names the
-    // other two, so the list is grouped by class in a FIXED order — the
-    // deploy-clearable group first, then unverifiable-parameter, then
-    // reason-less — and a group's ids sit under the remedy true for them.
+    // update. A REASON-LESS one (an older cdkd's) survives it exactly when the
+    // template names a declared parameter at that resource — the
+    // `resourcesNamingDeclaredParameter` reading the next deploy applies at its
+    // start (`stampReasonlessParameterRefusals`) to the template it is handed,
+    // which is the synthesized template export holds here (or the
+    // `--template` the user supplied). So with a template a reason-less record
+    // is classified exactly, failing closed into the sticky class like the
+    // deploy does; only without one (a direct caller) does it keep the hedged
+    // remedy. The list is grouped by class in a FIXED order — deploy-clearable,
+    // unverifiable-parameter, reason-less — each id under the remedy true for it.
+    const stickyRemedy = refusedBaselineRemedy({
+      observedBaselineRefused: true,
+      observedBaselineRefusalReason: 'unverifiable-parameter',
+    });
+    const hedgedRemedy = refusedBaselineRemedy({ observedBaselineRefused: true });
     const byClass: Array<[remedy: string | undefined, ids: string[]]> = [
       [undefined, []],
-      [undefined, []],
-      [undefined, []],
+      [stickyRemedy, []],
+      [hedgedRemedy, []],
     ];
+    let namesParameter: ((logicalId: string) => boolean) | undefined;
     for (const [logicalId, record] of refused) {
-      const remedy = refusedBaselineRemedy(record);
-      const slot = remedy === undefined ? 0 : hasUnverifiableParameterRefusal(record) ? 1 : 2;
-      byClass[slot]![0] = remedy;
+      let slot: 0 | 1 | 2;
+      if (refusedBaselineRemedy(record) === undefined) slot = 0;
+      else if (hasUnverifiableParameterRefusal(record)) slot = 1;
+      else if (template === undefined) slot = 2;
+      else {
+        namesParameter ??= resourcesNamingDeclaredParameter(
+          template as unknown as Parameters<typeof resourcesNamingDeclaredParameter>[0]
+        );
+        slot = namesParameter(logicalId) ? 1 : 0;
+      }
       byClass[slot]![1].push(logicalId);
     }
     const ordered = byClass.filter(([, ids]) => ids.length > 0);
@@ -7056,7 +7092,11 @@ export function reportDriftBaselineGaps(
     } else {
       logger.warn(`${head} The remedy depends on why each one was refused.`);
       for (const [remedy, ids] of ordered) {
-        logger.warn(safeMsg`${ids.length} of them: ${remedy ?? deployRemedy}`);
+        logger.warn(
+          remedy === undefined
+            ? safeMsg`${ids.length} of them — deploy a change to each one to restore its baseline.`
+            : safeMsg`${ids.length} of them — for each one: ${remedy}`
+        );
         listIds(ids);
       }
     }
