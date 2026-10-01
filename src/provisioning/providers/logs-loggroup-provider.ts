@@ -24,7 +24,12 @@ import {
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displaySafe, plainIdentOr } from '../../utils/display-safe.js';
-import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  maskerOrIdentity,
+  withDerivedNameMasks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -618,8 +623,23 @@ export class LogsLogGroupProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    context?: UpdateContext
+    callerContext?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // The physical id IS the log group name, which can be secret-derived.
+    // Paired with the RECORDED name (go-to-k/cdkd#4339): after a secret
+    // rotation the physical id is the PRE-rotation value, which this deploy's
+    // masker never resolved, and a previous side still spelling `{{resolve:`
+    // makes it a needle. (An unrotated secret-derived name IS the resolved
+    // value, which the deploy's masker already holds.) Every masker use
+    // below reads this one.
+    const context: UpdateContext = {
+      ...callerContext,
+      maskSecrets: withDerivedNameMasks(
+        this.logger,
+        createMaskedLogSinks(this.logger, callerContext?.maskSecrets),
+        [[previousProperties['LogGroupName'], physicalId]]
+      ).mask,
+    };
     try {
       return await this.applyUpdate(
         logicalId,
@@ -673,7 +693,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
     // review, which flagged the previous "names no value" wording as stale).
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating log group ${logicalId}: ${physicalId}`);
+    this.logger.debug(
+      `Updating log group ${logicalId}: ${maskerOrIdentity(context?.maskSecrets)(physicalId)}`
+    );
 
     // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -805,6 +827,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
         before: 'aws logs put-log-group-deletion-protection --log-group-identifier',
         identifier: physicalId,
         after: '--no-deletion-protection-enabled',
+        // A secret-derived name (the pre-rotation one included) withholds the
+        // command (go-to-k/cdkd#4339).
+        maskSecrets: maskerOrIdentity(context?.maskSecrets),
       });
       const disableStep = disableCommand
         ? `Then disable deletion protection — \`${disableCommand}\`, or via the console — and re-deploy with ${replaceFlags}`
@@ -990,7 +1015,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
           })
         );
       }
-      this.logger.debug(`Updated KMS key association for log group ${physicalId}`);
+      this.logger.debug(
+        `Updated KMS key association for log group ${maskerOrIdentity(context?.maskSecrets)(physicalId)}`
+      );
     }
 
     // Send the retention if the COERCED value changed. Coerced, so the two
@@ -1135,7 +1162,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       if (newFieldIndex && newFieldIndex.length > 0) {
         if (newFieldIndex.length > 1) {
           this.logger.debug(
-            `Log group ${physicalId} declares ${newFieldIndex.length} FieldIndexPolicies; AWS only supports one log-group-level field index policy. Applying the first.`
+            `Log group ${maskerOrIdentity(context?.maskSecrets)(physicalId)} declares ${newFieldIndex.length} FieldIndexPolicies; AWS only supports one log-group-level field index policy. Applying the first.`
           );
         }
         const first = newFieldIndex[0];
@@ -1189,7 +1216,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
           })
         );
       }
-      this.logger.debug(`Updated tags for log group ${physicalId}`);
+      this.logger.debug(
+        `Updated tags for log group ${maskerOrIdentity(context?.maskSecrets)(physicalId)}`
+      );
     }
 
     const arn = await this.buildArn(physicalId);

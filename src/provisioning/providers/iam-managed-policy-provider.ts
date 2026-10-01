@@ -30,6 +30,7 @@ import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-help
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
   createMaskedLogSinks,
+  maskerOrIdentity,
   withDerivedNameMasks,
   type MaskedLogSinks,
   type MaskerFn,
@@ -322,6 +323,11 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         ...(context?.desiredFromAwsReadback === true
           ? [[properties['ManagedPolicyName'], oldPolicyName] as [unknown, string]]
           : []),
+        // The ARN carries the PATH too (go-to-k/cdkd#4339): after a secret
+        // rotation it names the pre-rotation path, which this deploy's masker
+        // never resolved. The root path names nothing secret, and as a needle
+        // it would hide every `/`.
+        [previousProperties['Path'], recordedNonRootPath(physicalId)],
       ]
     );
     const { value: v } = log;
@@ -451,11 +457,15 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       // no longer in cdkd state.
       let orphanReason: string | undefined;
       try {
+        // This operation's masker reaches the delete's own lines too
+        // (go-to-k/cdkd#4339): they name the OLD policy ARN.
         const deleteResult = await this.delete(
           logicalId,
           physicalId,
           resourceType,
-          previousProperties
+          previousProperties,
+          undefined,
+          log.mask
         );
         // Issue #1778: a SKIP is a non-throwing "I did not address this
         // resource", so it sails straight past the catch below — the one path
@@ -607,9 +617,14 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>,
-    context?: DeleteContext
+    context?: DeleteContext,
+    // Internal, never passed by the engine: `update()`'s replacement arm hands
+    // its operation masker, which pairs the recorded name and path with the
+    // ARN (go-to-k/cdkd#4339). `DeleteContext` carries no masker yet
+    // (go-to-k/cdkd#2007), so an engine-driven delete is unmasked as before.
+    mask: MaskerFn = maskerOrIdentity(undefined)
   ): Promise<void | ResourceDeleteResult> {
-    this.logger.debug(`Deleting IAM managed policy ${logicalId}: ${physicalId}`);
+    this.logger.debug(mask(`Deleting IAM managed policy ${logicalId}: ${physicalId}`));
 
     try {
       try {
@@ -624,7 +639,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
             logicalId,
             physicalId
           );
-          this.logger.debug(`Managed policy ${physicalId} does not exist, skipping deletion`);
+          this.logger.debug(mask(`Managed policy ${physicalId} does not exist, skipping deletion`));
           return;
         }
         throw error;
@@ -646,12 +661,17 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted IAM managed policy ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete IAM managed policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete IAM managed policy ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1146,4 +1166,14 @@ function derivePolicyPathFromArn(arn: string): string | undefined {
   if (at < 0) return undefined;
   const resource = arn.slice(at + marker.length - 1);
   return resource.slice(0, resource.lastIndexOf('/') + 1);
+}
+
+/**
+ * The recorded path the policy ARN carries, as a mask needle: `undefined` for
+ * the root `/`, which names nothing secret and would hide every `/`
+ * (go-to-k/cdkd#4339).
+ */
+function recordedNonRootPath(arn: string): string | undefined {
+  const path = derivePolicyPathFromArn(arn);
+  return path === '/' ? undefined : path;
 }

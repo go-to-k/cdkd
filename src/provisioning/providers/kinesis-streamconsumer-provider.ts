@@ -32,7 +32,13 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
-import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  maskerOrIdentity,
+  withDerivedNameMasks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 
 /**
  * The stream ARN and consumer name a consumer ARN carries
@@ -204,6 +210,20 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // The consumer ARN carries the consumer name and the stream ARN, either of
+    // which can be secret-derived. Paired with the RECORDED values
+    // (go-to-k/cdkd#4339): after a secret rotation the ARN names the
+    // PRE-rotation value, which this deploy's masker never resolved, and a
+    // previous side still spelling `{{resolve:` makes it a needle.
+    const fromArn = consumerArnParts(physicalId);
+    const { mask } = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [
+        [previousProperties['ConsumerName'], fromArn?.consumerName],
+        [previousProperties['StreamARN'], fromArn?.streamArn],
+      ]
+    );
     try {
       return await this.applyUpdate(
         logicalId,
@@ -211,7 +231,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
         resourceType,
         properties,
         previousProperties,
-        context?.maskSecrets
+        mask
       );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
@@ -219,14 +239,32 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       // ProvisioningError already carries better context than a re-wrap.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Kinesis stream consumer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // AWS echoes the consumer ARN.
+      throw this.wrapMaskedError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Kinesis stream consumer ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
+  }
+
+  /**
+   * A failure wrap quoting AWS's text through `mask`, stamped exactly when the
+   * mask changed it (go-to-k/cdkd#4339).
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
   }
 
   private async applyUpdate(

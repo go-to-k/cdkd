@@ -65,8 +65,10 @@ import { clearOnUpdateRemoval } from '../update-removal.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import {
+  createMaskedLogSinks,
   createMaskedRetryLogger,
   maskerOrIdentity,
+  withDerivedNameMasks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import type {
@@ -102,11 +104,45 @@ import { unchangedBehindSecretReference } from '../secret-reference-immutable.js
  * not one, so the caller keeps its own comparison (go-to-k/cdkd#4275).
  */
 function loadBalancerNameFromArn(arn: string): string | undefined {
-  const marker = ':loadbalancer/';
+  return nameFromElbv2Arn(arn, ':loadbalancer/', 3);
+}
+
+/**
+ * The `Name` a target group ARN carries (`...:targetgroup/<name>/<id>`), or
+ * `undefined` when the physical id is not one (go-to-k/cdkd#4339).
+ */
+function targetGroupNameFromArn(arn: string): string | undefined {
+  return nameFromElbv2Arn(arn, ':targetgroup/', 2);
+}
+
+/**
+ * The name segment of an ELBv2 ARN: after `marker`, `segments` `/`-separated
+ * parts with the name second-to-last.
+ */
+function nameFromElbv2Arn(arn: string, marker: string, segments: number): string | undefined {
   const at = arn.indexOf(marker);
   if (at < 0) return undefined;
-  const segments = arn.slice(at + marker.length).split('/');
-  return segments.length === 3 && segments[1] !== '' ? segments[1] : undefined;
+  const parts = arn.slice(at + marker.length).split('/');
+  const name = parts[segments - 2];
+  return parts.length === segments && name !== undefined && name !== '' ? name : undefined;
+}
+
+/**
+ * A masker that also hides the NAME a recorded ELBv2 ARN carries when the
+ * recorded `Name` is secret-derived (go-to-k/cdkd#4339): after a secret
+ * rotation the physical id still names the PRE-rotation value, which this
+ * deploy's masker never resolved, and a previous side still spelling
+ * `{{resolve:` makes it a needle.
+ */
+function recordedNameMask(
+  maskSecrets: SecretMasker | undefined,
+  previousName: unknown,
+  recordedName: string | undefined
+): MaskerFn {
+  const logger = { debug: () => {}, warn: () => {} };
+  return withDerivedNameMasks(logger, createMaskedLogSinks(logger, maskSecrets), [
+    [previousName, recordedName],
+  ]).mask;
 }
 
 /**
@@ -669,8 +705,19 @@ export class ELBv2Provider implements ResourceProvider {
       // ProvisioningError already carries better context than a re-wrap.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
+      // The LoadBalancer arm has no wrap of its own, and AWS echoes its ARN,
+      // which carries a pre-rotation secret-derived name the deploy's masker
+      // never resolved (go-to-k/cdkd#4339).
+      const mask =
+        resourceType === 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+          ? recordedNameMask(
+              context?.maskSecrets,
+              previousProperties['Name'],
+              loadBalancerNameFromArn(physicalId)
+            )
+          : maskerOrIdentity(context?.maskSecrets);
       throw this.wrapMaskedError(
-        maskerOrIdentity(context?.maskSecrets),
+        mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -994,9 +1041,16 @@ export class ELBv2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    maskSecrets?: SecretMasker,
+    callerMaskSecrets?: SecretMasker,
     fromReadback = false
   ): Promise<ResourceUpdateResult> {
+    // Masks a pre-rotation secret-derived `Name` the ARN carries too
+    // (go-to-k/cdkd#4339), which this deploy's own masker never resolved.
+    const maskSecrets = recordedNameMask(
+      callerMaskSecrets,
+      previousProperties['Name'],
+      loadBalancerNameFromArn(physicalId)
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     // ELBv2 LoadBalancer Name / Type / Scheme are immutable after
@@ -1046,7 +1100,9 @@ export class ELBv2Provider implements ResourceProvider {
           desired: properties[key],
           previous: previousProperties[key],
           physicalName: key === 'Name' ? loadBalancerNameFromArn(physicalId) : undefined,
-          maskSecrets,
+          // The deploy's own masker: whether a desired value is one this
+          // deploy resolved is its question, not the recorded name's.
+          maskSecrets: callerMaskSecrets,
         })
       ) {
         continue;
@@ -1078,6 +1134,9 @@ export class ELBv2Provider implements ResourceProvider {
               before: 'aws elbv2 modify-load-balancer-attributes --load-balancer-arn',
               identifier: physicalId,
               after: '--attributes Key=deletion_protection.enabled,Value=false',
+              // An ARN carrying a secret-derived name (the pre-rotation one
+              // included) withholds the command (go-to-k/cdkd#4339).
+              maskSecrets,
             },
           })
         : 'For Name / Type / Scheme re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.';
@@ -1662,10 +1721,17 @@ export class ELBv2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    maskSecrets?: SecretMasker,
+    callerMaskSecrets?: SecretMasker,
     fromReadback = false
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating TargetGroup ${logicalId}: ${physicalId}`);
+    // Every line below that can name the target group, its ARN included,
+    // masks a pre-rotation secret-derived name too (go-to-k/cdkd#4339).
+    const maskSecrets = recordedNameMask(
+      callerMaskSecrets,
+      previousProperties['Name'],
+      targetGroupNameFromArn(physicalId)
+    );
+    this.logger.debug(`Updating TargetGroup ${logicalId}: ${maskSecrets(physicalId)}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 

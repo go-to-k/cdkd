@@ -66,7 +66,12 @@ import {
   type ProtectionGuardSite,
 } from './deletion-protection-compensation.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
-import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  maskerOrIdentity,
+  withDerivedNameMasks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 
 // ─── List reads (go-to-k/cdkd#3948) ─────────────────────────────────
 //
@@ -987,10 +992,11 @@ export class ASGProvider implements ResourceProvider {
 
   /**
    * The `context` parameter is read for ONE thing today: `maskSecrets` (issue
-   * #1932 item 3, adopted here by issue #1997). `applyTargetGroupArnsDiff` is
-   * the only path in this provider that interpolates a RESOLVED property value
-   * into a log line — its convergence timeout names the expected
-   * `TargetGroupARNs` set — so it is the only one the masker is threaded into.
+   * #1932 item 3, adopted here by issue #1997). It is paired with the RECORDED
+   * group name (go-to-k/cdkd#4339) into one masker, `mask`, which every reader
+   * of the name or a resolved value in this method uses: the updating line, the
+   * immutable-name refusal's pasted command, `applyTargetGroupArnsDiff`'s
+   * convergence warning, `fetchArn`'s failure line and `wrapUpdateError`.
    *
    * `create()` takes the masker too — see its own doc for why the original
    * "nothing to mask there" reading was wrong.
@@ -1011,10 +1017,19 @@ export class ASGProvider implements ResourceProvider {
         physicalId
       );
     }
-    // The physical id is the group name, which can be secret-derived.
-    this.logger.debug(
-      `Updating AutoScalingGroup ${logicalId}: ${maskerOrIdentity(context?.maskSecrets)(physicalId)}`
+    // The physical id is the group name, which can be secret-derived. Paired
+    // with the RECORDED name (go-to-k/cdkd#4339): after a secret rotation the
+    // physical id is the PRE-rotation value, which this deploy's masker never
+    // resolved, and a previous side still spelling `{{resolve:` makes it a
+    // needle. (An unrotated secret-derived name IS the resolved value, which
+    // the deploy's masker already holds.) Every line, the refusal's pasted
+    // command, and the failure wrap of this update read this one masker.
+    const { mask } = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [[previousProperties['AutoScalingGroupName'], physicalId]]
     );
+    this.logger.debug(`Updating AutoScalingGroup ${logicalId}: ${mask(physicalId)}`);
 
     // Reject diffs on fields AWS does not support modifying via
     // UpdateAutoScalingGroup. The replacement-detection layer typically
@@ -1071,6 +1086,9 @@ export class ASGProvider implements ResourceProvider {
                 before: 'aws autoscaling update-auto-scaling-group --auto-scaling-group-name',
                 identifier: physicalId,
                 after: '--deletion-protection none',
+                // A secret-derived name (the pre-rotation one included)
+                // withholds the command (go-to-k/cdkd#4339).
+                maskSecrets: mask,
               },
             })
           : 'Use cdkd deploy --replace to replace the group.';
@@ -1123,7 +1141,7 @@ export class ASGProvider implements ResourceProvider {
         physicalId,
         next.TargetGroupARNs as string[],
         prev.TargetGroupARNs as string[],
-        context?.maskSecrets,
+        mask,
         retained.TargetGroupARNs
       );
       await this.applyMetricsCollectionDiff(
@@ -1371,7 +1389,7 @@ export class ASGProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated AutoScalingGroup ${logicalId}`);
 
-      const arn = await this.fetchArn(physicalId, context?.maskSecrets);
+      const arn = await this.fetchArn(physicalId, mask);
       const attributes: Record<string, unknown> = {};
       if (arn) attributes['Arn'] = arn;
       if (launchTemplate?.LaunchTemplateId) {
@@ -1380,7 +1398,7 @@ export class ASGProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false, attributes };
     } catch (error) {
       if (error instanceof ResourceUpdateNotSupportedError) throw error;
-      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, context?.maskSecrets);
+      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, mask);
     }
   }
 
