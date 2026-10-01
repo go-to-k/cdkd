@@ -228,6 +228,63 @@ describe('runDestroyForStack refuses a non-plain logical id before any provider 
     expect(out).not.toContain('$(');
   });
 
+  it('describes the key in the rollback-orphan listing, keeping the physical id', async () => {
+    const state = makeState({ Bucket: res() });
+    state.orphans = [
+      { logicalId: HOSTILE, orphanedAt: 1, state: res({ physicalId: 'orphan-bucket-1' }) },
+    ];
+
+    await runDestroyForStack('TestStack', state, makeCtx());
+
+    const out = stripAnsi(everything());
+    expect(out).toContain(
+      '  - a logical id that is not a plain identifier (AWS::S3::Bucket)  orphan-bucket-1'
+    );
+    expect(out).not.toContain('$(');
+  });
+
+  it("describes the key in the destroy's own implicit-dependency debug lines", async () => {
+    await runDestroyForStack(
+      'TestStack',
+      makeState({
+        [HOSTILE]: res({ resourceType: 'AWS::EC2::InternetGateway' }),
+        Attach: res({ resourceType: 'AWS::EC2::VPCGatewayAttachment' }),
+      }),
+      makeCtx()
+    );
+
+    const implicit = debugSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.startsWith('Implicit delete dependency'));
+    expect(implicit).toEqual([
+      'Implicit delete dependency: Attach (AWS::EC2::VPCGatewayAttachment) must be deleted ' +
+        'before a logical id that is not a plain identifier (AWS::EC2::InternetGateway)',
+    ]);
+  });
+
+  it('describes the key in the per-resource (composite-alarm) implicit-dependency debug line', async () => {
+    await runDestroyForStack(
+      'TestStack',
+      makeState({
+        Composite: res({
+          resourceType: 'AWS::CloudWatch::CompositeAlarm',
+          physicalId: 'composite',
+          properties: { AlarmRule: 'ALARM("metric-alarm")' },
+        }),
+        [HOSTILE]: res({ resourceType: 'AWS::CloudWatch::Alarm', physicalId: 'metric-alarm' }),
+      }),
+      makeCtx()
+    );
+
+    const implicit = debugSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.startsWith('Implicit delete dependency'));
+    expect(implicit).toEqual([
+      'Implicit delete dependency: Composite (AWS::CloudWatch::CompositeAlarm) must be deleted ' +
+        'before a logical id that is not a plain identifier (AWS::CloudWatch::Alarm)',
+    ]);
+  });
+
   it('lets a plain id carrying medial `-` / `_` / `.` through to the provider', async () => {
     const result = await runDestroyForStack(
       'TestStack',
