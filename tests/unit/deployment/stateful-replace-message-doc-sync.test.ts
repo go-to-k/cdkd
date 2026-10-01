@@ -261,9 +261,9 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     //   recreate-targets.ts        -> --recreate-via-cc-api,
     //                                 --recreate-via-sdk-provider
     //                                 (one pre-flight probe, two flags)
-    //   deploy-engine/update.ts (diff) -> property-driven replacement
-    //   deploy-engine/update.ts (update- -> --replace,
-    //     failure fallback)           Cloud Control auto-fallback
+    //   deploy-engine/update-replace.ts -> property-driven replacement
+    //   deploy-engine/update-in-place.ts -> --replace,
+    //     (update-failure fallback)   Cloud Control auto-fallback
     //                                 (one guard, two triggers)
     //   rollback-executor.ts       -> NO row. It is an ADVISORY reader: it
     //                                 warns that a reverse-replacement cannot
@@ -358,8 +358,8 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     expect(readers.length).toBeGreaterThanOrEqual(5);
     expect(readers.map((f) => f.slice(repoRoot.length + 1)).sort()).toEqual([
       'src/cli/commands/recreate-confirm-prompt.ts',
-      'src/deployment/deploy-engine/update.ts',
-      'src/deployment/deploy-engine/update.ts',
+      'src/deployment/deploy-engine/update-in-place.ts',
+      'src/deployment/deploy-engine/update-replace.ts',
       'src/deployment/recreate-targets.ts',
       'src/deployment/rollback-executor.ts',
     ]);
