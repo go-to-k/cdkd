@@ -137,7 +137,7 @@ function tsFiles(dir: string): string[] {
  * method carrying three mentions of the identifier, and `destroy-runner.ts`'s
  * arrow carries the name in a COMMENT. The fence's whole job is catching a
  * dropped guard, so the widening cost exactly the thing it exists for. It also
- * bought nothing: all four governed sites carry the guard inside the
+ * bought nothing: every governed site carries the guard inside the
  * condition, and the early-return site is not in this population at all (its
  * partner classifier is a regex helper with no literal needles).
  */
@@ -319,15 +319,18 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
       'cli/commands/destroy-runner.ts',
       'deployment/deploy-engine/delete.ts',
       'deployment/deploy-engine/update.ts',
+      'provisioning/cc-protection-properties.ts',
       'provisioning/cloud-control-provider.ts',
     ]);
-    // FOUR governed sites: the engine's DELETE and UPDATE arms (one each, in
-    // their #4200 mixin modules), plus one each in
-    // `destroy-runner.ts` and `cloud-control-provider.ts`. A FIFTH guard exists
+    // FIVE governed sites: the engine's DELETE and UPDATE arms (one each, in
+    // their #4200 mixin modules), plus one each in `destroy-runner.ts`,
+    // `cloud-control-provider.ts` and `cc-protection-properties.ts` (the
+    // `--remove-protection` compensation's not-found arm, issue #2204, whose
+    // input can be an abandoned re-enable wait). Another guard exists
     // — `cleanupFailedCreateRemnant`'s early return — and is deliberately NOT
     // in this population: its partner classifier is the REGEX helper
     // `isNotFoundMessage`, which carries no literal needles, so no needle-driven
-    // scan can find it. It has its own behavioural case instead. Say FOUR
+    // scan can find it. It has its own behavioural case instead. Say FIVE
     // GOVERNED, never "every classifier".
     expect(
       governed,
@@ -336,7 +339,7 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
         'into a helper or a const, the site is still governed and still needs the guard — do ' +
         'NOT resolve this by editing the expected list, which drops the site from the ' +
         'population permanently.'
-    ).toHaveLength(4);
+    ).toHaveLength(5);
     expect(governed.filter((s) => s.file === 'deployment/deploy-engine/delete.ts')).toHaveLength(1);
     expect(governed.filter((s) => s.file === 'deployment/deploy-engine/update.ts')).toHaveLength(1);
     expect(governed.filter((s) => s.file === 'cli/commands/destroy-runner.ts')).toHaveLength(1);

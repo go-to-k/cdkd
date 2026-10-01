@@ -33,12 +33,12 @@ bootstrap-free-region	2026-09-01T14:50:59Z	PASS	240	verify.sh	PR#2398 arm 2/6: b
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
 budgets	2026-09-30T11:59:39Z	PASS	70	verify.sh	rc ok, orph clean (#4228)
 cache-streaming	2026-09-29T15:04:16Z	PASS	652	verify.sh	rc ok, orph clean (#4029 PR #4080: ElastiCache delete wait)
-cc-api-fallback	2026-09-29T03:32:02Z	PASS	60	verify.sh	rc ok, orph clean (#3993 PR #4031)
-cc-api-fallback-transitions	2026-09-29T03:32:02Z	PASS	126	verify.sh	rc ok, orph clean (#3993 PR #4031)
+cc-api-fallback	2026-10-01T14:58:01Z	PASS	45	verify.sh	rc ok, orph clean (#4290)
+cc-api-fallback-transitions	2026-10-01T14:59:28Z	PASS	90	verify.sh	rc ok, orph clean (#4290)
 cc-final-snapshot-handlers	2026-09-30T17:44:01Z	PASS	1223	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
 cc-getatt-readback	2026-09-19T20:26:58Z	PASS	110	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
-cc-protection-flip	2026-09-17T06:56:41Z	PASS	900	verify.sh	rc=0; all 3 phases, CC protection flip over 5 types, 5 deleted 0 errors; orphan scan clean (state/RDS+DocDB global/NeptuneGraph/VerifiedPermissions)
-cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
+cc-protection-flip	2026-10-01T14:57:59Z	PASS	536	verify.sh	rc ok, orph clean (#4290)
+cc-protection-flip-eks	2026-10-01T15:34:51Z	PASS	2750	verify.sh	rc ok, orph clean (#4290)
 cc-to-sdk-reroute	2026-09-28T09:23:32Z	PASS	145	verify.sh	#3939 PR #3947 head d643c04f5, stdin /dev/null; cdkd diff rc 0 with summary (probe copy); rc ok, orph clean
 ci-cd	2026-09-27T14:43:09Z	PASS	70	verify.sh	rc ok, orph clean (#3866)
 cloudfront-function-url	2026-10-01T10:13:53Z	PASS	261	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 7 deleted 0 errors, orph clean
@@ -86,7 +86,7 @@ docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifi
 drift-revert	2026-10-01T17:16:24Z	PASS	230	verify.sh	PR #4354 split-module subdirectories; rc ok, orph clean
 drift-revert-arrays	2026-09-29T23:22:50Z	PASS	185	verify.sh	PR #4053 (#4042 + #4051 codecommit rename adopted by recorded RepositoryId; UpdateContext.recordedAttributes from every update() caller) @a46f094/a7ca35d; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 drift-revert-vpc	2026-10-01T17:16:24Z	PASS	371	verify.sh	PR #4354 split-module subdirectories; rc ok, orph clean
-dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
+dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 dynamodb-autoscaling	2026-09-27T21:04:33Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dynamodb-globaltable	2026-10-01T05:58:25Z	PASS	1988	verify.sh	rc ok, orph clean (#4288)
@@ -97,7 +97,7 @@ dynamodb-stream-filter	2026-09-27T21:07:59Z	PASS	71	verify.sh	PR #3901 merge-gat
 dynamodb-streams	2026-10-01T10:13:53Z	PASS	317	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 11 deleted 0 errors, orph clean
 dynamodb-tableclass-switch	2026-09-27T21:05:43Z	PASS	70	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dynamodb-ttl-attr-change	2026-09-27T21:06:48Z	PASS	65	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
-ec2-instance	2026-09-30T18:16:33Z	PASS	121	verify.sh	rc ok, orph clean (#4242)
+ec2-instance	2026-10-01T14:57:23Z	PASS	105	verify.sh	rc ok, orph clean (#4290)
 ec2-instance-fanout	2026-09-30T18:16:33Z	PASS	175	verify.sh	rc ok, orph clean (#4242)
 ec2-route-targets	2026-09-25T13:35:54Z	PASS	631	verify.sh	rc ok, orph clean (#3728)
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
@@ -256,11 +256,12 @@ rds-dbinstance-backfill	2026-09-30T17:44:01Z	PASS	777	verify.sh	PR #4234 (#4111 
 rds-full-stack	2026-09-29T16:14:14Z	PASS	1047	verify.sh	rc ok, orph clean (#4029 PR #4080, final rebased head)
 recreate-mixed-direction	2026-09-25T09:51:57Z	PASS	105	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 recreate-nested-logical-id-collision	2026-09-24T18:20:06Z	PASS	120	verify.sh	rc ok, orph clean; PR #3668 head
-recreate-via-cc-api	2026-09-30T17:28:22Z	PASS	301	verify.sh	rc ok, orph clean
+recreate-via-cc-api	2026-10-01T14:59:44Z	PASS	105	verify.sh	rc ok, orph clean (#4290)
 recreate-via-sdk-provider	2026-09-30T17:28:22Z	PASS	240	verify.sh	rc ok, orph clean
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
 remove-protection	2026-10-01T17:16:24Z	PASS	2099	verify.sh	PR #4354 split-module subdirectories; rc ok, orph clean
+remove-protection-compensation	2026-10-01T18:25:12Z	PASS	210	verify.sh	rc ok, orph clean; new fixture, stop-protection + configuration-set refusals (#4290)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-10-01T11:06:17Z	PASS	70	verify.sh	rc ok, orph clean; #4265 reworded diagnosis C_MARKER
 replacement-fanout	2026-09-30T08:34:00Z	PASS	85	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers

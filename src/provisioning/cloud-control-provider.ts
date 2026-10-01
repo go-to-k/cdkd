@@ -8,6 +8,7 @@ import {
   type GetResourceRequestStatusCommandOutput,
   type ProgressEvent,
 } from '@aws-sdk/client-cloudcontrol';
+import { isDeepStrictEqual } from 'node:util';
 import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
 import {
   DescribeDBClustersCommand,
@@ -30,15 +31,29 @@ import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-pa
 import { getAwsClients } from '../utils/aws-clients.js';
 import { s3BucketArn } from '../utils/s3-endpoints.js';
 import {
-  disableInstanceApiTermination,
+  ec2InstanceProtectionSite,
   isTerminationProtectionPropagationError,
+  observeThenDisableInstanceApiTermination,
+  reDisableInstanceApiTermination,
+  reEnableInstanceApiTermination,
   TERMINATION_PROTECTION_MAX_ATTEMPTS,
 } from './ec2-termination-protection.js';
+
+import {
+  ProtectionFlipRegistry,
+  deleteWithProtectionCompensation,
+  isTerminalDeleteFailure,
+  observeThenDisableProtection,
+  protectionFlipKey,
+  type ProtectionFlipRecord,
+  type ProtectionGuardSite,
+} from './providers/deletion-protection-compensation.js';
 import { deleteEc2VolumeDirect } from './ec2-volume-delete.js';
 import type { EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import {
+  isAmbiguousCcHandlerErrorCode,
   isThrottlingError,
   isTransientServerError,
   markNonRetryable,
@@ -61,7 +76,11 @@ import { getTopLevelReadOnlyProperties } from './read-only-properties.js';
 import { getPrimaryIdentifierFields, toCloudControlIdentifier } from './cc-import-identifier.js';
 import { SECRET_MASK } from '../deployment/secret-redaction.js';
 import { assertRegionMatch, type DeleteContext, type RegionCheckPhase } from './region-check.js';
-import { ccProtectionProperty, type CcProtectionEntry } from './cc-protection-properties.js';
+import {
+  ccProtectionProperty,
+  ccProtectionSite,
+  type CcProtectionEntry,
+} from './cc-protection-properties.js';
 import { isNonProvisionable } from './unsupported-types.js';
 import { slowCcOperationTimeoutMs } from './slow-cc-operation-timeouts.js';
 import { isWaitAbandonedError, markWaitAbandoned } from './wait-abandoned.js';
@@ -725,6 +744,69 @@ export function deletesThroughSdkProvider(
   return typeof globalCluster === 'string';
 }
 
+/**
+ * A Cloud Control-routed `AWS::EC2::Instance` under `--remove-protection`:
+ * its region-pinned EC2 client, and whether the pre-flip read saw the guard
+ * ON (issue #2204).
+ */
+interface ProtectedEc2Instance {
+  readonly client: EC2Client;
+  readonly observedOn: boolean;
+}
+
+/**
+ * Whether a failed Cloud Control DELETE attempt may already be deleting the
+ * resource (issue #2204), so its `--remove-protection` guard must not be put
+ * back:
+ *
+ *  - an abandoned wait;
+ *  - a handler FAILED whose code leaves open that the service acted
+ *    (`isAmbiguousCcHandlerErrorCode`) — except an EC2 instance's
+ *    termination-protection refusal, which is a refusal whatever code the
+ *    handler files it under and is exactly what the instance's compensation
+ *    exists for;
+ *  - a CONFLICT (`ResourceConflictException`, or a handler `ResourceConflict`)
+ *    when an EARLIER attempt of the same record already may have been
+ *    deleting (`priorMayBeDeleting`). A handler `ResourceConflict`, or a
+ *    synchronous conflict after an ABANDONED earlier attempt, is most likely
+ *    that delete still running. A synchronous conflict after an earlier
+ *    attempt that FAILED ambiguously cannot be that request, which had ended;
+ *    it is more likely this run's own flip-off patch still in progress (one
+ *    counted as landed after its wait was abandoned), and standing down there
+ *    is the cautious side: a re-enable would conflict with the same patch.
+ *    On a first attempt a conflict stays a refusal.
+ *
+ * Standing down on a TERMINAL failure is never silent:
+ * `CloudControlProvider.delete` warns, naming the check and restore commands.
+ * A retryable failure that exhausts the destroy loop's attempt cap gets no
+ * such line; that limit is documented in docs/cli-destroy.md.
+ */
+function ccDeleteMayHaveActed(
+  error: unknown,
+  isProtectedEc2Instance: boolean,
+  priorMayBeDeleting: boolean
+): boolean {
+  if (isWaitAbandonedError(error)) return true;
+  if (priorMayBeDeleting && isCcConflict(error)) return true;
+  if (!(error instanceof CloudControlOperationFailedError) || error.ccOperation !== 'DELETE') {
+    return false;
+  }
+  if (!isAmbiguousCcHandlerErrorCode(error.ccErrorCode)) return false;
+  return !(isProtectedEc2Instance && isTerminationProtectionPropagationError(error.message));
+}
+
+/** A Cloud Control conflict, synchronous or handler-reported. */
+function isCcConflict(error: unknown): boolean {
+  if (error instanceof CloudControlOperationFailedError) {
+    return error.ccErrorCode === 'ResourceConflict';
+  }
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'ResourceConflictException'
+  );
+}
+
 export class CloudControlProvider implements ResourceProvider {
   private cloudControlClient: CloudControlClient;
   private logger = getLogger().child('CloudControlProvider');
@@ -735,6 +817,12 @@ export class CloudControlProvider implements ResourceProvider {
    * another test's suppression.
    */
   private readonly warnedUnresolvableSchemaTypes = new Set<string>();
+  /**
+   * `--remove-protection` flips (the CC protection registry's types and a
+   * Cloud Control-routed EC2 instance), keyed so a re-entered delete keeps
+   * them (#2204).
+   */
+  private readonly protectionFlips = new ProtectionFlipRegistry();
 
   // Maximum time to wait for operation completion (15 minutes)
   private readonly MAX_WAIT_TIME_MS = 15 * 60 * 1000;
@@ -1431,9 +1519,6 @@ export class CloudControlProvider implements ResourceProvider {
     // instance destroyed WITHOUT the flag still fails fast.
     const isProtectedEc2Instance =
       context?.removeProtection === true && resourceType === 'AWS::EC2::Instance';
-    if (isProtectedEc2Instance) {
-      await disableInstanceApiTermination(getAwsClients().ec2, physicalId, this.logger);
-    }
 
     // `--remove-protection` for CC-routed types whose deletion protection is
     // an ordinary top-level property (issues #1312 / #1314, e.g.
@@ -1444,16 +1529,133 @@ export class CloudControlProvider implements ResourceProvider {
     // error, matching the EC2 `DisableApiTermination` precedent above. Gated
     // on removeProtection so a protected resource destroyed WITHOUT the flag
     // still fails fast.
-    if (context?.removeProtection === true) {
-      const protectionEntry = ccProtectionProperty(resourceType);
-      if (protectionEntry) {
-        // Deliberately unconditional (no state-property pre-check): recorded
-        // properties can be stale vs. an out-of-band console/CLI flip, and
-        // the patch is idempotent.
-        await this.disableCcProtection(logicalId, physicalId, resourceType, protectionEntry);
-      }
+    const protectionEntry =
+      context?.removeProtection === true ? ccProtectionProperty(resourceType) : undefined;
+
+    if (!isProtectedEc2Instance && protectionEntry === undefined) {
+      return this.deleteThroughCloudControl(
+        logicalId,
+        physicalId,
+        resourceType,
+        context,
+        indeterminateGuard,
+        undefined,
+        undefined
+      );
     }
 
+    // Issue #2204: either flip runs under the compensation boundary, so a
+    // delete that then fails TERMINALLY puts back the guard this run turned
+    // off. Only these two arms enter it: every other Cloud Control delete
+    // flips nothing and keeps the path above, untouched.
+    //
+    // The instance's EC2 client is pinned to the region the pre-flight vetted,
+    // as a volume's is: the flip, the delete's re-flips and the compensation
+    // all go through it, and the compensation's restore command names the
+    // state's region.
+    const ec2Client = isProtectedEc2Instance
+      ? await this.ec2ClientInCcRegion(resourceType, logicalId, physicalId)
+      : undefined;
+    // The region the compensation's commands name: the state's, else the
+    // client's own (a pre-v2 state record carries none), so a pasted command
+    // never falls back to the operator's default region.
+    const commandRegion = context?.expectedRegion?.trim() || (await this.ccClientRegion());
+    const site =
+      ec2Client !== undefined
+        ? ec2InstanceProtectionSite(physicalId, commandRegion)
+        : ccProtectionSite(resourceType, physicalId, protectionEntry!, commandRegion);
+    let result: void | ResourceDeleteResult = undefined;
+    await deleteWithProtectionCompensation({
+      registry: this.protectionFlips,
+      key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
+      run: async (flip) => {
+        let protectedEc2: ProtectedEc2Instance | undefined;
+        if (ec2Client !== undefined) {
+          protectedEc2 = {
+            client: ec2Client,
+            observedOn: await observeThenDisableInstanceApiTermination(
+              ec2Client,
+              physicalId,
+              flip,
+              this.logger
+            ),
+          };
+        } else {
+          // Read the live value first, then flip (issue #2204). The flip
+          // itself stays unconditional: recorded properties can be stale vs.
+          // an out-of-band console/CLI flip, and the patch is idempotent.
+          await this.observeThenDisableCcProtection(
+            logicalId,
+            physicalId,
+            resourceType,
+            protectionEntry!,
+            flip
+          );
+        }
+        try {
+          result = await this.deleteThroughCloudControl(
+            logicalId,
+            physicalId,
+            resourceType,
+            context,
+            indeterminateGuard,
+            flip,
+            protectedEc2
+          );
+        } catch (error) {
+          this.warnGuardLeftOff(flip, error, site, logicalId, physicalId);
+          throw error;
+        }
+      },
+      compensation: {
+        logicalId,
+        physicalId,
+        logger: this.logger,
+        site,
+        reEnable: () =>
+          ec2Client !== undefined
+            ? reEnableInstanceApiTermination(ec2Client, physicalId)
+            : this.reEnableCcProtection(logicalId, physicalId, resourceType, protectionEntry!),
+      },
+    });
+    return result;
+  }
+
+  /**
+   * The Cloud Control (or, for a volume, EC2) delete and its wait, after any
+   * `--remove-protection` flip has run.
+   *
+   * `flip` is the compensation record when a flip ran (issue #2204), else
+   * `undefined`. Its `deleteAccepted` is decided PER ATTEMPT, unlike the SDK
+   * adopters' latch: it is cleared once each `DeleteResource` is taken (the
+   * send returned a request token), and set when
+   * that attempt's delete may already be running ({@link ccDeleteMayHaveActed}:
+   * an abandoned wait, a FAILED with an ambiguous handler code, or a conflict
+   * after an earlier attempt that may have been deleting). Any other
+   * FAILED delete leaves it unset, because that is the delete refusing — the
+   * case the compensation exists for — and Cloud Control accepting the REQUEST
+   * says nothing about whether the handler deleted anything. Per attempt,
+   * because a re-dispatched delete issues a fresh `DeleteResource`: an earlier
+   * attempt's abandoned wait must not stop a later, refused one from being
+   * compensated. An attempt whose `DeleteResource` send itself fails starts no
+   * delete, so it keeps the earlier attempt's latch. This is also why a Cloud
+   * Control-routed instance does not
+   * latch at the point its SDK twin does (the accepted `TerminateInstances`):
+   * that call is the handler's.
+   *
+   * `protectedEc2` is set for an `AWS::EC2::Instance` under
+   * `--remove-protection`: it enables the propagation-race retry, whose
+   * re-flips go through its region-pinned client.
+   */
+  private async deleteThroughCloudControl(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    indeterminateGuard: IndeterminateGuard | undefined,
+    flip: ProtectionFlipRecord | undefined,
+    protectedEc2: ProtectedEc2Instance | undefined
+  ): Promise<void | ResourceDeleteResult> {
     // Issue #3455: resolved OUTSIDE the `try` below, so a region refusal can
     // never reach its already-deleted arm, which matches message substrings
     // that the interpolated logical id can contain.
@@ -1462,7 +1664,10 @@ export class CloudControlProvider implements ResourceProvider {
         ? await this.ec2ClientInCcRegion(resourceType, logicalId, physicalId)
         : undefined;
 
-    const maxAttempts = isProtectedEc2Instance ? TERMINATION_PROTECTION_MAX_ATTEMPTS : 1;
+    const maxAttempts = protectedEc2 !== undefined ? TERMINATION_PROTECTION_MAX_ATTEMPTS : 1;
+    // Whether an earlier attempt of this record may already be deleting (see
+    // `ccDeleteMayHaveActed`), captured before each attempt can clear the latch.
+    let priorMayBeDeleting = false;
     for (let attempt = 1; ; attempt++) {
       try {
         // Issue #3455: an EBS volume is deleted with EC2 `DeleteVolume`, never
@@ -1489,6 +1694,8 @@ export class CloudControlProvider implements ResourceProvider {
           return withIndeterminateGuard(undefined, indeterminateGuard);
         }
 
+        // Issue #2204: see this method's JSDoc.
+        if (flip !== undefined) priorMayBeDeleting ||= flip.deleteAccepted;
         // Start resource deletion
         const deleteResponse = await this.cloudControlClient.send(
           new DeleteResourceCommand({
@@ -1505,6 +1712,13 @@ export class CloudControlProvider implements ResourceProvider {
             physicalId
           );
         }
+        // Issue #2204: a fresh delete is now running, so the latch is this
+        // attempt's from here on. Cleared only HERE, once Cloud Control took
+        // the request: an attempt whose send never got that far (a transport
+        // outage, a throttle) must not erase that an earlier attempt may still
+        // be deleting, or a later conflict with that delete would read as a
+        // refusal and be compensated.
+        if (flip !== undefined) flip.deleteAccepted = false;
 
         this.logger.debug(
           `Delete request submitted for ${logicalId}, token: ${deleteResponse.ProgressEvent.RequestToken}`
@@ -1521,6 +1735,14 @@ export class CloudControlProvider implements ResourceProvider {
         this.logger.debug(`Deleted resource ${logicalId}`);
         return withIndeterminateGuard(undefined, indeterminateGuard);
       } catch (error) {
+        // Issue #2204: a delete that may already be running must not have its
+        // guard put back. See this method's JSDoc.
+        if (
+          flip !== undefined &&
+          ccDeleteMayHaveActed(error, protectedEc2 !== undefined, priorMayBeDeleting)
+        ) {
+          flip.deleteAccepted = true;
+        }
         // Treat "not found" / "does not exist" as idempotent success for DELETE,
         // but only when the AWS client is operating against the same region the
         // resource was deployed to. A region mismatch must surface — otherwise a
@@ -1592,14 +1814,20 @@ export class CloudControlProvider implements ResourceProvider {
           return withIndeterminateGuard(undefined, indeterminateGuard);
         }
         if (
-          isProtectedEc2Instance &&
+          protectedEc2 !== undefined &&
           isTerminationProtectionPropagationError(err.message ?? '') &&
           attempt < maxAttempts
         ) {
           this.logger.debug(
             `Cloud Control delete of ${logicalId} raced the DisableApiTermination flip-off (attempt ${attempt}/${maxAttempts}); re-flipping and retrying`
           );
-          await disableInstanceApiTermination(getAwsClients().ec2, physicalId, this.logger);
+          await reDisableInstanceApiTermination(
+            protectedEc2.client,
+            physicalId,
+            flip!,
+            protectedEc2.observedOn,
+            this.logger
+          );
           await this.sleep(3000 * attempt);
           continue;
         }
@@ -1655,8 +1883,10 @@ export class CloudControlProvider implements ResourceProvider {
 
   /**
    * The EC2 client for a delete this provider issues through EC2 instead of
-   * Cloud Control (issue #3455), refused unless it targets the SAME region as
-   * the Cloud Control client the region pre-flight vetted.
+   * Cloud Control (issue #3455), and for a protected instance's
+   * `DisableApiTermination` flip and its compensation (issue #2204), refused
+   * unless it targets the SAME region as the Cloud Control client the region
+   * pre-flight vetted.
    *
    * `getAwsClients()` is read at call time while `cloudControlClient` was
    * captured at construction, so the two are not the same object and could
@@ -1685,7 +1915,10 @@ export class CloudControlProvider implements ResourceProvider {
         new ProvisioningError(
           `Refusing to delete ${logicalId} (${resourceType}, ${physicalId}): the EC2 client ` +
             `targets region '${ec2Region ?? 'unknown'}' but the Cloud Control client targets ` +
-            `'${ccRegion ?? 'unknown'}', so cdkd cannot show the delete would reach this volume. ` +
+            `'${ccRegion ?? 'unknown'}', so cdkd cannot show ` +
+            (resourceType === 'AWS::EC2::Instance'
+              ? `its DisableApiTermination flip would reach this instance. `
+              : `the delete would reach this volume. `) +
             `Re-run with --region set to the stack's region.`,
           resourceType,
           logicalId,
@@ -2058,13 +2291,16 @@ export class CloudControlProvider implements ResourceProvider {
    * The `add` patch op is used (RFC 6902: replaces when the path exists,
    * adds when absent), so the flip is idempotent regardless of whether the
    * live model carries the property.
+   *
+   * Resolves whether the flip LANDED (the patch was accepted and its wait
+   * succeeded), so the compensation records only a flip that did (#2204).
    */
   private async disableCcProtection(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     entry: CcProtectionEntry
-  ): Promise<void> {
+  ): Promise<boolean> {
     const protectionProperty = entry.property;
     this.logger.debug(
       `Disabling ${protectionProperty} on ${logicalId} (${resourceType}) before delete (--remove-protection)`
@@ -2082,7 +2318,7 @@ export class CloudControlProvider implements ResourceProvider {
         this.logger.warn(
           `Could not disable ${protectionProperty} on ${logicalId}: no request token received; proceeding with delete`
         );
-        return;
+        return false;
       }
       // A SHORT transient grace, not the poll's usual two minutes (issue
       // go-to-k/cdkd#3253 item 1). This flip is best-effort by construction —
@@ -2119,6 +2355,7 @@ export class CloudControlProvider implements ResourceProvider {
         this.PROTECTION_FLIP_TRANSIENT_GRACE_MS
       );
       this.logger.debug(`Disabled ${protectionProperty} on ${logicalId}`);
+      return true;
     } catch (error) {
       // `displaySafe` for the same reason the poll warn above carries it: this
       // message is not fully cdkd-controlled. An abandonment arrives
@@ -2164,6 +2401,137 @@ export class CloudControlProvider implements ResourceProvider {
           `Could not disable ${protectionProperty} on ${logicalId}, underlying failure: ${displaySafe(detail)}`
         );
       }
+      // An ABANDONED wait, or a FAILED with an ambiguous handler code, counts
+      // as landed: the patch may still have applied, and the compensation only
+      // ever writes back a value the pre-flip read observed, so re-enabling a
+      // flip that never landed is a no-op while skipping one that did would
+      // leave the guard stripped.
+      return (
+        isWaitAbandonedError(error) ||
+        (error instanceof CloudControlOperationFailedError &&
+          error.ccOperation === 'UPDATE' &&
+          isAmbiguousCcHandlerErrorCode(error.ccErrorCode))
+      );
+    }
+  }
+
+  /**
+   * Read the guard, then flip it off through {@link disableCcProtection},
+   * recording the flip on `flip` only when the read found the registry's
+   * `onValue` exactly and the flip landed (issue #2204). A failed read records
+   * nothing, so the compensation leaves the resource alone; the delete still
+   * proceeds either way, as it always has.
+   */
+  private async observeThenDisableCcProtection(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    entry: CcProtectionEntry,
+    flip: ProtectionFlipRecord
+  ): Promise<void> {
+    try {
+      await observeThenDisableProtection({
+        flip,
+        logger: this.logger,
+        physicalId,
+        guardName: entry.property,
+        observe: async () => {
+          const model = await this.getResourceState(resourceType, physicalId);
+          return model !== null && isDeepStrictEqual(model[entry.property], entry.onValue);
+        },
+        disable: async () => {
+          if (!(await this.disableCcProtection(logicalId, physicalId, resourceType, entry))) {
+            // Already warned by the flip; this only keeps the record unset.
+            throw new Error(`the ${entry.property} flip-off did not land`);
+          }
+        },
+      });
+    } catch {
+      // The flip did not land: nothing recorded, the delete proceeds.
+    }
+  }
+
+  /**
+   * The compensating write for a CC protection registry type: patch the guard
+   * back to its `onValue` and wait for it. Throws on any failure, which
+   * `compensateProtectionFlip` turns into the secondary log line naming the
+   * restore command.
+   *
+   * It WAITS, unlike the SDK adopters' single call, because a Cloud Control
+   * update is asynchronous and "accepted" is not "applied". The wait takes the
+   * flip's short transient grace, and is not interruptible.
+   */
+  private async reEnableCcProtection(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    entry: CcProtectionEntry
+  ): Promise<void> {
+    const patch = [{ op: 'add', path: `/${entry.property}`, value: entry.onValue }];
+    const response = await this.cloudControlClient.send(
+      new UpdateResourceCommand({
+        TypeName: resourceType,
+        Identifier: physicalId,
+        PatchDocument: JSON.stringify(patch),
+      })
+    );
+    const token = response.ProgressEvent?.RequestToken;
+    if (!token) {
+      throw new Error(`Cloud Control returned no request token for the ${entry.property} patch`);
+    }
+    await this.waitForOperation(
+      token,
+      logicalId,
+      'UPDATE',
+      resourceType,
+      this.PROTECTION_FLIP_TRANSIENT_GRACE_MS
+    );
+  }
+
+  /**
+   * The one line a terminal Cloud Control delete gets when the compensation
+   * STANDS DOWN because the attempt may already be deleting (issue #2204):
+   * cdkd cannot tell a delete in flight from a refusal filed under an
+   * ambiguous code, so it does not write the guard back, and says so with the
+   * check and restore commands rather than leaving the guard silently off.
+   * Never throws: it runs on the way to re-throwing the delete failure.
+   */
+  private warnGuardLeftOff(
+    flip: ProtectionFlipRecord,
+    error: unknown,
+    site: ProtectionGuardSite,
+    logicalId: string,
+    physicalId: string
+  ): void {
+    try {
+      if (!flip.flippedOffByThisRun || !flip.deleteAccepted || !isTerminalDeleteFailure(error)) {
+        return;
+      }
+      const commands = site.commands();
+      this.logger.warn(
+        safeMsg`${site.subject} ${logicalId}: the delete failed after --remove-protection had ` +
+          safeMsg`turned ${site.guardName} off, and cdkd cannot tell whether AWS had started ` +
+          safeMsg`deleting ${physicalId}, so it did not turn the guard back on. If it still ` +
+          safeMsg`exists, its ${site.guardName} may be off. Check with: ${commands.check} and if ` +
+          safeMsg`it is there, restore it with: ${commands.restoreLive}. The delete failure below ` +
+          safeMsg`is the outcome.`
+      );
+    } catch {
+      // The delete failure stays the outcome.
+    }
+  }
+
+  /**
+   * The Cloud Control client's own region, for a command the compensation
+   * prints when the state records none; `undefined` when it cannot be read.
+   */
+  private async ccClientRegion(): Promise<string | undefined> {
+    try {
+      return (
+        canonicalizeRegion((await this.cloudControlClient.config.region())?.trim()) || undefined
+      );
+    } catch {
+      return undefined;
     }
   }
 
@@ -2199,9 +2567,9 @@ export class CloudControlProvider implements ResourceProvider {
   /**
    * Wait for an asynchronous operation to complete.
    *
-   * Reached from FOUR call sites — `create()`, `update()`, `delete()` and
-   * `disableCcProtection()` — so everything here is CREATE / UPDATE / DELETE
-   * behavior at once.
+   * Reached from FIVE call sites — `create()`, `update()`, `delete()`,
+   * `disableCcProtection()` and `reEnableCcProtection()` — so everything here
+   * is CREATE / UPDATE / DELETE behavior at once.
    *
    * The poll is fenced against its own transport (issue #3236). Before that,
    * a `GetResourceRequestStatus` that failed for ANY reason propagated out of
@@ -2228,8 +2596,9 @@ export class CloudControlProvider implements ResourceProvider {
     operation: 'CREATE' | 'UPDATE' | 'DELETE',
     resourceType: string,
     /**
-     * Per-call override of {@link POLL_TRANSIENT_GRACE_MS}. Only
-     * `disableCcProtection` passes one; every provisioning call site takes the
+     * Per-call override of {@link POLL_TRANSIENT_GRACE_MS}. Only the
+     * `--remove-protection` flip and its compensation (`disableCcProtection`,
+     * `reEnableCcProtection`) pass one; every provisioning call site takes the
      * default, and a new one should have to say why it does not.
      */
     transientGraceMs: number = this.POLL_TRANSIENT_GRACE_MS

@@ -1896,6 +1896,11 @@
       ]
     },
     {
+      "name": "remove-protection-compensation",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rename-refactor",
       "annotated": false,
       "scenarios": []
@@ -3192,6 +3197,7 @@
     "recreate-nested-logical-id-collision",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
+    "remove-protection-compensation",
     "rename-refactor",
     "replace-squatter-refusal",
     "replacement-immutable-name",
