@@ -83,7 +83,6 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-09-30T12:03:08Z	PASS	110	verify.sh	rc ok, orph clean (#4228)
 docdb-neptune	2026-09-30T17:44:01Z	PASS	5476	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-01T02:53:15Z	PASS	235	verify.sh	PR #4256 (#2080 Plan C KMS/Cognito/AppSync create retry) at b67d477b0; rc ok, orph clean
 drift-revert	2026-10-01T05:37:57Z	PASS	321	verify.sh	PR #4286 deploy-engine replacement + heal mixins; rc ok, orph clean
 drift-revert-arrays	2026-09-29T23:22:50Z	PASS	185	verify.sh	PR #4053 (#4042 + #4051 codecommit rename adopted by recorded RepositoryId; UpdateContext.recordedAttributes from every update() caller) @a46f094/a7ca35d; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 drift-revert-vpc	2026-10-01T05:37:57Z	PASS	441	verify.sh	PR #4286 deploy-engine replacement + heal mixins; rc ok, orph clean
