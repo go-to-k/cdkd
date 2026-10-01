@@ -3556,7 +3556,7 @@ export async function captureObservedForImportedResources(
  * not be collapsed with the parent's (issue
  * [#2055](https://github.com/go-to-k/cdkd/issues/2055)).
  * `nestedStackChildRegionFromLocalArn` in
- * [src/deployment/intrinsic-function-resolver.ts](../../deployment/intrinsic-function-resolver.ts)
+ * [src/deployment/intrinsic-resolver-support.ts](../../deployment/intrinsic-resolver-support.ts)
  * parses this segment to learn which region to resolve a child's persisted
  * `{{resolve:...}}` output in — a secret NAME is regional, so resolving it in
  * the wrong region can answer with a DIFFERENT secret. Reading the child's own

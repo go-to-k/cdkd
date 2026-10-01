@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
+import { readResolverFamily } from '../_resolver-family.js';
 
 /**
  * Every `REF_RETURNS_SEGMENT_AFTER_PIPE` entry must be pinned by a unit test
@@ -32,7 +33,6 @@ import { describe, expect, it } from 'vite-plus/test';
  */
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../..');
-const RESOLVER = join(REPO_ROOT, 'src/deployment/intrinsic-function-resolver.ts');
 const UNIT_DEPLOYMENT = join(REPO_ROOT, 'tests/unit/deployment');
 
 /**
@@ -66,7 +66,7 @@ const walk = (dir: string): string[] => {
 
 describe('REF_RETURNS_SEGMENT_AFTER_PIPE entries are pinned by a unit test', () => {
   const entries = setEntriesOf(
-    readFileSync(RESOLVER, 'utf8'),
+    readResolverFamily(),
     'REF_RETURNS_SEGMENT_AFTER_PIPE',
   );
   const testFiles = walk(UNIT_DEPLOYMENT);

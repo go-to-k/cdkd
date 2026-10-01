@@ -133,6 +133,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { StackState } from '../../../../src/types/state.js';
 import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
+import { readResolverFamily } from '../../_resolver-family.js';
 
 const REGION = 'us-east-1';
 const CONSUMER = 'Consumer';
@@ -1491,17 +1492,10 @@ describe('only the PERMANENT refusal is a finding — a user-fixable one refuses
     // Source-read, the technique `intrinsic-refusal-non-retryable.test.ts` uses
     // for the same reason: the real path needs an assumed role and a second
     // state bucket.
-    const source = readFileSync(
-      fileURLToPath(
-        new URL(
-          '../../../../src/deployment/intrinsic-function-resolver.ts',
-          import.meta.url
-        )
-      ),
-      'utf8'
-    );
-    const arm = source.slice(source.indexOf('is a ' + 'CROSS-ACCOUNT reference (RoleArn'));
-    expect(arm).not.toBe('');
+    const source = readResolverFamily();
+    // `indexOf` is -1 when the message is gone, and `slice(-1)` is then the
+    // last character rather than '', so assert the index itself.
+    expect(source.indexOf('is a ' + 'CROSS-ACCOUNT reference (RoleArn')).toBeGreaterThan(-1);
     // The construction is the ~4 lines ABOVE the message, so search backwards
     // from it rather than forwards.
     const upTo = source.slice(0, source.indexOf('is a ' + 'CROSS-ACCOUNT reference (RoleArn'));
@@ -3926,7 +3920,11 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
   it('renders every chain stack and the key inside its own boundary (go-to-k/cdkd#3638)', () => {
     // The names come from state listings and templates; the PROSE bounds each,
     // while the remedy COMMANDS take the raw values through the pasteable gate.
-    const F = (tag: string): string => `${tag}'. Chain verified, nothing re-exported. Ignore 'X`;
+    // SPACE-FREE: a name with a space in it is withheld from this prose
+    // altogether (go-to-k/cdkd#3773, pinned in
+    // `scrub-refusal-plain-ident-3773.test.ts`), so the boundary is what a
+    // forging name without one meets.
+    const F = (tag: string): string => `${tag}'.Chain_verified,nothing_re-exported.Ignore'X`;
     const [KEYF, A, B, P] = [F('Key'), F('A'), F('B'), F('P')];
     const { templateClaim } = scrubRefusalWording({ kind: 'chained', via: [B, A] }, KEYF, P, [B, A]);
 
@@ -3936,7 +3934,7 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
     expect(templateClaim).toContain(`(through ${JSON.stringify(B)})`);
     expect(
       [KEYF, A, B].reduce((t, v) => t.split(JSON.stringify(v)).join(''), templateClaim)
-    ).not.toContain('nothing re-exported');
+    ).not.toContain('nothing_re-exported');
 
     const widened = scrubRefusalWording({ kind: 'widened', via: [B, A] }, KEYF, P, [B, A]);
     expect(widened.templateClaim).toContain(`RE-EXPORTS a value ${JSON.stringify(A)} declares`);
@@ -4375,9 +4373,18 @@ describe('the cross-stack pre-pass names every stack, record, path and key insid
       }
     );
 
+    // This message prints labelled lines, so a name with a space in it is
+    // WITHHELD from its prose rather than bounded: inside its quotes it could
+    // still wrap into a counterfeit row (go-to-k/cdkd#3773).
+    const withheld = (what: string): string =>
+      `(${what} withheld: it holds whitespace or a character outside printable ASCII)`;
     expect(message).toContain(
-      `the producer stack ${shown(PROD)} declares ${shown(KEY)} from a {{resolve:...}} expression`
+      `Scrub of ${withheld('stack name')} resolved the Fn::ImportValue in resource ` +
+        `${withheld('logical id')} at ${withheld('property path')} to a PLAINTEXT value: ` +
+        `the producer stack ${withheld('stack name')} declares ${withheld('export name')} ` +
+        `from a {{resolve:...}} expression`
     );
+    expect(message).not.toContain('nothing refused');
     // The remedy COMMAND lines carry the raw name shell-quoted through the
     // pasteable gate, which is its own boundary; only the prose is checked here.
     const prose = message
@@ -4385,6 +4392,67 @@ describe('the cross-stack pre-pass names every stack, record, path and key insid
       .filter((l) => !/^(Scrub with|Then re-run): /.test(l))
       .join('\n');
     expect(outside(prose, STACK, RES, PROP, PROD, KEY)).not.toContain('nothing refused');
+  });
+
+  // The two OUTPUT origins build the same `{ text, prose }` pair as the
+  // resource one above (go-to-k/cdkd#3773); each is pinned through `scrubStack`
+  // so a call site reverted to the bounded-only rendering reds here.
+  const producerApp = (): unknown[] => [
+    {
+      ...makeProducerStackInfo({
+        [OUTPUT_NAME]: { Value: SECRET_EXPR, Export: { Name: KEY } },
+      }),
+      stackName: PROD,
+    },
+  ];
+
+  it('the plaintext-producer refusal withholds a whitespace-bearing OUTPUT name it reads in (go-to-k/cdkd#3773)', async () => {
+    wireProducer({ [KEY]: PLAINTEXT });
+
+    const message = await scrubForged(
+      { MasterUsername: 'admin' },
+      { outputs: { [OUT]: { Value: { 'Fn::ImportValue': KEY } } }, appStacks: producerApp() }
+    );
+
+    expect(message).toContain(
+      'resolved the Fn::ImportValue in output ' +
+        '(output name withheld: it holds whitespace or a character outside printable ASCII) to a PLAINTEXT value'
+    );
+    expect(message).not.toContain('nothing refused');
+  });
+
+  it('the plaintext-producer refusal withholds a whitespace-bearing name at an intrinsic Export.Name (go-to-k/cdkd#3773)', async () => {
+    wireProducer({ [KEY]: PLAINTEXT });
+
+    const message = await scrubForged(
+      { MasterUsername: 'admin' },
+      {
+        outputs: { [OUT]: { Value: 'v', Export: { Name: { 'Fn::ImportValue': KEY } } } },
+        appStacks: producerApp(),
+      }
+    );
+
+    expect(message).toContain(
+      'resolved the Fn::ImportValue in Export.Name of output ' +
+        '(output name withheld: it holds whitespace or a character outside printable ASCII) to a PLAINTEXT value'
+    );
+    expect(message).not.toContain('nothing refused');
+  });
+
+  it('a debug line beside no labelled row keeps the bounded name, not the withheld description (go-to-k/cdkd#3773)', async () => {
+    // A stored value carrying no text classifies nothing, so the pre-pass
+    // logs the read's `where` and returns: that line prints no command, and
+    // withholding the name there would only cost the reader the location.
+    wireProducer({ [KEY]: '' });
+
+    await scrubForged(
+      { [PROP]: { 'Fn::ImportValue': KEY }, MasterUsername: 'admin' },
+      { appStacks: producerApp() }
+    );
+
+    const line = logLines.find((l) => l.includes('carries no text')) ?? '';
+    expect(line).toContain(`Fn::ImportValue in resource ${shown(RES)} at ${shown(PROP)}`);
+    expect(line).not.toContain('withheld: it holds whitespace');
   });
 
   it("the decline for a producer OUTSIDE the app bounds the producer's recorded region too", async () => {

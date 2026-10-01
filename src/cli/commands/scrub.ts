@@ -89,7 +89,13 @@ import { canonicalizeRegion } from '../../utils/aws-partition.js';
 // error message interpolates a bucket / key, so both reach the terminal only
 // through the same control-byte strip `export-index-store.ts` uses for the
 // name it logs.
-import { displayIdent, displaySafe, displayStackName, safeMsg } from '../../utils/display-safe.js';
+import {
+  STACK_REF_MAX_CODE_POINTS,
+  displayIdent,
+  displaySafe,
+  displayStackName,
+  safeMsg,
+} from '../../utils/display-safe.js';
 import type { StackState, StateImportEntry, StateOutputReadEntry } from '../../types/state.js';
 import { escapeRegExp } from '../../utils/regexp.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
@@ -3666,15 +3672,17 @@ export function scrubRefusalWording(
 ): { templateClaim: string; remedy: string; remedyCommands: string[]; withheldClause: string } {
   const chain = dedupePreservingOrder(loggedVia, 'first');
   const chainRoot = chain[chain.length - 1];
-  // The PROSE renders each name with its own boundary (go-to-k/cdkd#3638); the
-  // remedy COMMANDS below take the raw values through the pasteable gate.
-  const shownKey = displayIdent(loggedExportKey);
-  const shownRoot = chainRoot === undefined ? undefined : displayStackName(chainRoot);
+  // The PROSE renders each name with its own boundary (go-to-k/cdkd#3638),
+  // and describes one that could wrap into a counterfeit labelled row beside
+  // the commands (go-to-k/cdkd#3773); the remedy COMMANDS below take the raw
+  // values through the pasteable gate.
+  const shownKey = proseName(loggedExportKey, 'export name');
+  const shownRoot = chainRoot === undefined ? undefined : proseStackName(chainRoot);
   const through =
     chain.length > 1
       ? ` (through ${chain
           .slice(0, -1)
-          .map((s) => displayStackName(s))
+          .map((s) => proseStackName(s))
           .join(', ')})`
       : '';
   const templateClaim =
@@ -3717,8 +3725,11 @@ export function scrubRefusalWording(
     ...new Set(
       built.map((b, i) =>
         b.withheld.length > 0 && maskedNames.has(scrubOrder[i]!)
-          ? ` ${subject} holds a value recorded as a secret, so it is shown masked and is not ` +
-            `named in the command below; list the records as stored with ` +
+          ? ` ${subject} holds a value recorded as a secret, so it is ` +
+            // A masked name the prose ALSO withholds (it carries whitespace)
+            // is not shown at all, so "shown masked" would be false of it.
+            (proseWithholds(scrubOrder[i]!) ? 'not shown above and' : 'shown masked and') +
+            ` is not named in the command below; list the records as stored with ` +
             `'cdkd state list --long' and act on the record whose stack name matches.`
           : withheldTargetClause(b, 'stack', 'cdkd scrub', subject)
       )
@@ -3808,6 +3819,7 @@ function dedupePreservingOrder(values: readonly string[], keep: 'first' | 'last'
  * message with a planted stack name directly, without a scrub run.
  */
 export function plaintextProducerCrossStackReadError(
+  /** Rendered for prose beside labelled lines: {@link CrossStackReadOrigin}'s `prose`. */
   origin: string,
   stackName: string,
   intrinsic: string,
@@ -3892,9 +3904,9 @@ export function plaintextProducerCrossStackReadError(
     withheldClause + withheldTargetClause(rerun, 'stack', 'cdkd scrub', 'This stack name')
   ).trim();
   return new ScrubRefusalError(
-    `Scrub of ${displayStackName(stackName)} resolved the ${intrinsic} in ${origin}` +
-      `${path ? ` at ${maskedIdent(path, secrets)}` : ''} to a PLAINTEXT value: the producer stack ` +
-      `${displayStackName(loggedProducerStack)} ` +
+    `Scrub of ${proseStackName(stackName)} resolved the ${intrinsic} in ${origin}` +
+      `${path ? ` at ${proseName(maskSecretsInText(path, secrets), 'property path')}` : ''} to a PLAINTEXT value: the producer stack ` +
+      `${proseStackName(loggedProducerStack)} ` +
       `${templateClaim}, but its own state still stores ` +
       `the resolved plaintext rather than that expression. scrub has no expression to write in ` +
       `this stack's place, so it cannot redact the imported secret and must not report this ` +
@@ -4603,9 +4615,9 @@ function isRegionAmbiguousRefusal(err: unknown): boolean {
 
 // `NAMELESS_DYNAMIC_REFERENCE_MARKERS` and `DYNAMIC_REFERENCE_PREFIX` used to
 // be declared here. Neither is imported any more: scrub delegates the whole
-// PREDICATE to `isNamelessDynamicReferenceError`, which lives beside the
-// throws in
-// `intrinsic-function-resolver.ts` (issue go-to-k/cdkd#3181). They moved
+// PREDICATE to `isNamelessDynamicReferenceError`, which lives in
+// `intrinsic-resolver-support.ts`, beside the resolver whose throws it reads
+// (issue go-to-k/cdkd#3181). They moved
 // BESIDE the throws when the resolver grew the same partition internally: two
 // spellings of one predicate is what issue #1936 forbids, and the consumer
 // copy is the half that goes silently stale.
@@ -4753,6 +4765,66 @@ function isNamelessDynamicReferenceFailure(err: unknown): boolean {
  */
 function maskedIdent(value: string, secrets: RecordedSecretValues): string {
   return displayIdent(maskSecretsInText(value, secrets));
+}
+
+/**
+ * A name for the PROSE of a message that also prints labelled lines (the
+ * producer-plaintext refusal's `Scrub with:` / `Then re-run:`): the
+ * `displayIdent` rendering of the already-masked `logged` value when that
+ * rendering can carry no space of the value's own, otherwise a description
+ * (go-to-k/cdkd#3773).
+ *
+ * `displayIdent` gives a non-plain value a quoted BOUNDARY but keeps what is
+ * inside it, padding included, and a terminal wraps a long line at its width:
+ * a planted `Prod<60 spaces>Then re-run: cdkd scrub --all #` prints a
+ * counterfeit labelled row at column 0, above the genuine one. Every label
+ * and every command holds a space, so a value with NONE cannot spell a row at
+ * any wrap position, which is the whole test. It reads the value after
+ * `displayIdent`'s own sanitizer, which maps every control and non-ASCII
+ * character to a space, so a newline, a tab or an NBSP is refused with the
+ * padding, while a sanitizer-trimmed edge is not (it prints quoted, with no
+ * space left in it).
+ *
+ * WIDER than `plainOrDescribed` on purpose, since the prose is never pasted
+ * as an argument: a CDK-generated export key carries `:`, a property path
+ * carries `['Fn::If']`, and a masked name carries the `***` the withheld
+ * clause says it is "shown masked" with, and all three must still be shown.
+ */
+function proseName(logged: string, what: string, opts?: { maxCodePoints?: number }): string {
+  return proseWithholds(logged)
+    ? `(${what} withheld: it holds whitespace or a character outside printable ASCII)`
+    : displayIdent(logged, opts);
+}
+
+/** The test {@link proseName} withholds on, for a sentence that must agree with it. */
+function proseWithholds(logged: string): boolean {
+  return /\s/.test(displaySafe(logged, { asciiOnly: true }));
+}
+
+/**
+ * Where a cross-stack read sits ("resource Db"), rendered twice: `text` for
+ * the debug lines and the unresolved-read refusal, which print no labelled
+ * line, and `prose` through {@link proseName} for the producer-plaintext
+ * refusal, which does (go-to-k/cdkd#3773).
+ */
+interface CrossStackReadOrigin {
+  readonly text: string;
+  readonly prose: string;
+}
+
+function crossStackReadOrigin(
+  label: string,
+  what: string,
+  name: string,
+  secrets: RecordedSecretValues
+): CrossStackReadOrigin {
+  const logged = maskSecretsInText(name, secrets);
+  return { text: `${label} ${displayIdent(logged)}`, prose: `${label} ${proseName(logged, what)}` };
+}
+
+/** {@link proseName} for a stack name, at the stack-name cap `displayStackName` applies. */
+function proseStackName(logged: string): string {
+  return proseName(logged, 'stack name', { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
 }
 
 /**
@@ -5259,7 +5331,7 @@ function makeCrossStackPrePass(deps: {
 }): (
   bag: unknown,
   context: ResolverContext,
-  origin: string,
+  origin: CrossStackReadOrigin,
   opts?: { canRefuse?: boolean }
 ) => Promise<void> {
   const { stackName, resolver, producerTemplates, findings, logger } = deps;
@@ -5600,7 +5672,7 @@ function makeCrossStackPrePass(deps: {
       // nine log/finding sites below share one spelling (issue #2163 review --
       // the first cut hoisted it only past the `catch`, leaving four re-spelled
       // copies of the identical expression behind).
-      const where = `${key} in ${origin}${path ? ` at ${maskedIdent(path, secrets)}` : ''}`;
+      const where = `${key} in ${origin.text}${path ? ` at ${maskedIdent(path, secrets)}` : ''}`;
       try {
         await resolver.resolve({ [key]: node[key] }, probe);
       } catch (err) {
@@ -5658,7 +5730,7 @@ function makeCrossStackPrePass(deps: {
           );
           return;
         }
-        throw unresolvableCrossStackReadError(origin, stackName, key, path, err, secrets);
+        throw unresolvableCrossStackReadError(origin.text, stackName, key, path, err, secrets);
       }
       // Every read this node performed, the argument's nested ones included —
       // the verdict on a stored entry this run could not repair asks which
@@ -5843,7 +5915,7 @@ function makeCrossStackPrePass(deps: {
         return;
       }
       throw plaintextProducerCrossStackReadError(
-        origin,
+        origin.prose,
         stackName,
         key,
         path,
@@ -6810,7 +6882,7 @@ export async function scrubStack(
         await resolveCrossStackReads(
           resolveInput,
           resourceContext,
-          `resource ${maskedIdent(logicalId, recordedSecretValues)}`
+          crossStackReadOrigin('resource', 'logical id', logicalId, recordedSecretValues)
         );
         // PER TOP-LEVEL PROPERTY, not per bag (issue go-to-k/cdkd#3196).
         // `resolver.resolve` walks whatever it is handed and ONE throw aborts
@@ -7270,7 +7342,7 @@ export async function scrubStack(
           await resolveCrossStackReads(
             nameSource,
             nameContext,
-            `Export.Name of output ${maskedIdent(name, nameSecrets)}`,
+            crossStackReadOrigin('Export.Name of output', 'output name', name, nameSecrets),
             {
               canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
             }
@@ -7461,7 +7533,7 @@ export async function scrubStack(
         await resolveCrossStackReads(
           valueSource,
           valueContext,
-          `output ${maskedIdent(name, outputSecrets)}`,
+          crossStackReadOrigin('output', 'output name', name, outputSecrets),
           {
             canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
           }
