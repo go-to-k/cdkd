@@ -14,14 +14,15 @@
 #
 # Steps (each echoed as `Step N`):
 #   1. Seed the secret naming the stage, the service, the policy's path and
-#      description, the GraphQL API and the data source.
+#      description, the GraphQL API, the data source and the queue.
 #   2. Deploy.
 #   3. PREMISE: state records each secret-derived property as the
 #      {{resolve:secretsmanager: expression, and each resource lives under the
 #      name (path, description) the secret holds.
 #   4. LOAD-BEARING: the update (CDKD_TEST_UPDATE=true: only the Stages'
 #      Description, the Service's EnableECSManagedTags, the Policy's document,
-#      the API's XrayEnabled and the DataSource's Description change) EXITS 0.
+#      the API's XrayEnabled, the DataSource's Description and the Queue's
+#      VisibilityTimeout change) EXITS 0.
 #      This is what discriminates the fix; the refusals it replaced are named
 #      in the failure message. No secret-derived value appears in its
 #      --verbose log.
@@ -43,7 +44,9 @@
 # src/provisioning/providers/iam-managed-policy-provider.ts ALONE and the
 # policy is replaced: IAM refuses the create under the same name and path
 # ("EntityAlreadyExists": "A policy called ... already exists"). PlainStage
-# updates either way.
+# updates either way. Revert src/utils/logger.ts ALONE (go-to-k/cdkd#2177) and
+# step 4 fails "SecretQueue's 'Updating SQS queue' line carries no '***'
+# mask": that provider debug line prints the queue URL, name and all, raw.
 #
 # BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
 
@@ -104,6 +107,7 @@ POLICY_DESC="sdin-pdesc-${SUFFIX}"
 # AppSync names take no `-`: a data source name is `[_A-Za-z][_0-9A-Za-z]*`.
 GQL_API_NAME="sdin_gql_${SUFFIX//-/_}"
 DS_NAME="sdin_ds_${SUFFIX//-/_}"
+QUEUE_NAME="sdin-q-${SUFFIX}"
 export SDIN_SECRET_NAME="cdkd-integ-sdin-secret-${SUFFIX}"
 SEEDED_SECRET=0
 # Set just before the first deploy: the stack name is fixed, so a run refused by
@@ -174,8 +178,8 @@ fi
 echo "==> Step 1: seed the secret naming every secret-derived property"
 # From a file, not argv, so the value never shows in the host's process list.
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager create-secret --region "${REGION}" --name "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -250,12 +254,13 @@ SERVICE_ARN="$(state_physical_id SecretService)"
 TASK_DEF_ARN="$(state_physical_id TaskDef)"
 POLICY_ARN="$(state_physical_id SecretPolicy)"
 GQL_API_ID="$(state_physical_id SecretApi)"
-for v in API_ID CLUSTER_ID SERVICE_ARN TASK_DEF_ARN POLICY_ARN GQL_API_ID; do
+QUEUE_URL="$(state_physical_id SecretQueue)"
+for v in API_ID CLUSTER_ID SERVICE_ARN TASK_DEF_ARN POLICY_ARN GQL_API_ID QUEUE_URL; do
   if [ -z "${!v}" ]; then echo "FAIL: ${v} not found in ${STATE_KEY}" >&2; exit 1; fi
 done
 
 echo "==> Step 3 (PREMISE): state records the names as the redacted expression"
-for field in stage service path policydesc api datasource; do
+for field in stage service path policydesc api datasource queue; do
   if ! state_holds "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:${field}::}}"; then
     echo "FAIL: state does not record the {{resolve:secretsmanager: expression for the ${field}; the name is not secret-derived, so the update below would not exercise the guard" >&2
     exit 1
@@ -285,6 +290,7 @@ expect_eq "SecretDataSource's recorded Name" \
 expect_eq "SecretDataSource's physical id carries the secret's name" \
   "${GQL_API_ID}|${DS_NAME}" "$(state_physical_id SecretDataSource)"
 expect_eq "SecretDataSource's Description after deploy" "cdkd integ: initial" "$(ds_field description)"
+expect_eq "SecretQueue's URL ends with the secret's queue name" "${QUEUE_NAME}" "${QUEUE_URL##*/}"
 SECRET_STAGE_CREATED="$(stage_field "${STAGE_NAME}" CreatedDate)"
 PLAIN_STAGE_CREATED="$(stage_field plain CreatedDate)"
 SERVICE_CREATED="$(service_field createdAt)"
@@ -319,10 +325,23 @@ if [ ! -s "${DEPLOY_LOG}" ] || ! grep -qF "Updating ECS service" "${DEPLOY_LOG}"
   exit 1
 fi
 UPDATE_LOG_BODY="$(cat "${DEPLOY_LOG}")"
+# go-to-k/cdkd#2177 PREMISE: SecretQueue's provider update line must be in the
+# log, MASKED, or the queue-name absence below proves nothing (the queue was
+# not updated, or the wording drifted). That line has no per-site masker.
+QUEUE_UPDATE_LINE="$(grep -F "Updating SQS queue SecretQueue: " <<< "${UPDATE_LOG_BODY}" || true)"
+if [ -z "${QUEUE_UPDATE_LINE}" ]; then
+  echo "FAIL: premise: the update log has no 'Updating SQS queue SecretQueue: ' line (the queue was not updated, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
+if ! grep -qF '***' <<< "${QUEUE_UPDATE_LINE}"; then
+  echo "FAIL: SecretQueue's 'Updating SQS queue' line carries no '***' mask (go-to-k/cdkd#2177)" >&2
+  exit 1
+fi
 # Over the WHOLE log, engine progress lines included: a hit there is a loud
 # FAIL, never a vacuous pass, but look at the engine's lines before the
 # providers' when it fires (a Stage's physical id IS its name).
-for needle in "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}"; do
+for needle in "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}"; do
   # A here-string, not a pipe: see state_holds.
   if grep -qF -- "${needle}" <<< "${UPDATE_LOG_BODY}"; then
     echo "FAIL: the update log carries a secret-derived value in plaintext" >&2
@@ -346,6 +365,10 @@ expect_eq "SecretApi's id (not replaced)" "${GQL_API_ID}" "$(state_physical_id S
 expect_eq "SecretApi's XrayEnabled after the update" "True" "$(gql_field xrayEnabled)"
 expect_eq "SecretApi's name after the update" "${GQL_API_NAME}" "$(gql_field name)"
 expect_eq "SecretDataSource's Description after the update" "cdkd integ: updated" "$(ds_field description)"
+expect_eq "SecretQueue's VisibilityTimeout after the update" "60" \
+  "$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
+    --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
+expect_eq "SecretQueue's URL (not replaced)" "${QUEUE_URL}" "$(state_physical_id SecretQueue)"
 expect_eq "SecretStage's recorded StageName after the update" \
   "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:stage::}}" "$(state_property SecretStage StageName)"
 
@@ -375,6 +398,20 @@ assert_gone "managed policy ${POLICY_ARN} still exists after destroy" \
   aws iam get-policy --policy-arn "${POLICY_ARN}"
 assert_gone "GraphQL API ${GQL_API_ID} still exists after destroy" \
   aws appsync get-graphql-api --region "${REGION}" --api-id "${GQL_API_ID}"
+# SQS may answer for a deleted queue for up to 60 seconds.
+QUEUE_GONE=0
+for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+  if gone_probe aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
+    --attribute-names QueueArn; then
+    QUEUE_GONE=1
+    break
+  fi
+  [ "${attempt}" = 14 ] || sleep 5
+done
+if [ "${QUEUE_GONE}" != "1" ]; then
+  echo "FAIL: queue ${QUEUE_URL} still exists 65s after destroy" >&2
+  exit 1
+fi
 # `describe-services` / `describe-clusters` do not error for a deleted one:
 # they report it INACTIVE (or not at all), so a gone_probe cannot apply. A
 # STRICT capture of the status is the probe (a throttle aborts under set -e).
@@ -397,7 +434,7 @@ if [ "${TASK_DEF_STATUS}" = "ACTIVE" ]; then
   echo "FAIL: task definition ${TASK_DEF_ARN} is still ACTIVE after destroy" >&2
   exit 1
 fi
-echo "    OK: 0 orphans (state, API with both stages, ECS service, cluster and task definition, managed policy, GraphQL API with its data source)"
+echo "    OK: 0 orphans (state, API with both stages, ECS service, cluster and task definition, managed policy, GraphQL API with its data source, queue)"
 
 trap - EXIT INT TERM
 rm -f "${DEPLOY_LOG}" 2>/dev/null || true

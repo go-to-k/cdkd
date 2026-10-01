@@ -4,6 +4,7 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as appsync from 'aws-cdk-lib/aws-appsync';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
  * Immutable NAMES taken from a Secrets Manager secret, updated in place
@@ -37,6 +38,10 @@ import * as appsync from 'aws-cdk-lib/aws-appsync';
  *     physical id is the API id, so the provider asks AppSync for the live
  *     name. `SecretDataSource` (AWS::AppSync::DataSource, type NONE), `Name`
  *     from the secret: the `<apiId>|<name>` physical id carries it.
+ *   - `SecretQueue` (AWS::SQS::Queue), `QueueName` from the secret
+ *     (go-to-k/cdkd#2177): the provider's own update debug lines print the
+ *     queue URL, which carries the name, with no per-site masker. Only the
+ *     logger's sink mask keeps the name out of the `--verbose` log.
  *
  * A Scheduler Schedule's secret-derived `GroupName` stays refused on purpose
  * (go-to-k/cdkd#4275: nothing non-secret in the record identifies the group),
@@ -44,8 +49,8 @@ import * as appsync from 'aws-cdk-lib/aws-appsync';
  *
  * UPDATE (CDKD_TEST_UPDATE=true) changes only the Stages' `Description`, the
  * Service's `EnableECSManagedTags` (it has no description), the Policy's
- * `PolicyDocument`, the API's `XrayEnabled` and the DataSource's
- * `Description`: ordinary in-place changes, so the update is not a no-op.
+ * `PolicyDocument`, the API's `XrayEnabled`, the DataSource's `Description`
+ * and the Queue's `VisibilityTimeout`: ordinary in-place changes, so the update is not a no-op.
  *
  * covers: AWS::ApiGatewayV2::Api
  * covers: AWS::ApiGatewayV2::Stage
@@ -55,6 +60,7 @@ import * as appsync from 'aws-cdk-lib/aws-appsync';
  * covers: AWS::IAM::ManagedPolicy
  * covers: AWS::AppSync::GraphQLApi
  * covers: AWS::AppSync::DataSource
+ * covers: AWS::SQS::Queue
  */
 export class SecretDerivedImmutableNamesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -124,6 +130,11 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       name: fromSecret('datasource'),
       type: 'NONE',
       description,
+    });
+
+    new sqs.CfnQueue(this, 'SecretQueue', {
+      queueName: fromSecret('queue'),
+      visibilityTimeout: update ? 60 : 30,
     });
   }
 }

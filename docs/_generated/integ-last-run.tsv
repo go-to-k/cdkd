@@ -301,7 +301,7 @@ schema-v9-to-v10-migration	2026-09-29T06:42:58Z	PASS	215	verify.sh	rc ok, orph c
 scrub-nested-child	2026-09-30T04:58:05Z	PASS	146	verify.sh	rc ok, orph clean (PR #4167 scrub drops unnamed output)
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-09-25T15:16:49Z	PASS	155	verify.sh	rc ok, orph clean; #3515 json-patch-generator CC patch path, tree c067e96b0
-secret-derived-immutable-names	2026-10-01T16:08:16Z	PASS	116	verify.sh	PR #4336 @0dc9b6fb2+tests; rc ok, 0 orphans, 0 versions; real-AWS probe: reverting appsync-provider.ts alone -> Step 4 'GraphqlApi.Name is immutable', iam-managed-policy-provider.ts alone -> Step 4 'A policy called ... already exists'
+secret-derived-immutable-names	2026-10-01T18:08:17Z	PASS	95	verify.sh	PR #4359 logger-sink mask; SQS update line masked; rc ok, orph clean
 secrets-array-nested	2026-09-30T21:26:17Z	PASS	421	verify.sh	PR #4269 (#2177 ECS masker threading) @9e0e25c69; rc ok, destroy 0 errors, no state/IAM/VPC/ECS/log leftovers
 secrets-dynamic-ref	2026-10-01T07:41:07Z	PASS	576	verify.sh	rc ok, orph clean (#4243)
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean

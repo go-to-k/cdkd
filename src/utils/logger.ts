@@ -1,6 +1,7 @@
 import type { Logger, LogLevel } from '../types/config.js';
 import { displaySafe, terminalSafe } from './display-safe.js';
 import { getLiveRenderer } from './live-renderer.js';
+import { currentLogLineMasker, type LogLineMasker } from './log-line-masker.js';
 import { getCurrentStackOutputBuffer } from './stack-context.js';
 
 /**
@@ -134,6 +135,45 @@ export function isStdoutReservedForPayload(): boolean {
 }
 
 /**
+ * Render a log call's extra args. Under a masker, every string LEAF and object
+ * KEY is masked before `JSON.stringify` escapes it (a secret holding `"` or
+ * `\` no longer occurs in the finished JSON), and a number or boxed string by
+ * its text. The replacer sees every value `JSON.stringify` writes (after
+ * `toJSON`), so no text pass over the result is needed.
+ */
+function renderArgs(args: unknown[], mask: LogLineMasker | undefined): string {
+  if (mask === undefined) return args.map((a) => JSON.stringify(a)).join(' ');
+  const rebuilt = new WeakMap<object, Record<string, unknown>>();
+  const replacer = (_key: string, value: unknown): unknown => {
+    if (typeof value === 'string') return mask(value);
+    if (value instanceof String) return mask(String(value));
+    if (typeof value === 'number') {
+      const masked = mask(String(value));
+      return masked === String(value) ? value : masked;
+    }
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+    // Rebuild only when a KEY changes, and ONE copy per object: a fresh copy
+    // per visit would hide a cycle from `JSON.stringify`, turning a circular
+    // arg's TypeError into unbounded recursion.
+    const seen = rebuilt.get(value);
+    if (seen !== undefined) return seen;
+    const entries = Object.entries(value);
+    if (entries.every(([k]) => mask(k) === k)) return value;
+    // Null prototype: an own `__proto__` key stays a key, not the prototype.
+    const copy = Object.create(null) as Record<string, unknown>;
+    for (const [k, v] of entries) {
+      // Two keys masking to the same text must not collapse into one entry.
+      let key = mask(k);
+      for (let n = 2; Object.hasOwn(copy, key); n++) key = `${mask(k)}#${n}`;
+      copy[key] = v;
+    }
+    rebuilt.set(value, copy);
+    return copy;
+  };
+  return args.map((a) => JSON.stringify(a, replacer)).join(' ');
+}
+
+/**
  * Format timestamp
  */
 function formatTimestamp(): string {
@@ -176,11 +216,15 @@ export class ConsoleLogger implements Logger {
     // site is the same argument `display-safe.ts` makes in its own header --
     // widening the rule by hand, one reader at a time, is what missed four of
     // five readers in issue #2170 (issue #3003).
-    const formattedArgs =
-      args.length > 0 ? ' ' + displaySafe(args.map((a) => JSON.stringify(a)).join(' ')) : '';
+    //
+    // Secrets are masked BEFORE that sanitizing, on the raw text: sanitizing
+    // can rewrite a byte inside a secret, after which it no longer matches
+    // (issue #2177). Both the buffered and the live path receive this output.
+    const mask = currentLogLineMasker();
+    const formattedArgs = args.length > 0 ? ' ' + displaySafe(renderArgs(args, mask)) : '';
     // The message itself is sanitized HERE rather than at each of ~3000 call
     // sites, most of which interpolate a value raw (go-to-k/cdkd#3479).
-    message = terminalSafe(message);
+    message = terminalSafe(mask === undefined ? message : mask(message));
 
     // Verbose mode: full timestamps and level
     if (this.level === 'debug') {
