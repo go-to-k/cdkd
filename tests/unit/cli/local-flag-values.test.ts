@@ -58,6 +58,9 @@ afterEach(() => {
 
 function captureWarn(): () => string {
   const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+  // `spyOn` on an already-spied method returns the same spy, so clear it: a
+  // later case must not pass on an earlier one's line.
+  warn.mockClear();
   return () => warn.mock.calls.map((c) => String(c[0])).join('\n');
 }
 
@@ -127,7 +130,7 @@ describe('the --env-vars override example for a dropped env var', () => {
   it.each([...PASTE_PAYLOADS.map((p) => p.value), ...SHELL_SHAPED])(
     'puts a placeholder in place of %s',
     (value) => {
-      expect(envVarsOverrideExample(value, 'K')).toBe('{"<cdk path>":{"K":"<literal>"}}');
+      expect(envVarsOverrideExample(value, 'K')).toBe('{"<cdk path or logical id>":{"K":"<literal>"}}');
       expect(envVarsOverrideExample('MyFn', value)).toBe('{"MyFn":{"<variable name>":"<literal>"}}');
     }
   );
@@ -168,6 +171,10 @@ describe('cdkd local invoke-agentcore / invoke / start-api: a dropped env var be
       'Environment variable TABLE contains a CloudFormation intrinsic and was dropped. ' +
         'Override it with --env-vars (e.g. {"MyStack/MyFn":{"TABLE":"<literal>"}}), or pass a state-source flag'
     );
+    // A leading `_` is an ordinary env var name, shown at every site.
+    expect(await agentcore('_HANDLER', 'MyFn')).toContain('Environment variable _HANDLER contains');
+    expect(invokeDroppedEnvVarWarning('_HANDLER', 'MyFn')).toContain('Environment variable _HANDLER contains');
+    expect(startApiDroppedEnvVarWarning('MyFn', '_HANDLER', 'MyFn')).toContain('env var _HANDLER contains');
     expect(invokeDroppedEnvVarWarning('TABLE', 'MyStack/MyFn')).toContain(
       'Environment variable TABLE contains a CloudFormation intrinsic and was dropped. ' +
         'Override it with --env-vars (e.g. {"MyStack/MyFn":{"TABLE":"<literal>"}}), or pass --from-state'
@@ -186,7 +193,7 @@ describe('cdkd local invoke-agentcore / invoke / start-api: a dropped env var be
         expect(byKey, `${label} ${value}`).toContain('{"MyFn":{"<variable name>":"<literal>"}}');
         expectPasteSafe(byKey, value);
         const byPath = await build('K', value);
-        expect(byPath, `${label} ${value}`).toContain('{"<cdk path>":{"K":"<literal>"}}');
+        expect(byPath, `${label} ${value}`).toContain('{"<cdk path or logical id>":{"K":"<literal>"}}');
         expectPasteSafe(byPath, value);
         vi.restoreAllMocks();
       }
@@ -199,7 +206,7 @@ describe('cdkd local invoke-agentcore / invoke / start-api: a dropped env var be
   it.each(SHELL_SHAPED)('describes %s in every position', async (value) => {
     for (const [label, build] of rows) {
       expect(await build(value, 'MyFn'), label).toContain(NAME_DESC);
-      expect(await build('K', value), label).toContain('{"<cdk path>":{"K":"<literal>"}}');
+      expect(await build('K', value), label).toContain('{"<cdk path or logical id>":{"K":"<literal>"}}');
       vi.restoreAllMocks();
     }
     expect(startApiDroppedEnvVarWarning(value, 'K', 'MyFn')).toContain(`Lambda ${ID_DESC}:`);
@@ -235,10 +242,24 @@ describe('cdkd local start-api: --from-state env var substitution lines', () => 
         );
         expectPasteSafe(remedy, value);
       }
-      // The reason quotes template text, so it never shares a line with a flag.
+      // The reason quotes template text, so it never shares a line with a
+      // flag: a flag-free reason is shown on a line of its own, and one that
+      // names a flag itself (cdk-local's pseudo-parameter and cross-stack
+      // arms) is withheld.
       const [why, remedy] = stateUnsubstitutedWarnings('MyFn', 'K', `Ref '${value}': no record`);
-      expect(why).not.toMatch(/--[a-z]/);
+      expect(why).toContain(`could not substitute env var K from state: Ref '${value}': no record`);
+      expect(remedy).toContain('--from-state could not substitute env var K.');
       expect(remedy).not.toContain(value);
+      for (const reason of [
+        `Ref 'AWS::${value}': pseudo parameter not supplied (need an active state source, e.g. --from-cfn-stack)`,
+        `Fn::ImportValue "${value}": no cross-stack resolver supplied (pass a state-source flag, e.g. --from-cfn-stack)`,
+      ]) {
+        const [withheld] = stateUnsubstitutedWarnings('MyFn', 'K', reason);
+        expect(withheld, reason).toBe(
+          "Lambda MyFn: could not substitute env var K from state: (the resolver's reason is not shown: it names a flag beside template text)"
+        );
+        expectPasteSafe(withheld, value);
+      }
     }
   }, 120_000);
 

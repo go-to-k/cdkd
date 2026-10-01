@@ -1018,6 +1018,18 @@ export async function materializeLambdaLayersIncludingArns(
 }
 
 /**
+ * The warning for a template env var dropped because it holds an intrinsic.
+ * It names `--env-vars`, so the variable name and the override example's
+ * values are shown only when inert beside a flag (go-to-k/cdkd#4322).
+ */
+export function droppedEnvVarWarning(key: string, overrideKeyExample: string): string {
+  return (
+    `Environment variable ${shownBesideCommandOrDescribed(key, 'variable name')} contains a CloudFormation intrinsic and was dropped. ` +
+    `Override it with --env-vars (e.g. ${envVarsOverrideExample(overrideKeyExample, key)}), or pass --from-state (cdkd-deployed) / --from-cfn-stack (cdk-deployed) to recover deployed values.`
+  );
+}
+
+/**
  * Build the `--tmpfs /tmp:rw,size=<N>m` plan for a Lambda (issue #440).
  *
  * The shape is identical for ZIP and IMAGE Lambdas — `--tmpfs` overlays
@@ -1035,18 +1047,6 @@ export async function materializeLambdaLayersIncludingArns(
  * and the constant is centralized here so a future fixture / docs
  * update has a single grep target.
  */
-/**
- * The warning for a template env var dropped because it holds an intrinsic.
- * It names `--env-vars`, so the variable name and the override example's
- * values are shown only when inert beside a flag (go-to-k/cdkd#4322).
- */
-export function droppedEnvVarWarning(key: string, overrideKeyExample: string): string {
-  return (
-    `Environment variable ${shownBesideCommandOrDescribed(key, 'variable name')} contains a CloudFormation intrinsic and was dropped. ` +
-    `Override it with --env-vars (e.g. ${envVarsOverrideExample(overrideKeyExample, key)}), or pass --from-state (cdkd-deployed) / --from-cfn-stack (cdk-deployed) to recover deployed values.`
-  );
-}
-
 export function resolveTmpfsForLambda(
   lambda: ResolvedLambda
 ): { target: string; sizeMb: number } | undefined {

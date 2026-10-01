@@ -496,13 +496,13 @@ export function shownBesideCommandOrDescribed(value: string, what: string): stri
 
 /**
  * The `--env-vars` override example a dropped env var's warning prints,
- * `{"<cdk path>":{"<name>":"<literal>"}}` (go-to-k/cdkd#4322). Each value sits
+ * `{"<cdk path or logical id>":{"<name>":"<literal>"}}` (go-to-k/cdkd#4322). Each value sits
  * inside double quotes, where `$( )` and backticks still expand, so each is
  * shown only when {@link physicalIdShownBesideCommand} admits it and is a
  * quoted placeholder otherwise.
  */
 export function envVarsOverrideExample(overrideKey: string, envVarName: string): string {
-  const key = physicalIdShownBesideCommand(overrideKey) ?? '<cdk path>';
+  const key = physicalIdShownBesideCommand(overrideKey) ?? '<cdk path or logical id>';
   const name = physicalIdShownBesideCommand(envVarName) ?? '<variable name>';
   return `{"${key}":{"${name}":"<literal>"}}`;
 }

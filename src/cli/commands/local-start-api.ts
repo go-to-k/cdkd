@@ -1450,25 +1450,6 @@ export function shouldEmitFromCfnRedundancyTip(
 }
 
 /**
- * One-shot wrapper around `shouldEmitFromCfnRedundancyTip` for the
- * `--watch` hot-reload path. `synthesizeAndBuild` re-runs on every
- * reload firing, so without a gate the tip would re-emit on every
- * reload — noisy. This helper consults the caller-supplied ref:
- *  - If the predicate fires AND the ref is still `false`, calls `emit`
- *    and flips the ref to `true`.
- *  - On subsequent invocations the ref is `true` and the helper is a
- *    no-op for the rest of the ref's lifetime.
- *  - When the predicate does NOT fire (no `--from-cfn-stack` value /
- *    intentionally-different value / multi-stack run), the ref stays
- *    `false` so a future reload whose synthesized stacks change in a
- *    way that DOES make the value redundant still emits the tip once.
- *
- * The ref is owned by `localStartApiCommand` (one per server boot), so
- * independent server invocations get independent flags.
- *
- * @internal exported for unit tests.
- */
-/**
  * The one-shot tip when `--from-cfn-stack`'s value equals the routed stack
  * name. It names the flag and a backticked command, so the stack name is shown
  * only when plain (go-to-k/cdkd#4322).
@@ -1482,7 +1463,7 @@ export function fromCfnRedundancyTip(routedStackName: string): string {
  * operator's own argv; the API logical id comes from the template, so it is
  * shown only when plain (go-to-k/cdkd#4322).
  */
-export function stageMissWarning(stage: string | undefined, apiId: string): string {
+export function stageMissWarning(stage: string, apiId: string): string {
   // cdkd-raw-beside-safe: `stage` is the operator's own `--stage` argv value.
   return `--stage '${stage}' did not match any Stage on API ${quotedOrDescribed(apiId, 'logical id')}; routes on that API will get stageVariables: null.`;
 }
@@ -1493,11 +1474,20 @@ export function stateSubstitutedDebug(logicalId: string, key: string): string {
 }
 
 /**
+ * A `--flag`, `cdkd ` or `aws ` word starting at a word boundary: what makes a
+ * line carrying template text pasteable (the S1 rule of go-to-k/cdkd#3950).
+ */
+const NAMES_A_FLAG_OR_COMMAND = /(?:^|[\s'"`(])(?:--[a-z]|cdkd[ \t]|aws[ \t])/;
+
+/**
  * `--from-state`'s warning for an env var it could not substitute
  * (go-to-k/cdkd#4322). The resolver's reason quotes template text (`Ref 'X'`),
- * so it goes on a line of its own that names no flag; the line with the
- * `--from-state` / `--env-vars` remedy shows the logical id and the variable
- * name only when inert beside a flag.
+ * so it goes on a line of its own, apart from the `--from-state` /
+ * `--env-vars` remedy, which shows the logical id and the variable name only
+ * when inert beside a flag. Some resolver reasons name a flag themselves
+ * (cdk-local's pseudo-parameter and cross-stack arms: `… e.g.
+ * --from-cfn-stack`), so a reason that does is withheld rather than shown
+ * beside it (go-to-k/cdkd#4341 tracks the reason text itself).
  */
 export function stateUnsubstitutedWarnings(
   logicalId: string,
@@ -1506,8 +1496,11 @@ export function stateUnsubstitutedWarnings(
 ): [string, string] {
   const id = plainOrDescribed(logicalId, 'logical id');
   const name = shownBesideCommandOrDescribed(key, 'variable name');
+  const shownReason = NAMES_A_FLAG_OR_COMMAND.test(reason)
+    ? "(the resolver's reason is not shown: it names a flag beside template text)"
+    : displaySafe(reason);
   return [
-    `Lambda ${id}: could not substitute env var ${name} from state: ${displaySafe(reason)}`,
+    `Lambda ${id}: could not substitute env var ${name} from state: ${shownReason}`,
     `Lambda ${id}: --from-state could not substitute env var ${name}. Override it via --env-vars or it will be dropped.`,
   ];
 }
@@ -1530,6 +1523,25 @@ export function droppedEnvVarWarning(
   );
 }
 
+/**
+ * One-shot wrapper around `shouldEmitFromCfnRedundancyTip` for the
+ * `--watch` hot-reload path. `synthesizeAndBuild` re-runs on every
+ * reload firing, so without a gate the tip would re-emit on every
+ * reload — noisy. This helper consults the caller-supplied ref:
+ *  - If the predicate fires AND the ref is still `false`, calls `emit`
+ *    and flips the ref to `true`.
+ *  - On subsequent invocations the ref is `true` and the helper is a
+ *    no-op for the rest of the ref's lifetime.
+ *  - When the predicate does NOT fire (no `--from-cfn-stack` value /
+ *    intentionally-different value / multi-stack run), the ref stays
+ *    `false` so a future reload whose synthesized stacks change in a
+ *    way that DOES make the value redundant still emits the tip once.
+ *
+ * The ref is owned by `localStartApiCommand` (one per server boot), so
+ * independent server invocations get independent flags.
+ *
+ * @internal exported for unit tests.
+ */
 export function tryEmitFromCfnRedundancyTipOnce(
   fromCfnStack: string | boolean | undefined,
   routedStackNames: readonly string[],
