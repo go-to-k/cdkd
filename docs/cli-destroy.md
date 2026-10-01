@@ -1041,7 +1041,7 @@ non-TTY rule as the destroy prompts above:
 | `cdkd export` | the rollback-journal override, the migration confirm, and the nested-stack tree-wide confirm | `-y` / `--yes` |
 | `cdkd drift --accept` / `--revert` | `Update cdkd state...?` / `Push cdkd state values back into AWS...?` | `-y` / `--yes` |
 | `cdkd import --migrate-from-cloudformation` | `Set DeletionPolicy=Retain ... then delete the stack?` | `-y` / `--yes` |
-| `cdkd state migrate` | `Copy N object(s) from <bucket> -> <bucket>...?` | `-y` / `--yes` |
+| `cdkd state migrate` | `Copy N object(s) from <bucket> to <bucket>...?` | `-y` / `--yes` |
 | `cdkd events prune` | `Prune deployment-event history for <stack> (<region>): <scope>?` | `-y` / `--yes` |
 
 On a non-TTY stdin each refuses **before** creating the prompt, throwing

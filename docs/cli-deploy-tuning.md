@@ -239,8 +239,8 @@ them and asks before any provider call runs:
 ```text
 WARNING: --no-prefix-user-supplied-names will REPLACE 2 resource(s) whose
 AWS physical name is still prefixed with the stack name:
-  - MyRole (AWS::IAM::Role): MyStack-my-role -> my-role
-  - MyLb (AWS::ElasticLoadBalancingV2::LoadBalancer): MyStack-my-lb -> my-lb
+  - MyRole (AWS::IAM::Role): from MyStack-my-role to my-role
+  - MyLb (AWS::ElasticLoadBalancingV2::LoadBalancer): from MyStack-my-lb to my-lb
 These resources will be REPLACED because the new naming convention drops
 the stack-name prefix.
 

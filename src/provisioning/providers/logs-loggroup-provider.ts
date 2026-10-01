@@ -23,7 +23,7 @@ import {
 } from '@aws-sdk/client-cloudwatch-logs';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, plainIdentOr } from '../../utils/display-safe.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -784,10 +784,17 @@ export class LogsLogGroupProvider implements ResourceProvider {
       const remedy = deletionProtected
         ? `cdkd's recorded properties for this log group carry DeletionProtectionEnabled, so ${replaceFlags} alone will NOT succeed while AWS still has it on: the replacement normally deletes the log group, AWS refuses that delete while protection is on, and cdkd deploy has no --remove-protection flag to clear it (only cdkd destroy and cdkd state destroy act on one). Read "Deletion protection blocks a replacement" in docs/cli-deploy-safety.md BEFORE you disable anything: whether disabling helps at all, and what the flag ends up as, depend on your UpdateReplacePolicy and on whether the deploy completes — neither of which this refusal can see. ${disableStep} to delete + recreate the log group under the new class (its stored log events are lost). Setting DeletionProtectionEnabled: false in the template does NOT clear it in the same deploy: this refusal fires before that property is applied, so that route needs its own deploy with the LogGroupClass change reverted. Or revert the LogGroupClass change and keep the current class.`
         : `Re-deploy with ${replaceFlags} to delete + recreate the log group under the new class (its stored log events are lost), or revert the LogGroupClass change.`;
+      // A legal class is a plain enum word (STANDARD / INFREQUENT_ACCESS /
+      // DELIVERY) and prints bare; anything else is DESCRIBED, never shown, so no
+      // pasted span of the refusal runs a value the template or state chose. A
+      // quoted display is not enough: `'...'` is closed by a `'` in the value,
+      // and `"..."` still runs a `$( )` (go-to-k/cdkd#4239).
+      const shownClass = (c: string): string =>
+        plainIdentOr(c, 'a class value that is not a plain identifier');
       throw new ResourceUpdateNotSupportedError(
         'AWS::Logs::LogGroup',
         logicalId,
-        `the LogGroupClass ('${prevClass}' -> '${nextClass}') cannot be changed after creation. ${remedy} Note --force-stateful-recreation has NO per-resource granularity: it clears the data guard for every replacement target in the run`
+        `the LogGroupClass (from ${shownClass(prevClass)} to ${shownClass(nextClass)}) cannot be changed after creation. ${remedy} Note --force-stateful-recreation has NO per-resource granularity: it clears the data guard for every replacement target in the run`
       );
     }
 

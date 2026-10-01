@@ -2673,9 +2673,9 @@ function resolveAssetCodePath(
  * Routes with `unsupported` or `mockCors` are annotated so the user can
  * tell at a glance which routes will dispatch to a Lambda vs which
  * return 501 / 204 directly:
- *   - normal:        `GET /items -> Handler  (HTTP API)`
- *   - mockCors:      `OPTIONS /items -> [MOCK CORS preflight]  (REST v1, stage 'prod')`
- *   - unsupported:   `POST /admin -> [501 Not Implemented]  (HTTP API)`
+ *   - normal:        `GET /items to Handler  (HTTP API)`
+ *   - mockCors:      `OPTIONS /items to [MOCK CORS preflight]  (REST v1, stage 'prod')`
+ *   - unsupported:   `POST /admin to [501 Not Implemented]  (HTTP API)`
  */
 function printRouteTable(routes: readonly RouteWithAuth[]): void {
   const flat = routes.map((r) => r.route);
@@ -2703,7 +2703,7 @@ function printRouteTable(routes: readonly RouteWithAuth[]): void {
             ? formatRestV1IntegrationLabel(r.restV1Integration)
             : r.lambdaLogicalId;
     process.stdout.write(
-      `  ${r.method.padEnd(methodWidth)}  ${r.pathPattern.padEnd(pathWidth)}  -> ${target}  (${sourceLabel})\n`
+      `  ${r.method.padEnd(methodWidth)}  ${r.pathPattern.padEnd(pathWidth)}  to ${target}  (${sourceLabel})\n`
     );
   }
   process.stdout.write('\n');

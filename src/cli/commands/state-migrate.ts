@@ -165,7 +165,7 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
           ? 'and DELETE the source bucket'
           : '(source bucket will be kept)';
         const ok = await confirmPrompt(
-          `Copy ${sourceObjects.length} object(s) from ${legacyBucket} -> ${newBucket} ${action}?`
+          `Copy ${sourceObjects.length} object(s) from ${legacyBucket} to ${newBucket} ${action}?`
         );
         if (!ok) {
           logger.info('Migration cancelled.');
@@ -225,7 +225,7 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
           );
         }
 
-        logger.info(`✓ Migration complete: ${legacyBucket} -> ${newBucket}`);
+        logger.info(`✓ Migration complete: from ${legacyBucket} to ${newBucket}`);
       } finally {
         newS3.destroy();
       }

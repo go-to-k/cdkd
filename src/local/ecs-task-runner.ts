@@ -568,7 +568,7 @@ export function buildDependencyGraph(containers: ResolvedEcsContainer[]): graphl
   const cycles = graphlib.alg.findCycles(g);
   if (cycles.length > 0) {
     throw new EcsTaskRunnerError(
-      `Cyclic DependsOn detected: ${cycles.map((c) => c.join(' -> ')).join('; ')}`
+      `Cyclic DependsOn detected: ${cycles.map((c) => c.join(' then ')).join(', and ')}`
     );
   }
   return g;

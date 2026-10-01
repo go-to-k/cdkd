@@ -310,7 +310,7 @@ export function findNestedTemplateTreeDefect(
 const MAX_RENDERED_HOPS = 8;
 
 /**
- * `A (/x/a.json) -> B (/x/b.json)`. The logical id renders through
+ * `A (/x/a.json) then B (/x/b.json)`. The logical id renders through
  * `displayIdent` and the path through `displayAssemblyPath`, each supplying its
  * own boundary: this text exists FOR a hand-modified assembly, so a logical id
  * (a template key) and a path (derived from `aws:asset:path`) are both
@@ -321,13 +321,13 @@ const MAX_RENDERED_HOPS = 8;
 function renderChain(chain: readonly NestedTemplateHop[]): string {
   const hop = (h: NestedTemplateHop): string =>
     `${displayIdent(h.logicalId)} (${displayAssemblyPath(h.templatePath)})`;
-  if (chain.length <= MAX_RENDERED_HOPS) return chain.map(hop).join(' -> ');
+  if (chain.length <= MAX_RENDERED_HOPS) return chain.map(hop).join(' then ');
   const keep = MAX_RENDERED_HOPS / 2;
   return [
     ...chain.slice(0, keep).map(hop),
     `... ${chain.length - 2 * keep} more ...`,
     ...chain.slice(-keep).map(hop),
-  ].join(' -> ');
+  ].join(' then ');
 }
 
 /**

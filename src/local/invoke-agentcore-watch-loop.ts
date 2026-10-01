@@ -339,7 +339,7 @@ export async function softReloadAgentContainer(
   }
   const workdirDest = workdir.endsWith('/') ? workdir : `${workdir}/`;
   logger.info(
-    `Soft-reload: docker cp ${newAssetSourceDir} -> ${containerId}:${workdirDest}; restart.`
+    `Soft-reload: copying ${newAssetSourceDir} to ${containerId}:${workdirDest}, then restarting.`
   );
   const cpArgs = ['cp', `${newAssetSourceDir}/.`, `${containerId}:${workdirDest}`];
   try {

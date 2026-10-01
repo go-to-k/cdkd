@@ -566,7 +566,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       if (modeChanged) {
         const streamArn = await this.resolveStreamArn(physicalId);
         this.logger.debug(
-          `Switching stream mode for ${physicalId}: ${oldStreamMode} -> ${streamMode}`
+          `Switching stream mode for ${physicalId}: from ${oldStreamMode} to ${streamMode}`
         );
         await this.getClient().send(
           new UpdateStreamModeCommand({
@@ -592,7 +592,7 @@ export class KinesisStreamProvider implements ResourceProvider {
 
         if (newShardCount !== oldShardCount) {
           this.logger.debug(
-            `Updating shard count for ${physicalId}: ${oldShardCount} -> ${newShardCount}`
+            `Updating shard count for ${physicalId}: from ${oldShardCount} to ${newShardCount}`
           );
 
           await this.getClient().send(
@@ -615,7 +615,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       const effectiveOldRetention = oldRetention ?? 24;
       if (effectiveNewRetention !== effectiveOldRetention) {
         this.logger.debug(
-          `Updating retention period for ${physicalId}: ${effectiveOldRetention} -> ${effectiveNewRetention}`
+          `Updating retention period for ${physicalId}: from ${effectiveOldRetention} to ${effectiveNewRetention}`
         );
         if (effectiveNewRetention > effectiveOldRetention) {
           await this.getClient().send(
@@ -717,7 +717,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       const oldMaxRecordSize = comparableRecordSize(previousProperties['MaxRecordSizeInKiB'], mask);
       if (newMaxRecordSize !== undefined && newMaxRecordSize !== oldMaxRecordSize) {
         this.logger.debug(
-          `Updating max record size for ${physicalId}: ${oldMaxRecordSize} -> ${newMaxRecordSize}`
+          `Updating max record size for ${physicalId}: from ${oldMaxRecordSize ?? 'no value'} to ${newMaxRecordSize}`
         );
         await this.getClient().send(
           new UpdateMaxRecordSizeCommand({

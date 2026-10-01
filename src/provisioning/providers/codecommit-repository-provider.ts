@@ -606,11 +606,11 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
             recordedId
           );
           this.logger.debug(
-            `Rename ${physicalId} -> ${newName} already applied by a previous attempt`
+            `Rename from ${physicalId} to ${newName} already applied by a previous attempt`
           );
         }
         currentName = newName;
-        this.logger.debug(`Renamed CodeCommit Repository ${physicalId} -> ${newName}`);
+        this.logger.debug(`Renamed CodeCommit Repository from ${physicalId} to ${newName}`);
       }
 
       // Update RepositoryDescription if changed. An empty string clears the

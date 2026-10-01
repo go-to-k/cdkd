@@ -150,7 +150,7 @@ describe('DeployEngine - the diff and alias print surfaces mask a NoEcho value (
     const lines = logLines.join('\n');
     // Premise: both lines were printed, so their masking is what is tested.
     expect(lines).toContain(
-      `Property Name of AWS::SSM::Parameter requires replacement (${SECRET_MASK} -> "${SECRET_MASK}")`
+      `Property Name of AWS::SSM::Parameter requires replacement (from ${SECRET_MASK} to "${SECRET_MASK}")`
     );
     // The name IS the NoEcho value, so the secret-bearing-name refusal fires
     // before the collision arm could (go-to-k/cdkd#4043).
@@ -175,7 +175,7 @@ describe('DeployEngine - the diff and alias print surfaces mask a NoEcho value (
     await h.engine.deploy('s', { ...templateOf(false), Outputs: {} });
     const line = logLines.find((l) => l.includes('requires replacement ('));
     expect(line).toBe(
-      `Property Name of AWS::SSM::Parameter requires replacement (${SECRET_MASK} -> "${SECRET_MASK}")`
+      `Property Name of AWS::SSM::Parameter requires replacement (from ${SECRET_MASK} to "${SECRET_MASK}")`
     );
     expect(logLines.join('\n')).not.toContain(NOECHO);
   });
@@ -205,7 +205,7 @@ describe('DeployEngine - the diff and alias print surfaces mask a NoEcho value (
     });
     const line = logLines.find((l) => l.includes('requires replacement ('));
     expect(line).toBe(
-      `Property Name of AWS::SSM::Parameter requires replacement ("${SECRET_MASK}" -> "literal-name")`
+      `Property Name of AWS::SSM::Parameter requires replacement (from "${SECRET_MASK}" to "literal-name")`
     );
   });
 });
@@ -229,7 +229,7 @@ describe('DeployEngine - the replacement line knows every NoEcho value up front 
     });
     const line = logLines.find((l) => l.includes('requires replacement ('));
     expect(line).toBe(
-      `Property Name of AWS::SSM::Parameter requires replacement ("${SECRET_MASK}" -> "literal-name")`
+      `Property Name of AWS::SSM::Parameter requires replacement (from "${SECRET_MASK}" to "literal-name")`
     );
   });
 
@@ -256,7 +256,7 @@ describe('DeployEngine - the replacement line knows every NoEcho value up front 
     });
     const line = logLines.find((l) => l.includes('requires replacement ('));
     expect(line).toBe(
-      `Property Name of AWS::SSM::Parameter requires replacement ("${SECRET_MASK}" -> "literal-name")`
+      `Property Name of AWS::SSM::Parameter requires replacement (from "${SECRET_MASK}" to "literal-name")`
     );
   });
 
@@ -275,7 +275,7 @@ describe('DeployEngine - the replacement line knows every NoEcho value up front 
     });
     const line = logLines.find((l) => l.includes('requires replacement ('));
     expect(line).toBe(
-      `Property Name of AWS::SSM::Parameter requires replacement ("${NOECHO}" -> "literal-name")`
+      `Property Name of AWS::SSM::Parameter requires replacement (from "${NOECHO}" to "literal-name")`
     );
   });
 
@@ -334,7 +334,7 @@ describe('DeployEngine - the diff pass bag feeds the replacement line (go-to-k/c
     });
     const line = logLines.find((l) => l.includes('requires replacement ('));
     expect(line).toBe(
-      `Property Name of AWS::SSM::Parameter requires replacement (${SECRET_MASK} -> "${SECRET_MASK}")`
+      `Property Name of AWS::SSM::Parameter requires replacement (from ${SECRET_MASK} to "${SECRET_MASK}")`
     );
     expect(line).not.toContain(encoded);
   });

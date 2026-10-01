@@ -107,7 +107,7 @@ export class DagBuilder {
         if (skip?.has(depId)) {
           relaxedEdgeCount++;
           this.logger.debug(
-            `Skipped CDK-defensive DependsOn edge: ${displayIdent(depId)} -> ${displayIdent(logicalId)} (default; opt out with --no-aggressive-vpc-parallel)`
+            `Skipped CDK-defensive DependsOn edge from ${displayIdent(depId)} to ${displayIdent(logicalId)} (default; opt out with --no-aggressive-vpc-parallel)`
           );
           continue;
         }
@@ -115,13 +115,13 @@ export class DagBuilder {
         if (graph.hasNode(depId)) {
           graph.setEdge(depId, logicalId); // depId -> logicalId (logicalId depends on depId)
           edgeCount++;
-          this.logger.debug(`Added edge: ${displayIdent(depId)} -> ${displayIdent(logicalId)}`);
+          this.logger.debug(`Added edge from ${displayIdent(depId)} to ${displayIdent(logicalId)}`);
         } else if (parameterNames.has(depId)) {
           // `Ref` to a template Parameter, not a resource — no graph edge and
           // no warning. (Common in nested-stack children whose Parameters are
           // supplied by the parent via Properties.Parameters.)
           this.logger.debug(
-            `Skipped Parameter reference: ${displayIdent(logicalId)} -> ${displayIdent(depId)}`
+            `Skipped Parameter reference from ${displayIdent(logicalId)} to ${displayIdent(depId)}`
           );
         } else {
           // SANITIZED, and this line is why the whole file is
@@ -176,8 +176,8 @@ export class DagBuilder {
       const cycles = this.findCycles(graph);
       throw new DependencyError(
         `Circular dependency detected in template. Cycles: ${cycles
-          .map((c) => c.map((n) => displayIdent(n)).join(' -> '))
-          .join('; ')}`
+          .map((c) => c.map((n) => displayIdent(n)).join(' then '))
+          .join(', and ')}`
       );
     }
 
@@ -394,7 +394,7 @@ export class DagBuilder {
         graph.setEdge(policyId, logicalId);
         added++;
         this.logger.debug(
-          `Added implicit edge (custom resource policy): ${displayIdent(policyId)} -> ${displayIdent(logicalId)}`
+          `Added implicit edge (custom resource policy) from ${displayIdent(policyId)} to ${displayIdent(logicalId)}`
         );
       }
     }
@@ -436,7 +436,7 @@ export class DagBuilder {
       graph.setEdge(depId, dependentId);
       added++;
       this.logger.debug(
-        `Added implicit edge (lambda vpc): ${displayIdent(depId)} -> ${displayIdent(dependentId)}`
+        `Added implicit edge (lambda vpc) from ${displayIdent(depId)} to ${displayIdent(dependentId)}`
       );
     }
 
