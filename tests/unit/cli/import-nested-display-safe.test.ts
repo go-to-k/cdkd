@@ -475,7 +475,7 @@ describe('cdkd import renders template-derived identifiers display-safe (go-to-k
     expect(row).toBe('  ✗ Q (AWS::SQS::Queue) — denied FAILFORGED\nsecond line');
   });
 
-  it('a provider failure is bounded, its own line breaks kept', async () => {
+  it('a provider failure is bounded', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [stackInfo('S', { Resources: { Q: { Type: 'AWS::SQS::Queue' } } } as CloudFormationTemplate)],
     });

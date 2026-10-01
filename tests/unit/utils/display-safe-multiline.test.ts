@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vite-plus/test';
-import { displaySafe, displaySafeMultiline } from '../../../src/utils/display-safe.js';
+import {
+  displayAwsMessage,
+  displaySafe,
+  displaySafeMultiline,
+} from '../../../src/utils/display-safe.js';
 
 /**
  * go-to-k/cdkd#3479: `displaySafeMultiline` strips the line-FORGING class while
@@ -57,5 +61,15 @@ describe('displaySafeMultiline', () => {
     expect(displaySafeMultiline(undefined)).toBe('');
     expect(displaySafeMultiline(null)).toBe('');
     expect(displaySafeMultiline({ toString: null })).toBe('[object Object]');
+  });
+
+  it('displayAwsMessage keepLineBreaks: keeps line breaks, strips the forging class, bounds the length', () => {
+    expect(displayAwsMessage('a\u0085b\nRe-adopt with:\ncmd', { keepLineBreaks: true })).toBe(
+      'a b\nRe-adopt with:\ncmd'
+    );
+    // The default still joins lines.
+    expect(displayAwsMessage('a\nb')).toBe('a b');
+    const long = displayAwsMessage(`x\n${'y'.repeat(5000)}`, { keepLineBreaks: true });
+    expect(long).toMatch(/^x\ny+ \[cut: \d+ more characters withheld\]$/);
   });
 });
