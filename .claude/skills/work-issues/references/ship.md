@@ -38,6 +38,10 @@ when the harness denies `git reset`, push any unpushed commits plainly and take
 
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
+# From another tree, `.claude/hooks/bughunt-clean-gate.sh` refuses `-C "$VAR"`
+# on a `git commit` / `gh pr create|merge` segment, so every gated line takes
+# the LITERAL path; keep `$(git -C <literal path> merge-base origin/main HEAD)`.
+# Hand-pasting the origin/main TIP staged a revert of 45 of main's files (2026-09-30).
 # Message to a FILE named per BRANCH, never -m: inside -m "..." the shell
 # EVALUATES a backtick and drops the word while still creating the commit.
 # DERIVE, WRITE and COMMIT in ONE call -- shell state dies between tool calls.
