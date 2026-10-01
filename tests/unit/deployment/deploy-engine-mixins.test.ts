@@ -56,6 +56,8 @@ describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () =
         'deploy-engine/resolver-context.ts',
         'deploy-engine/rollback.ts',
         'deploy-engine/routing.ts',
+        'deploy-engine/update-in-place.ts',
+        'deploy-engine/update-replace.ts',
         'deploy-engine/update.ts',
       ])
     );
@@ -74,6 +76,8 @@ describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () =
         'healStaleAttributes',
         'provisionCreate',
         'provisionUpdate',
+        'updateByReplacement',
+        'updateInPlace',
         'provisionDelete',
         'provisionResource',
         'executeDeployment',

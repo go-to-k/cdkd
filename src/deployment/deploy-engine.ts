@@ -56,6 +56,8 @@ import * as replacementMixin from './deploy-engine/replacement.js';
 import * as healMixin from './deploy-engine/heal.js';
 import * as createMixin from './deploy-engine/create.js';
 import * as updateMixin from './deploy-engine/update.js';
+import * as updateReplaceMixin from './deploy-engine/update-replace.js';
+import * as updateInPlaceMixin from './deploy-engine/update-in-place.js';
 import * as deleteMixin from './deploy-engine/delete.js';
 import * as provisionMixin from './deploy-engine/provision.js';
 import * as executeMixin from './deploy-engine/execute.js';
@@ -1285,6 +1287,8 @@ DeployEngine.prototype.provisionResourceBody = provisionMixin.provisionResourceB
 DeployEngine.prototype.provisionDelete = deleteMixin.provisionDelete;
 
 DeployEngine.prototype.provisionUpdate = updateMixin.provisionUpdate;
+DeployEngine.prototype.updateByReplacement = updateReplaceMixin.updateByReplacement;
+DeployEngine.prototype.updateInPlace = updateInPlaceMixin.updateInPlace;
 
 DeployEngine.prototype.provisionCreate = createMixin.provisionCreate;
 

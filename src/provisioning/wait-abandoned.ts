@@ -11,7 +11,7 @@
  * `tests/unit/provisioning/wait-abandoned-guard-population.test.ts`:
  *
  *  - `cloud-control-provider.ts`'s own `delete()` catch,
- *  - `deploy-engine/update.ts`'s replacement delete-then-CREATE arm,
+ *  - `deploy-engine/update-in-place.ts`'s delete-then-CREATE fallback,
  *  - `deploy-engine/delete.ts`'s template-removal delete arm,
  *  - `destroy-runner.ts`'s per-resource delete loop.
  *

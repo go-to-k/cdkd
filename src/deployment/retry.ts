@@ -134,7 +134,7 @@ export const IAM_PROPAGATION_MAX_RETRIES = 26;
  * sites, so state the compounding rather than implying there is none.** Three
  * call sites wrap a DEFAULT-schedule `withRetry` inside their own outer loop
  * (`deploy-engine/replacement.ts`'s `--replace` fallback,
- * `deploy-engine/update.ts`'s named replacement, and
+ * `deploy-engine/update-replace.ts`'s named replacement, and
  * `rollback-executor.ts`'s reverse-replacement). The inner loop is the one
  * this grid changes, and the outer one re-enters it per attempt, so the
  * product grows with it: total sleep on a cooldown at those sites measures

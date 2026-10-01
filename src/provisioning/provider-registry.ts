@@ -55,7 +55,7 @@ export interface ProviderRoutingDecision {
    * Set when rule 2 sent a resource whose state record says `'cc-api'` BACK to
    * its SDK provider (issue #2719).
    *
-   * ONE reader: `deploy-engine/update.ts`'s update dispatch, which turns it into the
+   * ONE reader: `deploy-engine/update-in-place.ts`'s update dispatch, which turns it into the
    * info line that tells the user a live resource moved between provisioning
    * layers. `cdkd diff` does NOT read it — it has no routing decision to read,
    * only a template and a state record, so it re-derives the same answer
