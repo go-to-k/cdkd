@@ -551,7 +551,7 @@ describe('issue #3150: Fn::FindInMap keys', () => {
     );
     const lines = everyLine().filter((l) => l.startsWith('Resolved Fn::FindInMap: '));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/^Resolved Fn::FindInMap: map-\*\*\*\.env-\*\*\*\.size-\*\*\* -> /);
+    expect(lines[0]).toMatch(/^Resolved Fn::FindInMap: map-\*\*\*\.env-\*\*\*\.size-\*\*\* resolved to /);
   });
 
   it("the condition warning that renders the key's refusal (the go-to-k/cdkd#3154 review addendum)", async () => {
@@ -591,7 +591,7 @@ describe('issue #3150: Fn::GetAtt attribute names', () => {
     expect(everyLine()).toContain(
       'Unknown attribute Attr*** for resource type AWS::SQS::Queue, returning physical ID'
     );
-    expect(everyLine().some((l) => l.startsWith('Resolved Fn::GetAtt: Res.Attr*** -> '))).toBe(
+    expect(everyLine().some((l) => l.startsWith('Resolved Fn::GetAtt: Res.Attr*** resolved to '))).toBe(
       true
     );
     expectNowhere(`Attr${PIN}`);
@@ -603,7 +603,7 @@ describe('issue #3150: Fn::GetAtt attribute names', () => {
       { 'Fn::GetAtt': ['Res', sub('Attr${P}')] },
       makeContext({ resources: queue({ attributes: { [`Attr${PIN}`]: 'v' } }) }) as never
     );
-    expect(everyLine()).toContain('Resolved Fn::GetAtt from attributes: Res.Attr*** -> v');
+    expect(everyLine()).toContain('Resolved Fn::GetAtt from attributes: Res.Attr*** resolved to v');
   });
 
   it('CONTROL: an unrecorded attribute name prints verbatim', async () => {
@@ -612,7 +612,7 @@ describe('issue #3150: Fn::GetAtt attribute names', () => {
       { 'Fn::GetAtt': ['Res', plain('Attr${P}')] },
       makeContext({ resources: queue({ attributes: { [`Attr${UNRECORDED}`]: 'v' } }) }) as never
     );
-    expect(everyLine()).toContain(`Resolved Fn::GetAtt from attributes: Res.Attr${UNRECORDED} -> v`);
+    expect(everyLine()).toContain(`Resolved Fn::GetAtt from attributes: Res.Attr${UNRECORDED} resolved to v`);
   });
 
   it('the nested attributes line', async () => {
@@ -621,7 +621,7 @@ describe('issue #3150: Fn::GetAtt attribute names', () => {
       { 'Fn::GetAtt': ['Res', sub('Endpoint.Port${P}')] },
       makeContext({ resources: queue({ attributes: { Endpoint: { [`Port${PIN}`]: 'v' } } }) }) as never
     );
-    expect(everyLine()).toContain('Resolved Fn::GetAtt from nested attributes: Res.Endpoint.Port*** -> v');
+    expect(everyLine()).toContain('Resolved Fn::GetAtt from nested attributes: Res.Endpoint.Port*** resolved to v');
   });
 
   it("a masked read's pushed display (the refusal the deploy engine throws at default verbosity)", async () => {
@@ -686,7 +686,7 @@ describe('issue #3150: Fn::GetAtt attribute names', () => {
           },
         }) as never
       );
-      expect(everyLine().some((l) => l.startsWith('Normalized legacy Fn::GetAtt attribute: Zone.Name***vers -> '))).toBe(true);
+      expect(everyLine().some((l) => l.startsWith('Normalized legacy Fn::GetAtt attribute: Zone.Name***vers normalized to '))).toBe(true);
       expectNowhere('NameServers');
     });
 
@@ -919,8 +919,8 @@ describe('issue #3150: Fn::GetAZs region, transformed by canonicalizeRegion', ()
     await resolver.resolve({ 'Fn::GetAZs': sub('US-SOUTH-${P}') }, makeContext() as never);
     expect(everyLine()).toEqual(
       expect.arrayContaining([
-        'Resolved Fn::GetAZs: us-south-*** -> ["zone-a"]',
-        'Resolved Fn::GetAZs from cache: us-south-*** -> ["zone-a"]',
+        'Resolved Fn::GetAZs: us-south-*** resolved to ["zone-a"]',
+        'Resolved Fn::GetAZs from cache: us-south-*** resolved to ["zone-a"]',
       ])
     );
     expectNowhere(`us-south-${PIN}`);

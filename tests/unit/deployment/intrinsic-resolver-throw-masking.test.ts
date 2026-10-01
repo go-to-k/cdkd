@@ -1273,7 +1273,7 @@ describe('#2827 review — maskValueLeaves, directly', () => {
   it('leaves a value with nothing recorded byte-identical', async () => {
     const h = makeHarness();
     await h.resolver.resolve({ 'Fn::Split': [',', 'a,b,c'] }, h.context as never);
-    expect(splitRender(h)).toBe('Resolved Fn::Split: split by "," -> ["a","b","c"]');
+    expect(splitRender(h)).toBe('Resolved Fn::Split: split by "," resolved to ["a","b","c"]');
   });
 });
 
@@ -1577,7 +1577,7 @@ describe('#2759 — a value TRANSFORMED during resolution gets a derived needle'
     expect(base64Lines, 'the resolver must have logged the line, or this is vacuous').toHaveLength(1);
     expect(base64Lines[0]).not.toContain(encoded);
     expect(base64Lines[0]).not.toContain(PASSWORD);
-    expect(base64Lines[0]).toBe('Resolved Fn::Base64: *** -> ***');
+    expect(base64Lines[0]).toBe('Resolved Fn::Base64: *** resolved to ***');
   });
 
   it('an ASSEMBLED input counts too: base64 of a string that CONTAINS a secret', async () => {

@@ -193,7 +193,7 @@ describe("the Outputs pass's resolver lines stay masked (go-to-k/cdkd#4043 revie
     );
     const logged = loggedText();
     // Premise: the resolver printed the GetAtt line, so its masking is tested.
-    expect(logged).toContain('B.Value -> ***');
+    expect(logged).toContain('B.Value resolved to ***');
     expect(logged).not.toContain(NOECHO);
   });
 

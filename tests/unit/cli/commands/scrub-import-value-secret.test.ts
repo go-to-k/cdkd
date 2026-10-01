@@ -2213,7 +2213,7 @@ describe('a CONDITION that imports a secret does not print it (issue #2133 revie
   };
   const PUBLIC_PROPS = { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' };
   /** What the masked line must read once both operands have been rendered. */
-  const MASKED_EQUALS = 'Resolved Fn::Equals: "***" === "x" -> false';
+  const MASKED_EQUALS = 'Resolved Fn::Equals: "***" === "x" resolved to false';
 
   beforeEach(() => {
     consumerState = makeConsumerState(PUBLIC_PROPS);

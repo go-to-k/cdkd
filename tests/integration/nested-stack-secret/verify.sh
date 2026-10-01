@@ -543,7 +543,7 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
   # above greps the framed `port:m8`, not the bare two characters.
   local prefix
   for prefix in 'Parameter SubFloorPinSsm: using user-provided value ' \
-                'Resolved Ref to parameter: SubFloorPinSsm -> '; do
+                'Resolved Ref to parameter: SubFloorPinSsm resolved to '; do
     if ! awk -v p="${prefix}" 'index($0, p) { n++; if (substr($0, length($0) - length(p) - 2) != p "***") bad = 1 }
       END { exit (n == 0 || bad) ? 1 : 0 }' <<<"${text}"; then
       echo "FAIL: ${label}: the child's '${prefix}' lines are absent or not all masked whole by the parent carry's entry (issues #3114, #3156)" >&2

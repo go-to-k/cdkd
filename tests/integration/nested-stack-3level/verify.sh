@@ -286,7 +286,7 @@ masked_whole() {
 }
 GC_LINE_PREFIXES=()
 for name in GcSsmPass GcSsmWrap GcOutPass GcOutWrap GcNestPass GcVarPass GcIfPass; do
-  GC_LINE_PREFIXES+=("Parameter ${name}: using user-provided value " "Resolved Ref to parameter: ${name} -> ")
+  GC_LINE_PREFIXES+=("Parameter ${name}: using user-provided value " "Resolved Ref to parameter: ${name} resolved to ")
 done
 for prefix in "${GC_LINE_PREFIXES[@]}"; do
   rc=0

@@ -52,10 +52,14 @@ node ../../../../dist/cli.js deploy \
 During deployment, you should see logs like:
 
 ```
-Resolved Ref to resource: TestBucket560B80BC -> actual-bucket-name
-Resolved Fn::GetAtt: TestBucket560B80BC.Arn -> arn:aws:s3:::actual-bucket-name
-Resolved Fn::Join: arn:aws:s3:::actual-bucket-name/*
+Resolved Ref to resource: TestBucket560B80BC resolved to actual-bucket-name
+Resolved Fn::GetAtt: TestBucket560B80BC.Arn resolved to arn:aws:s3:::actual-bucket-name
+Resolved Fn::Join: a value that cannot be shown safely here
 ```
+
+The `Fn::Join` result `arn:aws:s3:::actual-bucket-name/*` ends in a glob `*`, so the
+line describes it rather than printing it (a value that is not shell-inert never
+reaches a `--verbose` `Resolved …` line, go-to-k/cdkd#4161).
 
 ## Clean up
 

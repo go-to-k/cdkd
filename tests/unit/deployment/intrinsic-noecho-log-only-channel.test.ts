@@ -124,26 +124,33 @@ describe('Ref to a NoEcho parameter records a log-only needle (go-to-k/cdkd#1998
 
   it("masks the resolver's own debug lines for an assembled value", async () => {
     const bag: RecordedSecretValues = new Map();
-    await resolver.resolve({ 'Fn::Join': ['', ['pw=', { Ref: 'Secret' }, ';']] }, context(true, bag));
+    await resolver.resolve({ 'Fn::Join': ['', ['pw-', { Ref: 'Secret' }, '.end']] }, context(true, bag));
     await resolver.resolve({ 'Fn::Sub': 'u:${Secret}' }, context(true, bag));
     const logs = logLines();
     expect(logs).toContain('Resolved Fn::Join');
     expect(logs).toContain('Resolved Fn::Sub');
     expect(logs).not.toContain(NOECHO);
-    // No over-masking of the public text around it.
-    expect(logs).toContain(`pw=${SECRET_MASK};`);
+    // No over-masking of the public text around it. The frame is shell-inert
+    // (`pw-` / `.end`), so the line prints the masked value rather than the
+    // description a `=` or `;` frame takes (go-to-k/cdkd#4161).
+    expect(logs).toContain(`pw-${SECRET_MASK}.end`);
   });
 
   it("masks the Fn::Base64 encoding in the log, and records it LOG-ONLY", async () => {
     // A recorded secret beside it, so the persist DETECTOR (which skips an
     // empty map) really runs: it must not read the log-only needle.
     const bag: RecordedSecretValues = new Map([[OTHER_SECRET, OTHER_EXPR]]);
-    const encoded = Buffer.from(`pw=${NOECHO}`).toString('base64');
+    // `pw-`, not `pw=`: an assignment-shaped input is DESCRIBED on the line
+    // whether or not the mask worked (go-to-k/cdkd#4161).
+    const encoded = Buffer.from(`pw-${NOECHO}`).toString('base64');
     const value = await resolver.resolve(
-      { 'Fn::Base64': { 'Fn::Sub': 'pw=${Secret}' } },
+      { 'Fn::Base64': { 'Fn::Sub': 'pw-${Secret}' } },
       context(true, bag)
     );
     expect(value).toBe(encoded);
+    // POSITIVE: the line printed the masked input and the masked encoding,
+    // so the negative cannot pass on a description.
+    expect(logLines()).toContain('Resolved Fn::Base64: pw-*** resolved to ***');
     expect(logLines()).not.toContain(encoded);
     expect(maskSecretsInText(encoded, bag)).toBe(SECRET_MASK);
     // PERSISTENCE UNCHANGED: the encoding is no map entry, so state keeps it.
@@ -235,6 +242,10 @@ describe('a nested child carries the parent log-only needles (go-to-k/cdkd#1998)
     expect(value).toBe(encoded);
     expect(own.has(encoded)).toBe(false);
     expect(own.size).toBe(0);
+    // POSITIVE: the line printed the masked input and encoding, so the
+    // negative cannot pass on a description (the padded encoding of this
+    // value is assignment-shaped, go-to-k/cdkd#4161).
+    expect(logLines()).toContain('Resolved Fn::Base64: *** resolved to ***');
     expect(logLines()).not.toContain(encoded);
   });
 
@@ -346,7 +357,7 @@ describe('the resolver masks its two bags in ONE pass (go-to-k/cdkd#4049)', () =
   ])('masks a longer value whole in a debug line: %s', async (_label, logOnly) => {
     expect(await resolver.resolve({ Ref: 'Plain' }, ctx(logOnly))).toBe(LONG);
     const lines = logLines();
-    expect(lines).toContain('Resolved Ref to parameter: Plain -> ');
+    expect(lines).toContain('Resolved Ref to parameter: Plain resolved to ');
     expect(lines).not.toContain('XXsecretYY');
     expect(lines).not.toContain('ZZtail');
   });

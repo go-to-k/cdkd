@@ -848,7 +848,7 @@ describe('issue #3156 point 2: a grandchild no longer prints the value', () => {
       // and needle masks overlap and collapse to one.
       expect(await grandchildLines(middle.bag, deepValue)).toEqual([
         'Parameter Deep: using user-provided value ***',
-        'Resolved Ref to parameter: Deep -> ***',
+        'Resolved Ref to parameter: Deep resolved to ***',
         'Resolved Fn::Join: ***',
       ]);
     });
