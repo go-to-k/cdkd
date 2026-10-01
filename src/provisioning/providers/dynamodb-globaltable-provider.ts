@@ -77,7 +77,7 @@ import {
 } from '../dynamodb-warm-throughput.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
-import { isThrottlingError } from '../../deployment/retryable-errors.js';
+import { isThrottlingError, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import {
   DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
   GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
@@ -103,7 +103,13 @@ import {
   resolveDynamoDbDeleteBudgetMs,
 } from './dynamodb-delete-budget.js';
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
-import { maskDeep, type MaskerFn } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  maskDeep,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import {
   pasteableAwsCommand,
   protectedReplacementAdvice,
@@ -416,6 +422,45 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * The masked sinks ONE `create()` / `update()` logs through (issue #2177,
+   * `.claude/rules/provider-masking.md`): `createMaskedLogSinks` over the
+   * context's masker, extended by `withDerivedNameMasks` with `pairs` — each
+   * `[template value, name derived from it]`. The physical id IS the table
+   * name, and every auto-scaling resource id, policy name, ARN and pasteable
+   * command embeds it, so a secret-derived `TableName` is masked wherever it
+   * occurs: below the base masker's substring floor too, and on update when
+   * only the PREVIOUS side recorded it (a rotated secret's `{{resolve:`
+   * reference). Built per call; never cached on the provider, which serves
+   * concurrent resources.
+   */
+  private operationSinks(
+    context: CreateContext | UpdateContext | undefined,
+    pairs: ReadonlyArray<readonly [raw: unknown, name: string | undefined]>
+  ): MaskedLogSinks {
+    return withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      pairs
+    );
+  }
+
+  /**
+   * Wrap a failure that RELAYS AWS text, masked through `log`: the shared
+   * `wrapMaskedAwsError` stamps `markRedactedCause` when the mask changed the
+   * text, so retry classification reads the raw cause chain (the #4244 class).
+   * A provider-local factory so the update-wrap coverage scanner sees the
+   * `ProvisioningError` it returns. Never for a cdkd-authored refusal, which
+   * must not be stamped.
+   */
+  private wrapMaskedError(
+    log: MaskedLogSinks,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(log.mask, error, build);
+  }
+
+  /**
    * Create a DynamoDB Global Table (CDK TableV2).
    *
    * GlobalTable is built on the regular DynamoDB Table primitive: cdkd issues
@@ -441,12 +486,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
     // The caller's secret masker (issue #1932 item 3, adopted here by issue
-    // #1997). Read defensively — `create()` is also called by the import path,
-    // by the rollback executor's reverse-replacement arm, and by tests, so it
-    // must not care which caller it got.
-    const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
-    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
-    this.logger.debug(`Creating DynamoDB GlobalTable ${logicalId}`);
+    // #1997), extended by the table-name needle (issue #2177). Read
+    // defensively — `create()` is also called by the import path, by the
+    // rollback executor's reverse-replacement arm, and by tests, so it must not
+    // care which caller it got. Every line below goes through `log`.
+    const log = this.operationSinks(context, [
+      [properties['TableName'], properties['TableName'] as string | undefined],
+    ]);
+    const maskSecrets: SecretMasker = log.mask;
+    const warn = log.warn;
+    log.debug(`Creating DynamoDB GlobalTable ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed `Replicas[].Tags` is refused before any call.
     const desiredReplicaTags = refuseMalformedReplicaTags(properties, resourceType, logicalId);
 
@@ -501,7 +550,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     let billingModeSubstituted = false;
     let billingModeAbsentOnReplay = false;
     try {
-      const billingReplayWarn = replayWarn(this.logger, context).onUnusable;
+      const billingReplayWarn = replayWarn(log, context).onUnusable;
       billingMode = requireConfigString(
         properties['BillingMode'],
         'PAY_PER_REQUEST',
@@ -546,8 +595,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
       }
     } catch (error) {
+      // A cdkd-authored refusal: masked, never stamped (`wrapMaskedAwsError` is
+      // for relayed AWS text only).
       throw new ProvisioningError(
-        error instanceof Error ? error.message : String(error),
+        log.mask(error instanceof Error ? error.message : String(error)),
         resourceType,
         logicalId,
         undefined,
@@ -723,7 +774,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // This is one call site of known class — a `readConfigString`
         // warn-and-DEFAULT — and what it records is precisely the DEFAULT that
         // was applied, which is the outcome that rule wants.
-        const replayDowngrade = replayWarn(this.logger, context).onUnusable;
+        const replayDowngrade = replayWarn(log, context).onUnusable;
         streamViewType = readConfigString(
           streamSpecInput,
           'StreamViewType',
@@ -739,8 +790,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             : {}
         );
       } catch (error) {
+        // A cdkd-authored refusal: masked, never stamped (`wrapMaskedAwsError`
+        // is for relayed AWS text only).
         throw new ProvisioningError(
-          error instanceof Error ? error.message : String(error),
+          log.mask(error instanceof Error ? error.message : String(error)),
           resourceType,
           logicalId,
           undefined,
@@ -781,7 +834,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // present in state, and the `observedProperties` baseline already
       // carries the stream).
       this.logger.info(
-        `Auto-enabling streams (NEW_AND_OLD_IMAGES) on ${logicalId} — required for cross-region replication`
+        log.mask(
+          `Auto-enabling streams (NEW_AND_OLD_IMAGES) on ${logicalId} — required for cross-region replication`
+        )
       );
       createParams.StreamSpecification = {
         StreamEnabled: true,
@@ -821,7 +876,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // match, which the NEXT update then reads as its previous side (the
       // #1552 class). Which arm you are on is a property of the GUARD, not of
       // the path: ask whether the call went out.
-      const onUnusableCreateIndexes = replayWarn(this.logger, context).onUnusable;
+      const onUnusableCreateIndexes = replayWarn(log, context).onUnusable;
       sdkIndexes = toSdkGlobalSecondaryIndexes(
         properties,
         currentRegion,
@@ -839,8 +894,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         maskSecrets
       );
     } catch (error) {
+      // A cdkd-authored refusal: masked, never stamped (`wrapMaskedAwsError` is
+      // for relayed AWS text only).
       throw new ProvisioningError(
-        error instanceof Error ? error.message : String(error),
+        log.mask(error instanceof Error ? error.message : String(error)),
         resourceType,
         logicalId,
         undefined,
@@ -1097,17 +1154,22 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
     try {
       await this.dynamoDBClient.send(new CreateTableCommand(createParams));
-      this.logger.debug(`CreateTable initiated for ${tableName}, waiting for ACTIVE`);
+      log.debug(`CreateTable initiated for ${log.value(tableName)}, waiting for ACTIVE`);
     } catch (error) {
       // CreateTable itself failed — AWS never committed the table, no
       // cleanup needed.
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create DynamoDB GlobalTable ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        tableName,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create DynamoDB GlobalTable ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            tableName,
+            cause
+          )
       );
     }
 
@@ -1116,7 +1178,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // Without this, an aborted deploy leaves a billing AWS-side table
     // with no cdkd state record (PR #374 pattern).
     try {
-      const tableInfo = await this.waitForTableActive(tableName, logicalId);
+      const tableInfo = await this.waitForTableActive(tableName, logicalId, undefined, maskSecrets);
 
       // Replica adds: one UpdateTable per region (AWS rejects multiple
       // ReplicaUpdates in a single call). Each call must complete before
@@ -1231,7 +1293,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         }
       }
 
-      this.logger.debug(`Successfully created DynamoDB GlobalTable ${logicalId}: ${tableName}`);
+      log.debug(`Successfully created DynamoDB GlobalTable ${logicalId}: ${log.value(tableName)}`);
 
       return {
         physicalId: tableName,
@@ -1272,7 +1334,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                 ReplicaUpdates: [{ Delete: { RegionName: region } }],
               })
             );
-            await this.waitForReplicaGone(tableName, region, logicalId);
+            await this.waitForReplicaGone(
+              tableName,
+              region,
+              logicalId,
+              undefined,
+              undefined,
+              maskSecrets
+            );
           } catch (replicaCleanupErr) {
             const msg = describeAwsFailure(replicaCleanupErr).detail;
             // `Delete={RegionName=` and `}` are cdkd's own text, so they sit in
@@ -1309,12 +1378,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // the live old table over it (issue #3826 / #3877).
       markAuxiliaryFailure(wiringError, logicalId);
       const cause = wiringError instanceof Error ? wiringError : undefined;
-      throw new ProvisioningError(
-        `Failed to create DynamoDB GlobalTable ${logicalId}: ${wiringError instanceof Error ? wiringError.message : String(wiringError)}`,
-        resourceType,
-        logicalId,
-        tableName,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        wiringError,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create DynamoDB GlobalTable ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            tableName,
+            cause
+          )
       );
     }
   }
@@ -1526,7 +1600,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
     }
 
-    await this.waitForReplicaActive(tableName, region, logicalId);
+    await this.waitForReplicaActive(tableName, region, logicalId, undefined, maskSecrets);
   }
 
   /**
@@ -1636,13 +1710,22 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // which ignores needles below `MIN_NEEDLE_LENGTH` (4). The per-value masking
     // below is the inner layer, handing the masker each raw string so it reaches
     // the WHOLE-VALUE arm at any length and BEFORE `JSON.stringify` escapes it.
-    const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
-    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    //
+    // The sinks carry the table-name needle too (issue #2177): the physical id
+    // IS the table name, paired with BOTH sides' `TableName`, so a name the
+    // previous side recorded as a `{{resolve:` reference (a rotated secret,
+    // whose plaintext this deploy's bag may not hold) is masked as well.
+    const log = this.operationSinks(context, [
+      [properties['TableName'], physicalId],
+      [previousProperties['TableName'], physicalId],
+    ]);
+    const maskSecrets: SecretMasker = log.mask;
+    const warn = log.warn;
     // `physicalId` is the resolved table name, so the entry line needs the
     // sink too (issue #1997) — found by a test asserting on the debug
     // stream rather than by review.
-    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
-    debug(`Updating DynamoDB GlobalTable ${logicalId}: ${maskSecrets(physicalId)}`);
+    const debug = log.debug;
+    debug(`Updating DynamoDB GlobalTable ${logicalId}: ${log.value(physicalId)}`);
     // go-to-k/cdkd#3994: a malformed desired `Replicas[].Tags` is refused
     // before any call.
     refuseMalformedReplicaTags(properties, resourceType, logicalId, physicalId);
@@ -1705,6 +1788,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               before: 'aws dynamodb update-table --table-name',
               identifier: physicalId,
               after: '--no-deletion-protection-enabled',
+              // A secret-derived table name withholds the command (issue #2177).
+              maskSecrets,
             },
           })
         : `replacement required (deploy with ${replaceFlags}, or destroy + redeploy)`;
@@ -1725,7 +1810,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }))
     ) {
       throw new ProvisioningError(
-        `TableName is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`,
+        log.mask(`TableName is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`),
         resourceType,
         logicalId,
         physicalId
@@ -1737,7 +1822,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       !deepEqual(properties['KeySchema'], previousProperties['KeySchema'])
     ) {
       throw new ProvisioningError(
-        `KeySchema is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`,
+        log.mask(`KeySchema is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`),
         resourceType,
         logicalId,
         physicalId
@@ -1749,7 +1834,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       !deepEqual(properties['LocalSecondaryIndexes'], previousProperties['LocalSecondaryIndexes'])
     ) {
       throw new ProvisioningError(
-        `LocalSecondaryIndexes is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`,
+        log.mask(
+          `LocalSecondaryIndexes is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`
+        ),
         resourceType,
         logicalId,
         physicalId
@@ -1782,7 +1869,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (removedButStillReferenced.length > 0) {
       throw new ProvisioningError(
         `AttributeDefinitions removals are immutable on AWS::DynamoDB::GlobalTable while a ` +
-          `key schema still references them (offenders: ${removedButStillReferenced.map((a) => a.AttributeName).join(', ')}); ` +
+          `key schema still references them (offenders: ${removedButStillReferenced.map((a) => log.value(a.AttributeName)).join(', ')}); ` +
           `replacement required`,
         resourceType,
         logicalId,
@@ -1814,8 +1901,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         !deepEqual(properties[key], previousProperties[key]);
       const refuse = (refusal: string, cause?: unknown): never => {
         throw new ProvisioningError(
-          `AWS::DynamoDB::GlobalTable ${logicalId}: ${refusal.replace(/\.$/, '')}. Nothing was ` +
-            `applied to the table; fix the template value`,
+          log.mask(
+            `AWS::DynamoDB::GlobalTable ${logicalId}: ${refusal.replace(/\.$/, '')}. Nothing was ` +
+              `applied to the table; fix the template value`
+          ),
           resourceType,
           logicalId,
           physicalId,
@@ -3002,7 +3091,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             ReplicaUpdates: [{ Delete: { RegionName: region } }],
           })
         );
-        await this.waitForReplicaGone(physicalId, region, logicalId);
+        await this.waitForReplicaGone(
+          physicalId,
+          region,
+          logicalId,
+          undefined,
+          undefined,
+          maskSecrets
+        );
       }
       for (const replica of replicaDiff.added) {
         const region = replica['Region'] as string | undefined;
@@ -3242,7 +3338,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             ReplicaUpdates: [{ Update: updateAction }],
           })
         );
-        await this.waitForReplicaActive(physicalId, region, logicalId);
+        await this.waitForReplicaActive(physicalId, region, logicalId, undefined, maskSecrets);
       }
 
       // 6. GSI diff. New GSI Create may need additional AttributeDefinitions
@@ -3718,14 +3814,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           } catch (ttlErr) {
             const msg = ttlErr instanceof Error ? ttlErr.message : String(ttlErr);
             if (msg.includes('Time to live has been modified multiple times')) {
-              throw new ProvisioningError(
-                `AWS rejected TimeToLive update on ${physicalId}: ${msg}. ` +
-                  `AWS enforces a ~4-hour rate limit on TTL changes per table; ` +
-                  `wait and redeploy, or keep the previous TTL state in this deploy.`,
-                resourceType,
-                logicalId,
-                physicalId,
-                ttlErr instanceof Error ? ttlErr : undefined
+              throw this.wrapMaskedError(
+                log,
+                ttlErr,
+                (text) =>
+                  new ProvisioningError(
+                    `AWS rejected TimeToLive update on ${log.value(physicalId)}: ${text}. ` +
+                      `AWS enforces a ~4-hour rate limit on TTL changes per table; ` +
+                      `wait and redeploy, or keep the previous TTL state in this deploy.`,
+                    resourceType,
+                    logicalId,
+                    physicalId,
+                    ttlErr instanceof Error ? ttlErr : undefined
+                  )
               );
             }
             throw ttlErr;
@@ -3778,12 +3879,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DynamoDB GlobalTable ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DynamoDB GlobalTable ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -4188,7 +4294,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             }
           );
           this.logger.debug(
-            `Upserted auto-scaling policy ${policyName} on ${tableName} (${dimension})`
+            maskSecrets(`Upserted auto-scaling policy ${policyName} on ${tableName} (${dimension})`)
           );
         } catch (err) {
           // A user abort is not an AWS failure (issue #2053 review). Swallowing it
@@ -4296,7 +4402,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
           }
         );
-        this.logger.debug(`Deregistered auto-scaling target ${resourceId} (${dimension})`);
+        this.logger.debug(
+          maskSecrets(`Deregistered auto-scaling target ${resourceId} (${dimension})`)
+        );
       } catch (err) {
         // A user abort is not an AWS failure (issue #2053 review). Swallowing it
         // printed up to two "Could not ... Run: aws application-autoscaling ..."
@@ -4354,7 +4462,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private async probeRegisteredTargets(
     tableName: string,
     specs: AutoScalingTargetSpec[],
-    localRegion: string
+    localRegion: string,
+    // The update caller's masker (issue #2177): the debug line below names the
+    // resolved table name and quotes AWS's error text. Defaults to IDENTITY.
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<Set<string> | null> {
     const byRegion = new Map<string, AutoScalingTargetSpec[]>();
     for (const spec of specs) {
@@ -4419,8 +4530,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           } while (policyToken);
         } catch (err) {
           this.logger.debug(
-            `Could not probe existing auto-scaling targets on ${tableName} in ${region}: ` +
-              `${describeAwsFailure(err).detail} — re-asserting every target instead.`
+            maskSecrets(
+              `Could not probe existing auto-scaling targets on ${tableName} in ${region}: ` +
+                `${describeAwsFailure(err).detail} — re-asserting every target instead.`
+            )
           );
           return null;
         }
@@ -4458,8 +4571,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     desiredSpecs: AutoScalingTargetSpec[],
     localRegion: string,
     alreadyApplied: ReadonlySet<string> = new Set(),
-    // Forwarded to `applyAutoScalingDiff` (issue #1997); this method logs no
-    // property value of its own. Defaults to IDENTITY.
+    // Forwarded to `applyAutoScalingDiff` (issue #1997) and to the presence
+    // probe (issue #2177); this method logs no property value of its own.
+    // Defaults to IDENTITY.
     maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
     // Dimensions an earlier step of this same `update()` already applied are
@@ -4484,7 +4598,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // (create) the probe could never save a call — don't pay for it.
     const registered =
       desiredSpecsToUse.length > 0 && previousSpecsToUse.length > 0
-        ? await this.probeRegisteredTargets(tableName, desiredSpecsToUse, localRegion)
+        ? await this.probeRegisteredTargets(tableName, desiredSpecsToUse, localRegion, maskSecrets)
         : new Set<string>();
 
     const handled = new Set<string>();
@@ -6233,7 +6347,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private async waitForTableActive(
     tableName: string,
     logicalId: string,
-    maxAttempts = 120
+    maxAttempts = 120,
+    // The create caller's masker (issue #2177): every line and throw below
+    // names the resolved table name. Defaults to IDENTITY.
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<{
     tableArn: string | undefined;
     tableId: string | undefined;
@@ -6244,7 +6361,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         new DescribeTableCommand({ TableName: tableName })
       );
       const status = response.Table?.TableStatus;
-      this.logger.debug(`Table ${tableName} status: ${status} (attempt ${attempt}/${maxAttempts})`);
+      this.logger.debug(
+        maskSecrets(
+          `Table ${maskSecrets(tableName)} status: ${status} (attempt ${attempt}/${maxAttempts})`
+        )
+      );
 
       if (status === 'ACTIVE') {
         return {
@@ -6255,7 +6376,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
       if (status !== 'CREATING' && status !== 'UPDATING') {
         throw new ProvisioningError(
-          `Unexpected table status while waiting for ACTIVE on ${tableName}: ${status}`,
+          maskSecrets(
+            `Unexpected table status while waiting for ACTIVE on ${maskSecrets(tableName)}: ${status}`
+          ),
           'AWS::DynamoDB::GlobalTable',
           logicalId,
           tableName
@@ -6264,7 +6387,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     throw new ProvisioningError(
-      `Table ${tableName} did not reach ACTIVE within ${maxAttempts}s`,
+      maskSecrets(`Table ${maskSecrets(tableName)} did not reach ACTIVE within ${maxAttempts}s`),
       'AWS::DynamoDB::GlobalTable',
       logicalId,
       tableName
@@ -6470,7 +6593,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     tableName: string,
     region: string,
     logicalId: string,
-    maxAttempts = 600
+    maxAttempts = 600,
+    // The create / update caller's masker (issue #2177): the throw below names
+    // the resolved table name. Defaults to IDENTITY.
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const response = await this.dynamoDBClient.send(
@@ -6479,12 +6605,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const replica = response.Table?.Replicas?.find((r) => r.RegionName === region);
       if (replica?.ReplicaStatus === 'ACTIVE') return;
       this.logger.debug(
-        `Replica ${region} status: ${replica?.ReplicaStatus} (attempt ${attempt}/${maxAttempts})`
+        maskSecrets(
+          `Replica ${region} status: ${replica?.ReplicaStatus} (attempt ${attempt}/${maxAttempts})`
+        )
       );
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     throw new ProvisioningError(
-      `Replica ${region} for table ${tableName} did not reach ACTIVE within ${maxAttempts}s`,
+      maskSecrets(
+        `Replica ${region} for table ${maskSecrets(tableName)} did not reach ACTIVE within ${maxAttempts}s`
+      ),
       'AWS::DynamoDB::GlobalTable',
       logicalId,
       tableName
@@ -6502,7 +6632,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     region: string,
     logicalId: string,
     maxAttempts = REPLICA_GONE_WAIT_ATTEMPTS,
-    budget?: ElapsedBudget
+    budget?: ElapsedBudget,
+    // The create-cleanup / update caller's masker (issue #2177): the interrupt
+    // label and the throw below name the resolved table name. Defaults to
+    // IDENTITY, which is what the DELETE caller takes (issue #2007).
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
     // Issue #1955: on the delete path this is one of THREE stacked waits inside
     // a single per-resource deadline, so it takes the smaller of its own cap
@@ -6516,7 +6650,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // exhaustion arm below throws: `DeleteTable` has NOT been issued yet and
     // AWS refuses it while a replica lives, so proceeding after a Ctrl-C would
     // trade a long wait for a confusing failure.
-    const watch = startInterruptWatch(`DynamoDB replica ${region} teardown on ${tableName}`);
+    const watch = startInterruptWatch(
+      maskSecrets(`DynamoDB replica ${region} teardown on ${maskSecrets(tableName)}`)
+    );
     try {
       while (wait.nextPoll()) {
         if (watch.isInterrupted()) throw watch.onInterrupted();
@@ -6546,8 +6682,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // long wait for a confusing failure, which is why both the exhaustion arm
     // and the interrupt arm throw.
     throw new ProvisioningError(
-      `Replica ${region} for table ${tableName} did not disappear within ${wait.pollsRun}s` +
-        `${wait.note()}`,
+      maskSecrets(
+        `Replica ${region} for table ${maskSecrets(tableName)} did not disappear within ` +
+          `${wait.pollsRun}s${wait.note()}`
+      ),
       'AWS::DynamoDB::GlobalTable',
       logicalId,
       tableName
