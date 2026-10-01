@@ -73,8 +73,12 @@ Revert the fix, rebuild, run, confirm the arm goes RED **at YOUR assertion —
 read which one fired**, then restore and rebuild. **Revert by COPY, from a
 COMMITTED, clean lane**: with `B=$(git merge-base origin/main HEAD)`, `cp` each
 path of `git diff --name-only --no-renames --diff-filter=M $B HEAD -- src/`
-(§8-c: the changed command's own paths) to scratch, then `git show $B:$f > $f`;
-restore by `cp` back until `git status --porcelain` is EMPTY. A file NEW in the
+(§8-c: the changed command's own paths) to scratch, then write the base copy to
+scratch FIRST and `cp` it over: `git show "${B}:${f}" > <scratch>/base && cp
+<scratch>/base "$f"` — in zsh a LITERAL path after `$B:` (`$B:src/…`) parses as
+a modifier, and a redirect onto the file truncates it even when `git show`
+fails. Restore by `cp` back until
+`git status --porcelain` is EMPTY. A file NEW in the
 PR stays, unimported by pre-fix code; one the fix DELETED or moved is restored
 by hand.
 The pre-fix run executes the BUG on real AWS and can mint resources the
