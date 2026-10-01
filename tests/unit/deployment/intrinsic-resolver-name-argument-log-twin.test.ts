@@ -50,7 +50,6 @@ import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
-import { UNSHOWABLE_VALUE } from '../../../src/utils/pasteable-command.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 const SECRET_ID = 'cdkd-name-argument-log-twin-probe';
@@ -1615,10 +1614,10 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     );
     expect(
       everyLine().filter((l) => l.startsWith('Using a producer-region resolver for ')),
-      // Described since go-to-k/cdkd#4250's review: the control character
-      // makes the region text one the display sanitizer ALTERED.
-      'the creation line describes the altered text'
-    ).toEqual([`Using a producer-region resolver for ${UNSHOWABLE_VALUE}`]);
+      // A render holding the mask skips the altered-value test
+      // (go-to-k/cdkd#4250 review), so the masked text prints.
+      'the creation line masks the same text'
+    ).toEqual(['Using a producer-region resolver for us-west-2_***']);
   });
 
   it('the region-scoped clients refusal masks a recorded secret holding a control character before the strip', async () => {
@@ -1648,10 +1647,10 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     );
     expect(
       everyLine().filter((l) => l.startsWith('Using a producer-region resolver for ')),
-      // Described since go-to-k/cdkd#4250's review: the control character
-      // makes the region text one the display sanitizer ALTERED.
-      'the creation line describes the altered text'
-    ).toEqual([`Using a producer-region resolver for ${UNSHOWABLE_VALUE}`]);
+      // A render holding the mask skips the altered-value test
+      // (go-to-k/cdkd#4250 review), so the masked text prints.
+      'the creation line masks the same text'
+    ).toEqual(['Using a producer-region resolver for us-west-2_***']);
   });
 
   it('both lookup helpers REQUIRE the name mapping (a compile-time pin, checked by typecheck:test)', () => {

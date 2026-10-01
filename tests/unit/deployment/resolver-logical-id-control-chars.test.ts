@@ -315,7 +315,8 @@ describe('a hostile logical id cannot redraw the terminal through a resolver ren
 
     const emitted = [...got.lines, got.error ?? ''].join('\n');
     expect(emitted).toContain('not found');
-    expectSanitized(emitted, 'the Fn::Sub-routed refusal');
+    // The two warns on this route describe the id since go-to-k/cdkd#4250.
+    expectDescribed(emitted, 'the Fn::Sub-routed warns');
   });
 });
 

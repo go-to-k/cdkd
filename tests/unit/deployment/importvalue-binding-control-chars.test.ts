@@ -234,8 +234,10 @@ describe('an Fn::Sub PLACEHOLDER NAME cannot forge a line either (go-to-k/cdkd#3
     expect(warned, 'the Ref-not-found warn never fired, so this case proves nothing').toContain(
       'not a resource, parameter, or pseudo parameter'
     );
-    expect(warned).toContain('Prod');
-    expect(warned).toContain('Evil');
+    // Described since go-to-k/cdkd#4250, on the warn and in the `Fn::Sub`
+    // keep-placeholder warn's echo of it.
+    expect(warned).not.toContain('Prod');
+    expect(warned).toContain(UNSHOWABLE_VALUE);
     expect(warned, 'a raw ESC reached the Ref-not-found warn').not.toContain(ESC);
     expect(warned, 'a raw CR reached the Ref-not-found warn').not.toContain('\r');
   });

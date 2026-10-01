@@ -985,6 +985,71 @@ describe('a name the display sanitizer ALTERED is described, not shown trimmed (
     expect(warn).toContain(`for stack ${UNSHOWABLE_VALUE} (us-east-1)`);
   });
 
+  it.each(ALTERED)('%j on the other bound callers', async (name) => {
+    // Each caller threads the pre-sanitizer text itself, so each is driven.
+    const paramName = await linesOf(() =>
+      resolver().resolveParameters({
+        Parameters: { [name]: { Type: 'String', Default: 'd' } },
+        Resources: {},
+      } as unknown as CloudFormationTemplate)
+    );
+    expect(paramName).toContain(`Parameter ${UNSHOWABLE_VALUE}: using default value d`);
+    const paramValue = await linesOf(() =>
+      resolver().resolveParameters({
+        Parameters: { P: { Type: 'String', Default: name } },
+        Resources: {},
+      } as unknown as CloudFormationTemplate)
+    );
+    expect(paramValue).toContain(`Parameter P: using default value ${UNSHOWABLE_VALUE}`);
+    aws.ssm = async () => ({ Parameter: { Value: 'x', Type: 'String' } });
+    const origin = await linesOf(() =>
+      resolver().resolve(
+        { 'Fn::ImportValue': 'Exp' },
+        ctx({
+          stackName: 'Consumer',
+          stateBackend: backend([]),
+          exportIndex: {
+            lookup: async () => ({ value: '{{resolve:ssm:/p}}', producerStack: name, producerRegion: 'us-east-1' }),
+          } as unknown as ExportIndexStore,
+        })
+      )
+    );
+    expect(origin).toContain(
+      `Re-resolving dynamic reference(s) in Fn::ImportValue 'Exp' (producer ${UNSHOWABLE_VALUE} / us-east-1)`
+    );
+    const region = await linesOf(async () => {
+      (
+        resolver() as unknown as { clientsForRegion: (r: string, t?: string) => unknown }
+      ).clientsForRegion('eu-west-1', name);
+    });
+    expect(region).toContain(`Using region-scoped AWS clients for ${UNSHOWABLE_VALUE}`);
+  });
+
+  it('describes a stack name past the length an identifier render cut, on the DescribeStacks warn too', async () => {
+    aws.cfn = async () => {
+      throw new Error('AccessDenied');
+    };
+    const lines = await linesOf(() =>
+      resolver('us-east-1', true).resolve(
+        { 'Fn::GetStackOutput': { StackName: 'P'.repeat(2000), OutputName: 'Out' } },
+        ctx({ stateBackend: backend([]) })
+      )
+    );
+    expect(lines.find((l) => l.includes('DescribeStacks fallback failed'))).toContain(
+      `for stack ${UNSHOWABLE_VALUE} (us-east-1)`
+    );
+  });
+
+  it('CONTROL: a plain list default still prints as JSON', async () => {
+    const lines = await linesOf(() =>
+      resolver().resolveParameters({
+        Parameters: { P: { Type: 'CommaDelimitedList', Default: ['a', 'b'] } },
+        Resources: {},
+      } as unknown as CloudFormationTemplate)
+    );
+    expect(lines).toContain('Parameter P: using default value ["a","b"]');
+  });
+
   it('describes a stack name past the length an identifier render cut', async () => {
     const name = 'P'.repeat(2000);
     const lines = await linesOf(() =>
