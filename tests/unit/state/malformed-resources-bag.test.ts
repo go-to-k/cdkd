@@ -5483,7 +5483,8 @@ describe('every id list in the module describes a non-plain logical id (go-to-k/
     ['orphan records refusal', (i) => malformedOrphanRecordsRefusalMessage('S', 'us-east-1', i)],
     ['orphan records destroy refusal', (i) => malformedOrphanRecordsForDestroyRefusalMessage('S', 'us-east-1', i)],
     ['orphan rows kept warning', (i) => malformedOrphanRowsKeptWarning('S', 'us-east-1', i)],
-    ['orphans-list orphan refusal', (i) => malformedOrphansForOrphanRefusalMessage('S', 'us-east-1', i)],    // No pasteable command beside it (a `cdkd diff --fail` / `--json` reason),
+    ['orphans-list orphan refusal', (i) => malformedOrphansForOrphanRefusalMessage('S', 'us-east-1', i)],
+    // No pasteable command beside it (a `cdkd diff --fail` / `--json` reason),
     // so a shape case only.
     ['orphan rows exit-3 reason', (i) => deployRefusesOrphanRowsReason(i)],
   ];
