@@ -108,6 +108,37 @@ export function backendErrorText(error: unknown, stackName: string, region: stri
   return displaySafe(error instanceof Error ? error.message : String(error));
 }
 
+/**
+ * `<stack> (<region>)` for the lines of a run that can end in
+ * {@link rerunRollback}'s labelled `Re-run with:` row: the plan header, the
+ * confirmation prompt and both completion lines (go-to-k/cdkd#3760, option 1).
+ * Each value is named only when `isPasteableIdent` admits it and described
+ * otherwise. `safeStack` kept interior spaces, so a padded journal-key name
+ * could wrap on screen into a counterfeit `Re-run with:` row a few rows from
+ * the real one, and the real one WITHHOLDS exactly such a name, so the
+ * operator fills its hole from these lines. The completion line prints in the
+ * same run as a failed-persist warning's `Re-run with:` row. A stack name and
+ * region cdkd writes are always plain, so only a planted key is described.
+ */
+function stackRegionShown(stackName: string, region: string): string {
+  return `${plainOrDescribed(stackName, 'stack name')} (${plainOrDescribed(region, 'region')})`;
+}
+
+/** Whether {@link stackRegionShown} names both values. */
+function stackRegionIsPlain(stackName: string, region: string): boolean {
+  return isPasteableIdent(stackName) && isPasteableIdent(region);
+}
+
+/** Printed under a nested-child plan line whose child name was described. */
+const NESTED_NAME_DESCRIBED_NOTE =
+  "(The nested stack's name is not a plain identifier, so it is described, not named; " +
+  "list the records as stored with 'cdkd state list --long'.)";
+
+/** Printed under the plan header when {@link stackRegionShown} described a value. */
+const STACK_REGION_DESCRIBED_NOTE =
+  '  (The stack name or region is not a plain identifier, so it is described, not named; ' +
+  "list the records as stored with 'cdkd state list --long'.)";
+
 interface RollbackOptions {
   force?: boolean;
   yes?: boolean;
@@ -244,10 +275,12 @@ function safe(value: unknown): string {
  * appends `~<logicalId>` per nesting level, and with CDK's ~60-character
  * generated nested-stack logical ids a legitimate child passes 255 around the
  * fourth level. Cutting one is a byte change on a LEGITIMATE value, and this
- * file is the worst place for it -- three of its renders are
- * `re-run 'cdkd rollback <stack>'` COPY-PASTE hints and one is the
- * confirmation prompt, so a cut name hands an operator an unrunnable command
- * mid-incident.
+ * file is the worst place for it -- when this helper was written, three of its
+ * renders were `re-run 'cdkd rollback <stack>'` COPY-PASTE hints and one was
+ * the confirmation prompt, so a cut name handed an operator an unrunnable
+ * command mid-incident. Those hints now go through `rerunRollback`'s gate
+ * (go-to-k/cdkd#3436) and the prompt through `stackRegionShown`
+ * (go-to-k/cdkd#3760).
  *
  * It is a NAMED helper rather than a `maxCodePoints` argument repeated per
  * site, because a per-site spelling of exactly this rule is what issue #3164
@@ -378,14 +411,16 @@ function divergedDuringRollbackMessage(divergentBodyRegion: unknown): string {
  * to skip — a data-loss-relevant lie in the one preview the user reads.
  */
 /**
- * The type(s) a reversed replacement touches (issue #2668): `NEW -> OLD` when
- * the replacement changed the resource's `Type` — the replay deletes the first
- * and re-creates the second — and the single type otherwise.
+ * The type(s) a reversed replacement touches (issue #2668): `from NEW to OLD`
+ * when the replacement changed the resource's `Type` — the replay deletes the
+ * first and re-creates the second — and the single type otherwise. Words, not
+ * an arrow: pasted, ` -> ` is `-` plus a `>` redirect onto the type after it
+ * (go-to-k/cdkd#4239).
  */
 function replacementTypes(op: RollbackPlanItem['op']): string {
   const routing = resolveReplacementOldType(op);
   return routing.ok && routing.oldType !== op.resourceType
-    ? `${safe(op.resourceType)} -> ${safe(routing.oldType)}`
+    ? `from ${safe(op.resourceType)} to ${safe(routing.oldType)}`
     : safe(op.resourceType);
 }
 
@@ -479,7 +514,7 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — no previous state available`;
     case 'skip-failed-type-change':
       return (
-        `  - skip     ${safe(op.logicalId)} (${safe(op.previousState?.resourceType)} -> ` +
+        `  - skip     ${safe(op.logicalId)} (from ${safe(op.previousState?.resourceType)} to ` +
         `${safe(op.resourceType)}) — failed Type change is a replacement, no in-place revert exists`
       );
   }
@@ -837,7 +872,8 @@ export async function rollbackCommand(
         );
 
       // 5. Plan — newest-first, one block per segment.
-      logger.info(`\nRollback plan for ${safeStack(stackName)} (${safe(region)}):`);
+      logger.info(`\nRollback plan for ${stackRegionShown(stackName, region)}:`);
+      if (!stackRegionIsPlain(stackName, region)) logger.info(STACK_REGION_DESCRIBED_NOTE);
       if (orphanedPending > 0) {
         logger.info(
           safeMsg`\n  Discard ${orphanedPending} record(s) of nested deploys whose parent run no longer ` +
@@ -909,7 +945,7 @@ export async function rollbackCommand(
       logger.info('');
 
       if (!skipConfirmation) {
-        const ok = await confirm(`Roll back ${safeStack(stackName)} (${safe(region)})?`);
+        const ok = await confirm(`Roll back ${stackRegionShown(stackName, region)}?`);
         if (!ok) {
           logger.info('Rollback cancelled');
           return;
@@ -1249,7 +1285,7 @@ export async function rollbackCommand(
       ) {
         await setup.stateBackend.deleteState(stackName, region);
         logger.info(
-          `State for ${safeStack(stackName)} (${safe(region)}) removed (stack fully rolled back).`
+          `State for ${stackRegionShown(stackName, region)} removed (stack fully rolled back).`
         );
       }
 
@@ -1280,7 +1316,7 @@ export async function rollbackCommand(
           `Rollback completed with ${totalWarnings} skipped/unrecoverable operation(s) (see warnings above).`
         );
       }
-      logger.info(`\nRollback of ${safeStack(stackName)} (${safe(region)}) complete.`);
+      logger.info(`\nRollback of ${stackRegionShown(stackName, region)} complete.`);
     } finally {
       // Release FIRST, unregister LAST (issue #2118). While the release
       // round-trip is in flight the lock is still held, so the handlers must
@@ -1416,12 +1452,22 @@ async function previewNestedChildRevert(
   runId: string | undefined,
   skipFinalSnapshot: boolean
 ): Promise<string[]> {
-  const shown = safeStack(childStackName);
+  // Named only when plain, described otherwise, for the reason
+  // `stackRegionShown` gives: this line is part of the run that can end in a
+  // `Re-run with:` row (go-to-k/cdkd#3760). A described child carries the
+  // same `cdkd state list --long` pointer the header does, since the parent's
+  // name can be plain while the child's journal-sourced logical id is not.
+  const plain = isPasteableIdent(childStackName);
+  const shown = plain
+    ? `nested stack ${childStackName}`
+    : 'a nested stack whose name is not a plain identifier';
+  const withPointer = (lines: string[]): string[] =>
+    plain ? lines : [...lines, `        ${NESTED_NAME_DESCRIBED_NOTE}`];
   if (runId === undefined) {
-    return [
-      `      (nested stack ${shown}: this segment carries no deploy run id — its revert will FAIL ` +
+    return withPointer([
+      `      (${shown}: this segment carries no deploy run id — its revert will FAIL ` +
         `and the segment is kept)`,
-    ];
+    ]);
   }
   try {
     const [childState, journal] = await Promise.all([
@@ -1430,25 +1476,28 @@ async function previewNestedChildRevert(
     ]);
     const segments = (journal?.segments ?? []).filter((s) => s.runId === runId);
     if (!childState || segments.length === 0) {
-      return [
-        `      (nested stack ${shown}: no journal record for this run — its revert will FAIL ` +
+      return withPointer([
+        `      (${shown}: no journal record for this run — its revert will FAIL ` +
           `and the segment is kept)`,
-      ];
+      ]);
     }
     const view: Record<string, ResourceState> = { ...childState.state.resources };
-    const lines = [`      nested stack ${shown} replays its own journal:`];
+    const lines = [`      ${shown} replays its own journal:`];
     for (let s = segments.length - 1; s >= 0; s--) {
       const childPlan = planRollback(segments[s]!.operations, view, new Set<string>());
       for (const item of childPlan) lines.push(`    ${actionLabel(item, skipFinalSnapshot)}`);
       applyPlanToPreview(childPlan, view, skipFinalSnapshot);
     }
     if (lines.length === 1) lines.push('        (nothing to undo)');
-    return lines;
+    return withPointer(lines);
   } catch (error) {
-    return [
-      `      (nested stack ${shown}: could not preview its revert: ` +
-        `${safe(error instanceof Error ? error.message : String(error))})`,
-    ];
+    // `backendErrorText`, not `safe()`: the backend's message re-spells the
+    // child's name, padding included, so a padded name is withheld whole
+    // (go-to-k/cdkd#3760).
+    return withPointer([
+      `      (${shown}: could not preview its revert: ` +
+        `${backendErrorText(error, childStackName, region)})`,
+    ]);
   }
 }
 

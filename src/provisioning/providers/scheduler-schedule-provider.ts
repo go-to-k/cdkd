@@ -25,11 +25,16 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
+import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { displaySafe, isPasteableIdent } from '../../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
-import { hasClauseBreak, isInertUnquoted } from '../../utils/pasteable-command.js';
+import {
+  hasClauseBreak,
+  isInertUnquoted,
+  plainOrDescribed,
+} from '../../utils/pasteable-command.js';
 import { isAwsCliLiteral } from '../replacement-protection-advice.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import {
@@ -71,6 +76,16 @@ import {
  * is impossible at the API level. The deploy engine's `--replace` fallback
  * recreates the schedule in the new group.
  */
+
+/**
+ * A schedule group as the GroupName refusal prints it (go-to-k/cdkd#4239):
+ * named when plain, described otherwise. The mask marker passes through as
+ * itself: it is a fixed cdkd literal (pasted, at most a glob that runs
+ * nothing), and it says that the group came from a secret.
+ */
+function groupShown(group: string): string {
+  return group === SECRET_MASK ? group : plainOrDescribed(group, 'group name');
+}
 export class SchedulerScheduleProvider implements ResourceProvider {
   private client: SchedulerClient | undefined;
   private readonly providerRegion = ambientRegion();
@@ -328,7 +343,16 @@ export class SchedulerScheduleProvider implements ResourceProvider {
         // and `cdkd deploy` takes `[stacks...]`, so the appended logical id was
         // parsed as a STACK NAME. The head of
         // `ResourceUpdateNotSupportedError` already names the resource.
-        `GroupName addresses the schedule (${previousGroupName ?? 'default'} -> ${groupName ?? 'default'}); ` +
+        // `from <a> to <b>`, not ` -> `: pasted, that is `-` plus a `>`
+        // redirect onto the group name after it (go-to-k/cdkd#4239). Masked
+        // where it is built, like the debug line below: a secret-derived group
+        // reaches this refusal RESOLVED on the desired side (go-to-k/cdkd#4275).
+        // `DeployEngine` also masks a thrown message; this does not rely on it.
+        // Each group is then named only when plain and described otherwise:
+        // it is template-chosen, unvalidated here, and printed on the line
+        // that names `cdkd deploy --replace` (go-to-k/cdkd#4214's rule).
+        `GroupName addresses the schedule (from ${groupShown(mask(previousGroupName ?? 'default'))} ` +
+          `to ${groupShown(mask(groupName ?? 'default'))}); ` +
           `re-run with \`cdkd deploy --replace\` to recreate it in the new group ` +
           `(--replace is a boolean flag and takes no resource id; it applies to every ` +
           `resource in the run whose in-place update is refused)`
