@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::InstanceProfile",
-  "generatedAt": "2026-10-01",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "InstanceProfileName",

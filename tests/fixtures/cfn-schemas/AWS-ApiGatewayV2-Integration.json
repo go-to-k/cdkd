@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Integration",
-  "generatedAt": "2026-10-01",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ApiId",
     "ConnectionId",
