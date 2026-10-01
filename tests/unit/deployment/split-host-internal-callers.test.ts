@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript-v6';
 import { describe, expect, it } from 'vite-plus/test';
@@ -42,10 +42,11 @@ const isInternal = (decl: ts.Declaration): boolean =>
 
 /** `file:line expr` for every reach of a family's `@internal` member from outside it. */
 function outsideReaches(): { reaches: string[]; scanned: number } {
-  const roots = walk(join(REPO_ROOT, 'src')).filter((abs) => {
-    const rel = abs.slice(REPO_ROOT.length + 1);
-    return !familyFiles.has(rel) && /deploy-engine|intrinsic-function-resolver/.test(readFileSync(abs, 'utf8'));
-  });
+  // Every non-family file, not only the ones that NAME a host: a re-export
+  // (`src/index.ts`) or an inferred type reaches a host with no path in sight.
+  const roots = walk(join(REPO_ROOT, 'src')).filter(
+    (abs) => !familyFiles.has(abs.slice(REPO_ROOT.length + 1))
+  );
   const config = ts.parseJsonConfigFileContent(
     ts.readConfigFile(join(REPO_ROOT, 'tsconfig.json'), (p) => ts.sys.readFile(p)).config,
     ts.sys,
@@ -57,11 +58,20 @@ function outsideReaches(): { reaches: string[]; scanned: number } {
   for (const abs of roots) {
     const sf = program.getSourceFile(abs)!;
     const visit = (node: ts.Node): void => {
+      let decl: ts.Declaration | undefined;
       if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
         const nameNode = ts.isPropertyAccessExpression(node) ? node.name : node.argumentExpression;
-        const decl = checker.getSymbolAtLocation(nameNode)?.declarations?.[0];
-        const declFile = decl?.getSourceFile().fileName.slice(REPO_ROOT.length + 1);
-        if (decl && declFile !== undefined && familyFiles.has(declFile) && isInternal(decl)) {
+        decl = checker.getSymbolAtLocation(nameNode)?.declarations?.[0];
+      } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
+        // `const { member } = host` reaches the member without a dot.
+        const key = node.propertyName ?? node.name;
+        if (ts.isIdentifier(key)) {
+          decl = checker.getTypeAtLocation(node.parent).getProperty(key.text)?.declarations?.[0];
+        }
+      }
+      if (decl !== undefined) {
+        const declFile = decl.getSourceFile().fileName.slice(REPO_ROOT.length + 1);
+        if (familyFiles.has(declFile) && isInternal(decl)) {
           const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
           reaches.push(`${abs.slice(REPO_ROOT.length + 1)}:${line} ${node.getText(sf).slice(0, 80)}`);
         }
