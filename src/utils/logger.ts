@@ -1,6 +1,7 @@
 import type { Logger, LogLevel } from '../types/config.js';
 import { displaySafe, terminalSafe } from './display-safe.js';
 import { getLiveRenderer } from './live-renderer.js';
+import { currentLogLineMasker, type LogLineMasker } from './log-line-masker.js';
 import { getCurrentStackOutputBuffer } from './stack-context.js';
 
 /**
@@ -134,6 +135,19 @@ export function isStdoutReservedForPayload(): boolean {
 }
 
 /**
+ * Render a log call's extra args. Under a masker, each string LEAF is masked
+ * before `JSON.stringify` escapes it (a secret holding `"` or `\` no longer
+ * occurs in the finished JSON), then the joined text is masked for the object
+ * keys a replacer cannot rewrite.
+ */
+function renderArgs(args: unknown[], mask: LogLineMasker | undefined): string {
+  if (mask === undefined) return args.map((a) => JSON.stringify(a)).join(' ');
+  const replacer = (_key: string, value: unknown): unknown =>
+    typeof value === 'string' ? mask(value) : value;
+  return mask(args.map((a) => JSON.stringify(a, replacer)).join(' '));
+}
+
+/**
  * Format timestamp
  */
 function formatTimestamp(): string {
@@ -176,11 +190,15 @@ export class ConsoleLogger implements Logger {
     // site is the same argument `display-safe.ts` makes in its own header --
     // widening the rule by hand, one reader at a time, is what missed four of
     // five readers in issue #2170 (issue #3003).
-    const formattedArgs =
-      args.length > 0 ? ' ' + displaySafe(args.map((a) => JSON.stringify(a)).join(' ')) : '';
+    //
+    // Secrets are masked BEFORE that sanitizing, on the raw text: sanitizing
+    // can rewrite a byte inside a secret, after which it no longer matches
+    // (issue #2177). Both the buffered and the live path receive this output.
+    const mask = currentLogLineMasker();
+    const formattedArgs = args.length > 0 ? ' ' + displaySafe(renderArgs(args, mask)) : '';
     // The message itself is sanitized HERE rather than at each of ~3000 call
     // sites, most of which interpolate a value raw (go-to-k/cdkd#3479).
-    message = terminalSafe(message);
+    message = terminalSafe(mask === undefined ? message : mask(message));
 
     // Verbose mode: full timestamps and level
     if (this.level === 'debug') {

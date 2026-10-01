@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { setLogLineMaskerSource } from '../utils/log-line-masker.js';
+import { hasMaskableValues, maskSecretsInText } from './secret-redaction.js';
 import type { RecordedSecretValues } from './secret-redaction.js';
 
 /**
@@ -29,8 +31,9 @@ import type { RecordedSecretValues } from './secret-redaction.js';
  * `{{resolve:...}}` back to plaintext and drive the very same providers (issue
  * [#2086](https://github.com/go-to-k/cdkd/issues/2086)) — and
  * `deploy-engine.ts` already imports `rollback-executor.ts`, so keeping the
- * store there would have made the two modules a cycle. A leaf that imports one
- * TYPE cannot participate in one.
+ * store there would have made the two modules a cycle. Its only imports are
+ * `secret-redaction.ts` and `src/utils/log-line-masker.ts`, both import-free,
+ * so it still cannot participate in one.
  *
  * SCOPE. {@link withCurrentResourceSecrets} wraps the provider CREATE / UPDATE
  * call itself, so the store is bound per resource and per retry attempt, and
@@ -41,6 +44,24 @@ import type { RecordedSecretValues } from './secret-redaction.js';
  * and `asPersisted` returns its bag unrewritten.
  */
 const currentResourceSecretsStore = new AsyncLocalStorage<RecordedSecretValues>();
+
+/**
+ * The logger's SINK masker (issue
+ * [#2177](https://github.com/go-to-k/cdkd/issues/2177)): every log line emitted
+ * while a bag is bound — a provider's own `this.logger.*` line included — is
+ * masked with the printing masker `createSecretMasker` hands the provider,
+ * so a provider call site that forgets to thread `maskSecrets` no longer prints
+ * the plaintext. Registered at module load: every binder imports this module,
+ * so the source is installed before any bag can be bound.
+ *
+ * Unbound or empty is one store read and an `undefined`, which the logger
+ * takes as "leave the line alone".
+ */
+setLogLineMaskerSource(() => {
+  const secrets = currentResourceSecretsStore.getStore();
+  if (secrets === undefined || !hasMaskableValues(secrets)) return undefined;
+  return (text: string) => maskSecretsInText(text, secrets);
+});
 
 /**
  * Run `fn` with `secrets` visible to {@link getCurrentResourceSecrets}. Used by
