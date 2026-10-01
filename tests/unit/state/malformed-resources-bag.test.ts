@@ -5465,14 +5465,17 @@ const ASSIGNMENTS = ['PATH=.', 'PATH+=:.', 'HISTFILE=victim'] as const;
  * Every span of `message` (`segmentsOf`: lines, sentences, clauses, runs of
  * lines, the `'` flip) after which `PATH` or `HISTFILE` differs from what it
  * was before the span. The harness's sentinel sees only FILES, and an
- * assignment touches none, so the check line turns a moved variable into one.
+ * assignment touches none, so the check turns a moved variable into one. It
+ * is an EXIT trap rather than a trailing line: `bash -c` stops at a later
+ * line's syntax error, after an earlier line's assignment already took.
  */
 function envChangingSpans(message: string, dir: string): string[] {
   return [...segmentsOf(message)].filter(
     (span) =>
       filesTouchedBy(
-        `__p="$PATH"; __h="\${HISTFILE-}"\n${span}\n` +
-          `[ "$PATH" = "$__p" ] && [ "\${HISTFILE-}" = "$__h" ] || : > ENV_CHANGED`,
+        `__p="$PATH"; __h="\${HISTFILE-}"; ` +
+          `trap '[ "$PATH" = "$__p" ] && [ "\${HISTFILE-}" = "$__h" ] || : > ENV_CHANGED' EXIT\n` +
+          span,
         dir
       ).includes('ENV_CHANGED')
   );
