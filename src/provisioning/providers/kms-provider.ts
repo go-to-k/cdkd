@@ -379,26 +379,6 @@ export class KMSProvider implements ResourceProvider {
   }
 
   /**
-   * Hand back the key an earlier attempt at this create already made, when its
-   * `CreateKey` succeeded and a follow-up call then failed (issue #2080).
-   *
-   * Without this the engine's retry re-ran `CreateKey` from the top: a
-   * transient 5xx, a throttle or an IAM-propagation denial on
-   * `EnableKeyRotation` minted a SECOND key and left the first live, billed and
-   * in no state record. That was the likeliest duplicate in this provider,
-   * since the follow-up calls fail in the ordinary, unambiguous way.
-   *
-   * Adoption is sound here where it is not after an ambiguous `CreateKey`
-   * (see {@link KMSProvider.reportPossibleOrphanKeys}): the key id came back in
-   * this process's own response, so there is nothing to infer. Three things
-   * still gate it, each falling through to a fresh `CreateKey` with the old key
-   * named at warn: the inputs must be the ones that made it, `DescribeKey` must
-   * read it, and it must be in a usable state (a key somebody scheduled for
-   * deletion meanwhile is not one to record). A TRANSIENT `DescribeKey` failure
-   * instead rethrows with the key still remembered, so the engine's next retry
-   * asks again rather than giving up on a key that is very likely fine.
-   */
-  /**
    * The ` --region <r>` fragment for a pasteable command, from the client that
    * made or listed the key (issue #4307): without it the command runs in the
    * user's shell-default region, where a describe answers NotFound and reads as
@@ -418,6 +398,26 @@ export class KMSProvider implements ResourceProvider {
     return region ? aws` --region ${region}` : aws``;
   }
 
+  /**
+   * Hand back the key an earlier attempt at this create already made, when its
+   * `CreateKey` succeeded and a follow-up call then failed (issue #2080).
+   *
+   * Without this the engine's retry re-ran `CreateKey` from the top: a
+   * transient 5xx, a throttle or an IAM-propagation denial on
+   * `EnableKeyRotation` minted a SECOND key and left the first live, billed and
+   * in no state record. That was the likeliest duplicate in this provider,
+   * since the follow-up calls fail in the ordinary, unambiguous way.
+   *
+   * Adoption is sound here where it is not after an ambiguous `CreateKey`
+   * (see {@link KMSProvider.reportPossibleOrphanKeys}): the key id came back in
+   * this process's own response, so there is nothing to infer. Three things
+   * still gate it, each falling through to a fresh `CreateKey` with the old key
+   * named at warn: the inputs must be the ones that made it, `DescribeKey` must
+   * read it, and it must be in a usable state (a key somebody scheduled for
+   * deletion meanwhile is not one to record). A TRANSIENT `DescribeKey` failure
+   * instead rethrows with the key still remembered, so the engine's next retry
+   * asks again rather than giving up on a key that is very likely fine.
+   */
   private async resumeKeyFromFailedAttempt(
     logicalId: string,
     attemptKey: string,

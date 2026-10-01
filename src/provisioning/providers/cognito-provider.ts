@@ -2055,6 +2055,25 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   }
 
   /**
+   * The ` --region <r>` fragment for a pasteable command, from the client the
+   * call or lookup went through (issue #4307): without it the command runs in
+   * the user's shell-default region, where it answers NotFound. An unreadable
+   * region renders no fragment rather than failing the warning. Built with the
+   * caller's `aws` tag, since a fragment from another tag withholds the command.
+   */
+  private async regionArg(
+    aws: ReturnType<typeof pasteableAwsCommand>
+  ): Promise<ReturnType<ReturnType<typeof pasteableAwsCommand>>> {
+    let region: string | undefined;
+    try {
+      region = await this.getClient().config.region();
+    } catch {
+      region = undefined;
+    }
+    return region ? aws` --region ${region}` : aws``;
+  }
+
+  /**
    * After an attempt at this create ended AMBIGUOUS (a 5xx: Cognito may have
    * made the pool and lost the answer), name the pools that could be its
    * orphan before a second `CreateUserPool` is sent (issue
@@ -2151,17 +2170,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
     const shown = candidates.slice(0, MAX_REPORTED_ORPHAN_POOLS);
     const aws = pasteableAwsCommand(log.mask);
-    // `--region` from the client that listed the pools (issue #4307): without
-    // it the commands run in the user's shell-default region, where a describe
-    // answers NotFound and reads as "no orphan". An unreadable region renders
-    // no fragment rather than failing the warning.
-    let listedRegion: string | undefined;
-    try {
-      listedRegion = await this.getClient().config.region();
-    } catch {
-      listedRegion = undefined;
-    }
-    const region = listedRegion ? aws` --region ${listedRegion}` : aws``;
+    const region = await this.regionArg(aws);
     const inspect = shown
       .map((id) => aws`aws cognito-idp describe-user-pool --user-pool-id ${id}${region}`.render())
       .join(' ; ');
@@ -2550,12 +2559,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       );
       this.logger.debug(`Restored the previous MFA configuration on UserPool ${physicalId}`);
     } catch (restoreError) {
+      const aws = pasteableAwsCommand();
+      const region = await this.regionArg(aws);
       this.logger.warn(
         `UserPool ${physicalId}: UpdateUserPool failed after SetUserPoolMfaConfig had already ` +
           `applied the new MFA configuration, and restoring the previous one also failed ` +
           `(${restoreError instanceof Error ? restoreError.name : typeof restoreError}). The pool ` +
           `may now carry the NEW MFA configuration with its OLD sign-in policy; re-run the deploy, ` +
-          `or check it with ${pasteableAwsCommand()`aws cognito-idp get-user-pool-mfa-config --user-pool-id ${physicalId}`.render()}.`
+          `or check it with ${aws`aws cognito-idp get-user-pool-mfa-config --user-pool-id ${physicalId}${region}`.render()}.`
       );
       this.logger.debug(
         `MFA restore failure detail for UserPool ${physicalId}: ` +
