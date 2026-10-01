@@ -193,6 +193,9 @@ function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
     ...(overrides.observedBaselineRefused && {
       observedBaselineRefused: overrides.observedBaselineRefused,
     }),
+    ...(overrides.observedBaselineRefusalReason && {
+      observedBaselineRefusalReason: overrides.observedBaselineRefusalReason,
+    }),
   };
 }
 
@@ -1200,6 +1203,91 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
     expect(warnings).toContain('1 resource(s) were NOT refreshed');
     // A refusal is not a failure: the command exits 0 and the state is saved.
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  describe('the refusal warning names the remedy each refusal class has (issue #3465)', () => {
+    const refused = (reason?: 'unverifiable-parameter' | 'incomplete-resolution'): ResourceState =>
+      makeResource({
+        physicalId: `refused-${reason ?? 'reasonless'}`,
+        resourceType: 'AWS::SQS::Queue',
+        properties: { QueueName: 'q' },
+        observedBaselineRefused: true,
+        ...(reason && { observedBaselineRefusalReason: reason }),
+      });
+    const DEPLOY_CLEARS = 'A deploy that actually CHANGES one of them restores its baseline';
+    const DEPLOY_CLEARS_FULL =
+      `${DEPLOY_CLEARS} — a NO_CHANGE deploy does not, and re-running this command will refuse them again. `;
+    const warningsOf = (): string => warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+
+    beforeEach(() => {
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
+    });
+
+    it('keeps the deploy remedy when every refusal is one a deploy clears', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(makeState({ A: refused('incomplete-resolution') }));
+
+      const { error } = await runRefresh(['TestStack']);
+      expect(error).toBeUndefined();
+      expect(warningsOf()).toContain(DEPLOY_CLEARS_FULL);
+      expect(warningsOf()).not.toContain('template parameter');
+    });
+
+    it('counts the refusals a deploy may not clear and names the rest apart', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          P: refused('unverifiable-parameter'),
+          R: refused(),
+          I: refused('incomplete-resolution'),
+        })
+      );
+
+      const { error } = await runRefresh(['TestStack']);
+      expect(error).toBeUndefined();
+      const w = warningsOf();
+      expect(w).toContain('3 resource(s) were NOT refreshed');
+      // Parameter-refused and reason-less are counted together; the
+      // incomplete-resolution one is the "rest".
+      expect(w).toContain('2 of them may keep the refusal even through a deploy that changes them');
+      expect(w).toContain("'cdkd state show' names each one's remedy");
+      expect(w).toContain('For the rest, a deploy that actually CHANGES one restores its baseline.');
+      expect(w).not.toContain(DEPLOY_CLEARS);
+    });
+
+    it('sums the refusals a deploy may not clear across stacks', async () => {
+      // One warning covers every stack the run touched, so each stack's count
+      // has to reach it: overwriting instead of adding keeps only the last.
+      mockListStacks.mockResolvedValueOnce([
+        { stackName: 'StackA', region: 'us-east-1' },
+        { stackName: 'StackB', region: 'us-east-1' },
+      ]);
+      // Keyed by stack: a multi-target run reads each record twice.
+      const records: Record<string, ReturnType<typeof makeState>> = {
+        StackA: makeState({ P: refused('unverifiable-parameter') }),
+        StackB: makeState({ R: refused(), I: refused('incomplete-resolution') }),
+      };
+      mockGetState.mockImplementation(async (stackName: string) => records[stackName] ?? null);
+
+      const { error } = await runRefresh(['--all']);
+      expect(error).toBeUndefined();
+      const w = warningsOf();
+      expect(w).toContain('3 resource(s) were NOT refreshed');
+      expect(w).toContain('2 of them may keep the refusal');
+    });
+
+    it('--dry-run words it the same way, with no "rest" when every refusal may stick', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(makeState({ P: refused('unverifiable-parameter') }));
+
+      const { error } = await runRefresh(['TestStack', '--dry-run']);
+      expect(error).toBeUndefined();
+      const w = warningsOf();
+      expect(w).toContain('1 resource(s) would NOT be refreshed');
+      expect(w).toContain('1 of them may keep the refusal even through a deploy that changes them');
+      expect(w).not.toContain('For the rest');
+      expect(w).not.toContain(DEPLOY_CLEARS);
+    });
   });
 
   it('--dry-run applies the SAME gate: a marked resource is not planned as a refresh', async () => {

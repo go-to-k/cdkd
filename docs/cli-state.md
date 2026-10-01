@@ -730,9 +730,18 @@ position the secret redaction — the refusal is recorded on the record, and thi
 command skips it rather than reading a value back against those properties,
 which could persist a resolved secret into `state.json` in plaintext. Such
 resources are counted and reported separately from `unsupported` ones, and
-`cdkd state show` marks each with an `ObservedBaseline: REFUSED` line. Re-running
-this command will not clear it: **deploy a change to the resource**, which
-rebuilds its record from your template and captures a real baseline.
+`cdkd state show` marks each with an `ObservedBaseline: REFUSED` line, which
+also names that resource's remedy. Re-running this command will not clear it:
+
+- **Deploy a change to the resource**, which rebuilds its record from your
+  template and captures a real baseline.
+- **Unless the refusal was over a template parameter** whose deployed value cdkd
+  could not prove. A deploy that updates the resource in place keeps that
+  refusal, so only replacing the resource, or re-importing it while a
+  CloudFormation stack can prove the value, clears it. A refusal recorded by an
+  older cdkd without its reason is treated this way when the resource reads a
+  template parameter. See
+  [the drift baseline an import records](import.md#the-drift-baseline-an-import-records).
 
 Run [`cdkd scrub`](cli-scrub.md) first on state written by a pre-GHSA binary.
 The readback is redacted **by position** against the existing record: the

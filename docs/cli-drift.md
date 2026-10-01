@@ -140,7 +140,7 @@ A **clean** verdict never means anything except compared-and-matched.
 | `refused` | cdkd declined to resolve a dynamic reference the resource's state records, because it could not attribute the reference to a region. Its secret-bearing properties were never looked at. | Yes — spell the reference as a full ARN, which names its region. |
 | `unresolvedToken` | State records a `{{resolve:...}}` spelling cdkd resolves for nobody. cdkd resolves all three CloudFormation services (`secretsmanager`, `ssm`, `ssm-secure`), so this is reserved for text that is not a dynamic reference at all, or a service AWS adds later. | No — a re-run cannot clear it, which is why it alone does not affect the exit code. |
 | `readFailed` | The read or the comparison threw, so NONE of that resource's properties were compared. Every other resource in the stack is still compared and reported. | Yes — usually a missing permission or a throttle; grant it or re-run. |
-| `baselineRefused` | A [`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused to capture that resource's observed baseline, so the only baseline available is the recorded properties that refusal already found untrustworthy. NONE of its properties were compared, and cdkd does not read it back from AWS at all. | Yes — deploy a change to the resource, which rebuilds its record from your template and captures a real baseline. |
+| `baselineRefused` | A [`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused to capture that resource's observed baseline, so the only baseline available is the recorded properties that refusal already found untrustworthy. NONE of its properties were compared, and cdkd does not read it back from AWS at all. | Yes — deploy a change to the resource; for a [template-parameter refusal](#clearing-a-baseline-refusal), replace it, or re-import it while a CloudFormation stack can prove the parameter. |
 | `uncertifiedBaseline` | The recorded baseline holds the redaction mask `***` at a position cdkd could not pair with the secret reference there (see [a position cdkd could not certify](#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify)), and the mask is the only difference at that position. Every other property was compared. | Yes — a `cdkd deploy` that changes nothing replaces each such mask the resource's own secret references can certify, and one that changes the resource re-captures the whole baseline. |
 | `unreadableRecord` | The state record holds a row that cannot be read as a resource — it is not an object, or it carries no resource type — or a row whose `properties` map is not a JSON object. cdkd drops the row so the rest of the stack is still compared, and reports it here rather than only warning, so a `--json` gate sees it. A row with an unreadable `properties` map keeps its real resource type and is not read back from AWS. | Yes — repair or re-import the record. |
 | `unreadableMap` | The record's whole `resources` map is not a JSON object, so no resource in it was read. cdkd reads the map as empty and reports one entry whose `logicalId` is `(resources map)`. Key on this cause, not on that name: a hand-edited record can hold an entry keyed `(resources map)`, which is reported as `unreadableRecord`. | Yes — repair or re-import the record. |
@@ -164,7 +164,8 @@ place. On the deploy path it is worse: the baseline refresh then refills those
 resources *from* those same properties. The warning says this itself, and the
 reliable remedy is to **re-run `cdkd import`** for the stack — or to deploy a
 change that actually touches a listed resource, which rebuilds its record from
-your template.
+your template. The deploy does not help a resource that reads a template
+parameter: it binds the same parameter `Default` the import did.
 
 A **drifted** resource can be partially compared too: the changes it reports
 are real, but they are not the whole comparison, so it carries
@@ -195,6 +196,23 @@ cdkd reads those parent records from state. When they cannot be established
 with its key), every secret reference that names no region is refused rather
 than resolved in the stack's own region: make the parent state readable or
 repair the record, or spell the reference as a full ARN.
+
+### Clearing a baseline refusal
+
+What clears a `baselineRefused` resource depends on why the import refused it,
+and the report row, the `--accept` / `--revert` refusals and
+[`cdkd state show`](cli-state.md#cdkd-state-show) each name the remedy for that
+resource:
+
+| Why the import refused it | What clears it |
+| --- | --- |
+| Its recorded properties could not position the secret redaction. | A deploy that actually changes the resource. A deploy that changes nothing does not. |
+| It reads a template parameter whose deployed value cdkd could not prove. | Replacing the resource, or re-importing it while a CloudFormation stack can prove the value. A deploy that updates it in place keeps the refusal. |
+| Recorded by an older cdkd, with no reason. | Like the first row, unless the resource reads a template parameter; then like the second. |
+
+`cdkd drift` holds no template, so for the last row it cannot tell you which of
+the two applies. The full rules are in
+[the drift baseline an import records](import.md#the-drift-baseline-an-import-records).
 
 ### What "drift unknown" excludes from the count
 
@@ -380,9 +398,8 @@ per-resource rather than per-property. Such a resource has no baseline, so
 positioned against properties the import already found untrustworthy — which
 can persist a resolved secret in plaintext. `--revert` has the mirror problem:
 it would push those properties to AWS, overwriting whatever the resource really
-holds. Both decline, name the resource, and point at the same remedy: **deploy
-a change to it**, which rebuilds its record from your template and captures a
-real baseline. Such a resource is **not reported as drifted either**: detection declines to
+holds. Both decline, name the resource, and point at the remedy
+[below](#clearing-a-baseline-refusal). Such a resource is **not reported as drifted either**: detection declines to
 compare it at all and reports it under `notCompared` with the cause
 `baselineRefused`. Comparing it would have meant rendering the live AWS value —
 including a decrypted secret — as one side of a drift row that nothing could

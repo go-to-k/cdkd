@@ -197,6 +197,9 @@ function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
     ...(overrides.observedBaselineRefused && {
       observedBaselineRefused: overrides.observedBaselineRefused,
     }),
+    ...(overrides.observedBaselineRefusalReason && {
+      observedBaselineRefusalReason: overrides.observedBaselineRefusalReason,
+    }),
   };
 }
 
@@ -1585,6 +1588,10 @@ describe('cdkd drift', () => {
       const note = String(spy.mock.calls[1]![0]);
       expect(note).toMatch(/SILENCES this warning without fixing/i);
       expect(note).toMatch(/--accept/);
+      // A deploy rebuilds the record by binding the parameter Default the
+      // import bound, so it repairs nothing a parameter decides (issue #3465):
+      // the deploy half of the remedy is qualified, the re-import half is not.
+      expect(note).toContain('and the deploy only when that resource reads no template parameter');
       // And it must NOT repeat the retired claim.
       const all = spy.mock.calls.map((c) => String(c[0])).join('\n');
       expect(all).not.toMatch(/stops after the stack's next deploy/i);
@@ -1775,6 +1782,62 @@ describe('cdkd drift', () => {
       // The wrong cause must NOT be borrowed for a population that has none.
       expect(output).not.toContain('the read or comparison failed');
       expect(output).not.toContain(REFUSED_PLAINTEXT);
+    });
+
+    it('names each refused record its own remedy on its report row (issue #3465)', async () => {
+      // "deploy a change" is false for an unverifiable-parameter refusal, which
+      // survives every in-place UPDATE, and only conditionally true for a
+      // reason-less one; the cause is one value for all three, so the remedy
+      // has to be read from each row's own record.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          ParamRefused: makeResource({
+            physicalId: 'p',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'p' },
+            observedBaselineRefused: true,
+            observedBaselineRefusalReason: 'unverifiable-parameter',
+          }),
+          ReasonlessRefused: makeResource({
+            physicalId: 'r',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'r' },
+            observedBaselineRefused: true,
+          }),
+          IncompleteRefused: makeResource({
+            physicalId: 'i',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'i' },
+            observedBaselineRefused: true,
+            observedBaselineRefusalReason: 'incomplete-resolution',
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockImplementation(() => ({
+        readCurrentState: async () => ({}),
+      }));
+
+      const { output } = await runDrift(['TestStack']);
+      const rowOf = (id: string): string => {
+        const rows = output.split('\n').filter((l) => l.startsWith(`    ! ${id} (`));
+        expect(rows).toHaveLength(1);
+        return rows[0]!;
+      };
+
+      const param = rowOf('ParamRefused');
+      expect(param).toContain('Deploying a change does NOT clear this refusal');
+      expect(param).not.toContain('deploy a change to this resource to restore one');
+
+      const reasonless = rowOf('ReasonlessRefused');
+      expect(reasonless).toContain('unless the resource reads a template parameter');
+      expect(reasonless).not.toContain('deploy a change to this resource to restore one');
+
+      const incomplete = rowOf('IncompleteRefused');
+      expect(incomplete).toContain(
+        'untrustworthy (deploy a change to this resource to restore one)'
+      );
+      expect(incomplete).not.toContain('template parameter');
     });
   });
 
