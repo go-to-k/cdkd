@@ -11,8 +11,9 @@ paths:
 `src/state/lock-contention-message.ts` is the ONLY place a fail-fast
 lock-contention refusal is worded (issue
 [#2161](https://github.com/go-to-k/cdkd/issues/2161)). Every refusing site uses
-it, `acquireLockWithRetry`'s exhaustion arm and `destroy-runner.ts`'s FORCE-QUIT
-hint included.
+it, `acquireLockWithRetry`'s exhaustion arm and the destroy FORCE-QUIT hint
+(`src/cli/commands/stack-lock-guard.ts`, both `destroy-runner.ts` lock sites'
+one SIGINT + lock guard) included.
 
 - `acquireLock` reaps an EXPIRED foreign lock and retries, so `false` means the
   lock is LIVE. `buildLockContentionMessage` reads `getLockInfo` best-effort and

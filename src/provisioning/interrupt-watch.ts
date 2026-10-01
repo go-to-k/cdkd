@@ -74,8 +74,8 @@
  *    `destroy.ts` registered no SIGINT handler of its own, and
  *    `destroy-runner.ts` removes its one in a `finally` — so between two stacks
  *    of a multi-stack destroy the shared handler was the ONLY listener. Merely
- *    latching there SWALLOWS the Ctrl-C: the process does not exit, `draining`
- *    is never set, `result.interrupted` stays false, and the loop proceeds to
+ *    latching there SWALLOWS the Ctrl-C: the process does not exit,
+ *    `lock.interrupted` is never set, `result.interrupted` stays false, and the loop proceeds to
  *    delete the NEXT stack after the user asked to stop — this file's own
  *    headline failure, one layer out.
  *
@@ -262,8 +262,9 @@ function armSharedSigintHandler(): void {
       // omitted. This handler cannot know whether a stack lock is held — it has
       // no command context — so the hint is a guess it cannot verify and cannot
       // afford to skip: it is the only thing between a user and a 30-minute TTL.
-      // `destroy-runner.ts`'s own force-quit arms print a FULLY QUALIFIED
-      // command (region / profile / bucket / prefix) since issue #2170; this
+      // The destroy lock guard's force-quit arm (`stack-lock-guard.ts`)
+      // prints a FULLY QUALIFIED command (region / profile / bucket / prefix)
+      // since issue #2170; this
       // one deliberately stays a placeholder, because it has no command
       // context to qualify with. Do not "align" the two: a placeholder is
       // honest here, and inventing defaults would point the user at a

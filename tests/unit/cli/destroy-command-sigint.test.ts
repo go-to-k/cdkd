@@ -220,7 +220,7 @@ function cleanRunResult(): Record<string, unknown> {
  * Registering a listener is load-bearing, not decoration: `interruptWatch`
  * defers to a graceful owner only when one is actually armed, so a mock that
  * registers nothing takes the pre-registration `process.exit(130)` and pins a
- * different path entirely. The real branch arms `emptySigintHandler` around
+ * different path entirely. The real branch arms its stack-lock guard handler around
  * exactly this window.
  */
 async function emptyStateRunTakingASignal(): Promise<Record<string, unknown>> {

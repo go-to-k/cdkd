@@ -20,6 +20,9 @@ import type { AwsClients } from '../../../src/utils/aws-clients.js';
 // flag exactly as a real SIGINT would.
 
 const warnSpy = vi.hoisted(() => vi.fn());
+// A spy rather than a plain function so a case can assert the first-signal
+// notice is routed THROUGH the live renderer (go-to-k/cdkd#2174).
+const printAboveSpy = vi.hoisted(() => vi.fn((write: () => void) => write()));
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
@@ -56,7 +59,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
     addTask: vi.fn(),
     removeTask: vi.fn(),
     updateTaskLabel: vi.fn(),
-    printAbove: (write: () => void) => write(),
+    printAbove: printAboveSpy,
   }),
 }));
 
@@ -223,6 +226,31 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
 
     // User-facing interrupt warning surfaced.
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('interrupted'));
+  });
+
+  it('the first SIGINT prints the drain notice through the live renderer', async () => {
+    const state = makeState({ A: res() });
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(((() => true) as unknown) as typeof process.stderr.write);
+    printAboveSpy.mockClear();
+    mockProviderDelete.mockImplementation(() => {
+      capturedSigintHandlers[0]!();
+      return Promise.resolve();
+    });
+
+    let text = '';
+    try {
+      await runDestroyForStack('TestStack', state, makeCtx());
+      text = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    } finally {
+      stderrSpy.mockRestore();
+    }
+
+    expect(printAboveSpy).toHaveBeenCalledOnce();
+    expect(text).toContain(
+      'Interrupted — finishing in-flight deletes, then flushing state and releasing the lock'
+    );
   });
 
   it('schedules no deletes in subsequent levels once draining (level-boundary gate)', async () => {
