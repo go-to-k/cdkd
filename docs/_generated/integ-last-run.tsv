@@ -21,7 +21,7 @@ appsync	2026-09-27T13:48:31Z	PASS	180	verify.sh	PR #3854 merge-gate run; rc ok, 
 asset-auto-create	2026-09-29T16:32:35Z	PASS	176	verify.sh	rc ok, orph clean; fixture-chosen region (#4114 final build)
 asset-bootstrap	2026-09-29T16:32:35Z	PASS	166	verify.sh	rc ok, orph clean; eu-west-1 (#4114 final build)
 asset-migration	2026-09-29T16:32:35Z	PASS	646	verify.sh	rc 0 in eu-west-1, 0 orphans (#4114 final build)
-aws-custom-resource	2026-08-12T08:12:11Z	PASS	77	verify.sh	#1674 lane; CR invoke path, 4 del/0 err, 0 orph
+aws-custom-resource	2026-10-01T03:26:48Z	PASS	121	verify.sh	rc ok, orph clean; #4255 CR invoke/readiness waiter (4 del/0 err)
 backup	2026-09-04T17:28:05Z	PASS	248	verify.sh	rc 0, destroy 4 deleted 0 errors, orph clean; 4 phases, both polarities of the stateful guard (#2553)
 basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 0 orphans
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
@@ -67,7 +67,7 @@ cross-stack-secret-import	2026-09-29T02:39:47Z	PASS	411	verify.sh	PR #4003 (#288
 custom-resource-getatt-data	2026-09-28T09:01:57Z	PASS	90	verify.sh	rc ok, orph clean, embedded arm (#2453)
 custom-resource-masked-service-token	2026-09-28T21:40:21Z	PASS	156	verify.sh	rc ok, orph clean; #3938 + #3976 refusal + #3960 seeded arms; pre-#3976 probe RED at R1
 custom-resource-noecho-nested	2026-09-30T10:20:59Z	PASS	1042	verify.sh	rc ok, orph clean; PR #4221 (#4094 bound child params + conditions)
-custom-resource-provider	2026-09-29T11:06:39Z	PASS	541	verify.sh	rc ok, orph clean; #2122 rebased head (pre-fix run red at the exit-2 wording)
+custom-resource-provider	2026-10-01T03:26:48Z	PASS	778	verify.sh	rc ok, orph clean; #4255 waiter-payload rebased head (26 del/0 err)
 custom-resource-resolved-secret	2026-09-28T23:14:51Z	PASS	316	verify.sh	rc ok, orph clean; 8-d: guard reverted -> A/B/U leak RED, new-side-only -> U replay leak RED
 data-analytics	2026-09-29T12:11:12Z	PASS	226	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
