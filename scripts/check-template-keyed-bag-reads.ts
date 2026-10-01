@@ -82,6 +82,7 @@ import { readFileSync } from 'node:fs';
 export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-function-resolver.ts',
   'src/deployment/intrinsic-resolver/support.ts',
+  'src/deployment/intrinsic-resolver/getatt.ts',
   'src/analyzer/template-parser.ts',
 ];
 

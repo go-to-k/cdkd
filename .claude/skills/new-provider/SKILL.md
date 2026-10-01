@@ -54,7 +54,7 @@ The user provides an AWS resource type like `AWS::SES::EmailIdentity`.
      treats this as "skipped" rather than failure.
    - `attributes: {}` is fine; `Fn::GetAtt` reconstructs missing
      attributes at deploy time via `constructAttribute` (see
-     `src/deployment/intrinsic-function-resolver.ts`).
+     `src/deployment/intrinsic-resolver/getatt.ts`).
    - For services whose `ListTags` returns a `Record<string,string>`
      map instead of a `Tag[]` array (Lambda, SQS), read the value at
      key `CDK_PATH_TAG` directly instead of going through
