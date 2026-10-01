@@ -73,7 +73,7 @@ Both guards sit at the state LOAD, above the first read.
 - `destroy-runner.ts`: above `Object.keys(state.resources).length`, which the
   fast path sits immediately below. `regionForState` is hoisted above it so the
   refusal can name the record.
-- the engine deploy flow: beside `refuseMalformedOutputs`, above every
+- the deploy flow: beside `refuseMalformedOutputs`, above every
   read of the bag. **Not** at `DiffCalculator.calculateDiff`, though that is the
   chokepoint both diff callers share: the engine's load dominates it,
   and `cdkd diff` keeps its repair-and-warn half at its own load, so the preview
