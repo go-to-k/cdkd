@@ -13,7 +13,7 @@ Sibling containers:
 
 ## FOUR call sites
 
-`destroy-runner.ts`, `deploy-engine.ts`,
+`destroy-runner.ts`, `deploy-engine/deploy-flow.ts`,
 `src/provisioning/providers/nested-stack-provider.ts` — that `delete()` counts the
 CHILD's bag one call BEFORE handing the record to `runDestroyForStack`, so the
 runner's guard alone cannot see a `null` or absent child bag — the bare `TypeError`
@@ -73,9 +73,9 @@ Both guards sit at the state LOAD, above the first read.
 - `destroy-runner.ts`: above `Object.keys(state.resources).length`, which the
   fast path sits immediately below. `regionForState` is hoisted above it so the
   refusal can name the record.
-- `deploy-engine.ts`: beside `refuseMalformedOutputs`, above the debug line and
-  every later read of the bag. **Not** at `DiffCalculator.calculateDiff`, though
-  that is the chokepoint both diff callers share: the engine's load dominates it,
+- `deploy-engine/deploy-flow.ts`: beside `refuseMalformedOutputs`, above every
+  read of the bag. **Not** at `DiffCalculator.calculateDiff`, though that is the
+  chokepoint both diff callers share: the engine's load dominates it,
   and `cdkd diff` keeps its repair-and-warn half at its own load, so the preview
   the deploy refusal points at still works.
 

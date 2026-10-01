@@ -3057,7 +3057,7 @@ function namedPropertyBagsClause(
  *
  * **It must be true under `cdkd deploy --dry-run` as well**, and the first
  * revision was not. Provisioning is gated AFTER the diff
- * (`deploy-engine.ts`'s `if (this.options.dryRun)` return sits below
+ * (`deploy-engine/deploy-flow.ts`'s `if (this.options.dryRun)` return sits below
  * `calculateDiff`), so a dry run reaches this refusal and aborts — while the
  * text asserted "it would DELETE and re-create resources", which a dry run
  * would not do. A refusal that misstates what was about to happen is the same

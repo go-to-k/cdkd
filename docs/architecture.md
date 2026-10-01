@@ -325,7 +325,7 @@ section is compared separately by `outputs-diff.ts`, called from
 This exists because an **Outputs-only** change — one whose `Resources` section
 is byte-identical — is a real change the deploy performs: `cdkd deploy` persists
 it and republishes the exports index (issue #875, see the no-change branch of
-`deploy-engine.ts`). Without the preview half, such a stack printed
+`deploy-engine/deploy-flow.ts`). Without the preview half, such a stack printed
 `No changes detected` and `cdkd diff --fail` exited `0` while the apply did
 write new outputs. The motivating chain is a producer that gains an
 `Export.Name` because a downstream stack started referencing it: the diff
@@ -461,7 +461,7 @@ break a consumer — was hidden the same way.
   parses back to the same values ([#4045](https://github.com/go-to-k/cdkd/issues/4045)).
 
 The module is a deliberate SECOND implementation rather than shared code: the
-deploy-side block lives in `deploy-engine.ts`, which is in the `integ-destroy`
+deploy-side block lives in `deploy-engine/`, which is in the `integ-destroy`
 merge-gate scope. `tests/unit/analyzer/outputs-diff.test.ts`
 pays for that trade with an anti-drift fence asserting the mirrored
 deploy-side semantics still hold.

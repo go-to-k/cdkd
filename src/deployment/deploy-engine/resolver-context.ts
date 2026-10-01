@@ -14,12 +14,11 @@ declare module '../deploy-engine.js' {
  * One entry the resolver pushed into `ResolverContext.redactedAttributeReads`
  * (issue [#2847](https://github.com/go-to-k/cdkd/issues/2847)).
  *
- * An INLINE TYPE-ONLY alias rather than a named import, for the reason this
- * file states at its other resolver types: 72 of the 80 suites that `vi.mock`
+ * An INLINE TYPE-ONLY alias rather than a named import: 72 of the 80 suites that `vi.mock`
  * `intrinsic-function-resolver.js` use a bare factory exposing only
  * `getAccountInfo`, so a new VALUE import reds them with a missing-export
  * error. A type import is erased at build time and reds nothing — which is
- * also why the two consumers below can now share the resolver's own
+ * also why the consumer below can share the resolver's own
  * definition instead of re-deriving the structure from a rendered string.
  */
 type RedactedAttributeRead = import('../intrinsic-function-resolver.js').RedactedAttributeRead;

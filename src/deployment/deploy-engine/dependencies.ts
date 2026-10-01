@@ -9,7 +9,7 @@ import { DagExecutor } from '../dag-executor.js';
 declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
-    hasPending: OmitThisParameter<typeof hasPending>;
+    hasPending<T>(executor: DagExecutor<T>): boolean;
     /** @internal */
     buildDeletionDependencies: OmitThisParameter<typeof buildDeletionDependencies>;
     /** @internal */

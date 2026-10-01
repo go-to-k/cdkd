@@ -204,7 +204,7 @@ export interface CommandInterruptWatch {
  * command exited 0, reporting full success with the events left behind. With
  * the per-stack flag accurate, one read serves both directions.
  *
- * Note on the counterpart contract: `deploy-engine.ts` removes its own SIGINT
+ * Note on the counterpart contract: `deploy-engine/deploy-flow.ts` removes its own SIGINT
  * handler before releasing its lock, which is safe only because `deploy.ts`'s
  * top-level handler outlives it. The destroy side now has the same property
  * for the same reason — the per-stack lock handler's removal

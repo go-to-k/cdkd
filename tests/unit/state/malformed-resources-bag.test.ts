@@ -3197,7 +3197,16 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // flow reaches through ONE call, placed below that flow's guard.
     const flow = code('src/deployment/deploy-engine/deploy-flow.ts');
     expect(flow.split('this.executeDeployment(').length - 1, 'the deploy flow calls executeDeployment more than once').toBe(1);
+    expect(flow.indexOf('refuseMalformedOrphans('), 'the deploy flow lost its orphans guard').toBeGreaterThan(-1);
     expect(flow.indexOf('refuseMalformedOrphans(')).toBeLessThan(flow.indexOf('this.executeDeployment('));
+    expect(flow.indexOf('refuseMalformedOrphanRecords('), 'the deploy flow lost its row guard').toBeGreaterThan(-1);
+    expect(flow.indexOf('refuseMalformedOrphanRecords(')).toBeLessThan(flow.indexOf('this.executeDeployment('));
+    // The flow's anchor is its first SAVE, so a read added ABOVE the guard in
+    // the same method would slip under it: there must be none.
+    expect(
+      reads(flow.slice(0, flow.indexOf('refuseMalformedOrphans('))),
+      'deploy-engine/deploy-flow.ts reads the orphans container above its guard'
+    ).toBe(0);
     const execCallers = spawnSync(
       'git',
       ['grep', '-l', '-e', 'executeDeployment(', '-e', 'persistStateAfterOutputFailure(', '--', 'src'],
@@ -3210,6 +3219,20 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       'src/deployment/deploy-engine/deploy-flow.ts',
       'src/deployment/deploy-engine/execute.ts',
     ]);
+    // ...and every read in that module sits inside those two functions, so a
+    // helper added beside them owes its own anchor rather than riding this one.
+    const execute = code('src/deployment/deploy-engine/execute.ts');
+    const executeFnBody = (name: string): string => {
+      const at = execute.indexOf(`export async function ${name}(`);
+      expect(at, `${name} moved or was renamed`).toBeGreaterThan(-1);
+      return execute.slice(at, execute.indexOf('\n}\n', at));
+    };
+    expect(reads(execute), 'execute.ts no longer reads the container').toBeGreaterThan(0);
+    expect(
+      reads(execute),
+      'deploy-engine/execute.ts reads the orphans container outside executeDeployment / ' +
+        'persistStateAfterOutputFailure: give that path its own ANCHORS entry.'
+    ).toBe(reads(executeFnBody('executeDeployment')) + reads(executeFnBody('persistStateAfterOutputFailure')));
     // `deploy-engine/rollback.ts` is excluded because every container read it
     // holds is inside `adoptRollbackOrphans`, whose only caller is the engine's
     // ROW-anchored `this.adoptRollbackOrphans(`. A read anywhere else in that

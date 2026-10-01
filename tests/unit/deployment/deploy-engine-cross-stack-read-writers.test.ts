@@ -1,7 +1,8 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vite-plus/test';
-import { familyLocation, readEngineFamily } from '../_engine-family.js';
+import ts from 'typescript-v6';
+import { ENGINE_FAMILY, familyLocation, readEngineFamily } from '../_engine-family.js';
 
 /**
  * Every writer of `imports` / `outputReads` in the engine must route
@@ -59,7 +60,9 @@ function stripComments(source: string): string {
     .split('\n')
     .map((line) => (line.trim().startsWith('//') ? '' : line))
     .join('\n')
-    .replace(/\/\*[\s\S]*?\*\//g, '');
+    // Each block comment becomes as many newlines as it spanned, so a
+    // reported line maps back to the real file.
+    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ''));
 }
 
 /**
@@ -190,15 +193,30 @@ describe('every cross-stack-read writer in the engine is accounted for (#2057)',
     // `observed-properties-redaction-population` relies on. The save sites
     // moved into the split modules, so the family is read, with a floor so an
     // emptied scan cannot pass.
-    const source = stripComments(readEngineFamily());
-    const calls = [...source.matchAll(/stateBackend\.saveState\(/g)].map((m) => m.index);
+    // Parsed, so a save reached through an alias (`const b = this.stateBackend;
+    // b.saveState(...)`) is counted, and the STATE argument itself is checked
+    // rather than any text inside the call.
+    const calls: { where: string; stateArg: string | undefined }[] = [];
+    for (const rel of ENGINE_FAMILY) {
+      const sf = ts.createSourceFile(rel, readFileSync(`${REPO_ROOT}${rel}`, 'utf8'), ts.ScriptTarget.Latest, true);
+      const walk = (node: ts.Node): void => {
+        if (
+          ts.isCallExpression(node) &&
+          ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === 'saveState'
+        ) {
+          const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+          calls.push({ where: `${rel}:${line}`, stateArg: node.arguments[2]?.getText(sf) });
+        }
+        ts.forEachChild(node, walk);
+      };
+      walk(sf);
+    }
     expect(calls.length, 'the engine save sites moved or vanished — re-derive').toBe(8);
-    for (const at of calls) {
-      const args = source.slice(at, source.indexOf(');', at));
-      expect(
-        args.includes('this.withParentInfo('),
-        `${familyLocation(source.slice(0, at).split('\n').length)} saves without withParentInfo`
-      ).toBe(true);
+    for (const { where, stateArg } of calls) {
+      expect(stateArg?.startsWith('this.withParentInfo('), `${where} saves without withParentInfo`).toBe(
+        true
+      );
     }
   });
 
