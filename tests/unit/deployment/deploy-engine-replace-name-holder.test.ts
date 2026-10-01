@@ -270,7 +270,7 @@ describe('deploy --replace proves the old resource holds the SENT name before de
     expect(err).not.toBeNull();
     expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
     expect(isMarkedNonRetryable(err)).toBe(true);
-    expect(err!.message).toContain(`cdkd's rule generates Name "${GENERATED}"`);
+    expect(err!.message).toContain(`the cdkd naming rule generates Name "${GENERATED}"`);
     expect(err!.message).toContain('the resource being replaced (app-stream)');
     // The UNDECIDED arm: the diagnosis cannot name another holder, and says
     // so once.

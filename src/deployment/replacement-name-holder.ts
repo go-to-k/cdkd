@@ -1139,8 +1139,11 @@ function rewrittenNameHolds(
     : (value: string): string => value;
   if (input.physicalId !== '' && holderIdNames(fold(input.physicalId), fold(sent))) return HOLDS;
   return unproven(
-    `${wanted}, and cdkd cannot show that ${newResource} holds that name (this type's provider ` +
-      `rewrites the names it sends, so a recorded name is no proof)`
+    // No apostrophe in a diagnosis: it is printed on the rollback refusal's
+    // `Collision diagnosis:` line beside JSON-quoted names, and an odd `'`
+    // pairs with one inside them when pasted (go-to-k/cdkd#4265).
+    `${wanted}, and cdkd cannot show that ${newResource} holds that name (the provider of this ` +
+      `type rewrites the names it sends, so a recorded name is no proof)`
   );
 }
 
@@ -1341,7 +1344,7 @@ function holderVerdict(
     );
   }
   const wanted = generatedName
-    ? `${v.create} named no ${labels}, and cdkd's rule generates ` +
+    ? `${v.create} named no ${labels}, and the cdkd naming rule generates ` +
       `${r.shown(namePath.join('.'))} ${r.quoted(wantName)} for it`
     : `${v.create} asked for ${r.shown(namePath.join('.'))} ${r.quoted(wantName)}`;
   const same = CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType)

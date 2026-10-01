@@ -365,6 +365,37 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
       expect(line).toContain('***');
     });
 
+    it('a skipped cleanup SHOWS a composite physical id: its line has no command, and the id is the only trace (go-to-k/cdkd#4265)', async () => {
+      // The `|`-composite ids (Route 53, Glue, API Gateway) are never plain, so
+      // the delete-skip sentence would describe them beside a command. Here
+      // the record is already gone and nothing else names the resource, so
+      // the id is printed, bounded in JSON quotes.
+      const composite = 'Z123|www.example.com|A';
+      h.provider.delete = vi.fn().mockResolvedValue({
+        outcome: 'skipped',
+        reason: 'malformed physicalId in state — no delete issued',
+      });
+      const engine = makeEngine(h) as unknown as {
+        deleteReplacedAfterCreate: (...args: unknown[]) => Promise<void>;
+      };
+
+      await engine.deleteReplacedAfterCreate(
+        'Rec',
+        'AWS::Route53::RecordSet',
+        { physicalId: composite, resourceType: 'AWS::Route53::RecordSet', properties: {} },
+        h.provider,
+        {},
+        undefined,
+        undefined,
+        new Map()
+      );
+
+      const line = warnLines().find((l) => l.includes('while cleaning up the replaced resource'));
+      expect(line).toContain(`cdkd did not confirm Rec (${JSON.stringify(composite)}) was deleted`);
+      expect(line).toContain('Delete it manually');
+      expect(line).not.toContain('not a plain identifier');
+    });
+
     it('keeps DELETE → CREATE for a same-name replacement (negative control)', async () => {
       const err = await provision(makeEngine(h), {
         recorded: 'my-fn',

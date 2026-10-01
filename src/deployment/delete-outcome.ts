@@ -1,5 +1,6 @@
 import type { IndeterminateGuard, ResourceDeleteResult } from '../types/resource.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { ROLE_ARN_MAX_CODE_POINTS, displayIdent } from '../utils/display-safe.js';
+import { physicalIdShownBesideCommand, plainOrDescribed } from '../utils/pasteable-command.js';
 
 /**
  * Shared helpers over {@link ResourceDeleteResult} — originally the deploy-side
@@ -21,8 +22,9 @@ import { displaySafe } from '../utils/display-safe.js';
  * `rollback-executor.ts` delete arms — discarded the value, so the same skip
  * printed as `deleted`, counted as `deleted`, and dropped the state record.
  *
- * **The module must stay a LEAF — no imports beyond the type, ever.** Same
- * reason as `src/provisioning/nested-stack-messages.ts`: both the deploy
+ * **The module must stay a LEAF — no imports beyond the types and
+ * `src/utils/` leaves, ever.** Same reason as
+ * `src/provisioning/nested-stack-messages.ts`: both the deploy
  * engine and the rollback executor consume it, and those two already sit on a
  * dense import ring (engine -> executor -> provider registry -> every
  * provider). A helper that pulled anything else in would close it.
@@ -100,16 +102,83 @@ export function deleteSkippedMessage(
   logicalId: string,
   physicalId: string,
   reason: string,
-  duringClause: string
+  duringClause: string,
+  /**
+   * `commandFreeLine: true` for a caller whose line carries NO command or
+   * flag, where the physical id may be the only trace of a leaked resource:
+   * the id is then always shown, bounded by `displayIdent` (JSON-quoted when
+   * not plain) instead of described. Outside the S1 rule, which concerns a
+   * value beside a command (go-to-k/cdkd#4265).
+   */
+  opts?: { commandFreeLine?: boolean }
 ): string {
   // The three values are state- or provider-sourced, and callers log this
-  // beside `formatResourceLine`'s folded status line: each is folded too, so a
-  // newline in one cannot start a line of the destroy or deploy output
-  // (go-to-k/cdkd#3773). `duringClause` is a caller literal.
+  // beside `formatResourceLine`'s folded status line, so none may start a line
+  // of the destroy or deploy output (go-to-k/cdkd#3773). `duringClause` is a
+  // caller literal, and several callers name a flag in it (`--replace`,
+  // `--revert-failed`) or append a `cdkd` command after it. So each value is
+  // SHOWN only when it is plain, and described otherwise — the same rule for
+  // every caller, decided here (go-to-k/cdkd#4265, go-to-k/cdkd#3950's S1
+  // rule). None of the descriptions holds a newline, so #3773 still holds.
+  // No pointer for a described physical id: where the id can still be read
+  // differs per caller (the state record, the rollback journal). The one
+  // caller with neither puts no command on its line and passes
+  // `commandFreeLine`, so its id is shown.
   return (
-    `cdkd did not confirm ${displaySafe(logicalId)} (${displaySafe(physicalId)}) was ` +
-    `deleted ${duringClause}, so it may still exist: ${displaySafe(reason)}`
+    `cdkd did not confirm ${plainOrDescribed(logicalId, 'logical id')} ` +
+    `(${
+      opts?.commandFreeLine === true
+        ? displayIdent(physicalId, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })
+        : skipPhysicalIdShown(physicalId)
+    }) was ` +
+    `deleted ${duringClause}, so it may still exist: ${skipReasonShown(reason)}`
   );
+}
+
+/**
+ * A physical id as {@link deleteSkippedMessage} shows it: itself when
+ * `displayIdent` is the identity on it at the role-ARN cap (an ARN, a URL or a
+ * bare name the operator needs to find the resource), it stays inert with its
+ * quotes stripped (`isInertUnquoted`, the repo's one spelling of the shell
+ * rule, which also refuses a `~` after `=` or `:`), and it does not start with
+ * `-`; a description otherwise.
+ */
+function skipPhysicalIdShown(physicalId: string): string {
+  // The repo's one rule, shared with the rollback refusals (no mask arm: the
+  // callers mask the whole sentence afterwards).
+  return physicalIdShownBesideCommand(physicalId) ?? 'a physical id that is not a plain identifier';
+}
+
+/**
+ * The characters a skip reason may hold to be shown: letters, digits, a space
+ * and the prose punctuation `. , : / _ - — –`, plus a plural `(s)` straight
+ * after a letter (`2 resource(s)`) and a MEDIAL `~` (a nested stack's
+ * `Parent~Child` name; only a leading `~` expands). None of them substitutes,
+ * separates a command, redirects, quotes, globs or expands. An ALLOW-list, as
+ * `isPasteableIdent` is, because the set of shell-active characters nobody
+ * thought of is unbounded.
+ *
+ * What it does NOT promise: a selection can still START inside the reason, at
+ * a `. `, `: ` or ` — ` it holds, and then the next word is the command that
+ * runs. So the reason's WORDS must be cdkd's own: every producer passes a
+ * state-sourced fragment through `plainOrDescribed` before putting it in a
+ * `'skipped'` reason (the nested-stack provider's child name), never
+ * `displaySafe` alone (security review of #4297). Only `'skipped'` outcomes
+ * reach this sentence (`deleteSkipReason` selects them); a provider's
+ * `'partial'` `orphanReason`, which can embed a physical id raw, is rendered
+ * elsewhere and is not held to this rule.
+ */
+const PLAIN_SKIP_REASON =
+  /^(?:[\p{L}\p{N} .,:/_\u2013\u2014-]|(?<=\p{L})\(s\)|(?<=[\p{L}\p{N}])~(?=[\p{L}\p{N}]))+$/u;
+
+/**
+ * A skip reason as {@link deleteSkippedMessage} shows it: itself when it is
+ * plain prose ({@link PLAIN_SKIP_REASON}), a description otherwise. cdkd's own
+ * reasons are all plain; one that embeds a state value carrying anything else
+ * (a nested stack name, a physical id) is described.
+ */
+function skipReasonShown(reason: string): string {
+  return PLAIN_SKIP_REASON.test(reason) ? reason : 'a reason that cannot be shown safely here';
 }
 
 /**
