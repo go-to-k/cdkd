@@ -462,16 +462,17 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
       const lines = allWarn().split('\n');
       // Positive control: the skip summary ran.
       expect(allWarn()).toContain('partially destroyed');
+      // go-to-k/cdkd#4175: such a key is skipped before any provider, so the
+      // child was never touched and the target is THIS stack's own record,
+      // named plainly; the forged row prints nowhere.
+      expect(mockProviderDelete).not.toHaveBeenCalled();
       expect(lines.filter((l) => l.startsWith('Drop the record with: '))).toEqual([
-        "Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1",
+        'Drop the record with: cdkd state orphan TestStack --stack-region us-east-1',
       ]);
       expect(lines.filter((l) => l.startsWith('Inspect it with: '))).toEqual([
-        "Inspect it with: cdkd state show '<stack>' --stack-region us-east-1",
+        'Inspect it with: cdkd state show TestStack --stack-region us-east-1',
       ]);
-      expect(allWarn()).toContain(
-        "A target that is not a plain identifier is printed as a quoted '<stack>' or '<region>' " +
-          "placeholder; list the records as stored with 'cdkd state list --long'."
-      );
+      expect(allWarn()).not.toContain('--all --force');
     }
   });
 

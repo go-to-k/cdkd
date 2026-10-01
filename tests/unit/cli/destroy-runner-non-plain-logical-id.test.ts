@@ -228,21 +228,6 @@ describe('runDestroyForStack refuses a non-plain logical id before any provider 
     expect(out).not.toContain('$(');
   });
 
-  it('describes the key in the rollback-orphan listing, keeping the physical id', async () => {
-    const state = makeState({ Bucket: res() });
-    state.orphans = [
-      { logicalId: HOSTILE, orphanedAt: 1, state: res({ physicalId: 'orphan-bucket-1' }) },
-    ];
-
-    await runDestroyForStack('TestStack', state, makeCtx());
-
-    const out = stripAnsi(everything());
-    expect(out).toContain(
-      '  - a logical id that is not a plain identifier (AWS::S3::Bucket)  orphan-bucket-1'
-    );
-    expect(out).not.toContain('$(');
-  });
-
   it("describes the key in the destroy's own implicit-dependency debug lines", async () => {
     await runDestroyForStack(
       'TestStack',

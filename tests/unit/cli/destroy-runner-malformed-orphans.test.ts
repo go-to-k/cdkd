@@ -484,8 +484,11 @@ describe('runDestroyForStack refuses an unusable orphan ROW (go-to-k/cdkd#3500)'
     expect(rows, 'the resource row was never listed, or listed more than once').toHaveLength(1);
     expect(rows[0], 'the forged newline survived, so the row can still BREAK').not.toContain('\n');
     expect(rows[0], 'the escape run reached the terminal').not.toContain(String.fromCharCode(0x1b));
-    // The real key is still readable — sanitizing may not cost the operator the name.
-    expect(rows[0]).toContain('Real');
+    // go-to-k/cdkd#4175: a key that is not a plain identifier is DESCRIBED, as
+    // on every delete-path line: it would run when pasted, and the destroy
+    // skips it rather than deleting it.
+    expect(rows[0]).toContain('a logical id that is not a plain identifier');
+    expect(rows[0]).not.toContain('DeleteMe');
   });
 
   it('SANITIZES all THREE listing fields, and cuts none of an identifier', async () => {

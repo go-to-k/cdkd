@@ -226,7 +226,12 @@ describe('runDestroyForStack - #808 deployment events', () => {
     }
   });
 
-  it('renders a planted logical id inert in both failed-delete lines (issue #3811)', async () => {
+  it('never reaches the failed-delete lines with a planted logical id (issues #3811, #4175)', async () => {
+    // go-to-k/cdkd#4175: a key that is not a plain identifier is SKIPPED before
+    // any provider sees it, so the failed-delete arms this case once drove can
+    // no longer be reached by one. What #3811 asked of them still holds over
+    // everything the run prints: no planted control character, and the forged
+    // `✓ Bar` row on no line of its own.
     const planted = 'X\r\n  ✓ Bar (AWS::S3::Bucket) deleted\x1b[2K‮';
     const resource = (type: string) => ({
       physicalId: 'phys',
@@ -236,39 +241,42 @@ describe('runDestroyForStack - #808 deployment events', () => {
       dependencies: [],
       provisionedBy: 'sdk' as const,
     });
-    const provider = {
-      delete: vi.fn(async (logicalId: string) => {
-        if (logicalId.startsWith('Timeout')) {
-          throw new ResourceTimeoutError(logicalId, 'AWS::SNS::Topic', 'us-east-1', 5, 'DELETE', 5);
-        }
-        throw new Error('boom');
-      }),
-    };
+    const provider = { delete: vi.fn(async () => { throw new Error('boom'); }) };
     const state = makeState({
       [`Timeout${planted}`]: resource('AWS::SNS::Topic'),
       [`Plain${planted}`]: resource('AWS::SQS::Queue'),
     });
 
-    await runDestroyForStack('S', state, makeContext({ provider, recorder: new CollectingRecorder() }));
+    const result = await runDestroyForStack(
+      'S',
+      state,
+      makeContext({ provider, recorder: new CollectingRecorder() })
+    );
 
-    const failed = logError.mock.calls
-      .map((c) => String(c[0]))
-      .filter((l) => l.includes('Failed to delete'));
-    expect(failed.some((l) => l.includes('TimeoutX'))).toBe(true);
-    expect(failed.some((l) => l.includes('PlainX'))).toBe(true);
-    for (const line of failed) {
-      for (const bad of ['\x1b', '\r', '\n', '‮']) expect(line).not.toContain(bad);
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(2);
+    expect(result.errorCount).toBe(0);
+    // cdkd's own SGR colour codes stripped; the planted `ESC[2K` is not one.
+    const printed = [logInfo, logWarn, logError].flatMap((spy) =>
+      // eslint-disable-next-line no-control-regex
+      spy.mock.calls.flatMap((c) => c.map((a: unknown) => String(a).replace(/\x1b\[[0-9;]*m/g, '')))
+    );
+    expect(printed.some((l) => l.includes('a logical id that is not a plain identifier'))).toBe(true);
+    for (const line of printed) {
+      for (const bad of ['\x1b', '\r', '‮']) expect(line).not.toContain(bad);
+      expect(line.split('\n').some((l) => l.trimStart().startsWith('✓ Bar'))).toBe(false);
     }
-    // The timeout arm prints the error's own MESSAGE as the second argument,
-    // and that message names the logical id too (go-to-k/cdkd#3773): every
-    // line of it must still be one cdkd wrote, so the forged `✓ Bar` row
-    // appears on no line of its own.
-    const timeoutCall = logError.mock.calls.find((c) => String(c[0]).includes('TimeoutX'))!;
-    const body = String(timeoutCall[1]);
+    // The timeout error itself still describes such an id, for any other caller.
+    const body = new ResourceTimeoutError(
+      `Timeout${planted}`,
+      'AWS::SNS::Topic',
+      'us-east-1',
+      5,
+      'DELETE',
+      5
+    ).message;
     expect(body).toContain('Resource a logical id that is not a plain identifier (AWS::SNS::Topic)');
     expect(body.split('\n')).toHaveLength(5);
-    expect(body.split('\n').some((l) => l.trimStart().startsWith('✓'))).toBe(false);
-    for (const bad of ['\x1b', '\r', '‮']) expect(body).not.toContain(bad);
   });
 
   it('describes a planted resource TYPE in the timeout message, newline or padded (go-to-k/cdkd#3773)', async () => {
@@ -329,13 +337,16 @@ describe('runDestroyForStack - #808 deployment events', () => {
     expect(new ResourceTimeoutError('Cr', atCap, 'us-east-1', 5, 'CREATE', 5).message).toContain(`(${atCap})`);
   });
 
-  it('renders a planted logical id and type inert in the slow-delete warn (issue #3811)', async () => {
+  it('renders a planted type inert in the slow-delete warn (issue #3811)', async () => {
     const planted = 'X\r\n  ✓ Bar (AWS::S3::Bucket) deleted\x1b[2K‮';
     const provider = {
       delete: vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 50))),
     };
+    // A PLAIN key (go-to-k/cdkd#4175 skips any other before the provider, so
+    // the slow-delete timer never starts for one); the planted TYPE still
+    // reaches the warn.
     const state = makeState({
-      [`Slow${planted}`]: {
+      Slow: {
         physicalId: 'phys',
         resourceType: `AWS::SNS::Topic${planted}`,
         properties: {},
@@ -354,7 +365,7 @@ describe('runDestroyForStack - #808 deployment events', () => {
     const warn = logWarn.mock.calls
       .map((c) => String(c[0]))
       .find((l) => l.includes('has been deleting'));
-    expect(warn).toContain('SlowX');
+    expect(warn).toContain('Slow (');
     expect(warn).toContain('AWS::SNS::TopicX');
     for (const bad of ['\x1b', '\r', '\n', '‮']) expect(warn).not.toContain(bad);
   });

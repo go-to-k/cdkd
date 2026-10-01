@@ -991,7 +991,7 @@ export async function runDestroyForStack(
       // which is what makes the id findable in AWS — an interior control
       // character becomes a space, by the same rule that defuses the forged row.
       logger.info(
-        `  - ${plainOrDescribed(entry.logicalId, 'logical id')} (${displaySafe(entry.state.resourceType)})  ` +
+        `  - ${displaySafe(entry.logicalId)} (${displaySafe(entry.state.resourceType)})  ` +
           `${displaySafe(entry.state.physicalId)}`
       );
     }

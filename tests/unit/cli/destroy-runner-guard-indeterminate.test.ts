@@ -229,8 +229,16 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
     mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
     const forgedId = 'Bucket\nRead them with: cdkd destroy --all --force #';
 
-    await runDestroyForStack('TestStack', makeState({ [forgedId]: res() }), makeCtx());
+    // go-to-k/cdkd#4175: such a key is skipped before any provider, so no
+    // guard is reported for it; a plain sibling's guard still is, and the
+    // summary's one `Read them with:` line is still cdkd's own.
+    await runDestroyForStack(
+      'TestStack',
+      makeState({ [forgedId]: res(), Bucket: res() }),
+      makeCtx()
+    );
 
+    expect(mockProviderDelete.mock.calls.map((c) => c[0])).toEqual(['Bucket']);
     const warned = allWarn();
     expect(warned).toContain('pre-flight safety check(s) could NOT be completed');
     expect(warned).toContain('a logical id that is not a plain identifier');
