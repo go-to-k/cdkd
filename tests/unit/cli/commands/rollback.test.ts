@@ -2916,7 +2916,7 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     const lines = info.mock.calls.map((c) => String(c[0]));
     expect(
       lines.some((l) =>
-        l.includes('(nested stack a nested stack name that is not a plain identifier: no journal record')
+        l.includes('(nested stack a name that is not a plain identifier: no journal record')
       )
     ).toBe(true);
     expect(lines.join('\n')).not.toContain('cdkd destroy');

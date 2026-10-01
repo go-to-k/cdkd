@@ -1450,7 +1450,7 @@ async function previewNestedChildRevert(
   // Named only when plain, described otherwise, for the reason
   // `stackRegionShown` gives: this line is part of the run that can end in a
   // `Re-run with:` row (go-to-k/cdkd#3760).
-  const shown = plainOrDescribed(childStackName, 'nested stack name');
+  const shown = plainOrDescribed(childStackName, 'name');
   if (runId === undefined) {
     return [
       `      (nested stack ${shown}: this segment carries no deploy run id — its revert will FAIL ` +

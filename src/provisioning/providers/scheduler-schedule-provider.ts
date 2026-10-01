@@ -29,7 +29,11 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { displaySafe, isPasteableIdent } from '../../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
-import { hasClauseBreak, isInertUnquoted } from '../../utils/pasteable-command.js';
+import {
+  hasClauseBreak,
+  isInertUnquoted,
+  plainOrDescribed,
+} from '../../utils/pasteable-command.js';
 import { isAwsCliLiteral } from '../replacement-protection-advice.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import {
@@ -71,6 +75,11 @@ import {
  * is impossible at the API level. The deploy engine's `--replace` fallback
  * recreates the schedule in the new group.
  */
+
+/** A schedule group as the GroupName refusal prints it (go-to-k/cdkd#4239). */
+function groupShown(group: string): string {
+  return plainOrDescribed(group, 'group name');
+}
 export class SchedulerScheduleProvider implements ResourceProvider {
   private client: SchedulerClient | undefined;
   private readonly providerRegion = ambientRegion();
@@ -333,8 +342,11 @@ export class SchedulerScheduleProvider implements ResourceProvider {
         // where it is built, like the debug line below: a secret-derived group
         // reaches this refusal RESOLVED on the desired side (go-to-k/cdkd#4275).
         // `DeployEngine` also masks a thrown message; this does not rely on it.
-        `GroupName addresses the schedule (from ${mask(previousGroupName ?? 'default')} ` +
-          `to ${mask(groupName ?? 'default')}); ` +
+        // Each group is then named only when plain and described otherwise:
+        // it is template-chosen, unvalidated here, and printed on the line
+        // that names `cdkd deploy --replace` (go-to-k/cdkd#4214's rule).
+        `GroupName addresses the schedule (from ${groupShown(mask(previousGroupName ?? 'default'))} ` +
+          `to ${groupShown(mask(groupName ?? 'default'))}); ` +
           `re-run with \`cdkd deploy --replace\` to recreate it in the new group ` +
           `(--replace is a boolean flag and takes no resource id; it applies to every ` +
           `resource in the run whose in-place update is refused)`

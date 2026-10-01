@@ -281,6 +281,25 @@ describe('SchedulerScheduleProvider', () => {
       });
     }, 60_000);
 
+    it('a payload group name is described, not printed, beside cdkd deploy --replace (go-to-k/cdkd#4239)', async () => {
+      const messages: Array<{ value: string; message: string }> = [];
+      for (const { value } of PAYLOADS) {
+        const error = await provider
+          .update('Sched', 'my-sched', TYPE, { ...BASE_PROPS, GroupName: value }, { ...BASE_PROPS })
+          .catch((e: unknown) => e);
+        messages.push({ value, message: error instanceof Error ? error.message : String(error) });
+      }
+      withPasteDir((dir) => {
+        for (const { value, message } of messages) {
+          expect(message, value).toContain(
+            `(from ${GROUP} to a group name that is not a plain identifier); re-run with`
+          );
+          expect(message, value).not.toContain(value);
+          expect(spansThatRun(message, dir), value).toEqual([]);
+        }
+      });
+    }, 120_000);
+
     it('treats a custom-group -> default-group move as a GroupName change too', async () => {
       const { GroupName: _drop, ...noGroup } = BASE_PROPS;
       await expect(
