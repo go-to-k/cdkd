@@ -100,7 +100,8 @@ and never reads the flag under test. Two more vacuity shapes:
 - **When a fix REMOVES a behaviour, an assertion that it HAPPENS goes
   over-determined, not red; when it RESHAPES a printed line, an anchored grep
   goes red only when someone runs that fixture** (go-to-k/cdkd#4194's appended
-  flags broke one, unseen until go-to-k/cdkd#4328 ran it). Sweep by the assertion's SHAPE, reaching
+  flags broke one, unseen until go-to-k/cdkd#4328 ran it). Sweep by the
+  assertion's SHAPE, reaching
   `tests/integration/**/verify.sh`, which no vitest run executes.
 
 ### 8-e. Watching runs and pollers

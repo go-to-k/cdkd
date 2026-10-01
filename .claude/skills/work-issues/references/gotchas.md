@@ -44,8 +44,8 @@
 - **Qualify every published issue/PR reference as `owner/repo#N`** — a bare `#N`
   renders against whichever repo reads it.
 - **An agent KILLED by a usage limit or a 429 keeps its context — `SendMessage`
-  it, never re-dispatch**, telling it its OWN reviewer subagents died too, so it
-  re-dispatches them (twice in the 2026-10-01 run, every lane at once);
+  it, never re-dispatch**, and tell it its OWN reviewer subagents died too: only
+  it can resume them (twice in the 2026-10-01 run, every lane at once);
   **read the TREE and the DIFF first**: it may
   already have committed, pushed and opened the PR, and **uncommitted changes
   there may be the round's real fix, not an abandoned probe**; §5-g covers one

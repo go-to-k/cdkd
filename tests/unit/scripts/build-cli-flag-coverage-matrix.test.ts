@@ -156,6 +156,20 @@ describe('scanFlagsInShellScript', () => {
     expect(scanFlagsInShellScript(sh).has('--force')).toBe(true);
   });
 
+  it('counts a flag AFTER a mid-line `#` (a string, ${#var}, $#, a trailing comment)', () => {
+    const sh = [
+      'cdkd deploy "a#b" --stack A',
+      'echo ${#arr[@]} --verbose',
+      '[ $# -gt 0 ] && cdkd destroy --force',
+      'cdkd diff # --strict',
+    ].join('\n');
+    const result = scanFlagsInShellScript(sh);
+    expect(result.has('--stack')).toBe(true);
+    expect(result.has('--verbose')).toBe(true);
+    expect(result.has('--force')).toBe(true);
+    expect(result.has('--strict')).toBe(true);
+  });
+
   it('does NOT count short-form flags', () => {
     const sh = `cdkd destroy -f -y`;
     const result = scanFlagsInShellScript(sh);

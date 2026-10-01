@@ -36,8 +36,9 @@ repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch:
 when the harness denies `git reset`, push any unpushed commits plainly and take
 `references/gates-and-pr.md` §7's merge arm from that tip; when it denies the
 `--force-with-lease` push, take that arm directly; when it denies the REBASE
-after a flatten, `git reset --soft <pushed tip>` until `git diff --stat HEAD
-origin/<branch>` is empty, then that arm (go-to-k/cdkd#4327). Otherwise:
+after a flatten, `git reset --soft <pushed tip>`, commit and push plainly what
+`git diff --cached --stat` still shows, then that arm (go-to-k/cdkd#4327).
+Otherwise:
 
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
