@@ -3524,8 +3524,10 @@ describe('shape pass: a literal does not vouch for a member a generic converter 
       iface({
         loadBalancers: { kind: 'array', refName: 'LoadBalancer' },
         vpcLatticeConfigurations: { kind: 'array', refName: 'VpcLatticeConfiguration' },
+        pair: { kind: 'ref', refName: 'Pair' },
       }),
     ],
+    ['Pair', iface({ roleArn: { kind: 'scalar' } })],
     [
       'LoadBalancer',
       iface({
@@ -3609,6 +3611,49 @@ describe('shape pass: a literal does not vouch for a member a generic converter 
       'VpcLatticeConfigurations.RoleArn',
       'VpcLatticeConfigurations.TargetGroupArn',
     ]);
+  });
+
+  it('the key pass reports a spread-and-patch parent for every member it does not delete', () => {
+    const whole = new Set<string>();
+    classifyTarget(
+      lowerFresh,
+      nestedKeys,
+      new Set(['advancedConfiguration', 'roleArn', 'targetGroupArn']),
+      new Set<string>(),
+      new Map(),
+      {
+        ...writeEvidence({ vpcLatticeConfigurations: ['roleArn'] }, ['vpcLatticeConfigurations']),
+        handoffExclusions: new Map([['vpcLatticeConfigurations', new Set(['rolearn'])]]),
+      },
+      undefined,
+      undefined,
+      whole
+    );
+    expect([...whole].sort()).toEqual([
+      'VpcLatticeConfigurations.AdvancedConfiguration',
+      'VpcLatticeConfigurations.TargetGroupArn',
+    ]);
+  });
+
+  it('a smaller definition does not claim a larger definition’s whole-delivered parent', () => {
+    // `Pair` fits inside the lattice parent's children, but the parent is an
+    // instance of `VpcLatticeConfiguration`, the larger shape it carries whole.
+    const withPair = {
+      ...definitions,
+      Pair: { AdvancedConfiguration: 'object', RoleArn: 'scalar' },
+    };
+    const pairBucket = classifyTargetShapes(
+      lowerFresh,
+      withPair,
+      sdk,
+      new Set(['AdvancedConfiguration']),
+      new Map(),
+      { nestedKeys, paths: new Set(['VpcLatticeConfigurations.AdvancedConfiguration']) }
+    ).entries.find((e) => e.definition === 'Pair')?.bucket;
+    expect(pairBucket).toBe('provider-handled');
+    expect(
+      latticeBucket(withPair, ['VpcLatticeConfigurations.AdvancedConfiguration'])
+    ).toBe('definition-member-missing');
   });
 });
 
@@ -4446,6 +4491,27 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
   const ecsInterfaces = collectSdkInterfaces(
     resolve(repoRoot, 'node_modules/@aws-sdk/client-ecs/dist-types/models')
   );
+
+  it('reports VpcLatticeConfigurations as delivered whole, which the shape pass relies on (PR #4324)', () => {
+    const ecsService = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::ECS::Service')!;
+    const whole = new Set<string>();
+    classifyTarget(
+      ecsService,
+      keyPaths('VpcLatticeConfigurations', 'PortName', 'RoleArn', 'TargetGroupArn'),
+      new Set(['portName', 'roleArn', 'targetGroupArn']),
+      new Set<string>(),
+      new Map(),
+      evidenceFor('ecs-provider.ts'),
+      undefined,
+      undefined,
+      whole
+    );
+    expect([...whole].sort()).toEqual([
+      'VpcLatticeConfigurations.PortName',
+      'VpcLatticeConfigurations.RoleArn',
+      'VpcLatticeConfigurations.TargetGroupArn',
+    ]);
+  });
 
   it('credits the members of LinuxParameters, and ONLY through the walk', () => {
     // The issue's headline case, against the real `ecs-provider.ts`:

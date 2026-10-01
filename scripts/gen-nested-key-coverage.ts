@@ -5604,13 +5604,20 @@ export function classifyTarget(
       // Deliberately NOT rescued by `providerLiterals`: the CFn spelling
       // appearing somewhere in the file is the loose heuristic this pass exists
       // to stop trusting.
-      // No terminal: only an ANCESTOR (or the parent itself) handed off counts,
-      // never a scope that names this member — that one is a per-member write.
+      // Only an ANCESTOR (or the parent itself) handed off counts, never a scope
+      // that names this member — that one is a per-member write. Filtering the
+      // scopes rather than omitting the terminal keeps a spread-and-patch
+      // exclusion decidable: without a terminal it fails closed to "not whole".
+      const ancestorScopes = new Set(
+        [...writeEvidence.handoffScopes].filter(
+          (s) => s.split('.').length <= parentChain.length
+        )
+      );
       if (
         isHandoffCovered(
-          writeEvidence.handoffScopes,
+          ancestorScopes,
           parentChain.join('.'),
-          undefined,
+          expected,
           writeEvidence.handoffExclusions
         )
       ) {
@@ -5821,7 +5828,9 @@ export function classifyTargetShapes(
   // `LoadBalancer`, which vouched for `VpcLatticeConfiguration.
   // AdvancedConfiguration` while the installed SDK's interface had no such
   // member. A converter that relocates the member (CloudFront's `CachedMethods`)
-  // keeps its credit: nothing else explains its literal.
+  // keeps its credit: nothing else explains its literal. Bound: a literal
+  // explained by something other than a definition (a top-level property, a
+  // read-back, a reverse map) still rescues, the key pass's #1393 residue.
   const childrenByParent = new Map<string, Set<string>>();
   for (const { segments, key } of wholeDelivery?.nestedKeys ?? []) {
     const parent = segments.slice(0, -1).join('.');
@@ -5829,26 +5838,40 @@ export function classifyTargetShapes(
     children.add(key);
     childrenByParent.set(parent, children);
   }
-  const deliveredWholeAt = (definition: string, key: string): boolean => {
-    const members = Object.keys(definitionShapes[definition] ?? {});
-    return (wholeDelivery?.nestedKeys ?? []).some(
-      ({ path, key: k, segments }) =>
-        k === key &&
-        wholeDelivery!.paths.has(path) &&
-        members.every((m) => childrenByParent.get(segments.slice(0, -1).join('.'))?.has(m))
+  const memberNames = (definition: string): string[] =>
+    Object.keys(definitionShapes[definition] ?? {});
+  // A parent is an instance of the LARGEST definition whose members it carries,
+  // so a two-member `{Key, Value}` shape never claims a bigger shape's parent.
+  const isInstanceOf = (definition: string, children: ReadonlySet<string>): boolean => {
+    const fits = (d: string): boolean => memberNames(d).every((m) => children.has(m));
+    const size = memberNames(definition).length;
+    return (
+      fits(definition) &&
+      !Object.keys(definitionShapes).some((d) => memberNames(d).length > size && fits(d))
     );
   };
-  const declaredVerbatimElsewhere = (definition: string, key: string): boolean =>
+  const deliveredWholeAt = (definition: string, key: string): boolean =>
+    (wholeDelivery?.nestedKeys ?? []).some(({ path, key: k, segments }) => {
+      const children = childrenByParent.get(segments.slice(0, -1).join('.'));
+      return (
+        k === key &&
+        wholeDelivery!.paths.has(path) &&
+        children !== undefined &&
+        isInstanceOf(definition, children)
+      );
+    });
+  // No self-exclusion needed: the audited definition's own interface lacks the key.
+  const declaredVerbatimElsewhere = (key: string): boolean =>
     Object.entries(definitionShapes).some(
       ([other, members]) =>
-        key in members &&
+        Object.hasOwn(members, key) &&
         (resolveDefinitionInterface(other, sdkInterfaces, inputReachable)?.members.has(
           styled(key)
         ) ??
           false)
     );
   const literalWithdrawn = (definition: string, key: string): boolean =>
-    deliveredWholeAt(definition, key) && declaredVerbatimElsewhere(definition, key);
+    deliveredWholeAt(definition, key) && declaredVerbatimElsewhere(key);
 
   const entries: NestedShapeClassification[] = [];
   let cleanCount = 0;
