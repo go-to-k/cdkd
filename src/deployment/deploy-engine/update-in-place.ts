@@ -44,7 +44,7 @@ declare module '../deploy-engine.js' {
   }
 }
 
-/** A branch of {@link provisionUpdate}, split out of it (#4350). */
+/** A branch of `provisionUpdate` (`update.ts`), split out of it (#4350). */
 export async function updateInPlace(
   this: DeployEngine,
   {
@@ -237,7 +237,7 @@ export async function updateInPlace(
   // them, so it would refuse. An earlier revision of this comment said
   // the opposite and contradicted its own sibling at the
   // observed-capture site, which relies on that same no-bags refusal. The property-driven replacement
-  // twin above passes `replaceProvider` for the same reason.
+  // twin in `update-replace.ts` passes `replaceProvider` for the same reason.
   let captureProvider = updateProvider;
   const inlinePolicyClaimed = this.inlinePolicyClaimedFor(resourceType, logicalId, stateResources);
   try {
@@ -398,7 +398,7 @@ export async function updateInPlace(
       //
       // `UpdateReplacePolicy: Retain` IS an exemption here since issue
       // #2518, exactly as it is on the property-driven replacement
-      // guard above and for the same reason: the old resource and its
+      // guard in `update-replace.ts` and for the same reason: the old resource and its
       // data survive the replacement (orphaned, not deleted), so there
       // is no data loss for `--force-stateful-recreation` to confirm.
       // Demanding the consent flag for a replacement that destroys
@@ -415,7 +415,7 @@ export async function updateInPlace(
             resourceType,
             currentProps,
             // The observed bag, for the same reason the property-driven
-            // guard above passes it (issue [#2521]).
+            // guard in `update-replace.ts` passes it (issue [#2521]).
             currentResource.observedProperties
           );
       if (statefulReason && this.options.forceStatefulRecreation !== true) {
@@ -446,7 +446,7 @@ export async function updateInPlace(
         // with its state fallback.
         //
         // `markNonRetryable` for the same reason as the property-driven
-        // guard's twin above: a flag plus a state-recorded bag decide
+        // guard's twin in `update-replace.ts`: a flag plus a state-recorded bag decide
         // it, and the message carries a template-controlled logical id
         // into substring-matching classifiers.
         throw markNonRetryable(
@@ -536,11 +536,11 @@ export async function updateInPlace(
         // gained `Snapshot` must not be overridden by a stale
         // `Delete`). State is the fallback for a template that omits
         // the attribute, and this is the ONLY snapshot read on the
-        // replacement paths that has one: every other site above passes
-        // the shared `updateReplacePolicy` binding, which is template-only.
+        // replacement paths that has one: every other site passes
+        // the shared `updateReplacePolicy` binding (read in `update.ts`), which is template-only.
         // The divergence is deliberate — omitting a promised snapshot is
         // destructive, so this read is conservative, while the `Retain`
-        // decision above only describes what the user is applying now.
+        // decision in `update.ts` only describes what the user is applying now.
         //
         // Unreachable under `Retain` (issue #2518) and not merely
         // skipped: `UpdateReplacePolicy` is ONE attribute, so a
@@ -728,7 +728,7 @@ export async function updateInPlace(
           // Chained UNMASKED, unlike the rollback executor's twin which
           // wraps its cause in `maskSecretsInError` -- a deliberate
           // asymmetry, recorded because three separate review passes
-          // raised it. This throw is inside `provisionUpdate`;
+          // raised it. This throw is inside `updateInPlace`;
           // further up, `provisionResource`'s catch re-wraps it with
           // `maskSecretsInError` over the cause CHAIN, so every link
           // the walk reaches is masked before anything leaves that
@@ -875,7 +875,7 @@ export async function updateInPlace(
         // now creates a SECOND cluster and leaves the first running,
         // where before this PR it hard-refused with
         // STATEFUL_REPLACE_BLOCKED. Same `⚠` shape as the
-        // `--recreate-via-*` leak warning above, which announces the
+        // `--recreate-via-*` leak warning in `update-replace.ts`, which announces the
         // strictly LESS surprising version of this outcome.
         this.logger.warn(
           `  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — the old physical ` +

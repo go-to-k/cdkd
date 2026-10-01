@@ -36,7 +36,7 @@ declare module '../deploy-engine.js' {
   }
 }
 
-/** A branch of {@link provisionUpdate}, split out of it (#4350). */
+/** A branch of `provisionUpdate` (`update.ts`), split out of it (#4350). */
 export async function updateByReplacement(
   this: DeployEngine,
   {
@@ -262,7 +262,7 @@ export async function updateByReplacement(
   // i.e. destroy-then-create — except when the template also renames
   // the target (go-to-k/cdkd#3931): the old resource then does not
   // hold the new name, so `createFirstThenDeleteOld` creates first.
-  // (`updateReplacePolicy` is read once above, before the stateful
+  // (`updateReplacePolicy` is read once in `update.ts`, before the stateful
   // guard, and reused here.)
   //
   // Issue #2668: BOTH inputs come from the state record. The layer
