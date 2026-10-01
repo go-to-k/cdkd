@@ -40,6 +40,7 @@ describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () =
     const modules = mixinModules();
     expect(modules.map((m) => m.file)).toEqual(
       expect.arrayContaining([
+        'deploy-engine-masking.ts',
         'deploy-engine-name-collision.ts',
         'deploy-engine-observed-capture.ts',
         'deploy-engine-outputs.ts',
@@ -56,6 +57,7 @@ describe('DeployEngine mixin modules are wired onto the prototype (#4200)', () =
         'resolveOutputs',
         'performRollback',
         'drainObservedCaptures',
+        'redactOutputs',
       ])
     );
   });
