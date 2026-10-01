@@ -6,8 +6,7 @@ paths:
 
 # `waitForOperation`: the poll's transport fence
 
-Issue [#3236](https://github.com/go-to-k/cdkd/issues/3236); mechanism in
-`cloud-control-provider.ts`'s JSDoc.
+Issue [#3236](https://github.com/go-to-k/cdkd/issues/3236); mechanism: `cloud-control-provider.ts` JSDoc.
 
 **Never add a transport / throttle / 5xx pattern to
 `RETRYABLE_ERROR_MESSAGE_PATTERNS` to make a failed poll recoverable** — that
@@ -19,8 +18,8 @@ Bounds:
 
 - The `try` wraps the `send` EXPRESSION alone, never the loop body.
 - `maxWaitMs` bounds everything; no attempt budget may outlive it.
-  `POLL_TRANSIENT_GRACE_MS` (2 min) covers
-  ONE UNBROKEN run of failures, reset by any answered poll; it is a per-call
+  `POLL_TRANSIENT_GRACE_MS` (2 min) covers ONE UNBROKEN failure run, reset by
+  any answered poll; it is a per-call
   ARGUMENT, overridden only by `disableCcProtection` (10 s, issue
   [#3253](https://github.com/go-to-k/cdkd/issues/3253)).
 - `isTransientPollFailure` fails CLOSED and must never absorb
@@ -43,9 +42,10 @@ command — SANITIZE, QUOTE, then SUPPRESS (issue
 2. **Already-deleted classifiers on the state-drop path test
    `isWaitAbandonedError` BEFORE their substring match**, treating true as "not
    already deleted". FOUR governed sites drop the state row on true:
-   `cloud-control-provider.ts`'s `delete()` catch, `deployment/deploy-engine/update.ts`'s
-   replacement delete and `deployment/deploy-engine/delete.ts`'s template-removal delete, and `destroy-runner.ts`'s
-   delete loop. Wording is not the protection; the marker lives in
+   `cloud-control-provider.ts`'s `delete()` catch,
+   `deployment/deploy-engine/update.ts` (replacement),
+   `deployment/deploy-engine/delete.ts` (template removal), `destroy-runner.ts`.
+   Wording is not the protection; the marker lives in
    `src/provisioning/wait-abandoned.ts`, a LEAF.
 3. **CREATE is non-retryable; DELETE and UPDATE are not**: a CREATE replay
    duplicates the create, the others are safe.

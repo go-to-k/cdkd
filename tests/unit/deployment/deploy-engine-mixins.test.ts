@@ -5,7 +5,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 
 /**
  * `DeployEngine` method groups live in mixin modules (issue #4200): a
- * `declare module './deploy-engine.js'` augmentation tells the type checker the
+ * `declare module '../deploy-engine.js'` augmentation tells the type checker the
  * method exists, and `deploy-engine.ts` assigns the module's function onto
  * `DeployEngine.prototype`. A MISSING assignment therefore typechecks clean and
  * fails only when the method is first called at runtime, which for a rare
