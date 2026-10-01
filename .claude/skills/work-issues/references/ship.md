@@ -42,7 +42,7 @@ git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
 # From another tree, `.claude/hooks/bughunt-clean-gate.sh` refuses `-C "$VAR"`
 # on a `git commit` / `gh pr create|merge` segment, so every gated line takes
 # the LITERAL path; keep `$(git -C <literal path> merge-base origin/main HEAD)`.
-# Hand-pasting the origin/main TIP staged a revert of 45 of main's files (2026-09-30).
+# Never the origin/main TIP: --soft onto it stages a revert of main's newer files.
 # Message to a FILE named per BRANCH, never -m: inside -m "..." the shell
 # EVALUATES a backtick and drops the word while still creating the commit.
 # DERIVE, WRITE and COMMIT in ONE call -- shell state dies between tool calls.
@@ -63,8 +63,8 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. Its `merge=union` keeps both LOCALLY,
   but GitHub ignores that driver: a `main` commit adding ledger rows next to
-  this PR's turns it CONFLICTING, and CI never fires. Rebase locally, then run
-  `vp run integ-ledger-normalize` and commit it before the push.
+  this PR's turns it CONFLICTING, and CI never fires. Rebase locally, then
+  normalize before the push (Merge, below).
 
 ### Merge
 
@@ -78,7 +78,10 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   once when no check has APPEARED) and require that checks EXIST. It has no sha
   field — `headRefOid` is `gh pr view`'s: an unknown field exits 1 on EVERY
   poll, so a loop reading non-zero as pending outlives a green CI. **PUSH FIRST,
-  then run the post-rebase suite while CI drains.**
+  then run the post-rebase suite while CI drains** — so the suite's ledger test
+  runs only after the push: re-run `vp run integ-ledger-normalize` after EVERY
+  rebase and push only once `git status --porcelain -- docs/_generated/` is
+  empty.
 - **A body edit RE-RUNS four required checks** (`on: edited`), green or
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
   "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,
