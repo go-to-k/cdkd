@@ -16,12 +16,6 @@ paths:
 **Keep it a LEAF — no imports beyond types and `src/utils/` leaves**: the deploy
 engine and rollback executor both consume it.
 
-**Delete-caller gate** ([#4175](https://github.com/go-to-k/cdkd/issues/4175)).
-`isDeletableLogicalId` is asked by `destroy-runner.ts` and the deploy DELETE arm
-below their Retain arm and above any final-snapshot step or provider call: a
-non-plain `state.resources` key is a SKIP that keeps the record, since every
-provider prints the key raw. Keep it above both.
-
 **Skip pair** ([#1762](https://github.com/go-to-k/cdkd/issues/1762)).
 `deleteSkipReason` returns the `'skipped'` arm's `reason`, or `undefined` for
 the `void` return, keeping that reading in ONE place. `deleteSkippedMessage` is
