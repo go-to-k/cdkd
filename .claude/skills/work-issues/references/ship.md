@@ -73,15 +73,22 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 
 - **Read the merge state before you watch CI** — at `CONFLICTING` CI never
   fires, and `--watch` returns at once while no check EXISTS. Wait with THIS, not
-  a hand-written loop (an unknown `--json` field exits 1 on EVERY poll):
+  a hand-written loop (an unknown `--json` field exits 1 on EVERY poll). It
+  re-reads the state every pass and ends non-zero on anything but green CI; the
+  merge verdict is still `CLEAN` (next bullet), not the watch's exit:
 
   ```bash
-  R=<owner>/<repo>; N=<n>
-  until m=$(gh pr view $N -R $R --json state,mergeable -q '.state+" "+.mergeable') \
-    && { [ "${m#* }" != UNKNOWN ] || [ "${m% *}" != OPEN ]; }; do sleep 15; done
-  if [ "$m" != 'OPEN MERGEABLE' ]; then echo "$m: no CI to wait on; CONFLICTING -> rebase, push"
-  else until [ "$(gh pr checks $N -R $R --json state -q length 2>/dev/null || echo 0)" -gt 0 ]
-    do sleep 15; done; gh pr checks $N -R $R --watch; fi
+  R=<owner>/<repo>; N=<n>; rc=1; i=0
+  while [ $((i+=1)) -le 60 ]; do   # 15 min: past it, no workflow is coming
+    m=$(gh pr view $N -R $R --json state,mergeable -q '.state+" "+.mergeable') || m=ERR
+    case "$m" in
+      'OPEN MERGEABLE') [ "$(gh pr checks $N -R $R --json state -q length 2>/dev/null || echo 0)" -gt 0 ] \
+        && { gh pr checks $N -R $R --watch; rc=$?; break; } ;;
+      'OPEN CONFLICTING') echo 'CONFLICTING: CI never fires; rebase (above), push, re-run'; break ;;
+      'OPEN UNKNOWN'|ERR) ;;   # ERR to the end: a wrong N/R or dead auth
+      *) echo "$m: not open"; break ;;
+    esac; sleep 15
+  done; echo "m=$m rc=$rc"; [ $rc = 0 ]
   ```
 
   **PUSH FIRST, then run the post-rebase suite while CI drains** — so its ledger
