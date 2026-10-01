@@ -362,8 +362,9 @@ export class KMSProvider implements ResourceProvider {
         // because if the retries run out, it is a live, billed key that no
         // cdkd state records.
         const aws = pasteableAwsCommand();
+        const region = await this.regionArg(aws);
         this.logger.warn(
-          safeMsg`KMS key ${createdKeyId} was created for ${logicalId}, but a follow-up call failed. A retry of this create reuses that key instead of creating another, so do not delete it while the deploy is still retrying. Only if the deploy then FAILS is the key left unrecorded in cdkd state; delete it then with: ${aws`aws kms schedule-key-deletion --key-id ${createdKeyId} --pending-window-in-days 7`.render()}`
+          safeMsg`KMS key ${createdKeyId} was created for ${logicalId}, but a follow-up call failed. A retry of this create reuses that key instead of creating another, so do not delete it while the deploy is still retrying. Only if the deploy then FAILS is the key left unrecorded in cdkd state; delete it then with: ${aws`aws kms schedule-key-deletion --key-id ${createdKeyId}${region} --pending-window-in-days 7`.render()}`
         );
       }
       const cause = error instanceof Error ? error : undefined;
@@ -375,6 +376,26 @@ export class KMSProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * The ` --region <r>` fragment for a pasteable command, from the client that
+   * made or listed the key (issue #4307): without it the command runs in the
+   * user's shell-default region, where a describe answers NotFound and reads as
+   * "no orphan". An unreadable region renders no fragment rather than failing
+   * the warning. Built with the caller's `aws` tag, since a fragment from
+   * another tag withholds the command.
+   */
+  private async regionArg(
+    aws: ReturnType<typeof pasteableAwsCommand>
+  ): Promise<ReturnType<ReturnType<typeof pasteableAwsCommand>>> {
+    let region: string | undefined;
+    try {
+      region = await this.getClient().config.region();
+    } catch {
+      region = undefined;
+    }
+    return region ? aws` --region ${region}` : aws``;
   }
 
   /**
@@ -409,8 +430,9 @@ export class KMSProvider implements ResourceProvider {
     // in this process is not this create's retry.
     if (Date.now() - pending.heldAtMs > AMBIGUOUS_LATCH_TTL_MS) return undefined;
     const aws = pasteableAwsCommand();
+    const region = await this.regionArg(aws);
     const deletion =
-      aws`aws kms schedule-key-deletion --key-id ${pending.keyId} --pending-window-in-days 7`.render();
+      aws`aws kms schedule-key-deletion --key-id ${pending.keyId}${region} --pending-window-in-days 7`.render();
     const notReused = (reason: string): undefined => {
       this.logger.warn(
         safeMsg`KMS key ${pending.keyId} was created for ${logicalId} by an earlier attempt of this deploy, but ${reason}, so this attempt creates a new key and that one is not recorded in cdkd state. If it is unused, schedule its deletion with: ${deletion}`
@@ -570,16 +592,17 @@ export class KMSProvider implements ResourceProvider {
       return;
     }
     const aws = pasteableAwsCommand();
+    const region = await this.regionArg(aws);
     const shown = candidates.slice(0, MAX_REPORTED_ORPHANS);
     // READ commands first. A candidate may be another stack's key with the
     // same settings, so a deletion command leading the line would hand the
     // user exactly the wrong-resource mistake cdkd declines to make itself.
     const inspect = shown
-      .map((keyId) => aws`aws kms describe-key --key-id ${keyId}`.render())
+      .map((keyId) => aws`aws kms describe-key --key-id ${keyId}${region}`.render())
       .join(' ; ');
     const deletion = shown
       .map((keyId) =>
-        aws`aws kms schedule-key-deletion --key-id ${keyId} --pending-window-in-days 7`.render()
+        aws`aws kms schedule-key-deletion --key-id ${keyId}${region} --pending-window-in-days 7`.render()
       )
       .join(' ; ');
     this.logger.warn(

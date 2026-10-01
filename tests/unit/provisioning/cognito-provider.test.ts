@@ -2937,7 +2937,9 @@ describe('CognitoUserPoolProvider', () => {
           .map((c) => String(c[0]))
           .find((m) => m.includes('restoring the previous one also failed'))!;
         if (outcome === 'bare') {
-          expect(warned).toContain(`aws cognito-idp get-user-pool-mfa-config --user-pool-id ${poolId}`);
+          expect(warned).toContain(
+            `aws cognito-idp get-user-pool-mfa-config --user-pool-id ${poolId} --region us-east-1`
+          );
         } else {
           expectWithheld(warned, 'aws cognito-idp');
         }

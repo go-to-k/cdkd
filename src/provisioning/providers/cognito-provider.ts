@@ -2055,6 +2055,25 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   }
 
   /**
+   * The ` --region <r>` fragment for a pasteable command, from the client the
+   * call or lookup went through (issue #4307): without it the command runs in
+   * the user's shell-default region, where it answers NotFound. An unreadable
+   * region renders no fragment rather than failing the warning. Built with the
+   * caller's `aws` tag, since a fragment from another tag withholds the command.
+   */
+  private async regionArg(
+    aws: ReturnType<typeof pasteableAwsCommand>
+  ): Promise<ReturnType<ReturnType<typeof pasteableAwsCommand>>> {
+    let region: string | undefined;
+    try {
+      region = await this.getClient().config.region();
+    } catch {
+      region = undefined;
+    }
+    return region ? aws` --region ${region}` : aws``;
+  }
+
+  /**
    * After an attempt at this create ended AMBIGUOUS (a 5xx: Cognito may have
    * made the pool and lost the answer), name the pools that could be its
    * orphan before a second `CreateUserPool` is sent (issue
@@ -2151,11 +2170,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
     const shown = candidates.slice(0, MAX_REPORTED_ORPHAN_POOLS);
     const aws = pasteableAwsCommand(log.mask);
+    const region = await this.regionArg(aws);
     const inspect = shown
-      .map((id) => aws`aws cognito-idp describe-user-pool --user-pool-id ${id}`.render())
+      .map((id) => aws`aws cognito-idp describe-user-pool --user-pool-id ${id}${region}`.render())
       .join(' ; ');
     const deletion = shown
-      .map((id) => aws`aws cognito-idp delete-user-pool --user-pool-id ${id}`.render())
+      .map((id) => aws`aws cognito-idp delete-user-pool --user-pool-id ${id}${region}`.render())
       .join(' ; ');
     log.warn(
       `An earlier CreateUserPool attempt for ${logicalId} failed without a definite answer, and Cognito may have created a pool then that no cdkd state records. ${candidates.length} user pool(s) named ${v(poolName)} were created between ${since} and ${until}: ${shown.join(', ')}${candidates.length > shown.length ? ', ...' : ''}. cdkd does not adopt or delete them: a pool name does not prove which deploy created it. Creating a new pool now, so the new pool and the candidate(s) above will ALL be named ${v(poolName)} -- Cognito allows duplicate names. First inspect each candidate (its user count, creation date and tags): ${inspect}. Only after confirming a pool is this deploy's orphan and not another deploy's, delete it: ${deletion}.${incomplete}`
@@ -2539,12 +2559,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       );
       this.logger.debug(`Restored the previous MFA configuration on UserPool ${physicalId}`);
     } catch (restoreError) {
+      const aws = pasteableAwsCommand();
+      const region = await this.regionArg(aws);
       this.logger.warn(
         `UserPool ${physicalId}: UpdateUserPool failed after SetUserPoolMfaConfig had already ` +
           `applied the new MFA configuration, and restoring the previous one also failed ` +
           `(${restoreError instanceof Error ? restoreError.name : typeof restoreError}). The pool ` +
           `may now carry the NEW MFA configuration with its OLD sign-in policy; re-run the deploy, ` +
-          `or check it with ${pasteableAwsCommand()`aws cognito-idp get-user-pool-mfa-config --user-pool-id ${physicalId}`.render()}.`
+          `or check it with ${aws`aws cognito-idp get-user-pool-mfa-config --user-pool-id ${physicalId}${region}`.render()}.`
       );
       this.logger.debug(
         `MFA restore failure detail for UserPool ${physicalId}: ` +
