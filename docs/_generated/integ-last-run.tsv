@@ -41,7 +41,7 @@ cc-protection-flip	2026-09-17T06:56:41Z	PASS	900	verify.sh	rc=0; all 3 phases, C
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
 cc-to-sdk-reroute	2026-09-28T09:23:32Z	PASS	145	verify.sh	#3939 PR #3947 head d643c04f5, stdin /dev/null; cdkd diff rc 0 with summary (probe copy); rc ok, orph clean
 ci-cd	2026-09-27T14:43:09Z	PASS	70	verify.sh	rc ok, orph clean (#3866)
-cloudfront-function-url	2026-07-31T06:11:38Z	PASS	209	verify.sh	regression run post-#1311/#1318; fire-and-forget create + delete-wait path clean; 7 del/0 err, 0 orphans
+cloudfront-function-url	2026-10-01T10:13:53Z	PASS	261	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 7 deleted 0 errors, orph clean
 cloudtrail-trail	2026-09-28T07:22:06Z	PASS	196	verify.sh	#3885 log-group sweep; rc ok, orph clean, /aws/lambda/<stack>- groups 0 after run
 cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 cloudwatch-anomaly-detector	2026-09-30T12:01:08Z	PASS	65	verify.sh	rc ok, orph clean (#4228)
@@ -94,7 +94,7 @@ dynamodb-gsi-update	2026-09-27T20:52:47Z	PASS	1358	verify.sh	PR #3901 merge-gate
 dynamodb-ondemand	2026-09-27T21:02:28Z	PASS	291	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dynamodb-sse	2026-09-27T21:03:18Z	PASS	50	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dynamodb-stream-filter	2026-09-27T21:07:59Z	PASS	71	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
-dynamodb-streams	2026-09-29T18:12:56Z	PASS	280	verify.sh	PR #4136 (#4112 stream member post-write capture) @20bf50a; rc ok, destroy 0 errors, no state/lock/CFn leftovers
+dynamodb-streams	2026-10-01T10:13:53Z	PASS	317	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 11 deleted 0 errors, orph clean
 dynamodb-tableclass-switch	2026-09-27T21:05:43Z	PASS	70	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 dynamodb-ttl-attr-change	2026-09-27T21:06:48Z	PASS	65	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
 ec2-instance	2026-09-30T18:16:33Z	PASS	121	verify.sh	rc ok, orph clean (#4242)
@@ -116,17 +116,17 @@ emr-cluster	2026-09-30T17:19:24Z	PASS	715	verify.sh	PR #4246 (#2204 EMR --remove
 emr-instance-configs	2026-09-24T22:46:12Z	PASS	990	verify.sh	rc ok, 0 orphans (#3663)
 emr-instance-fleets	2026-09-24T22:46:12Z	PASS	971	verify.sh	rc ok, 0 orphans (#3663)
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-eventbridge	2026-09-30T18:16:33Z	PASS	125	verify.sh	rc ok, orph clean (#4242)
+eventbridge	2026-10-01T10:13:53Z	PASS	115	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 10 deleted 0 errors, orph clean
 eventbridge-api-destination	2026-08-10T04:16:05Z	PASS	66	verify.sh	0810 staleness sweep b1; Connection/ApiDestination GetAtt, 5 del 0 err, 0 orph
 eventbridge-archive	2026-07-31T06:21:38Z	PASS	54	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 eventbridge-input-transformer	2026-08-10T04:16:05Z	PASS	53	verify.sh	0810 staleness sweep b1; post-#1396 ECS target sub-shape, 0 err, 0 orph
 eventbridge-pipes	2026-09-29T02:38:06Z	PASS	180	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, named-pipe --replace delete-first, 6 deleted 0 errors, orph clean
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
-eventsourcemapping-race	2026-09-27T12:27:25Z	PASS	90	verify.sh	rc ok, orph clean (#3861)
+eventsourcemapping-race	2026-10-01T10:13:53Z	PASS	100	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
 export	2026-10-01T08:47:54Z	PASS	321	verify.sh	PR #4305 deploy-engine provision arms split; rc ok, orph clean
 export-nested-stack	2026-10-01T08:35:50Z	PASS	191	verify.sh	rc ok, orph clean (#4245)
-fifo-sqs-event-source	2026-09-27T12:27:25Z	PASS	105	verify.sh	rc ok, orph clean (#3861)
+fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
 fsx-lustre	2026-09-29T11:59:09Z	PASS	872	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 fsx-ontap	2026-08-02T06:33:37Z	PASS	1704	verify.sh	0802 heavy TTL sweep; deploy+update+destroy ok, 0 orphans, no final backup
 fsx-openzfs	2026-08-02T05:53:30Z	PASS	1287	verify.sh	0802 heavy TTL sweep; deploy+update+drift+destroy ok; untagged OpenZFS final backup swept (#1113)
@@ -153,7 +153,7 @@ import-attributes	2026-09-28T18:32:16Z	PASS	60	verify.sh	PR #4007 merge-gate run
 import-auto-mode	2026-09-30T02:41:42Z	PASS	90	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 import-deployed-parameter-secret	2026-10-01T06:24:56Z	PASS	440	verify.sh	rc ok, orph clean; #4273 ssm-parameter import refusal (10 del/0 err)
 import-heal-prefix-record	2026-09-25T10:36:04Z	PASS	165	verify.sh	rc ok, orph clean; resolver at origin/main leaves all 4 rows wrong
-import-lambda-url-attributes	2026-09-24T09:53:01Z	PASS	115	verify.sh	rc ok, orph clean; pre-fix mutant FAILs at step 4
+import-lambda-url-attributes	2026-10-01T10:13:53Z	PASS	105	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
 import-migrate-vpc	2026-09-28T17:48:20Z	PASS	350	verify.sh	rc ok, orph clean (#3950 lane B)
 import-nested-stack	2026-09-29T07:15:57Z	PASS	145	verify.sh	PR #4058 merge-gate run; rc ok, orph clean
 import-reimport-masked-attrs	2026-09-28T18:03:10Z	PASS	186	verify.sh	PR #4007 merge-gate run; new fixture; pre-fix binary red at phase 2; rc ok, orph clean
@@ -166,25 +166,25 @@ inplace-attr-propagation	2026-07-26T19:25:15Z	PASS	57	verify.sh	0727b sweep-b10 
 intrinsic-functions	2026-08-15T00:12:35Z	PASS	20	standard	0 err / 0 orph; resolver change regression check (#1916)
 intrinsics-torture	2026-09-26T12:48:55Z	PASS	60	verify.sh	#3809 final sha (rebased); rc ok, orph clean
 intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (rebased); rc ok, orph clean
-kinesis-esm-filter	2026-09-27T15:53:36Z	PASS	75	verify.sh	rc ok, orph clean
+kinesis-esm-filter	2026-10-01T10:13:53Z	PASS	91	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
 kinesis-stream-mode-switch	2026-10-01T02:52:52Z	PASS	116	verify.sh	PR #4252 (#4239 arrow paste sites) at dc71dd51d; rc ok, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-01T08:47:54Z	PASS	145	verify.sh	PR #4305 deploy-engine provision arms split; rc ok, orph clean
+lambda	2026-10-01T10:13:53Z	PASS	136	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 9 deleted 0 errors, orph clean
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
 lambda-config-field-removal	2026-10-01T04:01:28Z	PASS	236	verify.sh	rc ok, orph clean (#4241)
-lambda-destinations	2026-08-10T05:50:57Z	PASS	70	verify.sh	0810 P2 sweep b10; rc ok, 0 orph
+lambda-destinations	2026-10-01T10:13:53Z	PASS	105	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
 lambda-durable-replacement	2026-09-29T02:37:41Z	PASS	155	verify.sh	PR #4028 round 2 (#3979 holderVerdict drift refusal) @e7c7bd6d; rc ok, #3808 held-name rename refused without deleting, orph clean
 lambda-env-removal	2026-10-01T04:01:28Z	PASS	110	verify.sh	rc ok, orph clean (#4241)
 lambda-esm-self-managed-kafka	2026-09-27T12:27:25Z	PASS	120	verify.sh	rc ok, orph clean; schema-registry add + removal phases (#3861)
-lambda-event-invoke-config-update	2026-09-29T17:31:36Z	PASS	171	verify.sh	rc ok, orph clean; #4134 CR-propagated name->ARN ceiling lowered to in place
-lambda-layer-version-update	2026-07-26T21:13:17Z	PASS	82	verify.sh	re-run post review fixes (tab-safe version list); account clean
+lambda-event-invoke-config-update	2026-10-01T10:13:53Z	PASS	186	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 8 deleted 0 errors, orph clean
+lambda-layer-version-update	2026-10-01T10:13:53Z	PASS	101	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 3 deleted 0 errors, orph clean
 lambda-log-retention	2026-08-10T05:38:11Z	PASS	69	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 lambda-microvm-image	2026-10-01T06:24:56Z	PASS	612	verify.sh	rc ok, orph clean; #4273 must-be-an-ARN refusal
 lambda-reserved-concurrency	2026-10-01T04:01:28Z	PASS	126	verify.sh	rc ok, orph clean (#4241)
 lambda-snapstart	2026-10-01T04:01:28Z	PASS	226	verify.sh	rc ok, orph clean (#4241)
-lambda-url-authtype-replay	2026-09-25T20:11:20Z	PASS	156	verify.sh	rc ok, orph clean (#3740 final sha)
+lambda-url-authtype-replay	2026-10-01T10:13:53Z	PASS	181	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
 lambda-versioning	2026-08-10T11:50:46Z	PASS	53	standard	0810 P0/P1 sweep b1; Version/Alias delete order ok, 4 del/0 err
 launchtemplate-asg-inplace	2026-09-30T12:14:09Z	PASS	170	verify.sh	rc ok, orph clean (#4228)
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
@@ -305,7 +305,7 @@ secrets-array-nested	2026-09-30T21:26:17Z	PASS	421	verify.sh	PR #4269 (#2177 ECS
 secrets-dynamic-ref	2026-10-01T07:41:07Z	PASS	576	verify.sh	rc ok, orph clean (#4243)
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
-serverless-api	2026-10-01T09:03:35Z	PASS	65	verify.sh	PR #4303 (#2080 Plan C API Gateway create retry) at e66ac917f; rc ok, 16 deleted 0 errors, orph clean
+serverless-api	2026-10-01T10:13:53Z	PASS	75	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 16 deleted 0 errors, orph clean
 servicediscovery	2026-10-01T08:27:27Z	PASS	120	verify.sh	PR #4309 (#4299 FAILED-operation retry stamp) at 6a885047f; rc ok, 3 deleted 0 errors, orph clean
 servicediscovery-namespaces	2026-10-01T08:27:27Z	PASS	135	verify.sh	PR #4309 (#4299 FAILED-operation retry stamp) at 6a885047f; rc ok, 2 deleted 0 errors, orph clean
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)

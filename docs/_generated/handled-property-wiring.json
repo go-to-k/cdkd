@@ -13624,6 +13624,7 @@
           "seededBy": [
             "applyUpdate",
             "create",
+            "operationSinks",
             "readCurrentState",
             "update"
           ]
@@ -14853,7 +14854,8 @@
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         }
       ],

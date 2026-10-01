@@ -11,9 +11,11 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -21,6 +23,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { createMaskedLogSinks, withDerivedNameMasks } from '../masked-retry-logger.js';
 
 /**
  * The short `ResourceDeleteResult.reason` the two malformed-`LayerVersionArn`
@@ -61,6 +64,15 @@ const DEPLOY_SKIP_CAVEAT =
   `(https://github.com/go-to-k/cdkd/issues/1762), leaving the old one untracked; there, remove the resource by hand.`;
 
 /**
+ * The layer NAME inside a layer ARN (`arn:...:layer:<name>[:<version>]`), or
+ * `undefined` for any other spelling. A secret-masking needle only (issue
+ * #2177).
+ */
+function layerNameSegment(value: string): string | undefined {
+  return /:layer:([^:]+)/.exec(value)?.[1];
+}
+
+/**
  * AWS Lambda LayerVersion Provider
  *
  * Implements resource provisioning for AWS::Lambda::LayerVersion using the Lambda SDK.
@@ -92,18 +104,34 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
   }
 
   /**
-   * Create a Lambda layer version
+   * Create a Lambda layer version.
+   *
+   * `context` is read for its masker only (issue #2177): every line and
+   * failure goes through one masked sink set, and the layer version ARN
+   * embeds `LayerName`, which the template may have resolved from a secret.
    */
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Lambda layer version ${logicalId}`);
-
     const layerName =
       (properties['LayerName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 64 });
+    // Built per call; never cached on the provider, which serves concurrent
+    // resources. A generated name is not secret-derived, so the pair adds a
+    // needle only when the template's `LayerName` is.
+    const log = withDerivedNameMasks(
+      this.logger,
+      createMaskedLogSinks(this.logger, context?.maskSecrets),
+      [
+        [properties['LayerName'], layerName],
+        // `LayerName` may be a layer ARN; AWS may quote the bare name.
+        [properties['LayerName'], layerNameSegment(layerName)],
+      ]
+    );
+    log.debug(`Creating Lambda layer version ${logicalId}`);
 
     const content = properties['Content'] as Record<string, unknown> | undefined;
     if (!content) {
@@ -135,9 +163,7 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
       );
 
       const layerVersionArn = response.LayerVersionArn!;
-      this.logger.debug(
-        `Successfully created Lambda layer version ${logicalId}: ${layerVersionArn}`
-      );
+      log.debug(`Successfully created Lambda layer version ${logicalId}: ${layerVersionArn}`);
 
       return {
         physicalId: layerVersionArn,
@@ -146,13 +172,21 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // AWS quotes a rejected request value back (issue #2177); a message the
+      // mask changed is stamped so the retry classifiers read the unmasked
+      // `cause` (issue #4244).
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Lambda layer version ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw wrapMaskedAwsError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Lambda layer version ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }

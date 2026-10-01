@@ -9,8 +9,10 @@ import {
   type InvokeMode,
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
+import { lambdaFunctionNameForMask } from '../../utils/lambda-function-name.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
@@ -24,6 +26,12 @@ import type {
   CreateContext,
   UpdateContext,
 } from '../../types/resource.js';
+import {
+  createMaskedLogSinks,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 
 /**
  * AWS Lambda Function URL Provider
@@ -48,6 +56,38 @@ export class LambdaUrlProvider implements ResourceProvider {
   }
 
   /**
+   * The masked sinks ONE `create()` / `update()` logs and refuses through
+   * (issue #2177, `.claude/rules/provider-masking.md`): `createMaskedLogSinks`
+   * over the context's masker, extended by `withDerivedNameMasks` with `pairs`
+   * -- each `[template value, name derived from it]`. The physical id is the
+   * target function's ARN, which embeds a function name the template may have
+   * resolved from a secret. Built per call; never cached on the provider,
+   * which serves concurrent resources.
+   */
+  private operationSinks(
+    maskSecrets: MaskerFn | undefined,
+    pairs: ReadonlyArray<readonly [raw: unknown, name: string | undefined]>
+  ): MaskedLogSinks {
+    return withDerivedNameMasks(this.logger, createMaskedLogSinks(this.logger, maskSecrets), pairs);
+  }
+
+  /**
+   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * masked (issue #2177): AWS quotes a rejected request value back. The
+   * `cause` stays unmasked, and a message the mask changed is stamped so the
+   * retry classifiers read that chain (`wrapMaskedAwsError`, issue #4244). A
+   * method, so `gen-update-wrap-coverage` sees the catch that throws it as a
+   * wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
+  }
+
+  /**
    * Create a Lambda Function URL
    */
   async create(
@@ -56,9 +96,22 @@ export class LambdaUrlProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating Lambda URL ${logicalId}`);
-
     const targetFunctionArn = properties['TargetFunctionArn'] as string;
+    // Issue #2177: every create() line and failure goes through this one sink
+    // set. The recorded physical id is the ARN `CreateFunctionUrlConfig`
+    // answers with, which embeds the function name `TargetFunctionArn` names.
+    const log = this.operationSinks(context?.maskSecrets, [
+      [targetFunctionArn, typeof targetFunctionArn === 'string' ? targetFunctionArn : undefined],
+      // The bare name too: AWS may quote the function by name, not by ARN.
+      [
+        targetFunctionArn,
+        typeof targetFunctionArn === 'string'
+          ? lambdaFunctionNameForMask(targetFunctionArn)
+          : undefined,
+      ],
+    ]);
+    log.debug(`Creating Lambda URL ${logicalId}`);
+
     if (!targetFunctionArn) {
       throw new ProvisioningError(
         `TargetFunctionArn is required for Lambda URL ${logicalId}`,
@@ -90,7 +143,7 @@ export class LambdaUrlProvider implements ResourceProvider {
     // Deliberately NOT a refusal: refusing would make the URL unrestorable,
     // which is the whole reason this site downgrades at all.
     if (context?.replayingState === true && properties['AuthType'] === undefined) {
-      this.logger.warn(
+      log.warn(
         `Lambda URL ${logicalId} is being restored from a cdkd state record that ` +
           `carries no AuthType, so cdkd cannot vouch for the auth type the URL had. ` +
           `Creating it with the default (NONE), which makes the function URL PUBLIC. ` +
@@ -102,7 +155,7 @@ export class LambdaUrlProvider implements ResourceProvider {
       properties['AuthType'],
       'NONE',
       'AWS::Lambda::Url AuthType',
-      replayWarn(this.logger, context)
+      replayWarn(log, context)
     ) as FunctionUrlAuthType;
 
     try {
@@ -126,7 +179,7 @@ export class LambdaUrlProvider implements ResourceProvider {
       const functionUrl = response.FunctionUrl;
       const functionArn = response.FunctionArn;
 
-      this.logger.debug(`Successfully created Lambda URL ${logicalId}: ${functionUrl}`);
+      log.debug(`Successfully created Lambda URL ${logicalId}: ${functionUrl}`);
 
       return {
         physicalId: functionArn || targetFunctionArn,
@@ -137,12 +190,17 @@ export class LambdaUrlProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Lambda URL ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        targetFunctionArn,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Lambda URL ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            targetFunctionArn,
+            cause
+          )
       );
     }
   }
@@ -153,7 +211,8 @@ export class LambdaUrlProvider implements ResourceProvider {
    * `context` is read for the ORIGIN of the desired bag only
    * (`replayingState` / `desiredFromAwsReadback`), which decides whether a
    * malformed `AuthType` refuses (a template-path update) or warns (a rollback
-   * revert or `cdkd drift --revert`) — issue #3740.
+   * revert or `cdkd drift --revert`) — issue #3740 — and for its masker
+   * (issue #2177).
    */
   async update(
     logicalId: string,
@@ -163,7 +222,25 @@ export class LambdaUrlProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Lambda URL ${logicalId}: ${physicalId}`);
+    // Issue #2177: every update() line and failure goes through this one sink
+    // set. The physical id is the recorded function ARN; either side's
+    // `TargetFunctionArn` being secret-derived makes it a needle (the previous
+    // side covers a rotated secret whose old plaintext is in no bag of this
+    // deploy). Both can only over-mask.
+    const log = this.operationSinks(context?.maskSecrets, [
+      [properties['TargetFunctionArn'], physicalId],
+      [previousProperties['TargetFunctionArn'], physicalId],
+      // The bare name too: AWS may quote the function by name, not by ARN.
+      [properties['TargetFunctionArn'], lambdaFunctionNameForMask(physicalId)],
+      [previousProperties['TargetFunctionArn'], lambdaFunctionNameForMask(physicalId)],
+      [
+        properties['TargetFunctionArn'],
+        typeof properties['TargetFunctionArn'] === 'string'
+          ? properties['TargetFunctionArn']
+          : undefined,
+      ],
+    ]);
+    log.debug(`Updating Lambda URL ${logicalId}: ${physicalId}`);
 
     // Diff-based no-op: when `cdkd drift --revert` round-trips the
     // observed snapshot back through `update()` on a no-drift resource,
@@ -227,7 +304,7 @@ export class LambdaUrlProvider implements ResourceProvider {
           ? {
               onUnusable: (message) => {
                 authTypeUnusable = true;
-                this.logger.warn(
+                log.warn(
                   `${message} The function URL's existing auth type is kept for this ` +
                     `update rather than reset to the default (NONE), which would make ` +
                     `the URL public.`
@@ -238,9 +315,10 @@ export class LambdaUrlProvider implements ResourceProvider {
       ) as FunctionUrlAuthType;
     } catch (error) {
       // Outside the `try` below, so the refusal is not re-labelled as an AWS
-      // update failure.
+      // update failure. cdkd's own refusal, so masked but never stamped
+      // retryable (`wrapMaskedAwsError` is for relayed AWS text only).
       throw new ProvisioningError(
-        `${error instanceof Error ? error.message : String(error)}. Nothing was applied to ` +
+        `${log.mask(error instanceof Error ? error.message : String(error))}. Nothing was applied to ` +
           `Lambda URL ${logicalId}; fix the template value`,
         resourceType,
         logicalId,
@@ -367,12 +445,17 @@ export class LambdaUrlProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Lambda URL ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Lambda URL ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
