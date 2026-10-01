@@ -340,7 +340,7 @@ describe('ServiceDiscoveryProvider namespace secret masking (#2063)', () => {
    * The site the issue did not name. Distinct from every test above: the submit
    * SUCCEEDS, so no arm catch ever sees a raw error — and the
    * `ProvisioningError` `pollOperation` builds is re-thrown verbatim past the
-   * arm's `maskErrorMessage`. Masking the arm alone leaves this open.
+   * arm's `wrapMaskedError`. Masking the arm alone leaves this open.
    */
   describe('pollOperation — the operation`s own ErrorMessage', () => {
     const OPERATION_ARMS = [

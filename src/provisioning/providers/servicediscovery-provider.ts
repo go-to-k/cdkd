@@ -46,7 +46,12 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
-import { createMaskedRetryLogger, maskerOrIdentity } from '../masked-retry-logger.js';
+import {
+  createMaskedRetryLogger,
+  maskerOrIdentity,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
+import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -167,23 +172,35 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   }
 
   /**
-   * Mask a caught AWS error's message before it is interpolated into the
-   * `ProvisioningError` this provider throws (issue #2050, review round 2).
-   *
-   * The twin of `ELBv2Provider.maskErrorMessage` — see that method for the full
-   * rationale. In short: `withRetry` rethrows the RAW error and the deploy
-   * engine prints the resulting message at ERROR (DEFAULT verbosity), so this
-   * is a wider disclosure surface than the retry logger, and the ONLY one for a
-   * NON-RETRYABLE rejection, where `withRetry` emits nothing at all.
+   * Mask a caught AWS error's message before it is interpolated into a line
+   * this provider logs (issue #2050, review round 2). A thrown failure goes
+   * through {@link wrapMaskedError} instead, which masks the same text and
+   * also stamps the wrap.
    *
    * Masks `error.message` rather than the assembled sentence so the masker can
    * reach `maskSecretsInText`'s WHOLE-VALUE arm (any length) instead of only
-   * the SUBSTRING arm (needles of 4+ characters). The `cause` chain is left
-   * untouched so `isRetryableTransientError`'s `$metadata` walk is unaffected.
+   * the SUBSTRING arm (needles of 4+ characters).
    */
   private maskErrorMessage(error: unknown, maskSecrets: SecretMasker | undefined): string {
     const mask = maskerOrIdentity(maskSecrets);
     return mask(error instanceof Error ? error.message : String(error));
+  }
+
+  /**
+   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * masked (issue #2050): `withRetry` rethrows the RAW error and the deploy
+   * engine prints the wrap at ERROR, the ONLY surface for a NON-RETRYABLE
+   * rejection. The text is masked RAW, the `cause` stays unmasked, and a
+   * message the mask changed is stamped so the retry classifiers read that
+   * chain (`wrapMaskedAwsError`, issue #4259). A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapMaskedAwsError(mask, error, build);
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -403,12 +420,17 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       // message is masked. The `ProvisioningError` passthrough above is why
       // {@link pollOperation} masks its OWN message rather than relying on
       // this line — a FAILED-operation error re-throws here untouched.
-      throw new ProvisioningError(
-        `Failed to create private DNS namespace ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create private DNS namespace ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -501,12 +523,17 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update private DNS namespace ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update private DNS namespace ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -649,12 +676,17 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create HTTP namespace ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create HTTP namespace ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -729,12 +761,17 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update HTTP namespace ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update HTTP namespace ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -828,12 +865,17 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create public DNS namespace ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create public DNS namespace ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -916,12 +958,17 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update public DNS namespace ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update public DNS namespace ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1087,13 +1134,17 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       // classifier walks it for `$metadata`, so only the human-readable
       // message is masked.
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create service discovery service ${logicalId}: ` +
-          `${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create service discovery service ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -1295,13 +1346,17 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       // `cause` carries the ORIGINAL error untouched (issue #2050) — see the
       // create path above.
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update service discovery service ${logicalId}: ` +
-          `${this.maskErrorMessage(error, maskSecrets)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update service discovery service ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1474,7 +1529,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * Why not leave it to the arms' own catch: every namespace arm and
    * `updateService` open with `if (error instanceof ProvisioningError) throw
    * error;`, so a `ProvisioningError` raised here is re-thrown VERBATIM and
-   * never reaches their `maskErrorMessage`. `deploy-engine.ts` then prints it
+   * never reaches their `wrapMaskedError`. `deploy-engine.ts` then prints it
    * at ERROR — DEFAULT verbosity. That passthrough is correct (it preserves
    * the resource/logical-id context this frame added), which is exactly why
    * the mask has to be applied at the point of construction.
