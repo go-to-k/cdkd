@@ -266,7 +266,8 @@ describe('extractPropertyShapes', () => {
     for (let i = 13; i >= 1; i--) deep = { type: 'object', properties: { [`L${i}`]: deep } };
     const out = shapes({
       properties: {
-        Remote: { $ref: 'https://example.com/schema.json#/definitions/Obj' },
+        // Sliced past `#/definitions/`'s length this would spell `Obj`.
+        Remote: { $ref: '#/properties/xObj' },
         Deep: deep,
       },
       definitions: { Obj: { type: 'object' } },
