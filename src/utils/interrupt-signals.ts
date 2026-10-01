@@ -148,11 +148,11 @@ export interface CommandInterruptWatch {
  * carrying "the user interrupted" from `runDestroyForStack` back to the
  * `--all` loop was `DestroyRunnerResult.interrupted` — a boolean assigned ONCE,
  * inside the runner's `try`, after its level loop. Every instant where the
- * runner's `draining` flag flips AFTER that assignment is an instant where
+ * runner's `lock.interrupted` flag flips AFTER that assignment is an instant where
  * `cdkd destroy --all` went on to delete the NEXT stack after the user asked
  * it to stop.
  *
- * The runner's outer `finally` re-syncs `result.interrupted ||= draining` to
+ * The runner's outer `finally` re-syncs `result.interrupted ||= lock.interrupted` to
  * cover the widest such window (renderer teardown, state flush, lock release),
  * and that line is marked TACTICAL in its own comment: it narrows the window
  * rather than removing it. Two gaps survive it, and neither is reachable from
@@ -206,9 +206,10 @@ export interface CommandInterruptWatch {
  * Note on the counterpart contract: `deploy-engine.ts` removes its own SIGINT
  * handler before releasing its lock, which is safe only because `deploy.ts`'s
  * top-level handler outlives it. The destroy side now has the same property
- * for the same reason — `destroy-runner.ts`'s `process.removeListener('SIGINT',
- * sigintHandler)` is no longer the last handler standing, because this one is
- * disposed only in the command's outermost `finally`.
+ * for the same reason — the per-stack lock handler's removal
+ * (`stack-lock-guard.ts`, which both `destroy-runner.ts` lock sites use) is no
+ * longer the last handler standing, because this one is disposed only in the
+ * command's outermost `finally`.
  *
  * @param opts.command the user-facing command name used in the force-quit
  *   notice (`cdkd destroy` / `cdkd state destroy`).
@@ -237,8 +238,8 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
    * confirm prompt. Staying silent across that window swallowed the signal
    * outright — no notice, no exit, no escalation on a repeat — and because
    * this watch IS a listener, `interrupt-watch.ts`'s last-listener force-quit
-   * could no longer fire there either. The runner then began with `draining`
-   * false and destroyed the whole stack the user had just asked to stop, which
+   * could no longer fire there either. The runner then began with
+   * `lock.interrupted` false and destroyed the whole stack the user had just asked to stop, which
    * is issue #2117's own defect one window further in.
    *
    * Counting listeners answers the real question, and the two exclusions are

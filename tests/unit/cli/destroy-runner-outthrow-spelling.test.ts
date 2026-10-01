@@ -30,6 +30,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const RUNNER = join(process.cwd(), 'src/cli/commands/destroy-runner.ts');
+// The runner's lock + SIGINT catches moved here (go-to-k/cdkd#2174); they are
+// still on the destroy path, so the bare-String() sweep below reads both.
+const LOCK_GUARD = join(process.cwd(), 'src/cli/commands/stack-lock-guard.ts');
 const FINAL_SNAPSHOT = join(process.cwd(), 'src/provisioning/final-snapshot.ts');
 
 /**
@@ -81,17 +84,19 @@ describe('destroy-runner keeps each caught-value read on the helper matching its
     // proved it vacuous by renaming the binding to `caught` and restoring the
     // exact pre-fix defect -- the fence stayed green. A name list cannot fence
     // a population that chooses its own names.
-    const bindings = [...source.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g)].map(
-      (m) => m[1]!
+    const files = [RUNNER, LOCK_GUARD].map((file) => ({ file, code: codeOf(file) }));
+    const bindings = files.flatMap(({ code }) =>
+      [...code.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g)].map((m) => m[1]!)
     );
 
     // Floor: a parse that finds no bindings must fail here rather than assert
     // over an empty set.
-    expect(bindings.length, 'no catch bindings found — did the parse break?').toBeGreaterThan(10);
+    expect(bindings.length, 'no catch bindings found — did the parse break?').toBeGreaterThan(8);
 
-    const offenders = source
-      .split('\n')
-      .map((text, i) => ({ line: i + 1, text }))
+    const offenders = files
+      .flatMap(({ file, code }) =>
+        code.split('\n').map((text, i) => ({ line: `${file.split('/').pop()}:${i + 1}`, text }))
+      )
       .filter(({ text }) =>
         bindings.some((b) => {
           // ESCAPE the binding: `catch ($err)` is legal, and interpolating it
