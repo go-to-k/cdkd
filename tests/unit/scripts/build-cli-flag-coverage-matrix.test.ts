@@ -138,6 +138,24 @@ describe('scanFlagsInShellScript', () => {
     expect(scanFlagsInShellScript(sh).has('--dry-run')).toBe(true);
   });
 
+  it('does NOT count a flag named only in a full-line comment (go-to-k/cdkd#1951)', () => {
+    const sh = [
+      '#!/usr/bin/env bash',
+      '# every hint carries the typed --state-bucket after the target',
+      '    # indented: --remove-protection',
+      'cdkd deploy --stack A',
+    ].join('\n');
+    const result = scanFlagsInShellScript(sh);
+    expect(result.has('--state-bucket')).toBe(false);
+    expect(result.has('--remove-protection')).toBe(false);
+    expect(result.has('--stack')).toBe(true);
+  });
+
+  it('still counts a flag on a command line that carries a trailing comment', () => {
+    const sh = 'cdkd destroy --force # tear down';
+    expect(scanFlagsInShellScript(sh).has('--force')).toBe(true);
+  });
+
   it('does NOT count short-form flags', () => {
     const sh = `cdkd destroy -f -y`;
     const result = scanFlagsInShellScript(sh);

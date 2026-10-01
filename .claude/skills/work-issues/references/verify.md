@@ -75,17 +75,18 @@ tests passing is necessary but NOT sufficient:
 ### 8-d. Integ arms owe a discrimination proof (mutation-probe on real AWS)
 
 Revert the fix, rebuild, run, confirm the arm goes RED **at YOUR assertion —
-read which one fired**, then restore and rebuild. **Revert by COPY, from a
-COMMITTED, clean lane**: with `B=$(git merge-base origin/main HEAD)`, `cp` each
-path of `git diff --name-only --no-renames --diff-filter=M $B HEAD -- src/`
-(§8-c: the changed command's own paths) to scratch, then write the base copy to
-scratch FIRST and `cp` it over: `git show "${B}:${f}" > <scratch>/base && cp
+read which one fired**, then restore and rebuild. A failure HINT's needle is
+copied from that red log, never reasoned (go-to-k/cdkd#4336's
+`EntityAlreadyExists` never printed). **Revert by COPY, from a COMMITTED, clean
+lane**: with `B=$(git merge-base origin/main HEAD)`, `cp` each path of
+`git diff --name-only --no-renames --diff-filter=M $B HEAD -- src/` (§8-c: the
+changed command's own paths) to scratch, then write the base copy to scratch
+FIRST and `cp` it over: `git show "${B}:${f}" > <scratch>/base && cp
 <scratch>/base "$f"` — in zsh a LITERAL path after `$B:` (`$B:src/…`) parses as
 a modifier, and a redirect onto the file truncates it even when `git show`
-fails. Restore by `cp` back until
-`git status --porcelain` is EMPTY. A file NEW in the
-PR stays, unimported by pre-fix code; one the fix DELETED or moved is restored
-by hand.
+fails. Restore by `cp` back until `git status --porcelain` is EMPTY. A file NEW
+in the PR stays, unimported by pre-fix code; one the fix DELETED or moved is
+restored by hand.
 The pre-fix run executes the BUG on real AWS and can mint resources the
 fixture's sweep cannot name, so scan the account by stack prefix and resource
 family too. Probe each HALF of a multi-part fix separately, and add a NEGATIVE
@@ -97,7 +98,9 @@ and never reads the flag under test. Two more vacuity shapes:
   regression net.** `git diff origin/main -- <fixture>`, then add the one that
   could only pass AFTER it, guarded against vacuity.
 - **When a fix REMOVES a behaviour, an assertion that it HAPPENS goes
-  over-determined, not red.** Sweep by the assertion's SHAPE, reaching
+  over-determined, not red; when it RESHAPES a printed line, an anchored grep
+  goes red only when someone runs that fixture** (go-to-k/cdkd#4194's appended
+  flags broke one, unseen until go-to-k/cdkd#4328 ran it). Sweep by the assertion's SHAPE, reaching
   `tests/integration/**/verify.sh`, which no vitest run executes.
 
 ### 8-e. Watching runs and pollers

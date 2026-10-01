@@ -78,7 +78,6 @@
       "integs": [
         "appsync",
         "cross-stack-secret-import",
-        "ec2-instance",
         "export",
         "gc-custom-asset-names",
         "lambda",
@@ -256,7 +255,6 @@
         "lambda-url-authtype-replay",
         "list-parameters",
         "local-invoke-agentcore-from-state",
-        "local-invoke-buildkit",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-cfn-stack-multi-stack",
         "local-invoke-from-state",
@@ -364,11 +362,8 @@
         "cc-final-snapshot-handlers",
         "deletion-policy-snapshot",
         "efs-immutable-replacement",
-        "elbv2-same-name-replacement",
-        "glue-securityconfig-replace",
         "glue-update-hardening",
         "healthimaging-stateful-update-fallback",
-        "lambda-url-authtype-replay",
         "loggroup-class-guard",
         "loggroup-never-expire-guard",
         "nested-stack-replace-guard",
@@ -380,7 +375,6 @@
         "replacement-rename-onto-holder",
         "rollback-command",
         "rollback-replacement-retain",
-        "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
         "type-change-replacement",
@@ -724,7 +718,6 @@
     {
       "flag": "--prefer-sdk-route",
       "integs": [
-        "cc-api-fallback-transitions",
         "codebuild-project",
         "docdb-neptune",
         "nested-stack-replace-guard",
@@ -736,12 +729,6 @@
       "flag": "--prefix-user-supplied-names",
       "integs": [
         "rollback-explicit-name-rewrite"
-      ]
-    },
-    {
-      "flag": "--profile",
-      "integs": [
-        "local-start-agentcore"
       ]
     },
     {
@@ -765,7 +752,6 @@
       "flag": "--recreate-via-sdk-provider",
       "integs": [
         "recreate-mixed-direction",
-        "recreate-nested-logical-id-collision",
         "recreate-via-sdk-provider",
         "sdk-to-cc-autoroute"
       ]
@@ -938,7 +924,6 @@
         "local-invoke-from-state",
         "local-run-task-from-state",
         "local-start-alb-from-state",
-        "local-start-api",
         "local-start-service",
         "loggroup-class-guard",
         "loggroup-kms-associate",
@@ -1075,20 +1060,13 @@
         "lambda-layer-version-update",
         "loggroup-class-guard",
         "nested-stack-replace-guard",
-        "replace-squatter-refusal",
-        "rollback-replay-cc-generated-name"
+        "replace-squatter-refusal"
       ]
     },
     {
       "flag": "--resource-timeout",
       "integs": [
         "docdb-neptune",
-        "remove-protection"
-      ]
-    },
-    {
-      "flag": "--resource-warn-after",
-      "integs": [
         "remove-protection"
       ]
     },
@@ -1296,7 +1274,6 @@
         "list-parameters",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-state",
-        "local-run-task-cdkd-assets",
         "local-run-task-from-state",
         "local-start-alb-from-state",
         "local-start-service",
@@ -1578,7 +1555,6 @@
         "eventbridge-scheduler",
         "eventbus-policy",
         "eventsourcemapping-race",
-        "export",
         "export-nested-stack",
         "fifo-sqs-event-source",
         "fsx-lustre",
@@ -1736,12 +1712,11 @@
     "--ignore-errors",
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
+    "--profile",
+    "--resource-warn-after",
     "--strict"
   ],
   "unknownFlagsInIntegs": [
-    "--Arn--",
-    "--Name",
-    "--TopicArn--",
     "--accept",
     "--access-key-id",
     "--access-point-id",
@@ -1762,7 +1737,6 @@
     "--argjson",
     "--arn",
     "--asset-bucket",
-    "--assume-role",
     "--assume-role-policy-document",
     "--attribute",
     "--attribute-definitions",
@@ -1870,7 +1844,6 @@
     "--group-ids",
     "--group-name",
     "--handler",
-    "--help",
     "--host",
     "--host-port",
     "--hosted-zone-id",
@@ -1921,7 +1894,6 @@
     "--log-stream-name",
     "--logical-resource-id",
     "--long",
-    "--max-count",
     "--max-items",
     "--max-results",
     "--max-time",
@@ -1930,9 +1902,7 @@
     "--message-group-id",
     "--metric-name",
     "--metrics",
-    "--mfa-configuration",
     "--migrate-from-cloudformation",
-    "--min-count",
     "--monitoring-interval",
     "--mount",
     "--name",
@@ -1997,7 +1967,6 @@
     "--prefix-list-id",
     "--protect-configuration-id",
     "--protocol",
-    "--pull",
     "--purge-events",
     "--qualifier",
     "--query",
