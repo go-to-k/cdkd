@@ -30,9 +30,11 @@ import {
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { displayIdent } from '../../../src/utils/display-safe.js';
 import { UNSHOWABLE_VALUE } from '../../../src/utils/pasteable-command.js';
 import {
   CLAUSE_BREAK_PAYLOAD,
+  OPERATOR_FLIP,
   PASTE_PAYLOADS,
   spansThatRun,
   withPasteDir,
@@ -43,6 +45,9 @@ const DQ_FLIP = 'Invalid value "prod';
 
 function expectPastesNothing(line: string, dir: string, label = line): void {
   expect(spansThatRun(line, dir), label).toEqual([]);
+  // The harness flips the `'` parity ABOVE the line; a second flip BELOW
+  // closes it, which is what leaves a value inside cdkd's own `'…'` bare.
+  expect(spansThatRun(`${line}\n${OPERATOR_FLIP}`, dir), `between two ' flips: ${label}`).toEqual([]);
   expect(spansThatRun(`${DQ_FLIP}\n${line}`, dir), `under a " flip: ${label}`).toEqual([]);
   expect(
     spansThatRun(`${DQ_FLIP}\n${line}\n${DQ_FLIP}`, dir),
@@ -161,6 +166,29 @@ async function linesOf(body: () => Promise<unknown>): Promise<string[]> {
 
 const resolver = (region = 'us-east-1', cfnFallback = false): IntrinsicFunctionResolver =>
   new IntrinsicFunctionResolver(region, { cfnFallback });
+
+/** A nested stack `id` whose recorded `attribute` is a dynamic reference. */
+function nestedOrigin(id: string, attribute: string): Promise<string[]> {
+  aws.ssm = async () => ({ Parameter: { Value: 'x', Type: 'String' } });
+  const type = 'AWS::CloudFormation::Stack';
+  return linesOf(() =>
+    resolver().resolve(
+      { 'Fn::GetAtt': [id, attribute] },
+      ctx({
+        template: { Resources: { [id]: { Type: type } } },
+        resources: {
+          [id]: {
+            physicalId: 'arn:aws:cloudformation:us-east-1:123456789012:stack/Child/uuid',
+            resourceType: type,
+            properties: {},
+            attributes: { [attribute]: '{{resolve:ssm:/p}}' },
+            dependencies: [],
+          },
+        },
+      })
+    )
+  );
+}
 
 const echo = (text: string): Error => new Error(`The ID '${text}' does not exist`);
 
@@ -467,6 +495,17 @@ const SITES: readonly Site[] = [
       ),
     pick: starts('The state record for '),
   },
+  // ---- the nested-stack origin label ---------------------------------------
+  {
+    site: 'Re-resolving line, a nested stack logical id',
+    drive: (v) => nestedOrigin(v, 'Outputs.Foo'),
+    pick: starts('Re-resolving dynamic reference(s) in nested stack '),
+  },
+  {
+    site: 'Re-resolving line, a nested stack attribute',
+    drive: (v) => nestedOrigin('Child', `Outputs.${v}`),
+    pick: starts('Re-resolving dynamic reference(s) in nested stack '),
+  },
   // ---- Fn::ImportValue ----------------------------------------------------
   {
     site: 'ImportValue export name (Resolving and Found lines, not-found refusal)',
@@ -622,6 +661,27 @@ const SITES: readonly Site[] = [
         )
       ),
     pick: starts('No state found for stack: '),
+  },
+  {
+    // `S3StateBackend.getState` names the region through `displayIdent`, so a
+    // non-plain one reaches the message JSON-quoted.
+    site: 'failed state read WARN, the region as getState echoes it',
+    drive: (v) =>
+      linesOf(() =>
+        resolver().resolve(
+          { 'Fn::ImportValue': 'Exp' },
+          ctx({
+            stateBackend: backend([
+              {
+                stackName: 'Producer',
+                region: v,
+                fail: new Error(`Failed to get state for stack Producer (${displayIdent(v)}): AccessDenied`),
+              },
+            ]),
+          })
+        )
+      ),
+    pick: starts('Failed to read state for stack '),
   },
   {
     site: 'failed state read WARN, the stack and its echo',
@@ -903,7 +963,8 @@ describe('a value on the resolver\'s remaining log lines runs nothing when paste
     aws.cfn = async () => ({});
   });
 
-  it.each(SITES)('$site', async ({ drive, pick }) => {
+  // `%s` over the name itself: `$site` cuts a long name, and cut names collide.
+  it.each(SITES.map((s) => [s.site, s] as const))('%s', async (_site, { drive, pick }) => {
     const rendered: Array<{ payload: string; line: string }> = [];
     for (const payload of PAYLOADS) {
       resetAccountInfoCache();
@@ -918,7 +979,10 @@ describe('a value on the resolver\'s remaining log lines runs nothing when paste
         expectPastesNothing(line, dir, `${payload} on ${JSON.stringify(line)}`);
       }
     });
-    // Then the shape: no part of the payload's command printed, and the slot
+    // Then the shape. The `OWNED` pin is not redundant with the paste: for a
+    // value inside cdkd's own `'…'` beside a `(`, as on the origin label, the
+    // flipped line is a syntax error, so this pin is what reds a revert there.
+    // No part of the payload's command printed, and the slot
     // was described for at least one payload (a payload whose separator the
     // site's own parse consumed, such as the clause break's `:` in a
     // dynamic reference, can leave an inert piece to print as it is).
@@ -961,6 +1025,18 @@ describe('a name the display sanitizer ALTERED is described, not shown trimmed (
   // malformed-record refusal tells the operator to repair THAT record.
   const ALTERED = ['Prod\u00a0', 'Prod ', 'Prod\t', 'Prod\u0416'];
 
+  it.each(['caf\u00e9', '\u65e5\u672c\u8a9e'])('CONTROL: an inert non-ASCII VALUE still prints: %j', async (value) => {
+    const lines = await linesOf(() => resolver().resolve({ 'Fn::Join': ['', [value]] }, ctx()));
+    expect(lines).toContain(`Resolved Fn::Join: ${value}`);
+    const param = await linesOf(() =>
+      resolver().resolveParameters({
+        Parameters: { P: { Type: 'String', Default: value } },
+        Resources: {},
+      } as unknown as CloudFormationTemplate)
+    );
+    expect(param).toContain(`Parameter P: using default value ${value}`);
+  });
+
   it.each(ALTERED)('%j', async (name) => {
     const refusal = (
       await linesOf(() =>
@@ -1000,7 +1076,11 @@ describe('a name the display sanitizer ALTERED is described, not shown trimmed (
         Resources: {},
       } as unknown as CloudFormationTemplate)
     );
-    expect(paramValue).toContain(`Parameter P: using default value ${UNSHOWABLE_VALUE}`);
+    // A VALUE is held to the default sanitizer only: padding and control
+    // characters are described, an inert non-ASCII value prints.
+    expect(paramValue).toContain(
+      `Parameter P: using default value ${name === 'Prod\u0416' ? name : UNSHOWABLE_VALUE}`
+    );
     aws.ssm = async () => ({ Parameter: { Value: 'x', Type: 'String' } });
     const origin = await linesOf(() =>
       resolver().resolve(
