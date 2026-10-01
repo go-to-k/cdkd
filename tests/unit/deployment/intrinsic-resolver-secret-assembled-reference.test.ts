@@ -47,6 +47,8 @@ const REFUSAL_TAIL =
 
 /** How many SSM lookups reached the SDK. */
 const ssmCalls = vi.hoisted(() => ({ count: 0 }));
+/** How many Secrets Manager lookups reached the SDK. */
+const smCalls = vi.hoisted(() => ({ count: 0 }));
 
 const logSpies = vi.hoisted(() => ({
   debug: vi.fn(),
@@ -78,6 +80,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
         // The ARN form a region-pinned token sends (resolved by a sibling).
         // `crnoechovalue`: a custom resource's NoEcho `Data` value.
         if (name === '/app/crnoechovalue' || name === `/app/${NAME}` || name === `/app/${SHORT_NAME}` || name?.endsWith(`:parameter/app/${NAME}`)) return { Parameter: { Value: 'q7', Type: 'SecureString' } };
+        // Issue #4266: an `ssm-secure` parameter named by a secret.
+        if (name === `/sec/${NAME}` || name === `/sec/${SHORT_NAME}`) return { Parameter: { Value: "secure-value", Type: "SecureString" } };
         if (name === `/app/${BIG_NAME}`) return { Parameter: { Value: BIG_VALUE, Type: 'SecureString' } };
         // A PUBLIC parameter named by the secret: its result records nothing.
         if (name === `/pub/${NAME}`) return { Parameter: { Value: 'public-value', Type: 'String' } };
@@ -88,6 +92,11 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     },
     secretsManager: {
       send: vi.fn(async (command: { input?: { SecretId?: string } }) => {
+        smCalls.count += 1;
+        // Issue #4266: ids assembled from `Name` / the sub-floor secret.
+        if (command.input?.SecretId === `app-${NAME}` || command.input?.SecretId === `app-${SHORT_NAME}`) {
+          return { SecretString: JSON.stringify({ k: "sm-secret-value" }) };
+        }
         if (command.input?.SecretId === SECRET_ID) return { SecretString: JSON.stringify({ name: SHORT_NAME }) };
         // Review M0: a secret whose `username` is a substring of its own id.
         if (command.input?.SecretId === 'myapp-db') {
@@ -102,7 +111,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 const { isMarkedNonRetryable } = await import('../../../src/deployment/retryable-errors.js');
-const { IntrinsicResolutionRefusalError } = await import('../../../src/utils/error-handler.js');
+const { IntrinsicResolutionRefusalError, DynamicReferenceRegionAmbiguousError } = await import('../../../src/utils/error-handler.js');
 const { IntrinsicFunctionResolver, resetAccountInfoCache } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
@@ -115,6 +124,7 @@ beforeEach(() => {
   resetAccountInfoCache();
   clearRecordedSecretExpressions();
   ssmCalls.count = 0;
+  smCalls.count = 0;
 });
 
 /** `Name` and `Big` as String parameters, bound; `secret` makes them inherited secrets. */
@@ -311,6 +321,88 @@ describe('issue #4166: the twin half through each wrapper', () => {
       expect(bag.has('q7')).toBe(false);
     });
   }
+});
+
+// Issue #4266: a `secretsmanager` / `ssm-secure` result is a secret by
+// spelling, so the token is refused before its lookup and the assembled id
+// never reaches AWS (CloudTrail would record it).
+describe('issue #4266: a secret-by-spelling token assembled from a secret is refused before its lookup', () => {
+  for (const [service, text, masked] of [
+    ['secretsmanager', 'port:{{resolve:secretsmanager:app-${Name}:SecretString:k}}', '{{resolve:secretsmanager:app-***:SecretString:k}}'],
+    ['ssm-secure', 'port:{{resolve:ssm-secure:/sec/${Name}}}', '{{resolve:ssm-secure:/sec/***}}'],
+  ] as const) {
+    for (const [source, name, placeholder, variables, secret] of NAME_SOURCES) {
+      it(`${service}, with the name from ${source}`, async () => {
+        const message = await refusalOf(persist({ A: subOf(placeholder, variables)(text) }, secret));
+        expect(message).toBe(`Refusing to resolve ${masked}: ${REFUSAL_TAIL}`);
+        // The twin half's source is itself a Secrets Manager token: one lookup.
+        const ownLookups = secret ? 0 : 1;
+        expect(smCalls.count + ssmCalls.count, 'no lookup of the assembled id').toBe(ownLookups);
+        for (const line of everyLine()) expect(line).not.toContain(`/sec/${name}`);
+        for (const line of everyLine()) expect(line).not.toContain(`app-${name}`);
+      });
+    }
+  }
+
+  it('is refused before a region-pinned sibling looks it up', async () => {
+    const message = await refusalOf(
+      persist(
+        { A: { 'Fn::Sub': 'port:{{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2:123456789012:secret:app-${Name}:SecretString:k}}' } },
+        true
+      )
+    );
+    expect(message).toMatch(/^Refusing to resolve \{\{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2:123456789012:secret:app-\*\*\*:SecretString:k\}\}: /);
+    expect(smCalls.count, 'no lookup of the assembled id').toBe(0);
+  });
+
+  it('leaves the region-ambiguous refusal first, which `cdkd scrub` re-raises by class', async () => {
+    // Both refuse before any lookup; the ambiguous one is the class scrub
+    // refuses the stack on, so it must not be pre-empted.
+    const context = { ...contextFor(new Map(), true), producerRegions: ['us-west-2'] };
+    const error = await new IntrinsicFunctionResolver('us-east-1')
+      .resolve({ A: { 'Fn::Sub': 'port:{{resolve:secretsmanager:app-${Name}:SecretString:k}}' } }, context as never)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(error).toBeInstanceOf(DynamicReferenceRegionAmbiguousError);
+    expect(String((error as Error).message)).not.toContain(NAME);
+    expect(smCalls.count, 'no lookup of the assembled id').toBe(0);
+  });
+
+  it('CONTROL: persisted text (cdkd drift, the rollback replay) still looks it up and resolves', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const context = contextFor(new Map(), true) as never;
+    expect(await resolver.resolveDynamicReferences(`port:{{resolve:secretsmanager:app-${NAME}:SecretString:k}}`, context)).toBe(
+      'port:sm-secret-value'
+    );
+    expect(await resolver.resolveDynamicReferences(`port:{{resolve:ssm-secure:/sec/${NAME}}}`, context)).toBe(
+      'port:secure-value'
+    );
+    expect([smCalls.count, ssmCalls.count]).toEqual([1, 1]);
+  });
+
+  it('CONTROL: the same tokens from a name that is NOT a secret are looked up and resolve', async () => {
+    const { resolved } = await persist(
+      {
+        A: { 'Fn::Sub': 'port:{{resolve:secretsmanager:app-${Name}:SecretString:k}}' },
+        B: { 'Fn::Sub': 'port:{{resolve:ssm-secure:/sec/${Name}}}' },
+      },
+      false
+    );
+    expect(resolved).toEqual({ A: 'port:sm-secret-value', B: 'port:secure-value' });
+    expect([smCalls.count, ssmCalls.count]).toEqual([1, 1]);
+  });
+
+  it('the comparison path still leaves it unresolved, with no lookup and no refusal', async () => {
+    const context = { ...contextFor(new Map(), true), skipDynamicReferences: true };
+    const resolved = await new IntrinsicFunctionResolver('us-east-1').resolve(
+      { A: { 'Fn::Sub': 'port:{{resolve:secretsmanager:app-${Name}:SecretString:k}}' } },
+      context as never
+    );
+    expect(resolved).toEqual({ A: `port:{{resolve:secretsmanager:app-${NAME}:SecretString:k}}` });
+    expect(smCalls.count).toBe(0);
+  });
 });
 
 describe('issue #4166: what the refusal leaves alone', () => {

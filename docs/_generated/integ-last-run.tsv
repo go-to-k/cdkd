@@ -169,7 +169,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-09-27T15:53:36Z	PASS	75	verify.sh	rc ok, orph clean
 kinesis-stream-mode-switch	2026-10-01T02:52:52Z	PASS	116	verify.sh	PR #4252 (#4239 arrow paste sites) at dc71dd51d; rc ok, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-01T04:01:28Z	PASS	155	verify.sh	rc ok, orph clean (#4241)
+lambda	2026-10-01T05:17:08Z	PASS	115	verify.sh	rc ok, orph clean
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-09-16T17:42:36Z	PASS	413	verify.sh	us-east-1, gating the go-to-k/cdkd#3231 merge at afee5469: rc ok, 17 deleted 0 errors, no orphan roles/functions/VPCs/ENIs/instances, state prefix swept to 0 surviving versions against an empty pre-flight. One retry, on the operator-role wording. Ran the PRE-go-to-k/cdkd#3274 single-wording counter, which printed 1 and matched an independent grep -c of the log's Retrying lines; an earlier 16:59:49Z run on the go-to-k/cdkd#3274 branch exercised the NEW per-wording block and printed the same 1 total as 1/0/0
@@ -302,7 +302,7 @@ sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sh
 sdk-to-cc-autoroute	2026-09-25T15:16:49Z	PASS	155	verify.sh	rc ok, orph clean; #3515 json-patch-generator CC patch path, tree c067e96b0
 secret-derived-immutable-names	2026-10-01T01:09:18Z	PASS	70	verify.sh	PR #4277 (#4275 secret-derived immutable names) @a806dc99b; rc ok, destroy 0 errors, 0 orphans; real-AWS probe: reverting apigatewayv2-provider.ts alone -> Step 4 'StageName is immutable', ecs-provider.ts alone -> 'Cannot update ServiceName'
 secrets-array-nested	2026-09-30T21:26:17Z	PASS	421	verify.sh	PR #4269 (#2177 ECS masker threading) @9e0e25c69; rc ok, destroy 0 errors, no state/IAM/VPC/ECS/log leftovers
-secrets-dynamic-ref	2026-10-01T01:23:14Z	PASS	684	verify.sh	go-to-k/cdkd#4258 review round 1 (M0 inherited-only needle); Phase 1b3b refused masked, 0 surviving state versions
+secrets-dynamic-ref	2026-10-01T05:17:08Z	PASS	576	verify.sh	rc ok, orph clean; #4266 pre-lookup refusal arms
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
 serverless-api	2026-09-30T20:40:33Z	PASS	60	verify.sh	PR #4271 (#2177 ApiGatewayV2 masker threading) @a3db05a83; rc ok, destroy 0 errors, no state/IAM/Lambda/API leftovers

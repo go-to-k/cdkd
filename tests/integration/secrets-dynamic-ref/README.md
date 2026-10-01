@@ -59,13 +59,15 @@ covers the optional-trailing-field grammar.
      one more deploy under `CDKD_TEST_OUTPUT_LEAK=true`, which declares an
      `OutputFailureLeak` output whose `Fn::Sub` variable resolves the secret's
      `password` and whose body uses that value as the JSON key of a second
-     reference — the resolver's own `key '<password>' not found` error. Guard
-     1b pins the synthesized shape (premise), that the deploy warned
-     `Failed to resolve output OutputFailureLeak` (the sentinel that the arm
-     ran), that the warn carries `***` and not the password, that the whole
-     `--verbose` log is password-free, and that the resolver's own
-     `Resolving dynamic reference:` echo of the assembled reference is in it
-     with `***` in the key position. The output is gated so the
+     reference, which is refused before its lookup (issue
+     [#4266](https://github.com/go-to-k/cdkd/issues/4266)). Guard 1b pins the
+     synthesized shape (premise), that the deploy warned
+     `Failed to resolve output OutputFailureLeak: Refusing to resolve
+     {{resolve:secretsmanager:<name>:SecretString:***}}: ...` (the sentinel
+     that the arm ran), that the warn carries `***` and not the password, that
+     the whole `--verbose` log is password-free, and that the log has the `Pw`
+     lookup's `Resolving dynamic reference:` echo but none for the assembled
+     reference. The output is gated so the
      unchanged-stack `diff --fail` guard later never sees it.
    - Phases 1b3 / 1b4 (issue [#2743](https://github.com/go-to-k/cdkd/issues/2743)):
      two more probe deploys under `CDKD_TEST_SERVICE_SPAN`, whose `Fn::Sub`
@@ -92,8 +94,12 @@ covers the optional-trailing-field grammar.
      {{resolve:ssm:<prefix>***}}: the reference was assembled from a secret
      value and resolves to a secret`. The log carries no password,
      `state.json` holds it only where the Secret keeps it, and state has no
-     `SecretNamedRef` output key. The password-named parameter is deleted and
-     proven gone at teardown.
+     `SecretNamedRef` output key. The same probe declares `SecretNamedSecureRef`,
+     the same name through `ssm-secure` (issue
+     [#4266](https://github.com/go-to-k/cdkd/issues/4266)): it is refused with
+     the same masked warning, and its `--verbose` log has no `ssm-secure` lookup
+     line, while the `ssm` arm's lookup line is there as the sentinel. The
+     password-named parameter is deleted and proven gone at teardown.
    - Phase 1b5 (issue [#2743](https://github.com/go-to-k/cdkd/issues/2743)):
      seeds `outputs.ServiceSpanLegacy = {{resolve:<password>}}` into
      `state.json` (what a release before the refusal persisted), runs a real

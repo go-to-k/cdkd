@@ -13,11 +13,15 @@
  * WHY THE ERROR CAN CARRY A PLAINTEXT: condition evaluation reaches
  * `resolveDynamicReferences`, and `resolveSub` / `resolveJoin` re-enter it with
  * the ASSEMBLED string. So a `Conditions` entry whose `Fn::Sub` variable
- * resolves a secret, and whose body then uses that value as the JSON KEY of a
- * second reference, makes the lookup fail NAMING the password —
- * `key '<password>' not found in secret '<id>'`, thrown unmasked by
- * construction because every other consumer of that throw masks at ITS own
- * boundary.
+ * resolves a secret, and whose body then uses that value inside the NAME of a
+ * plain `ssm` reference, makes the lookup fail NAMING the password —
+ * `SSM parameter '/probe/<password>' not found or has no value`.
+ *
+ * The same shape with a `secretsmanager` (or `ssm-secure`) body no longer
+ * reaches a lookup: issue #4266 refuses it before the id is sent to AWS, so
+ * the error this catch renders is that refusal, which names the assembled
+ * token. One case below pins it; the bag-variant cases use a plain `ssm`
+ * body, which is still looked up (its `Type` decides whether it is a secret).
  *
  * THE ASSERTIONS ARE FULL LINES, not `toContain('***')`. A shape check passes
  * on an unmasked line that happens to carry a mask elsewhere; the pair
@@ -39,14 +43,21 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 // Module-level spies rather than a factory returning a fresh object: `getLogger()`
 // is called per resolver instance, and a per-call object makes the warn
 // unobservable (the same reasoning as `dynamic-references.test.ts`).
-const { mockLoggerWarn, mockLoggerDebug, mockLoggerInfo, mockLoggerError, mockSecretsManagerSend } =
-  vi.hoisted(() => ({
-    mockLoggerWarn: vi.fn(),
-    mockLoggerDebug: vi.fn(),
-    mockLoggerInfo: vi.fn(),
-    mockLoggerError: vi.fn(),
-    mockSecretsManagerSend: vi.fn(),
-  }));
+const {
+  mockLoggerWarn,
+  mockLoggerDebug,
+  mockLoggerInfo,
+  mockLoggerError,
+  mockSecretsManagerSend,
+  mockSsmSend,
+} = vi.hoisted(() => ({
+  mockLoggerWarn: vi.fn(),
+  mockLoggerDebug: vi.fn(),
+  mockLoggerInfo: vi.fn(),
+  mockLoggerError: vi.fn(),
+  mockSecretsManagerSend: vi.fn(),
+  mockSsmSend: vi.fn(),
+}));
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -65,7 +76,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
     ec2: { send: vi.fn().mockResolvedValue({ AvailabilityZones: [] }) },
     secretsManager: { send: mockSecretsManagerSend },
-    ssm: { send: vi.fn() },
+    ssm: { send: mockSsmSend },
   }),
 }));
 
@@ -76,15 +87,23 @@ const SECRET_ID = 'cdkd-2748-secret';
 /** The reference whose resolution RECORDS the password into the pass map. */
 const PW_REF = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:password}}`;
 
+/** A plain `ssm` reference whose NAME is assembled from the `Pw` variable. */
+const SSM_ASSEMBLED_BODY = '{{resolve:ssm:/probe/${Pw}}}';
+
+/** The masked lookup failure the resolver throws for {@link SSM_ASSEMBLED_BODY}. */
+const SSM_NOT_FOUND = "Dynamic reference: SSM parameter '/probe/***' not found or has no value";
+
 beforeEach(() => {
   vi.clearAllMocks();
-  // One secret, one key. The assembled reference below asks for a key named by
-  // the RESOLVED password, which this document does not have -- so the resolver
-  // throws its own `key '<k>' not found` naming it. The SDK is never the one
-  // that names the plaintext here; the resolver is.
+  // One secret, one key: `PW_REF` resolves and records the password.
   mockSecretsManagerSend.mockResolvedValue({
     SecretString: JSON.stringify({ password: PASSWORD }),
   });
+  // The assembled `ssm` name `/probe/<password>` has no parameter: a response
+  // without `Parameter`, so the resolver throws its own `SSM parameter '<name>'
+  // not found or has no value` naming it. The SDK is never the one that names
+  // the plaintext here; the resolver is.
+  mockSsmSend.mockResolvedValue({});
 });
 
 /**
@@ -94,17 +113,14 @@ beforeEach(() => {
  * carry the resolved password into the next case's template and the second case
  * would measure the first one's state.
  */
-function leakingTemplate(): CloudFormationTemplate {
+function leakingTemplate(body: string = SSM_ASSEMBLED_BODY): CloudFormationTemplate {
   return {
     Resources: {},
     Conditions: {
       Leak: {
         'Fn::Equals': [
           {
-            'Fn::Sub': [
-              `{{resolve:secretsmanager:${SECRET_ID}:SecretString:\${Pw}}}`,
-              { Pw: PW_REF },
-            ],
+            'Fn::Sub': [body, { Pw: PW_REF }],
           },
           'never-equal',
         ],
@@ -126,8 +142,8 @@ function ctx(template: CloudFormationTemplate, overrides: Partial<ResolverContex
  * EVERY line this pass emitted, at every level, joined.
  *
  * `debug` IS included, and that is the strongest half of these negatives. The
- * resolver's `Resolving dynamic reference: secretsmanager:<id>:SecretString:<key>`
- * echo prints the ASSEMBLED key -- the resolved password -- and issue #2728
+ * resolver's `Resolving dynamic reference: ssm:<name>` echo prints the
+ * ASSEMBLED name -- carrying the resolved password -- and issue #2728
  * masked it (further down this same file). An earlier revision of this helper
  * excluded `debug` because that fix was still in flight on another PR, and
  * widening the negative then would have made this file pass only once that PR
@@ -164,12 +180,40 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
     // to mask against -- otherwise the masked line below would prove nothing.
     expect(context.recordedSecretValues?.has(PASSWORD)).toBe(true);
 
-    expect(conditionWarns()[0]).toBe(
-      `Failed to evaluate condition Leak: Dynamic reference: key '***' not found in secret '${SECRET_ID}', assuming false`
-    );
+    // PREMISE: the assembled name reached its LOOKUP -- one `PW_REF` fetch,
+    // then one `GetParameter` for `/probe/<password>` -- so the error below is
+    // the lookup's, not an earlier refusal's.
+    expect(mockSecretsManagerSend).toHaveBeenCalledTimes(1);
+    expect(mockSsmSend).toHaveBeenCalledTimes(1);
+
+    expect(conditionWarns()[0]).toBe(`Failed to evaluate condition Leak: ${SSM_NOT_FOUND}, assuming false`);
     // ...and nowhere else, at ANY level.
     expect(allLogLines()).not.toContain(PASSWORD);
     // Behaviour preserved: a failed condition is still downgraded to false.
+    expect(conditions['Leak']).toBe(false);
+  });
+
+  it('renders the issue #4266 refusal of a secretsmanager reference assembled from the password, masked', async () => {
+    // The shape the bag cases used before issue #4266: the password as the
+    // JSON KEY of a second `secretsmanager` reference. That reference is now
+    // refused BEFORE its lookup, so the error this catch renders is the
+    // refusal, which quotes the assembled token.
+    const resolver = new IntrinsicFunctionResolver();
+    const template = leakingTemplate(`{{resolve:secretsmanager:${SECRET_ID}:SecretString:\${Pw}}}`);
+    const context = ctx(template);
+
+    const conditions = await resolver.evaluateConditions(context);
+
+    expect(conditionWarns()).toHaveLength(1);
+    expect(context.recordedSecretValues?.has(PASSWORD)).toBe(true);
+    // PREMISE: only `PW_REF` was fetched -- the assembled id never reached AWS.
+    expect(mockSecretsManagerSend).toHaveBeenCalledTimes(1);
+    expect(conditionWarns()[0]).toBe(
+      `Failed to evaluate condition Leak: Refusing to resolve {{resolve:secretsmanager:${SECRET_ID}:SecretString:***}}: ` +
+        'the reference was assembled from a secret value and resolves to a secret, so recording it would write ' +
+        'that value into state inside the reference. Build the reference name from non-secret values., assuming false'
+    );
+    expect(allLogLines()).not.toContain(PASSWORD);
     expect(conditions['Leak']).toBe(false);
   });
 
@@ -188,10 +232,7 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
         Inherited: {
           'Fn::Equals': [
             {
-              'Fn::Sub': [
-                `{{resolve:secretsmanager:${SECRET_ID}:SecretString:\${Pw}}}`,
-                { Pw: inheritedOnly },
-              ],
+              'Fn::Sub': [SSM_ASSEMBLED_BODY, { Pw: inheritedOnly }],
             },
             'never-equal',
           ],
@@ -208,9 +249,10 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
     expect(conditionWarns()).toHaveLength(1);
     // The pass map stayed empty, so only the inherited bag could have masked it.
     expect(context.recordedSecretValues?.size).toBe(0);
-    expect(conditionWarns()[0]).toBe(
-      `Failed to evaluate condition Inherited: Dynamic reference: key '***' not found in secret '${SECRET_ID}', assuming false`
-    );
+    // PREMISE: the lookup ran (and nothing else did), so the line is its error.
+    expect(mockSecretsManagerSend).not.toHaveBeenCalled();
+    expect(mockSsmSend).toHaveBeenCalledTimes(1);
+    expect(conditionWarns()[0]).toBe(`Failed to evaluate condition Inherited: ${SSM_NOT_FOUND}, assuming false`);
     expect(allLogLines()).not.toContain(inheritedOnly);
     // Behaviour, like every sibling case: a failed condition is still false.
     expect(conditions['Inherited']).toBe(false);
@@ -265,9 +307,9 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
     const conditions = await resolver.evaluateConditions(context);
 
     expect(conditionWarns()).toHaveLength(1);
-    expect(conditionWarns()[0]).toBe(
-      `Failed to evaluate condition Leak: Dynamic reference: key '***' not found in secret '${SECRET_ID}', assuming false`
-    );
+    expect(mockSecretsManagerSend).toHaveBeenCalledTimes(1);
+    expect(mockSsmSend).toHaveBeenCalledTimes(1);
+    expect(conditionWarns()[0]).toBe(`Failed to evaluate condition Leak: ${SSM_NOT_FOUND}, assuming false`);
     expect(allLogLines()).not.toContain(PASSWORD);
     // The map this function INVENTS must not be handed back. (Not the wider
     // claim an earlier revision made here -- `cdkd scrub` deliberately hands
@@ -275,6 +317,38 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
     // caller's choice.) The caller's context is untouched below.
     expect((context as { recordedSecretValues?: unknown }).recordedSecretValues).toBeUndefined();
     expect(conditions['Leak']).toBe(false);
+  });
+
+  it('the private bag is what masks a NEEDLE-only plaintext for a caller that brought none', async () => {
+    // The case above cannot tell whether the private bag exists: the assembled
+    // name is masked BY POSITION, out of the log twin `resolveSub` built
+    // (issue #3150), with or without a bag. Here the second token CARRIES the
+    // password as literal text after a sibling token in the same leaf resolved
+    // it -- no twin mask, and not assembled, so issue #4266 lets it reach its
+    // lookup. The only thing that can mask its name is the NEEDLE the first
+    // token recorded, and for this caller that needle lives only in the bag
+    // `evaluateConditions` invents.
+    const resolver = new IntrinsicFunctionResolver();
+    const template = {
+      Resources: {},
+      Conditions: {
+        Carrying: {
+          'Fn::Equals': [`${PW_REF}|{{resolve:ssm:/probe/${PASSWORD}}}`, 'never-equal'],
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+    const context = { template, resources: {} } as ResolverContext;
+
+    const conditions = await resolver.evaluateConditions(context);
+
+    expect(conditionWarns()).toHaveLength(1);
+    // PREMISE: the first token resolved, and the carrying name reached its lookup.
+    expect(mockSecretsManagerSend).toHaveBeenCalledTimes(1);
+    expect(mockSsmSend).toHaveBeenCalledTimes(1);
+    expect(conditionWarns()[0]).toBe(`Failed to evaluate condition Carrying: ${SSM_NOT_FOUND}, assuming false`);
+    expect(allLogLines()).not.toContain(PASSWORD);
+    expect((context as { recordedSecretValues?: unknown }).recordedSecretValues).toBeUndefined();
+    expect(conditions['Carrying']).toBe(false);
   });
 
   it('keeps the INHERITED bag when the caller brought only that one', async () => {
@@ -293,10 +367,7 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
         InheritedOnly: {
           'Fn::Equals': [
             {
-              'Fn::Sub': [
-                `{{resolve:secretsmanager:${SECRET_ID}:SecretString:\${Pw}}}`,
-                { Pw: inheritedOnly },
-              ],
+              'Fn::Sub': [SSM_ASSEMBLED_BODY, { Pw: inheritedOnly }],
             },
             'never-equal',
           ],
@@ -316,9 +387,9 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
     const conditions = await resolver.evaluateConditions(context);
 
     expect(conditionWarns()).toHaveLength(1);
-    expect(conditionWarns()[0]).toBe(
-      `Failed to evaluate condition InheritedOnly: Dynamic reference: key '***' not found in secret '${SECRET_ID}', assuming false`
-    );
+    expect(mockSecretsManagerSend).not.toHaveBeenCalled();
+    expect(mockSsmSend).toHaveBeenCalledTimes(1);
+    expect(conditionWarns()[0]).toBe(`Failed to evaluate condition InheritedOnly: ${SSM_NOT_FOUND}, assuming false`);
     expect(allLogLines()).not.toContain(inheritedOnly);
     // The private map went into the spread copy, not the caller's object.
     expect((context as { recordedSecretValues?: unknown }).recordedSecretValues).toBeUndefined();

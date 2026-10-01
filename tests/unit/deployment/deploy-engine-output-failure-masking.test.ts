@@ -22,10 +22,16 @@
  *   (the "sibling's plaintext echoed" shape the scrub mock manufactures is
  *   not the resolver's), so the case that proves the path exists is one the
  *   resolver builds itself — an `Fn::Sub` whose variable resolves the secret's
- *   `password` key and whose body uses that VALUE as the JSON key of a second
- *   reference to the same secret. The lookup succeeds and the resolver's own
- *   `key '<password>' not found in secret` message carries the plaintext the
- *   same pass just recorded. (An SSM not-found is NOT a usable shape for
+ *   `password` key and whose body uses that VALUE inside a second reference.
+ *   For a `secretsmanager` / `ssm-secure` body that second reference is
+ *   refused BEFORE its lookup (issue #4266: the assembled id is never sent to
+ *   AWS), and the refusal, quoting the assembled token, is the error the
+ *   engine renders. A plain `ssm` body is still looked up — its `Type`
+ *   decides whether it is a secret — so the lookup-side lines (the echo, the
+ *   retry label, the unrecognized-Type warn) are reached through it, and for
+ *   the other two spellings through a token that CARRIES a secret this pass
+ *   recorded without being assembled from it, which #4266 does not refuse.
+ *   (An SSM not-found is NOT a usable shape for
  *   that: a missing live parameter raises the SDK's `ParameterNotFound`,
  *   which propagates unchanged and names nothing — the fake below DOES name
  *   the parameter, so the engine warn on the SSM shapes has something to
@@ -78,8 +84,9 @@ vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
  */
 const SECRET_ID = 'cdkd-test-dynref-secret';
 const PASSWORD = 'cdkd-known-pw-123';
-const { secretSends, throttledIds } = vi.hoisted(() => ({
-  secretSends: [] as string[],
+const { secretIds, throttledIds } = vi.hoisted(() => ({
+  /** The `SecretId` of every lookup, in order: which ids reached AWS. */
+  secretIds: [] as string[],
   /** Secret ids whose FIRST lookup is answered with a throttle, so the retry label prints. */
   throttledIds: new Set<string>(),
 }));
@@ -89,11 +96,11 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
     readonly config = { region: () => Promise.resolve('us-east-1') };
     constructor(_config?: unknown) {}
     async send(command: { input?: { SecretId?: string }; constructor: { name: string } }): Promise<unknown> {
-      secretSends.push(command.constructor.name);
       if (command.constructor.name !== 'GetSecretValueCommand') {
         throw new Error(`unexpected Secrets Manager command ${command.constructor.name}`);
       }
       const id = command.input?.SecretId;
+      secretIds.push(String(id));
       if (id !== undefined && throttledIds.delete(id)) {
         const throttle = new Error('Rate exceeded');
         throttle.name = 'ThrottlingException';
@@ -126,7 +133,9 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
  * serves a command the subject never sends is a fixture agreeing with an
  * assumption rather than a test.
  */
-const { throttledParams, unknownTypeParams } = vi.hoisted(() => ({
+const { ssmNames, throttledParams, unknownTypeParams } = vi.hoisted(() => ({
+  /** The `Name` of every `GetParameterCommand`, in order: which names reached AWS. */
+  ssmNames: [] as string[],
   /** Parameter names whose FIRST lookup is answered with a throttle, so the retry label prints. */
   throttledParams: new Set<string>(),
   /** Parameter names whose lookup SUCCEEDS with a `Type` cdkd does not know, so the unrecognized-Type warn prints. */
@@ -148,6 +157,7 @@ vi.mock('@aws-sdk/client-ssm', async (importOriginal) => {
       if (command.constructor.name !== 'GetParameterCommand') {
         throw new Error(`unexpected SSM command ${command.constructor.name}`);
       }
+      ssmNames.push(String(name));
       if (name !== undefined && throttledParams.delete(name)) {
         const throttle = new Error('Rate exceeded');
         throttle.name = 'ThrottlingException';
@@ -309,7 +319,8 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
   beforeEach(() => {
     vi.clearAllMocks();
     resolverMode.real = false;
-    secretSends.length = 0;
+    secretIds.length = 0;
+    ssmNames.length = 0;
     throttledIds.clear();
     throttledParams.clear();
     unknownTypeParams.clear();
@@ -563,11 +574,12 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
 
   describe('reachability with the REAL resolver over a faked Secrets Manager', () => {
     // The password is resolved into the variable, then used as the JSON key of
-    // a second reference to the same secret: the lookup succeeds and the
-    // resolver's own error names the missing key — the plaintext. Built FRESH
-    // per case: `resolveSub` resolves the variable map IN PLACE, so a shared
-    // literal would carry the resolved password into the next case's template
-    // and that case would never resolve (or record) the inner reference.
+    // a second reference to the same secret. Since issue #4266 that second
+    // reference is refused BEFORE its lookup, and the refusal, quoting the
+    // assembled token, is what the engine renders. Built FRESH per case:
+    // `resolveSub` resolves the variable map IN PLACE, so a shared literal
+    // would carry the resolved password into the next case's template and that
+    // case would never resolve (or record) the inner reference.
     const assembled = () => ({
       'Fn::Sub': [
         `{{resolve:secretsmanager:${SECRET_ID}:SecretString:\${Pw}}}`,
@@ -575,33 +587,44 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       ],
     });
 
+    /** The issue #4166 / #4266 refusal of a secret token assembled from a secret, for its masked log text. */
+    const assembledRefusal = (tokenLogText: string): string =>
+      `Refusing to resolve ${tokenLogText}: the reference was assembled from a secret value and ` +
+      'resolves to a secret, so recording it would write that value into state inside the ' +
+      'reference. Build the reference name from non-secret values.';
+    const ASSEMBLED_REFUSAL = assembledRefusal(`{{resolve:secretsmanager:${SECRET_ID}:SecretString:***}}`);
+
     beforeEach(() => {
       resolverMode.real = true;
     });
 
-    it('the resolver reaches this throw and masks it AT THE THROW — premise, restated by issue #2827', async () => {
+    it('the resolver reaches this throw and masks it AT THE THROW — premise, restated by issues #2827 and #4266', async () => {
       await makeEngine().deploy(stackName, templateWith({ Leak: { Value: assembled() } }));
 
-      // WHAT CHANGED. This case used to assert the real resolver's own message
-      // CARRIES the password — the premise the boundary mask rested on. Issue
-      // #2827 fixed the producer end: the resolver masks the raw `secretId` /
-      // `jsonKey` before interpolating them, so the message never leaves it
-      // unmasked and no caller inherits the obligation.
+      // WHAT CHANGED, twice. This case first asserted the real resolver's own
+      // message CARRIES the password — the premise the boundary mask rested
+      // on. Issue #2827 fixed the producer end: the resolver masks the raw
+      // `secretId` / `jsonKey` before interpolating them. Issue #4266 then
+      // moved the throw itself: the assembled reference is refused BEFORE its
+      // lookup, so the throw is no longer a not-found key but the refusal,
+      // quoting the assembled token masked.
       //
-      // Kept, inverted, rather than deleted, because the REACHABILITY half is
-      // what the cases below depend on: two `GetSecretValueCommand` sends and
-      // a not-found-key throw naming the secret. A shape that stopped reaching
-      // the throw would satisfy every `not.toContain(PASSWORD)` below
-      // vacuously, and `not.toContain` alone cannot tell masked from absent.
-      // The boundary mask this file is about is NOT made inert: the fake-resolver
-      // `__leak__` cases above drive an error the resolver did not build, and
-      // those are what discriminate `handleOutputResolutionFailure` now.
+      // Kept rather than deleted, because the REACHABILITY half is what the
+      // cases below depend on: exactly ONE lookup (the `Pw` variable's), so
+      // the assembled id never reached AWS, and a refusal naming the secret. A
+      // shape that stopped reaching the throw would satisfy every
+      // `not.toContain(PASSWORD)` below vacuously, and `not.toContain` alone
+      // cannot tell masked from absent. The boundary mask this file is about
+      // is NOT made inert: the fake-resolver `__leak__` cases above drive an
+      // error the resolver did not build, and those are what discriminate
+      // `handleOutputResolutionFailure` now.
       const thrown = lastThrown.value as Error;
-      expect(thrown).toBeInstanceOf(Error);
-      expect(thrown.message).toContain(`not found in secret '${SECRET_ID}'`);
-      expect(thrown.message).toContain('***');
+      expect(thrown).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      expect(thrown.message).toBe(ASSEMBLED_REFUSAL);
       expect(thrown.message).not.toContain(PASSWORD);
-      expect(secretSends.filter((c) => c === 'GetSecretValueCommand').length).toBeGreaterThanOrEqual(2);
+      expect(isMarkedNonRetryable(thrown)).toBe(true);
+      expect(secretIds).toEqual([SECRET_ID]);
+      expect(outputFailureWarn()).toBe(`Failed to resolve output Leak: ${ASSEMBLED_REFUSAL}`);
     });
 
     it('default arm: the warn is masked', async () => {
@@ -614,23 +637,27 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       expect(warn).not.toContain(PASSWORD);
     });
 
-    it('no log line at ANY level carries the password on that path — the resolver echoes the assembled reference too', async () => {
-      // The second lookup's `Resolving dynamic reference: secretsmanager:<id>:SecretString:<jsonKey>...`
-      // debug line would print the password (the JSON key) one line before
-      // the warn under `--verbose`; it is masked against the same pass map.
-      // (The throttle-retry label carries only the secret ID, constant on this
-      // shape — the password-as-ID case below is the one that pins it.) Every
-      // level is checked, and the premise that the resolver logged the second
-      // lookup at all is pinned so a resolver that stopped emitting the line
-      // could not pass this vacuously.
+    it('no log line at ANY level carries the password on that path — the assembled reference is refused before it is echoed', async () => {
+      // Before issue #4266 the second lookup's `Resolving dynamic reference:
+      // secretsmanager:<id>:SecretString:<jsonKey>...` debug line printed the
+      // assembled JSON key, masked against the same pass map. The refusal now
+      // precedes that echo, so the ONLY echo is the `Pw` variable's own lookup
+      // and the refusal warn is the only line quoting the assembled token —
+      // pinned exactly, so a resolver that echoed (or looked up) the assembled
+      // reference again could not pass this. The echo-masking half lives on in
+      // the plain-`ssm` and secret-carrying-token cases below, whose lookups
+      // are still reached. Every level is checked.
       await makeEngine().deploy(stackName, templateWith({ Leak: { Value: assembled() } }));
 
       const lines = [debugSpy, infoSpy, warnSpy, errorSpy].flatMap((spy) =>
         spy.mock.calls.map((c) => String(c[0]))
       );
       const echoes = lines.filter((l) => l.includes('Resolving dynamic reference: secretsmanager:'));
-      expect(echoes.length).toBeGreaterThanOrEqual(2);
-      expect(echoes.some((l) => l.includes(':SecretString:***'))).toBe(true);
+      expect(echoes).toHaveLength(1);
+      expect(echoes[0]).toContain(`secretsmanager:${SECRET_ID}:SecretString:password:`);
+      expect(lines.filter((l) => l.includes('SecretString:***'))).toEqual([
+        `Failed to resolve output Leak: ${ASSEMBLED_REFUSAL}`,
+      ]);
       for (const line of lines) expect(line).not.toContain(PASSWORD);
     });
 
@@ -644,8 +671,17 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       const error = thrown as Error & { cause?: unknown };
       expect(error.message).toContain('***');
       expect(error.message).not.toContain(PASSWORD);
-      expect((error.cause as Error).message).toContain(`key '***' not found in secret '${SECRET_ID}'`);
+      expect(error.message).toBe(
+        `Failed to resolve output Leak: ${ASSEMBLED_REFUSAL} ` +
+          '(--strict-getatt promotes output resolution failures to deploy errors; drop the flag to skip the output instead)'
+      );
+      // The cause is the issue #4266 refusal (the assembled id is refused
+      // before its lookup, so only the `Pw` variable's lookup ran), cloned
+      // masked, the non-retryable marker carried across.
+      expect(secretIds).toEqual([SECRET_ID]);
+      expect((error.cause as Error).message).toBe(ASSEMBLED_REFUSAL);
       expect((error.cause as Error).message).not.toContain(PASSWORD);
+      expect(isMarkedNonRetryable(error.cause)).toBe(true);
       // The resolver's OWN instance is masked at the throw since issue #2827,
       // so the engine's clone and the original now agree. Before that fix this
       // line read `toContain(PASSWORD)` — the whole point of the producer-side
@@ -730,23 +766,44 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
     // Both SSM spellings: `ssm` and `ssm-secure` reach `resolveSSMReference`
     // through different arms of `resolveDynamicReferences`, each threading
     // the context on its own, so each is pinned on its own.
-    for (const service of ['ssm', 'ssm-secure'] as const) {
-      const ssmAssembled = () => ({
-        'Fn::Sub': [
-          `{{resolve:${service}:/probe/\${Pw}}}`,
-          { Pw: `{{resolve:secretsmanager:${SECRET_ID}:SecretString:password}}` },
-        ],
-      });
-
-      it(`an ${service} name assembled from the password is echoed masked too, before its lookup fails`, async () => {
+    //
+    // They reach it through DIFFERENT shapes since issue #4266. A plain `ssm`
+    // name ASSEMBLED from the password is still looked up (only the lookup's
+    // `Type` says whether it is a secret), so its shape is unchanged. An
+    // `ssm-secure` one is refused before its lookup (pinned on its own below),
+    // so its arm is reached by a token that CARRIES the password as LITERAL
+    // text, after a sibling token in the same leaf resolved and recorded it:
+    // not assembled (no twin mask, no inherited needle), so #4266 lets it
+    // through, and every line naming it is masked by the NEEDLE alone.
+    const pwRef = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:password}}`;
+    const ssmShapes = [
+      {
+        service: 'ssm',
+        shape: 'assembled from',
+        value: (): unknown => ({ 'Fn::Sub': ['{{resolve:ssm:/probe/${Pw}}}', { Pw: pwRef }] }),
+        // A secret result of an ASSEMBLED token is refused after the lookup (issue #4166).
+        unknownTypeFailure: `Failed to resolve output Leak: ${assembledRefusal('{{resolve:ssm:/probe/***}}')}`,
+      },
+      {
+        service: 'ssm-secure',
+        shape: 'carrying',
+        value: (): unknown => `${pwRef}|{{resolve:ssm-secure:/probe/${PASSWORD}}}`,
+        // Not assembled, so the secret result is resolved, not refused.
+        unknownTypeFailure: undefined,
+      },
+    ] as const;
+    for (const { service, shape, value, unknownTypeFailure } of ssmShapes) {
+      it(`an ${service} name ${shape} the password is echoed masked too, before its lookup fails`, async () => {
         // `{{resolve:<service>:/probe/<password>}}`: the lookup raises
         // `ParameterNotFound`. The real SDK's message names nothing, so the
         // exposure on this shape is the resolver's `Resolving dynamic
         // reference: <service>:/probe/<name>` debug line emitted BEFORE the
         // call; the fake's message names the parameter, which also puts the
         // engine's failure warn on this path to the test.
-        await makeEngine().deploy(stackName, templateWith({ Leak: { Value: ssmAssembled() } }));
+        await makeEngine().deploy(stackName, templateWith({ Leak: { Value: value() } }));
 
+        // PREMISE: the lookup ran, once — the name reached `GetParameter`.
+        expect(ssmNames).toEqual([`/probe/${PASSWORD}`]);
         const lines = [debugSpy, infoSpy, warnSpy, errorSpy].flatMap((spy) =>
           spy.mock.calls.map((c) => String(c[0]))
         );
@@ -760,15 +817,18 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       });
 
       it(`...and in the ${service} unrecognized-Type warn, when the lookup SUCCEEDS with a Type cdkd does not know`, async () => {
-        // The one arm where the assembled name reaches a WARN at default
-        // verbosity: the lookup returns a value whose `Type` is neither
-        // String / StringList nor SecureString. The value is then treated as a
-        // secret, so the output is refused (issue #4166: a secret result of a
-        // reference assembled from a secret is never recorded) — after this
-        // warn, and with the name masked in both lines.
+        // The one arm where the name reaches a WARN at default verbosity: the
+        // lookup returns a value whose `Type` is neither String / StringList
+        // nor SecureString. The value is then treated as a secret. For the
+        // ASSEMBLED `ssm` shape the output is therefore refused (issue #4166:
+        // a secret result of a reference assembled from a secret is never
+        // recorded) — after this warn, and with the name masked in both
+        // lines. The CARRYING `ssm-secure` shape is not assembled, so it
+        // resolves and no failure warn prints.
         unknownTypeParams.add(`/probe/${PASSWORD}`);
-        await makeEngine().deploy(stackName, templateWith({ Leak: { Value: ssmAssembled() } }));
+        await makeEngine().deploy(stackName, templateWith({ Leak: { Value: value() } }));
 
+        expect(ssmNames).toEqual([`/probe/${PASSWORD}`]);
         const lines = [debugSpy, infoSpy, warnSpy, errorSpy].flatMap((spy) =>
           spy.mock.calls.map((c) => String(c[0]))
         );
@@ -776,19 +836,16 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
         expect(typeWarns).toHaveLength(1);
         expect(typeWarns[0]).toContain(`SSM parameter '/probe/***' reported an unrecognized Type 'Weird'`);
         for (const line of lines) expect(line).not.toContain(PASSWORD);
-        expect(outputFailureWarn()).toBe(
-          `Failed to resolve output Leak: Refusing to resolve {{resolve:${service}:/probe/***}}: ` +
-            'the reference was assembled from a secret value and resolves to a secret, so recording ' +
-            'it would write that value into state inside the reference. Build the reference name ' +
-            'from non-secret values.'
-        );
+        expect(outputFailureWarn()).toBe(unknownTypeFailure);
       });
 
       it(`...and in the ${service} throttle-retry label`, async () => {
         dynamicReferenceRetryDelays.sleep = async () => {};
         throttledParams.add(`/probe/${PASSWORD}`);
-        await makeEngine().deploy(stackName, templateWith({ Leak: { Value: ssmAssembled() } }));
+        await makeEngine().deploy(stackName, templateWith({ Leak: { Value: value() } }));
 
+        // PREMISE: the throttled lookup and its retry both reached SSM.
+        expect(ssmNames).toEqual([`/probe/${PASSWORD}`, `/probe/${PASSWORD}`]);
         const lines = [debugSpy, infoSpy, warnSpy, errorSpy].flatMap((spy) =>
           spy.mock.calls.map((c) => String(c[0]))
         );
@@ -799,23 +856,70 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       });
     }
 
-    it('a secret ID assembled from the password is masked in the throttle-retry label too', async () => {
-      // `{{resolve:secretsmanager:<password>:SecretString:password}}`: the
-      // first lookup of that id is throttled, so `withRetry` prints
+    it('an ssm-secure name ASSEMBLED from the password is refused before its lookup (issue #4266): no echo, no send, a masked refusal', async () => {
+      // The shape the `ssm-secure` arm of the loop above used before issue
+      // #4266. It never reaches `GetParameter` now, so the engine renders the
+      // refusal, quoting the assembled token masked.
+      await makeEngine().deploy(
+        stackName,
+        templateWith({ Leak: { Value: { 'Fn::Sub': ['{{resolve:ssm-secure:/probe/${Pw}}}', { Pw: pwRef }] } } })
+      );
+
+      expect(ssmNames).toEqual([]);
+      expect(secretIds).toEqual([SECRET_ID]);
+      const lines = [debugSpy, infoSpy, warnSpy, errorSpy].flatMap((spy) =>
+        spy.mock.calls.map((c) => String(c[0]))
+      );
+      expect(lines.filter((l) => l.includes('Resolving dynamic reference: ssm-secure:'))).toEqual([]);
+      expect(lines.filter((l) => l.includes('Retrying ssm-secure:'))).toEqual([]);
+      for (const line of lines) expect(line).not.toContain(PASSWORD);
+      expect(outputFailureWarn()).toBe(
+        `Failed to resolve output Leak: ${assembledRefusal('{{resolve:ssm-secure:/probe/***}}')}`
+      );
+    });
+
+    it('a secret ID assembled from the password is refused before its lookup, so no retry label is ever printed (issue #4266)', async () => {
+      // `{{resolve:secretsmanager:<password>:SecretString:password}}`. Before
+      // issue #4266 its first lookup was throttled here and the retry label —
+      // the secret id — was asserted masked. The id is now refused before it
+      // is sent, so the throttle primed below is never CONSUMED: one lookup
+      // (the `Pw` variable's), no retry line, and the masked refusal. The
+      // label's masking on a secret id is pinned by the next case.
+      dynamicReferenceRetryDelays.sleep = async () => {};
+      throttledIds.add(PASSWORD);
+      const idAssembled = {
+        'Fn::Sub': ['{{resolve:secretsmanager:${Pw}:SecretString:password}}', { Pw: pwRef }],
+      };
+      await makeEngine().deploy(stackName, templateWith({ Leak: { Value: idAssembled } }));
+
+      expect(secretIds).toEqual([SECRET_ID]);
+      expect(throttledIds.has(PASSWORD)).toBe(true);
+      const lines = [debugSpy, infoSpy, warnSpy, errorSpy].flatMap((spy) =>
+        spy.mock.calls.map((c) => String(c[0]))
+      );
+      expect(lines.filter((l) => l.includes('Retrying secretsmanager:'))).toEqual([]);
+      for (const line of lines) expect(line).not.toContain(PASSWORD);
+      expect(outputFailureWarn()).toBe(
+        `Failed to resolve output Leak: ${assembledRefusal('{{resolve:secretsmanager:***:SecretString:password}}')}`
+      );
+    });
+
+    it('a secret ID CARRYING the password is masked in the throttle-retry label', async () => {
+      // The label case on a shape that still reaches the lookup: the second
+      // token's id is the password as LITERAL text, recorded by the first
+      // token in the same leaf. Not assembled, so issue #4266 lets it
+      // through; its first lookup is throttled, so `withRetry` prints
       // `Retrying <label> in ...` at debug — the label is the secret id. The
       // retry then meets the SDK's not-found, which names nothing. The
       // resolver's retry sleep is replaced through its exported seam so the
       // backoff does not run for real.
       dynamicReferenceRetryDelays.sleep = async () => {};
       throttledIds.add(PASSWORD);
-      const idAssembled = {
-        'Fn::Sub': [
-          '{{resolve:secretsmanager:${Pw}:SecretString:password}}',
-          { Pw: `{{resolve:secretsmanager:${SECRET_ID}:SecretString:password}}` },
-        ],
-      };
-      await makeEngine().deploy(stackName, templateWith({ Leak: { Value: idAssembled } }));
+      const idCarrying = `${pwRef}|{{resolve:secretsmanager:${PASSWORD}:SecretString:password}}`;
+      await makeEngine().deploy(stackName, templateWith({ Leak: { Value: idCarrying } }));
 
+      // PREMISE: the throttled lookup and its retry both reached AWS.
+      expect(secretIds).toEqual([SECRET_ID, PASSWORD, PASSWORD]);
       const lines = [debugSpy, infoSpy, warnSpy, errorSpy].flatMap((spy) =>
         spy.mock.calls.map((c) => String(c[0]))
       );
@@ -823,14 +927,17 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       expect(retries).toHaveLength(1);
       expect(retries[0]).toContain('Retrying secretsmanager:***');
       for (const line of lines) expect(line).not.toContain(PASSWORD);
-      expect(outputFailureWarn()).toBeDefined();
+      expect(outputFailureWarn()).toBe(
+        "Failed to resolve output Leak: Secrets Manager can't find the specified secret."
+      );
     });
 
     it('Fn::Join, the other re-entry seam: the warn is masked (no throttle — the label cases above are the throttle probes)', async () => {
       // `resolveJoin` joins its resolved parts and re-enters
       // `resolveDynamicReferences` with the result: the inner part resolves
       // (and records) the password, the joined string is the second
-      // reference with the password as its JSON key.
+      // reference with the password as its JSON key — refused before its
+      // lookup since issue #4266, so the warn is that refusal.
       const joined = {
         'Fn::Join': [
           '',
@@ -847,6 +954,8 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       expect(warn).toBeDefined();
       expect(warn).toContain('***');
       expect(warn).not.toContain(PASSWORD);
+      expect(warn).toBe(`Failed to resolve output Leak: ${ASSEMBLED_REFUSAL}`);
+      expect(secretIds).toEqual([SECRET_ID]);
     });
   });
 });

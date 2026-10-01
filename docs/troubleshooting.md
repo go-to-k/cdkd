@@ -1601,7 +1601,12 @@ deploy resolved does not count: two references to one secret, where the first
 one's value (`myapp`) also appears in the second one's literal text
 (`myapp-db`), both resolve, in either order.
 
-Not refused: a reference whose result is public (an `ssm` `String` or
+A `secretsmanager` or `ssm-secure` reference is a secret by its service
+alone, so it is refused before cdkd looks it up: the assembled name is never
+sent to AWS, where CloudTrail would record it. An `ssm` reference is looked up
+first, to learn whether its parameter is a `SecureString`.
+
+Not refused: an `ssm` reference whose result is public (a `String` or
 `StringList` parameter) or empty, and one whose lookup fails, which reports
 its own error with the name masked. `cdkd drift` and a rollback replay read what
 state already holds and are not refused.

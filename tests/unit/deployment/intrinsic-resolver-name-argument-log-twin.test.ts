@@ -173,6 +173,11 @@ const lookupBehaviour = vi.hoisted(() => ({
   ssmType: undefined as string | undefined,
   /** go-to-k/cdkd#3950: when set, every `GetSecretValue` for another id answers this. */
   secretAnswer: undefined as Record<string, unknown> | undefined,
+  /**
+   * Issue #4266: every lookup the mocks RECEIVED, as `<service>:<name>`, so a
+   * refusal can show the assembled name never left the resolver.
+   */
+  sent: [] as string[],
 }));
 /** STS: the real account, or an answer with no account (a FABRICATED id). */
 const stsBehaviour = vi.hoisted(() => ({ fabricated: false }));
@@ -208,6 +213,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     },
     ssm: {
       send: vi.fn(async (command: { input?: { Name?: string } }) => {
+        lookupBehaviour.sent.push(`ssm:${String(command.input?.Name)}`);
         if (lookupBehaviour.endpointFailure && command.input?.Name?.startsWith('arn:')) {
           throw new Error(
             `getaddrinfo ENOTFOUND ssm.${command.input.Name.split(':')[3]}.amazonaws.com`
@@ -236,6 +242,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     },
     secretsManager: {
       send: vi.fn(async (command: { input?: { SecretId?: string } }) => {
+        lookupBehaviour.sent.push(`secretsmanager:${String(command.input?.SecretId)}`);
         if (command.input?.SecretId === SECRET_ID || command.input?.SecretId === SECRET_ARN) {
           // `pin` for ordinary assembly; the rest are FRAGMENTS of the literal a
           // guard compares against (`Private` + `Ip`, `us-east-` + `1`).
@@ -331,6 +338,27 @@ const sub = (template: string, jsonKey = 'pin'): unknown => ({
 /** The CONTROL twin of `sub`: the same text with an unrecorded value. */
 const plain = (template: string): string => template.replace('${P}', UNRECORDED);
 
+/**
+ * Issue #4266: the TEMPLATE-route refusal of a `secretsmanager` / `ssm-secure`
+ * token assembled from a secret, taken before its lookup, printing `display`.
+ */
+const assembledRefusal = (display: string): string =>
+  `Refusing to resolve ${display}: the reference was assembled from a secret value and resolves ` +
+  'to a secret, so recording it would write that value into state inside the reference. Build ' +
+  'the reference name from non-secret values.';
+
+/**
+ * The premise of an issue #4266 refusal: the mocks received the pin's own
+ * lookup (so the recorder is live) and nothing else, i.e. the assembled name
+ * was never sent.
+ */
+function expectOnlyPinLookups(): void {
+  expect(lookupBehaviour.sent, 'premise: the recorder saw the pin lookup').toContain(
+    `secretsmanager:${SECRET_ID}`
+  );
+  expect(lookupBehaviour.sent.filter((sent) => sent !== `secretsmanager:${SECRET_ID}`)).toEqual([]);
+}
+
 const NESTED_ARN = 'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child';
 
 interface ContextOverrides {
@@ -374,6 +402,35 @@ async function messageOf(
   }
   expect(outcome).toBeInstanceOf(Error);
   return (outcome as Error).message;
+}
+
+/**
+ * Issue #4266: the PERSISTED route (`resolveDynamicReferences`: drift, the
+ * rollback replay), which still looks up a `secretsmanager` / `ssm-secure`
+ * token the template route now refuses before its lookup. Persisted text is
+ * its own twin, so a name parsed out of `token` is masked by the twin an
+ * earlier write of the SAME pass registered for that exact name: each of
+ * `writes` is resolved first, in the shared context. Returns the rejection,
+ * or `{ resolvedInstead }`.
+ */
+async function persistedOutcome(writes: unknown[], token: string): Promise<unknown> {
+  const resolver = new IntrinsicFunctionResolver('us-east-1');
+  const context = makeContext();
+  for (const write of writes) await resolver.resolve(write, context as never);
+  return resolver.resolveDynamicReferences(token, context as never).then(
+    (resolved) => ({ resolvedInstead: resolved }),
+    (reason: unknown) => reason
+  );
+}
+
+/** {@link persistedOutcome}, which must reject. */
+async function persistedRejectionOf(writes: unknown[], token: string): Promise<Error> {
+  const outcome = await persistedOutcome(writes, token);
+  if (outcome && typeof outcome === 'object' && 'resolvedInstead' in outcome) {
+    throw new Error(`the lookup must fail; it resolved to ${String(outcome.resolvedInstead)}`);
+  }
+  expect(outcome).toBeInstanceOf(Error);
+  return outcome as Error;
 }
 
 function everyLine(): string[] {
@@ -435,6 +492,7 @@ beforeEach(() => {
   lookupBehaviour.secretsQuote = false;
   lookupBehaviour.ssmType = undefined;
   lookupBehaviour.secretAnswer = undefined;
+  lookupBehaviour.sent.length = 0;
   stsBehaviour.fabricated = false;
   resetAccountInfoCache();
 });
@@ -1320,36 +1378,42 @@ describe('issue #3150: the CloudFormation-fallback export success line', () => {
 });
 
 describe('issue #3150: names parsed out of an assembled dynamic reference', () => {
+  // Issue #4266: on the TEMPLATE route a secretsmanager / ssm-secure token
+  // assembled from a secret is refused before its lookup, so the names it
+  // parses are masked where the lookup still runs: the PERSISTED route, with
+  // the twin the inner Fn::Sub registered for the name.
   it('a JSON key an inner Fn::Sub built', async () => {
-    const message = await messageOf(
-      {
-        'Fn::Sub': [
-          `{{resolve:secretsmanager:${SECRET_ID}:SecretString:\${K}}}`,
-          { K: sub('pw-${P}') },
-        ],
-      },
-      makeContext()
-    );
+    const message = (
+      await persistedRejectionOf(
+        [sub('pw-${P}')],
+        `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pw-${PIN}}}`
+      )
+    ).message;
     expect(message).toBe(`Dynamic reference: key 'pw-***' not found in secret '${SECRET_ID}'`);
     expectNowhere(`pw-${PIN}`, message);
   });
 
   it('a secret id an inner Fn::Sub built: the lookup debug line', async () => {
-    const outcome = await new IntrinsicFunctionResolver('us-east-1')
-      .resolve(
-        {
-          'Fn::Sub': ['{{resolve:secretsmanager:\${K}:SecretString:pin}}', { K: sub('sec-${P}') }],
-        },
-        makeContext() as never
-      )
-      .then(
-        () => undefined,
-        (e: unknown) => (e instanceof Error ? e.message : String(e))
-      );
-    expect(outcome, 'the lookup of an unknown secret must fail').toBeDefined();
-    const lookups = everyLine().filter((l) => l.startsWith('Resolving dynamic reference: secretsmanager:'));
-    expect(lookups.some((l) => l.includes('secretsmanager:sec-***:SecretString:pin')), JSON.stringify(lookups)).toBe(true);
-    expectNowhere(`sec-${PIN}`, String(outcome));
+    const error = await persistedRejectionOf(
+      [sub('sec-${P}')],
+      `{{resolve:secretsmanager:sec-${PIN}:SecretString:pin}}`
+    );
+    expect(lookupBehaviour.sent, 'premise: the persisted route looked the token up').toContain(
+      `secretsmanager:sec-${PIN}`
+    );
+    expect(everyLine()).toContain(
+      'Resolving dynamic reference: secretsmanager:sec-***:SecretString:pin:AWSCURRENT:'
+    );
+    expectNowhere(`sec-${PIN}`, error.message);
+  });
+
+  it('CONTROL: on the persisted route, a secret id no write of the pass registered prints verbatim', async () => {
+    // The same token after a write of ANOTHER name: the sub-floor pin is
+    // recorded, and only the registered twin of the whole name masks it.
+    await persistedRejectionOf([sub('other-${P}')], `{{resolve:secretsmanager:sec-${PIN}:SecretString:pin}}`);
+    expect(everyLine()).toContain(
+      `Resolving dynamic reference: secretsmanager:sec-${PIN}:SecretString:pin:AWSCURRENT:`
+    );
   });
 
   it('CONTROL: a JSON key an inner Fn::Sub built from an unrecorded value prints verbatim', async () => {
@@ -1374,35 +1438,40 @@ describe('issue #3150: names parsed out of an assembled dynamic reference', () =
     expectNowhere(`param-${PIN}`, message);
   });
 
-  it('a version stage and version id inner Fn::Subs built', async () => {
-    // The lookup succeeds, so the secret result is refused (issue #4166)
-    // after the lookup line: both name the fields masked.
-    const resolver = new IntrinsicFunctionResolver('us-east-1');
-    const message = await resolver
-      .resolve(
-        {
-          'Fn::Sub': [
-            `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin:\${S}:\${V}}}`,
-            { S: sub('stage-${P}'), V: sub('version-${P}') },
-          ],
-        },
-        makeContext() as never
-      )
-      .then(
-        () => undefined,
-        (e: unknown) => (e instanceof Error ? e.message : String(e))
-      );
+  it('a version stage and version id inner Fn::Subs built: the lookup line', async () => {
+    const outcome = await persistedOutcome(
+      [sub('stage-${P}'), sub('version-${P}')],
+      `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin:stage-${PIN}:version-${PIN}}}`
+    );
+    // The persisted route resolves it: no refusal stands between the lookup
+    // and its result there.
+    expect(outcome).toEqual({ resolvedInstead: PIN });
     expect(everyLine()).toContain(
       `Resolving dynamic reference: secretsmanager:${SECRET_ID}:SecretString:pin:stage-***:version-***`
     );
-    expect(message).toBe(
-      `Refusing to resolve {{resolve:secretsmanager:${SECRET_ID}:SecretString:pin:stage-***:version-***}}: ` +
-        'the reference was assembled from a secret value and resolves to a secret, so recording it ' +
-        'would write that value into state inside the reference. Build the reference name from ' +
-        'non-secret values.'
+    expectNowhere(`stage-${PIN}`);
+    expectNowhere(`version-${PIN}`);
+  });
+
+  it('a version stage and version id inner Fn::Subs built: the template route refuses before the lookup (issue #4266)', async () => {
+    const message = await messageOf(
+      {
+        'Fn::Sub': [
+          `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin:\${S}:\${V}}}`,
+          { S: sub('stage-${P}'), V: sub('version-${P}') },
+        ],
+      },
+      makeContext()
     );
-    expectNowhere(`stage-${PIN}`, String(message));
-    expectNowhere(`version-${PIN}`, String(message));
+    expect(message).toBe(
+      assembledRefusal(
+        `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin:stage-***:version-***}}`
+      )
+    );
+    expectOnlyPinLookups();
+    expect(everyLine().filter((l) => l.includes(':SecretString:pin:stage-'))).toEqual([]);
+    expectNowhere(`stage-${PIN}`, message);
+    expectNowhere(`version-${PIN}`, message);
   });
 
   it('CONTROL: a version stage and version id substituted from unrecorded values print verbatim', async () => {
@@ -1429,18 +1498,24 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     'Fn::Sub': [template, { P: ref(jsonKey) }],
   });
 
-  it('a secret id: the lookup debug line', async () => {
-    const outcome = await new IntrinsicFunctionResolver('us-east-1')
-      .resolve(inline('{{resolve:secretsmanager:sec-${P}:SecretString:pin}}'), makeContext() as never)
-      .then(
-        () => undefined,
-        (e: unknown) => (e instanceof Error ? e.message : String(e))
-      );
-    expect(outcome, 'the lookup of an unknown secret must fail').toBeDefined();
-    expect(everyLine()).toContain(
-      'Resolving dynamic reference: secretsmanager:sec-***:SecretString:pin:AWSCURRENT:'
+  // Issue #4266: a secretsmanager / ssm-secure token this Fn::Sub assembles
+  // around a secret is refused BEFORE its lookup, so its parsed names reach no
+  // lookup, SDK or sibling line on this route. Their masking stays pinned on
+  // the persisted route (the inner-Fn::Sub describe above and the #3171 one
+  // below), and the TWIN PAIRING these cases are about through plain `ssm`
+  // tokens, which are still looked up: the pairing is one function for every
+  // service (`dynamicReferenceNameLogText`).
+  it('a secret id: refused before its lookup (issue #4266), the token printed through its twin', async () => {
+    const message = await messageOf(
+      inline('{{resolve:secretsmanager:sec-${P}:SecretString:pin}}'),
+      makeContext()
     );
-    expectNowhere(`sec-${PIN}`, String(outcome));
+    expect(message).toBe(assembledRefusal('{{resolve:secretsmanager:sec-***:SecretString:pin}}'));
+    expectOnlyPinLookups();
+    expect(
+      everyLine().filter((l) => l.startsWith('Resolving dynamic reference: secretsmanager:sec-'))
+    ).toEqual([]);
+    expectNowhere(`sec-${PIN}`, message);
   });
 
   it('CONTROL: a secret id assembled from an unrecorded value prints verbatim', async () => {
@@ -1464,11 +1539,13 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     expect(everyLine()).toContain(`Resolving dynamic reference: ssm:param-${UNRECORDED}`);
   });
 
-  it('the region-scoped clients refusal of an invalid secret ARN region prints the region masked', async () => {
+  it('the region-scoped clients refusal of an invalid parameter ARN region prints the region masked', async () => {
     // No `isClientSafeRegion` gate sits in front of the `named-region` arm, so
     // the guest built for `us-west-2_q7` reaches `clientsForRegion`'s backstop.
+    // A plain `ssm` ARN: the secretsmanager one is refused before this arm
+    // since issue #4266.
     const message = await messageOf(
-      inline('{{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2_${P}:210987654321:secret:x:SecretString:k}}'),
+      inline('{{resolve:ssm:arn:aws:ssm:us-west-2_${P}:210987654321:parameter/x}}'),
       makeContext()
     );
     expect(message).toBe(
@@ -1600,10 +1677,12 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
   it('a producer-region resolver reused for a second spelling of its region prints *** once the spellings mask differently', async () => {
     // A literal region spelled as the template writes it creates the guest;
     // an Fn::Sub assembling the same region around a recorded secret reuses it.
+    // Plain `ssm` ARNs: an assembled secretsmanager one is refused before the
+    // guest is asked for since issue #4266.
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const context = makeContext();
     const literal = await messageOf(
-      `{{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2_${PIN}:210987654321:secret:x:SecretString:k}}`,
+      `{{resolve:ssm:arn:aws:ssm:us-west-2_${PIN}:210987654321:parameter/x}}`,
       context,
       resolver
     );
@@ -1612,7 +1691,7 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
         'region name, and a region is substituted into the AWS service hostname.'
     );
     const assembled = await messageOf(
-      inline('{{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2_${P}:210987654321:secret:x:SecretString:k}}'),
+      inline('{{resolve:ssm:arn:aws:ssm:us-west-2_${P}:210987654321:parameter/x}}'),
       context,
       resolver
     );
@@ -1626,9 +1705,13 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     // `AWSCURRENT` is the default for the empty stage, so it is not a run of
     // the token; the token still spells it inside `x-AWSCURRENT-q7`, so the
     // name fails closed. The empty version id beside it still prints empty.
-    await new IntrinsicFunctionResolver('us-east-1')
-      .resolve(inline('{{resolve:secretsmanager:x-AWSCURRENT-${P}:SecretString:pin}}'), makeContext() as never)
-      .catch(() => undefined);
+    // On the persisted route (issue #4266 refuses the assembled token before
+    // its lookup on the template route): the run rule needs no twin pairing,
+    // and the secret id takes the twin a write of the pass registered.
+    await persistedRejectionOf(
+      [sub('x-AWSCURRENT-${P}')],
+      `{{resolve:secretsmanager:x-AWSCURRENT-${PIN}:SecretString:pin}}`
+    );
     expect(everyLine()).toContain(
       'Resolving dynamic reference: secretsmanager:x-AWSCURRENT-***:SecretString:pin:***:'
     );
@@ -1670,27 +1753,39 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     expect(context.recordedSecretValues.has(Buffer.from(`prefix:${PUBLIC_HOST}`).toString('base64'))).toBe(true);
   });
 
-  it("a region-pinned sibling's ssm-secure refusal prints the parent's token twin", async () => {
+  it("a region-pinned sibling's refusal prints the parent's token twin", async () => {
+    // A plain `ssm` ARN answered `SecureString`, so the SIBLING refuses the
+    // secret result (issue #4166). An assembled ssm-secure token no longer
+    // reaches the sibling: the parent refuses it before delegating (issue #4266).
+    lookupBehaviour.ssmType = 'SecureString';
     const message = await messageOf(
-      inline('{{resolve:ssm-secure:arn:aws:ssm:us-west-2:210987654321:parameter/pub-${P}}}'),
+      inline('{{resolve:ssm:arn:aws:ssm:us-west-2:210987654321:parameter/pub-${P}}}'),
       makeContext()
     );
-    expect(message).toMatch(
-      /^Refusing to resolve \{\{resolve:ssm-secure:arn:aws:ssm:us-west-2:210987654321:parameter\/pub-\*\*\*\}\}: the parameter is a String parameter/
+    expect(lookupBehaviour.sent, 'premise: the sibling looked the token up').toContain(
+      `ssm:arn:aws:ssm:us-west-2:210987654321:parameter/pub-${PIN}`
+    );
+    expect(message).toBe(
+      assembledRefusal('{{resolve:ssm:arn:aws:ssm:us-west-2:210987654321:parameter/pub-***}}')
     );
     expectNowhere(`pub-${PIN}`, message);
   });
 
   it('a name spelled by two runs with the SAME twin keeps that partial mask', async () => {
     // Pairs with the case below: only DIFFERENT twins give up the partial mask.
-    const outcome = await new IntrinsicFunctionResolver('us-east-1')
-      .resolve(inline('{{resolve:secretsmanager:x-${P}:SecretString:x-${P}}}'), makeContext() as never)
-      .then(
-        () => undefined,
-        (e: unknown) => (e instanceof Error ? e.message : String(e))
-      );
-    expect(outcome, 'the lookup of an unknown secret must fail').toBeDefined();
-    expect(everyLine()).toContain('Resolving dynamic reference: secretsmanager:x-***:SecretString:x-***:AWSCURRENT:');
+    // The name is the parameter ARN's region, which the token spells twice;
+    // a plain `ssm` token, since an assembled secretsmanager one is refused
+    // before its names are parsed (issue #4266).
+    await new IntrinsicFunctionResolver('us-east-1')
+      .resolve(
+        inline('{{resolve:ssm:arn:aws:ssm:us-west-${P}:210987654321:parameter/x:us-west-${P}}}'),
+        makeContext() as never
+      )
+      .catch(() => undefined);
+    expect(everyLine().filter((l) => l.startsWith('Using a producer-region resolver for '))).toEqual([
+      'Using a producer-region resolver for us-west-***',
+    ]);
+    expectNowhere(`us-west-${PIN}`);
   });
 
   it('two tokens, one lost from the twin: neither is paired with the other token\'s twin', async () => {
@@ -1714,30 +1809,36 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     expectNowhere(`pub-b-${PIN}`);
   });
 
-  it('a token lost from the twin: the ssm-secure refusal prints the whole token as ***', async () => {
+  it('a token lost from the twin: the issue #4266 refusal prints the whole token as ***', async () => {
     // `{{` + `resolve:...`: the twin holds no token to pair, so the refusal's
-    // own token text falls back to `***` rather than to the raw token.
+    // own token text falls back to `***` rather than to the raw token. The
+    // ssm-secure token is refused before its lookup, so this is the #4266
+    // refusal rather than the public-parameter one.
     const message = await messageOf(
       {
         'Fn::Sub': ['${B}resolve:ssm-secure:pub-${P}}}', { B: ref('br'), P: ref('pin') }],
       },
       makeContext()
     );
-    expect(message).toMatch(/^Refusing to resolve \*\*\*: the parameter is a String parameter/);
+    expect(message).toBe(assembledRefusal('***'));
+    expectOnlyPinLookups();
     expectNowhere(`pub-${PIN}`, message);
   });
 
   it('a parsed name whose raw text holds a 4+ character recorded secret straddling the mask prints as ***', async () => {
     // The twin run `id-***ab` splits the recorded `q7ab`, so only the RAW name's
-    // needle mask sees it: printing the run as it is would show `ab`.
+    // needle mask sees it: printing the run as it is would show `ab`. A plain
+    // `ssm` parameter name: an assembled secretsmanager id is refused before
+    // its lookup line since issue #4266.
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const context = makeContext();
     await resolver.resolve(ref('pinab'), context as never);
     expect(context.recordedSecretValues.has(`${PIN}ab`), 'premise: q7ab is recorded').toBe(true);
     await resolver
-      .resolve(inline('{{resolve:secretsmanager:id-${P}ab:SecretString:k}}'), context as never)
+      .resolve(inline('{{resolve:ssm:id-${P}ab}}'), context as never)
       .catch(() => undefined);
-    expect(everyLine()).toContain('Resolving dynamic reference: secretsmanager:***:SecretString:k:AWSCURRENT:');
+    expect(lookupBehaviour.sent, 'premise: the token was looked up').toContain(`ssm:id-${PIN}ab`);
+    expect(everyLine()).toContain('Resolving dynamic reference: ssm:***');
     expectNowhere('***ab');
   });
 
@@ -1746,20 +1847,28 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     const context = makeContext();
     await resolver.resolve(ref('pinab'), context as never);
     const message = await messageOf(inline('{{resolve:ssm-secure:pub-${P}ab}}'), context, resolver);
-    expect(message).toMatch(/^Refusing to resolve \*\*\*: the parameter is a String parameter/);
+    // Issue #4266: refused before the lookup, through the same token text.
+    expect(message).toBe(assembledRefusal('***'));
+    expectOnlyPinLookups();
     expect(message).not.toContain('***ab');
   });
 
   it("a region-pinned sibling's refusal: a 4+ character secret straddling the mask prints the token as ***", async () => {
+    // A plain `ssm` ARN answered `SecureString`, as in the sibling case above:
+    // an assembled ssm-secure token is refused by the parent (issue #4266).
+    lookupBehaviour.ssmType = 'SecureString';
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const context = makeContext();
     await resolver.resolve(ref('pinab'), context as never);
     const message = await messageOf(
-      inline('{{resolve:ssm-secure:arn:aws:ssm:us-west-2:210987654321:parameter/pub-${P}ab}}'),
+      inline('{{resolve:ssm:arn:aws:ssm:us-west-2:210987654321:parameter/pub-${P}ab}}'),
       context,
       resolver
     );
-    expect(message).toMatch(/^Refusing to resolve \*\*\*: the parameter is a String parameter/);
+    expect(lookupBehaviour.sent, 'premise: the sibling looked the token up').toContain(
+      `ssm:arn:aws:ssm:us-west-2:210987654321:parameter/pub-${PIN}ab`
+    );
+    expect(message).toBe(assembledRefusal('***'));
     expect(message).not.toContain('***ab');
   });
 
@@ -1776,16 +1885,18 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
   });
 
   it('a name spelled by two runs of the token with different twins prints as ***', async () => {
-    // `x-q7` is the secret id (a run whose twin is `x-***`) and, literally, the
-    // JSON key (a run whose twin is itself).
-    const outcome = await new IntrinsicFunctionResolver('us-east-1')
-      .resolve(inline('{{resolve:secretsmanager:x-${P}:SecretString:x-q7}}'), makeContext() as never)
-      .then(
-        () => undefined,
-        (e: unknown) => (e instanceof Error ? e.message : String(e))
-      );
-    expect(outcome, 'the lookup of an unknown secret must fail').toBeDefined();
-    expect(everyLine()).toContain('Resolving dynamic reference: secretsmanager:***:SecretString:***:AWSCURRENT:');
+    // `us-west-q7` is the parameter ARN's region (a run whose twin is
+    // `us-west-***`) and, literally, the parameter name's last piece (a run
+    // whose twin is itself). Plain `ssm`, as in the SAME-twin case above.
+    await new IntrinsicFunctionResolver('us-east-1')
+      .resolve(
+        inline('{{resolve:ssm:arn:aws:ssm:us-west-${P}:210987654321:parameter/x:us-west-q7}}'),
+        makeContext() as never
+      )
+      .catch(() => undefined);
+    expect(everyLine().filter((l) => l.startsWith('Using a producer-region resolver for '))).toEqual([
+      'Using a producer-region resolver for ***',
+    ]);
   });
 
   it('an SSM parameter name', async () => {
@@ -1806,41 +1917,40 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     expectNowhere(`svc-${PIN}`, message);
   });
 
-  it('the ssm-secure refusal of a public parameter', async () => {
+  it('an ssm-secure token assembled around a secret: refused before the public-parameter lookup (issue #4266)', async () => {
+    // Before #4266 the lookup answered `String` and the ssm-secure
+    // public-parameter refusal printed this token; now no lookup is made.
     const message = await messageOf(inline('{{resolve:ssm-secure:pub-${P}}}'), makeContext());
-    expect(message).toBe(
-      'Refusing to resolve {{resolve:ssm-secure:pub-***}}: the parameter is a String parameter, ' +
-        'and the ssm-secure spelling is defined for SecureString parameters only. ' +
-        'Reference it as {{resolve:ssm:...}} if it is public configuration.'
-    );
+    expect(message).toBe(assembledRefusal('{{resolve:ssm-secure:pub-***}}'));
+    expectOnlyPinLookups();
     expectNowhere(`pub-${PIN}`, message);
   });
 
-  it('the ambiguous-region refusal names the token and the secret name', async () => {
+  it('the ambiguous-region refusal names the token and the parameter name', async () => {
+    // A plain `ssm` token: an assembled secretsmanager one is refused before
+    // the region is classified (issue #4266).
     const message = await messageOf(
       {
         'Fn::Sub': [
-          '{{resolve:secretsmanager:sec-${P}:SecretString:pin}}',
+          '{{resolve:ssm:sec-${P}}}',
           { P: `{{resolve:secretsmanager:${SECRET_ARN}:SecretString:pin}}` },
         ],
       },
       makeContext({ producerRegions: ['us-west-2'] })
     );
     expect(message).toMatch(
-      /^Refusing to resolve the secret reference \{\{resolve:secretsmanager:sec-\*\*\*:SecretString:pin\}\}: it names 'sec-\*\*\*' without a region/
+      /^Refusing to resolve the secret reference \{\{resolve:ssm:sec-\*\*\*\}\}: it names 'sec-\*\*\*' without a region/
     );
     expectNowhere(`sec-${PIN}`, message);
   });
 
-  it('the producer-region resolver line for a secret ARN whose region was assembled', async () => {
+  it('the producer-region resolver line for a parameter ARN whose region was assembled', async () => {
     // `classifyReplaySecretRegion` hands back the ARN's region as written, so
-    // the line lowercases the RAW region's twin.
+    // the line lowercases the RAW region's twin. A plain `ssm` ARN: an
+    // assembled secretsmanager one is refused before the guest (issue #4266).
     await new IntrinsicFunctionResolver('us-east-1')
       .resolve(
-        inline(
-          `{{resolve:secretsmanager:arn:aws:secretsmanager:US-WEST-\${P}:210987654321:secret:${SECRET_ID}:SecretString:pin}}`,
-          'one'
-        ),
+        inline('{{resolve:ssm:arn:aws:ssm:US-WEST-${P}:210987654321:parameter/x}}', 'one'),
         makeContext() as never
       )
       .catch(() => undefined);
@@ -1849,40 +1959,38 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     ]);
   });
 
-  it('a mask covering a brace leaves no token to pair, so every parsed name prints as ***', async () => {
+  it('a mask covering a brace leaves no token to pair: the issue #4266 refusal prints the token as ***', async () => {
     // `{{` + `resolve:...`: the twin reads `***resolve:...`, which holds no
-    // token at all.
-    const outcome = await new IntrinsicFunctionResolver('us-east-1')
-      .resolve(
-        {
-          'Fn::Sub': [
-            '${B}resolve:secretsmanager:sec-${P}:SecretString:pin}}',
-            { B: ref('br'), P: ref('pin') },
-          ],
-        },
-        makeContext() as never
-      )
-      .then(
-        () => undefined,
-        (e: unknown) => (e instanceof Error ? e.message : String(e))
-      );
-    expect(outcome, 'the lookup of an unknown secret must fail').toBeDefined();
-    expect(everyLine()).toContain('Resolving dynamic reference: secretsmanager:***:SecretString:***:***:***');
-    expectNowhere(`sec-${PIN}`, String(outcome));
+    // token at all. The secretsmanager token is refused before its names are
+    // parsed; every name of an unpaired token printing `***` stays pinned by
+    // the plain `ssm` case 'two tokens, one lost from the twin' above.
+    const message = await messageOf(
+      {
+        'Fn::Sub': [
+          '${B}resolve:secretsmanager:sec-${P}:SecretString:pin}}',
+          { B: ref('br'), P: ref('pin') },
+        ],
+      },
+      makeContext()
+    );
+    expect(message).toBe(assembledRefusal('***'));
+    expectOnlyPinLookups();
+    expectNowhere(`sec-${PIN}`, message);
   });
 
-  it('a secret carrying a ":" prints every parsed name as ***', async () => {
+  it('a secret carrying a ":": the issue #4266 refusal prints the token through its twin', async () => {
     // `q:7` splits the reference at a colon the twin does not have, so no
-    // name can be paired with its twin piece by piece.
-    const outcome = await new IntrinsicFunctionResolver('us-east-1')
-      .resolve(inline('{{resolve:secretsmanager:sec-${P}:SecretString:pin}}', 'col'), makeContext() as never)
-      .then(
-        () => undefined,
-        (e: unknown) => (e instanceof Error ? e.message : String(e))
-      );
-    expect(outcome, 'the lookup of an unknown secret must fail').toBeDefined();
-    expect(everyLine()).toContain('Resolving dynamic reference: secretsmanager:***:SecretString:***:***:***');
-    expectNowhere('sec-q', String(outcome));
+    // name can be paired with its twin piece by piece, while the TOKEN still
+    // pairs whole. The secretsmanager token is refused before its names are
+    // parsed; every name printing `***` stays pinned by the plain `ssm` case
+    // in the ':' describe below.
+    const message = await messageOf(
+      inline('{{resolve:secretsmanager:sec-${P}:SecretString:pin}}', 'col'),
+      makeContext()
+    );
+    expect(message).toBe(assembledRefusal('{{resolve:secretsmanager:sec-***:SecretString:pin}}'));
+    expectOnlyPinLookups();
+    expectNowhere('sec-q', message);
   });
 
   it("the ambiguous-region refusal's producer regions, equal to a string the pass assembled", async () => {
@@ -1904,12 +2012,15 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
   });
 
   describe('a secret carrying a ":" (the pieces cannot be paired)', () => {
-    it('a secret ARN whose region was assembled too: the producer-region line prints ***', async () => {
+    // Plain `ssm` tokens where the case needs the token looked up: an
+    // assembled secretsmanager / ssm-secure one is refused before its names
+    // are parsed (issue #4266).
+    it('a parameter ARN whose region was assembled too: the producer-region line prints ***', async () => {
       await new IntrinsicFunctionResolver('us-east-1')
         .resolve(
           {
             'Fn::Sub': [
-              '{{resolve:secretsmanager:arn:aws:secretsmanager:us-west-${P}:210987654321:secret:sec-${C}:SecretString:pin}}',
+              '{{resolve:ssm:arn:aws:ssm:us-west-${P}:210987654321:parameter/sec-${C}}}',
               { P: ref('one'), C: ref('col') },
             ],
           },
@@ -1921,17 +2032,17 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       ]);
     });
 
-    it('a secret ARN in another region: the sibling resolver keeps every name masked', async () => {
+    it('a parameter ARN in another region: the sibling resolver keeps every name masked', async () => {
       await new IntrinsicFunctionResolver('us-east-1')
         .resolve(
-          inline(
-            '{{resolve:secretsmanager:arn:aws:secretsmanager:us-west-2:210987654321:secret:sec-${P}:SecretString:pin}}',
-            'col'
-          ),
+          inline('{{resolve:ssm:arn:aws:ssm:us-west-2:210987654321:parameter/sec-${P}}}', 'col'),
           makeContext() as never
         )
         .catch(() => undefined);
-      expect(everyLine()).toContain('Resolving dynamic reference: secretsmanager:***:SecretString:***:***:***');
+      expect(lookupBehaviour.sent, 'premise: the sibling looked the token up').toContain(
+        'ssm:arn:aws:ssm:us-west-2:210987654321:parameter/sec-q:7'
+      );
+      expect(everyLine()).toContain('Resolving dynamic reference: ssm:***');
       expectNowhere('sec-q');
     });
 
@@ -1951,12 +2062,15 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       expect(everyLine()).toContain('Resolving dynamic reference: ssm:param-k:9');
     });
 
-    it('an ssm-secure parameter name: the lookup line and the refusal', async () => {
+    it('an ssm-secure parameter name: refused before the lookup (issue #4266), the token through its twin', async () => {
+      // No lookup line any more; the parameter name printing `***` stays
+      // pinned by the plain `ssm` case above.
       const message = await messageOf(inline('{{resolve:ssm-secure:pub-${P}}}', 'col'), makeContext());
-      expect(message).toMatch(
-        /^Refusing to resolve \{\{resolve:ssm-secure:pub-\*\*\*\}\}: the parameter is a String parameter/
+      expect(message).toBe(assembledRefusal('{{resolve:ssm-secure:pub-***}}'));
+      expectOnlyPinLookups();
+      expect(everyLine().filter((l) => l.startsWith('Resolving dynamic reference: ssm-secure:'))).toEqual(
+        []
       );
-      expect(everyLine()).toContain('Resolving dynamic reference: ssm-secure:***');
       expectNowhere('pub-q', message);
     });
 
@@ -1971,14 +2085,14 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
       const message = await messageOf(
         {
           'Fn::Sub': [
-            '{{resolve:secretsmanager:sec-${P}:SecretString:pin}}',
+            '{{resolve:ssm:sec-${P}}}',
             { P: `{{resolve:secretsmanager:${SECRET_ARN}:SecretString:col}}` },
           ],
         },
         makeContext({ producerRegions: ['us-west-2'] })
       );
       expect(message).toMatch(
-        /^Refusing to resolve the secret reference \{\{resolve:secretsmanager:sec-\*\*\*:SecretString:pin\}\}: it names '\*\*\*' without a region/
+        /^Refusing to resolve the secret reference \{\{resolve:ssm:sec-\*\*\*\}\}: it names '\*\*\*' without a region/
       );
       expectNowhere('sec-q', message);
     });
@@ -2727,8 +2841,16 @@ describe('go-to-k/cdkd#3171: SDK text quoting a name assembled around a sub-floo
       lookupBehaviour.secretsQuote = true;
     });
 
+    // Issue #4266: on the TEMPLATE route an assembled secretsmanager token is
+    // refused before its lookup, so no SDK text quotes its names there. The
+    // positive cases run on the PERSISTED route, which still sends them, each
+    // name masked by the twin a write of the same pass registered for it.
     it('the secret id an AccessDenied quotes back', async () => {
-      const error = await rejectionOf(inline('{{resolve:secretsmanager:sec-${P}:SecretString:pin}}'));
+      const error = await persistedRejectionOf(
+        [sub('sec-${P}')],
+        `{{resolve:secretsmanager:sec-${PIN}:SecretString:pin}}`
+      );
+      expect(lookupBehaviour.sent, 'premise: the name was sent').toContain(`secretsmanager:sec-${PIN}`);
       expect(error.message).toMatch(/ on resource: sec-\*\*\*$/);
       expect(error.name).toBe('AccessDeniedException');
       expectNowhere(`sec-${PIN}`, ...everyTextOf(error));
@@ -2742,8 +2864,9 @@ describe('go-to-k/cdkd#3171: SDK text quoting a name assembled around a sub-floo
     });
 
     it('the version stage a staging-label miss quotes back', async () => {
-      const error = await rejectionOf(
-        inline('{{resolve:secretsmanager:other:SecretString:pin:stage-${P}}}')
+      const error = await persistedRejectionOf(
+        [sub('stage-${P}')],
+        `{{resolve:secretsmanager:other:SecretString:pin:stage-${PIN}}}`
       );
       expect(error.message).toBe(
         "Secrets Manager can't find the specified secret value for staging label: stage-***"
@@ -2761,8 +2884,9 @@ describe('go-to-k/cdkd#3171: SDK text quoting a name assembled around a sub-floo
     });
 
     it('the version id a version miss quotes back', async () => {
-      const error = await rejectionOf(
-        inline('{{resolve:secretsmanager:other:SecretString:pin::ver-${P}}}')
+      const error = await persistedRejectionOf(
+        [sub('ver-${P}')],
+        `{{resolve:secretsmanager:other:SecretString:pin::ver-${PIN}}}`
       );
       expect(error.message).toBe(
         "Secrets Manager can't find the specified secret value for VersionId: ver-***"
@@ -2774,10 +2898,14 @@ describe('go-to-k/cdkd#3171: SDK text quoting a name assembled around a sub-floo
       // No caller pair covers the region: the host names it alone, not the
       // whole ARN the secret-id pair keys on. The guest's own region does.
       lookupBehaviour.endpointFailure = true;
-      const error = await rejectionOf(
-        inline(
-          '{{resolve:secretsmanager:arn:aws:secretsmanager:us-north-${P}:210987654321:secret:other:SecretString:pin}}'
-        )
+      // Two writes: the region, which the guest's text is looked up by, and
+      // the whole secret ARN, which the lookup line prints as one name.
+      const error = await persistedRejectionOf(
+        [
+          sub('us-north-${P}'),
+          sub('arn:aws:secretsmanager:us-north-${P}:210987654321:secret:other'),
+        ],
+        `{{resolve:secretsmanager:arn:aws:secretsmanager:us-north-${PIN}:210987654321:secret:other:SecretString:pin}}`
       );
       expect(error.message).toBe('getaddrinfo ENOTFOUND secretsmanager.us-north-***.amazonaws.com');
       expectNowhere(`us-north-${PIN}`, ...everyTextOf(error));

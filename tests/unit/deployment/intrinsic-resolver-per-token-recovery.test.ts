@@ -114,6 +114,13 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     // one: below `MIN_NEEDLE_LENGTH` the needle mask cannot clean it, so only
     // the twin-derived route can, and each field is then tested on its own
     // merits rather than on a needle that happens to cover both.
+    //
+    // A PLAIN `ssm` token, and that is load-bearing since issue #4266: an
+    // `ssm-secure` (or `secretsmanager`) token assembled from a secret is
+    // refused BEFORE its lookup, and a refusal is rethrown rather than
+    // recorded (the next case), so it never reaches this entry at all. Plain
+    // `ssm` needs the lookup to learn its `Type`, so it is still fetched, fails,
+    // and is recorded.
     const PW = 'pw1'; // shorter than MIN_NEEDLE_LENGTH (4) on purpose
     const PW_REF = '{{resolve:secretsmanager:app/pw:SecretString:pw}}';
     sendMock.mockImplementation((cmd: { __type: string; input: Record<string, unknown> }) => {
@@ -130,10 +137,14 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const abandonedResolutions: AbandonedResolution[] = [];
 
     await resolver.resolve(
-      { 'Fn::Sub': ['{{resolve:ssm-secure:/deleted/${Pw}}}', { Pw: PW_REF }] },
+      { 'Fn::Sub': ['{{resolve:ssm:/deleted/${Pw}}}', { Pw: PW_REF }] },
       { recordedSecretValues: new Map<string, string>(), abandonedResolutions } as never
     );
 
+    expect(
+      sendMock.mock.calls.map(([cmd]) => (cmd as { __type: string }).__type),
+      'the premise: the variable resolved, then the assembled token was looked up and failed'
+    ).toEqual(['GetSecretValue', 'GetParameter']);
     expect(abandonedResolutions).toHaveLength(1);
     expect(
       abandonedResolutions[0]!.subject,
@@ -147,6 +158,50 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
         'arrives RAW and echoes the name it was handed, and below MIN_NEEDLE_LENGTH the ' +
         'needle mask cannot see it — so this field needs the twin-derived redaction too.'
     ).not.toContain(PW);
+  });
+
+  it('still ABORTS on the before-lookup refusal of a token assembled from a secret (issue #4266)', async () => {
+    // The shape the case above used to take, `ssm-secure` assembled from a
+    // secret. It is no longer a failed FETCH: issue #4266 refuses it before
+    // its lookup, inside the per-token `try`, and that refusal is DELIBERATE,
+    // so the catch must rethrow it rather than record the token and walk on.
+    // The refusal arrives with no lookup having run, which is the property
+    // the other refusal cases here cannot show (each of theirs follows one).
+    const PW = 'pw1';
+    sendMock.mockImplementation((cmd: { __type: string }) =>
+      cmd.__type === 'GetParameter'
+        ? Promise.reject(new Error('the assembled name must never be sent'))
+        : Promise.resolve({ SecretString: JSON.stringify({ pw: PW }) })
+    );
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const abandonedResolutions: AbandonedResolution[] = [];
+
+    const error = await resolver
+      .resolve(
+        {
+          'Fn::Sub': [
+            '{{resolve:ssm-secure:/deleted/${Pw}}}',
+            { Pw: '{{resolve:secretsmanager:app/pw:SecretString:pw}}' },
+          ],
+        },
+        { recordedSecretValues: new Map<string, string>(), abandonedResolutions } as never
+      )
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    expect((error as Error).message).toMatch(
+      /^Refusing to resolve \{\{resolve:ssm-secure:\/deleted\/\*\*\*\}\}: the reference was assembled from a secret value/
+    );
+    expect(
+      sendMock.mock.calls.map(([cmd]) => (cmd as { __type: string }).__type),
+      'the assembled token was looked up: the refusal must come BEFORE its lookup'
+    ).toEqual(['GetSecretValue']);
+    expect(
+      abandonedResolutions,
+      'the refusal was RECORDED instead of re-raised, so the walk continued past it'
+    ).toHaveLength(0);
   });
 
   it('still ABORTS on a refusal that arrives through a KEY, not only through a token', async () => {
@@ -201,6 +256,16 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     // pass — measured `...staging label: ***SECRETTAIL`, ten characters of a
     // recorded secret in the field this interface documents as masked, and the
     // needle mask cannot recover it because the needle itself is mangled.
+    //
+    // ON THE PERSISTED ROUTE since issue #4266. The template-route `Fn::Sub`
+    // assembly this case used is a `secretsmanager` token assembled from a
+    // secret, now refused before its lookup, so no fetch fails and nothing is
+    // recorded. The public `resolveDynamicReferences` (`cdkd scrub` / `drift`
+    // over persisted text) is exempt and still fetches, so it is the route that
+    // reaches this ordering. Its field masks are the needle-derived log text of
+    // each field (the twin there is the text itself) rather than the twin's
+    // pieces, and the ordering they need is the same: the two fields are
+    // recorded secrets, `SHORT` a prefix of `LONG` and EARLIER in the token.
     const SHORT = 'abcd';
     const LONG = 'abcdSECRETTAIL';
     sendMock.mockImplementation((cmd: { __type: string; input: Record<string, unknown> }) => {
@@ -222,20 +287,29 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     });
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const abandonedResolutions: AbandonedResolution[] = [];
+    const context = {
+      recordedSecretValues: new Map<string, string>(),
+      abandonedResolutions,
+    } as never;
 
-    await resolver.resolve(
-      {
-        'Fn::Sub': [
-          '{{resolve:secretsmanager:${A}:SecretString:pw:${B}}}',
-          {
-            A: '{{resolve:secretsmanager:app/short:SecretString}}',
-            B: '{{resolve:secretsmanager:app/long:SecretString}}',
-          },
-        ],
-      },
-      { recordedSecretValues: new Map<string, string>(), abandonedResolutions } as never
+    // Record both needles, as the walk that resolved them would have.
+    await resolver.resolveDynamicReferences(
+      '{{resolve:secretsmanager:app/short:SecretString}}/{{resolve:secretsmanager:app/long:SecretString}}',
+      context
+    );
+    await resolver.resolveDynamicReferences(
+      `{{resolve:secretsmanager:${SHORT}:SecretString:pw:${LONG}}}`,
+      context
     );
 
+    expect(
+      sendMock.mock.calls.map(([cmd]) => (cmd as { input: Record<string, unknown> }).input),
+      'the premise: the persisted token was LOOKED UP, with both fields in its request'
+    ).toMatchObject([
+      { SecretId: 'app/short' },
+      { SecretId: 'app/long' },
+      { SecretId: SHORT, VersionStage: LONG },
+    ]);
     expect(
       abandonedResolutions,
       'the assembled reference did not fail, so nothing was recorded and the assertion below ' +
