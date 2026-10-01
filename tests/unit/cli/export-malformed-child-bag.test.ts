@@ -333,7 +333,7 @@ describe('cdkd export over a nested child whose resources bag is unreadable (iss
     // below never reach.
     expect(info).toContain(`Migrating cdkd nested-stack tree rooted at '${STACK}'`);
     expect(info).toContain('(2 stack(s), leaf-first)');
-    expect(info).toContain(`[${CHILD}]`);
+    expect(info).toContain(`['${CHILD}']`);
     expectNothingWritten();
   });
 
@@ -348,6 +348,9 @@ describe('cdkd export over a nested child whose resources bag is unreadable (iss
         `CdkdError: State for '${CHILD}' (${REGION}) has no readable 'resources' map`
       );
       expect(message).toContain(`cdkd state show '${CHILD}' --stack-region ${REGION} --json`);
+      // Export's OWN text (go-to-k/cdkd#4181), not the shared one.
+      expect(message).toContain("'cdkd export' migrates the resources this record lists");
+      expect(message).not.toContain('Repair or remove the record');
       // Neither accidental refusal the named one replaced: a bare `TypeError`
       // from a bag read, or every row reported as blocked.
       expect(message).not.toContain('TypeError');
@@ -453,6 +456,14 @@ describe('cdkd export over a ROOT record whose resources bag is unreadable (issu
     expect(message).toContain(`Object key: cdkd/${STACK}/state.json`);
     expect(message).toContain('State bucket: test-bucket');
     expect(message).not.toContain('--stack-region');
+    // Export LOADED the record through the legacy key probe; it listed
+    // nothing, and the body it read may name a region (go-to-k/cdkd#4181).
+    expect(message).toContain('The record was loaded from its legacy key');
+    expect(message).not.toContain('listed with no region');
+    // Export DELETES the record after migrating; the shared text's "saving
+    // over" harm and its "remove" remedy are false here.
+    expect(message).toContain("'cdkd export' migrates the resources this record lists");
+    expect(message).not.toContain('Repair or remove the record');
     expect(message).not.toContain('TypeError');
     expect(mockAcquireLock).not.toHaveBeenCalled();
     expectNothingWritten();
@@ -482,4 +493,100 @@ describe('cdkd export over a ROOT record whose resources bag is unreadable (issu
       expectNothingWritten();
     });
   }
+});
+
+/**
+ * The export half of go-to-k/cdkd#3315: a resource entry whose `properties`
+ * map is not an object. `buildImportPlan` and the phase-2 pre-delete read the
+ * map through `?? {}`, which lets a string, a list or a number through, so
+ * before the refusal a torn map planned (and a `--dry-run` printed the plan)
+ * with nothing named. Refused at the LOAD for the root and over every tree
+ * node for a child, before the lock.
+ */
+describe('cdkd export over a record whose properties map is unreadable (go-to-k/cdkd#3315)', () => {
+  const PROPERTY_SHAPES: Array<[string, unknown]> = [
+    ['a string', 'abcdef'],
+    ['a list', []],
+    ['a number', 5],
+    ['null', null],
+    ['absent', ABSENT],
+  ];
+
+  function tornRow(value: unknown): Record<string, unknown> {
+    const r = row('root-bucket-phys', 'AWS::S3::Bucket');
+    if (value === ABSENT) delete r['properties'];
+    else r['properties'] = value;
+    return r;
+  }
+
+  for (const [label, value] of PROPERTY_SHAPES) {
+    it(`REFUSES by name, before the lock, when a ROOT row's properties is ${label}`, async () => {
+      mockGetState.mockImplementation(async (name: string) => {
+        if (name !== STACK) return null;
+        const record = rootRecord();
+        (record.state['resources'] as Record<string, unknown>)['RootBucket'] = tornRow(value);
+        return record;
+      });
+
+      // `--dry-run` too: before the refusal a dry run printed a plan here.
+      const message = await runExport(['--dry-run']);
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(message).toContain(
+        `State for ${STACK} (${REGION}) holds 1 resource record(s) whose 'properties' map ` +
+          `cannot be read — RootBucket`
+      );
+      expect(message).toContain("'cdkd export' migrates the resources this record lists");
+      expect(message).not.toContain('TypeError');
+      expect(mockGetState.mock.calls.map((c) => c[0])).toEqual([STACK]);
+      expect(mockAcquireLock).not.toHaveBeenCalled();
+      expectNothingWritten();
+    });
+  }
+
+  it("REFUSES by name when a nested CHILD row's properties is torn", async () => {
+    const childOnly = {
+      ...CHILD_TEMPLATE,
+      Resources: { ChildBucket: CHILD_TEMPLATE.Resources.ChildBucket },
+    };
+    writeFileSync(join(tmp, 'child.nested.template.json'), JSON.stringify(childOnly), 'utf-8');
+    serveTree({ ChildBucket: { ...row('child-bucket-phys', 'AWS::S3::Bucket'), properties: 'ab' } });
+
+    const message = await runExport(['--dry-run']);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(message).toContain(
+      `State for '${CHILD}' (${REGION}) holds 1 resource record(s) whose 'properties' map ` +
+        `cannot be read — ChildBucket`
+    );
+    expect(mockGetState.mock.calls.map((c) => c[0])).toEqual([STACK, CHILD]);
+    // Export's OWN text, not the shared deploy/drift one.
+    expect(message).toContain("'cdkd export' migrates the resources this record lists");
+    expect(message).not.toContain('Repair or remove the record');
+    // Refused in the node loop, before the first lock of the export.
+    expect(mockAcquireLock).not.toHaveBeenCalled();
+    expectNothingWritten();
+  });
+
+  it("a REAL run refuses a nested CHILD's torn properties under the root lock, and releases it", async () => {
+    const childOnly = {
+      ...CHILD_TEMPLATE,
+      Resources: { ChildBucket: CHILD_TEMPLATE.Resources.ChildBucket },
+    };
+    writeFileSync(join(tmp, 'child.nested.template.json'), JSON.stringify(childOnly), 'utf-8');
+    serveTree({ ChildBucket: { ...row('child-bucket-phys', 'AWS::S3::Bucket'), properties: 'ab' } });
+
+    const message = await runExport([]);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(message).toContain(
+      `State for '${CHILD}' (${REGION}) holds 1 resource record(s) whose 'properties' map ` +
+        `cannot be read — ChildBucket`
+    );
+    // The node loop runs under the ROOT lock the command took; the command's
+    // `finally` releases it, and no child lock was taken.
+    expect(mockAcquireLock).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+    expectNothingWritten();
+  });
 });

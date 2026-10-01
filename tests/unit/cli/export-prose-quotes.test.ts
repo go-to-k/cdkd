@@ -54,24 +54,9 @@ const ALLOWED_HAND_QUOTES: Readonly<Record<string, { count: number; reason: stri
     reason:
       "printed in a blocked-resource reason, and safe there: one site runs only on a CFN_IMPORT_REFUSED_DESPITE_REGISTRY hit, so the type is one of that table's cdkd literals; the other only after DescribeType answered, so it is a registry type name AWS accepted",
   },
-  stackArg: { count: 1, reason: 'the stack name the operator typed' },
-  flag: { count: 1, reason: 'the --stack-region the operator typed' },
-  path: { count: 2, reason: 'the template file path the operator typed' },
-  raw: { count: 4, reason: 'the --cfn-child-stack-name value the operator typed' },
-  cfnName: {
-    count: 1,
-    reason: 'the CFn name split out of the --cfn-child-stack-name value the operator typed',
-  },
-  t: { count: 2, reason: 'the --parameter token the operator typed' },
-  name: { count: 1, reason: 'the --parameter override name the operator typed' },
-  'uploadOpts.stateBucket': {
-    count: 1,
-    reason: "the operator's state bucket (flag, CDKD_STATE_BUCKET, cdk.json, or cdkd's default name)",
-  },
-  bucket: {
-    count: 1,
-    reason: "the operator's state bucket (flag, CDKD_STATE_BUCKET, cdk.json, or cdkd's default name)",
-  },
+  // The operator-typed values (a stack argument, --stack-region, a template
+  // path, --cfn-child-stack-name, --parameter, the state bucket) left this
+  // table with go-to-k/cdkd#3371: each now goes through quotedOrNotShown.
   changeSetName: { count: 2, reason: 'a name cdkd generates' },
   body: { count: 2, reason: "showRecordValue's own JSON escape, which is the boundary" },
   'String(value)': { count: 1, reason: 'quotedOrNotShown itself, after its plain check' },
@@ -219,8 +204,8 @@ async function familiesFor(
     {
       family: 'root-not-found refusal',
       message: await refusal(() => buildCdkdStateStackTree(value, 'us-east-1', backend({}))),
-      quoted: `No cdkd state found for stack '${value}' (us-east-1)`,
-      described: `No cdkd state found for stack ${NOT_SHOWN} (us-east-1)`,
+      quoted: `No cdkd state found for stack '${value}' ('us-east-1')`,
+      described: `No cdkd state found for stack ${NOT_SHOWN} ('us-east-1')`,
     },
     {
       family: 'missing-child refusal (root name)',
@@ -231,8 +216,8 @@ async function familiesFor(
           backend({ [`${value}|us-east-1`]: stateOf({ stackName: value, region: 'us-east-1', resources: nested }) })
         )
       ),
-      quoted: `missing nested-child '${value}~Child' (us-east-1). Parent stack '${value}' lists 'Child'`,
-      described: `missing nested-child ${NOT_SHOWN} (us-east-1). Parent stack ${NOT_SHOWN} lists 'Child'`,
+      quoted: `missing nested-child '${value}~Child' ('us-east-1'). Parent stack '${value}' lists 'Child'`,
+      described: `missing nested-child ${NOT_SHOWN} ('us-east-1'). Parent stack ${NOT_SHOWN} lists 'Child'`,
     },
     {
       family: 'missing-child refusal (logical id)',
@@ -249,8 +234,8 @@ async function familiesFor(
           })
         )
       ),
-      quoted: `missing nested-child 'Root~${value}' (us-east-1). Parent stack 'Root' lists '${value}'`,
-      described: `missing nested-child ${NOT_SHOWN} (us-east-1). Parent stack 'Root' lists ${NOT_SHOWN}`,
+      quoted: `missing nested-child 'Root~${value}' ('us-east-1'). Parent stack 'Root' lists '${value}'`,
+      described: `missing nested-child ${NOT_SHOWN} ('us-east-1'). Parent stack 'Root' lists ${NOT_SHOWN}`,
     },
     {
       family: 'region-mismatch refusal (record region)',
@@ -405,7 +390,7 @@ describe('cdkd export puts no state or template value inside its own quotes (go-
       )
     );
     expect(child.length).toBeLessThanOrEqual(STACK_REF_MAX_CODE_POINTS);
-    expect(message).toContain(`missing nested-child '${child}' (us-east-1)`);
+    expect(message).toContain(`missing nested-child '${child}' ('us-east-1')`);
     expect(message).toContain(`no child state file exists at ${NOT_SHOWN}.`);
   });
 

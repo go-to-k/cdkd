@@ -100,7 +100,7 @@ assert_composite_id_plan() {
   assert_plan_identifier "${log}" 'AWS::EC2::VPCGatewayAttachment' \
     '\(AWS::EC2::VPCGatewayAttachment\).*AttachmentType=IGW, VpcId=vpc-[0-9a-f]+'
   assert_plan_identifier "${log}" 'AWS::Lambda::EventInvokeConfig' \
-    '\(AWS::Lambda::EventInvokeConfig\).*FunctionName=cdkd-export-test-[a-z0-9]+, Qualifier=\$LATEST'
+    '\(AWS::Lambda::EventInvokeConfig\).*FunctionName=cdkd-export-test-[a-z0-9]+, Qualifier="\$LATEST"'
   # Issue #1761 — a DIFFERENT family from the four above: not a splitter but a
   # COMPOSITE_PHYSICAL_ID_IDENTIFIERS resolution, whose value comes from the
   # recorded `Id` attribute rather than from any segment of cdkd's physical id.

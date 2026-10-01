@@ -93,6 +93,21 @@ offending resource is named in one message so you can fix them in one pass.
 | A Parameter with neither a `--parameter` override nor a template `Default` | The changeset would be rejected. | Pass `--parameter Key=Value`. |
 | An identifier property the template carries in an unrepresentable shape | A list containing an intrinsic, a nested list, or an empty list. | Declare the scalar the message names. |
 
+**A damaged state record.** A record whose `resources` map, or a resource
+entry's `properties` map, is not a JSON object — `null`, absent, a list, a
+string, a number or a boolean, from a hand edit or a truncation — is refused by
+name: for the root stack at the state load, before any lock, and for every
+nested child before any child stack is planned or locked (after the root's
+plan, and on a real run under the root lock, which it releases), under
+`--dry-run` too. The export
+reads the `properties` map to build an import identifier, to check for the
+mask, and to find what a phase-2 pre-delete removes, and it deletes the record
+once the migration succeeds. Repair the record by hand, or re-import the named
+resources with a selective `cdkd import --force`. Removing the record does not
+unblock the export: without the root record there is nothing to migrate, and
+without a nested child's record the export refuses the tree as missing that
+child.
+
 **About the `***` mask.** Forcing the Custom Resource to update does not clear
 the block: the handler supplies the value to the *deploy*, and cdkd re-masks it
 on the way into state — which is what the export reads. Either stop setting
@@ -207,6 +222,12 @@ up cdkd state with `cdkd state orphan`. The cause is usually a missing
 permission: the pre-delete issues `apigatewayv2:DeleteStage` for the stage, and
 `iam:DeleteRolePolicy` / `iam:DeleteUserPolicy` / `iam:DeleteGroupPolicy` for an
 inline policy, depending on what it is attached to.
+
+The plan row and the failure message name each pre-delete's physical id only
+when it is a plain value inert on a command line; any other, a `$default` stage
+included, prints as "(not shown: it is not a plain identifier)", since the
+message also carries commands to paste. `cdkd state show` prints the stored
+value.
 
 ## How cdkd resolves each resource's identifier
 
@@ -517,8 +538,11 @@ Two ways forward:
 - **Escape hatch.** Pass `--accept-transient-context`. cdkd proceeds and warns,
   naming every override. You are then responsible for passing the same `-c`
   flags to every future `cdk deploy` for this stack, or for moving them into
-  `cdk.json` before then. On success cdkd prints the exact `cdk diff` /
-  `cdk deploy` commands including the captured flags.
+  `cdk.json` before then. On success cdkd prints the `cdk diff` /
+  `cdk deploy` commands including the captured flags. A value that is not a
+  plain identifier inert on a command line (JSON, a space) prints as the
+  quoted hole `'<context>'` there and as "(not shown: it is not a plain
+  identifier)" in the warning; `cdk.json` is the way to keep such a value.
 
 ## Cross-stack consumers
 
@@ -546,9 +570,9 @@ has drifted from the synth template. Run `cdkd state refresh-observed '<stack>'`
 (or any redeploy) before exporting, then `cdkd drift '<stack>'` to verify. The
 warning is non-blocking by design — you decide whether to proceed.
 
-A `resources` **bag** that is not a JSON object — `null`, absent, a list, a
-string, a number or a boolean — gets a single warning naming the stack, and the
-rest of this report is skipped: there are no rows to judge a baseline for.
+A `resources` **bag** that is not a JSON object never reaches this report: the
+export refuses such a record first (see
+[What blocks an export](#what-blocks-an-export)).
 
 A `resources` **entry** that is not an object, or carries no resource type,
 gets its own warning here, naming the logical ids, and is left out of the

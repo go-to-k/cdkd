@@ -73,8 +73,8 @@ describe('refuseTransientContextIfUnsafe', () => {
       thrown = err as Error;
     }
     expect(thrown).toBeDefined();
-    expect(thrown!.message).toContain('-c env=prod');
-    expect(thrown!.message).toContain('-c region=us-east-1');
+    expect(thrown!.message).toContain("-c 'env=prod'");
+    expect(thrown!.message).toContain("-c 'region=us-east-1'");
   });
 
   it('proceeds with --accept-transient-context (does not throw)', () => {
@@ -4399,32 +4399,32 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
    *
    * go-to-k/cdkd#3328's rounds 3, 4 and 5 hardened six renderings of a
    * record-derived stack name in this file, one at a time, and each round found
-   * the next by accident — round 5's own FIXTURE was what surfaced the sixth,
-   * because a hostile name hit `cdkd2cfnStackName`'s refusal before reaching
-   * the block the case was written for. A seventh would have been found the
-   * same way or not at all, so this is a check rather than a seventh sentence.
+   * the next by accident. A seventh would have been found the same way or not at
+   * all, so this is a check rather than a seventh sentence.
+   *
+   * TWO populations share it since go-to-k/cdkd#3371. The names
+   * `walkCdkdStateStackTree` MINTS from a record's `resources` keys
+   * (`${parent}~${logicalId}`) and the fields carried beside them; and the
+   * template- and CLI-derived identifiers — a template logical id, the
+   * synthesized or typed stack name, the CloudFormation stack name, a
+   * `--stack-region` value. Both reach a line an operator pastes from.
+   *
+   * RAW includes the retired `safeSegment(...)`: it sanitized and capped but
+   * kept `'`, `$`, `(` and a space, so a value it printed still ran once a
+   * pasted selection reached it (go-to-k/cdkd#4205). A name renders through
+   * `quotedOrNotShown` (sentences), `displayIdent` (list rows) or the shared
+   * command gate.
    *
    * ITS LIMIT, stated because naming these bindings does not close their class:
    * a value crossing a helper's RETURN (`const targetRegion = await
    * pickStackRegion(...)`) has no carrier on its right-hand side, so nothing
-   * here can DERIVE it — the two below were added by hand after a review found
-   * them raw. When adding a helper that returns a record-derived value, add its
-   * binding here too; the derived half covers only values read off a receiver.
+   * here can DERIVE it — those bindings are listed by hand below. When adding a
+   * helper that returns such a value, add its binding here too.
    *
    * The record's `physicalId` / `properties` / `attributes` are body content at
-   * the same trust boundary and have their own case below
-   * (go-to-k/cdkd#3375), since those values are not names and render through
-   * `showRecordValue` rather than `safeSegment`.
-   *
-   * SCOPE, stated because it is narrower than "every value in every message":
-   * only the names `walkCdkdStateStackTree` MINTS from a record's own
-   * `resources` keys (`${parent}~${logicalId}`, applied recursively) and the
-   * fields carried beside them. Those are chosen by anyone able to write one
-   * state key. A template `logicalId` or a CLI-supplied `resolvedStackName` sits
-   * at a different trust boundary and is deliberately NOT in the population —
-   * that half is go-to-k/cdkd#3371.
+   * the same trust boundary and have their own case below (go-to-k/cdkd#3375).
    */
-  it('renders no record-derived name RAW in any message (go-to-k/cdkd#3328)', async () => {
+  it('renders no record-, template- or CLI-derived name RAW in any message (go-to-k/cdkd#3328, go-to-k/cdkd#3371)', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const source = readFileSync(
@@ -4433,15 +4433,36 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
     );
 
     // Derived from the CODE in BOTH directions: the receivers this file reads a
-    // minted name off, AND the property names that name is CARRIED under.
-    // `walkCdkdStateStackTree` mints `${parent}~${logicalId}`; the value then
-    // travels node `.stackName` -> `PerStackImportNode.cdkdStackName` ->
-    // `PerStackPlan.cdkdName` -> `importedStacks[].cdkdStackName`, and the first
-    // cut of this fence watched only the FIRST hop — which left a reachable,
-    // MULTI-LINE raw rendering unwatched while looking like the class was
-    // covered (review round 6). A fence that watches a subset of its stated
-    // class is worse than none.
-    const carriers = ['stackName', 'region', 'cdkdStackName', 'cdkdName'];
+    // name off, AND the property names that name is CARRIED under. The minted
+    // name travels node `.stackName` -> `PerStackImportNode.cdkdStackName` ->
+    // `PerStackPlan.cdkdName` -> `importedStacks[].cdkdStackName`; the template
+    // and CLI ones as `.logicalId`, `.cfnName`, `.cfnStackName`,
+    // `.consumerStackName` and `.outputName`.
+    const carriers = [
+      'stackName',
+      'region',
+      'cdkdStackName',
+      'cdkdName',
+      'logicalId',
+      'cfnName',
+      'cfnStackName',
+      'consumerStackName',
+      'outputName',
+      'childLogicalId',
+      // A receiver's `.resourceType` (a template `Type`, `Custom::<anything>`
+      // among them) in a row. The bare `${resourceType}` is not watched: every
+      // remaining site sits behind a lookup keyed by cdkd's own constants, or
+      // after a DescribeType that ANSWERED for that Type. The one that fired
+      // exactly when DescribeType REJECTED it (`fetchPrimaryIdentifier`'s
+      // no-fallback refusal) renders through `quotedOrNotShown` (S1 of the
+      // go-to-k/cdkd#4245 review).
+      'resourceType',
+      // G3 of the same review: a failure row's `.type`, a cross-stack row's
+      // `.location`, and the next-steps block's `.cdkStackName`.
+      'type',
+      'location',
+      'cdkStackName',
+    ];
     const receivers = [
       ...new Set(
         [...source.matchAll(new RegExp(`\\b(\\w+)\\.(?:${carriers.join('|')})\\b`, 'g'))].map(
@@ -4449,40 +4470,65 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
         )
       ),
     ];
-    // NO allow-list: a new receiver joins by being WRITTEN. The exclusions are
-    // the two bags that are not tree nodes — `options` / `deps` / `opts` style
-    // parameter objects carrying a CLI-supplied name, which is go-to-k/cdkd#3371's
-    // population and a different trust boundary.
-    const notNodes = new Set(['options', 'opts', 'deps', 'input', 'stackInfo', 'setup']);
-    const watched = receivers.filter((name) => !notNodes.has(name));
-    // A FLOOR, so a regex that silently stopped matching cannot pass here, and
-    // an upper sanity bound so an over-broad match is visible too.
-    expect(watched.length).toBeGreaterThanOrEqual(5);
+    // NO allow-list and NO exclusions: a new receiver joins by being WRITTEN.
+    // The parameter bags go-to-k/cdkd#3328 excluded (`options`, `deps`, ...)
+    // carry go-to-k/cdkd#3371's CLI-supplied population, so they are watched
+    // too.
+    expect(receivers.length).toBeGreaterThanOrEqual(10);
 
     const identifiers = [
-      ...watched.flatMap((r) => carriers.map((c) => `${r}.${c}`)),
-      // The BARE bindings the same value is destructured or bound into. A
-      // property that is not one of the four carriers is still the same value
-      // when it is READ OFF a record — `node.state.parentStack` is the extreme
-      // case, an un-minted state-body field with no shape constraint at all,
-      // and it was raw while the first two cuts of this fence passed (review
-      // round 7).
+      ...receivers.flatMap((r) => carriers.map((c) => `${r}.${c}`)),
+      // The BARE bindings the same values are destructured or bound into.
       'childStackName',
       'cdkdName',
       'parentStackName',
       'row.childStackName',
       'node.state.parentStack',
-      // A record-derived value crossing a helper's RETURN into a local: both of
-      // these are `pickStackRegion`'s answer, whose LEGACY branch returns the
-      // record BODY's `region` — `typeof === 'string'` its only constraint, so
-      // arbitrary UTF-8 — and they render into two DESTRUCTIVE confirmation
-      // prompts (review round 8).
+      // A record-derived value crossing a helper's RETURN into a local:
+      // `pickStackRegion`'s answer, whose LEGACY branch returns the record
+      // BODY's `region`.
       'targetRegion',
       'rootRegion',
+      // go-to-k/cdkd#3371: template- and CLI-derived bindings.
+      'logicalId',
+      'childLogicalId',
+      'resolvedStackName',
+      'cfnStackName',
+      'rootStackName',
+      'stackName',
+      'region',
+      'cfnName',
+      'stackArg',
+      'flag',
+      // Operator-typed values the parsers and helpers bind under their own
+      // names (review of go-to-k/cdkd#4245): the `--parameter` token and name,
+      // the `--cfn-child-stack-name` value, a `-c` value, the template path,
+      // the state bucket, and a template Parameter key.
+      't',
+      'name',
+      'raw',
+      'v',
+      'path',
+      'bucket',
+      'uploadOpts.stateBucket',
+      'parameterKey',
     ];
+    const escaped = (id: string): string => id.replace('.', '\\.');
     const raw = identifiers.flatMap((id) =>
-      [...source.matchAll(new RegExp(`\\$\\{${id.replace('.', '\\.')}\\}`, 'g'))]
+      [
+        ...source.matchAll(new RegExp(`\\$\\{(?:safeSegment\\()?${escaped(id)}\\)?\\}`, 'g')),
+      ]
         .map((m) => ({ id, at: m.index ?? 0 }))
+        // A value printed only on the arm where the shared `isPasteableIdent`
+        // gate admitted it (the nested resume tail's CloudFormation name).
+        .filter(
+          ({ at }) =>
+            !new RegExp(`isPasteableIdent\\(${escaped(id)}\\)\\s*\\?\\s*$`).test(
+              source.slice(Math.max(0, at - 120), at).replace(/`[^`]*$/, '')
+            )
+        )
+        // A doc or line COMMENT quoting the shape is not a message.
+        .filter(({ at }) => !/^\s*(?:\*|\/\/)/.test(source.slice(source.lastIndexOf('\n', at) + 1, at)))
         // A template literal used as a DATA value rather than as a message:
         // `childStackName: \`${parentStackName}~${logicalId}\`` MINTS the name
         // and the upload key `stackName: \`${plan.cdkdName}__nested__...\`` is an
@@ -4491,40 +4537,80 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
         // Anchored on the property assignment, so it exempts only a literal
         // that IS the value of a `*[Ss]tackName` key.
         .filter(({ at }) => !/\b\w*[Ss]tackName: `[^`]*$/.test(source.slice(Math.max(0, at - 80), at)))
+        // The minting assignment itself (`const childStackName = \`...\``).
+        .filter(({ at }) => !/\bconst \w*[Ss]tackName = `[^`]*$/.test(source.slice(Math.max(0, at - 80), at)))
         // The literal handed WHOLE to `quotedOrNotShown` (go-to-k/cdkd#3950),
         // which prints it only when `displayIdent` leaves the assembled text
-        // unchanged: the missing-child refusal's state-key path.
+        // unchanged: the state-key paths.
         .filter(({ at }) => !/quotedOrNotShown\(`[^`]*$/.test(source.slice(Math.max(0, at - 80), at)))
         .map(({ id, at }) => `${id} at offset ${at}`)
     );
 
-    expect(raw, 'a record-derived name is interpolated without a sanitizer').toEqual([]);
+    expect(raw, 'a derived name is interpolated without a boundary').toEqual([]);
+    // A bare `displayIdent(<derived name>)` is not a boundary either: its JSON
+    // quotes leave `$( )` live when pasted (go-to-k/cdkd#4229's decision). A
+    // name renders through `quotedOrNotShown`, `plainOrNotShown` or `rowIdent`
+    // (both of which DESCRIBE a value that is not plain and inert)
+    // (which shell-bounds the JSON form). G2 of the go-to-k/cdkd#4245 review.
+    // AWS-derived values are exempt by NAME: an SSM-reported `got.type`.
+    const AWS_DERIVED = new Set(['got.type']);
+    const bareDisplay = identifiers
+      .filter((id) => !AWS_DERIVED.has(id))
+      .flatMap((id) =>
+        [...source.matchAll(new RegExp(`displayIdent\\(${escaped(id)}\\b`, 'g'))].map(
+          (m) => `${id} at offset ${m.index ?? 0}`
+        )
+      );
+    // Non-vacuity: the SAME pattern finds the one exempt site, so a regex that
+    // stopped matching fails here instead of passing over nothing.
+    expect(
+      [...source.matchAll(new RegExp(`displayIdent\\(${escaped('got.type')}\\b`, 'g'))]
+        .length
+    ).toBeGreaterThanOrEqual(1);
+    expect(bareDisplay, 'a derived name is rendered through a bare displayIdent').toEqual([]);
+    // And the retired renderer does not come back under another spelling.
+    expect(source).not.toMatch(/\bsafeSegment\(/);
 
     // The INDIRECTION the literal match cannot see: a list of such names
-    // reduced to a string and interpolated as one. `remainingSummary` was
-    // exactly that — `perStackPlans.slice(i).map((p) => p.cdkdName).join(', ')`
-    // straight into a throw — and it passed both earlier cuts of this fence.
-    // A WINDOW around each `.join(`, not a parsed map/join pair: the shapes in
-    // this file wrap across lines, carry a `.slice()` between them, and put
-    // parentheses inside the callback's template literal, all of which a
-    // structural regex got wrong in three different ways. The window is crude
-    // and it is what the assertion's non-vacuity floor keeps honest.
+    // reduced to a string and interpolated as one. A WINDOW around each
+    // `.join(`, not a parsed map/join pair: the shapes in this file wrap across
+    // lines, carry a `.slice()` between them, and put parentheses inside the
+    // callback's template literal, all of which a structural regex got wrong in
+    // three different ways. The window is crude and it is what the
+    // non-vacuity floor keeps honest.
     const joinWindows = [...source.matchAll(/\.join\(/g)].map(({ index }) =>
       source.slice(Math.max(0, (index ?? 0) - 220), index ?? 0)
     );
-    // The SAME callback parameter name serves both trust boundaries here (`s`
-    // is a synth stack in one place and an imported record in another), so the
-    // discriminator is what the `.map` runs OVER. `result.stacks` is the Cloud
-    // Assembly's own list — go-to-k/cdkd#3371's population.
-    const carrierJoins = joinWindows
-      .filter((w) => !w.includes('result.stacks'))
-      .filter((w) => carriers.some((c) => new RegExp(`\\.${c}\\b`).test(w)));
-    // Non-vacuity: the shape exists in this file, so an assertion over an empty
-    // set would be asserting nothing.
-    expect(carrierJoins.length).toBeGreaterThanOrEqual(2);
+    // `result.stacks` (the Cloud Assembly's own list) is no longer excluded:
+    // its names are go-to-k/cdkd#3371's population.
+    const carrierJoins = joinWindows.filter((w) =>
+      carriers.some((c) => new RegExp(`\\.${c}\\b`).test(w))
+    );
+    expect(carrierJoins.length).toBeGreaterThanOrEqual(4);
+    // Lists bound under their own names: template Parameter names (`missing`,
+    // `missingNested`, `skipped`, `params`, `[...known]`) and `--parameter`
+    // names (`stray`).
+    const namedJoins = joinWindows.filter((w) =>
+      /\b(?:missing|missingNested|skipped|stray|params|known)\b[^\n]*$/.test(w.slice(-60))
+    );
+    expect(namedJoins.length).toBeGreaterThanOrEqual(6);
+    // Anchored at the END of the window, the list's own `.map`: a boundary
+    // elsewhere in the window (a neighbour's `quotedOrNotShown(cdkdName)`)
+    // must not satisfy it.
     expect(
-      carrierJoins.filter((w) => !/safeSegment\(|safeDetail\(|quotedOrNotShown\(/.test(w)),
-      'a list of record-derived names is joined into a message without a sanitizer'
+      namedJoins.filter(
+        (w) =>
+          !/\b(?:missing|missingNested|skipped|stray|params|known)\]?\.map\(\(\s*(\w+)\s*\)\s*=>\s*quotedOrNotShown\(\1\)\s*\)$/.test(
+            w
+          )
+      ),
+      'a list of template- or CLI-derived names is joined into a message without a boundary'
+    ).toEqual([]);
+    expect(
+      carrierJoins.filter(
+        (w) => !/safeDetail\(|quotedOrNotShown\(|regionListMember\(|rowIdent\(/.test(w)
+      ),
+      'a list of derived names is joined into a message without a boundary'
     ).toEqual([]);
   });
 
@@ -4565,7 +4651,7 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
       { name: 'resourceIdentifier', re: /\bresourceIdentifier\b/, floor: 0 },
       { name: 'propertiesOverlay', re: /\bpropertiesOverlay\b/, floor: 0 },
     ];
-    const rendered = /^(?:showRecordValue|preDeletedLine|commandHole)\(/;
+    const rendered = /^(?:showRecordValue|recordValueOrNotShown|preDeletedLine|commandHole)\(/;
     const all = [...source.matchAll(/\$\{([^{}`]*)\}/g)]
       .map((m) => ({ expr: (m[1] as string).trim(), at: m.index ?? 0 }))
       // `Object.keys(...)` of a `resourceIdentifier` lists the splitter's own
@@ -4958,7 +5044,7 @@ describe('parseCfnChildStackNameOverrides (issue #464 PR B2)', () => {
 
   it("rejects entries without '='", () => {
     expect(() => parseCfnChildStackNameOverrides(['MyApp~Database'])).toThrow(
-      /not in <cdkdName>=<cfnName> form/
+      /not in '<cdkdName>=<cfnName>' form/
     );
   });
 
@@ -5450,21 +5536,26 @@ describe('buildResolvedParametersPerStack (issue #464 follow-up — root-first p
       await expect(
         run(rootWith('AWS::SSM::Parameter::Value<String>', { RoleParam: { Ref: 'RootRole' } }), read)
       ).rejects.toThrow(
-        /SSM parameter \/app\/role-name.*read failed \(ParameterNotFound\).*ssm:GetParameter.*--parameter RootRole=<name>/s
+        /SSM parameter \/app\/role-name.*read failed \(ParameterNotFound\).*ssm:GetParameter.*for 'RootRole' with '--parameter <Key>=<Name>'/s
       );
     });
 
     it('names the two stacks only when plain, and no pasted span of the refusal runs (go-to-k/cdkd#3950)', async () => {
-      const refusalFor = async (rootName: string): Promise<string> => {
+      const refusalFor = async (
+        rootName: string,
+        ssmName = '/app/role-name',
+        readSsmParameter?: (name: string) => Promise<{ value: string; type?: string }>
+      ): Promise<string> => {
         const err = await buildResolvedParametersPerStack({
           rootStackName: rootName,
-          rootParameters: [{ ParameterKey: 'RootRole', ParameterValue: '/app/role-name' }],
+          rootParameters: [{ ParameterKey: 'RootRole', ParameterValue: ssmName }],
           perStackNodes: [
             node(rootName, rootWith('AWS::SSM::Parameter::Value<String>', { RoleParam: { Ref: 'RootRole' } })),
             node(`${rootName}~Child`, { Resources: {} }, { stack: rootName, logicalId: 'Child' }),
           ],
           tree: treeNode(rootName, new Map([['Child', treeNode(`${rootName}~Child`, new Map())]])),
           resolver,
+          ...(readSsmParameter && { readSsmParameter }),
         }).then(
           () => undefined,
           (e: unknown) => e as Error
@@ -5473,12 +5564,34 @@ describe('buildResolvedParametersPerStack (issue #464 follow-up — root-first p
         return err!.message;
       };
       expect(await refusalFor('Plain1')).toContain(
-        "Stack 'Plain1' passes its SSM-typed Parameter RootRole (SSM parameter /app/role-name) to " +
+        "Stack 'Plain1' passes its SSM-typed Parameter 'RootRole' (SSM parameter /app/role-name) to " +
           "nested stack 'Plain1~Child'."
       );
       const messages: Array<{ value: string; message: string }> = [];
       for (const { value } of PASTE_PAYLOADS) messages.push({ value, message: await refusalFor(value) });
+      // R3 of the go-to-k/cdkd#4245 review: the SSM parameter NAME is the
+      // parent template's value, inside a refusal that ends on a `--parameter`
+      // remedy, so a non-inert one is described, never JSON-quoted.
+      const ssmMessages: Array<{ value: string; message: string }> = [];
+      const readFails = async (): Promise<{ value: string }> => {
+        throw Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+      };
+      for (const { value } of [...PASTE_PAYLOADS, { value: '/app/$(touch OWNED)' }]) {
+        ssmMessages.push({ value, message: await refusalFor('Plain1', value) });
+        // The READ-FAILED arm: the one that ends on the `--parameter` remedy
+        // (security review of go-to-k/cdkd#4245, round 5).
+        const failed = await refusalFor('Plain1', value, readFails);
+        expect(failed, value).toContain("with '--parameter <Key>=<Name>', and re-run.");
+        ssmMessages.push({ value, message: failed });
+      }
       withPasteDir((dir) => {
+        for (const { value, message } of ssmMessages) {
+          expect(message, value).toContain(
+            '(SSM parameter (not shown: it is not a plain identifier)) to nested stack'
+          );
+          expect(message, value).not.toContain(value);
+          expect(spansThatRun(message, dir), value).toEqual([]);
+        }
         for (const { value, message } of messages) {
           expect(message, value).toContain(
             'Stack (not shown: it is not a plain identifier) passes its SSM-typed Parameter'

@@ -30,12 +30,14 @@ import {
   submitImportChangeSet,
 } from '../../../src/cli/commands/export.js';
 import { AWS_MESSAGE_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
+import { spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
 import { getLogger } from '../../../src/utils/logger.js';
 
 /** Closes a hand-written `'...'` and writes its own clause after it. */
 const QUOTE_FORGE = "abc'. Verified safe to import. 'x";
+const NOT_SHOWN = '(not shown: it is not a plain identifier)';
 
 describe('composite physical-id refusals render the recorded id with its own boundary', () => {
   it('JSON-quotes a forging id, so its quote cannot close one of cdkd', () => {
@@ -66,7 +68,7 @@ describe('composite physical-id refusals render the recorded id with its own bou
 });
 
 describe('the EC2::Route destination refusal renders recorded values with their own boundary', () => {
-  it('JSON-quotes a forging destination segment in the refusal', () => {
+  it('describes a forging destination segment in the refusal (go-to-k/cdkd#4229)', () => {
     // The declared destination is an IPv4 CIDR, so the mismatch is decidable
     // and refused rather than warned.
     let message = '';
@@ -77,12 +79,12 @@ describe('the EC2::Route destination refusal renders recorded values with their 
     } catch (e) {
       message = (e as Error).message;
     }
-    expect(message).toContain(`destination segment is ${JSON.stringify(QUOTE_FORGE)}.`);
-    expect(message).toContain(`currently sits at ${JSON.stringify(QUOTE_FORGE)} —`);
-    expect(message).not.toContain(`'${QUOTE_FORGE}'`);
+    expect(message).toContain(`destination segment is ${NOT_SHOWN}.`);
+    expect(message).toContain(`currently sits at ${NOT_SHOWN} —`);
+    expect(message).not.toContain(QUOTE_FORGE);
   });
 
-  it('JSON-quotes a forging recorded property in the warning', () => {
+  it('describes a forging recorded property in the warning (go-to-k/cdkd#4229)', () => {
     // A declared value cdkd cannot normalise takes the WARNING arm.
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     try {
@@ -91,8 +93,8 @@ describe('the EC2::Route destination refusal renders recorded values with their 
       });
       expect(warn).toHaveBeenCalledTimes(1);
       const message = String(warn.mock.calls[0]![0]);
-      expect(message).toContain(`declare DestinationCidrBlock=${JSON.stringify(QUOTE_FORGE)}, but`);
-      expect(message).not.toContain(`'${QUOTE_FORGE}'`);
+      expect(message).toContain(`declare DestinationCidrBlock=${NOT_SHOWN}, but`);
+      expect(message).not.toContain(QUOTE_FORGE);
     } finally {
       warn.mockRestore();
     }
@@ -451,9 +453,9 @@ describe('the nested-stack asset-path refusals render the logical id without cdk
     },
   });
 
-  it('JSON-quotes a forging logical id', () => {
+  it('describes a forging logical id (go-to-k/cdkd#4245 review)', () => {
     expect(() => indexNestedTemplatePaths(template(QUOTE_FORGE), dir)).toThrow(
-      `cdkd export: nested-stack ${JSON.stringify(QUOTE_FORGE)} has `
+      'cdkd export: nested-stack (not shown: it is not a plain identifier) has '
     );
   });
 
@@ -461,6 +463,27 @@ describe('the nested-stack asset-path refusals render the logical id without cdk
     expect(() => indexNestedTemplatePaths(template('Child'), dir)).toThrow(
       "cdkd export: nested-stack Child has Metadata['aws:asset:path']="
     );
+  });
+  it('describes a forging logical id on the ESCAPE refusal too (go-to-k/cdkd#4245 review)', () => {
+    const escaping = {
+      Resources: {
+        [QUOTE_FORGE]: {
+          Type: 'AWS::CloudFormation::Stack',
+          Metadata: { 'aws:asset:path': '../../outside.template.json' },
+        },
+      },
+    };
+    let message = '';
+    try {
+      indexNestedTemplatePaths(escaping, dir);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain(
+      'cdkd export: nested-stack (not shown: it is not a plain identifier) has '
+    );
+    expect(message).not.toContain('which is absolute');
+    expect(message).not.toContain(QUOTE_FORGE);
   });
 });
 
@@ -483,18 +506,35 @@ describe('preDeletedLine renders the recorded physical id with its own boundary'
     expect(preDeletedLine('abc123')).toBe('✓ deleted abc123');
   });
 
-  // Real AWS identifiers carrying `$`, `|`, `#` and `*` printed bare before
-  // go-to-k/cdkd#3375 and still do (the `export` integ fixture greps
-  // `Qualifier=$LATEST`).
+  // A mid-word `#` is inert on a command line, so a log-group name stays bare.
+  it('renders a log-group name bare', () => {
+    expect(preDeletedLine('/aws/lambda/fn#1')).toBe('✓ deleted /aws/lambda/fn#1');
+  });
+
+  // `$`, `|` and `*` are shell syntax: printed bare, a planted `i-1|reboot`
+  // runs a command when the line is pasted, with no quote flip at all. So a
+  // value holding one is JSON-quoted even when it is a real AWS id (the
+  // go-to-k/cdkd#4245 review; the `export` integ fixture greps the quoted
+  // `Qualifier="$LATEST"`).
   it.each([
     ['a Lambda qualifier', '$LATEST'],
     ['an API Gateway v2 stage', '$default'],
     ['an API Gateway v2 route key', '$connect'],
     ['a cdkd composite physical id', 'a1b2c3|r4s5t6|GET'],
-    ['a log-group name', '/aws/lambda/fn#1'],
     ['a Route 53 wildcard record', '*.example.com'],
-  ])('renders %s bare', (_what, id) => {
-    expect(preDeletedLine(id)).toBe(`✓ deleted ${id}`);
+    ['a planted pipe', 'i-1|reboot'],
+  ])('JSON-quotes %s, which is not inert unquoted', (_what, id) => {
+    expect(preDeletedLine(id)).toBe(`✓ deleted ${JSON.stringify(id)}`);
+  });
+
+  it('a planted pipe id runs nothing when its line is pasted', () => {
+    withPasteDir((dir) => {
+      // `i-1|touch$IFS$9OWNED` is IN `RECORD_VALUE_PLAIN` and runs when bare,
+      // so this case fails if the `isInertUnquoted` gate is dropped.
+      for (const id of ['i-1|touch$IFS$9OWNED', 'i-1|touch OWNED', 'x*']) {
+        expect(spansThatRun(preDeletedLine(id), dir), id).toEqual([]);
+      }
+    });
   });
 
   // ...while anything that could close a quote, spell an annotation or run
@@ -630,7 +670,8 @@ describe('CloudFormation IMPORT failure reasons are folded and bounded', () => {
     // The header, then exactly one row per event: the echoed newline did not
     // start another.
     expect(lines).toHaveLength(3);
-    expect(lines[2]).toBe(`  - ${JSON.stringify("Other) ok'")} (AWS::S3::Bucket): short`);
+    // Described (`rowIdent`, go-to-k/cdkd#4229): a non-plain id is not shown.
+    expect(lines[2]).toBe('  - (not shown: it is not a plain identifier) (AWS::S3::Bucket): short');
     expect(lines[0]).toBe('IMPORT changeset failed:');
     expect(lines[1]).toMatch(
       /^ {2}- Stage \(AWS::ApiGatewayV2::Stage\): Identifier stage Re-run with: rm -rf ~ r+ \[cut: \d+ more characters withheld\]$/

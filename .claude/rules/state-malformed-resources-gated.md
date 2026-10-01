@@ -21,13 +21,14 @@ fires first — and, since go-to-k/cdkd#3202, `src/cli/commands/deploy.ts`'s
 pre-lock `--recreate-via-*` read, an INDEPENDENT load of the same record the
 engine's guard does not dominate. Same helper, so every refusal reads identically.
 
-## Three refusal entry points, one predicate
+## Four refusal entry points, one predicate
 
 `refuseMalformedState` (`import` / `orphan` / `rollback`),
-`refuseMalformedResourcesForDestroy` and `refuseMalformedResourcesForDeploy` all
-delegate to `hasReadableResources`, so the VERDICT is singular and only the
-MESSAGE varies. The split is not stylistic — neither gated command does what the
-shared text describes: a destroy DELETES the record down an empty-stack fast path
+`refuseMalformedResourcesForDestroy`, `refuseMalformedResourcesForDeploy` and
+`refuseMalformedResourcesForExport` (go-to-k/cdkd#4181: export DELETES the
+record after migrating, so "remove it" is no way out there) all delegate to `hasReadableResources`, so the VERDICT is singular and only the
+MESSAGE varies. The split is not stylistic — none of the three commands does what
+the shared text describes (export's case is on its builder): a destroy DELETES the record down an empty-stack fast path
 rather than saving over it, and a deploy RE-PROVISIONS the whole stack before
 that save. An operator told their record "would be replaced with a well-formed
 empty one" would not know that running anyway DUPLICATES their stack.

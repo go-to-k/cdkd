@@ -41,6 +41,8 @@ import {
   malformedResourcePropertiesWarning,
   malformedDriftResourcePropertiesRefusalMessage,
   malformedDriftResourcePropertiesWarning,
+  malformedExportResourcePropertiesRefusalMessage,
+  malformedExportResourcesRefusalMessage,
   malformedResourcesWarning,
   malformedStateRefusalMessage,
   refuseMalformedNestedChildOutputs,
@@ -67,6 +69,8 @@ import {
   refuseMalformedResourceEntriesForDestroy,
   refuseMalformedResourceProperties,
   refuseMalformedResourcePropertiesForDrift,
+  refuseMalformedResourcePropertiesForExport,
+  refuseMalformedResourcesForExport,
   refuseMalformedResourcePropertiesForOrphan,
   refuseMalformedResourcesForDeploy,
   refuseMalformedResourcesForDestroy,
@@ -3609,6 +3613,9 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     'refuseMalformedState(',
     'refuseMalformedResourcesForDestroy(',
     'refuseMalformedResourcesForDeploy(',
+    // go-to-k/cdkd#4181: `cdkd export`, whose text says it DELETES the record
+    // after migrating rather than saving over it.
+    'refuseMalformedResourcesForExport(',
   ];
 
   /**
@@ -3627,7 +3634,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(21);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(23);
 
     const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
     const properties = exported.filter((n) => n.includes('ResourceProperties'));
@@ -3702,9 +3709,12 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // subtracting the records its save is deleting.
     // A THIRD since go-to-k/cdkd#3315: `cdkd drift --accept` / `--revert`,
     // whose text describes writing the record back rather than a diff.
+    // A FOURTH, the export half of go-to-k/cdkd#3315: `cdkd export`, which
+    // reads the map and then deletes the record.
     expect([...properties].sort()).toEqual([
       'refuseMalformedResourceProperties(',
       'refuseMalformedResourcePropertiesForDrift(',
+      'refuseMalformedResourcePropertiesForExport(',
       'refuseMalformedResourcePropertiesForOrphan(',
     ]);
     expect(
@@ -4523,6 +4533,14 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
       'go-to-k/cdkd#3202. Its ONE caller is the selective `cdkd import`, raising from the command ' +
       'body before the lock and before any provider import, with no withRetry around it. Revisit ' +
       'if a retrying caller is added.',
+    'refuseMalformedResourcesForExport(':
+      'go-to-k/cdkd#4181. Its ONE caller is `cdkd export`, raising at the root state load and ' +
+      'over every nested tree node (under the root lock), with no withRetry around it. Revisit ' +
+      'if a retrying caller is added.',
+    'refuseMalformedResourcePropertiesForExport(':
+      'go-to-k/cdkd#3315, the export half. Its ONE caller is `cdkd export`, raising beside ' +
+      'refuseMalformedResourcesForExport, with no withRetry around it. ' +
+      'Revisit if a retrying caller is added.',
     'refuseMalformedResourceEntriesForImportSave(':
       'go-to-k/cdkd#3202. Its ONE caller is `cdkd import`, raising from the command body on the ' +
       'assembled map, after the per-row provider imports and before the save, with no withRetry ' +
@@ -4534,7 +4552,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(21);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(23);
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
@@ -4976,7 +4994,7 @@ describe('cdkd drift properties refusal and warning (issue go-to-k/cdkd#3315)', 
     }
   });
 
-  it('the refusal names both write modes and what continuing would do', () => {
+  it('the refusal names both write modes and what continuing would do (drift)', () => {
     const text = malformedDriftResourcePropertiesRefusalMessage('S', 'us-east-1', ['A']);
     expect(text).toContain("'cdkd drift --accept' and '--revert' WRITE this record back");
     expect(text).toContain("'--revert' push to the live resource");
@@ -4988,6 +5006,153 @@ describe('cdkd drift properties refusal and warning (issue go-to-k/cdkd#3315)', 
     expect(text).toContain("'cdkd drift' does NOT compare these resources");
     expect(text).toContain('the run does not exit clean');
     expect(text).toContain("'cdkd drift --accept' / '--revert' and 'cdkd deploy' REFUSE");
+  });
+});
+
+/**
+ * `cdkd export`'s pair (go-to-k/cdkd#4181 for the `resources` bag, the export
+ * half of go-to-k/cdkd#3315 for `properties`). Their own texts because export
+ * neither saves over the record, which the shared text names as the harm, nor
+ * compares a template: it migrates the record and then DELETES it, and
+ * "remove the record" is a dead end there.
+ */
+describe('cdkd export refusals (go-to-k/cdkd#4181, go-to-k/cdkd#3315)', () => {
+  for (const [label, value] of UNREADABLE) {
+    it(`refuses a resources bag that is ${label}, with the shared code and NO retry marker`, () => {
+      let thrown: unknown;
+      try {
+        refuseMalformedResourcesForExport(state(value), 'S', 'us-east-1');
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(CdkdError);
+      expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+      expect(isMarkedNonRetryable(thrown as Error)).toBe(false);
+      expect((thrown as Error).message).toBe(
+        malformedExportResourcesRefusalMessage('S', 'us-east-1')
+      );
+    });
+
+    it(`refuses a properties map that is ${label}, naming the record`, () => {
+      let thrown: unknown;
+      try {
+        refuseMalformedResourcePropertiesForExport(withProperties(value), 'S', 'us-east-1');
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(CdkdError);
+      expect((thrown as CdkdError).code).toBe(STATE_RESOURCES_MALFORMED);
+      expect(isMarkedNonRetryable(thrown as Error)).toBe(false);
+      expect((thrown as Error).message).toBe(
+        malformedExportResourcePropertiesRefusalMessage('S', 'us-east-1', ['A'])
+      );
+    });
+  }
+
+  it('does not throw for a healthy record or an EMPTY map; an unreadable BAG is the other refusal', () => {
+    expect(() => refuseMalformedResourcesForExport(state({}), 'S', 'us-east-1')).not.toThrow();
+    expect(() =>
+      refuseMalformedResourcePropertiesForExport(withProperties({ K: 'v' }), 'S', 'us-east-1')
+    ).not.toThrow();
+    expect(() =>
+      refuseMalformedResourcePropertiesForExport(withProperties({}), 'S', 'us-east-1')
+    ).not.toThrow();
+    // The bag is the resources refusal's to name; this one stays silent rather
+    // than inventing per-character ids.
+    expect(() =>
+      refuseMalformedResourcePropertiesForExport(state('ab'), 'S', 'us-east-1')
+    ).not.toThrow();
+  });
+
+  const TEXTS = [
+    ['resources', (s: string, r: string | undefined) => malformedExportResourcesRefusalMessage(s, r)],
+    [
+      'properties',
+      (s: string, r: string | undefined) =>
+        malformedExportResourcePropertiesRefusalMessage(s, r, ['A']),
+    ],
+  ] as const;
+
+  for (const [label, build] of TEXTS) {
+    it(`the ${label} refusal speaks for export: it deletes the record, and nothing was written`, () => {
+      const text = build('S', 'us-east-1');
+      expect(text).toContain(
+        "'cdkd export' migrates the resources this record lists into CloudFormation and then " +
+          "DELETES the cdkd state, so it refuses rather than continuing, under '--dry-run' too."
+      );
+      expect(text).toContain('Nothing was imported and no state was written.');
+      // The shared text's harm (a SAVE over the record) and its "remove"
+      // remedy are both false for export.
+      expect(text).not.toContain('saving over a record');
+      expect(text).not.toContain('Repair or remove the record');
+      expect(text).not.toContain('Comparing a template');
+      expect(text.endsWith('Inspect it with: cdkd state show S --stack-region us-east-1 --json')).toBe(
+        true
+      );
+    });
+
+    it(`the ${label} refusal's LEGACY arm opens on how export loaded the record, not on a listing`, () => {
+      const recovery = { stateBucket: 'b', statePrefix: 'cdkd' };
+      const text = build('S', undefined);
+      const withRecovery =
+        label === 'resources'
+          ? malformedExportResourcesRefusalMessage('S', undefined, recovery)
+          : malformedExportResourcePropertiesRefusalMessage('S', undefined, ['A'], recovery);
+      for (const t of [text, withRecovery]) {
+        expect(t).toContain(
+          'The record was loaded from its legacy key, which carries no region segment'
+        );
+        // `cdkd orphan`'s lead describes a LISTING export never runs, and says
+        // the body names no region when an export's legacy body may name one.
+        expect(t).not.toContain('listed with no region');
+        expect(t).not.toContain('--stack-region');
+      }
+      expect(withRecovery).toContain('Object key: cdkd/S/state.json');
+      expect(withRecovery).toContain('State bucket: b');
+    });
+  }
+
+  it('the resources refusal says why removing the record does not unblock the export', () => {
+    const text = malformedExportResourcesRefusalMessage('S', 'us-east-1');
+    expect(text).toContain('Removing it does not unblock the export');
+    expect(text).toContain('refuses the tree as missing that child');
+    expect(text).toContain('every stack below this record would drop out of the migration');
+  });
+
+  it('the export properties refusal describes a forged logical id; the deploy text does not yet (G6)', () => {
+    const id = 'x$(touch OWNED)';
+    const exported = malformedExportResourcePropertiesRefusalMessage('S', 'us-east-1', [id]);
+    expect(exported).toContain('— (not shown: it is not a plain identifier) —');
+    expect(exported).not.toContain(id);
+    // A plain id is still named.
+    expect(malformedExportResourcePropertiesRefusalMessage('S', 'us-east-1', ['A'])).toContain('— A —');
+    // `~root` / `a=~b` round-trip through `displayIdent` unchanged but are NOT
+    // inert (tilde expansion), so the `isInertUnquoted` clause describes them.
+    for (const tilde of ['~root', 'a=~b']) {
+      const text = malformedExportResourcePropertiesRefusalMessage('S', 'us-east-1', [tilde]);
+      expect(text, tilde).toContain('— (not shown: it is not a plain identifier) —');
+      expect(text, tilde).not.toContain(`— ${tilde} —`);
+    }
+    // Discriminates the `describeUnsafe` flag: the deploy text keeps the bare
+    // JSON render (go-to-k/cdkd#4253).
+    expect(malformedResourcePropertiesRefusalMessage('S', 'us-east-1', [id])).toContain(
+      `— ${JSON.stringify(id)} —`
+    );
+  });
+
+  it('the properties refusal names what export reads the map for, and the re-import remedy', () => {
+    const text = malformedExportResourcePropertiesRefusalMessage('S', 'us-east-1', ['A']);
+    expect(text).toContain("holds 1 resource record(s) whose 'properties' map cannot be read");
+    expect(text).toContain('CloudFormation import identifier');
+    expect(text).toContain('phase-2 pre-delete');
+    expect(text).toContain("a selective 'cdkd import --force'");
+  });
+
+  it("orphan's region-less arm keeps its LISTING lead", () => {
+    // The export lead is a parameter; the default must stay `cdkd orphan`'s.
+    expect(malformedStateRefusalMessage('S', undefined)).toContain(
+      'The record is listed with no region'
+    );
   });
 });
 
@@ -7745,6 +7910,15 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'malformedDriftResourcePropertiesWarning',
       (s, r) => malformedDriftResourcePropertiesWarning(s, r, ['A']),
     ],
+    // go-to-k/cdkd#4181 / go-to-k/cdkd#3315: `cdkd export`'s pair.
+    [
+      'malformedExportResourcesRefusalMessage',
+      (s, r) => malformedExportResourcesRefusalMessage(s as string, r),
+    ],
+    [
+      'malformedExportResourcePropertiesRefusalMessage',
+      (s, r) => malformedExportResourcePropertiesRefusalMessage(s, r, ['A']),
+    ],
     [
       'malformedExportNamesWarning',
       (s, r) => malformedExportNamesWarning(s as string, r as string),
@@ -7951,9 +8125,11 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'refuseMalformedResourceEntriesForOrphan',
       'refuseMalformedResourceProperties',
       'refuseMalformedResourcePropertiesForDrift',
+      'refuseMalformedResourcePropertiesForExport',
       'refuseMalformedResourcePropertiesForOrphan',
       'refuseMalformedResourcesForDeploy',
       'refuseMalformedResourcesForDestroy',
+      'refuseMalformedResourcesForExport',
       'refuseMalformedState',
     ];
     expect(
@@ -8047,6 +8223,8 @@ describe('the inspect command explains a withheld value before its label (go-to-
     entry(malformedDriftResourcePropertiesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
     entry(malformedDriftResourcePropertiesWarning, (f, s, r) => f(s, r, ['A'])),
     entry(malformedExportNamesWarning, (f, s, r) => f(s, r)),
+    entry(malformedExportResourcePropertiesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedExportResourcesRefusalMessage, (f, s, r) => f(s, r)),
     entry(malformedExportSourceWarning, (f, s, r) => f(s, r)),
     entry(malformedImportUnrepairedEntriesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
     entry(malformedLocalOutputsWarning, (f, s, r) => f(s, r)),

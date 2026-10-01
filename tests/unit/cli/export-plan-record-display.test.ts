@@ -12,6 +12,7 @@ import { setStdinIsTty } from '../../stdin-tty.js';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
@@ -186,6 +187,8 @@ let bucketPhysicalId = 'my-bucket-phys';
 let stagePhysicalId = 'stage-phys';
 /** Recorded detach targets of an optional `AWS::IAM::Policy` row (go-to-k/cdkd#3857). */
 let policyRoles: string[] | undefined;
+/** The policy row's logical id, shared by the state record and the template. */
+let policyLogicalId = 'MyPolicy';
 
 function stateRecord(): { state: Record<string, unknown>; etag: string } {
   return {
@@ -209,7 +212,7 @@ function stateRecord(): { state: Record<string, unknown>; etag: string } {
           dependencies: [],
         },
         ...(policyRoles && {
-          MyPolicy: {
+          [policyLogicalId]: {
             physicalId: 'MyPolicyName',
             resourceType: 'AWS::IAM::Policy',
             properties: { PolicyName: 'MyPolicyName', Roles: policyRoles },
@@ -261,6 +264,7 @@ beforeEach(() => {
   stagePhysicalId = 'stage-phys';
   region = REGION;
   policyRoles = undefined;
+  policyLogicalId = 'MyPolicy';
   cfnState.phase1Succeeds = false;
   cfnState.describeStacksCalls = 0;
   cfnState.phase2ExecuteError = undefined;
@@ -328,10 +332,14 @@ describe('cdkd export --dry-run renders recorded ids in the plan with their own 
     expect(lines).toContain('  MyStage (AWS::ApiGatewayV2::Stage) — physicalId: stage-phys');
   });
 
-  it('renders a real `$`-prefixed Stage id bare, as the export fixture expects', async () => {
+  it('describes a `$`-prefixed Stage id: it is not inert on a command line (go-to-k/cdkd#4229)', async () => {
+    // The maintainer's decision on go-to-k/cdkd#4229: a displayed value that is
+    // not `isInertUnquoted` is described, and `$` expands when pasted bare.
     stagePhysicalId = '$default';
     expect(await runExport(dryRunArgs())).toBeUndefined();
-    expect(infoLines()).toContain('  MyStage (AWS::ApiGatewayV2::Stage) — physicalId: $default');
+    expect(infoLines()).toContain(
+      '  MyStage (AWS::ApiGatewayV2::Stage) — physicalId: (not shown: it is not a plain identifier)'
+    );
   });
 
   it('keeps a planted newline from forging a plan row, and quotes the value', async () => {
@@ -352,10 +360,11 @@ describe('cdkd export --dry-run renders recorded ids in the plan with their own 
       '  MyBucket (AWS::S3::Bucket) ← BucketName=' +
         String.raw`"my-bucket\n  Other (AWS::S3::Bucket) \u2190 BucketName=x'"`
     );
+    // The pre-delete row DESCRIBES a value that is not inert (go-to-k/cdkd#4229):
+    // its JSON quotes would still expand `$( )` when pasted.
     const stageRow = lines.find((l) => l.startsWith('  MyStage (AWS::ApiGatewayV2::Stage) — '))!;
     expect(stageRow).toBe(
-      '  MyStage (AWS::ApiGatewayV2::Stage) — physicalId: ' +
-        String.raw`"stage\n  Forged (AWS::ApiGatewayV2::Stage) \u2014 physicalId: y'"`
+      '  MyStage (AWS::ApiGatewayV2::Stage) — physicalId: (not shown: it is not a plain identifier)'
     );
   });
 
@@ -407,16 +416,36 @@ describe('cdkd export renders the pre-deleted Stage id with its own boundary on 
     expect(lines).toContain('  ' + String.raw`✓ deleted "stage\n  \u2713 deleted prod'"`);
   });
 
-  it('bounds the AWS error and escapes the recorded id when the pre-delete fails', async () => {
+  it('bounds the AWS error and describes the recorded id when the pre-delete fails', async () => {
     deleteStage.mockRejectedValue(new Error(`AccessDenied\nRe-run with: rm -rf ~ ${'e'.repeat(5000)}`));
     const message = await runExport(realRunArgs());
     expect(message).toBeDefined();
     expect(message).toContain(
-      'physicalId: ' + String.raw`"stage\n  \u2713 deleted prod'"` + ') failed: AccessDenied Re-run with'
+      'physicalId: (not shown: it is not a plain identifier)) failed: AccessDenied Re-run with'
     );
     expect(message).toContain('more characters withheld]');
     expect(message).not.toContain('e'.repeat(4097));
   });
+
+  it('describes a forged physical id in the pre-delete failure, and no pasted span runs (S2)', async () => {
+    const rendered: Array<{ value: string; message: string }> = [];
+    for (const { value } of PASTE_PAYLOADS) {
+      stagePhysicalId = value;
+      deleteStage.mockRejectedValue(new Error('AccessDenied'));
+      const message = await runExport(realRunArgs());
+      expect(message, value).toBeDefined();
+      rendered.push({ value, message: message! });
+    }
+    withPasteDir((dir) => {
+      for (const { value, message } of rendered) {
+        expect(message, value).toContain(
+          'physicalId: (not shown: it is not a plain identifier)) failed:'
+        );
+        expect(message, value).not.toContain(value);
+        expect(spansThatRun(message, dir), value).toEqual([]);
+      }
+    });
+  }, 120_000);
 
   it('ends the pre-delete refusal on its orphan command, alone on a labelled line (go-to-k/cdkd#3436)', async () => {
     deleteStage.mockRejectedValue(new Error('AccessDenied'));
@@ -561,6 +590,39 @@ describe('a failed IAM::Policy pre-delete names the IAM by-hand delete (go-to-k/
     expect(message).toContain(
       "aws apigatewayv2 delete-stage --api-id '<ApiId>' --stage-name '<StageName>'"
     );
+  });
+  it('describes a forging logical id in the failure head (go-to-k/cdkd#4245 review)', async () => {
+    cfnState.phase1Succeeds = true;
+    deleteStage.mockResolvedValue({});
+    iamSend.mockRejectedValue(new Error('AccessDenied'));
+    policyRoles = ['HandlerRole'];
+    policyLogicalId = "Handler Policy'x";
+    writeFileSync(
+      templatePath,
+      JSON.stringify({
+        ...TEMPLATE,
+        Resources: {
+          ...TEMPLATE.Resources,
+          [policyLogicalId]: {
+            Type: 'AWS::IAM::Policy',
+            Properties: { PolicyName: 'MyPolicyName', Roles: ['HandlerRole'] },
+          },
+        },
+      }),
+      'utf-8'
+    );
+    const message = await runExport(
+      dryRunArgs()
+        .filter((a) => a !== '--dry-run')
+        .concat('--yes')
+    );
+    // Described, not displayed (`plainOrNotShown`): the message carries the
+    // recovery commands, and behind an operator's unpaired quote a
+    // shell-quoted JSON display runs its `$( )`.
+    expect(message).toContain(
+      'pre-delete of (not shown: it is not a plain identifier) (AWS::IAM::Policy,'
+    );
+    expect(message).not.toContain(policyLogicalId);
   });
 });
 

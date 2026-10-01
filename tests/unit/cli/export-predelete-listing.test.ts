@@ -155,10 +155,35 @@ describe('preDeleteListingLines', () => {
       preDeleteListingLines({
         logicalId: 'Stage',
         resourceType: 'AWS::ApiGatewayV2::Stage',
-        physicalId: '$default',
+        physicalId: 'stage-1',
         properties: { ApiId: 'a1', Roles: ['NotARealField'] },
       })
-    ).toEqual(['Stage (AWS::ApiGatewayV2::Stage) — physicalId: $default']);
+    ).toEqual(['Stage (AWS::ApiGatewayV2::Stage) — physicalId: stage-1']);
+  });
+
+  it('describes a physical id that is not inert on a command line (go-to-k/cdkd#4229)', () => {
+    for (const physicalId of ['$default', 'x$(touch OWNED)', "x'y", 'a|b']) {
+      const [head] = preDeleteListingLines({
+        logicalId: 'Stage',
+        resourceType: 'AWS::ApiGatewayV2::Stage',
+        physicalId,
+        properties: { ApiId: 'a1' },
+      });
+      expect(head, physicalId).toBe(
+        'Stage (AWS::ApiGatewayV2::Stage) — physicalId: (not shown: it is not a plain identifier)'
+      );
+    }
+    // And a forged LOGICAL id on the row is described (`rowIdent`), never
+    // displayed in JSON or shell quotes (go-to-k/cdkd#4229).
+    const [forgedRow] = preDeleteListingLines({
+      logicalId: 'x$(touch OWNED)',
+      resourceType: 'AWS::ApiGatewayV2::Stage',
+      physicalId: 'stage-1',
+      properties: { ApiId: 'a1' },
+    });
+    expect(forgedRow).toBe(
+      '(not shown: it is not a plain identifier) (AWS::ApiGatewayV2::Stage) — physicalId: stage-1'
+    );
   });
 });
 
@@ -286,7 +311,7 @@ describe('the nested-tree plan summary names each pre-delete and its detach targ
 
     expect(result.outcome).toBe('dry-run');
     const lines = infoSpy.mock.calls.map((c) => String(c[0]));
-    const at = lines.findIndex((l) => l.startsWith('  [Root] → CFn stack'));
+    const at = lines.findIndex((l) => l.startsWith("  ['Root'] → CFn stack"));
     expect(at).toBeGreaterThanOrEqual(0);
     expect(lines.slice(at + 1, at + 3)).toEqual([
       `    ${HEAD}`,

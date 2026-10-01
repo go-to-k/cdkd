@@ -398,17 +398,22 @@ export function malformedStateRefusalMessage(
  *
  * Every other identity keeps the command, so a region-keyed record's text is
  * the one-line shape it always was.
+ *
+ * `legacyLead` replaces the region-less arm's opening sentence for a caller
+ * that did not LIST the record — `cdkd export` loads it through the legacy key
+ * probe ({@link EXPORT_LEGACY_LEAD}).
  */
 function inspectTail(
   prose: string,
   stackName: string | undefined,
   region: string | undefined,
-  recovery?: LockRecoveryContext
+  recovery?: LockRecoveryContext,
+  legacyLead?: string
 ): string {
   if (stackName === undefined || region !== undefined) {
     return `${prose} ${inspectClause(stackName, region, recovery)}Inspect it with: ${inspectCommand(stackName, region, recovery)}`;
   }
-  const legacy = orphanInspectClause(stackName, undefined, recovery);
+  const legacy = orphanInspectClause(stackName, undefined, recovery, legacyLead);
   return [`${prose} ${legacy.sentence ?? ''}`.trimEnd(), ...(legacy.locations ?? [])].join('\n');
 }
 
@@ -1276,6 +1281,100 @@ export function refuseMalformedResourcesForDeploy(
       malformedDeployResourcesRefusalMessage(stackName, region),
       STATE_RESOURCES_MALFORMED
     )
+  );
+}
+
+/**
+ * How {@link inspectTail}'s region-less arm opens for a record `cdkd export`
+ * LOADED from the legacy key (go-to-k/cdkd#4181). Export never lists: it asks
+ * for the region-keyed record and falls back to `<prefix>/<stack>/state.json`,
+ * whose body names either the region the export targets or none at all
+ * (`tryGetLegacy` accepts both). The listing sentence
+ * {@link orphanInspectClause} opens with by default would describe a listing
+ * that never happened, and would say the body names no region when it may.
+ */
+const EXPORT_LEGACY_LEAD =
+  `The record was loaded from its legacy key, which carries no region segment — ` +
+  `'cdkd state show' reads such a record only when its body names a region, and a ` +
+  `'cdkd deploy' will not migrate it while it is torn — so inspect the object directly`;
+
+/**
+ * What `cdkd export` does with a record, and why "remove it" is no way out
+ * there — the half the two export refusals share (go-to-k/cdkd#4181). Removing
+ * the ROOT record leaves the export nothing to migrate, and removing a nested
+ * CHILD's makes `walkCdkdStateStackTree` refuse the tree as missing that child,
+ * so the only remedy that lets the export run is a repaired record.
+ */
+const EXPORT_DELETES_STATE =
+  `'cdkd export' migrates the resources this record lists into CloudFormation and then ` +
+  `DELETES the cdkd state, so it refuses rather than continuing, under '--dry-run' too.`;
+
+/**
+ * The text {@link refuseMalformedResourcesForExport} raises (go-to-k/cdkd#4181).
+ *
+ * A FOURTH `resources` text, for the reason each of the others exists: none
+ * describes what an export does. {@link malformedStateRefusalMessage} names a
+ * SAVE over the record as the harm and offers "repair or remove" — export saves
+ * nothing over it, it DELETES it after migrating, and removing a record is a
+ * dead end there ({@link EXPORT_DELETES_STATE}'s note). What is at stake is
+ * migrating a truncated record: an unreadable map lists no resources, and for
+ * a nested stack `walkCdkdStateStackTree` returns such a node CHILDLESS, so
+ * every stack below it would drop out of the migration.
+ *
+ * `rawRegion` is `undefined` for a record loaded from the legacy key; that arm
+ * ends on the object key rather than a `cdkd state show` command, opening with
+ * {@link EXPORT_LEGACY_LEAD}.
+ */
+export function malformedExportResourcesRefusalMessage(
+  rawStackName: string,
+  rawRegion: string | undefined,
+  /** See {@link malformedStateRefusalMessage}. */
+  recovery?: LockRecoveryContext
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return inspectTail(
+    `${malformedStateDiagnosis(stackName, region)} ${EXPORT_DELETES_STATE} An unreadable map ` +
+      `lists no resources, so the export would migrate a truncated record — and, for a nested ` +
+      `stack, a truncated tree: every stack below this record would drop out of the ` +
+      `migration. Nothing was imported and no state was written. ` +
+      `Repair the record by hand before exporting. Removing it does not unblock the export: ` +
+      `without the root record there is nothing to migrate, and without the record of a nested ` +
+      `child the export refuses the tree as missing that child.`,
+    stackName,
+    region,
+    recovery,
+    EXPORT_LEGACY_LEAD
+  );
+}
+
+/**
+ * For `cdkd export`: refuse a record whose `resources` bag cannot be read, at
+ * the root state load and over every node of a nested tree (go-to-k/cdkd#3188,
+ * go-to-k/cdkd#4181).
+ *
+ * The same predicate as {@link refuseMalformedState}, and a separate entry
+ * point for the MESSAGE — {@link malformedExportResourcesRefusalMessage} says
+ * why that one's text is false here.
+ *
+ * `region` is `undefined` for a record export loaded from the legacy key
+ * (`migrationPending`).
+ */
+export function refuseMalformedResourcesForExport(
+  state: StackState,
+  stackName: string,
+  region: string | undefined,
+  recovery?: LockRecoveryContext
+): void {
+  if (hasReadableResources(state)) return;
+  // NOT `markNonRetryable`: `cdkd export` raises it from its own flow, outside
+  // any `withRetry`, so the marker would fence nothing — at the root load
+  // before any lock, and over a nested tree's nodes under the ROOT lock the
+  // command took, which its `finally` releases. Named in the test file's
+  // UNMARKED table.
+  throw new CdkdError(
+    malformedExportResourcesRefusalMessage(stackName, region, recovery),
+    STATE_RESOURCES_MALFORMED
   );
 }
 
@@ -2838,6 +2937,9 @@ export function repairMalformedResourcePropertiesForReadOnly(state: StackState):
   return unreadable;
 }
 
+/** What {@link namedPropertyBagsDiagnosis} prints for a described id. */
+const UNSAFE_ID_DESCRIPTION = '(not shown: it is not a plain identifier)';
+
 /**
  * The half the refusal and the warning share: what is wrong and which records.
  *
@@ -2893,7 +2995,16 @@ export function repairMalformedResourcePropertiesForReadOnly(state: StackState):
 function namedPropertyBagsDiagnosis(
   stackName: string | undefined,
   region: string | undefined,
-  logicalIds: readonly string[]
+  logicalIds: readonly string[],
+  /**
+   * DESCRIBE each id that is not a plain identifier inert on a command line,
+   * instead of JSON-quoting it: JSON quotes still expand `$( )` and a backtick,
+   * and turn inside out behind an unpaired `'` or `"` pasted above (the
+   * maintainer's decision on go-to-k/cdkd#4229). Only the `cdkd export` text
+   * opts in today; the deploy, diff, orphan and drift texts keep the bare
+   * `displayIdent` render, tracked on go-to-k/cdkd#4253.
+   */
+  describeUnsafe = false
 ): string {
   if (logicalIds.length === 0) {
     throw new Error(
@@ -2902,7 +3013,12 @@ function namedPropertyBagsDiagnosis(
   }
   const named = logicalIds
     .slice(0, NAMED_UNREADABLE_PROPERTY_BAGS)
-    .map((id) => displayIdent(id, { maxCodePoints: IDENT_MAX_CODE_POINTS }))
+    // A plain id renders unchanged either way.
+    .map((id) => {
+      const shown = displayIdent(id, { maxCodePoints: IDENT_MAX_CODE_POINTS });
+      if (!describeUnsafe || (shown === id && !/\s/.test(id) && isInertUnquoted(id))) return shown;
+      return UNSAFE_ID_DESCRIPTION;
+    })
     .join(', ');
   const rest = logicalIds.length - NAMED_UNREADABLE_PROPERTY_BAGS;
   const more = rest > 0 ? ` and ${rest} more` : '';
@@ -3365,6 +3481,16 @@ function orphanInspectCommand(
 }
 
 /**
+ * {@link orphanInspectClause}'s default region-less opening, for a record a
+ * caller found by LISTING — `cdkd orphan`. `cdkd export` loads its record
+ * instead and opens with {@link EXPORT_LEGACY_LEAD}.
+ */
+const LISTED_LEGACY_LEAD =
+  `The record is listed with no region — a legacy 'state.json' whose body names none, or ` +
+  `one the listing could not read — which 'cdkd state show' cannot read and a 'cdkd deploy' ` +
+  `will not migrate while it is torn, so inspect the object directly`;
+
+/**
  * How {@link malformedOrphanResourcePropertiesRefusalMessage} tells the operator
  * to inspect the record: a `command` it prints on its trailing
  * `Inspect the record:` line, or — for the legacy region-less shape, where no
@@ -3399,7 +3525,9 @@ function orphanInspectCommand(
 function orphanInspectClause(
   stackName: string | undefined,
   region: string | undefined,
-  recovery?: LockRecoveryContext
+  recovery?: LockRecoveryContext,
+  /** The region-less arm's opening sentence; see {@link inspectTail}. */
+  legacyLead: string = LISTED_LEGACY_LEAD
 ): { command?: string; sentence?: string; locations?: string[] } {
   // `''` is no identity either, the floor {@link dropRecordCommand} and
   // {@link withheldVerdict} both carry. Without it a direct caller passing
@@ -3416,10 +3544,7 @@ function orphanInspectClause(
   if (region !== undefined) {
     return { command: orphanInspectCommand(stackName, region, recovery) };
   }
-  const lead =
-    `The record is listed with no region — a legacy 'state.json' whose body names none, or ` +
-    `one the listing could not read — which 'cdkd state show' cannot read and a 'cdkd deploy' ` +
-    `will not migrate while it is torn, so inspect the object directly`;
+  const lead = legacyLead;
   // The bucket and prefix are printed only when they render EXACTLY
   // (go-to-k/cdkd#3377): an altered one would name a different bucket or key
   // space. Otherwise the sentence falls back to the placeholder forms. The
@@ -3693,6 +3818,83 @@ export function malformedDriftResourcePropertiesWarning(
     `'cdkd drift --accept' / '--revert' and 'cdkd deploy' REFUSE this record. ` +
     `${inspectClause(stackName, region)}See the stored values with: ` +
     `${inspectCommand(stackName, region)}`
+  );
+}
+
+/**
+ * The text {@link refuseMalformedResourcePropertiesForExport} raises (issue
+ * [#3315](https://github.com/go-to-k/cdkd/issues/3315)).
+ *
+ * Its own text for the reason each of the others has one: export compares no
+ * template against the map — so {@link namedPropertyBagsClause}'s ADDED /
+ * REPLACEMENT sentence is false here and the text opens with
+ * {@link namedPropertyBagsDiagnosis} — and it neither saves the record back
+ * nor pushes a baseline. What it does with the map is READ it: the import
+ * identifier of a type keyed by a property, the mask check that blocks a
+ * redacted value, and the inline policy's principals and a Stage's `ApiId`
+ * that the phase-2 pre-delete removes. `?? {}` covered only `null` and
+ * `undefined`, so a stored string reached all of them. Then the export DELETES
+ * the record, the only evidence of the damage.
+ *
+ * `rawRegion` is `undefined` for a record loaded from the legacy key, which
+ * ends on the object key ({@link malformedExportResourcesRefusalMessage}).
+ */
+export function malformedExportResourcePropertiesRefusalMessage(
+  rawStackName: string | undefined,
+  rawRegion: string | undefined,
+  logicalIds: readonly string[],
+  /** See {@link malformedStateRefusalMessage}. */
+  recovery?: LockRecoveryContext
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return inspectTail(
+    `${namedPropertyBagsDiagnosis(stackName, region, logicalIds, true)} ${EXPORT_DELETES_STATE} ` +
+      `The export reads this map to build the CloudFormation import identifier, to ` +
+      `check it for the redaction mask, and to find what a phase-2 pre-delete removes, so a ` +
+      `map it cannot read makes each of those answers wrong — and the record showing the ` +
+      `damage is deleted once the export succeeds. Nothing was imported and no state was ` +
+      `written. Repair the record by hand, or re-import each named resource with a selective ` +
+      `'cdkd import --force', which records the properties resolved from the template; then ` +
+      `export again.`,
+    stackName,
+    region,
+    recovery,
+    EXPORT_LEGACY_LEAD
+  );
+}
+
+/**
+ * For `cdkd export`: refuse a record whose resource entries carry a
+ * `properties` map that cannot be read (issue
+ * [#3315](https://github.com/go-to-k/cdkd/issues/3315), the export half).
+ *
+ * The same predicate as {@link refuseMalformedResourceProperties}; a separate
+ * entry point for the MESSAGE and nothing else. REFUSE rather than repair: the
+ * export is write-capable — it pre-deletes AWS resources in phase 2 and
+ * deletes the record at the end — and a repaired `{}` feeds the same wrong
+ * reads as the torn map does.
+ *
+ * CALL IT AT THE LOAD, after {@link refuseMalformedResourcesForExport} (an
+ * unreadable bag yields `[]` here, so the order only decides which text an
+ * operator sees first): at the root state load and over every node of a
+ * nested tree, above `buildImportPlan`, whose reads it dominates.
+ */
+export function refuseMalformedResourcePropertiesForExport(
+  state: StackState,
+  stackName: string | undefined,
+  region: string | undefined,
+  recovery?: LockRecoveryContext
+): void {
+  const unreadable = unreadableResourcePropertyBags(state);
+  if (unreadable.length === 0) return;
+  // NOT `markNonRetryable`, for the reason `refuseMalformedResourcesForExport`
+  // gives: raised from the command's own flow, outside any `withRetry` (at the
+  // root load before any lock; for a nested node, under the root lock). Named
+  // in the test file's UNMARKED table.
+  throw new CdkdError(
+    malformedExportResourcePropertiesRefusalMessage(stackName, region, unreadable, recovery),
+    STATE_RESOURCES_MALFORMED
   );
 }
 
