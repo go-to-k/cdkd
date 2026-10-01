@@ -39,6 +39,12 @@ import {
   FORGED_QUOTE,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
+import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
 
 describe('Route53Provider', () => {
   let provider: Route53Provider;
@@ -543,6 +549,60 @@ describe('Route53Provider', () => {
           delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'];
         }
       });
+
+      it('names no payload logical id or zone id beside the accelerated-recovery timeout commands (go-to-k/cdkd#4226)', async () => {
+        // The refusal names `cdkd state destroy` and the manual `aws` command.
+        // Pre-fix it printed the logical id and the state-borne zone id raw.
+        process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'] = '1';
+        process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'] = '30';
+        try {
+          for (const { value } of PASTE_PAYLOADS) {
+            for (const [logicalId, zoneId] of [
+              [value, 'Z1CLEAN'],
+              ['MyZone', value],
+            ] as const) {
+              let probes = 0;
+              mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+                const name = command.constructor.name;
+                if (name === 'ListQueryLoggingConfigsCommand') {
+                  return Promise.resolve({ QueryLoggingConfigs: [] });
+                }
+                if (name === 'GetHostedZoneCommand') {
+                  probes += 1;
+                  return Promise.resolve({
+                    HostedZone: {
+                      Id: zoneId,
+                      Features: {
+                        AcceleratedRecoveryStatus: probes === 1 ? 'ENABLED' : 'DISABLING',
+                      },
+                    },
+                  });
+                }
+                return Promise.resolve({});
+              });
+              const message = await provider
+                .delete(logicalId, zoneId, 'AWS::Route53::HostedZone')
+                .then(
+                  () => '',
+                  (e: unknown) => String((e as Error).message)
+                );
+              expect(message, value).toContain(
+                logicalId === value
+                  ? 'on hosted zone a logical id that is not a plain identifier (Z1CLEAN);'
+                  : 'on hosted zone MyZone (not shown: it is not a plain identifier)'
+              );
+              withPasteDir((dir) => {
+                expectNoCommandBesideDisplay(message, value);
+                expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+              });
+            }
+          }
+        } finally {
+          mockSend.mockReset();
+          delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'];
+          delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'];
+        }
+      }, 120_000);
 
       // Issue #3136: the hosted zone id is the `state.json`-borne physical id,
       // so the manual-disable command in the timeout refusal (a THROWN
@@ -1469,7 +1529,71 @@ describe('Route53Provider', () => {
             properties: { Name: 'example.com', VPCs: { Ref: 'SomeParam' } },
           })
         )
-      ).rejects.toThrow(/matches 2 hosted zones .*--resource MyZone=<hostedZoneId>/s);
+      ).rejects.toThrow(/matches 2 hosted zones .*--resource MyZone='<hostedZoneId>'/s);
+    });
+
+    it('shows no payload logical id or zone name beside the --resource remedy (go-to-k/cdkd#4226)', async () => {
+      // Both refusals that end in the hosted-zone `--resource` remedy: the
+      // split-horizon ambiguity and the inconclusive listing. Pre-fix they
+      // printed the logical id raw and the template's Name inside `"..."`,
+      // where a shell still expands `$( )`, and the remedy's fragment named
+      // the id raw beside a bare `<hostedZoneId>`.
+      const refusal = async (logicalId: string, name: string, page: unknown): Promise<string> => {
+        mockSend.mockResolvedValueOnce(page);
+        const err: unknown = await provider
+          // An unresolved `VPCs` says nothing about visibility, so nothing
+          // narrows the split-horizon pair.
+          .import(makeInput({ logicalId, properties: { Name: name, VPCs: { Ref: 'P' } } }))
+          .then(
+            () => undefined,
+            (e: unknown) => e
+          );
+        expect(err, `${logicalId} ${name}`).toBeInstanceOf(Error);
+        return (err as Error).message;
+      };
+      const ambiguous = (name: string) => ({
+        HostedZones: [zone('Z1PUBLIC', name, false), zone('Z2PRIVATE', name, true)],
+        IsTruncated: false,
+      });
+      const inconclusive = { HostedZones: [], IsTruncated: true };
+      for (const { value } of PASTE_PAYLOADS) {
+        const messages = [
+          await refusal(value, 'example.com', ambiguous('example.com.')),
+          await refusal(value, 'example.com', inconclusive),
+          await refusal('MyZone', value, ambiguous(value)),
+          await refusal('MyZone', value, inconclusive),
+        ];
+        expect(messages[0], value).toContain(
+          'for a logical id that is not a plain identifier (split-horizon'
+        );
+        expect(messages[1], value).toContain(
+          'for hosted zone a logical id that is not a plain identifier —'
+        );
+        for (const message of messages.slice(0, 2)) {
+          expect(message, value).toContain("pass --resource '<logicalId>'='<hostedZoneId>'");
+        }
+        for (const message of messages.slice(2)) {
+          expect(message, value).toContain(
+            'HostedZoneName (not shown: it is not a plain identifier)'
+          );
+          expect(message, value).toContain("pass --resource MyZone='<hostedZoneId>'");
+        }
+        withPasteDir((dir) => {
+          for (const message of messages) {
+            expectNoCommandBesideDisplay(message, value);
+            expect(spansThatRun(message, dir), `${value}: ${message}`).toEqual([]);
+          }
+        });
+      }
+    }, 120_000);
+
+    it('still shows a zone name carrying a Route 53 octal escape (go-to-k/cdkd#4226)', async () => {
+      // A backslash-escaped name is the spelling that reaches the
+      // inconclusive-listing refusal, and `\0` is literal inside `"..."`.
+      mockSend.mockResolvedValueOnce({ HostedZones: [], IsTruncated: true });
+      await expect(
+        provider.import(makeInput({ properties: { Name: '\\052.example.com' } }))
+      ).rejects.toThrow('Could not determine whether HostedZoneName "\\052.example.com" exists');
     });
 
     it('REFUSES when the name is still ambiguous AFTER narrowing (two private zones)', async () => {
@@ -1597,7 +1721,7 @@ describe('Route53Provider', () => {
       await expect(
         provider.import(makeInput({ properties: { Name: 'example.com' } }))
       ).rejects.toThrow(
-        /Could not determine whether HostedZoneName "example\.com" exists .*--resource MyZone=<hostedZoneId>/s
+        /Could not determine whether HostedZoneName "example\.com" exists .*--resource MyZone='<hostedZoneId>'/s
       );
     });
 

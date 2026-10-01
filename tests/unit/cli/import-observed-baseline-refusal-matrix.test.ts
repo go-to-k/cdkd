@@ -1912,3 +1912,64 @@ describe('cdkd import records its baseline refusal on the state record (issue #2
     expect(resources['Preserved']!.observedProperties).toEqual({ Value: 'live-value' });
   });
 });
+
+describe('the preserved-refusal debug note names no payload beside cdkd import (go-to-k/cdkd#4226)', () => {
+  it('describes a logical id or type that is not plain', async () => {
+    // The note names `cdkd import`, and pre-fix it printed the record's
+    // logical id and type raw, so a `;` in either ran when the line was
+    // pasted. Each payload family as the logical id, then as the type.
+    const { PASTE_PAYLOADS, expectNoCommandBesideDisplay, spansThatRun, withPasteDir } =
+      await import('../utils/paste-harness.js');
+    for (const { value } of PASTE_PAYLOADS) {
+      for (const [logicalId, resourceType] of [
+        [value, 'AWS::SSM::Parameter'],
+        ['Preserved', value],
+      ] as const) {
+        const debug = vi.fn();
+        const state: StackState = {
+          version: STATE_SCHEMA_VERSION_CURRENT,
+          stackName: 'marker-stack',
+          region: 'us-east-1',
+          resources: {
+            [logicalId]: {
+              physicalId: 'p-preserved',
+              resourceType,
+              properties: { Value: 'downgraded' },
+              observedBaselineRefused: true,
+            },
+          },
+          outputs: {},
+          lastModified: 0,
+        } satisfies StackState;
+        const registry = {
+          getProviderFor: () => ({
+            provider: { readCurrentState: async () => ({ Value: 'live' }) },
+            provisionedBy: 'sdk',
+          }),
+        } as unknown as Parameters<typeof captureObservedForImportedResources>[1];
+        await captureObservedForImportedResources(
+          state,
+          registry,
+          { debug, info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Parameters<
+            typeof captureObservedForImportedResources
+          >[2],
+          new ObservedBaselineRefusals(new Set<string>()),
+          new Set<string>()
+        );
+        const note = debug.mock.calls
+          .map((c) => String(c[0]))
+          .find((line) => line.includes('capture SKIPPED for preserved'));
+        expect(note, `${logicalId} ${resourceType}`).toBeDefined();
+        expect(note).toContain(
+          logicalId === value
+            ? 'for preserved a logical id that is not a plain identifier (AWS::SSM::Parameter):'
+            : 'for preserved Preserved (a resource type that is not a plain identifier):'
+        );
+        withPasteDir((dir) => {
+          expectNoCommandBesideDisplay(note!, value);
+          expect(spansThatRun(note!, dir), `${value}: ${note}`).toEqual([]);
+        });
+      }
+    }
+  }, 120_000);
+});

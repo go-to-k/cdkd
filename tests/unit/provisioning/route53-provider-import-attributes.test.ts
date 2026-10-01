@@ -98,6 +98,12 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import {
+  PASTE_PAYLOADS,
+  expectNoCommandBesideDisplay,
+  spansThatRun,
+  withPasteDir,
+} from '../utils/paste-harness.js';
+import {
   IntrinsicFunctionResolver,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
@@ -270,6 +276,55 @@ describe('Route53Provider hosted-zone import attributes (issue #1875)', () => {
       const warning = childLogger.warn.mock.calls.at(-1)?.[0] as string;
       expect(warning).toContain('cdkd import --resource Zone=ZREMEDY --force');
       expect(warning).toContain('does NOT heal the record');
+    });
+
+    it('names no payload logical id or zone id in the re-import command (go-to-k/cdkd#4226)', async () => {
+      // Pre-fix the command interpolated the template's logical id raw, so a
+      // `;`, `$( )` or `'` in it ran when the command was pasted. A logical id
+      // that is not plain is now the quoted `'<logicalId>'` hole.
+      for (const { value } of PASTE_PAYLOADS) {
+        childLogger.warn.mockClear();
+        mockSend.mockResolvedValueOnce(listPage('ZREMEDY'));
+        mockSend.mockRejectedValueOnce(new Error('AccessDenied: route53:GetHostedZone'));
+
+        await provider.import(makeInput({ logicalId: value, properties: { Name: 'example.com' } }));
+
+        const warning = childLogger.warn.mock.calls.at(-1)?.[0] as string;
+        expect(warning, value).toContain("cdkd import --resource '<logicalId>'=ZREMEDY --force");
+        withPasteDir((dir) => {
+          expectNoCommandBesideDisplay(warning, value);
+          expect(spansThatRun(warning, dir), `${value}: ${warning}`).toEqual([]);
+        });
+
+        // The zone id AWS's listing returned is gated too, and AWS's own
+        // message (which can echo anything) ends its line, so the command
+        // starts the next one.
+        childLogger.warn.mockClear();
+        mockSend.mockResolvedValueOnce(listPage(value));
+        mockSend.mockRejectedValueOnce(new Error(`AccessDenied on hostedzone/${value}`));
+        await provider.import(makeInput({ properties: { Name: 'example.com' } }));
+        const byZone = childLogger.warn.mock.calls.at(-1)?.[0] as string;
+        const [first, rest] = byZone.split('\n');
+        expect(first, value).toMatch(
+          /^Imported hosted zone \(not shown: it is not a plain identifier\) but could not read/
+        );
+        expect(rest, value).toContain("cdkd import --resource Zone='<hostedZoneId>' --force");
+        expectNoCommandBesideDisplay(byZone, value);
+        withPasteDir((dir) => {
+          expect(spansThatRun(rest!, dir), `${value}: ${rest}`).toEqual([]);
+        });
+      }
+    }, 120_000);
+
+    it('shows a zone id that is plain but not pasteable, and holes it in the command (go-to-k/cdkd#4226)', async () => {
+      // The display and the command use different predicates: `:` is plain
+      // (inert inside prose) but not a pasteable command argument.
+      mockSend.mockResolvedValueOnce(listPage('Z1:odd'));
+      mockSend.mockRejectedValueOnce(new Error('AccessDenied: route53:GetHostedZone'));
+      await provider.import(makeInput({ properties: { Name: 'example.com' } }));
+      const [first, rest] = (childLogger.warn.mock.calls.at(-1)?.[0] as string).split('\n');
+      expect(first).toMatch(/^Imported hosted zone Z1:odd but could not read its NameServers/);
+      expect(rest).toContain("cdkd import --resource Zone='<hostedZoneId>' --force");
     });
 
     it('DECLINES the row when the zone vanished between the lookup and the read', async () => {

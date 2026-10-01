@@ -31,12 +31,19 @@ import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markNameCollision } from '../../deployment/retryable-errors.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import {
+  isPlainImportValue,
+  normalizeAwsTagsToCfn,
+  remedyLogicalId,
+  VALUE_NOT_SHOWN,
+} from '../import-helpers.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 import { readConfigString } from '../config-shape.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import {
   COMPOSITE_ID_SEPARATOR,
   compositeIdSeparatorRefusal,
+  logicalIdShown,
   packCompositeId,
 } from '../composite-id.js';
 import type {
@@ -52,7 +59,7 @@ import type {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { safeMsg } from '../../utils/display-safe.js';
+import { isPasteableIdent, safeMsg } from '../../utils/display-safe.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
@@ -319,6 +326,19 @@ export function recordIdentityChanged(
 function canonicalizeQueryName(name: string): string {
   const lowered = name.toLowerCase().replaceAll('*', '\\052');
   return lowered.endsWith('.') ? lowered : `${lowered}.`;
+}
+
+/**
+ * A template's `HostedZoneName` as the refusals ending in a `--resource`
+ * remedy print it: inside cdkd's `"..."` when plain, described otherwise
+ * (go-to-k/cdkd#4226). A shell expands `$( )` inside double quotes, so a name
+ * carrying one ran when the refusal was pasted. A Route 53 octal escape
+ * (`\052.example.com`) is still shown: it is the spelling that reaches the
+ * inconclusive-listing refusal, and a backslash before a digit is literal
+ * inside double quotes in both bash and zsh.
+ */
+function zoneNameShown(name: string): string {
+  return isPlainImportValue(name.replace(/\\[0-7]{3}/g, 'x')) ? `"${name}"` : VALUE_NOT_SHOWN;
 }
 
 /**
@@ -1053,8 +1073,10 @@ export class Route53Provider implements ResourceProvider {
           await new Promise<void>((resolve) => setTimeout(resolve, tick));
         }
       }
+      // Names `cdkd state destroy` and an `aws` command, so the logical id and
+      // the recorded zone id are shown only when plain (go-to-k/cdkd#4226).
       throw new ProvisioningError(
-        `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach ${label} on hosted zone ${logicalId} (${physicalId}); re-run \`cdkd state destroy\` or disable manually via ${pasteableAwsCommand()`aws route53 update-hosted-zone-features --hosted-zone-id ${physicalId} --no-enable-accelerated-recovery`.render()}`,
+        `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach ${label} on hosted zone ${logicalIdShown(logicalId)} ${isPlainImportValue(physicalId) ? `(${physicalId})` : VALUE_NOT_SHOWN}; re-run \`cdkd state destroy\` or disable manually via ${pasteableAwsCommand()`aws route53 update-hosted-zone-features --hosted-zone-id ${physicalId} --no-enable-accelerated-recovery`.render()}`,
         'AWS::Route53::HostedZone',
         logicalId,
         physicalId
@@ -2399,9 +2421,11 @@ export class Route53Provider implements ResourceProvider {
         // match — after a visibility filter the survivors are all on one side,
         // so naming public/private there would point at the wrong thing.
         const cause = narrowing ? '' : ' (split-horizon public/private DNS)';
+        // Ends in `subject.remedy`, a `--resource` fragment, so the logical id
+        // and the zone name are shown only when plain (go-to-k/cdkd#4226).
         throw new ProvisioningError(
-          `HostedZoneName "${hostedZoneName}" matches ${matched.length} hosted zones ` +
-            `for ${logicalId}${cause}. Refusing to guess which one is meant — ${subject.remedy}.`,
+          `HostedZoneName ${zoneNameShown(hostedZoneName)} matches ${matched.length} hosted zones ` +
+            `for ${logicalIdShown(logicalId)}${cause}. Refusing to guess which one is meant — ${subject.remedy}.`,
           resourceType,
           logicalId,
           physicalId
@@ -2447,14 +2471,16 @@ export class Route53Provider implements ResourceProvider {
     // conversion sits beside a `logger.warn`, so a reader who starts from the
     // logger call sites finds it and stops. The note belongs HERE, at the
     // throw. `.detail` keeps AWS's own sentence; the disclosure question for
-    // every site of that shape is go-to-k/cdkd#2319's.
+    // every site of that shape is go-to-k/cdkd#2319's. The middle arm ends in
+    // `subject.remedy`, a `--resource` fragment, so it shows the logical id
+    // and the zone name only when plain (go-to-k/cdkd#4226).
     throw new ProvisioningError(
       lookupErrorMessage
         ? `Could not resolve HostedZoneName "${String(hostedZoneName)}" for ${subject.noun} ` +
             `${logicalId}: ${lookupErrorMessage}`
         : typeof hostedZoneName === 'string' && hostedZoneName
-          ? `Could not determine whether HostedZoneName "${hostedZoneName}" exists for ` +
-            `${subject.noun} ${logicalId} — the hosted-zone listing ended before the name ` +
+          ? `Could not determine whether HostedZoneName ${zoneNameShown(hostedZoneName)} exists for ` +
+            `${subject.noun} ${logicalIdShown(logicalId)} — the hosted-zone listing ended before the name ` +
             `could be resolved either way, so cdkd will not assume it is absent. ` +
             `${subject.remedy}.`
           : `Either HostedZoneId or HostedZoneName is required for ${subject.noun} ${logicalId}`,
@@ -3080,12 +3106,18 @@ export class Route53Provider implements ResourceProvider {
       return { Id: zoneId, NameServers: response.DelegationSet?.NameServers ?? [] };
     } catch (error) {
       if (error instanceof Error && error.name === 'NoSuchHostedZone') return null;
+      // The command names the logical id and the zone id only when plain, and
+      // AWS's message ends its own line so the command starts the next one
+      // (go-to-k/cdkd#4226). `zoneId` is the id AWS's own listing returned,
+      // gated all the same, as every other value on a command line is.
+      const zoneShown = isPlainImportValue(zoneId) ? zoneId : VALUE_NOT_SHOWN;
+      const zoneArg = isPasteableIdent(zoneId) ? zoneId : commandHole('hostedZoneId');
       this.logger.warn(
-        `Imported hosted zone ${zoneId} but could not read its NameServers: ` +
-          `${describeAwsFailure(error).detail}. ` +
+        `Imported hosted zone ${zoneShown} but could not read its NameServers: ` +
+          `${describeAwsFailure(error).detail}.\n` +
           `The zone is adopted without them (any attributes already in state for this ` +
           `zone are kept). Re-run ` +
-          `\`cdkd import --resource ${logicalId}=${zoneId} --force\` once the permission ` +
+          `\`cdkd import --resource ${remedyLogicalId(logicalId)}=${zoneArg} --force\` once the permission ` +
           `is granted, or make a template change that forces an UPDATE — a plain ` +
           `\`cdkd deploy\` does NOT heal the record, because an unchanged zone is ` +
           `NO_CHANGE and never calls update().`
@@ -3198,7 +3230,10 @@ export class Route53Provider implements ResourceProvider {
           requirePrivateZone: templateZoneVisibility(input.properties),
           subject: {
             noun: 'hosted zone',
-            remedy: `pass --resource ${input.logicalId}=<hostedZoneId> to adopt it explicitly`,
+            // The fragment names the logical id only when plain, and the
+            // placeholder is a quoted hole: a bare `<hostedZoneId>` redirects
+            // when the line is pasted (go-to-k/cdkd#4226).
+            remedy: `pass --resource ${remedyLogicalId(input.logicalId)}=${commandHole('hostedZoneId')} to adopt it explicitly`,
           },
         }
       );
