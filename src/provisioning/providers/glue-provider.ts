@@ -158,7 +158,7 @@ const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
  * disambiguates the id without re-deriving the identity from the bag: it is
  * used only when the id starts with it, and the table name is the remainder
  * ({@link segmentAfterAnchor}). The `Ref` resolver anchors the same way
- * (`glueTableRefFromPhysicalId` in `intrinsic-function-resolver.ts`), so a
+ * (`glueTableRefFromPhysicalId` in `intrinsic-resolver-support.ts`), so a
  * `{Ref: <Table>}` names the table these sites address.
  *
  * `bags` are tried in order, so pass the one describing what was DEPLOYED

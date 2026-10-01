@@ -1280,7 +1280,7 @@ export type LayerArnClassification =
  * future partition is rejected rather than mis-attributed to commercial, which
  * is the same trade every other consumer of that table makes.
  *
- * Deliberately NOT `isClientSafeRegion` (`intrinsic-function-resolver.ts`):
+ * Deliberately NOT `isClientSafeRegion` (`intrinsic-resolver-support.ts`):
  * that predicate is charset-based because its job is to keep a value inside a
  * hostname label, so it accepts anything lower-case alphanumeric — including
  * strings no region grammar would admit. See the note it carries.

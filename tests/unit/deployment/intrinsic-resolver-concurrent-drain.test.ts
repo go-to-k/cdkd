@@ -1494,7 +1494,12 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
       }
       ts.forEachChild(node, seedWalk);
     };
-    seedWalk(sf);
+    // Every file of the split resolver (#4337): a module-scope call site in a
+    // split-out module must still be attributed or refused.
+    for (const rel of RESOLVER_FAMILY) {
+      const abs = join(import.meta.dirname, '../../..', rel);
+      seedWalk(ts.createSourceFile(abs, readFileSync(abs, 'utf8'), ts.ScriptTarget.Latest, true));
+    }
     expect(
       unowned,
       `a call to ${HELPER} that this walk cannot attribute to a method or callable field — ` +

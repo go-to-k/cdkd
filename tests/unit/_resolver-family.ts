@@ -19,6 +19,13 @@ export const RESOLVER_FAMILY: readonly string[] = [
     .map((f) => `src/deployment/${f}`),
 ];
 
+// A floor: a split module renamed out of the glob would leave the family as
+// the host alone, and every fence counting an ABSENCE over it would shrink
+// silently rather than red.
+if (RESOLVER_FAMILY.length < 2) {
+  throw new Error(`the resolver family resolved to ${RESOLVER_FAMILY.join(', ')} only`);
+}
+
 /** Every family file's source, joined with a newline. */
 export function readResolverFamily(): string {
   const root = join(import.meta.dirname, '../..');

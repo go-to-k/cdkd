@@ -268,7 +268,7 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     for (const span of blockCommentSpans(rawSubject())) {
       expect(
         span.openedFrom,
-        `a block-comment opener at line ${span.line} is not one (prefix: ${JSON.stringify(span.prefix)}), ` +
+        `a block-comment opener at ${familyLocation(span.line)} is not one (prefix: ${JSON.stringify(span.prefix)}), ` +
           `so the stripper removed ${span.length} characters the scan then could not see`
       ).toBe('comment');
     }

@@ -2070,7 +2070,7 @@ export const nestedCaptureOrders = new AsyncLocalStorage<WeakMap<object, number>
  * recorded rejection is thrown when it expires.
  *
  * The cap is a HANG GUARD, and it does not claim to be more. It is sized
- * against the largest fixed wait in this file — the `Fn::GetAtt`
+ * against the largest fixed wait in the resolver — the `Fn::GetAtt`
  * `Ipv6CidrBlocks` poll's sleep budget, 15 attempts x 2 s, about 30 s — but
  * that budget is a floor, not a ceiling: the poll also awaits 15 AWS calls,
  * and one part can drive several lookups in sequence through object
@@ -2257,7 +2257,7 @@ export async function allSettledKeepingFirstRejection<T>(
     // is not an option at all — which is the whole argument. What it is NOT: it
     // is not true that this runs "before any per-pass secret bag exists" (the
     // two call sites are mid-pass, which is what issue #2797 was about), and it
-    // is not true that every error arriving here was built at a site this file's
+    // is not true that every error arriving here was built at a site the resolver's
     // coverage checker governs. The drained promises are `resolveValue`, which
     // reaches the dynamic-reference lookups. Since go-to-k/cdkd#3171
     // `sendWithThrottleRetry` rethrows an AWS rejection as a clone masked by

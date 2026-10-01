@@ -95,7 +95,7 @@ export const LOCK_FILE_SUFFIX = '/lock.json';
  * read as a stack name) rather than corrupting ordinary stack names.
  *
  * It stays SHAPE-based and deliberately does not reuse `isClientSafeRegion`
- * from `intrinsic-function-resolver.ts`: that predicate is charset-based (its
+ * from `intrinsic-resolver-support.ts`: that predicate is charset-based (its
  * job is to keep a value inside a hostname label, so it accepts anything
  * lowercase-alphanumeric) and would classify almost every stack name as a
  * region. This one has the opposite job — telling a region segment apart from

@@ -213,7 +213,8 @@ function inArnScope(file: string): boolean {
     posix.startsWith('src/cli/') ||
     posix.startsWith('src/local/') ||
     posix === 'src/utils/role-arn.ts' ||
-    posix === 'src/deployment/intrinsic-function-resolver.ts'
+    posix === 'src/deployment/intrinsic-function-resolver.ts' ||
+    posix.startsWith('src/deployment/intrinsic-resolver-')
   );
 }
 
@@ -1313,6 +1314,7 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
     expect(inArnScope('src/cli/commands/rollback.ts')).toBe(true);
     expect(inArnScope('src/utils/role-arn.ts')).toBe(true);
     expect(inArnScope('src/deployment/intrinsic-function-resolver.ts')).toBe(true);
+    expect(inArnScope('src/deployment/intrinsic-resolver-support.ts')).toBe(true);
 
     // ...and the surfaces it deliberately does NOT reach. Pinned so a later
     // "just drop the predicate" cannot land quietly -- `inArnScope`'s own doc
