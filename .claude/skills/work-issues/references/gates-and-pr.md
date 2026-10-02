@@ -66,8 +66,8 @@ git -C "<LANE_TREE>" rebase origin/main   # the launch-mode probe's recorded pat
 
 Re-run the checks, `git push --force-with-lease`. If the harness denies it,
 `git checkout -B <branch> origin/<branch>`, `git merge origin/main`,
-`vp run integ-ledger-normalize` and commit what changed (`merge=union` hides
-the ledger conflict locally), push plainly:
+the generators and `vp run integ-ledger-normalize`, commit what changed
+(`merge=union` hides the ledger conflict locally), push plainly:
 lossless under the squash merge (#3813).
 
 **Re-run the SUITE after the rebase, after `pnpm install --frozen-lockfile`

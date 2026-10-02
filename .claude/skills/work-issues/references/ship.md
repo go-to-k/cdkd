@@ -33,13 +33,14 @@ turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
 `docs/_generated/integ-last-run.tsv` gains a row at the same place on every lane
 that ran one, so a commit-by-commit rebase re-conflicts once per commit; the
 repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch,
-so push every commit plainly FIRST: when the harness denies the `git reset`, the
-rebase or the `--force-with-lease` push, take §7's MERGE ARM, which starts from
-`origin/<branch>` (go-to-k/cdkd#4327). Spelled here, as a denial also blocks
-re-reading §7: `git -C <LANE_TREE> checkout -B <branch> origin/<branch>`,
-the same `-C` `merge origin/main`, `vp run integ-ledger-normalize`
-(`merge=union` hides the ledger conflict locally), commit what changed, push
-plainly. Otherwise:
+so FIRST push plainly until `git rev-list origin/<branch>..HEAD` is empty (a
+denied plain push is re-authorized, never routed round through the arm). Then,
+when the harness denies the `git reset`, the rebase or the `--force-with-lease`
+push, take §7's MERGE ARM from `origin/<branch>` (go-to-k/cdkd#4327), spelled
+here as a denial also blocks re-reading §7 — all in `<LANE_TREE>` by literal
+path: `checkout -B <branch> origin/<branch>`, `merge origin/main`, re-run the
+generators and `vp run integ-ledger-normalize` (`merge=union` hides the ledger
+conflict locally), commit what changed, push plainly. Otherwise:
 
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
