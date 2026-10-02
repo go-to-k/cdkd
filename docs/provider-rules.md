@@ -1249,10 +1249,14 @@ MaxInstanceLifetime: clearOnUpdateRemoval(newLifetime, prevLifetime, 0),
 
 A type whose `update()` has been audited for EVERY property also declares
 `removalHandledInUpdate`: the properties whose removal `update()` handles
-itself (a local reset, a diff, a required or create-only property). The
-caller then warns once per resource for any removed property in neither
-map, naming it as left at its current AWS value. A type without that entry
-is never warned about, because cdkd cannot say what its `update()` does.
+itself (a local reset, a diff, a required or create-only property, or a
+value left in place that `update()` names in its own warning). The caller
+then warns once per resource for any removed property in neither map,
+naming it as left at its current AWS value AND saying CloudFormation would
+reset it to its default — so a property with no such reset (FSx
+`StorageCapacity` cannot shrink) goes into `removalHandledInUpdate` with its
+own warning, never into the shared line. A type without that entry is never
+warned about, because cdkd cannot say what its `update()` does.
 
 `drift --revert` injects nothing: its previous side is an AWS readback, not a
 template, so `UpdateContext.removedProperties` is empty there. A local
