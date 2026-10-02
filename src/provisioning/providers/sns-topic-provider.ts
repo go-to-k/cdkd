@@ -38,6 +38,13 @@ import type {
 } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import {
+  hasErrorName,
+  nameHeldBefore,
+  skippedCleanupText,
+  type NameHeldBefore,
+} from './create-ownership.js';
 
 /**
  * The value SNS enforces for a topic that never set `MaximumMessageSize`
@@ -91,9 +98,52 @@ export class SNSTopicProvider implements ResourceProvider {
     ],
   ]);
 
+  /** See {@link callerAccount}. */
+  private callerIdentity: { account: string; partition: string } | undefined;
+
   constructor() {
     const awsClients = getAwsClients();
     this.snsClient = awsClients.sns;
+  }
+
+  /**
+   * The caller's account and partition from STS, for the ARN a topic name
+   * maps to. Memoized on the instance only once a VALIDATED answer arrived:
+   * a failure is retried by the next lookup, never cached.
+   */
+  private async callerAccount(): Promise<{ account: string; partition: string }> {
+    if (this.callerIdentity !== undefined) return this.callerIdentity;
+    const identity = await getAwsClients().sts.send(new GetCallerIdentityCommand({}));
+    const partition = identity.Arn?.split(':')[1];
+    if (typeof identity.Account !== 'string' || !/^\d{12}$/.test(identity.Account) || !partition) {
+      throw new Error('STS did not report a usable account and partition');
+    }
+    this.callerIdentity = { account: identity.Account, partition };
+    return this.callerIdentity;
+  }
+
+  /**
+   * Did a topic hold `topicName` before this create (go-to-k/cdkd#4403)?
+   * `CreateTopic` takes no ARN, so the one the name maps to is built from
+   * the caller's account and partition (STS) and this client's region, then
+   * read. Only SNS's own `NotFoundException` is `free`; a failed STS call, an
+   * unreadable identity or any other error is `unknown`.
+   */
+  private async topicHeldBefore(topicName: string): Promise<NameHeldBefore> {
+    return nameHeldBefore(
+      async () => {
+        const region = await this.snsClient.config.region();
+        const { account, partition } = await this.callerAccount();
+        if (!region) throw new Error('the SNS client reported no region');
+        await this.snsClient.send(
+          new GetTopicAttributesCommand({
+            TopicArn: `arn:${partition}:sns:${region}:${account}:${topicName}`,
+          })
+        );
+        return true;
+      },
+      (error) => error instanceof NotFoundException || hasErrorName(error, ['NotFoundException'])
+    );
   }
 
   /**
@@ -171,6 +221,18 @@ export class SNSTopicProvider implements ResourceProvider {
         tags = desiredTags;
       }
 
+      // Whether the cleanup below may delete what CreateTopic returns: it hands
+      // back a topic that already held the name (go-to-k/cdkd#4403). Asked
+      // only when a wiring step can fail.
+      const wiringDeclared =
+        Boolean(properties['ArchivePolicy']) ||
+        Boolean(properties['DataProtectionPolicy']) ||
+        properties['DeliveryStatusLogging'] != null ||
+        Array.isArray(properties['Subscription']);
+      const heldBefore: NameHeldBefore = wiringDeclared
+        ? await this.topicHeldBefore(topicName)
+        : 'free';
+
       const createParams: CreateTopicCommandInput = {
         Name: topicName,
         ...(Object.keys(topicAttributes).length > 0 && { Attributes: topicAttributes }),
@@ -199,15 +261,11 @@ export class SNSTopicProvider implements ResourceProvider {
       // partial-policy state could persist silently across redeploys.
       // Wrap the wiring in an inner try/catch that issues a best-effort
       // `DeleteTopicCommand` before re-throwing the original error.
-      // Note: CreateTopic does NOT throw on pre-existing topics (unlike
-      // S3/Logs which raise BucketAlreadyOwnedByYou / ResourceAlreadyExists),
-      // so cdkd cannot distinguish "we created this" vs "we adopted a
-      // pre-existing topic" — this matches the existing `delete()`
-      // behavior (always deletes), and the cleanup follows suit. If a
-      // user has a pre-existing topic with the same name AND a wiring
-      // step fails on first deploy, cdkd will delete the pre-existing
-      // topic. This is a known limitation matching the existing destroy
-      // semantics; not a regression introduced by this fix.
+      // CreateTopic does NOT throw on a pre-existing topic (unlike S3 / Logs,
+      // which raise BucketAlreadyOwnedByYou / ResourceAlreadyExists), so the
+      // delete runs only when the lookup before the create found the name
+      // free (`heldBefore`, go-to-k/cdkd#4403); otherwise the topic stays and
+      // the warning says why.
       try {
         // Apply ArchivePolicy (FIFO topics only, must be set after creation)
         if (properties['ArchivePolicy']) {
@@ -289,15 +347,27 @@ export class SNSTopicProvider implements ResourceProvider {
           }
         }
       } catch (innerError) {
-        try {
-          await this.snsClient.send(new DeleteTopicCommand({ TopicArn: topicArn }));
-          this.logger.debug(
-            `Cleaned up partially-created SNS topic ${logicalId} (${topicArn}) after wiring failure`
-          );
-        } catch (cleanupError) {
+        if (heldBefore !== 'free') {
           warn(
-            `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
+            skippedCleanupText(
+              heldBefore,
+              `SNS topic ${logicalId} (${topicArn})`,
+              pasteableAwsCommand(
+                maskSecrets
+              )`aws sns delete-topic --topic-arn ${topicArn}`.render()
+            )
           );
+        } else {
+          try {
+            await this.snsClient.send(new DeleteTopicCommand({ TopicArn: topicArn }));
+            this.logger.debug(
+              `Cleaned up partially-created SNS topic ${logicalId} (${topicArn}) after wiring failure`
+            );
+          } catch (cleanupError) {
+            warn(
+              `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
+            );
+          }
         }
         // The topic itself was created: an "already exists" from its wiring is an
         // auxiliary object's, not this topic's name collision (#3826).

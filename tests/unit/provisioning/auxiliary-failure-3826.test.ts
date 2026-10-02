@@ -624,10 +624,15 @@ const CASES: Case[] = [
       TopicName: 'topic',
       Subscription: [{ Protocol: 'sqs', Endpoint: 'arn:aws:sqs:us-east-1:123456789012:q' }],
     },
-    clients: [SNSClient],
+    // STS: the lookup before the create (go-to-k/cdkd#4403) builds the ARN
+    // the name maps to; GetTopicAttributes answering reads as "held".
+    clients: [SNSClient, STSClient],
     main: 'CreateTopicCommand',
     aux: 'SubscribeCommand',
-    responses: { CreateTopicCommand: { TopicArn: 'arn:aws:sns:us-east-1:123456789012:topic' } },
+    responses: {
+      CreateTopicCommand: { TopicArn: 'arn:aws:sns:us-east-1:123456789012:topic' },
+      GetCallerIdentityCommand: { Account: '123456789012', Arn: 'arn:aws:iam::123456789012:user/u' },
+    },
   },
   {
     // No main create at all: every AWS call acts on something other than the

@@ -2,14 +2,23 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { spawnSync } from 'node:child_process';
 import { WITHHELD_AWS_COMMAND } from '../../../src/provisioning/replacement-protection-advice.js';
 
-const { mockSend, warnSpy } = vi.hoisted(() => ({
+const { mockSend, describeRuleSend, warnSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
+  // The lookup before the create (go-to-k/cdkd#4403) goes to its own spy, so
+  // each case's primed PutRule / PutTargets / cleanup sequence stays as is.
+  describeRuleSend: vi.fn(),
   warnSpy: vi.fn(),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    eventBridge: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    eventBridge: {
+      send: (command: { constructor: { name: string } }) =>
+        command.constructor.name === 'DescribeRuleCommand'
+          ? describeRuleSend(command)
+          : mockSend(command),
+      config: { region: () => Promise.resolve('us-east-1') },
+    },
   }),
 }));
 
@@ -32,6 +41,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import { ResourceNotFoundException } from '@aws-sdk/client-eventbridge';
 import { EventBridgeRuleProvider } from '../../../src/provisioning/providers/eventbridge-rule-provider.js';
 import {
   FORGED_CTRL,
@@ -47,7 +57,118 @@ describe('EventBridgeRuleProvider partial-create cleanup (Issue #376)', () => {
   beforeEach(() => {
     mockSend.mockReset();
     warnSpy.mockReset();
+    describeRuleSend.mockReset();
+    describeRuleSend.mockRejectedValue(
+      new ResourceNotFoundException({ $metadata: {}, message: 'Rule MyRule does not exist.' })
+    );
     provider = new EventBridgeRuleProvider();
+  });
+
+  describe('a rule that held the name before PutRule overwrote it (go-to-k/cdkd#4403)', () => {
+    const props = {
+      Name: 'MyRule',
+      EventBusName: 'their-bus',
+      EventPattern: { source: ['aws.s3'] },
+      Targets: [{ Id: 'Target1', Arn: 'arn:aws:sqs:us-east-1:123:queue1' }],
+    };
+
+    it('is neither stripped of its targets nor deleted when the wiring fails', async () => {
+      describeRuleSend.mockReset();
+      describeRuleSend.mockResolvedValueOnce({ Name: 'MyRule', Arn: 'arn:aws:events:us-east-1:123:rule/their-bus/MyRule' });
+      mockSend.mockResolvedValueOnce({ RuleArn: 'arn:aws:events:us-east-1:123:rule/their-bus/MyRule' });
+      mockSend.mockRejectedValueOnce(new Error('PutTargets boom'));
+
+      await expect(provider.create('MyRule', RESOURCE_TYPE, props)).rejects.toThrow('PutTargets boom');
+
+      expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual([
+        'PutRuleCommand',
+        'PutTargetsCommand',
+      ]);
+      expect(describeRuleSend.mock.calls[0]![0].input).toEqual({
+        Name: 'MyRule',
+        EventBusName: 'their-bus',
+      });
+      const warned = String(warnSpy.mock.calls[0]?.[0]);
+      expect(warned).toContain('already existed before this create');
+      expect(warned).toContain('did not delete');
+    });
+
+    it('is not deleted when the lookup could not answer, and the warning names the manual cleanup', async () => {
+      describeRuleSend.mockReset();
+      describeRuleSend.mockRejectedValueOnce(
+        // A message a text match would read as "not found": only the error
+        // NAME may decide.
+        Object.assign(new Error('Rule MyRule does not exist, or you are not authorized'), {
+          name: 'AccessDeniedException',
+        })
+      );
+      mockSend.mockResolvedValueOnce({ RuleArn: 'arn:aws:events:us-east-1:123:rule/their-bus/MyRule' });
+      mockSend.mockRejectedValueOnce(new Error('PutTargets boom'));
+
+      await expect(provider.create('MyRule', RESOURCE_TYPE, props)).rejects.toThrow('PutTargets boom');
+
+      expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual([
+        'PutRuleCommand',
+        'PutTargetsCommand',
+      ]);
+      const warned = String(warnSpy.mock.calls[0]?.[0]);
+      expect(warned).toContain('could not tell whether this create made');
+      expect(warned).toContain('aws events delete-rule --name MyRule --event-bus-name their-bus');
+    });
+
+    it.each(['held', 'unknown'] as const)('masks a secret-derived rule name in the %s warning', async (arm) => {
+      describeRuleSend.mockReset();
+      if (arm === 'held') {
+        describeRuleSend.mockResolvedValueOnce({ Name: 'rule-SECRETVALUE' });
+      } else {
+        describeRuleSend.mockRejectedValueOnce(
+          Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+        );
+      }
+      mockSend.mockResolvedValueOnce({ RuleArn: 'arn:aws:events:us-east-1:123:rule/rule-SECRETVALUE' });
+      mockSend.mockRejectedValueOnce(new Error('PutTargets boom'));
+
+      await expect(
+        provider.create(
+          'MyRule',
+          RESOURCE_TYPE,
+          { ...props, Name: 'rule-SECRETVALUE' },
+          { maskSecrets: (t: string) => t.split('SECRETVALUE').join('***') }
+        )
+      ).rejects.toThrow('PutTargets boom');
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).not.toBe('');
+      expect(warned).not.toContain('SECRETVALUE');
+    });
+
+    it('masks a secret-derived rule name in the warning of a cleanup that itself failed', async () => {
+      // The name is free (the default), so the cleanup runs, and fails.
+      mockSend.mockResolvedValueOnce({ RuleArn: 'arn:aws:events:us-east-1:123:rule/rule-SECRETVALUE' });
+      mockSend.mockRejectedValueOnce(new Error('PutTargets boom'));
+      mockSend.mockRejectedValueOnce(new Error('ListTargetsByRule boom for rule-SECRETVALUE'));
+
+      await expect(
+        provider.create(
+          'MyRule',
+          RESOURCE_TYPE,
+          { ...props, Name: 'rule-SECRETVALUE' },
+          { maskSecrets: (t: string) => t.split('SECRETVALUE').join('***') }
+        )
+      ).rejects.toThrow('PutTargets boom');
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('Failed to clean up partially-created EventBridge rule');
+      expect(warned).not.toContain('SECRETVALUE');
+    });
+
+    it('asks nothing for a rule without targets, whose create has no step to fail', async () => {
+      mockSend.mockResolvedValueOnce({ RuleArn: 'arn:aws:events:us-east-1:123:rule/MyRule' });
+
+      await provider.create('MyRule', RESOURCE_TYPE, { Name: 'MyRule', EventPattern: { source: ['aws.s3'] } });
+
+      expect(describeRuleSend).not.toHaveBeenCalled();
+    });
   });
 
   it('issues RemoveTargets + DeleteRule when PutTargets fails after PutRule succeeded', async () => {

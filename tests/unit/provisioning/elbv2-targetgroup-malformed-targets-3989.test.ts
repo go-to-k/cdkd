@@ -14,7 +14,18 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
   return {
     ...actual,
     ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({
-      send: mockSend,
+      send: (command: { constructor: { name: string }; input?: { Names?: unknown } }) =>
+        // The by-name lookup before a create (go-to-k/cdkd#4403): the name is free.
+        command.input?.Names !== undefined
+          ? Promise.reject(
+              Object.assign(new Error('One or more resources not found'), {
+                name:
+                  command.constructor.name === 'DescribeTargetGroupsCommand'
+                    ? 'TargetGroupNotFoundException'
+                    : 'LoadBalancerNotFoundException',
+              })
+            )
+          : mockSend(command),
       config: { region: () => Promise.resolve('us-east-1') },
     })),
   };

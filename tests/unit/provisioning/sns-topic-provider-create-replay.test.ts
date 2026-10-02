@@ -4,11 +4,20 @@ import { CreateTopicCommand, DeleteTopicCommand } from '@aws-sdk/client-sns';
 const mockSend = vi.fn();
 // The logger factory builds its child logger EAGERLY, so `warn` has to be
 // hoisted with it (the aws-clients factory below only closes over `mockSend`).
-const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
+// `ownershipSend` answers the lookup before the create (go-to-k/cdkd#4403):
+// STS for the account, GetTopicAttributes on the ARN the name maps to.
+const { warn, ownershipSend } = vi.hoisted(() => ({ warn: vi.fn(), ownershipSend: vi.fn() }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    sns: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    sns: {
+      send: (command: { constructor: { name: string } }) =>
+        command.constructor.name === 'GetTopicAttributesCommand'
+          ? ownershipSend(command)
+          : mockSend(command),
+      config: { region: () => Promise.resolve('us-east-1') },
+    },
+    sts: { send: ownershipSend },
   }),
 }));
 
@@ -51,6 +60,13 @@ describe('SNSTopicProvider create() replay tolerance (issue #1551)', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // The name is free before the create.
+    ownershipSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'GetCallerIdentityCommand') {
+        return { Account: '123456789012', Arn: 'arn:aws:iam::123456789012:user/u' };
+      }
+      throw Object.assign(new Error('Topic does not exist'), { name: 'NotFoundException' });
+    });
     mockSend.mockImplementation((cmd) =>
       cmd instanceof CreateTopicCommand ? Promise.resolve({ TopicArn: TOPIC_ARN }) : Promise.resolve({})
     );

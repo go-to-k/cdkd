@@ -62,6 +62,10 @@ describe('EventBridgeRuleProvider', () => {
     });
 
     it('should create a rule with targets', async () => {
+      // DescribeRule before the create (go-to-k/cdkd#4403): the name is free.
+      mockSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ $metadata: {}, message: 'not found' })
+      );
       // PutRule
       mockSend.mockResolvedValueOnce({
         RuleArn: 'arn:aws:events:us-east-1:123456789012:rule/my-rule',
@@ -78,9 +82,10 @@ describe('EventBridgeRuleProvider', () => {
       });
 
       expect(result.physicalId).toBe('arn:aws:events:us-east-1:123456789012:rule/my-rule');
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[0][0].constructor.name).toBe('DescribeRuleCommand');
 
-      const putTargetsCall = mockSend.mock.calls[1][0];
+      const putTargetsCall = mockSend.mock.calls[2][0];
       expect(putTargetsCall.constructor.name).toBe('PutTargetsCommand');
       // Non-ECS targets pass through the #1381 conversion unchanged.
       expect(putTargetsCall.input.Targets).toEqual([
@@ -89,6 +94,10 @@ describe('EventBridgeRuleProvider', () => {
     });
 
     it('converts CFn-shaped EcsParameters to the SDK shape on PutTargets (#1381)', async () => {
+      // DescribeRule before the create (go-to-k/cdkd#4403): the name is free.
+      mockSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ $metadata: {}, message: 'not found' })
+      );
       // PutRule
       mockSend.mockResolvedValueOnce({
         RuleArn: 'arn:aws:events:us-east-1:123456789012:rule/my-rule',
@@ -124,7 +133,7 @@ describe('EventBridgeRuleProvider', () => {
         ],
       });
 
-      const putTargetsCall = mockSend.mock.calls[1][0];
+      const putTargetsCall = mockSend.mock.calls[2][0];
       const ecs = putTargetsCall.input.Targets[0].EcsParameters;
       expect(ecs.NetworkConfiguration).toEqual({
         awsvpcConfiguration: {
