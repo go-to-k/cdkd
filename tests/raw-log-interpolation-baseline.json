@@ -67,7 +67,7 @@
   "src/deployment/intrinsic-resolver/getatt.ts": 14,
   "src/deployment/intrinsic-resolver/string-functions.ts": 5,
   "src/deployment/orphan-adoption.ts": 4,
-  "src/deployment/recreate-targets.ts": 7,
+  "src/deployment/recreate-targets/probe.ts": 7,
   "src/deployment/retry.ts": 1,
   "src/deployment/rollback-executor.ts": 13,
   "src/deployment/rollback-executor/names.ts": 1,

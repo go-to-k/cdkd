@@ -7477,7 +7477,7 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
         'separator injective here',
     ],
     [
-      'src/deployment/recreate-targets.ts',
+      'src/deployment/recreate-targets/validate.ts',
       1,
       'the same `${resourceType}:${property}` closed-set membership test',
     ],
