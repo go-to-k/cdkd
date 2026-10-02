@@ -537,6 +537,27 @@ function bindingNames(name: ts.BindingName): string[] {
   return out;
 }
 
+/** Does a `var` anywhere in this function's body (not a nested function's) bind `name`? */
+function declaresHoistedVar(fn: ts.SignatureDeclaration, name: string): boolean {
+  const body = (fn as { body?: ts.Node }).body;
+  if (!body) return false;
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found || (node !== body && ts.isFunctionLike(node))) return;
+    if (
+      ts.isVariableDeclarationList(node) &&
+      (node.flags & ts.NodeFlags.BlockScoped) === 0 &&
+      node.declarations.some((d) => bindingNames(d.name).includes(name))
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+  return found;
+}
+
 /**
  * Is `name` declared in a scope enclosing `use` by anything OTHER than an
  * import — a `const` / `let` / `var` (destructured included), a function or
@@ -553,6 +574,9 @@ function isShadowed(use: ts.Node, name: string): boolean {
       for (const parameter of current.parameters) {
         if (bindingNames(parameter.name).includes(name)) return true;
       }
+      // A `var` HOISTS to the function scope from any nested block, so it
+      // shadows even when the block holding it does not enclose the use.
+      if (declaresHoistedVar(current, name)) return true;
     }
     const statements = (current as unknown as { statements?: ts.NodeArray<ts.Statement> })
       .statements;
