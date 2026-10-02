@@ -641,7 +641,8 @@ Intrinsic function resolution (shared with Analysis Layer). The class lives
 here with its options interface; its other module-scope helpers and types,
 including `ResolverContext`, live in
 `intrinsic-resolver/support.ts`; the method groups live beside it in
-`intrinsic-resolver/` (`getatt.ts`, `cross-stack.ts`, `dynamic-refs.ts`).
+`intrinsic-resolver/` (`getatt.ts`, `cross-stack.ts`, `dynamic-refs.ts`,
+`string-functions.ts`, `functions.ts`, `masking.ts`).
 
 **Resolution Context**:
 

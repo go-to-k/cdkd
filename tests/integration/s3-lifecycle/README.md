@@ -19,31 +19,37 @@ failed against real S3).
 
 ## Phases
 
-0b. **Same-region adopt** — the negative control, run **first**. Plant a
-   **per-run unique** name in the region this stack deploys to (the same
-   `CDKD_XR_ARM_BUCKET` hook Phase 0 uses); cdkd must **adopt** it and complete
-   the deploy. Under the default `us-east-1` this does **not** enter the guard
-   at all — S3 answers a same-region re-create with a legacy 200 OK rather than
-   the 409 — so there it is a regression net for "cdkd deploys cleanly over a
-   pre-existing same-region bucket", **not** a discriminating negative control.
-   Set `AWS_REGION` elsewhere and it becomes one. The guard's adopt arm is
-   fenced by the unit suite either way.
+0b. **Same-region name holder is refused** — run **first**. Plant a
+   **per-run unique** bucket in the region this stack deploys to, and add a
+   bucket of that name to the stack via `CDKD_XR_ARM_BUCKET` (the stack creates
+   it only when that variable is set, so every other phase deploys the stack it
+   always deployed). Since go-to-k/cdkd#4344, a plain create of an explicitly
+   named bucket first asks `S3BucketProvider.import()` (a `HeadBucket`) whether
+   a bucket already holds the name, and refuses with `NAMED_CREATE_COLLISION`,
+   nothing created, when one does — the account's own bucket included
+   (CloudFormation's "already exists"). Asserts the refusal's text ("already
+   holds that name", "Nothing was created."), that the planted bucket keeps a
+   marker tag planted before the deploy, and that no state record holds
+   `XrArmBucket`.
 
    Neither arm may plant a name the fixture itself reuses. An earlier version
    planted the stack's **own** bucket name cross-region, which poisoned that
    name for Phase 1 as well and wedged the whole fixture for over 20 minutes.
 
-0. **Cross-region adopt refusal** (issue
-   [#2227](https://github.com/go-to-k/cdkd/issues/2227)) — plant a **per-run
-   unique** bucket name in another region, and add a bucket of that name to the
-   stack via `CDKD_XR_ARM_BUCKET` (the stack creates it only when that variable
-   is set, so every other phase deploys the stack it always deployed). Then
-   deploy. `CreateBucket` answers `BucketAlreadyOwnedByYou` on account-global
-   **ownership**, so cdkd must read the bucket's real region back — from the
-   409's own `x-amz-bucket-region` header — and **refuse** rather than adopt and
-   reconfigure a bucket that lives elsewhere. Asserts the refusal text naming
-   both regions, not merely that the deploy failed. Phase 1 is **not** its
-   negative control (nothing collides there); Phase 0b is.
+0. **Cross-region name holder is refused** — the same lookup against a
+   **per-run unique** bucket this account owns in another region. The
+   `HeadBucket` in the stack's region answers 301, and cdkd refuses with that
+   cause ("S3 answered 301 for that bucket", "already exists in another
+   region") before `CreateBucket` runs. That message names the bucket, not the
+   regions. The test also asserts that the issue
+   [#2227](https://github.com/go-to-k/cdkd/issues/2227) guard ("Refusing to
+   adopt existing S3 bucket", which reads the region back from `CreateBucket`'s
+   `BucketAlreadyOwnedByYou`) did **not** fire: on a plain create it is now
+   reached only if the name is taken between the lookup and `CreateBucket`,
+   which this fixture cannot stage, and
+   `tests/unit/provisioning/s3-bucket-provider-already-owned-region.test.ts` /
+   `s3-bucket-provider-us-east-1-preflight.test.ts` cover it. Phase 1 is
+   **not** its control (nothing collides there); Phase 0b is.
 
    The name is unique per run for a measured reason: once an S3 bucket name has
    existed in one region, re-creating it in **another** answers
@@ -52,8 +58,8 @@ failed against real S3).
    collision on a name the fixture reuses poisons that name for the rest of the
    run and for the next one.
 0c. **Cloud-Control-routed delete identity** (issue
-   [#2283](https://github.com/go-to-k/cdkd/issues/2283)) — the Phase 0 guard
-   lives in `S3BucketProvider`, on the **SDK** route. A bucket whose state
+   [#2283](https://github.com/go-to-k/cdkd/issues/2283)) — the #2227 /
+   #2245 bucket-region guards live in `S3BucketProvider`, on the **SDK** route. A bucket whose state
    record says `provisionedBy: cc-api` never reaches that provider:
    `ProviderRegistry.getProviderFor` step 2 (the sticky rule) hands it to
    `CloudControlProvider` **before** the SDK provider is consulted, and that
@@ -73,7 +79,11 @@ failed against real S3).
    - **Arm OK** (the negative control, and load-bearing): a bucket really in
      this region must still delete through the Cloud Control route. Without it,
      Arm XR would "pass" on any malformed-state failure — a destroy that died
-     for an unrelated reason also leaves a bucket standing.
+     for an unrelated reason also leaves a bucket standing. It also reads back
+     the `deployments/{runId}.jsonl` that `cdkd state destroy` records (issue
+     [#2423](https://github.com/go-to-k/cdkd/issues/2423)): one `destroy` run,
+     `SUCCEEDED` with one delete, a `RESOURCE_SUCCEEDED` row for the planted
+     bucket, and no `RESOURCE_GUARD_INDETERMINATE` row — the guard answered.
    - **Arm XR**: a **per-run unique** bucket planted in another region, named by
      a state record that claims this one. cdkd must refuse — asserted on the
      refusal text naming both regions **and** on the bucket still being there
@@ -94,9 +104,8 @@ failed against real S3).
      one-resource stack yields one row under either reading — it would look
      fenced while discriminating nothing.
      Two things about it are decisions: it drives `cdkd destroy` rather than
-     `cdkd state destroy` (the latter threads no event recorder, so it writes
-     no events at all — issue
-     [#2423](https://github.com/go-to-k/cdkd/issues/2423)), which is why it
+     `cdkd state destroy` (Arm OK already pins the state verb's events, so this
+     arm keeps the top-level verb's recorder pinned live), which is why it
      runs from a scratch directory with no `cdk.json` so the CLI falls back to
      its state-based stack list; and the delete still succeeding under the deny
      was MEASURED, not assumed — `cloudformation describe-type --type-name

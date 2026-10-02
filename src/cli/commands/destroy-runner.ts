@@ -232,11 +232,12 @@ export interface DestroyRunnerContext {
    * resource it deletes (operation always DELETE), plus zero or more
    * RESOURCE_GUARD_INDETERMINATE events ALONGSIDE that outcome (issue
    * [#2301](https://github.com/go-to-k/cdkd/issues/2301)). `record()` is
-   * synchronous and never throws. The CALLER (`cdkd destroy`) owns the
-   * RUN_STARTED / RUN_FINISHED events and `finalize()`s the recorder. When
-   * `undefined` the runner behaves exactly as before #808 (events are a
-   * no-op) — which is what `cdkd state destroy` gets today, since it passes
-   * no recorder at all. Error + metadata only — never resource properties.
+   * synchronous and never throws. The CALLER (`cdkd destroy` /
+   * `cdkd state destroy`) owns the RUN_STARTED / RUN_FINISHED events and
+   * `finalize()`s the recorder. When `undefined` the runner behaves exactly as
+   * before #808 (events are a no-op) — which is what a nested-stack child's
+   * destroy gets, since `NestedStackProvider.delete` passes no recorder.
+   * Error + metadata only — never resource properties.
    */
   eventRecorder?: DeploymentEventRecorder;
 }
@@ -2110,28 +2111,20 @@ export async function runDestroyForStack(
       // stack of size. Names the resources and points at the durable record,
       // which is the whole point of issue #2301: the events OUTLIVE the run.
       // The pointer at `cdkd events` is GATED on a recorder existing, because
-      // `cdkd state destroy` threads none (`state.ts`, the `runDestroyForStack`
-      // call) and so writes no `deployments/` object at all. Telling that
-      // caller to go read entries nothing wrote sends them to an empty command
-      // and reads as cdkd having lost the record -- worse than saying less.
-      //
-      // The absent-recorder text is CALLER-AGNOSTIC, and that is the correction
-      // rather than the wording: TWO callers thread no recorder, not one.
-      // `cdkd state destroy` is the obvious one (go-to-k/cdkd#2423), but
-      // `NestedStackProvider.delete` also drives this runner for a child stack
-      // with no recorder in its context -- under ANY verb, `cdkd destroy`
-      // included. Naming `state destroy` here would tell someone already
-      // running `cdkd destroy` to re-run it, which changes nothing for them.
-      // The runner cannot tell the two apart from `ctx` today, so it states the
-      // FACT it can observe (this run recorded none) and cites both causes.
+      // `NestedStackProvider.delete` drives this runner for a child stack with
+      // no recorder in its context -- under ANY verb -- so that run writes no
+      // `deployments/` object at all. Telling that caller to go read entries
+      // nothing wrote sends them to an empty command and reads as cdkd having
+      // lost the record -- worse than saying less. Both top-level verbs
+      // (`cdkd destroy`, `cdkd state destroy` since go-to-k/cdkd#2423) thread a
+      // recorder, so the nested-stack child is the only absent-recorder caller.
       const eventsCommand = pasteableCommand('cdkd events', [
         { value: stackName, hole: 'stack', opts: { plainIdent: true } },
       ]);
       const durablePointer =
         ctx.eventRecorder === undefined
-          ? `This summary is the only record: this run wrote no deployment events, either ` +
-            `because it is a 'cdkd state destroy' (go-to-k/cdkd#2423) or because it is a ` +
-            `nested-stack child, neither of which threads an event recorder.`
+          ? `This summary is the only record: this run wrote no deployment events, because ` +
+            `it destroyed a nested-stack child, which threads no event recorder.`
           : `The RESOURCE_GUARD_INDETERMINATE entries name the check and the reason ` +
             `and survive the run.` +
             withheldTargetClause(eventsCommand, 'stack', 'cdkd events', "This stack's name") +

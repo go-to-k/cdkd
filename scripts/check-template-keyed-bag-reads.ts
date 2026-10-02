@@ -85,6 +85,9 @@ export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-resolver/getatt.ts',
   'src/deployment/intrinsic-resolver/cross-stack.ts',
   'src/deployment/intrinsic-resolver/dynamic-refs.ts',
+  'src/deployment/intrinsic-resolver/string-functions.ts',
+  'src/deployment/intrinsic-resolver/functions.ts',
+  'src/deployment/intrinsic-resolver/masking.ts',
   'src/analyzer/template-parser.ts',
 ];
 

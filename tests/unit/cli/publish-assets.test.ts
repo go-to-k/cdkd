@@ -273,6 +273,30 @@ describe('cdkd publish-assets', () => {
       expect(reported).toContain('Stage MyStage failed to load');
     });
 
+    // Issue go-to-k/cdkd#3507: `--all` with surviving stacks next to a failed
+    // Stage published the survivors' assets and exited 0. The every-Stage-loaded
+    // `--all` arm is the display-safe case above, which reaches the publish line.
+    it('refuses --all when a Stage failed to load, before publishing anything', async () => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [makeStack({ stackName: 'TopStack' })],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
+      });
+
+      const { exitCode } = await runCmd(['--all']);
+
+      expect(exitCode).toBe(1);
+      const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(reported).toContain('--all would publish assets for only part of this app; refusing.');
+      expect(reported).toContain('Synthesized: TopStack');
+      expect(reported).toContain('Stage MyStage failed to load');
+      const published = mockLoggerInfo.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes('Publishing assets for stack:'));
+      expect(published).toEqual([]);
+    });
+
     it('leaves the no-matching-stacks refusal untouched when every Stage loaded', async () => {
       mockSynthesize.mockResolvedValue({
         stacks: [makeStack({ stackName: 'TopStack' })],

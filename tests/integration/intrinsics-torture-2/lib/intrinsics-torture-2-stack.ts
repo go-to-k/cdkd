@@ -9,7 +9,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * The sibling `intrinsics-torture` fixture surfaced bug #838 (`Fn::Join`
  * over a list-returning intrinsic crashed). This fixture goes after the
  * NEXT tier of intrinsic arg-shapes that the resolver in
- * `src/deployment/intrinsic-function-resolver.ts` is likely to mishandle:
+ * `src/deployment/intrinsic-function-resolver.ts` and `intrinsic-resolver/*.ts` is likely to mishandle:
  * the less-common / harder forms each LIST-returning or NESTED-intrinsic
  * variant, the FindInMap enhanced 4th-arg default, a `Ref`-valued
  * `Fn::GetAtt` attribute name, the `${!Literal}` Sub escape, `Fn::Base64`

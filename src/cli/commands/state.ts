@@ -82,7 +82,9 @@ import {
 } from '../../deployment/secret-redaction.js';
 import { stripControlChars } from '../../utils/regexp.js';
 import { buildReadCurrentStateContext } from './drift.js';
-import { runDestroyForStack } from './destroy-runner.js';
+import { runDestroyForStack, type DestroyRunnerResult } from './destroy-runner.js';
+import { startRunRecorder, recordRunFailed, recordRunOutcome } from './deployment-events-run.js';
+import type { DeploymentRunResult } from '../../types/deployment-events.js';
 import { createStateMigrateCommand } from './state-migrate.js';
 import {
   buildStackTree,
@@ -2707,87 +2709,129 @@ async function stateDestroyCommand(
           break;
         }
 
-        // Set the NestedStackProvider context — fires only when the state
-        // file carries an AWS::CloudFormation::Stack record. `state destroy`
-        // does not synth, so accountId is not separately resolved here;
-        // the field is unused on the destroy path (only `create` builds
-        // the synthesized ARN). Bracketed by `interruptWatch.runStack` so a
-        // second Ctrl-C in this window escalates through the RUNNER's handler,
-        // the only one that can release this stack's lock.
-        const result = await interruptWatch.runStack(() =>
-          withNestedStackContext(
-            {
-              stateBackend: setup.stateBackend,
-              lockManager: setup.lockManager,
-              providerRegistry,
-              parentStackName: stackName,
-              parentRegion: ref.region ?? setup.region,
-              accountId: 'unknown',
-              awsClients: setup.awsClients,
-              stateBucket: setup.bucket,
-              exportIndexStore: setup.exportIndexStore,
-              destroyOptions: {
-                ...(options.profile && { profile: options.profile }),
-                statePrefix: options.statePrefix,
-                ...(options.removeProtection === true && { removeProtection: true }),
-                ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
-                ...(options.resourceWarnAfter?.globalMs !== undefined && {
-                  resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
-                }),
-                ...(options.resourceTimeout?.globalMs !== undefined && {
-                  resourceTimeoutMs: options.resourceTimeout.globalMs,
-                }),
-                ...(options.resourceWarnAfter?.perTypeMs && {
-                  resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
-                }),
-                ...(options.resourceTimeout?.perTypeMs && {
-                  resourceTimeoutByType: options.resourceTimeout.perTypeMs,
-                }),
-              },
-            },
-            () =>
-              runDestroyForStack(stackName, stateResult.state, {
+        // Issue #2423 — the deployment-event recorder for this target, the twin
+        // of `destroy.ts`'s per-stack bracket: `RUN_STARTED` here, the runner's
+        // per-resource events through `eventRecorder`, `RUN_FINISHED` below, and
+        // `finalize()` in the `finally`. One run per (stack, region) TARGET, not
+        // per command: the events store is keyed by stack AND region, so each
+        // target's history lands beside its own state record. Created BELOW the
+        // interrupt check above for the reason `destroy.ts` gives — breaking
+        // after `RUN_STARTED` would finalize a run for a target nothing touched.
+        //
+        // `command: 'destroy'` rather than a new literal: the run IS a destroy,
+        // through the same runner, and every reader's `command` switch stays
+        // complete. Best-effort like every recorder: `record()` / `finalize()`
+        // never throw, so a missing `deployments/` write cannot fail the destroy.
+        const eventRecorder = startRunRecorder({
+          backend: setup.stateBackend,
+          stackName,
+          region: ref.region ?? setup.region,
+          command: 'destroy',
+        })!;
+        let destroyRunResult: DeploymentRunResult = 'SUCCEEDED';
+        let result: DestroyRunnerResult;
+        try {
+          // Set the NestedStackProvider context — fires only when the state
+          // file carries an AWS::CloudFormation::Stack record. `state destroy`
+          // does not synth, so accountId is not separately resolved here;
+          // the field is unused on the destroy path (only `create` builds
+          // the synthesized ARN). Bracketed by `interruptWatch.runStack` so a
+          // second Ctrl-C in this window escalates through the RUNNER's handler,
+          // the only one that can release this stack's lock.
+          result = await interruptWatch.runStack(() =>
+            withNestedStackContext(
+              {
                 stateBackend: setup.stateBackend,
                 lockManager: setup.lockManager,
                 providerRegistry,
-                baseAwsClients: setup.awsClients,
-                baseRegion: setup.region,
-                // `getState` adopted the KEY's region into the record above, so
-                // this is the only place the divergence is still visible; the
-                // runner refuses on it when the record still lists resources
-                // (issue #3328).
-                ...(stateResult.divergentBodyRegion !== undefined && {
-                  divergentBodyRegion: stateResult.divergentBodyRegion,
-                }),
-                ...(options.profile && { profile: options.profile }),
+                parentStackName: stackName,
+                parentRegion: ref.region ?? setup.region,
+                accountId: 'unknown',
+                awsClients: setup.awsClients,
                 stateBucket: setup.bucket,
-                statePrefix: options.statePrefix,
-                // --yes skips the per-stack prompt inside the runner.
-                skipConfirmation: options.yes,
-                removeProtection: options.removeProtection === true,
-                skipFinalSnapshot: options.skipFinalSnapshot === true,
-                // go-to-k/cdkd#4150: a top-level destroy may resolve a
-                // secret-derived principal list; a deploy never does.
-                resolveSecretDerivedPrincipals: {},
                 exportIndexStore: setup.exportIndexStore,
-                ...(options.allowUnsupportedTypes?.length && {
-                  allowUnsupportedTypes: options.allowUnsupportedTypes,
-                }),
-                ...(options.resourceWarnAfter?.globalMs !== undefined && {
-                  resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
-                }),
-                ...(options.resourceTimeout?.globalMs !== undefined && {
-                  resourceTimeoutMs: options.resourceTimeout.globalMs,
-                }),
-                ...(options.resourceWarnAfter?.perTypeMs && {
-                  resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
-                }),
-                ...(options.resourceTimeout?.perTypeMs && {
-                  resourceTimeoutByType: options.resourceTimeout.perTypeMs,
-                }),
-              })
-          )
-        );
+                destroyOptions: {
+                  ...(options.profile && { profile: options.profile }),
+                  statePrefix: options.statePrefix,
+                  ...(options.removeProtection === true && { removeProtection: true }),
+                  ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+                  ...(options.resourceWarnAfter?.globalMs !== undefined && {
+                    resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+                  }),
+                  ...(options.resourceTimeout?.globalMs !== undefined && {
+                    resourceTimeoutMs: options.resourceTimeout.globalMs,
+                  }),
+                  ...(options.resourceWarnAfter?.perTypeMs && {
+                    resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+                  }),
+                  ...(options.resourceTimeout?.perTypeMs && {
+                    resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+                  }),
+                },
+              },
+              () =>
+                runDestroyForStack(stackName, stateResult.state, {
+                  stateBackend: setup.stateBackend,
+                  lockManager: setup.lockManager,
+                  providerRegistry,
+                  baseAwsClients: setup.awsClients,
+                  baseRegion: setup.region,
+                  // `getState` adopted the KEY's region into the record above, so
+                  // this is the only place the divergence is still visible; the
+                  // runner refuses on it when the record still lists resources
+                  // (issue #3328).
+                  ...(stateResult.divergentBodyRegion !== undefined && {
+                    divergentBodyRegion: stateResult.divergentBodyRegion,
+                  }),
+                  ...(options.profile && { profile: options.profile }),
+                  stateBucket: setup.bucket,
+                  statePrefix: options.statePrefix,
+                  // --yes skips the per-stack prompt inside the runner.
+                  skipConfirmation: options.yes,
+                  removeProtection: options.removeProtection === true,
+                  skipFinalSnapshot: options.skipFinalSnapshot === true,
+                  // go-to-k/cdkd#4150: a top-level destroy may resolve a
+                  // secret-derived principal list; a deploy never does.
+                  resolveSecretDerivedPrincipals: {},
+                  exportIndexStore: setup.exportIndexStore,
+                  ...(options.allowUnsupportedTypes?.length && {
+                    allowUnsupportedTypes: options.allowUnsupportedTypes,
+                  }),
+                  ...(options.resourceWarnAfter?.globalMs !== undefined && {
+                    resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+                  }),
+                  ...(options.resourceTimeout?.globalMs !== undefined && {
+                    resourceTimeoutMs: options.resourceTimeout.globalMs,
+                  }),
+                  ...(options.resourceWarnAfter?.perTypeMs && {
+                    resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+                  }),
+                  ...(options.resourceTimeout?.perTypeMs && {
+                    resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+                  }),
+                  eventRecorder,
+                })
+            )
+          );
+          // Same mapping as `destroy.ts`: a resource error or a skip (issue
+          // #1752 — the target is not destroyed and its state was preserved) is
+          // a FAILED run; a clean, cancelled or empty-skip destroy is SUCCEEDED.
+          destroyRunResult =
+            result.errorCount > 0 || result.skippedCount > 0 ? 'FAILED' : 'SUCCEEDED';
+          recordRunOutcome(eventRecorder, stackName, destroyRunResult, {
+            created: 0,
+            updated: 0,
+            deleted: result.deletedCount,
+            ...(result.errorCount > 0 && { failed: result.errorCount }),
+            ...(result.skippedCount > 0 && { skipped: result.skippedCount }),
+          });
+        } catch (destroyError) {
+          destroyRunResult = 'FAILED';
+          recordRunFailed(eventRecorder, stackName, destroyError);
+          throw destroyError;
+        } finally {
+          await eventRecorder.finalize(destroyRunResult);
+        }
         totalErrors += result.errorCount;
         totalSkipped += result.skippedCount;
         if (result.interrupted) interrupted = true;

@@ -831,7 +831,8 @@ describe('the pseudo-parameter render keeps its marker, and the premise is drive
     // a "source file missing" failure from any other working directory. The
     // sibling suite added in the same PR already spells it this way.
     const source = readResolverFamily();
-    const start = source.indexOf('private async resolvePseudoParameter(');
+    // A class method or, since #4337, the mixin function in `functions.ts`.
+    const start = source.search(/(?:private async |export async function )resolvePseudoParameter\(/);
     expect(start, 'resolvePseudoParameter was renamed or removed').toBeGreaterThan(-1);
     // Brace-match the method body rather than scanning a fixed window: the
     // method is long, carries several multi-line comments, and a window is

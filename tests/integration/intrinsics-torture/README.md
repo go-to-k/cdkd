@@ -4,7 +4,7 @@ A real-AWS integration test designed to **surface intrinsic-function-resolution
 bugs** in cdkd.
 
 cdkd resolves EVERY CloudFormation intrinsic function itself in
-[`src/deployment/intrinsic-function-resolver.ts`](../../../src/deployment/intrinsic-function-resolver.ts),
+[`src/deployment/intrinsic-function-resolver.ts`](../../../src/deployment/intrinsic-function-resolver.ts) and [`intrinsic-resolver/`](../../../src/deployment/intrinsic-resolver/),
 unlike the AWS CDK CLI, which hands the unresolved template to CloudFormation
 and lets the CFn engine resolve them server-side. The less-common intrinsics
 and deeply-nested expressions are exactly where cdkd's hand-rolled resolver is

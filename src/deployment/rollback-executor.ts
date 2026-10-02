@@ -1042,12 +1042,15 @@ function createOpMasker(logger: Logger, secrets: RecordedSecretValues): OpMasker
     // as it came, for the render around it to stringify as before.
     mask: (text) => (typeof text === 'string' ? sinks.mask(text) : text),
     addNamed: (record) => {
-      // Rebuilt over EVERY pair so far, never layered: the helper replaces its
-      // needles longest first, and a later layer's shorter needle
-      // (`alice-example-com`) applied ahead of an earlier layer's longer one
-      // (`MyStack-alice-example-com-0a1b2c3d`) would leave the longer one's
-      // other parts on the line. Re-evaluating the earlier pairs against the
-      // grown bag is safe too: `secrets` only ever gains entries.
+      // Rebuilt over EVERY pair so far, never layered. A layer's base would
+      // be the earlier layers, whose needles then look to its crossing check
+      // like recorded secrets: an earlier name that contains an occurrence
+      // of a later one (the id `MyStack-alice-example-com` around
+      // the derived `alice-example-com`) would withhold the WHOLE line as
+      // `***`, an over-mask, where a single helper call masks the longer
+      // name and keeps the rest of the line (go-to-k/cdkd#4193).
+      // Re-evaluating the earlier pairs against the grown bag is safe too:
+      // `secrets` only ever gains entries.
       pairs.push(...secretDerivedNamePairs(record));
       sinks = withDerivedNameMasks(logger, base, pairs);
     },

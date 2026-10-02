@@ -50,7 +50,9 @@ Selection follows the same rules as `cdkd deploy` and `cdkd destroy`:
   shell does not expand them first.
 - **Several names** may be given at once; the result is their deduplicated
   union.
-- **`--all`** selects every stack in the synthesized app.
+- **`--all`** selects every stack in the synthesized app. When a CDK Stage
+  failed to load, `--all` is refused rather than diffing only the stacks that
+  did synthesize ([the failed-Stage note](cli-deploy-safety.md#a-pre-synthesized-assembly-is-trusted-input)).
 - **No argument** is accepted only when the app contains exactly one stack.
   With more than one, cdkd lists the available stacks and exits `1` rather than
   guessing.

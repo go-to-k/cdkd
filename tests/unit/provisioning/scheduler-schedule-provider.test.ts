@@ -701,7 +701,7 @@ describe('SchedulerScheduleProvider', () => {
     // `cdkd import` now PERSISTS the returned attribute map (issue #1098), so
     // an empty-string placeholder is no longer harmless. The intrinsic
     // resolver treats any non-undefined flat attribute as a hit
-    // (resolveGetAtt in src/deployment/intrinsic-function-resolver.ts), so a
+    // (resolveGetAtt in src/deployment/intrinsic-resolver/getatt.ts), so a
     // stored `Arn: ''` would shadow constructAttribute's fallback and make
     // Fn::GetAtt resolve to the empty string. Omit the key instead.
     it('omits Arn entirely when the read-back has no Arn (never stores an empty string)', async () => {

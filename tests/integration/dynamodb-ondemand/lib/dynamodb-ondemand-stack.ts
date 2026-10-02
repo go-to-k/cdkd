@@ -105,7 +105,7 @@ export class DynamodbOndemandStack extends cdk.Stack {
     // CDKD_TEST_UPDATE=true: PROVISIONED, RCU=20 / WCU=10  (pure capacity
     //                        change — the load-bearing silent-drop case).
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
-    new dynamodb.Table(this, 'ProvisionedTable', {
+    const provisionedTable = new dynamodb.Table(this, 'ProvisionedTable', {
       tableName: 'cdkd-ondemand-test-provisioned-table',
       partitionKey: {
         name: 'id',
@@ -116,6 +116,40 @@ export class DynamodbOndemandStack extends cdk.Stack {
       writeCapacity: isUpdate ? 10 : 5,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+
+    // --- PointInTimeRecoverySpecification.RecoveryPeriodInDays refusal
+    // (issue go-to-k/cdkd#3255) ------------------------------------------
+    //
+    // A period CloudFormation's Integer grammar rejects used to be DROPPED with
+    // a warning: `UpdateContinuousBackups` then SUCCEEDED at DynamoDB's default
+    // period (35) while state kept the declared value, so drift reported it on
+    // every run. It is now REFUSED before any AWS call, on both paths.
+    //
+    // Every deploy declares a valid period of 7 on the provisioned table (an L1
+    // override, so the fixture does not depend on the L2 prop's cdk-lib
+    // version). `CDKD_TEST_PITR_REFUSE` drives the two refusal deploys, each of
+    // which verify.sh expects to FAIL:
+    //   - `update`: the same table's period is re-spelled `' 14 '`.
+    //   - `create`: a table that exists ONLY in this deploy declares `' 14 '`,
+    //     so the refusal must land before `CreateTable`.
+    const pitrRefuse = process.env.CDKD_TEST_PITR_REFUSE;
+    const provisionedCfn = provisionedTable.node.defaultChild as dynamodb.CfnTable;
+    provisionedCfn.addPropertyOverride('PointInTimeRecoverySpecification', {
+      PointInTimeRecoveryEnabled: true,
+      RecoveryPeriodInDays: pitrRefuse === 'update' ? ' 14 ' : 7,
+    });
+    if (pitrRefuse === 'create') {
+      const refusedTable = new dynamodb.Table(this, 'PitrRefusedTable', {
+        tableName: 'cdkd-ondemand-test-pitr-refused-table',
+        partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+      (refusedTable.node.defaultChild as dynamodb.CfnTable).addPropertyOverride(
+        'PointInTimeRecoverySpecification',
+        { PointInTimeRecoveryEnabled: true, RecoveryPeriodInDays: ' 14 ' }
+      );
+    }
 
     // A THIRD table for the `BillingMode` REMOVAL semantic (issue #1553).
     //

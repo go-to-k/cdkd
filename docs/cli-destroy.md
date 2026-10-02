@@ -64,7 +64,10 @@ consumer stack is destroyed before the producers it reads from. When the app
 synthesizes but yields no stacks, for example because every stack sits under a
 Stage that failed to load, `--all` and any wildcard pattern (`'*'`, `'Cdkd*'`)
 are refused: neither falls back to every stack in the state bucket. An exact
-physical stack name still resolves from state.
+physical stack name still resolves from state. When some stacks synthesize but
+a Stage failed to load, `--all` is refused too, because it would destroy the
+rest of the app and leave the Stage's stacks running; name the stacks to
+destroy explicitly.
 
 A nested-stack **child** cannot be destroyed directly: `cdkd destroy '<child>'`
 is refused, because the parent's `AWS::CloudFormation::Stack` row would then
@@ -756,7 +759,7 @@ state preservation, and does **not** change the exit code: a destroy showing
 only when non-zero. A warning beneath the line names the resources; the durable
 half is a `RESOURCE_GUARD_INDETERMINATE` event, which outlives the run — see
 [Deployment Events](deployment-events.md). `cdkd state destroy` prints the same
-figure but records no events at all.
+figure and records the same event.
 
 The state record is kept on purpose: without it you would have neither the AWS
 resource deleted nor an id to go and delete it with. To finish the destroy,
