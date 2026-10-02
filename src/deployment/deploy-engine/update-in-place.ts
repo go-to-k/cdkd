@@ -3,6 +3,10 @@ import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js
 import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import { STICKY_CC_MIGRATION_EXEMPT } from '../../provisioning/provider-registry.js';
+import {
+  recordedProtectionEvidence,
+  recordedProtectionNote,
+} from '../../provisioning/recorded-protection.js';
 import { withoutGeneratedFallbackName } from '../../provisioning/resource-name.js';
 import {
   prepareRemovalForUpdate,
@@ -473,19 +477,34 @@ export async function updateInPlace(
         // guard's twin in `update-replace.ts`: a flag plus a state-recorded bag decide
         // it, and the message carries a template-controlled logical id
         // into substring-matching classifiers.
+        // Issue #2610 site 10: both arms advise a flag that cannot remove a
+        // resource AWS protects — this path's delete never carries
+        // `removeProtection` either.
+        const protection = recordedProtectionEvidence(
+          resourceType,
+          currentProps,
+          currentResource.observedProperties,
+          this.stackRegion
+        );
         throw markNonRetryable(
           new CdkdError(
             replaceOptIn
               ? `--replace would DELETE + CREATE the stateful resource ${logicalId} ` +
-                  `(${resourceType}) — ${renderStatefulReason(statefulReason)}. Re-run with ` +
-                  `--force-stateful-recreation to confirm the data loss, or change the ` +
-                  `resource definition to avoid the immutable-property change.`
+                  `(${resourceType}) — ${renderStatefulReason(statefulReason)}. ` +
+                  (protection
+                    ? `${recordedProtectionNote(protection, '--replace --force-stateful-recreation')} ` +
+                      `Or change the resource's definition to avoid the immutable-property change.`
+                    : `Re-run with --force-stateful-recreation to confirm the data loss, or ` +
+                      `change the resource definition to avoid the immutable-property change.`)
               : `${logicalId} (${resourceType}) cannot be updated in place by the ` +
                   `provisioning layer it routes through, so applying this change would ` +
                   `DELETE + CREATE it — but it is a stateful resource: ` +
-                  `${renderStatefulReason(statefulReason)}. Re-run with ` +
-                  `--force-stateful-recreation to confirm the data loss, or change the ` +
-                  `resource definition to avoid the update.`,
+                  `${renderStatefulReason(statefulReason)}. ` +
+                  (protection
+                    ? `${recordedProtectionNote(protection, '--force-stateful-recreation')} ` +
+                      `Or change the resource's definition to avoid the update.`
+                    : `Re-run with --force-stateful-recreation to confirm the data loss, or ` +
+                      `change the resource definition to avoid the update.`),
             'STATEFUL_REPLACE_BLOCKED',
             // Chain the rejection that routed us here: the message
             // above names no layer and no AWS text, so this is the

@@ -14,6 +14,12 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 //   true,protect       INFREQUENT_ACCESS + DeletionProtectionEnabled (P4).
 //   protect            STANDARD + DeletionProtectionEnabled (P5, P6, P7) — the
 //                      class change that reaches the issue #2579 arm.
+//   rename             STANDARD, unprotected, under a NEW LogGroupName (P2b).
+//   true,protect,rename
+//                      INFREQUENT_ACCESS + protection under a NEW LogGroupName
+//                      (P5b). A name change is a create-only replacement, so
+//                      the deploy engine's own stateful refusal answers it
+//                      before the provider runs — issue #2610's site 9.
 //
 // CloudFormation documents LogGroupClass as "Update requires: Updates are not
 // supported" — there is no CloudWatch Logs API to change a log group's class
@@ -51,10 +57,14 @@ export class LoggroupClassGuardStack extends cdk.Stack {
 
     const toInfrequentAccess = modes.includes('true');
     const deletionProtection = modes.includes('protect');
+    const renamed = modes.includes('rename');
 
     const lg = new logs.LogGroup(this, 'ClassLg', {
-      // Keep in sync with `LG_NAME` in verify.sh, which asserts the two agree.
-      logGroupName: '/cdkd-integ/loggroup-class-guard/class',
+      // Keep in sync with `LG_NAME` / `LG_RENAMED` in verify.sh; phase 1
+      // asserts the first against state. Both sit under the swept prefix.
+      logGroupName: renamed
+        ? '/cdkd-integ/loggroup-class-guard/renamed'
+        : '/cdkd-integ/loggroup-class-guard/class',
       retention: logs.RetentionDays.ONE_DAY,
       logGroupClass: toInfrequentAccess
         ? logs.LogGroupClass.INFREQUENT_ACCESS

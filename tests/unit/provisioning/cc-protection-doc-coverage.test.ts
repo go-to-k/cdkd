@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 import { ccProtectionRegistryTypes } from '../../../src/provisioning/cc-protection-properties.js';
-import { PROTECTION_PROPERTY_BY_TYPE } from '../../../src/cli/commands/destroy-runner.js';
+import { PROTECTION_PROPERTY_BY_TYPE } from '../../../src/provisioning/protection-flags.js';
 import {
   destroyRemoveProtectionHelp,
   stateDestroyRemoveProtectionHelp,

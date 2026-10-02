@@ -28,6 +28,9 @@
 #      the actionable "cannot be changed after creation" + "--replace" message,
 #      assert it is the UNPROTECTED arm (the protected arm's wording must be
 #      absent), and assert AWS is unchanged.
+#   2b. Re-deploy STANDARD, unprotected, under a NEW LogGroupName: the deploy
+#      engine's own stateful refusal (issue #2610 site 9) must fire with its
+#      SHORT advice and none of the protected note. Assert AWS unchanged.
 #   3. Re-deploy the same change with --replace --force-stateful-recreation:
 #      expect success and the log group recreated as INFREQUENT_ACCESS.
 #   4. Turn deletion protection ON in place. Assert AWS reports it on and the
@@ -38,6 +41,9 @@
 #      name DeletionProtectionEnabled, say `cdkd deploy` has no
 #      --remove-protection, and quote the out-of-band disable command with THIS
 #      log group's name. Assert AWS unchanged in BOTH properties.
+#   5b. Rename the PROTECTED log group: the same engine refusal must now say
+#      --force-stateful-recreation alone cannot remove it, naming the recorded
+#      DeletionProtectionEnabled (issue #2610). Assert AWS unchanged.
 #   6. Follow the remedy the message hands the reader: EXTRACT the disable
 #      command out of phase 5's own output, check its argv shape, run it, then
 #      re-deploy with --replace --force-stateful-recreation. Expect success and
@@ -117,6 +123,8 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 # groups.
 LG_PREFIX="/cdkd-integ/loggroup-class-guard/"
 LG_NAME="${LG_PREFIX}class"
+# The `rename` mode's name (phases 2b and 5b), which neither refusal may create.
+LG_RENAMED="${LG_PREFIX}renamed"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -457,6 +465,58 @@ assert_not_protected_arm() { # $1 = phase label, $2 = captured output, $3 = log 
   done <<<"$(protected_needles "$3")"
 }
 
+# Issue #2610 site 9: the deploy engine's property-driven STATEFUL_REPLACE_BLOCKED
+# refusal, reached by a LogGroupName change (create-only) on a log group with a
+# recorded retention. ENGINE_REFUSAL is the sentinel: it is printed whichever
+# advice follows, so a reword of the advice cannot read as "the guard did not
+# fire", and a missing sentinel fails loudly on its own.
+ENGINE_REFUSAL='but it is a stateful resource'
+ENGINE_SHORT_ADVICE='Re-run with --force-stateful-recreation to confirm the data loss'
+# Pins WHICH refusal: the update-failure fallback's text carries ENGINE_REFUSAL
+# too, so this one keeps the phases on the property-driven site.
+ENGINE_SITE='requires replacement (immutable property changed: LogGroupName'
+engine_protected_needles() {
+  printf '%s\n' "cdkd's recorded properties for this resource carry DeletionProtectionEnabled: true"
+  printf '%s\n' "so --force-stateful-recreation alone does not remove the old resource"
+}
+
+# Reads RENAME_OUT / RENAME_RC, which each phase captures itself: the mode list
+# stays a literal at the call, where the mode-timeline fence can read it.
+RENAME_OUT=""
+RENAME_RC=0
+check_rename_refusal() { # $1 = phase label
+  tail -4 <<<"${RENAME_OUT}"
+  if [ "${RENAME_RC}" -eq 0 ]; then
+    echo "FAIL: $1: a LogGroupName change without --force-stateful-recreation exited 0" >&2
+    exit 1
+  fi
+  if ! grep -qF -- "${ENGINE_REFUSAL}" <<<"${RENAME_OUT}"; then
+    echo "FAIL: $1: the engine's stateful refusal ('${ENGINE_REFUSAL}') is absent (rc=${RENAME_RC}) — it did not fire, or its wording drifted" >&2
+    exit 1
+  fi
+  if ! grep -qF -- "${ENGINE_SITE}" <<<"${RENAME_OUT}"; then
+    echo "FAIL: $1: a stateful refusal fired, but not the property-driven one ('${ENGINE_SITE}')" >&2
+    exit 1
+  fi
+}
+
+assert_rename_left_aws_unchanged() { # $1 = phase label, $2 = class, $3 = protection
+  # Single probes: the refusal came before any write (see phase 2).
+  local cls prot renamed_rows
+  assert_lg_exists "${LG}"
+  cls="$(lg_class "${LG}")"
+  prot="$(lg_protection "${LG}")"
+  renamed_rows="$(lg_row_count "${LG_RENAMED}")"
+  if [ "${cls}" != "$2" ] || [ "${prot}" != "$3" ]; then
+    echo "FAIL: $1: AWS changed despite the refusal (expected $2/$3, got '${cls}'/'${prot}')" >&2
+    exit 1
+  fi
+  if [ "${renamed_rows}" != "0" ]; then
+    echo "FAIL: $1: the refused rename created ${LG_RENAMED} anyway (rows: '${renamed_rows}')" >&2
+    exit 1
+  fi
+}
+
 # --- Phase 1: deploy baseline (STANDARD, unprotected) --------------------
 echo "==> Phase 1: deploy STANDARD, unprotected log group"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -535,6 +595,29 @@ if [ "${PROT_P2}" != "False" ]; then
   exit 1
 fi
 echo "    guard fired with actionable message (unprotected arm); AWS unchanged (STANDARD, unprotected)"
+
+# --- Phase 2b: rename an UNPROTECTED log group (issue #2610 site 9) -------
+echo "==> Phase 2b: rename the unprotected log group without --force-stateful-recreation (expect the engine refusal, SHORT advice)"
+set +e
+RENAME_OUT="$(CDKD_TEST_UPDATE=rename node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+RENAME_RC=$?
+set -e
+check_rename_refusal "Phase 2b"
+if ! grep -qF -- "${ENGINE_SHORT_ADVICE}" <<<"${RENAME_OUT}"; then
+  echo "FAIL: Phase 2b: the unprotected refusal lost its short advice ('${ENGINE_SHORT_ADVICE}')" >&2
+  exit 1
+fi
+# The floor under phase 5b, over the same needles: without it they could be
+# satisfied by text the refusal prints unconditionally.
+while IFS= read -r needle; do
+  if grep -qF -- "${needle}" <<<"${RENAME_OUT}"; then
+    echo "FAIL: Phase 2b: an UNPROTECTED log group got the protected note (#2610 predicate stuck on?): ${needle}" >&2
+    exit 1
+  fi
+done <<<"$(engine_protected_needles)"
+assert_rename_left_aws_unchanged "Phase 2b" STANDARD False
+echo "    engine refusal fired with the short advice; AWS unchanged"
 
 # --- Phase 3: --replace --force-stateful-recreation recreates the group ---
 echo "==> Phase 3: re-deploy with --replace --force-stateful-recreation (expect recreate as INFREQUENT_ACCESS)"
@@ -620,6 +703,27 @@ if [ "${PROT_P5}" != "True" ]; then
   exit 1
 fi
 echo "    protected arm fired, named the property, the missing flag and the disable command; AWS unchanged"
+
+# --- Phase 5b: rename the PROTECTED log group (issue #2610 site 9) --------
+echo "==> Phase 5b: rename the protected log group without --force-stateful-recreation (expect the engine refusal's protected note)"
+set +e
+RENAME_OUT="$(CDKD_TEST_UPDATE=true,protect,rename node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+RENAME_RC=$?
+set -e
+check_rename_refusal "Phase 5b"
+while IFS= read -r needle; do
+  if ! grep -qF -- "${needle}" <<<"${RENAME_OUT}"; then
+    echo "FAIL: Phase 5b: the refusal is missing the protected note (#2610): ${needle}" >&2
+    exit 1
+  fi
+done <<<"$(engine_protected_needles)"
+if grep -qF -- "${ENGINE_SHORT_ADVICE}" <<<"${RENAME_OUT}"; then
+  echo "FAIL: Phase 5b: a PROTECTED log group still got the short advice alone" >&2
+  exit 1
+fi
+assert_rename_left_aws_unchanged "Phase 5b" INFREQUENT_ACCESS True
+echo "    engine refusal named the recorded protection; AWS unchanged"
 
 # --- Phase 6: the remedy the protected arm hands the reader ---------------
 # Not "a disable command with the same effect" — THE command phase 5 just

@@ -746,9 +746,8 @@ export function printRunEvents(
 /**
  * Color the event-type token by its lifecycle phase.
  *
- * Exported for unit-test coverage (matching `destroy-runner.ts`'s
- * `PROTECTION_PROPERTY_BY_TYPE` convention) — it is pure, so testing it
- * directly beats driving it through the renderer's log output.
+ * Exported for unit-test coverage — it is pure, so testing it directly beats
+ * driving it through the renderer's log output.
  *
  * Issue #2438: the declared union is what the WRITER emits; the value handed
  * here was restored by `JSON.parse` from the stored stream and is therefore

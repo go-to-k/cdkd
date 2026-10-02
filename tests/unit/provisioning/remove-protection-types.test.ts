@@ -27,7 +27,7 @@ import {
   removeProtectionTypes,
 } from '../../../src/provisioning/remove-protection-types.js';
 import { ccProtectionRegistryTypes } from '../../../src/provisioning/cc-protection-properties.js';
-import { PROTECTION_PROPERTY_BY_TYPE } from '../../../src/cli/commands/destroy-runner.js';
+import { PROTECTION_PROPERTY_BY_TYPE } from '../../../src/provisioning/protection-flags.js';
 import {
   destroyRemoveProtectionHelp,
   stateDestroyRemoveProtectionHelp,
