@@ -723,6 +723,18 @@ and reads the test, and both read the same fixture, so a premise shared by code
 and mock is invariant under it. Only a recorded real response or a live arm
 falsifies a fixture.
 
+The S3 pre-flight's partial-create cleanup gate has a sibling for every create
+API that answers success with a resource already holding the name: ELBv2
+`CreateLoadBalancer` / `CreateTargetGroup` on identical settings, SNS
+`CreateTopic`, and EventBridge `PutRule`, which overwrites (issue
+[#4403](https://github.com/go-to-k/cdkd/issues/4403)). Before the create, and
+only when a wiring step that can fail is declared, the provider looks up the
+name it is about to send (`src/provisioning/providers/create-ownership.ts`).
+Only the service's own not-found answer licenses the partial-create cleanup. A
+name that was held, or a lookup that could not answer, leaves the resource in
+place with a warning saying why and the manual delete command. A new provider
+of such a type gates its cleanup the same way.
+
 ## Reporting a skipped delete
 
 Written for issue [#1752](https://github.com/go-to-k/cdkd/issues/1752).

@@ -2283,6 +2283,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "nlb-source-nat",
+        "partial-create-handback",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -2421,6 +2422,10 @@
         ],
         "nlb-source-nat": [
           "l2"
+        ],
+        "partial-create-handback": [
+          "l1",
+          "literal"
         ],
         "propagation-races-2": [
           "l2"
@@ -2717,6 +2722,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "nlb-source-nat",
+        "partial-create-handback",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -2868,6 +2874,10 @@
         ],
         "nlb-source-nat": [
           "l2"
+        ],
+        "partial-create-handback": [
+          "l1",
+          "literal"
         ],
         "propagation-races-2": [
           "l2"
@@ -3571,6 +3581,7 @@
         "local-start-alb",
         "local-start-alb-from-state",
         "nlb-source-nat",
+        "partial-create-handback",
         "remove-protection",
         "replacement-rename-onto-holder"
       ],
@@ -3608,6 +3619,10 @@
           "l1",
           "literal"
         ],
+        "partial-create-handback": [
+          "l1",
+          "literal"
+        ],
         "remove-protection": [
           "l2",
           "literal"
@@ -3628,6 +3643,7 @@
         "import-attribute-readback-network",
         "local-start-alb",
         "local-start-alb-from-state",
+        "partial-create-handback",
         "replacement-rename-onto-holder"
       ],
       "signals": {
@@ -3652,6 +3668,10 @@
           "literal"
         ],
         "local-start-alb-from-state": [
+          "literal"
+        ],
+        "partial-create-handback": [
+          "l1",
           "literal"
         ],
         "replacement-rename-onto-holder": [
@@ -3698,6 +3718,7 @@
         "eventbridge-input-transformer",
         "iam-propagation-stress",
         "nested-stack-secret",
+        "partial-create-handback",
         "rename-refactor",
         "replacement-immutable-name",
         "scheduled-task"
@@ -3722,6 +3743,10 @@
           "l2"
         ],
         "nested-stack-secret": [
+          "l1",
+          "literal"
+        ],
+        "partial-create-handback": [
           "l1",
           "literal"
         ],
@@ -5865,6 +5890,7 @@
         "monitoring",
         "nested-stack-3level",
         "noecho-parameter-masking",
+        "partial-create-handback",
         "replacement-fanout",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
@@ -5968,6 +5994,10 @@
           "l2"
         ],
         "noecho-parameter-masking": [
+          "l1",
+          "literal"
+        ],
+        "partial-create-handback": [
           "l1",
           "literal"
         ],

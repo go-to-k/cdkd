@@ -99,6 +99,12 @@ import {
   type ProtectionGuardSite,
 } from './deletion-protection-compensation.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import {
+  hasErrorName,
+  nameHeldBefore,
+  skippedCleanupText,
+  type NameHeldBefore,
+} from './create-ownership.js';
 
 /**
  * The `Name` a load balancer ARN carries
@@ -150,6 +156,19 @@ function explicitElbv2Name(input: ResourceImportInput): string | undefined {
     (typeof declared === 'string' && declared !== '') ||
     (typeof declared === 'number' && Number.isFinite(declared));
   return usable ? sentElbv2Name(input.properties, input.logicalId) : undefined;
+}
+
+/**
+ * A by-name `Describe*` before a create (go-to-k/cdkd#4403): a listed match
+ * holds the name. The ABSENCE of one is answered by the service's not-found
+ * error, so an empty list with no error is no answer: it throws, which the
+ * lookup reads as `unknown`, never as `free`.
+ */
+function answeredHeld(items: unknown[] | undefined): true {
+  if (items === undefined || items.length === 0) {
+    throw new Error('ELBv2 answered no match and no not-found error for the name');
+  }
+  return true;
 }
 
 /**
@@ -879,6 +898,34 @@ export class ELBv2Provider implements ResourceProvider {
     try {
       const lbName = sentElbv2Name(properties, logicalId);
 
+      // Whether the cleanup below may delete what CreateLoadBalancer returns:
+      // on identical settings it hands back a load balancer that already held
+      // the name (go-to-k/cdkd#4403). Asked only when a wiring step can fail.
+      const lbAttributes = this.normalizeAttributes(properties['LoadBalancerAttributes']);
+      const enforcePrivateLink = properties[
+        'EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic'
+      ] as EnforceSecurityGroupInboundRulesOnPrivateLinkTrafficEnum | undefined;
+      const minCapacity = properties['MinimumLoadBalancerCapacity'] as
+        | { CapacityUnits?: number | string }
+        | undefined;
+      // Read ONCE, so the wait below and this gate cannot disagree.
+      const waitForActive = process.env['CDKD_NO_WAIT'] !== 'true';
+      const wiringDeclared =
+        waitForActive ||
+        lbAttributes.length > 0 ||
+        enforcePrivateLink !== undefined ||
+        minCapacity?.CapacityUnits !== undefined;
+      const heldBefore: NameHeldBefore = wiringDeclared
+        ? await nameHeldBefore(
+            async () =>
+              answeredHeld(
+                (await this.getClient().send(new DescribeLoadBalancersCommand({ Names: [lbName] })))
+                  .LoadBalancers
+              ),
+            (error) => hasErrorName(error, ['LoadBalancerNotFoundException'])
+          )
+        : 'free';
+
       const ipv4IpamPoolId = properties['Ipv4IpamPoolId'] as string | undefined;
       const response = await this.getClient().send(
         new CreateLoadBalancerCommand({
@@ -946,7 +993,7 @@ export class ELBv2Provider implements ResourceProvider {
         //
         // Create only. SetSubnets / SetSecurityGroups / SetIpAddressType
         // on update act on an already-active LB and need no waiter.
-        if (process.env['CDKD_NO_WAIT'] !== 'true') {
+        if (waitForActive) {
           this.logger.debug(`Waiting for LoadBalancer ${logicalId} to reach active state...`);
           await waitUntilLoadBalancerAvailable(
             // 600s matches Terraform's default `aws_lb` create timeout.
@@ -967,7 +1014,6 @@ export class ELBv2Provider implements ResourceProvider {
         // Apply LoadBalancerAttributes if specified (normalized so an
         // unquoted-YAML numeric/boolean Value goes on the wire as a string,
         // matching the TG / Listener create paths).
-        const lbAttributes = this.normalizeAttributes(properties['LoadBalancerAttributes']);
         if (lbAttributes.length > 0) {
           await this.getClient().send(
             new ModifyLoadBalancerAttributesCommand({
@@ -985,9 +1031,6 @@ export class ELBv2Provider implements ResourceProvider {
         // so re-issue the create-time security groups with the flag when the
         // template carries it (NLB + security-groups only; AWS rejects it
         // elsewhere and the error surfaces through the cleanup catch).
-        const enforcePrivateLink = properties[
-          'EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic'
-        ] as EnforceSecurityGroupInboundRulesOnPrivateLinkTrafficEnum | undefined;
         if (enforcePrivateLink !== undefined) {
           await this.getClient().send(
             new SetSecurityGroupsCommand({
@@ -1014,9 +1057,6 @@ export class ELBv2Provider implements ResourceProvider {
         // member). EnableCapacityReservationProvisionStabilize is a CFn-only
         // orchestration flag with NO SDK member: it opts the deploy into
         // waiting for the reservation to reach `provisioned` before success.
-        const minCapacity = properties['MinimumLoadBalancerCapacity'] as
-          | { CapacityUnits?: number | string }
-          | undefined;
         if (minCapacity?.CapacityUnits !== undefined) {
           await this.getClient().send(
             new ModifyCapacityReservationCommand({
@@ -1044,21 +1084,35 @@ export class ELBv2Provider implements ResourceProvider {
           }
         }
       } catch (innerError) {
-        try {
-          await this.getClient().send(new DeleteLoadBalancerCommand({ LoadBalancerArn: lbArn }));
-          this.logger.debug(
-            `Cleaned up partially-created LoadBalancer ${logicalId} (${lbArn}) after wiring failure`
-          );
-        } catch (cleanupError) {
+        if (heldBefore !== 'free') {
           this.logger.warn(
-            // Masked for uniformity with the sibling lines in this same `try`
-            // (issue #2063), matching the Listener / TargetGroup create paths.
-            // The cleanup call carries only the AWS-issued ARN, so a resolved
-            // property value reaching here would be surprising — but
-            // "surprising" is not "impossible", and an unmasked line sitting
-            // beside masked ones is what a later author copies.
-            `Failed to clean up partially-created LoadBalancer ${logicalId} (${lbArn}): ${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-load-balancer --load-balancer-arn ${lbArn}`.render()}`
+            maskerOrIdentity(maskSecrets)(
+              skippedCleanupText(
+                heldBefore,
+                `LoadBalancer ${logicalId} (${lbArn})`,
+                pasteableAwsCommand(
+                  maskSecrets
+                )`aws elbv2 delete-load-balancer --load-balancer-arn ${lbArn}`.render()
+              )
+            )
           );
+        } else {
+          try {
+            await this.getClient().send(new DeleteLoadBalancerCommand({ LoadBalancerArn: lbArn }));
+            this.logger.debug(
+              `Cleaned up partially-created LoadBalancer ${logicalId} (${lbArn}) after wiring failure`
+            );
+          } catch (cleanupError) {
+            this.logger.warn(
+              // Masked for uniformity with the sibling lines in this same `try`
+              // (issue #2063), matching the Listener / TargetGroup create paths.
+              // The cleanup call carries only the AWS-issued ARN, so a resolved
+              // property value reaching here would be surprising — but
+              // "surprising" is not "impossible", and an unmasked line sitting
+              // beside masked ones is what a later author copies.
+              `Failed to clean up partially-created LoadBalancer ${logicalId} (${lbArn}): ${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-load-balancer --load-balancer-arn ${lbArn}`.render()}`
+            );
+          }
         }
         // The resource itself was created: an "already exists" from its wiring
         // is an auxiliary object's, not this resource's name collision (#3826).
@@ -1646,6 +1700,26 @@ export class ELBv2Provider implements ResourceProvider {
 
       const tgName = sentElbv2Name(properties, logicalId);
 
+      // Whether the cleanup below may delete what CreateTargetGroup returns:
+      // on identical settings it hands back a target group that already held
+      // the name (go-to-k/cdkd#4403). Asked only when a wiring step can fail.
+      const tgAttributes = this.normalizeAttributes(properties['TargetGroupAttributes']);
+      const targets = toTargetDescriptions(desiredTargets.items);
+      const heldBefore: NameHeldBefore =
+        tgAttributes.length > 0 || targets.length > 0
+          ? await nameHeldBefore(
+              async () =>
+                answeredHeld(
+                  (
+                    await this.getClient().send(
+                      new DescribeTargetGroupsCommand({ Names: [tgName] })
+                    )
+                  ).TargetGroups
+                ),
+              (error) => hasErrorName(error, ['TargetGroupNotFoundException'])
+            )
+          : 'free';
+
       const response = await this.getClient().send(
         new CreateTargetGroupCommand({
           Name: tgName,
@@ -1702,7 +1776,6 @@ export class ELBv2Provider implements ResourceProvider {
       // name — wrap in the same best-effort-delete-then-rethrow pattern as the
       // LoadBalancer create path above.
       try {
-        const tgAttributes = this.normalizeAttributes(properties['TargetGroupAttributes']);
         if (tgAttributes.length > 0) {
           await this.getClient().send(
             new ModifyTargetGroupAttributesCommand({
@@ -1715,7 +1788,6 @@ export class ELBv2Provider implements ResourceProvider {
           );
         }
 
-        const targets = toTargetDescriptions(desiredTargets.items);
         if (targets.length > 0) {
           await this.getClient().send(
             new RegisterTargetsCommand({ TargetGroupArn: tgArn, Targets: targets })
@@ -1723,23 +1795,37 @@ export class ELBv2Provider implements ResourceProvider {
           this.logger.debug(`Registered ${targets.length} target(s) for ${logicalId}`);
         }
       } catch (innerError) {
-        try {
-          await this.getClient().send(new DeleteTargetGroupCommand({ TargetGroupArn: tgArn }));
-          this.logger.debug(
-            `Cleaned up partially-created TargetGroup ${logicalId} (${tgArn}) after wiring failure`
-          );
-        } catch (cleanupError) {
+        if (heldBefore !== 'free') {
           this.logger.warn(
-            // Masked for uniformity with the sibling lines in this same `try`
-            // (issue #2050). The cleanup call carries only a physical ARN, so a
-            // resolved property value reaching here would be surprising — but
-            // "surprising" is not "impossible", and an unmasked line sitting
-            // beside masked ones is what a later author copies.
-            `Failed to clean up partially-created TargetGroup ${logicalId} (${tgArn}): ` +
-              `${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be ` +
-              `required before the next deploy: ` +
-              `${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-target-group --target-group-arn ${tgArn}`.render()}`
+            maskerOrIdentity(maskSecrets)(
+              skippedCleanupText(
+                heldBefore,
+                `TargetGroup ${logicalId} (${tgArn})`,
+                pasteableAwsCommand(
+                  maskSecrets
+                )`aws elbv2 delete-target-group --target-group-arn ${tgArn}`.render()
+              )
+            )
           );
+        } else {
+          try {
+            await this.getClient().send(new DeleteTargetGroupCommand({ TargetGroupArn: tgArn }));
+            this.logger.debug(
+              `Cleaned up partially-created TargetGroup ${logicalId} (${tgArn}) after wiring failure`
+            );
+          } catch (cleanupError) {
+            this.logger.warn(
+              // Masked for uniformity with the sibling lines in this same `try`
+              // (issue #2050). The cleanup call carries only a physical ARN, so a
+              // resolved property value reaching here would be surprising — but
+              // "surprising" is not "impossible", and an unmasked line sitting
+              // beside masked ones is what a later author copies.
+              `Failed to clean up partially-created TargetGroup ${logicalId} (${tgArn}): ` +
+                `${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be ` +
+                `required before the next deploy: ` +
+                `${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-target-group --target-group-arn ${tgArn}`.render()}`
+            );
+          }
         }
         // The resource itself was created: an "already exists" from its wiring
         // is an auxiliary object's, not this resource's name collision (#3826).

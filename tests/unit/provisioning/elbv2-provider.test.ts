@@ -2,12 +2,29 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 // Mock AWS clients before importing the provider
 const mockSend = vi.fn();
+// Every by-name lookup the client mock answers on the side, so a "no AWS
+// call" assertion can still see one.
+const routedLookups = vi.fn();
 
 vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
   const actual = await vi.importActual('@aws-sdk/client-elastic-load-balancing-v2');
   return {
     ...actual,
-    ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({ send: mockSend, config: { region: () => Promise.resolve('us-east-1') } })),
+    ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({
+      send: (command: { constructor: { name: string }; input?: { Names?: unknown } }) =>
+        // The by-name lookup before a create (go-to-k/cdkd#4403): the name is free.
+        command.input?.Names !== undefined
+          ? (routedLookups(command), Promise.reject(
+              Object.assign(new Error('One or more resources not found'), {
+                name:
+                  command.constructor.name === 'DescribeTargetGroupsCommand'
+                    ? 'TargetGroupNotFoundException'
+                    : 'LoadBalancerNotFoundException',
+              })
+            ))
+          : mockSend(command),
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
     // createLoadBalancer waits for `active` (issue #1274). The real waiter
     // would poll DescribeLoadBalancers against `mockSend` and time the test
     // out, so stub it; the wait's own behavior is covered by
@@ -870,6 +887,7 @@ describe('ELBv2Provider', () => {
       const result = await provider.import(makeInput());
       expect(result).toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
+      expect(routedLookups).not.toHaveBeenCalled();
     });
 
     it('TargetGroup explicit override: DescribeTargetGroups verifies and returns the ARN', async () => {
@@ -909,6 +927,7 @@ describe('ELBv2Provider', () => {
       );
       expect(result).toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
+      expect(routedLookups).not.toHaveBeenCalled();
     });
   });
 });

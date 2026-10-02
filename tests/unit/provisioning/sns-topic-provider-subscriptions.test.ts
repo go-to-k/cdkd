@@ -7,11 +7,24 @@ import {
   ListSubscriptionsByTopicCommand,
 } from '@aws-sdk/client-sns';
 
-const mockSend = vi.fn();
+const { mockSend, ownershipSend } = vi.hoisted(() => ({
+  mockSend: vi.fn(),
+  // The lookup before the create (go-to-k/cdkd#4403): STS for the account,
+  // then GetTopicAttributes on the ARN the name maps to. Its own spy, so the
+  // cases below keep their command routing; the name is free by default.
+  ownershipSend: vi.fn(),
+}));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    sns: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    sns: {
+      send: (command: { constructor: { name: string } }) =>
+        command.constructor.name === 'GetTopicAttributesCommand'
+          ? ownershipSend(command)
+          : mockSend(command),
+      config: { region: () => Promise.resolve('us-east-1') },
+    },
+    sts: { send: ownershipSend },
   }),
 }));
 
@@ -45,6 +58,13 @@ describe('SNSTopicProvider inline Subscription (issue #980)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    ownershipSend.mockReset();
+    ownershipSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'GetCallerIdentityCommand') {
+        return { Account: '123456789012', Arn: 'arn:aws:iam::123456789012:user/u' };
+      }
+      throw Object.assign(new Error('Topic does not exist'), { name: 'NotFoundException' });
+    });
     provider = new SNSTopicProvider();
   });
 

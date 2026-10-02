@@ -13,7 +13,20 @@ const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    sns: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    // The lookup before a create (go-to-k/cdkd#4403): STS answers a marker
+    // account, and only a read of THAT account's ARN is answered "not
+    // found", so the name is free and every other call reaches `mockSend`.
+    sns: {
+      send: (command: { constructor: { name: string }; input?: { TopicArn?: string } }) =>
+        command.constructor.name === 'GetTopicAttributesCommand' &&
+        command.input?.TopicArn?.includes(':000000000000:') === true
+          ? Promise.reject(Object.assign(new Error('Topic does not exist'), { name: 'NotFoundException' }))
+          : mockSend(command),
+      config: { region: () => Promise.resolve('us-east-1') },
+    },
+    sts: {
+      send: () => Promise.resolve({ Account: '000000000000', Arn: 'arn:aws:iam::000000000000:user/u' }),
+    },
   }),
 }));
 

@@ -1831,6 +1831,11 @@
       "scenarios": []
     },
     {
+      "name": "partial-create-handback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "propagation-races-2",
       "annotated": true,
       "scenarios": [
@@ -3204,6 +3209,7 @@
     "nodejs-function",
     "noecho-parameter-masking",
     "orphan-getatt-takeover",
+    "partial-create-handback",
     "rds-dbinstance-backfill",
     "recreate-mixed-direction",
     "recreate-nested-logical-id-collision",
