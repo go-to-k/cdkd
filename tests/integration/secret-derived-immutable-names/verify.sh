@@ -9,7 +9,9 @@
 # that never happened, and refused every in-place update (the ECS row is
 # go-to-k/cdkd#4263); so did the AppSync GraphQLApi and DataSource providers,
 # and the IAM ManagedPolicy provider REPLACED the policy instead (a create under
-# the same name and path, which IAM refuses). A Scheduler Schedule's GroupName stays refused on
+# the same name and path, which IAM refuses). The Cloud Control provider, which
+# a Logs MetricFilter routes to, put an op on the create-only FilterName path
+# in every update's JSON Patch. A Scheduler Schedule's GroupName stays refused on
 # purpose (go-to-k/cdkd#4275), so it is not deployed here.
 #
 # Steps (each echoed as `Step N`):
@@ -22,7 +24,7 @@
 #   4. LOAD-BEARING: the update (CDKD_TEST_UPDATE=true: only the Stages'
 #      Description, the Service's EnableECSManagedTags, the Policy's document,
 #      the API's XrayEnabled, the DataSource's Description and the Queue's
-#      VisibilityTimeout change) EXITS 0.
+#      VisibilityTimeout and the Filter's FilterPattern change) EXITS 0.
 #      This is what discriminates the fix; the refusals it replaced are named
 #      in the failure message. No secret-derived value appears in its
 #      --verbose log.
@@ -48,6 +50,10 @@
 # updates either way. Revert src/utils/logger.ts ALONE (go-to-k/cdkd#2177) and
 # step 4 fails "SecretQueue's 'Updating SQS queue' line carries no '***'
 # mask": that provider debug line prints the queue URL, name and all, raw.
+# Revert src/provisioning/cloud-control-provider.ts ALONE and step 4 is
+# expected to fail on Cloud Control's refusal of the patch op on the
+# create-only /FilterName (the message is not yet measured: copy it from the
+# probe's red log into the refusal list below).
 #
 # BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
 
@@ -109,6 +115,7 @@ POLICY_DESC="sdin-pdesc-${SUFFIX}"
 GQL_API_NAME="sdin_gql_${SUFFIX//-/_}"
 DS_NAME="sdin_ds_${SUFFIX//-/_}"
 QUEUE_NAME="sdin-q-${SUFFIX}"
+FILTER_NAME="sdin-mf-${SUFFIX}"
 export SDIN_SECRET_NAME="cdkd-integ-sdin-secret-${SUFFIX}"
 SEEDED_SECRET=0
 # Set just before the first deploy: the stack name is fixed, so a run refused by
@@ -179,8 +186,8 @@ fi
 echo "==> Step 1: seed the secret naming every secret-derived property"
 # From a file, not argv, so the value never shows in the host's process list.
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager create-secret --region "${REGION}" --name "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -226,6 +233,11 @@ service_field() { # usage: service_field <field> (a strict capture: a failed rea
   aws ecs describe-services --region "${REGION}" --cluster "${CLUSTER_ID}" \
     --services "${SERVICE_ARN}" --query "services[0].$1" --output text
 }
+filter_field() { # usage: filter_field <field> (a strict capture: a failed read aborts)
+  aws logs describe-metric-filters --region "${REGION}" --log-group-name "${FILTER_LOG_GROUP}" \
+    --filter-name-prefix "${FILTER_NAME}" --query "metricFilters[?filterName=='${FILTER_NAME}'] | [0].$1" \
+    --output text
+}
 expect_eq() { # usage: expect_eq <what> <want> <got>
   if [ "$3" != "$2" ]; then
     echo "FAIL: $1: want '$2', got '$3'" >&2
@@ -256,12 +268,14 @@ TASK_DEF_ARN="$(state_physical_id TaskDef)"
 POLICY_ARN="$(state_physical_id SecretPolicy)"
 GQL_API_ID="$(state_physical_id SecretApi)"
 QUEUE_URL="$(state_physical_id SecretQueue)"
-for v in API_ID CLUSTER_ID SERVICE_ARN TASK_DEF_ARN POLICY_ARN GQL_API_ID QUEUE_URL; do
+FILTER_LOG_GROUP="$(state_physical_id FilterLogGroup)"
+FILTER_ID="$(state_physical_id SecretFilter)"
+for v in API_ID CLUSTER_ID SERVICE_ARN TASK_DEF_ARN POLICY_ARN GQL_API_ID QUEUE_URL FILTER_LOG_GROUP FILTER_ID; do
   if [ -z "${!v}" ]; then echo "FAIL: ${v} not found in ${STATE_KEY}" >&2; exit 1; fi
 done
 
 echo "==> Step 3 (PREMISE): state records the names as the redacted expression"
-for field in stage service path policydesc api datasource queue; do
+for field in stage service path policydesc api datasource queue filter; do
   if ! state_holds "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:${field}::}}"; then
     echo "FAIL: state does not record the {{resolve:secretsmanager: expression for the ${field}; the name is not secret-derived, so the update below would not exercise the guard" >&2
     exit 1
@@ -292,10 +306,14 @@ expect_eq "SecretDataSource's physical id carries the secret's name" \
   "${GQL_API_ID}|${DS_NAME}" "$(state_physical_id SecretDataSource)"
 expect_eq "SecretDataSource's Description after deploy" "cdkd integ: initial" "$(ds_field description)"
 expect_eq "SecretQueue's URL ends with the secret's queue name" "${QUEUE_NAME}" "${QUEUE_URL##*/}"
+expect_eq "SecretFilter's recorded FilterName" \
+  "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:filter::}}" "$(state_property SecretFilter FilterName)"
+expect_eq "SecretFilter's FilterPattern after deploy" "WARN" "$(filter_field filterPattern)"
+FILTER_CREATED="$(filter_field creationTime)"
 SECRET_STAGE_CREATED="$(stage_field "${STAGE_NAME}" CreatedDate)"
 PLAIN_STAGE_CREATED="$(stage_field plain CreatedDate)"
 SERVICE_CREATED="$(service_field createdAt)"
-for v in SECRET_STAGE_CREATED PLAIN_STAGE_CREATED SERVICE_CREATED; do
+for v in SECRET_STAGE_CREATED PLAIN_STAGE_CREATED SERVICE_CREATED FILTER_CREATED; do
   if [ -z "${!v}" ] || [ "${!v}" = "None" ]; then echo "FAIL: ${v} unreadable" >&2; exit 1; fi
 done
 
@@ -342,7 +360,7 @@ fi
 # Over the WHOLE log, engine progress lines included: a hit there is a loud
 # FAIL, never a vacuous pass, but look at the engine's lines before the
 # providers' when it fires (a Stage's physical id IS its name).
-for needle in "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}"; do
+for needle in "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}"; do
   # A here-string, not a pipe: see state_holds.
   if grep -qF -- "${needle}" <<< "${UPDATE_LOG_BODY}"; then
     echo "FAIL: the update log carries a secret-derived value in plaintext" >&2
@@ -370,6 +388,9 @@ expect_eq "SecretQueue's VisibilityTimeout after the update" "60" \
   "$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
     --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
 expect_eq "SecretQueue's URL (not replaced)" "${QUEUE_URL}" "$(state_physical_id SecretQueue)"
+expect_eq "SecretFilter's FilterPattern after the update" "ERROR" "$(filter_field filterPattern)"
+expect_eq "SecretFilter's creation time (not replaced)" "${FILTER_CREATED}" "$(filter_field creationTime)"
+expect_eq "SecretFilter's physical id" "${FILTER_ID}" "$(state_physical_id SecretFilter)"
 expect_eq "SecretStage's recorded StageName after the update" \
   "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:stage::}}" "$(state_property SecretStage StageName)"
 
@@ -399,6 +420,16 @@ assert_gone "managed policy ${POLICY_ARN} still exists after destroy" \
   aws iam get-policy --policy-arn "${POLICY_ARN}"
 assert_gone "GraphQL API ${GQL_API_ID} still exists after destroy" \
   aws appsync get-graphql-api --region "${REGION}" --api-id "${GQL_API_ID}"
+# The log group's deletion takes its metric filters with it. A prefix listing
+# does not error for a missing group, so a STRICT capture of the exact-name
+# match is the probe (a throttle aborts under set -e).
+LEFTOVER_LOG_GROUP="$(aws logs describe-log-groups --region "${REGION}" \
+  --log-group-name-prefix "${FILTER_LOG_GROUP}" \
+  --query "logGroups[?logGroupName=='${FILTER_LOG_GROUP}'].logGroupName" --output text)"
+if [ -n "${LEFTOVER_LOG_GROUP}" ] && [ "${LEFTOVER_LOG_GROUP}" != "None" ]; then
+  echo "FAIL: log group ${FILTER_LOG_GROUP} (and its metric filter) still exists after destroy" >&2
+  exit 1
+fi
 # SQS may answer for a deleted queue for up to 60 seconds.
 QUEUE_GONE=0
 for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
@@ -435,7 +466,7 @@ if [ "${TASK_DEF_STATUS}" = "ACTIVE" ]; then
   echo "FAIL: task definition ${TASK_DEF_ARN} is still ACTIVE after destroy" >&2
   exit 1
 fi
-echo "    OK: 0 orphans (state, API with both stages, ECS service, cluster and task definition, managed policy, GraphQL API with its data source, queue)"
+echo "    OK: 0 orphans (state, API with both stages, ECS service, cluster and task definition, managed policy, GraphQL API with its data source, queue, log group with its metric filter)"
 
 trap - EXIT INT TERM
 rm -f "${DEPLOY_LOG}" 2>/dev/null || true
@@ -446,4 +477,4 @@ echo "==> Step 8: sweep every object version under the stack's state prefix"
 s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
 echo ""
-echo "[verify] PASS - an in-place update of a Stage, an ECS Service, a managed policy, a GraphQL API and a data source whose immutable values come from a secret succeeded, in place, and destroy was clean"
+echo "[verify] PASS - an in-place update of a Stage, an ECS Service, a managed policy, a GraphQL API, a data source and a Cloud Control-routed metric filter whose immutable values come from a secret succeeded, in place, and destroy was clean"

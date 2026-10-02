@@ -1830,6 +1830,7 @@
     "--file-system-id",
     "--file-system-ids",
     "--filter",
+    "--filter-name-prefix",
     "--filter-pattern",
     "--filters",
     "--force-delete-without-recovery",
