@@ -756,7 +756,7 @@ state preservation, and does **not** change the exit code: a destroy showing
 only when non-zero. A warning beneath the line names the resources; the durable
 half is a `RESOURCE_GUARD_INDETERMINATE` event, which outlives the run — see
 [Deployment Events](deployment-events.md). `cdkd state destroy` prints the same
-figure but records no events at all.
+figure and records the same event.
 
 The state record is kept on purpose: without it you would have neither the AWS
 resource deleted nor an id to go and delete it with. To finish the destroy,

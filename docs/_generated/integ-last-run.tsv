@@ -291,7 +291,7 @@ s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-10-01T13:26:54Z	PASS	306	verify.sh	rc ok, orph clean; #4295 cloudfront distribution provider
 s3-directory-bucket	2026-09-29T11:17:28Z	PASS	90	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 s3-event-notification	2026-09-28T17:37:17Z	PASS	106	verify.sh	rc ok, orph clean (#3996, after merging main)
-s3-lifecycle	2026-09-29T12:27:30Z	PASS	407	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
+s3-lifecycle	2026-10-01T21:16:59Z	PASS	316	verify.sh	rc ok, orph clean; PR #4370 (#2423 state destroy events), head 09ba2f04b; phases 0/0b re-pointed to the #4344 named-create refusal
 s3-object-lock	2026-09-28T08:47:22Z	PASS	60	verify.sh	rc ok, orph clean (#2177 s3 mask threading, client-s3 3.1140)
 s3-replication-and-filter	2026-09-28T08:46:11Z	PASS	105	verify.sh	rc ok, orph clean (#2177 s3 mask threading, client-s3 3.1140)
 s3-subconfig-removal	2026-09-28T08:48:59Z	PASS	85	verify.sh	rc ok, orph clean (#2177 s3 mask threading, client-s3 3.1140)

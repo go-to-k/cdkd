@@ -636,7 +636,9 @@ once, on the destroy page:
 [`--remove-protection`](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy),
 and [skipped resources](cli-destroy.md#skipped-resources-on-destroy).
 
-Note that `cdkd state destroy` records no deployment events at all — see
+Each stack and region `cdkd state destroy` runs against records one
+deployment-event run under `command: destroy` (a failed, skipped or declined
+target included), readable with [`cdkd events`](cli-events.md) after the record is gone — see
 [Deployment Events](deployment-events.md).
 
 The two per-resource duration flags behave exactly as they do on deploy; they
