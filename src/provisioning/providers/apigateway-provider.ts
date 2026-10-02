@@ -75,7 +75,7 @@ import {
 import { safeMsg } from '../../utils/display-safe.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { injectiveKey } from '../../state/record-keys.js';
-import { collectOrphanIds, reportPossibleOrphans } from './apigateway-orphan-report.js';
+import { collectOrphanIds, reportPossibleOrphans } from './orphan-report.js';
 import {
   AmbiguousCreateLatch,
   RecentIdSet,
@@ -87,7 +87,7 @@ import {
  * Retry-safety state for the two API Gateway creates that mint their id and
  * carry no idempotency token, `CreateAuthorizer` and `CreateDeployment`
  * (issue [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
- * `apigateway-orphan-report.ts`. Module-scoped: a provider instance is per
+ * `orphan-report.ts`. Module-scoped: a provider instance is per
  * registry, and one process can build several.
  */
 const createAuthorizerLatch = new AmbiguousCreateLatch('apigateway:CreateAuthorizer');

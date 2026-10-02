@@ -9,13 +9,28 @@ import {
   type InstanceFleetModifyConfig,
   type InstanceFleetState,
   type InstanceFleetType,
+  type AddInstanceFleetCommandOutput,
 } from '@aws-sdk/client-emr';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { toSdkInstanceTypeConfigs } from '../emr-configuration.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { createMaskedLogSinks } from '../masked-retry-logger.js';
+import {
+  collectOrphanIds,
+  orphanCommandRegionArg,
+  reportPossibleOrphans,
+} from './orphan-report.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  isInsideWindow,
+  withoutServerErrorRetries,
+} from './ambiguous-create.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -68,6 +83,23 @@ const toNumber = (v: unknown): number | undefined => {
 const jsonEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /**
+ * Retry-safety state for `AddInstanceFleet`, which mints the instance fleet id and
+ * carries no idempotency token (issue
+ * [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
+ * `orphan-report.ts`. Module-scoped: a provider instance is per
+ * registry, and one process can build several.
+ */
+const addInstanceFleetLatch = new AmbiguousCreateLatch('emr:AddInstanceFleet');
+/** Instance fleets this process created and recorded, never reported as orphan candidates. */
+const fleetsCreatedByThisProcess = new RecentIdSet();
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetEMRInstanceFleetCreateRetryStateForTests(): void {
+  addInstanceFleetLatch.resetForTests();
+  fleetsCreatedByThisProcess.resetForTests();
+}
+
+/**
  * SDK Provider for `AWS::EMR::InstanceFleetConfig` (issue #1070).
  *
  * This type adds a standalone instance fleet (MASTER / CORE / TASK) to an
@@ -115,6 +147,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
   readonly disableCcApiFallback = true;
 
   private client: EMRClient | undefined;
+  private createClient: EMRClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('EMRInstanceFleetConfigProvider');
 
@@ -152,6 +185,23 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     return this.client;
   }
 
+  /**
+   * The client `AddInstanceFleet` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #2080). Separate so every other call
+   * keeps the full SDK retry.
+   */
+  private getCreateClient(): EMRClient {
+    if (!this.createClient) {
+      this.createClient = withoutServerErrorRetries(
+        new EMRClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
+    }
+    return this.createClient;
+  }
+
   getMinResourceTimeoutMs(): number {
     // Poll ceiling PLUS one interval so the internal wait times out before the
     // deploy engine's non-cancelling external deadline (see EMRClusterProvider).
@@ -163,7 +213,8 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     if (resourceType !== 'AWS::EMR::InstanceFleetConfig') {
       throw new ProvisioningError(
@@ -186,10 +237,67 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
 
     try {
       const fleet = this.toInstanceFleetConfig(properties);
-      const response = await this.getClient().send(
-        new AddInstanceFleetCommand({ ClusterId: clusterId, InstanceFleet: fleet })
-      );
+      // Issue #2080: after an earlier ambiguous attempt, name the instance fleet
+      // it may have added before a second AddInstanceFleet is sent. Detection
+      // only -- see `orphan-report.ts`. Only a TASK instance fleet can
+      // be duplicated: a cluster holds at most one MASTER and one CORE, so a
+      // replay of either cannot add a second one.
+      const orphanWindow = addInstanceFleetLatch.take(logicalId);
+      if (orphanWindow !== undefined && fleet.InstanceFleetType === 'TASK') {
+        const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+        const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await orphanCommandRegionArg(this.getClient(), aws);
+        const name = fleet.Name;
+        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+          action: 'AddInstanceFleet',
+          service: 'EMR',
+          listAction: 'ListInstanceFleets',
+          subject: `a TASK instance fleet${name !== undefined ? ` named ${log.value(name)}` : ''} in cluster ${log.value(clusterId)}`,
+          noun: 'TASK instance fleet(s)',
+          list: () =>
+            collectOrphanIds(
+              async (marker) => {
+                const page = await this.getClient().send(
+                  new ListInstanceFleetsCommand({
+                    ClusterId: clusterId,
+                    ...(marker && { Marker: marker }),
+                  })
+                );
+                return { items: page.InstanceFleets ?? [], next: page.Marker };
+              },
+              (item) =>
+                item.Id &&
+                item.InstanceFleetType === 'TASK' &&
+                (name === undefined || item.Name === name) &&
+                isInsideWindow(item.Status?.Timeline?.CreationDateTime, orphanWindow) &&
+                !fleetsCreatedByThisProcess.has(item.Id)
+                  ? item.Id
+                  : undefined
+            ),
+          // No call reads one instance fleet by id: list the cluster's.
+          inspect: () =>
+            aws`aws emr list-instance-fleets --cluster-id ${clusterId}${regionArg}`.render(),
+          remove: (id) =>
+            aws`aws emr modify-instance-fleet --cluster-id ${clusterId} --instance-fleet InstanceFleetId=${id},TargetOnDemandCapacity=0,TargetSpotCapacity=0${regionArg}`.render(),
+          removeVerb:
+            'scale it to zero, which releases its instances (EMR has no call that removes an instance fleet; it ends with its cluster)',
+        });
+      }
+      const attemptStartMs = Date.now();
+      let response: AddInstanceFleetCommandOutput;
+      try {
+        response = await this.getCreateClient().send(
+          new AddInstanceFleetCommand({
+            ClusterId: clusterId,
+            InstanceFleet: fleet,
+          })
+        );
+      } catch (error) {
+        addInstanceFleetLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
       const fleetId = response.InstanceFleetId;
+      if (fleetId) fleetsCreatedByThisProcess.add(fleetId);
       if (!fleetId) {
         throw new ProvisioningError(
           `EMR AddInstanceFleet for ${logicalId} returned no instance fleet id`,

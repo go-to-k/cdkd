@@ -1,6 +1,7 @@
 import {
   EMRClient,
   RunJobFlowCommand,
+  ListClustersCommand,
   TerminateJobFlowsCommand,
   DescribeClusterCommand,
   ListInstanceGroupsCommand,
@@ -27,6 +28,7 @@ import {
   type ManagedScalingPolicy,
   type AutoTerminationPolicy,
   type Tag,
+  type RunJobFlowCommandOutput,
 } from '@aws-sdk/client-emr';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -52,7 +54,20 @@ import {
   toSdkStepConfigs,
 } from '../emr-configuration.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import { createMaskedLogSinks } from '../masked-retry-logger.js';
+import {
+  collectOrphanIds,
+  orphanCommandRegionArg,
+  reportPossibleOrphans,
+} from './orphan-report.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  isInsideWindow,
+  withoutServerErrorRetries,
+} from './ambiguous-create.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -61,6 +76,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -120,6 +136,26 @@ const toBoolean = (v: unknown): boolean | undefined => {
 };
 
 const jsonEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/** Cluster states an orphan lookup reports: every state that still bills. */
+const LIVE_CLUSTER_STATES: ClusterState[] = ['STARTING', 'BOOTSTRAPPING', 'RUNNING', 'WAITING'];
+
+/**
+ * Retry-safety state for `RunJobFlow`, which mints the cluster id and carries
+ * no idempotency token (issue
+ * [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
+ * `orphan-report.ts`. Module-scoped: a provider instance is per
+ * registry, and one process can build several.
+ */
+const runJobFlowLatch = new AmbiguousCreateLatch('emr:RunJobFlow');
+/** Clusters this process created and recorded, never reported as orphan candidates. */
+const clustersCreatedByThisProcess = new RecentIdSet();
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetEMRClusterCreateRetryStateForTests(): void {
+  runJobFlowLatch.resetForTests();
+  clustersCreatedByThisProcess.resetForTests();
+}
 
 /**
  * The {@link ProtectionGuardSite} for an `AWS::EMR::Cluster`, whose guard is
@@ -205,6 +241,7 @@ export class EMRClusterProvider implements ResourceProvider {
   readonly disableCcApiFallback = true;
 
   private client: EMRClient | undefined;
+  private createClient: EMRClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('EMRClusterProvider');
   /** `--remove-protection` flips, keyed so a re-entered delete keeps them (#2204). */
@@ -264,6 +301,23 @@ export class EMRClusterProvider implements ResourceProvider {
   }
 
   /**
+   * The client `RunJobFlow` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #2080). Separate so every other call
+   * keeps the full SDK retry.
+   */
+  private getCreateClient(): EMRClient {
+    if (!this.createClient) {
+      this.createClient = withoutServerErrorRetries(
+        new EMRClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
+    }
+    return this.createClient;
+  }
+
+  /**
    * Self-reported minimum per-resource timeout: the deploy engine resolves
    * `max(getMinResourceTimeoutMs(), globalCliDefault)` so EMR's slow
    * create/terminate polling fits inside the resource deadline without the
@@ -287,7 +341,8 @@ export class EMRClusterProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     if (resourceType !== 'AWS::EMR::Cluster') {
       throw new ProvisioningError(
@@ -355,8 +410,66 @@ export class EMRClusterProvider implements ResourceProvider {
         ),
       };
 
-      const response = await this.getClient().send(new RunJobFlowCommand(input));
+      // Issue #2080: after an earlier ambiguous attempt, name the cluster it
+      // may have launched before a second RunJobFlow is sent. Detection only
+      // -- see `orphan-report.ts`. A duplicate cluster bills per
+      // instance-hour, so the report carries a terminate command (after
+      // confirming); cdkd never terminates a cluster it did not record.
+      const orphanWindow = runJobFlowLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+        const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await orphanCommandRegionArg(this.getClient(), aws);
+        const name = input.Name;
+        const protectedCluster = input.Instances?.TerminationProtected === true;
+        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+          action: 'RunJobFlow',
+          service: 'EMR',
+          listAction: 'ListClusters',
+          subject: `a cluster named ${log.value(name)}`,
+          noun: 'cluster(s)',
+          list: () =>
+            collectOrphanIds(
+              async (marker) => {
+                const page = await this.getClient().send(
+                  new ListClustersCommand({
+                    CreatedAfter: new Date(orphanWindow.floorMs),
+                    CreatedBefore: new Date(orphanWindow.ceilingMs),
+                    // A cluster already terminating or gone bills nothing.
+                    ClusterStates: LIVE_CLUSTER_STATES,
+                    ...(marker && { Marker: marker }),
+                  })
+                );
+                return { items: page.Clusters ?? [], next: page.Marker };
+              },
+              (c) =>
+                c.Id &&
+                c.Name === name &&
+                isInsideWindow(c.Status?.Timeline?.CreationDateTime, orphanWindow) &&
+                !clustersCreatedByThisProcess.has(c.Id)
+                  ? c.Id
+                  : undefined
+            ),
+          inspect: (id) => aws`aws emr describe-cluster --cluster-id ${id}${regionArg}`.render(),
+          remove: (id) => aws`aws emr terminate-clusters --cluster-ids ${id}${regionArg}`.render(),
+          // Conditional, not chained: the candidate may be another deploy's
+          // cluster, whose protection this template says nothing about.
+          removeVerb: protectedCluster
+            ? // A quoted hole (`commandHole`): a bare `<id>` pastes as a redirection.
+              `terminate it (this template turns termination protection on, so if describe-cluster shows it on for the candidate, first run ${aws`aws emr modify-cluster-attributes --cluster-id`.render()} ${commandHole('id')} ${aws`--no-termination-protected${regionArg}`.render()} with its id)`
+            : 'terminate it',
+        });
+      }
+      const attemptStartMs = Date.now();
+      let response: RunJobFlowCommandOutput;
+      try {
+        response = await this.getCreateClient().send(new RunJobFlowCommand(input));
+      } catch (error) {
+        runJobFlowLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
       clusterId = response.JobFlowId;
+      if (clusterId) clustersCreatedByThisProcess.add(clusterId);
       if (!clusterId) {
         throw new ProvisioningError(
           `EMR RunJobFlow for ${logicalId} returned no JobFlowId`,

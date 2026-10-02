@@ -164,6 +164,11 @@ export class EmrInstanceConfigsStack extends cdk.Stack {
     // Ref / Fn::GetAtt Id of the standalone instance group — proves the
     // provider's physicalId + attribute wiring.
     new cdk.CfnOutput(this, 'TaskGroupId', { value: taskGroup.ref });
-    new cdk.CfnOutput(this, 'TaskGroupAttrId', { value: taskGroup.attrId });
+    // getAtt, not attrId / attrInstanceGroupId: the schema renamed the
+    // attribute `Id` -> `InstanceGroupId` and aws-cdk-lib dropped `attrId`,
+    // so either accessor breaks synth on one side of the fixture's semver range.
+    new cdk.CfnOutput(this, 'TaskGroupAttrId', {
+      value: cdk.Token.asString(taskGroup.getAtt('InstanceGroupId')),
+    });
   }
 }

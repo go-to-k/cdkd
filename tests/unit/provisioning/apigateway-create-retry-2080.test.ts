@@ -279,6 +279,9 @@ describe('ApiGatewayProvider tokenless create retry safety (issue #2080, detecti
         'aws apigateway get-authorizer --rest-api-id rest1 --authorizer-id auth1 --region ap-southeast-2'
       );
       expect(line).not.toContain('delete-authorizer');
+      // The shared report's default service name, on the undated arm too.
+      expect(line).toContain('API Gateway may have created');
+      expect(line).toContain('API Gateway reports no creation time');
       expect(line).toContain('does not adopt or delete');
     });
 
@@ -497,6 +500,9 @@ describe('ApiGatewayProvider tokenless create retry safety (issue #2080, detecti
       expect(read).toBeGreaterThan(-1);
       expect(remove).toBeGreaterThan(read);
       expect(line).toContain('Only after confirming');
+      // The shared report's defaults: the service and the remove verb.
+      expect(line).toContain('API Gateway may have created');
+      expect(line).toContain('delete it:');
     });
 
     it('does not report a same-described deployment created BEFORE the ambiguous attempt', async () => {
