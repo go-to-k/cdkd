@@ -185,7 +185,6 @@ phases, and lets CloudFormation re-`CREATE` it in phase 2.
 
 | Resource type | Why | What the re-create costs |
 | --- | --- | --- |
-| `AWS::ApiGatewayV2::Stage` | The schema declares no handlers at all. CDK's `HttpApi` construct auto-emits the `$default` stage. | About 10 seconds of unavailability. The HttpApi endpoint URL is unchanged — it embeds the API id, not the stage name. |
 | `AWS::IAM::Policy` | No `read` or `list` handler: an inline policy attachment has no first-class AWS resource id. CDK L2 grants emit these (ECS task execution role ECR pull, Lambda execution role inline policies). | The attachment is dropped from its role / user / group between phases, so any in-flight call relying on the granted permission fails with `AccessDenied` until phase 2 completes. |
 
 The plan printed before the confirmation lists each of these resources. For
@@ -235,15 +234,14 @@ but re-running `cdkd export` does not resume: the CloudFormation stack now
 exists, so the export refuses it. The error gives the by-hand steps: delete
 the remaining pre-delete resources, run the phase-2 UPDATE yourself, and clean
 up cdkd state with `cdkd state orphan`. The cause is usually a missing
-permission: the pre-delete issues `apigatewayv2:DeleteStage` for the stage, and
-`iam:DeleteRolePolicy` / `iam:DeleteUserPolicy` / `iam:DeleteGroupPolicy` for an
-inline policy, depending on what it is attached to.
+permission: the pre-delete issues `iam:DeleteRolePolicy` /
+`iam:DeleteUserPolicy` / `iam:DeleteGroupPolicy` for an inline policy,
+depending on what it is attached to.
 
 The plan row and the failure message name each pre-delete's physical id only
-when it is a plain value inert on a command line; any other, a `$default` stage
-included, prints as "(not shown: it is not a plain identifier)", since the
-message also carries commands to paste. `cdkd state show` prints the stored
-value.
+when it is a plain value inert on a command line; any other prints as
+"(not shown: it is not a plain identifier)", since the message also carries
+commands to paste. `cdkd state show` prints the stored value.
 
 ## How cdkd resolves each resource's identifier
 
@@ -269,6 +267,7 @@ than in the id — and produces the field map:
 - `AWS::ApiGateway::RequestValidator`
 - `AWS::ApiGatewayV2::Integration`
 - `AWS::ApiGatewayV2::Route`
+- `AWS::ApiGatewayV2::Stage`
 - `AWS::EC2::VPCGatewayAttachment`
 - `AWS::EC2::VPCCidrBlock`
 - `AWS::EC2::Route`

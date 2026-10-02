@@ -189,14 +189,13 @@ interface ExportOptions {
    */
   strictCrossStack: boolean;
   /**
-   * Auto-handle `AWS::ApiGatewayV2::Stage` and other resource types AWS
-   * does NOT support in IMPORT changesets (`handlers: []` in the CFn
+   * Auto-handle `AWS::IAM::Policy` and any other resource type AWS does
+   * NOT support in IMPORT changesets (no `read` handler in the CFn
    * schema) but DOES support normal CREATE for. Default true: cdkd
    * skips these from phase 1, deletes the AWS-side resource between
-   * phases, and lets CFn re-CREATE in phase 2 — brief unavailability
-   * window (~10s for Stage; HttpApi endpoint URL is unchanged across
-   * the migration because it embeds ApiId not StageName). When false,
-   * cdkd blocks the export with a clear error instead.
+   * phases, and lets CFn re-CREATE in phase 2 — brief window in which
+   * the resource is absent. When false, cdkd blocks the export with a
+   * clear error instead.
    *
    * Commander parses `--no-recreate-import-unsupported` into
    * `recreateImportUnsupported: false`; the default (no flag) leaves
@@ -821,25 +820,43 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     }
     return { resourceIdentifier: { TableBucketARN: tableBucketARN, Namespace: namespace } };
   },
-  // NOTE: `AWS::ApiGatewayV2::Stage` is intentionally NOT in this map — it is
-  // handled by IMPORT_UNSUPPORTED_RECREATABLE_TYPES (pre-delete + phase-2
-  // CREATE) instead, because AWS CloudFormation rejected it from IMPORT
-  // changesets ("ResourceTypes [AWS::ApiGatewayV2::Stage] are not supported
-  // for Import"), which blocked `cdkd export` on any stack with an HttpApi
-  // (CDK auto-creates a `$default` Stage).
+  // cdkd's SDK provider stores the BARE `StageName` (apigatewayv2-provider.ts's
+  // `createStage`) and reads the parent `ApiId` from the recorded properties;
+  // a Stage created or imported through Cloud Control stores CC's `|`-joined
+  // identifier, `<apiId>|<stageName>` (the intrinsic resolver decodes the same
+  // two shapes). Both are accepted. A stage name cannot contain `|`.
   //
-  // BOTH facts this note used to assert are now stale, measured live
-  // us-east-1 2026-08-13: the type reports `primaryIdentifier`
-  // `[ApiId, StageName]` (not the single-key `['/properties/Id']` recorded
-  // here) and `ProvisioningType: FULLY_MUTABLE` with a full handler set
-  // INCLUDING `read` (not `handlers: []`). So the registry no longer says the
-  // type is un-importable. Nothing is changed on that basis here — the
-  // recreatable branch runs before any identifier resolution, so the arity
-  // never reaches this map — but a re-test of whether the pre-delete dance
-  // (and its ~10s unavailability window) is still needed is worth doing;
-  // recorded rather than acted on because it is a behavior change for a type
-  // this PR does not otherwise touch. Tracked in
-  // [#1772](https://github.com/go-to-k/cdkd/issues/1772).
+  // CFn primary identifier is [ApiId, StageName], `ProvisioningType:
+  // FULLY_MUTABLE` with a `read` handler, and NO `readOnlyProperties` (live
+  // `DescribeType`, us-east-1), so the default whole-map overlay is right:
+  // both fields are writable Properties the synth template already carries.
+  //
+  // This type used to be pre-deleted and re-CREATEd in phase 2, because
+  // CloudFormation once refused it in IMPORT changesets; AWS's import-support
+  // table now lists it as importable, so an HttpApi's `$default` stage is
+  // imported in place with no unavailability window (issue
+  // [#1772](https://github.com/go-to-k/cdkd/issues/1772)).
+  'AWS::ApiGatewayV2::Stage': (physicalId, properties) => {
+    if (!physicalId.trim()) {
+      throw new Error('empty physical id for AWS::ApiGatewayV2::Stage (expected a StageName)');
+    }
+    const parts = physicalId.split('|');
+    if (parts.length > 2) {
+      throw new Error(
+        `expected a bare StageName or '<apiId>|<stageName>', got ${parts.length} parts: ` +
+          `${showRecordValue(physicalId)}`
+      );
+    }
+    if (parts.length === 2) {
+      const [apiId, stageName] = parts as [string, string];
+      if (!apiId || !stageName) {
+        throw new Error(`empty part in '<apiId>|<stageName>': ${showRecordValue(physicalId)}`);
+      }
+      return { resourceIdentifier: { ApiId: apiId, StageName: stageName } };
+    }
+    const apiId = readStringProperty(properties, 'ApiId', 'AWS::ApiGatewayV2::Stage');
+    return { resourceIdentifier: { ApiId: apiId, StageName: physicalId } };
+  },
 
   // cdkd stores `<functionName>|<qualifier>` (lambda-event-invoke-config-
   // provider.ts's `buildPhysicalId`), split on the FIRST `|` — a Lambda function
@@ -2506,17 +2523,15 @@ export interface ImportPlanEntry {
  * Entry in the "delete from AWS before phase-2 UPDATE so CFn can re-CREATE
  * fresh" list. Used for resource types AWS does NOT support in IMPORT
  * changesets but DOES support normal CREATE for — currently just
- * `AWS::ApiGatewayV2::Stage` (handlers: []), which is auto-emitted by
- * CDK's `HttpApi` construct as `$default`.
+ * `AWS::IAM::Policy` (no `read` handler), which CDK auto-emits for L2
+ * grants.
  *
  * The flow: phase-1 IMPORT skips these resources entirely. Between
  * phase 1 and phase 2, cdkd issues a per-type SDK delete call against
  * the AWS-side resource. Phase 2 then sees the resource in the full
- * synth template and CFn CREATEs it fresh. There IS a brief
- * unavailability window between the SDK delete and CFn's CREATE
- * (typically ~10s for Stage); for `$default` HttpApi Stage this is
- * fine because the API URL embeds ApiId + region, not StageName, so
- * the endpoint URL is unchanged across the migration.
+ * synth template and CFn CREATEs it fresh. There IS a brief window
+ * between the SDK delete and CFn's CREATE in which the resource is
+ * absent.
  *
  * Tracked design discussion: cdkd issue #307.
  */
@@ -2553,13 +2568,13 @@ export interface RecreateBeforePhase2Entry {
  * --type-name <T> | jq .handlers` — types with `handlers: []` (or a
  * missing `read` / `list` handler that prevents CFn from looking the
  * resource up by identifier) are candidates. Currently registered:
- * `AWS::ApiGatewayV2::Stage` (no handlers at all) and `AWS::IAM::Policy`
- * (no `read` / `list` — inline policy attachments have no first-class
- * AWS resource id). See the per-entry comment for each addition.
+ * `AWS::IAM::Policy` (no `read` / `list` — inline policy attachments have
+ * no first-class AWS resource id). See the per-entry comment for each
+ * addition. A type leaves this list once CloudFormation imports it:
+ * `AWS::ApiGatewayV2::Stage` did, and is now an ordinary
+ * `COMPOSITE_ID_SPLITTERS` import (issue #1772).
  */
 const IMPORT_UNSUPPORTED_RECREATABLE_TYPES: ReadonlySet<string> = new Set([
-  // AWS::ApiGatewayV2::Stage — `handlers: []`. HttpApi auto-emits `$default`.
-  'AWS::ApiGatewayV2::Stage',
   // AWS::IAM::Policy — `handlers: ['create', 'delete', 'update']` (no `read`/
   // `list`). Inline policies attached to roles / users / groups don't have a
   // first-class AWS resource id, so CFn IMPORT can't look them up. cdkd's
@@ -2597,33 +2612,6 @@ export function isImportUnsupportedRecreatableType(resourceType: string): boolea
 type PreDeleteHandler = (entry: RecreateBeforePhase2Entry) => Promise<void>;
 
 const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
-  'AWS::ApiGatewayV2::Stage': async (entry) => {
-    // ApiGatewayV2Client isn't in src/utils/aws-clients.ts — lazy-init
-    // inline (same pattern as ApiGatewayV2Provider.getClient).
-    const { ApiGatewayV2Client, DeleteStageCommand, NotFoundException } =
-      await import('@aws-sdk/client-apigatewayv2');
-    const apiId = entry.properties['ApiId'];
-    if (typeof apiId !== 'string' || !apiId) {
-      throw new Error(
-        `cdkd state's properties for ${plainOrNotShown(entry.logicalId)} ` +
-          `(${plainOrNotShown(entry.resourceType)}) is missing 'ApiId'`
-      );
-    }
-    const client = new ApiGatewayV2Client({ ...awsClientDefaults() });
-    try {
-      await client.send(new DeleteStageCommand({ ApiId: apiId, StageName: entry.physicalId }));
-    } catch (err) {
-      // Idempotent on already-deleted: a retry after a partial pre-delete
-      // failure (or a concurrent operator action) would otherwise abort the
-      // export. AWS returns NotFoundException for both "ApiId not found"
-      // and "Stage not found"; either way the goal state (Stage gone) is
-      // already achieved. Other errors propagate.
-      if (err instanceof NotFoundException) {
-        return;
-      }
-      throw err;
-    }
-  },
   'AWS::IAM::Policy': async (entry) => {
     // Mirrors IAMPolicyProvider.delete (src/provisioning/providers/
     // iam-policy-provider.ts): inline policy attachments are stored per-
@@ -3175,8 +3163,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           for (const line of preDeleteListingLines(r)) logger.info(`  ${line}`);
         }
         logger.info(
-          '  Brief unavailability window per type (~10s for Stage; HttpApi endpoint URL ' +
-            'is unchanged because it embeds ApiId, not StageName. IAM::Policy: the inline ' +
+          '  Brief unavailability window per type (IAM::Policy: the inline ' +
             'policy is removed from each listed Role/User/Group between phases — any ' +
             'in-flight AWS API call that depends on the granted permission will fail until ' +
             'CFn re-CREATEs it in phase 2 from the template, whose principals cdkd has checked ' +
@@ -3369,11 +3356,11 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       );
 
       // Pre-delete IMPORT-unsupported resources (currently just
-      // AWS::ApiGatewayV2::Stage). These were skipped from phase 1
+      // AWS::IAM::Policy). These were skipped from phase 1
       // because AWS rejects them in IMPORT changesets. The synth template
       // still includes them, so phase-2 UPDATE will see them as new and
       // CFn will issue CREATE — but only AFTER we delete the AWS-side
-      // resource here, or CFn's CreateStage would collide with the
+      // resource here, or CFn's CREATE would collide with the
       // already-existing one. Failure here is fatal: cdkd state is intact
       // (release happens in outer finally) but a partial pre-delete may
       // leave AWS in a half-state — the recovery path is to fix the
@@ -3412,8 +3399,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
                 `\`cdkd export\` does NOT work — the existing-stack check rejects it. ` +
                 `To recover manually:\n` +
                 `  1. Fix the failure cause (typically IAM permissions for the underlying ` +
-                `AWS API — apigatewayv2:DeleteStage for a Stage, iam:Delete{Role,User,Group}Policy ` +
-                `for an inline policy).\n` +
+                `AWS API — iam:Delete{Role,User,Group}Policy for an inline policy).\n` +
                 `  2. Delete the remaining AWS-side IMPORT-unsupported resources by hand:\n` +
                 preDeleteManualCommands(recreateBeforePhase2)
                   .map((line) => `       ${line}\n`)
@@ -5300,7 +5286,7 @@ export async function buildImportPlan(
       continue;
     }
 
-    // IMPORT-unsupported but CFn-createable types (`AWS::ApiGatewayV2::Stage`).
+    // IMPORT-unsupported but CFn-createable types (`AWS::IAM::Policy`).
     // Skip phase-1 IMPORT entirely; cdkd will delete the AWS-side resource
     // between phases so CFn's phase-2 CREATE doesn't collide. The opt-out
     // flag `--no-recreate-import-unsupported` blocks them instead.
@@ -5391,13 +5377,6 @@ export async function buildImportPlan(
     // above, because cdkd has a real answer (pre-delete + phase-2 CREATE) for
     // the types on that list and must not steal them. `AWS::IAM::Policy` would
     // otherwise land here: it is NON_PROVISIONABLE with no `read` handler.
-    // `AWS::ApiGatewayV2::Stage` would NOT — measured live us-east-1
-    // 2026-08-13 it is now FULLY_MUTABLE with a full handler set including
-    // `read`, so the registry no longer agrees with the reason that type was
-    // put on the recreatable list. Whether its pre-delete + re-CREATE dance
-    // (and its unavailability window) is still necessary is tracked separately;
-    // this ordering keeps today's behavior either way (issue
-    // [#1772](https://github.com/go-to-k/cdkd/issues/1772)).
     let resolved: CompositeIdResult;
     try {
       // ONE `DescribeType` per type answers both questions — the pre-flight
@@ -5590,10 +5569,10 @@ export function blockedMigrationTail(blocked: readonly BlockedResource[]): strin
 
 /**
  * The by-hand deletes for the pre-delete types a failed run may have left
- * behind, one line per TYPE present (go-to-k/cdkd#3910): the recovery used to
- * print the API Gateway command even when an IAM::Policy pre-delete failed.
- * Every value is a quoted `commandHole`, never a bare `<placeholder>`, which a
- * shell reads as a redirection.
+ * behind, one line per principal KIND present (go-to-k/cdkd#3910): a command
+ * is printed only for what the entries actually record. Every value is a
+ * quoted `commandHole`, never a bare `<placeholder>`, which a shell reads as a
+ * redirection.
  */
 export function preDeleteManualCommands(
   entries: readonly {
@@ -5602,16 +5581,7 @@ export function preDeleteManualCommands(
     properties?: Record<string, unknown>;
   }[]
 ): string[] {
-  const types = new Set(entries.map((e) => e.resourceType));
   const lines: string[] = [];
-  if (types.has('AWS::ApiGatewayV2::Stage')) {
-    lines.push(
-      withPasteableAwsProfile(
-        `aws apigatewayv2 delete-stage --api-id ${commandHole('ApiId')} ` +
-          `--stage-name ${commandHole('StageName')}`
-      )
-    );
-  }
   // One command per principal KIND a policy records, each alone on its line
   // so it pastes; the explanation is a line of its own after them.
   const kinds = new Set<'role' | 'user' | 'group'>();
@@ -6640,7 +6610,7 @@ function describeOverlayValueShape(current: unknown): string {
  * (matches upstream `cdk import` behavior).
  *
  * Resources outside `phase1Imports` (phase-2 CREATE Custom Resources,
- * pre-delete + recreate targets like Stage / IAM::Policy) are passed
+ * pre-delete + recreate targets like IAM::Policy) are passed
  * through unchanged — they get CREATEd from synth and don't have any
  * pre-existing Properties state to preserve.
  *
@@ -9162,8 +9132,8 @@ export async function runPerStackImportLoop(args: {
               await handler(entry);
             } catch (err) {
               // The single-stack path's wrapper, for the nested path
-              // (go-to-k/cdkd#3910): AWS's text can quote a recorded Stage id,
-              // policy name or ApiId back, and nothing above this renders it.
+              // (go-to-k/cdkd#3910): AWS's text can quote a recorded policy name
+              // or principal name back, and nothing above this renders it.
               const msg = err instanceof Error ? err.message : String(err);
               const importedSummary = importedStacks
                 .map(
@@ -9746,7 +9716,7 @@ export function createExportCommand(): Command {
     .option(
       '--no-recreate-import-unsupported',
       'Block instead of auto-handling resource types AWS does NOT support in IMPORT ' +
-        'changesets (AWS::ApiGatewayV2::Stage and AWS::IAM::Policy). ' +
+        'changesets (AWS::IAM::Policy). ' +
         'Default behavior: cdkd skips these from phase 1, deletes the AWS-side resource ' +
         'between phases, and lets CFn re-CREATE in phase 2 (brief unavailability window). ' +
         'With this flag, the export aborts with a clear error instead.'

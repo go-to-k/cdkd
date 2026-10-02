@@ -992,9 +992,9 @@ describe('buildImportPlan — IMPORT read-handler pre-flight (issue #1659)', () 
   });
 
   it('treats a `handlers: []` array (the legacy render) as no read handler', async () => {
-    // Real registry entries render an EMPTY handlers block as an array — see
-    // the AWS::ApiGatewayV2::Stage note in export.ts. `hasOwnProperty` on an
-    // array is false either way, but the fixture pins the real wire shape.
+    // Real registry entries render an EMPTY handlers block as an array.
+    // `hasOwnProperty` on an array is false either way, but the fixture pins
+    // the real wire shape.
     const state = stateWith({
       Thing: { resourceType: 'AWS::Some::Thing', physicalId: 'thing-1' },
     });
@@ -1066,6 +1066,82 @@ describe('buildImportPlan — IMPORT read-handler pre-flight (issue #1659)', () 
     const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
     expect(plan.blocked).toEqual([]);
     expect(plan.recreateBeforePhase2.map((r) => r.logicalId)).toEqual(['Policy']);
+  });
+
+  // Issue #1772: CloudFormation imports an HttpApi stage, so it is a phase-1
+  // IMPORT, never pre-deleted and re-CREATEd — under either flag value.
+  for (const recreateImportUnsupported of [true, false]) {
+    it(`imports an AWS::ApiGatewayV2::Stage in phase 1 (recreateImportUnsupported: ${recreateImportUnsupported})`, async () => {
+      const state = stateWith({
+        Stage: {
+          resourceType: 'AWS::ApiGatewayV2::Stage',
+          physicalId: '$default',
+          properties: { ApiId: 'api-xyz', StageName: '$default' },
+        },
+      });
+      const template = {
+        Resources: {
+          Stage: {
+            Type: 'AWS::ApiGatewayV2::Stage',
+            Properties: { ApiId: { Ref: 'Api' }, StageName: '$default', AutoDeploy: true },
+          },
+        },
+      };
+      const plan = await buildImportPlan(
+        state,
+        template,
+        cfnClientFor({
+          // The live registry entry's shape (us-east-1).
+          'AWS::ApiGatewayV2::Stage': {
+            primaryIdentifier: ['/properties/ApiId', '/properties/StageName'],
+            handlers: { create: {}, read: {}, update: {}, delete: {}, list: {} },
+            provisioningType: 'FULLY_MUTABLE',
+          },
+        }),
+        'MyStack',
+        { recreateImportUnsupported, skipImportSupportPreflight: false }
+      );
+      expect(plan.blocked).toEqual([]);
+      expect(plan.recreateBeforePhase2).toEqual([]);
+      expect(plan.phase1Imports.map((i) => [i.logicalId, i.resourceIdentifier])).toEqual([
+        ['Stage', { ApiId: 'api-xyz', StageName: '$default' }],
+      ]);
+    });
+  }
+
+  it("imports a Cloud Control-recorded stage from its `<apiId>|<stageName>` id", async () => {
+    const state = stateWith({
+      Stage: {
+        resourceType: 'AWS::ApiGatewayV2::Stage',
+        physicalId: 'api-cc|$default',
+        // Differs from the id's api part on purpose: the id is the source.
+        properties: { ApiId: 'api-other', StageName: '$default' },
+      },
+    });
+    const template = {
+      Resources: {
+        Stage: {
+          Type: 'AWS::ApiGatewayV2::Stage',
+          Properties: { ApiId: { Ref: 'Api' }, StageName: '$default' },
+        },
+      },
+    };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        'AWS::ApiGatewayV2::Stage': {
+          primaryIdentifier: ['/properties/ApiId', '/properties/StageName'],
+          handlers: { create: {}, read: {}, update: {}, delete: {}, list: {} },
+          provisioningType: 'FULLY_MUTABLE',
+        },
+      }),
+      'MyStack'
+    );
+    expect(plan.blocked).toEqual([]);
+    expect(plan.phase1Imports.map((i) => [i.logicalId, i.resourceIdentifier])).toEqual([
+      ['Stage', { ApiId: 'api-cc', StageName: '$default' }],
+    ]);
   });
 });
 

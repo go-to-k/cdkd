@@ -16,9 +16,12 @@ import { Construct } from 'constructs';
  *     `AWS::IAM::Role`, `AWS::SNS::Topic`, `AWS::Lambda::Function`).
  *   - Composite-id splitters via an HTTP API: `AWS::ApiGatewayV2::Api`
  *     (single-key), `AWS::ApiGatewayV2::Integration` / `Route` /
- *     `AWS::Lambda::Permission` (composite, narrow propertiesOverlay).
- *   - IMPORT-unsupported but CFn-createable types via the same HTTP API:
- *     `AWS::ApiGatewayV2::Stage` (handlers: [] in CFn schema). Exercises
+ *     `AWS::Lambda::Permission` (composite, narrow propertiesOverlay), and
+ *     the auto-emitted `$default` `AWS::ApiGatewayV2::Stage` (composite,
+ *     whole-map overlay), imported in place rather than pre-deleted and
+ *     re-created (issue #1772).
+ *   - IMPORT-unsupported but CFn-createable types: the inline
+ *     `AWS::IAM::Policy` (no `read` handler in the CFn schema). Exercises
  *     the pre-delete + phase-2 CREATE path closed by cdkd issue #307.
  *   - Custom Resource (`Custom::*`) that goes through the phase-2
  *     CREATE path when --include-non-importable is set. The backing
@@ -192,19 +195,15 @@ export class ExportStack extends cdk.Stack {
       },
     });
 
-    // ── HTTP API (composite-id splitters + Stage pre-delete path) ──
+    // ── HTTP API (composite-id splitters) ──
     // Minimal HttpApi → 1 ApiGwV2::Api (single-key import), 1
-    // ApiGwV2::Stage ($default, IMPORT-unsupported → pre-delete + phase-2
-    // CREATE), 1 ApiGwV2::Integration (composite import), 1
-    // ApiGwV2::Route (composite import), 1 Lambda::Permission (composite
-    // import). The CR handler Lambda is reused as the integration target
-    // — same Lambda already imports in phase 1, the Permission grants
-    // ApiGwV2 invoke. Exercises every piece of the export pipeline:
-    // composite-id resolution + readOnlyProperties narrowing +
-    // IMPORT-unsupported pre-delete + phase-2 CFn CREATE of the deleted
-    // Stage. Brief unavailability of the $default Stage between the
-    // SDK DeleteStage call and CFn CreateStage; the apiEndpoint URL is
-    // unchanged across the migration (it embeds ApiId, not StageName).
+    // ApiGwV2::Stage ($default, composite import — issue #1772), 1
+    // ApiGwV2::Integration (composite import), 1 ApiGwV2::Route
+    // (composite import), 1 Lambda::Permission (composite import). The CR
+    // handler Lambda is reused as the integration target — same Lambda
+    // already imports in phase 1, the Permission grants ApiGwV2 invoke.
+    // Exercises composite-id resolution + readOnlyProperties narrowing;
+    // verify.sh's step 4d proves the $default Stage is adopted in place.
     const httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
       apiName: `cdkd-export-test-${suffix}`,
     });

@@ -302,14 +302,12 @@ describe('the --remove-protection compensation commands (the issue examples)', (
 
 describe('hand-built aws commands in cdkd export', () => {
   const entries = [
-    { resourceType: 'AWS::ApiGatewayV2::Stage' },
     // An unreadable principal list names every kind: three iam lines.
     { resourceType: 'AWS::IAM::Policy' },
   ];
 
   it('preDeleteManualCommands is byte-identical without a profile', () => {
     expect(preDeleteManualCommands(entries).filter((l) => l.startsWith('aws '))).toEqual([
-      "aws apigatewayv2 delete-stage --api-id '<ApiId>' --stage-name '<StageName>'",
       "aws iam delete-role-policy --role-name '<RoleName>' --policy-name '<PolicyName>'",
       "aws iam delete-user-policy --user-name '<UserName>' --policy-name '<PolicyName>'",
       "aws iam delete-group-policy --group-name '<GroupName>' --policy-name '<PolicyName>'",
@@ -319,7 +317,6 @@ describe('hand-built aws commands in cdkd export', () => {
   it('preDeleteManualCommands carries the profile', () => {
     setPasteableAwsProfile('prod');
     expect(preDeleteManualCommands(entries).filter((l) => l.startsWith('aws '))).toEqual([
-      "aws --profile prod apigatewayv2 delete-stage --api-id '<ApiId>' --stage-name '<StageName>'",
       "aws --profile prod iam delete-role-policy --role-name '<RoleName>' --policy-name '<PolicyName>'",
       "aws --profile prod iam delete-user-policy --user-name '<UserName>' --policy-name '<PolicyName>'",
       "aws --profile prod iam delete-group-policy --group-name '<GroupName>' --policy-name '<PolicyName>'",
