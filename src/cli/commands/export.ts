@@ -6552,9 +6552,8 @@ const OVERLAY_PREVIEW_MAX_CODE_POINTS = 120;
  * rather than as two `\u` escapes, so the pair really is what gets cut.
  * `truncateCodePoints` in `src/utils/display-safe.ts` owns that rule, and this
  * is the site go-to-k/cdkd#3018 was opened over. Other `slice`-based display
- * truncations remain elsewhere (`src/local/websocket-server.ts`,
- * `src/local/rest-v1-integrations.ts` among them); closing this one is not a
- * claim about them.
+ * truncations remain elsewhere (`src/local/websocket-server.ts` among them);
+ * closing this one is not a claim about them.
  *
  * Deliberately NOT applied to the SCALAR branch below, which is the arm that
  * cannot exceed the cap: tracing the two call sites, it is reachable only with

@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
 import { EcsTaskResolutionError } from 'cdk-local/internal';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
@@ -1609,23 +1609,6 @@ function notFoundError(
     }
   }
   return new EcsTaskResolutionError(msg.trimEnd());
-}
-
-/**
- * Resolve a `kind: 'cdk-asset'` Image entry back to the on-disk build
- * context recorded in the stack's asset manifest. Surfaces an absolute
- * path to the cdk.out asset directory + the dockerfile name so the
- * runner can hand the pair to `buildDockerImage` directly. Returns
- * `undefined` when the asset isn't in the manifest — the caller hard-
- * errors with a clear "re-synthesize" pointer.
- *
- * @no-live-caller nothing in `src/` calls this. The rest of this module is live; the live
- * paths take `stack.assetManifestPath` and derive the directory at their own call sites
- * (issue #2228).
- */
-export function buildCdkOutDir(stack: StackInfo): string | undefined {
-  if (!stack.assetManifestPath) return undefined;
-  return dirname(stack.assetManifestPath);
 }
 
 /**

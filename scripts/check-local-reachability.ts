@@ -30,17 +30,17 @@
  * -------------------------------------
  * A module-level rule ("every file has a live importer") does NOT catch #2203,
  * and measuring that is the whole reason this critic is shaped the way it is.
- * `vtl-engine.ts` HAS a live importer: `rest-v1-integrations.ts` imports
+ * `vtl-engine.ts` HAD a live importer: `rest-v1-integrations.ts` imported
  * `evaluateVtl` from it, and `local-start-api.ts` imports `warnSsrfRiskyUri`
- * from `rest-v1-integrations.ts`. Under ESM that import chain LOADS
- * `vtl-engine.ts` at runtime — the module is evaluated, so "unreferenced" is
- * false of it — while every function it exports is called only from functions
- * that are themselves never called. Three states, not two:
+ * from `rest-v1-integrations.ts`. Under ESM that import chain LOADED
+ * `vtl-engine.ts` at runtime — the module was evaluated, so "unreferenced" was
+ * false of it — while every function it exported was called only from
+ * functions that were themselves never called. Three states, not two:
  *
  *   LIVE          a shipped entry point transitively reaches the symbol.
  *   LOADED-ONLY   the module is evaluated at runtime (some other symbol in it,
  *                 or a `verbatimModuleSyntax` inline-type import, drags it in)
- *                 but no exported symbol is reached.  <- vtl-engine.ts
+ *                 but no exported symbol is reached.
  *   UNREFERENCED  nothing in `src/` imports the module at all.
  *
  * The last two are equally inert to a user and equally attractive to a fix.
@@ -64,11 +64,11 @@
  *     annotations cannot rot into decoration, and — see below — this is also
  *     what stops the critic degrading to a vacuous green.
  *
- * Annotating is the FLOOR, not the destination: DELETING the orphans is issue
- * https://github.com/go-to-k/cdkd/issues/2277, kept separate because removing a
- * subsystem and its tests is a different review from adding a critic. Note that
- * when that lands and the annotation count reaches zero, the stale direction
- * stops defending anything and {@link runSelfProbe} is all that remains.
+ * Annotating is the FLOOR, not the destination: the orphans the critic first
+ * found were DELETED (issue #2277), so a new orphan is deleted rather than
+ * annotated unless something still needs it. With no `@no-live-caller` left in
+ * the tree, the stale direction defends only the `@test-only-export` seams, and
+ * {@link runSelfProbe} is what holds the reachability walk.
  *
  * WHAT DEFENDS THIS CRITIC FROM ITSELF
  * ------------------------------------
@@ -92,11 +92,11 @@
  *
  *  2. COLLAPSE TOWARD GREEN — the reachability computation degrades so that
  *     everything reads as reachable. No floor sees this: file and symbol counts
- *     are unchanged. Two things catch it. While orphans exist, the STALE
+ *     are unchanged. Two things catch it. While annotations exist, the STALE
  *     direction does it for free: if everything is reachable then every
- *     existing `@no-live-caller` is stale and the run fails. That defence
- *     disappears the day the orphans are deleted, so it is not the primary one.
- *     The primary one is {@link runSelfProbe} — a fixed corpus with known
+ *     existing annotation is stale and the run fails. That defence shrinks
+ *     with the annotation count (one `@test-only-export` seam remains), so it
+ *     is not the primary one. The primary one is {@link runSelfProbe} — a fixed corpus with known
  *     verdicts, including a known LOADED-ONLY module and a known live shim,
  *     analyzed on every run before the real tree is touched.
  *
@@ -330,7 +330,7 @@ interface FileInfo {
  *
  * Type positions are skipped because a type reference emits nothing: under
  * `verbatimModuleSyntax` an inline `{ type X }` import still loads the MODULE
- * (which is why `reload-orchestrator.ts` classifies as loaded-only rather than
+ * (so a module reached only that way classifies as loaded-only rather than
  * unreferenced) but it never makes the exported VALUE run. A `class C extends
  * B` heritage clause is the opposite case and is walked, because `extends` is
  * evaluated; `implements` is not.

@@ -297,7 +297,7 @@ curl_assert "Function URL fallback" "http://127.0.0.1:${PORT_FNURL}/url-only/pin
 # arrives at the HTTP client as a single block. This is a RIE limitation
 # (verified empirically against the v1.0 RIE shipped in the base image
 # on 2026-05-22); the `invokeRieStreaming` that RUNS here is cdk-local's
-# (cdkd's own copy has no live caller - issue #2228), and it parses the
+# (cdkd carries no copy of it), and it parses the
 # streaming protocol and pipes the body bytes with `Transfer-Encoding:
 # chunked`, but real incremental delivery only manifests against the
 # deployed Lambda runtime. The integ asserts the protocol shape, not

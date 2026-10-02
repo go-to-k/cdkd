@@ -7491,11 +7491,6 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
         'needs the operator to type the separator into their own role ARN',
     ],
     [
-      'src/local/httpv2-service-integration.ts',
-      1,
-      '`${service}:${region}`; `service` is a literal at the call site',
-    ],
-    [
       'src/synthesis/context-providers/vpc-provider.ts',
       1,
       '`${subnet.type}/${subnet.name}`; the type half is a closed set',

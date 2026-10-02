@@ -22,11 +22,7 @@ vi.mock('../../../src/local/rie-client.js', async () => {
       if (queue.length === 0) return { payload: {}, raw: '{}' };
       return queue.shift()!;
     }),
-    invokeRieStreaming: vi.fn(),
     waitForRieReady: vi.fn(async () => undefined),
-    parseStreamingPrelude: vi.fn(),
-    STREAM_PRELUDE_MAX_BYTES: 0,
-    STREAM_BODY_MAX_BYTES: 0,
     __queueInvokeResult: (payload: unknown) =>
       queue.push({ payload, raw: typeof payload === 'string' ? payload : JSON.stringify(payload) }),
     __resetQueue: () => {

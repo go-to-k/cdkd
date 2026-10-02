@@ -127,7 +127,8 @@ function isSdkDynamicImport(node: ts.Node | undefined): boolean {
  * Names bound to a whole `@aws-sdk/client-*` MODULE, for the `new mod.XClient()`
  * form (`const mod = await import('@aws-sdk/client-sns'); new mod.SNSClient()`).
  *
- * `src/local/httpv2-service-integration.ts` builds six clients this way.
+ * No `src/` site uses this form today; the unit suite's synthetic case is what
+ * keeps the arm from being lost before one does.
  */
 export function sdkClientNamespaces(source: ts.SourceFile): Set<string> {
   const names = new Set<string>();

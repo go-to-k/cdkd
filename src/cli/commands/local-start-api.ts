@@ -116,7 +116,6 @@ import {
 } from '../../local/stage-resolver.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
 import { createWatchPredicates, resolveWatchConfig } from 'cdk-local/internal';
-import { type NextStateMaterial } from '../../local/reload-orchestrator.js';
 import {
   attachAuthorizers,
   type AuthorizerInfo,
@@ -148,6 +147,29 @@ import {
   applyCallerIdentityCredentials,
   AWS_CREDENTIAL_ENV_KEYS,
 } from '../../utils/caller-credentials.js';
+
+/**
+ * What one synth + discovery pass produces: the initial boot and every
+ * `--watch` reload (`reloadAllServers`) build the servers from it.
+ */
+interface NextStateMaterial {
+  /** Discovered routes with attached authorizer info (`authorizer: undefined` when none). */
+  routes: RouteWithAuth[];
+  /** Full per-Lambda spec map (every Lambda reachable through `routes` or a WebSocket route). */
+  specs: Map<string, ContainerSpec>;
+  corsConfigByApiId: Map<string, CorsConfig>;
+  /**
+   * Discovered WebSocket APIs (#462). On `--watch`, a route-set or Lambda
+   * change forces a WebSocket server restart: the protocol has no equivalent
+   * of `setServerState`'s atomic swap.
+   */
+  webSocketApis?: readonly DiscoveredWebSocketApi[];
+  /**
+   * The target stacks this material was built from, so the initial boot can
+   * run startup-only side effects (`warnVpcConfigLambdas`) without re-synthesizing.
+   */
+  stacks?: readonly StackInfo[];
+}
 
 interface LocalStartApiOptions {
   app?: string;

@@ -103,8 +103,18 @@ const symbolsReported = (report: ReachabilityReport, kind?: Finding['kind']): Se
   new Set(report.findings.filter((f) => !kind || f.kind === kind).map((f) => f.symbol));
 
 describe('local reachability critic — the real tree', () => {
-  it('reports nothing: every orphan is annotated and no annotation is stale', () => {
+  it('reports nothing: no unannotated orphan and no stale annotation', () => {
     expect(analyze().findings).toEqual([]);
+  }, ANALYZE_TIMEOUT_MS);
+
+  it('carries no fork: no module is loaded-only or unreferenced', () => {
+    // go-to-k/cdkd#2277 deleted the orphaned copies, so neither state occurs in
+    // the real tree. A module re-entering one must be deleted or given a caller;
+    // the probes below produce both states by mutation.
+    const forks = analyze().modules.filter(
+      (m) => m.moduleClass === 'loaded-only' || m.moduleClass === 'unreferenced'
+    );
+    expect(forks.map((m) => m.file)).toEqual([]);
   }, ANALYZE_TIMEOUT_MS);
 
   it('sees the whole of src/, not a fragment', () => {
@@ -117,29 +127,40 @@ describe('local reachability critic — the real tree', () => {
   }, ANALYZE_TIMEOUT_MS);
 
   it('classifies the three states a module-level rule collapses together', () => {
-    const byFile = new Map(analyze().modules.map((m) => [m.file, m]));
+    const RUNNER = 'src/local/ecs-task-runner.ts';
+    const VALUE_IMPORTS = '\n  cleanupEcsRun,\n  createEcsRunState,\n  runEcsTask,\n  type EcsRunState,';
+    const classOf = (sources?: ReadonlyMap<string, string>) =>
+      analyze(sources).modules.find((m) => m.file === RUNNER);
     // LIVE: `cdkd local run-task` imports it directly.
-    expect(byFile.get('src/local/ecs-task-runner.ts')?.moduleClass).toBe('live');
-    // LOADED-ONLY: `rest-v1-integrations.ts` imports `evaluateVtl`, so ESM
-    // evaluates the module, yet no exported symbol is ever reached. A rule
-    // asking "does this file have a live importer" answers YES here and misses
-    // the whole defect (issue #2203).
-    expect(byFile.get('src/local/vtl-engine.ts')?.moduleClass).toBe('loaded-only');
-    expect(byFile.get('src/local/vtl-engine.ts')?.loaded).toBe(true);
-    expect(byFile.get('src/local/vtl-engine.ts')?.liveSymbols).toBe(0);
+    expect(classOf()?.moduleClass).toBe('live');
+    // LOADED-ONLY: the importer keeps only inline `type` bindings, so under
+    // `verbatimModuleSyntax` ESM still evaluates the module, yet no exported
+    // symbol is ever reached. A rule asking "does this file have a live
+    // importer" answers YES here and misses the whole defect (issue #2203).
+    const loadedOnly = classOf(
+      withMutation('src/cli/commands/local-run-task.ts', VALUE_IMPORTS, '\n  type EcsRunState,')
+    );
+    expect(loadedOnly?.moduleClass).toBe('loaded-only');
+    expect(loadedOnly?.loaded).toBe(true);
+    expect(loadedOnly?.liveSymbols).toBe(0);
     // UNREFERENCED: nothing in `src/` imports it at all.
-    expect(byFile.get('src/local/httpv2-service-integration.ts')?.moduleClass).toBe('unreferenced');
-    expect(byFile.get('src/local/httpv2-service-integration.ts')?.loaded).toBe(false);
+    const unreferenced = classOf(
+      withMutation(
+        'src/cli/commands/local-run-task.ts',
+        "import {" + VALUE_IMPORTS + "\n  type RunEcsTaskOptions,\n} from '../../local/ecs-task-runner.js';\n",
+        ''
+      )
+    );
+    expect(unreferenced?.moduleClass).toBe('unreferenced');
+    expect(unreferenced?.loaded).toBe(false);
   }, ANALYZE_TIMEOUT_MS);
 
   it('splits a module whose live and dead halves sit in one file', () => {
-    const rie = analyze().modules.find((m) => m.file === 'src/local/rie-client.ts');
-    expect(rie?.moduleClass).toBe('live-partial');
-    // The correction that cost a review round: this file is NOT wholly dead.
-    expect(rie?.liveSymbols).toBeGreaterThan(0);
-    expect(rie?.deadSymbols).toContain('invokeRieStreaming');
-    expect(rie?.deadSymbols).not.toContain('invokeRie');
-    expect(rie?.deadSymbols).not.toContain('waitForRieReady');
+    const puller = analyze().modules.find((m) => m.file === 'src/local/ecr-puller.ts');
+    expect(puller?.moduleClass).toBe('live-partial');
+    // Only the test-reset seam is unreached; the module itself is live.
+    expect(puller?.liveSymbols).toBeGreaterThan(0);
+    expect(puller?.deadSymbols).toEqual(['__resetStsCachesForTesting']);
   }, ANALYZE_TIMEOUT_MS);
 });
 
@@ -182,15 +203,18 @@ describe('local reachability critic — must NOT fire on legitimate shims', () =
     }
   }, ANALYZE_TIMEOUT_MS);
 
+  // The live importer whose `ecr-puller.js` import the two probes below rewrite.
+  const PULLER_IMPORT = "import { parseEcrUri, pullEcrImage } from '../../local/ecr-puller.js';";
+
   it('does not resurrect a symbol through a TYPE-only import binding', () => {
     // The `refs` set holds NAMES, not resolved bindings, so a value-position
     // occurrence of a name that is imported type-only would otherwise create a
     // runtime edge and mark the target live. Here that would silently un-orphan
-    // `createReloadOrchestrator` and turn its annotation into a false "stale".
+    // `__resetStsCachesForTesting` and turn its annotation into a false "stale".
     const mutated = withMutation(
       'src/cli/commands/local-start-api.ts',
-      "import { type NextStateMaterial } from '../../local/reload-orchestrator.js';",
-      "import {\n  type createReloadOrchestrator,\n  type NextStateMaterial,\n} from '../../local/reload-orchestrator.js';\nvoid createReloadOrchestrator;"
+      PULLER_IMPORT,
+      "import {\n  type __resetStsCachesForTesting,\n  parseEcrUri,\n  pullEcrImage,\n} from '../../local/ecr-puller.js';\nvoid __resetStsCachesForTesting;"
     );
     expect(analyze(mutated).findings).toEqual([]);
   }, ANALYZE_TIMEOUT_MS);
@@ -200,11 +224,11 @@ describe('local reachability critic — must NOT fire on legitimate shims', () =
     // fixture cannot discriminate rather than that the type-only rule works.
     const mutated = withMutation(
       'src/cli/commands/local-start-api.ts',
-      "import { type NextStateMaterial } from '../../local/reload-orchestrator.js';",
-      "import {\n  createReloadOrchestrator,\n  type NextStateMaterial,\n} from '../../local/reload-orchestrator.js';\nvoid createReloadOrchestrator;"
+      PULLER_IMPORT,
+      "import {\n  __resetStsCachesForTesting,\n  parseEcrUri,\n  pullEcrImage,\n} from '../../local/ecr-puller.js';\nvoid __resetStsCachesForTesting;"
     );
     const stale = analyze(mutated).findings.filter((f) => f.kind === 'stale-annotation');
-    expect(stale.map((f) => f.symbol)).toEqual(['createReloadOrchestrator']);
+    expect(stale.map((f) => f.symbol)).toEqual(['__resetStsCachesForTesting']);
   }, ANALYZE_TIMEOUT_MS);
 
   it('does not treat a file that only declares types as a fork', () => {
@@ -323,32 +347,30 @@ describe('local reachability critic — RED probes against real code', () => {
 
   it('fires when an annotation goes STALE because the symbol became live', () => {
     // The direction that stops the annotations rotting into decoration — and,
-    // while orphans exist, the free defence against the reachability walk
-    // degrading to "everything is reachable".
-    // `rest-v1-integrations.ts` already imports `evaluateVtl`; the only thing
-    // missing is a reference to it from a function that IS live.
+    // while annotations exist, a free defence against the reachability walk
+    // degrading to "everything is reachable". The seam is declared in the same
+    // file as the live `pullEcrImage`, so one reference from its body is enough.
     const mutated = withMutation(
-      'src/local/rest-v1-integrations.ts',
-      '  const classification = classifyInternalHost(host);',
-      '  void evaluateVtl;\n  const classification = classifyInternalHost(host);'
+      'src/local/ecr-puller.ts',
+      'export async function pullEcrImage(imageUri: string, options: EcrPullOptions): Promise<string> {',
+      'export async function pullEcrImage(imageUri: string, options: EcrPullOptions): Promise<string> {\n  void __resetStsCachesForTesting;'
     );
     const stale = analyze(mutated).findings.filter((f) => f.kind === 'stale-annotation');
-    expect(stale.map((f) => f.symbol)).toContain('evaluateVtl');
-    expect(stale[0]?.tag).toBe(NO_LIVE_CALLER_TAG);
+    expect(stale.map((f) => f.symbol)).toEqual(['__resetStsCachesForTesting']);
+    expect(stale[0]?.tag).toBe(TEST_ONLY_TAG);
   }, ANALYZE_TIMEOUT_MS);
 
   it('fires when an annotation is a bare token with no reason', () => {
-    // `reload-orchestrator.ts` carries exactly one annotation, so the anchor is
-    // unique without having to pick an occurrence out of a repeated block.
+    // `ecr-puller.ts` carries exactly one annotation, so the anchor is unique
+    // without having to pick an occurrence out of a repeated block.
     const mutated = withMutation(
-      'src/local/reload-orchestrator.ts',
-      ' * @no-live-caller superseded by `reloadAllServers` in `local-start-api.ts`, which drives the\n' +
-        ' * `--watch` reload across the N-server topology. The only thing still imported from this\n' +
-        ' * module is the `NextStateMaterial` type (issue #2228).',
-      ' * @no-live-caller dead'
+      'src/local/ecr-puller.ts',
+      ' * @test-only-export exists so unit tests can drop the module-level STS caches between\n' +
+        ' * cases; no shipped code path calls it, and the rest of this module is live.',
+      ' * @test-only-export dead'
     );
     const bare = analyze(mutated).findings.filter((f) => f.kind === 'bare-annotation');
-    expect(bare.map((f) => f.symbol)).toContain('createReloadOrchestrator');
+    expect(bare.map((f) => f.symbol)).toEqual(['__resetStsCachesForTesting']);
   }, ANALYZE_TIMEOUT_MS);
 
   it('reports a symbol whose annotation is DELETED, one file at a time', () => {
@@ -356,16 +378,12 @@ describe('local reachability critic — RED probes against real code', () => {
     // is load-bearing. Each is removed on its own and must be reported.
     //
     // The floor's job is to reject a VACUOUS sweep (a loop over nothing proves
-    // nothing), not to pin the count — but unlike the magnitude BANDS further
-    // down it cannot be set "below the planned post-#2277 state", because
-    // go-to-k/cdkd#2277 deletes the orphaned fork wholesale and takes the
-    // annotated population to roughly zero. So it tracks the tree exactly and
-    // is lowered deliberately when an annotated module is deleted: 8 -> 7 by
-    // go-to-k/cdkd#2527, which removed `src/local/cfn-local-state-provider.ts`
-    // (an unreferenced fork of a class cdk-local owns). When #2277 lands, this
-    // case needs RESTRUCTURING rather than another decrement.
+    // nothing). After go-to-k/cdkd#2277 the real tree carries no
+    // `@no-live-caller` at all, only the `@test-only-export` seam in
+    // `ecr-puller.ts`; the `@no-live-caller` arm is held by the self-probe
+    // corpus (`annotatedDead`) instead.
     const annotated = analyze().modules.filter((m) => m.deadSymbols.length > 0);
-    expect(annotated.length).toBeGreaterThanOrEqual(7);
+    expect(annotated.length).toBeGreaterThanOrEqual(1);
     for (const mod of annotated) {
       const path = join(REPO_ROOT, mod.file);
       const copy = new Map(REAL_SOURCES);
@@ -578,13 +596,11 @@ describe('local reachability critic — CLI and wiring', () => {
     // A dark run yields 0 for every one of these, so a floor discriminates just
     // as well as an equality -- while an equality also reds on any correct
     // addition under `src/local/**`, whose only remedy is to bump the number,
-    // which is the reflex that makes an assertion worthless. go-to-k/cdkd#2277
-    // (deleting the orphans) will move four of these BY DESIGN: it takes
-    // scopeFiles 57 -> ~53 and scopeExportedSymbols 84 -> 55, so each band sits
-    // BELOW that state as well as ABOVE the checker's own FLOORS -- above the
-    // floors because a band equal to one adds nothing the floor does not
-    // already catch, below the post-2277 state because a band that reds on a
-    // planned, correct change is the same ratchet in the other direction.
+    // which is the reflex that makes an assertion worthless. Each band sits
+    // ABOVE the checker's own FLOORS, because a band equal to one adds nothing
+    // the floor does not already catch, and below the current tree with room
+    // for a correct deletion, because a band that reds on one is the same
+    // ratchet in the other direction.
     const proc = run(['--json']);
     const parsed = JSON.parse(proc.stdout);
     expect(parsed.scopeFiles).toBeGreaterThanOrEqual(45);

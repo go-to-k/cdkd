@@ -193,11 +193,11 @@ export interface ImageContainerSpec extends ContainerSpecBase {
    * work — see `src/local/ecr-puller.ts`). The pool passes this verbatim to `docker
    * run` — no further resolution happens on the per-cold-start path.
    *
-   * On hot reload (`--watch`) the reload-orchestrator detects spec
-   * signature changes via `reload-orchestrator.ts:specSignature`; a
-   * change in `image` (e.g. the user edited the Dockerfile and the
-   * deterministic tag flipped) triggers a pool teardown so the next
-   * cold-start runs the newly-built image.
+   * On hot reload (`--watch`) `reloadAllServers` in `local-start-api.ts`
+   * builds a fresh pool from the re-synthesized specs and disposes the
+   * previous one, so a changed `image` (e.g. the user edited the
+   * Dockerfile and the deterministic tag flipped) is what the next
+   * cold-start runs.
    */
   image: string;
   /**
