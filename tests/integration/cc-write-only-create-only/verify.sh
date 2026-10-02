@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd Cloud Control UPDATE of a write-only key holding a
 # create-only path (go-to-k/cdkd#4416).
-# Deploys a Cognito ManagedLoginBranding (write-only + create-only ClientId)
-# and a Kinesis-source Pipe (write-only SourceParameters holding the
-# create-only StartingPosition) and a CodePipeline CustomActionType (create-only
-# Settings / ConfigurationProperties holding write-only leaves), then updates a
-# MUTABLE property of each. Cloud
-# Control refused both updates while cdkd re-added the write-only key
-# ("createOnlyProperties [...] cannot be updated"). Asserts both updates land
-# in place (same ids, new values readable from AWS), then destroys clean.
+# Deploys a Cognito ManagedLoginBranding (write-only + create-only ClientId),
+# a Kinesis-source Pipe (write-only SourceParameters holding the create-only
+# StartingPosition) and a CodePipeline CustomActionType (create-only Settings /
+# ConfigurationProperties holding write-only leaves), then updates a MUTABLE
+# property of each. Cloud Control refused all three updates while cdkd re-added
+# the unchanged key ("createOnlyProperties [...] cannot be updated"). Asserts
+# all three land in place (same ids, new values readable from AWS), then
+# destroys clean.
 
 set -euo pipefail
 
