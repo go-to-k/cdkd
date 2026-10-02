@@ -44,9 +44,9 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * - `ROLE_EXPLICIT_NAME` — when set, the role declares that name. Unset
  *   (phases 1-2) it is UNNAMED and cdkd mints `<stack>-<logicalId>`.
  * - `ROLE_DESCRIPTION` — a MUTABLE property, so phase 2's
- *   `--recreate-via-cc-api` has a real change to carry. Without one the differ
- *   classifies the resource NO_CHANGE and the migration never runs
- *   (go-to-k/cdkd#2651).
+ *   `--recreate-via-cc-api` has a real change to carry. Before
+ *   go-to-k/cdkd#2651 was fixed, a flagged resource the differ classified
+ *   NO_CHANGE was never migrated.
  * - `REPLAY_CC_NAME_FAIL` — injects a deliberately invalid SQS queue.
  *
  * THE FIXED `Path`

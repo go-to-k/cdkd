@@ -474,11 +474,11 @@ echo "[verify] phase 1 ok: SDK-routed role '${SDK_NAME}'"
 # ---------------------------------------------------------------------------
 # PHASE 2: migrate the resource onto Cloud Control
 # ---------------------------------------------------------------------------
-# ROLE_DESCRIPTION carries a REAL property change: `--recreate-via-cc-api` on an
-# otherwise-unchanged template prints its warning and then does nothing, because
-# the differ classifies the resource NO_CHANGE and the engine never provisions
-# it (go-to-k/cdkd#2651). Without a change here the record would never flip and
-# phase 3 would run on the SDK route.
+# ROLE_DESCRIPTION carries a REAL property change. Before go-to-k/cdkd#2651 was
+# fixed, `--recreate-via-cc-api` on an otherwise-unchanged template printed its
+# warning and then did nothing, so without a change the record never flipped
+# and phase 3 ran on the SDK route. The change is kept so the phase does not
+# depend on that fix.
 MIGRATED_DESCRIPTION='cdkd #3199 migrated'
 echo "[verify] phase 2: ROLE_DESCRIPTION='${MIGRATED_DESCRIPTION}' cdkd deploy --recreate-via-cc-api ${LOGICAL_ID}"
 ROLE_DESCRIPTION="${MIGRATED_DESCRIPTION}" ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \

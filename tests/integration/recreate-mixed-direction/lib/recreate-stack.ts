@@ -34,11 +34,11 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * The explicit flag depends on no coverage table, so a backfill cannot rot it.
  *
  * `RuntimeManagementConfig` (default `UpdateRuntimeOn: 'Auto'`; set
- * `'FunctionUpdate'` here) toggles with the phase because routing is decided
- * while PROVISIONING: a deploy the differ classifies NO_CHANGE never reaches
- * the provider, so a recreate flag on an unchanged resource does nothing
- * (go-to-k/cdkd#2651). Both layers handle the property today; it is here as
- * the property delta and as an AWS-side witness, NOT as a routing trigger.
+ * `'FunctionUpdate'` here) toggles with the phase as the AWS-side witness of
+ * each recreate. It was also the property delta a recreate flag needed before
+ * go-to-k/cdkd#2651 was fixed, when a flagged resource whose diff was
+ * NO_CHANGE was never provisioned. Both layers handle the property today; it
+ * is NOT a routing trigger.
  *
  * The single Phase 2 deploy mixes both flags so the deploy engine's
  * recreate-target processing handles both directions in one DAG run.

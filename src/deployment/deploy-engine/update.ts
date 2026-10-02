@@ -189,17 +189,11 @@ export async function provisionUpdate(
   // `?.()` for the test doubles, as at the diff call: a double without
   // the method compares the full bag.
   //
-  // The recreate flags are read below this skip (the issue #2651 class),
-  // but for a resource whose TYPE is unchanged a `--recreate-via-*`
-  // target this narrowing could absorb is not reachable from the CLI:
-  // `--recreate-via-cc-api` with `--prefer-sdk-route` on the same
-  // resource is `ambiguousIntent` whenever the template carries the
-  // allow-listed drop (a check made against the RECORDED type), and
-  // `--recreate-via-sdk-provider` is `blockedAlreadySdk` for every record
-  // not on 'cc-api', a superset of the records narrowed here (which also
-  // need an allow set and a removable drop). Both refuse at pre-flight
-  // with `RECREATE_TARGETS_INVALID` -- see
-  // `src/deployment/recreate-targets.ts`. A TYPE change does reach this
+  // A `--recreate-via-*` target never takes this skip (issue #2651): the
+  // flag asks for a destroy + recreate whatever the properties say, and an
+  // unchanged bag is the usual case — `promoteRecreateTargets` turns the
+  // diff's NO_CHANGE for such a target into an UPDATE precisely so it
+  // reaches the recreate below. A TYPE change does reach this
   // arm (the diff emits it as an UPDATE carrying `Type`), and this skip
   // compares properties only — so it is gated on `!typeChanged` below
   // (issue #3036): two types whose bags compare equal are still two
@@ -264,6 +258,7 @@ export async function provisionUpdate(
   if (
     !typeChanged &&
     !suppliesFreshMaskOnlyValue &&
+    this.recreateDirectionFor(stackName, logicalId) === undefined &&
     keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten)
   ) {
     // Attribute-only change (schema v5+): `DeletionPolicy` /
@@ -468,11 +463,9 @@ export async function provisionUpdate(
   // with a validated parent one was treated as recreate-flagged — and
   // `recreateFlagged` is what SKIPS the stateful guard below.
   //
-  // Read INSIDE `case 'UPDATE'`, and only after the no-op short-circuit
-  // above: a named target whose diff is NO_CHANGE is silently ignored
-  // (issue [#2651](https://github.com/go-to-k/cdkd/issues/2651)) -- which is also why any test or fixture measuring
-  // this flag must give the target a real property change, or it
-  // measures nothing.
+  // Read INSIDE `case 'UPDATE'`: a target the diff called NO_CHANGE gets
+  // here because `promoteRecreateTargets` made it an UPDATE, and the
+  // no-op skips above exempt it (issue #2651).
   const recreateTargets =
     this.options.recreateTargets?.stackName === stackName
       ? this.options.recreateTargets

@@ -265,9 +265,9 @@ assert_archive_crossrefs
 LAST_MOD_1=$(aws_text "Lambda LastModified" aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LastModified')
 
 # --- Phase 2: move the Lambda to Cloud Control ------------------------------
-# The seed template carries a real property delta (RuntimeManagementConfig):
-# a deploy the differ classifies NO_CHANGE never reaches the provider, so a
-# recreate flag on an unchanged resource does nothing (go-to-k/cdkd#2651).
+# The seed template carries a real property delta (RuntimeManagementConfig),
+# the AWS-side witness of the recreate. (Before go-to-k/cdkd#2651 was fixed it
+# was also what made the recreate flag act at all.)
 echo "==> Phase 2: re-deploy with --recreate-via-cc-api CcLambda (SDK-registered type onto Cloud Control) + add FnArnParam"
 CDKD_INTEG_PHASE=seed node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -277,7 +277,7 @@ CDKD_INTEG_PHASE=seed node "${LOCAL_DIST}" deploy "${STACK}" \
 
 read_state
 assert_layer "Lambda (Phase 2)" "AWS::Lambda::Function" "FunctionName" "${FN_NAME}" "cc-api" \
-  "The --recreate-via-cc-api seed did not seed, so cross-refs E/F below would be vacuous. Likely cause: the flag no-opped because the differ saw NO_CHANGE between the base and seed templates (go-to-k/cdkd#2651 -- check that lib/sdk-ccapi-crossref-stack.ts still toggles RuntimeManagementConfig on CDKD_INTEG_PHASE=seed), or --recreate-via-cc-api itself regressed (run the recreate-via-cc-api fixture). This step does NOT depend on any property being unhandled by the SDK provider."
+  "The --recreate-via-cc-api seed did not seed, so cross-refs E/F below would be vacuous. Likely cause: --recreate-via-cc-api regressed, including a return of go-to-k/cdkd#2651 (run the recreate-via-cc-api and cc-to-sdk-reroute fixtures). This step does NOT depend on any property being unhandled by the SDK provider."
 assert_archive_layer
 assert_sdk_side
 assert_layer "SSM Parameter fn-arn" "AWS::SSM::Parameter" "Name" "${FN_ARN_PARAM}" "sdk" "${SDK_DIAG}"
