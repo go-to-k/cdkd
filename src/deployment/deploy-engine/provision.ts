@@ -17,6 +17,11 @@ import { DEFAULT_RESOURCE_TIMEOUT_MS, DEFAULT_RESOURCE_WARN_AFTER_MS } from './o
 import { isReplacementCeiling } from '../deploy-value-equality.js';
 import { withResourceDeadline } from '../resource-deadline.js';
 import { maskSecretsInError } from '../secret-redaction.js';
+import {
+  priorAttemptLookup,
+  priorAttemptsInJournal,
+  withPriorAttempts,
+} from '../prior-attempt-scope.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -382,30 +387,44 @@ export async function provisionResourceBody(
   counts?: ProvisionCounts,
   progress?: { current: number; total: number }
 ): Promise<ResourceOutcomeSignal | void> {
+  // go-to-k/cdkd#4355: what this stack's rollback journal recorded for the
+  // resource, for a provider that cannot otherwise tell its own leftover from
+  // another owner's identical resource. Read only when a provider asks.
+  const priorAttempts = priorAttemptLookup(logicalId, async () =>
+    priorAttemptsInJournal(
+      await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion),
+      logicalId,
+      change.resourceType
+    )
+  );
   switch (change.changeType) {
     case 'CREATE':
-      return this.provisionCreate(
-        logicalId,
-        change,
-        stateResources,
-        stackName,
-        template,
-        parameterValues,
-        conditions,
-        counts,
-        progress
+      return withPriorAttempts(priorAttempts, () =>
+        this.provisionCreate(
+          logicalId,
+          change,
+          stateResources,
+          stackName,
+          template,
+          parameterValues,
+          conditions,
+          counts,
+          progress
+        )
       );
     case 'UPDATE':
-      return this.provisionUpdate(
-        logicalId,
-        change,
-        stateResources,
-        stackName,
-        template,
-        parameterValues,
-        conditions,
-        counts,
-        progress
+      return withPriorAttempts(priorAttempts, () =>
+        this.provisionUpdate(
+          logicalId,
+          change,
+          stateResources,
+          stackName,
+          template,
+          parameterValues,
+          conditions,
+          counts,
+          progress
+        )
       );
     case 'DELETE':
       return this.provisionDelete(

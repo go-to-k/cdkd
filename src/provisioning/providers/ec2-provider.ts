@@ -32,7 +32,10 @@ import {
   CreateSecurityGroupCommand,
   DeleteSecurityGroupCommand,
   AuthorizeSecurityGroupIngressCommand,
+  type AuthorizeSecurityGroupIngressCommandInput,
+  type AuthorizeSecurityGroupIngressCommandOutput,
   RevokeSecurityGroupIngressCommand,
+  type RevokeSecurityGroupIngressCommandInput,
   AuthorizeSecurityGroupEgressCommand,
   RevokeSecurityGroupEgressCommand,
   CreateTagsCommand,
@@ -138,7 +141,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { pasteableAwsCommand, WITHHELD_AWS_COMMAND } from '../replacement-protection-advice.js';
-import { displayIdent } from '../../utils/display-safe.js';
+import { displayIdent, safeMsg } from '../../utils/display-safe.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import {
   isRedactedRecordedValue,
@@ -146,7 +149,11 @@ import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { markNonRetryable, THROTTLING_ERROR_NAMES } from '../../deployment/retryable-errors.js';
+import {
+  getPriorAttempts,
+  markRefusedBeforeApplying,
+} from '../../deployment/prior-attempt-scope.js';
 import { deleteSkipReason } from '../../deployment/delete-outcome.js';
 
 /** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
@@ -474,6 +481,8 @@ export function describedInstanceAttributes(
 
 export class EC2Provider implements ResourceProvider {
   private ec2Client: EC2Client;
+  /** The standalone-ingress Authorize's client: one send per call (#4355). */
+  private ec2AuthorizeClient: EC2Client;
   private logger = getLogger().child('EC2Provider');
   /** `--remove-protection` flips, keyed so a re-entered instance delete keeps them (#2204). */
   private readonly protectionFlips = new ProtectionFlipRegistry();
@@ -688,6 +697,9 @@ export class EC2Provider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.ec2Client = awsClients.ec2;
+    // `?? ec2` only for a test double that provides no `ec2SingleSend`;
+    // `AwsClients` always does.
+    this.ec2AuthorizeClient = awsClients.ec2SingleSend ?? awsClients.ec2;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -735,7 +747,8 @@ export class EC2Provider implements ResourceProvider {
           // A reverse-replacement rollback creates from a STATE record, so the
           // refusal downgrades here exactly as it does on the update path.
           context?.replayingState === true ? (message) => this.logger.warn(message) : undefined,
-          context?.maskSecrets
+          context?.maskSecrets,
+          context?.replayingState === true
         );
       case 'AWS::EC2::Instance':
         return this.createInstance(logicalId, resourceType, properties, context);
@@ -842,7 +855,9 @@ export class EC2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets
+          context?.maskSecrets,
+          context?.replayingState === true,
+          context?.recordedAttributes
         );
       case 'AWS::EC2::Instance':
         return this.updateInstance(
@@ -3450,13 +3465,20 @@ export class EC2Provider implements ResourceProvider {
    *   so a refusal would leave the rule deleted from AWS with the op failed —
    *   and on a rollback replay the value comes from a STATE record, which no
    *   template edit can fix. Absent (the plain CREATE dispatch) it throws.
+   * @param replayingState A rollback replay, whose rule is one this stack
+   *   recorded: an identical rule already on the group is adopted
+   *   (go-to-k/cdkd#4355, {@link resolveDuplicateIngress}).
+   * @param revokedRule Set by `updateSecurityGroupIngress`: the physical id of
+   *   the previous rule it has just revoked, which a refusal names.
    */
   private async createSecurityGroupIngress(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     onUnusableProtocol?: (message: string) => void,
-    maskSecrets?: MaskerFn
+    maskSecrets?: MaskerFn,
+    replayingState = false,
+    revokedRule?: string
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SecurityGroupIngress ${logicalId}`);
 
@@ -3495,7 +3517,7 @@ export class EC2Provider implements ResourceProvider {
     // non-blank string. AWS itself would reject such a protocol, so this is
     // unverified defense-in-depth rather than a measured hazard; refusing here
     // rather than leaving it to AWS keeps the id from being recorded on the
-    // idempotent "already exists" arm below. The downgrade reuses `onUnusableProtocol`,
+    // "already exists" arm below. The downgrade reuses `onUnusableProtocol`,
     // which `updateSecurityGroupIngress` passes UNCONDITIONALLY: that path has
     // already REVOKED the rule, so a throw would leave it deleted from AWS with
     // no template-side remedy — the same constraint the protocol guard above
@@ -3520,9 +3542,20 @@ export class EC2Provider implements ResourceProvider {
       { maskSecrets, ...(onUnusableProtocol && { onRefusal: onUnusableProtocol }) }
     );
 
+    // go-to-k/cdkd#4355: set once a send of THIS call failed ambiguously and
+    // was re-sent below, so a Duplicate on the re-send may be that send's rule.
+    let earlierSendAmbiguous = false;
     try {
-      const response = await this.ec2Client.send(
-        new AuthorizeSecurityGroupIngressCommand({
+      // One SDK send per call (go-to-k/cdkd#4355): each failure is classified
+      // per send, the engine's retry repeats a throttle or a 5xx, and
+      // `sendAuthorizeIngress` re-sends a socket error itself — neither the
+      // single-send client nor the engine's retry would.
+      const response = await this.sendAuthorizeIngress(
+        logicalId,
+        () => {
+          earlierSendAmbiguous = true;
+        },
+        {
           GroupId: groupId,
           // Override the protocol with the GUARDED value. `buildIpPermission`
           // deliberately re-reads the raw bag (it is shared with the
@@ -3532,7 +3565,7 @@ export class EC2Provider implements ResourceProvider {
           // leave the rule revoked on the update path. That is the blocker this
           // guard exists to prevent, one level further along.
           IpPermissions: [{ ...this.buildIpPermission(properties), IpProtocol: ipProtocol }],
-        })
+        }
       );
 
       // Issue #1761: the `sgr-...` rule id is read off the response the
@@ -3559,21 +3592,33 @@ export class EC2Provider implements ResourceProvider {
         ...(effectiveProperties && { effectiveProperties }),
       };
     } catch (error) {
-      // Treat "already exists" as success (idempotent, like CloudFormation)
+      // An identical rule is already on the group. Adopted only when it is
+      // this stack's own (go-to-k/cdkd#4355); otherwise the create refuses.
       if (error instanceof Error && error.message.includes('already exists')) {
-        this.logger.debug(`SecurityGroupIngress ${logicalId} already exists, treating as success`);
-        // The Authorize FAILED, so no response carries the rule id — but this
-        // arm still reports the rule as provisioned and state is written from
+        // The Authorize FAILED, so no response carries the rule id — but an
+        // adopted rule is reported as provisioned and state is written from
         // it, so the id has to be looked up or `cdkd export` refuses exactly
-        // the resources a re-run adopted (issue #1761). Best-effort by
-        // construction: `lookupIngressRuleId` swallows its own failures and
-        // returns `undefined`, because turning today's idempotent success into
-        // a deploy failure over a missing export-time convenience would be a
-        // strictly worse trade. Safe to `await` here in a way the success arm
-        // is not — this path created nothing, so there is nothing to orphan.
-        const existingRuleId = await this.lookupIngressRuleId(logicalId, groupId, {
-          ...properties,
-          IpProtocol: ipProtocol,
+        // the resources a re-run adopted (issue #1761). The refusal names it
+        // too. Best-effort by construction: `lookupIngressRuleId` swallows its
+        // own failures and returns `undefined`. Safe to `await` here in a way
+        // the success arm is not — this path created nothing, so there is
+        // nothing to orphan.
+        const desired = { ...properties, IpProtocol: ipProtocol };
+        const existingRuleId = await this.lookupIngressRuleId(logicalId, groupId, desired);
+        await this.resolveDuplicateIngress({
+          logicalId,
+          resourceType,
+          groupId,
+          desired,
+          existingRuleId,
+          replayingState,
+          // An earlier send of THIS write may have authorized the rule: an
+          // earlier engine retry of this dispatch failed without a definite
+          // answer. (Each send is classified on its own: `ec2SingleSend`.)
+          ownAttemptMayHaveLanded:
+            earlierSendAmbiguous || getPriorAttempts(logicalId)?.possiblyLanded() === true,
+          ...(maskSecrets && { maskSecrets }),
+          ...(revokedRule !== undefined && { revokedRule }),
         });
         // The same record the success arm writes: this arm reports the rule as
         // provisioned, so state is written here too and the narrowing has to
@@ -3585,12 +3630,317 @@ export class EC2Provider implements ResourceProvider {
         };
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const failure = new ProvisioningError(
         `Failed to create SecurityGroupIngress ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         undefined,
         cause
+      );
+      // go-to-k/cdkd#4355: an Authorize AWS PROVABLY did not apply (a 4xx or
+      // a throttle on a single send, with no earlier attempt of this dispatch
+      // left in doubt) is journaled without its bag, so a rule someone adds by
+      // hand before the re-run is not adopted. Anything else may have landed:
+      // its bag stays evidence, and the dispatch remembers it so a duplicate
+      // on the engine's retry keeps its bag too.
+      const lookup = getPriorAttempts(logicalId);
+      if (
+        authorizeDefinitelyNotApplied(error) &&
+        !earlierSendAmbiguous &&
+        lookup?.possiblyLanded() !== true
+      ) {
+        markRefusedBeforeApplying(failure);
+      } else {
+        lookup?.notePossiblyLanded();
+      }
+      throw failure;
+    }
+  }
+
+  /**
+   * Send one `AuthorizeSecurityGroupIngress` through the single-send client,
+   * re-sending up to {@link AUTHORIZE_SOCKET_RESENDS} times on a socket error
+   * that can follow a written request (go-to-k/cdkd#4355). The SDK would have
+   * re-sent those, but `ec2SingleSend` turns its retries off so every failure
+   * is classified per send, and the engine's retry does not repeat socket
+   * errors — without this a network blip fails the create outright.
+   *
+   * Each such failure may have authorized the rule, so it is reported through
+   * `onAmbiguousResend` and noted on the dispatch: a Duplicate from the
+   * re-send then refuses WITHOUT the refusal mark, keeping the evidence for
+   * the next deploy. Any other failure (and the last socket error) is thrown
+   * unchanged.
+   */
+  private async sendAuthorizeIngress(
+    logicalId: string,
+    onAmbiguousResend: () => void,
+    input: AuthorizeSecurityGroupIngressCommandInput
+  ): Promise<AuthorizeSecurityGroupIngressCommandOutput> {
+    for (let resend = 0; ; resend++) {
+      try {
+        return await this.ec2AuthorizeClient.send(new AuthorizeSecurityGroupIngressCommand(input));
+      } catch (error) {
+        const connectTimeout = isConnectTimeout(error);
+        if (
+          resend >= AUTHORIZE_SOCKET_RESENDS ||
+          !(connectTimeout || isResendableSocketFailure(error))
+        ) {
+          throw error;
+        }
+        // A connect timeout sent nothing, so it is re-sent without the flag.
+        if (!connectTimeout) {
+          onAmbiguousResend();
+          getPriorAttempts(logicalId)?.notePossiblyLanded();
+        }
+        this.logger.debug(
+          safeMsg`SecurityGroupIngress ${logicalId}: Authorize failed on the socket (${describeAwsFailure(error).summary}); re-sending`
+        );
+        await this.sleep(AUTHORIZE_SOCKET_RESEND_DELAY_MS * (resend + 1));
+      }
+    }
+  }
+
+  /**
+   * Decide what an `InvalidPermission.Duplicate` on an ingress create means
+   * (go-to-k/cdkd#4355): return to adopt the existing rule, throw to refuse.
+   *
+   * AWS reports the same error for a rule an interrupted run of THIS stack
+   * left behind (the Authorize landed, the run died before state recorded it)
+   * and for an identical rule another owner added by hand or from another
+   * stack. Adopting the second records it as this stack's, and `cdkd destroy`
+   * then revokes it from under its owner. So the rule is adopted only when
+   * this stack's own records show it:
+   *
+   * - a rollback replay (`replayingState`), whose bag IS a state record; or
+   * - a bag this stack's rollback journal recorded for the logical id
+   *   ({@link getPriorAttempts}) that describes the same rule.
+   *
+   * A retry of the same create in this run (the engine's, after a send that
+   * got no definite answer) whose first Authorize may have landed is NOT
+   * evidence in this run: AWS records no creation time for a rule, so nothing
+   * tells that rule from a stranger's added meanwhile. It refuses, but WITHOUT
+   * the refusal mark (`ownAttemptMayHaveLanded`), so the failed op keeps its
+   * attempted bag and the next `cdkd deploy` adopts — a pre-existing identical
+   * rule included. A throttled send applied nothing and leaves no doubt.
+   *
+   * Anything else refuses, naming the existing rule — including a journal
+   * that cannot be read, and a caller that bound no evidence. The journal is
+   * read only here, so an ordinary create makes no extra call.
+   */
+  private async resolveDuplicateIngress(input: {
+    logicalId: string;
+    resourceType: string;
+    groupId: string;
+    desired: Record<string, unknown>;
+    existingRuleId: string | undefined;
+    replayingState: boolean;
+    ownAttemptMayHaveLanded: boolean;
+    maskSecrets?: MaskerFn;
+    revokedRule?: string;
+  }): Promise<void> {
+    const { logicalId, resourceType, groupId, desired, existingRuleId } = input;
+    if (input.replayingState) {
+      // The replay licence needs no further evidence (its bag is a state
+      // record), so the adopted id is logged where an operator can audit it.
+      this.logger.warn(
+        safeMsg`SecurityGroupIngress ${logicalId}: the rollback replay adopted the existing identical rule ${existingRuleId ?? '(id not found)'} on ${groupId} as this stack's`
+      );
+      return;
+    }
+    const wanted = ingressRuleIdentity(groupId, desired);
+    const lookup = getPriorAttempts(logicalId);
+    let unreadable: string | undefined;
+    if (lookup !== undefined) {
+      try {
+        const attempts = await lookup.attempts();
+        if (attempts.some((bag) => ingressRuleIdentity(bag['GroupId'], bag) === wanted)) {
+          this.logger.info(
+            safeMsg`SecurityGroupIngress ${logicalId}: adopting the existing identical rule ${existingRuleId ?? '(id not found)'} on ${groupId}, which this stack's rollback journal shows an earlier deploy of it attempted`
+          );
+          return;
+        }
+      } catch (error) {
+        // `summary` in the thrown (persisted) message: an S3 AccessDenied's
+        // `detail` names the caller's role ARN and the bucket key.
+        const failure = describeAwsFailure(error);
+        unreadable = failure.summary;
+        this.logger.debug(
+          safeMsg`SecurityGroupIngress ${logicalId}: rollback journal read failed: ${failure.detail}`
+        );
+      }
+    }
+    const rule = existingRuleId ? `rule ${existingRuleId}` : 'an identical rule';
+    const message =
+      `Cannot create SecurityGroupIngress ${logicalId}: ${rule} already exists on security ` +
+      `group ${groupId}, and nothing in this stack's records shows cdkd created it` +
+      (unreadable === undefined
+        ? ''
+        : ` (the stack's rollback journal could not be read: ${unreadable})`) +
+      `. cdkd does not adopt it, because 'cdkd destroy' would then revoke a rule its owner ` +
+      `still relies on. Remove this rule from the stack if the existing one already covers ` +
+      `it, or, if the existing rule is a leftover nobody owns (for example from an ` +
+      `interrupted cdkd deploy), revoke it and re-deploy` +
+      (existingRuleId
+        ? `: ${pasteableAwsCommand(
+            input.maskSecrets
+          )`aws ec2 revoke-security-group-ingress --group-id ${groupId} --security-group-rule-ids ${existingRuleId}`.render()}`
+        : '.') +
+      (input.ownAttemptMayHaveLanded
+        ? ` An earlier attempt of this create got no definite answer from AWS and may ` +
+          `have authorized this rule itself, so the attempt is kept in the stack's ` +
+          `rollback journal: the next 'cdkd deploy' adopts the rule if it is still identical.`
+        : '') +
+      (input.revokedRule === undefined
+        ? ''
+        : ` This was an update: the previous rule (${input.revokedRule}) has already been ` +
+          `revoked, and the existing rule was left untouched` +
+          // Only a deploy journals the op `--revert-failed` replays.
+          (lookup === undefined
+            ? '.'
+            : `; 'cdkd rollback <stack> --revert-failed' re-authorizes the previous rule` +
+              (input.ownAttemptMayHaveLanded
+                ? `, after first revoking the existing identical rule, which the kept attempt ` +
+                  `names as this stack's, if it carries this stack's description; otherwise it is ` +
+                  `left and named.`
+                : '.')));
+    const refusal = markNonRetryable(
+      new ProvisioningError(
+        input.maskSecrets ? input.maskSecrets(message) : message,
+        resourceType,
+        logicalId
+      )
+    );
+    // Marked so the failed op is journaled WITHOUT this bag: the bag is what a
+    // later deploy reads as "this stack attempted the rule", and what
+    // `cdkd rollback --revert-failed` reverts an update FROM (revoking it).
+    // Left unmarked when this dispatch's own earlier send may have made the
+    // rule: then the bag is the evidence the next deploy adopts on.
+    if (!input.ownAttemptMayHaveLanded) markRefusedBeforeApplying(refusal);
+    throw refusal;
+  }
+
+  /**
+   * Every rule on `groupId`, walking `NextToken` up to {@link MAX_SG_RULE_PAGES}
+   * pages; `undefined` when the group could not be read whole. Throws what
+   * `DescribeSecurityGroupRules` throws.
+   */
+  private async listGroupRules(groupId: string): Promise<SecurityGroupRule[] | undefined> {
+    const rules: SecurityGroupRule[] = [];
+    let nextToken: string | undefined;
+    let pages = 0;
+    do {
+      if (pages >= MAX_SG_RULE_PAGES) return undefined;
+      const resp: DescribeSecurityGroupRulesResult = await this.ec2Client.send(
+        new DescribeSecurityGroupRulesCommand({
+          Filters: [{ Name: 'group-id', Values: [groupId] }],
+          MaxResults: SG_RULE_PAGE_SIZE,
+          ...(nextToken && { NextToken: nextToken }),
+        })
+      );
+      rules.push(...(resp.SecurityGroupRules ?? []));
+      nextToken = resp.NextToken;
+      pages += 1;
+    } while (nextToken);
+    return rules;
+  }
+
+  /**
+   * After a revoke by a recorded `sgr-` id found nothing — the id is stale, or
+   * the rule is gone — find THIS stack's rule among the live ones and revoke it
+   * by its own id (go-to-k/cdkd#4355). A live rule counts as this stack's only
+   * when both its identity (protocol, ports, source) AND its description match
+   * the record (an absent description matches an absent one): a bare tuple
+   * match could be someone else's re-add after this stack's rule was revoked
+   * out of band. Exactly one such rule is revoked. No rule with its identity
+   * means gone, and only same-identity rules with a DIFFERENT (unredacted)
+   * description are judged someone else's and left, with a warning; every
+   * other branch (several matches, a redacted description, a group that cannot
+   * be read, no properties) may leave this stack's rule live, so it returns a
+   * skip and the record is kept. The extra call is made only on this path.
+   */
+  private async revokeMatchingLiveRule(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    groupId: string,
+    properties: Record<string, unknown> | undefined,
+    context: DeleteContext | undefined
+  ): Promise<void | ResourceDeleteResult> {
+    const commandsFor = (candidates: string[]): string =>
+      candidates.length === 0
+        ? ''
+        : ` If one of the rules is this stack's, revoke it by hand: ${candidates
+            .map((id) =>
+              pasteableAwsCommand()`aws ec2 revoke-security-group-ingress --group-id ${groupId} --security-group-rule-ids ${id}`.render()
+            )
+            .join(' ; ')}`;
+    // The rule may still be live and this stack's, so the record is KEPT and
+    // the delete reports a skip (exit 2, re-runnable) — never "deleted".
+    const keep = (why: string, candidates: string[] = []): ResourceDeleteResult => {
+      this.logger.warn(
+        safeMsg`SecurityGroupIngress ${logicalId}: its recorded rule id is stale and ${why}, so nothing was revoked and the record is kept.` +
+          commandsFor(candidates)
+      );
+      return { outcome: 'skipped', reason: SG_INGRESS_UNPROVEN_RULE_SKIP_REASON };
+    };
+    if (properties === undefined) return keep('state records no properties to find its rule by');
+    let rules: SecurityGroupRule[] | undefined;
+    try {
+      rules = await this.listGroupRules(groupId);
+    } catch (error) {
+      return keep(
+        safeMsg`the group's rules could not be read (${describeAwsFailure(error).summary})`
+      );
+    }
+    if (rules === undefined) return keep('the group has too many rules to read whole');
+    const sameRule = rules.filter(
+      (rule) =>
+        rule.IsEgress !== true &&
+        typeof rule.SecurityGroupRuleId === 'string' &&
+        securityGroupRuleMatchesCfnIngress(rule, properties)
+    );
+    const sameIds = sameRule.map((rule) => rule.SecurityGroupRuleId!);
+    if (sameRule.length === 0) {
+      // Nothing on the group is this rule any more: it is gone.
+      this.logger.debug(
+        safeMsg`SecurityGroupIngress ${physicalId} does not exist, skipping deletion`
+      );
+      return;
+    }
+    // A redacted recorded description can never equal a live one, so it
+    // cannot tell this stack's rule from someone else's.
+    if (isRedactedRecordedValue(properties['Description'])) {
+      return keep(
+        'its recorded description is redacted, so its live rule cannot be told apart',
+        sameIds
+      );
+    }
+    const recordedDescription = descriptionKey(properties['Description']);
+    const ours = sameRule.filter(
+      (rule) => descriptionKey(rule.Description) === recordedDescription
+    );
+    if (ours.length > 1) {
+      return keep(
+        `${ours.length} live rules match its record`,
+        ours.map((rule) => rule.SecurityGroupRuleId!)
+      );
+    }
+    if (ours.length === 0) {
+      // Live rules with its protocol, ports and source, but none with its
+      // description: judged someone else's, so left in place.
+      this.logger.warn(
+        safeMsg`SecurityGroupIngress ${logicalId}: its recorded rule is gone, and no live rule with its protocol, ports and source also carries its description, so nothing was revoked.` +
+          commandsFor(sameIds)
+      );
+      return;
+    }
+    const outcome = await this.revokeIngressRule(logicalId, physicalId, resourceType, context, {
+      GroupId: groupId,
+      SecurityGroupRuleIds: [ours[0]!.SecurityGroupRuleId!],
+    });
+    if (outcome === 'not-matched') {
+      this.logger.debug(
+        safeMsg`SecurityGroupIngress ${logicalId}: the rule matching its record vanished before the revoke`
       );
     }
   }
@@ -3599,7 +3949,7 @@ export class EC2Provider implements ResourceProvider {
    * Best-effort lookup of the `sgr-...` id of an ALREADY-EXISTING ingress rule
    * (issue #1761).
    *
-   * Only the idempotent "already exists" arm of {@link createSecurityGroupIngress}
+   * Only the "already exists" arm of {@link createSecurityGroupIngress}
    * calls this: the successful arm reads the id straight off
    * `AuthorizeSecurityGroupIngress`'s own response, which is what keeps the
    * mutating path free of the issue #1710 orphan hazard.
@@ -3632,29 +3982,15 @@ export class EC2Provider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<string | undefined> {
     try {
-      const rules: SecurityGroupRule[] = [];
-      let nextToken: string | undefined;
-      let pages = 0;
-      do {
-        if (pages >= MAX_SG_RULE_PAGES) {
-          this.logger.debug(
-            `SecurityGroupIngress ${logicalId}: DescribeSecurityGroupRules on ${groupId} still ` +
-              `paginating after ${MAX_SG_RULE_PAGES} pages — cannot prove the match is unique, ` +
-              `so not recording an Id attribute`
-          );
-          return undefined;
-        }
-        const resp: DescribeSecurityGroupRulesResult = await this.ec2Client.send(
-          new DescribeSecurityGroupRulesCommand({
-            Filters: [{ Name: 'group-id', Values: [groupId] }],
-            MaxResults: SG_RULE_PAGE_SIZE,
-            ...(nextToken && { NextToken: nextToken }),
-          })
+      const rules = await this.listGroupRules(groupId);
+      if (rules === undefined) {
+        this.logger.debug(
+          `SecurityGroupIngress ${logicalId}: DescribeSecurityGroupRules on ${groupId} still ` +
+            `paginating after ${MAX_SG_RULE_PAGES} pages — cannot prove the match is unique, ` +
+            `so not recording an Id attribute`
         );
-        rules.push(...(resp.SecurityGroupRules ?? []));
-        nextToken = resp.NextToken;
-        pages += 1;
-      } while (nextToken);
+        return undefined;
+      }
 
       const matches = rules.filter(
         (rule) => rule.IsEgress !== true && securityGroupRuleMatchesCfnIngress(rule, properties)
@@ -3685,7 +4021,9 @@ export class EC2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    maskSecrets?: MaskerFn
+    maskSecrets?: MaskerFn,
+    replayingState = false,
+    recordedAttributes?: Readonly<Record<string, unknown>>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SecurityGroupIngress ${logicalId}: ${physicalId}`);
 
@@ -3693,7 +4031,30 @@ export class EC2Provider implements ResourceProvider {
     // round-trip can call update() with new == old, which without this
     // guard would needlessly revoke + re-authorize the rule.
     if (JSON.stringify(properties) === JSON.stringify(previousProperties)) {
-      return { physicalId, wasReplaced: false };
+      if (!replayingState) return { physicalId, wasReplaced: false };
+      // go-to-k/cdkd#4355: on a rollback replay the same bag on both sides is
+      // `--revert-failed` over an update that journaled no attempted bag, and
+      // the rule may be gone (a refused update had already revoked it) or live
+      // (the failure came before any revoke). Authorize only, never revoke: a
+      // revoked rule is re-created, and a live one answers Duplicate, which the
+      // replay adopts. Short-circuiting would report a restore that never
+      // happened; revoking first would drop a live rule for nothing.
+      const restored = await this.createSecurityGroupIngress(
+        logicalId,
+        resourceType,
+        properties,
+        (message) => this.logger.warn(message),
+        maskSecrets,
+        true
+      );
+      return {
+        physicalId: restored.physicalId,
+        wasReplaced: false,
+        ...(restored.attributes && { attributes: restored.attributes }),
+        ...(restored.effectiveProperties && {
+          effectiveProperties: restored.effectiveProperties,
+        }),
+      };
     }
 
     // SecurityGroupIngress updates require replacement: revoke old, authorize new
@@ -3702,7 +4063,10 @@ export class EC2Provider implements ResourceProvider {
         logicalId,
         physicalId,
         resourceType,
-        previousProperties
+        previousProperties,
+        // The old rule's recorded `sgr-` id, when there is one, revokes exactly
+        // it (go-to-k/cdkd#4355).
+        recordedAttributes ? { recordedAttributes } : undefined
       );
       // go-to-k/cdkd#3952: delete-then-create must ABORT when the revoke was
       // skipped (provider-delete-path.md): authorizing the new rule would leave
@@ -3736,7 +4100,11 @@ export class EC2Provider implements ResourceProvider {
         (message) => this.logger.warn(message),
         // Issue #2176 round 3: the re-create is what packs the composite id, so
         // the masker has to reach IT rather than being used in this frame.
-        maskSecrets
+        maskSecrets,
+        replayingState,
+        // Named in a refusal: the recorded `sgr-` id when there is one, else the
+        // composite tuple.
+        typeof recordedAttributes?.['Id'] === 'string' ? recordedAttributes['Id'] : physicalId
       );
       return {
         physicalId: createResult.physicalId,
@@ -3773,19 +4141,24 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
-   * `permission` with every `Description` whose value cdkd redacted removed
-   * (go-to-k/cdkd#3952). A revoke does not match on the description, so
-   * leaving it out addresses the same rule without sending the redaction.
+   * `permission` with every `Description` removed. A revoke never NEEDS one
+   * ("If the security group rule has a description, you do not need to specify
+   * the description to revoke the rule", EC2 API reference), but a description
+   * that is SENT must match: a recorded description the live rule lacks — a
+   * rule adopted from another owner (go-to-k/cdkd#4355), or one edited out of
+   * band — answers `InvalidPermission.NotFound` in a non-default VPC, which the
+   * delete reads as "already gone" and leaves the rule live. Dropping it also
+   * keeps a redacted description from being sent (go-to-k/cdkd#3952).
    */
-  private withoutRedactedDescription<T>(value: T): T {
+  private withoutDescription<T>(value: T): T {
     if (Array.isArray(value)) {
-      return value.map((item: unknown) => this.withoutRedactedDescription(item)) as T;
+      return value.map((item: unknown) => this.withoutDescription(item)) as T;
     }
     if (value === null || typeof value !== 'object') return value;
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value)) {
-      if (key === 'Description' && isRedactedRecordedValue(child)) continue;
-      out[key] = this.withoutRedactedDescription(child);
+      if (key === 'Description') continue;
+      out[key] = this.withoutDescription(child);
     }
     return out as T;
   }
@@ -3812,11 +4185,36 @@ export class EC2Provider implements ResourceProvider {
 
     const [groupId, ipProtocol, fromPortStr, toPortStr] = parts;
 
+    // go-to-k/cdkd#4355: the recorded `sgr-` id addresses EXACTLY the rule it
+    // names. But a recorded id can be STALE — a revoke-and-authorize that minted
+    // a new id the record never received (a rollback's update arm keeps the old
+    // attributes), or `--revert-failed`, whose record names the rule the refused
+    // update already revoked while `properties` is the attempted rule. So a
+    // not-found by id looks for this stack's live rule by its record
+    // (`revokeMatchingLiveRule`) rather than reading as "gone".
+    const recordedRuleId = context?.recordedAttributes?.['Id'];
+    if (typeof recordedRuleId === 'string' && SG_RULE_ID_PATTERN.test(recordedRuleId)) {
+      const byId = await this.revokeIngressRule(logicalId, physicalId, resourceType, context, {
+        GroupId: groupId,
+        SecurityGroupRuleIds: [recordedRuleId],
+      });
+      if (byId === 'revoked') return;
+      return this.revokeMatchingLiveRule(
+        logicalId,
+        physicalId,
+        resourceType,
+        groupId!,
+        properties,
+        context
+      );
+    }
+
     // Build IpPermission from properties if available, otherwise from physicalId
     // go-to-k/cdkd#3952: RevokeSecurityGroupIngress matches the rule by its
     // permission, and a not-found below reads as "already deleted". NOT
-    // `Description`: a revoke does not match on it, so a redacted one is
-    // simply left out of the permission below rather than blocking the delete.
+    // `Description`: a revoke never needs it and every description is left
+    // out of the permission below (`withoutDescription`), so a redacted one
+    // cannot block the delete.
     if (properties) {
       const redactedSkip = redactedDeleteAddressSkip(
         this.logger,
@@ -3837,21 +4235,49 @@ export class EC2Provider implements ResourceProvider {
     }
 
     const ipPermission = properties
-      ? this.withoutRedactedDescription(this.buildIpPermission(properties))
+      ? this.withoutDescription(this.buildIpPermission(properties))
       : {
           IpProtocol: ipProtocol,
           FromPort: fromPortStr !== '-1' ? Number(fromPortStr) : undefined,
           ToPort: toPortStr !== '-1' ? Number(toPortStr) : undefined,
         };
 
+    await this.revokeIngressRule(logicalId, physicalId, resourceType, context, {
+      GroupId: groupId,
+      IpPermissions: [ipPermission],
+    });
+  }
+
+  /**
+   * Send one `RevokeSecurityGroupIngress` for {@link deleteSecurityGroupIngress},
+   * by rule id or by permission, answering whether it revoked a rule. A
+   * not-found (after the region check), or a revoke that matched NOTHING
+   * without an error (a default VPC answers so, listing the permission under
+   * `UnknownIpPermissions`), is `'not-matched'`: the caller falls back from the
+   * id, and on the permission path it is logged at warn, where it can also mean
+   * the record no longer describes the live rule.
+   */
+  private async revokeIngressRule(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    input: RevokeSecurityGroupIngressCommandInput
+  ): Promise<'revoked' | 'not-matched'> {
+    const byId = input.SecurityGroupRuleIds !== undefined;
+    const notMatched = (): 'not-matched' => {
+      if (!byId) {
+        this.logger.warn(
+          safeMsg`SecurityGroupIngress ${logicalId}: no rule on the group matched ${physicalId}, so nothing was revoked; if the rule still exists, revoke it by hand`
+        );
+      }
+      return 'not-matched';
+    };
     try {
-      await this.ec2Client.send(
-        new RevokeSecurityGroupIngressCommand({
-          GroupId: groupId,
-          IpPermissions: [ipPermission],
-        })
-      );
+      const response = await this.ec2Client.send(new RevokeSecurityGroupIngressCommand(input));
+      if ((response?.UnknownIpPermissions?.length ?? 0) > 0) return notMatched();
       this.logger.debug(`Successfully deleted SecurityGroupIngress ${logicalId}`);
+      return 'revoked';
     } catch (error) {
       if (this.isNotFoundError(error)) {
         const clientRegion = await this.ec2Client.config.region();
@@ -3862,8 +4288,7 @@ export class EC2Provider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`SecurityGroupIngress ${physicalId} does not exist, skipping deletion`);
-        return;
+        return notMatched();
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -7166,6 +7591,141 @@ function sgProtocolKey(value: unknown): unknown {
   // here too, and keeps the standalone lookup and the inline-rule reconcile
   // reading ONE definition of protocol identity.
   return canonicalizeIpProtocolValue(value ?? '-1');
+}
+
+/**
+ * The rule a standalone `AWS::EC2::SecurityGroupIngress` bag describes, as a
+ * comparable key (go-to-k/cdkd#4355): the group, protocol, port range and
+ * source — what AWS treats as the same rule. `Description` is left out, since
+ * AWS reports a duplicate whatever the description says.
+ */
+function ingressRuleIdentity(groupId: unknown, properties: Record<string, unknown>): string {
+  const source = (key: string): unknown => properties[key] ?? null;
+  return JSON.stringify({
+    g: groupId ?? null,
+    p: sgProtocolKey(properties['IpProtocol']),
+    f: cfnIngressPortValue(properties['FromPort']),
+    t: cfnIngressPortValue(properties['ToPort']),
+    c4: source('CidrIp'),
+    c6: source('CidrIpv6'),
+    sg: source('SourceSecurityGroupId'),
+    sgName: source('SourceSecurityGroupName'),
+    sgOwner: source('SourceSecurityGroupOwnerId'),
+    pl: source('SourcePrefixListId'),
+  });
+}
+
+/**
+ * Why a stale-id delete kept its record (go-to-k/cdkd#4355). Fixed, and free of
+ * the already-deleted needles `deleteSkippedMessage` lists: the callers read
+ * those as success and would drop the record.
+ */
+const SG_INGRESS_UNPROVEN_RULE_SKIP_REASON =
+  'recorded rule id is stale; live rule not proven to be this stack';
+
+/** A rule description for comparison: absent and empty are the same. */
+function descriptionKey(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+/**
+ * Re-sends `sendAuthorizeIngress` makes on a resendable socket failure, and the
+ * base of its linear backoff. Small and bounded: a blip, not an outage.
+ */
+const AUTHORIZE_SOCKET_RESENDS = 2;
+const AUTHORIZE_SOCKET_RESEND_DELAY_MS = 500;
+
+/**
+ * Node socket codes raised when the connection was never established, so the
+ * request never reached AWS (the set `retryable-errors.ts` keeps out of its
+ * ambiguous codes for that reason), plus `EAI_AGAIN` (DNS lookup failed).
+ */
+const NEVER_CONNECTED_SOCKET_CODES: ReadonlySet<string> = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EAI_AGAIN',
+]);
+
+/**
+ * Socket failures that can follow a WRITTEN request (the service may have
+ * acted), which the SDK would re-send and `sendAuthorizeIngress` re-sends.
+ */
+const RESENDABLE_SOCKET_CODES: ReadonlySet<string> = new Set([
+  'ECONNRESET',
+  'EPIPE',
+  'ETIMEDOUT',
+  'EADDRNOTAVAIL',
+]);
+
+function errorCode(error: unknown): unknown {
+  return (error as { code?: unknown } | null)?.code;
+}
+
+/**
+ * The SDK's CONNECT timeout (`@smithy/node-http-handler`: a `TimeoutError` with
+ * no `code`, "the request socket did not establish a connection"): no request
+ * was written. Every other `TimeoutError` (a request or socket-inactivity
+ * timeout, or one carrying `ETIMEDOUT`) may follow a written request.
+ */
+function isConnectTimeout(error: unknown): boolean {
+  const e = error as { name?: unknown; code?: unknown; message?: unknown } | null;
+  return (
+    e?.name === 'TimeoutError' &&
+    e.code === undefined &&
+    typeof e.message === 'string' &&
+    e.message.includes('did not establish a connection')
+  );
+}
+
+/** A failure whose request provably never reached AWS (go-to-k/cdkd#4355). */
+function neverReachedAws(error: unknown): boolean {
+  if (isConnectTimeout(error)) return true;
+  const code = errorCode(error);
+  if (typeof code === 'string' && NEVER_CONNECTED_SOCKET_CODES.has(code)) return true;
+  // No credentials (an expired SSO session): the request was never signed.
+  return (error as { name?: unknown } | null)?.name === 'CredentialsProviderError';
+}
+
+/**
+ * A socket failure after which the request may have been written, which
+ * `sendAuthorizeIngress` re-sends (go-to-k/cdkd#4355). A connect timeout is
+ * re-sent too but is NOT this: see {@link isConnectTimeout}.
+ */
+function isResendableSocketFailure(error: unknown): boolean {
+  if (isConnectTimeout(error)) return false;
+  const code = errorCode(error);
+  if (typeof code === 'string' && RESENDABLE_SOCKET_CODES.has(code)) return true;
+  return (error as { name?: unknown } | null)?.name === 'TimeoutError';
+}
+
+/**
+ * Whether a failed `AuthorizeSecurityGroupIngress` send PROVABLY applied
+ * nothing (go-to-k/cdkd#4355): a 4xx, an identified throttle, or a request
+ * that never reached AWS (a connection never established, no credentials). Anything
+ * unclassified — a 5xx, a socket error, no `$metadata` — may have landed,
+ * which is deliberately not `isAmbiguousOutcomeError`'s default: there an
+ * unknown shape reads as "not ambiguous", here it must keep the bag.
+ *
+ * Per SEND: the Authorize goes through `ec2SingleSend` (no SDK retries), so the
+ * error describes the one send it answers. An SDK-internal retry would hide
+ * whether an earlier send was throttled (nothing applied) or ambiguous.
+ */
+function authorizeDefinitelyNotApplied(error: unknown): boolean {
+  if (neverReachedAws(error)) return true;
+  const e = error as {
+    name?: unknown;
+    $retryable?: { throttling?: unknown };
+    $metadata?: { httpStatusCode?: unknown };
+  } | null;
+  // A throttle IDENTIFIED as one (its name, or the SDK's flag) — never by a
+  // bare 503, which `isThrottlingError` also counts but which can be a server
+  // error after the request was applied.
+  if (typeof e?.name === 'string' && THROTTLING_ERROR_NAMES.has(e.name)) return true;
+  if (e?.$retryable?.throttling === true) return true;
+  const status = e?.$metadata?.httpStatusCode;
+  return typeof status === 'number' && status >= 400 && status < 500;
 }
 
 /**

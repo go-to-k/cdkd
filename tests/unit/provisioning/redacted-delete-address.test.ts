@@ -425,14 +425,18 @@ describe('EC2 SecurityGroupIngress: every permission field is an address, Descri
     expect(warnText()).toContain(`with ${field}`);
   });
 
-  it('an unredacted Description is kept on the revoke', async () => {
+  // go-to-k/cdkd#4355: a revoke never needs the description, and a SENT one
+  // must match the live rule's — a rule adopted from another owner carries
+  // none, so sending the recorded one answered NotFound and left it live.
+  it('an unredacted Description is left out of the revoke too', async () => {
     send.mockResolvedValue({});
     await new EC2Provider().delete('R', 'sg-1|tcp|443|443', 'AWS::EC2::SecurityGroupIngress', {
       ...base,
       Description: 'https in',
     });
     expect(send).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(send.mock.calls[0]![0].input)).toContain('https in');
+    expect(JSON.stringify(send.mock.calls[0]![0].input)).not.toContain('https in');
+    expect(JSON.stringify(send.mock.calls[0]![0].input)).not.toContain('Description');
   });
 
   it('a redacted Description is left out of the revoke instead of blocking it', async () => {

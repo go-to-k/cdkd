@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { withSkipPrefix } from '../../../src/provisioning/resource-name.js';
+import { markRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -387,6 +388,86 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(failed.previousState).toMatchObject({ physicalId: 'phys-B-old', properties: { p: 'old' } });
     expect(failed.physicalId).toBe('phys-B-old');
     expect(failed.attemptedProperties).toEqual({ p: 'new' });
+  });
+
+  it.each([
+    ['CREATE', 'create'],
+    ['UPDATE', 'update'],
+] as const)(
+    'journals a %s refused as belonging to someone else WITHOUT its attempted bag (go-to-k/cdkd#4355)',
+    async (changeType, method) => {
+      // The bag is what the next deploy reads as "this stack attempted that
+      // resource", and what `--revert-failed` reverts an UPDATE from: kept, it
+      // would make the next deploy adopt the resource the refusal declined.
+      const change = {
+        logicalId: 'B',
+        changeType,
+        resourceType: 'AWS::S3::Bucket',
+        desiredProperties: { p: 'new' },
+        currentProperties: { p: 'old' },
+        propertyChanges: [{ path: 'p', requiresReplacement: false }],
+      } as unknown as ResourceChange;
+      const prevB: ResourceState = {
+        physicalId: 'phys-B-old',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { p: 'old' },
+        attributes: {},
+        dependencies: [],
+      };
+      const engine = buildEngine({
+        changes: new Map([['B', change]]),
+        deps: { B: [] },
+        noRollback: true,
+        currentEtag: 'e0',
+        ...(changeType === 'UPDATE' && { currentResources: { B: prevB } }),
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: {
+            getProviderFor: () => {
+              provider: Record<'create' | 'update', ReturnType<typeof vi.fn>>;
+            };
+          };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider[method].mockRejectedValue(
+        markRefusedBeforeApplying(new Error('B already exists and is not ours'))
+      );
+
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      expect(seg.failedOperations).toHaveLength(1);
+      expect(seg.failedOperations[0].logicalId).toBe('B');
+      expect(seg.failedOperations[0].changeType).toBe(changeType);
+      expect(seg.failedOperations[0]).not.toHaveProperty('attemptedProperties');
+    }
+  );
+
+  it("keeps a nested-stack row's attempted bag when only a CHILD resource's error is marked (go-to-k/cdkd#4355)", async () => {
+    // The parent AWS::CloudFormation::Stack row fails because a child resource
+    // refused; the child's mark must not strip the parent row's evidence.
+    const change = {
+      logicalId: 'B',
+      changeType: 'CREATE',
+      resourceType: 'AWS::S3::Bucket',
+      desiredProperties: { p: 'new' },
+      propertyChanges: [],
+    } as unknown as ResourceChange;
+    const engine = buildEngine({ changes: new Map([['B', change]]), deps: { B: [] }, noRollback: true, currentEtag: 'e0' });
+    const provider = (
+      engine as unknown as {
+        providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+      }
+    ).providerRegistry.getProviderFor().provider;
+    const child = Object.assign(markRefusedBeforeApplying(new Error('child refused')), { logicalId: 'ChildRule' });
+    provider.create.mockRejectedValue(Object.assign(new Error('nested deploy failed', { cause: child }), { logicalId: 'ChildRule' }));
+
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+    const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+    expect(seg.failedOperations[0].logicalId).toBe('B');
+    expect(seg.failedOperations[0].attemptedProperties).toEqual({ p: 'new' });
   });
 
   it('records a failed DELETE op with previousState-derived id and no attemptedProperties (#1198)', async () => {

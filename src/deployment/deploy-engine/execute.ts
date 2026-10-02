@@ -25,6 +25,7 @@ import { DagExecutor } from '../dag-executor.js';
 import { withSharedDrainBudget } from '../drain-budget.js';
 import type { SettledNestedRows } from '../nested-child-journal.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
+import { isRefusedBeforeApplying } from '../prior-attempt-scope.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -209,7 +210,16 @@ export async function executeDeployment(
                   newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy,
                 ...(previousState && { previousState }),
                 physicalId: newResources[logicalId]?.physicalId ?? previousState?.physicalId,
-                attemptedProperties: this.attemptedResolvedProps.get(logicalId),
+                // go-to-k/cdkd#4355: a failed op whose attempted bag is
+                // provably not this stack's resource (a refusal, or a write AWS
+                // definitely rejected) journals no attempted bag. The bag is what a later deploy
+                // reads as "this stack attempted that resource"
+                // (`priorAttemptsInJournal`), and `--revert-failed` reverts an
+                // UPDATE FROM it — both would then act on a resource the
+                // refusal found belonging to someone else.
+                ...(!isRefusedBeforeApplying(provisionError, logicalId) && {
+                  attemptedProperties: this.attemptedResolvedProps.get(logicalId),
+                }),
               });
               throw provisionError;
             }

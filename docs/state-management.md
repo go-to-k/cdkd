@@ -146,7 +146,15 @@ deploy completed (one `segment` per failed attempt) so `cdkd rollback` can
 revert them with no synth. Each segment also
 carries the op(s) that **FAILED** mid-deploy (`failedOperations[]` — pre-op
 state + attempted properties; an additive field, no `journalVersion` bump)
-so `cdkd rollback --revert-failed` can optionally revert them too. Every completed
+so `cdkd rollback --revert-failed` can optionally revert them too. The one
+place a deploy acts on the journal's contents while provisioning is an `AWS::EC2::SecurityGroupIngress` create that
+AWS rejects as a duplicate: it adopts the existing rule only when a segment shows
+the same logical id attempted the same rule (and no later completed DELETE of
+the id superseded it), and refuses otherwise. A failed op refused because the
+resource it met belongs to someone else, or whose write AWS provably did not
+apply (one send answered with a 4xx or a throttle), is recorded WITHOUT its
+attempted properties, so it is never read back as an attempt; any other
+failed write keeps them, since it may have landed. Every completed
 UPDATE op additionally records whether the deploy left the OLD physical
 resource alive (`oldResourceRetained` — also additive, also no bump; it is read
 only for a replacement, but recording it unconditionally is what keeps an

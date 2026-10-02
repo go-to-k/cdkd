@@ -77,6 +77,7 @@ export class AwsClients {
   private lambdaClient?: LambdaClient;
   private stsClient?: STSClient;
   private ec2Client?: EC2Client;
+  private ec2SingleSendClient?: EC2Client;
   private dynamoDBClient?: DynamoDBClient;
   private cloudFormationClient?: CloudFormationClient;
   private apiGatewayClient?: APIGatewayClient;
@@ -373,6 +374,30 @@ export class AwsClients {
    */
   get ec2(): EC2Client {
     return this.getEC2Client();
+  }
+
+  /**
+   * An EC2 client whose every call is ONE send (`maxAttempts: 1`): the SDK
+   * retries nothing, so each failure reaches the caller with its own status
+   * and cdkd's retry decides (go-to-k/cdkd#4355). For a write whose failure
+   * must be classified per send — an SDK-internal retry hides whether an
+   * earlier send was throttled (nothing applied) or answered ambiguously.
+   */
+  getEC2SingleSendClient(): EC2Client {
+    if (!this.ec2SingleSendClient) {
+      this.ec2SingleSendClient = new EC2Client({
+        ...this.clientOptions,
+        maxAttempts: 1,
+      });
+    }
+    return this.ec2SingleSendClient;
+  }
+
+  /**
+   * Convenience getter for the single-send EC2 client
+   */
+  get ec2SingleSend(): EC2Client {
+    return this.getEC2SingleSendClient();
   }
 
   /**
@@ -682,6 +707,7 @@ export class AwsClients {
     this.lambdaClient?.destroy();
     this.stsClient?.destroy();
     this.ec2Client?.destroy();
+    this.ec2SingleSendClient?.destroy();
     this.dynamoDBClient?.destroy();
     this.cloudFormationClient?.destroy();
     this.apiGatewayClient?.destroy();

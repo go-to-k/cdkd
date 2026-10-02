@@ -22,4 +22,27 @@ describe('AwsClients', () => {
       clients.destroy();
     }
   });
+
+  // go-to-k/cdkd#4355: the standalone-ingress Authorize is classified per send,
+  // which holds only while this client retries nothing inside the SDK.
+  it('builds ec2SingleSend as a separate EC2 client with SDK retries off, destroyed with the rest', async () => {
+    const clients = new AwsClients({ region: 'us-east-1' });
+    const single = clients.ec2SingleSend;
+    const regular = clients.ec2;
+    let destroyed = 0;
+    const realDestroy = single.destroy.bind(single);
+    single.destroy = () => {
+      destroyed += 1;
+      realDestroy();
+    };
+    try {
+      expect(single).not.toBe(regular);
+      expect(clients.ec2SingleSend).toBe(single);
+      expect(await single.config.maxAttempts()).toBe(1);
+      expect(await regular.config.maxAttempts()).toBeGreaterThan(1);
+    } finally {
+      clients.destroy();
+    }
+    expect(destroyed).toBe(1);
+  });
 });
