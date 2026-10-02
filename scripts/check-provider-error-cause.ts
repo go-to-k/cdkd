@@ -49,7 +49,8 @@
  *    is covered too.
  *
  * Anything outside both is a validation / precondition throw with no cause in
- * scope — bucket (c), and the largest bucket by far (378 of 765).
+ * scope — bucket (c), and the largest bucket by far (543 of 996 over `src/`,
+ * measured 2026-10-02).
  *
  * WHAT COUNTS AS THREADED (structural, not "mentions the binding")
  * ---------------------------------------------------------------
@@ -61,7 +62,38 @@
  * parentheses, an `as` cast, a `!`, an `undefined`-guarded conditional, or
  * `??` / `||`, and optionally through local `const` / `let` bindings resolved
  * to the declaration NEAREST the use. A property access (`result.error`), a
- * call, a `new`, an object literal or a string is REFUSED.
+ * `new`, an object literal or a string is REFUSED, and so is a call — with ONE
+ * named exception, below.
+ *
+ * CAUSE COMPOSERS (issue #2075)
+ * -----------------------------
+ * Some causes are DERIVED on purpose and still classify. `redactedDockerCause`
+ * builds a new `Error` because the raw `execFile` error carries the docker
+ * command line (go-to-k/cdkd#2440), and copies the classification fields and
+ * the non-retryable marker across. `normalizeAwsError` rewrites an SDK
+ * `Unknown` message and chains the original underneath. `maskSecretsInError`
+ * clones every link with all its own property descriptors. A textual rule
+ * cannot tell those from the inert `new Error(err.message)`, so they are
+ * REGISTERED by name in {@link CAUSE_COMPOSERS}, and a call is accepted only
+ * when
+ *
+ *   - its callee is a bare identifier bound by a NAMED IMPORT of that name
+ *     whose specifier RESOLVES to the registered module (a same-named local
+ *     function, or the name imported from elsewhere, is refused), and
+ *   - the argument in the registered position is itself threaded.
+ *
+ * THE BOUND: this checker believes the registration — it does not read the
+ * composer's body. What proves each composer preserves the classifier verdict
+ * is the RUNTIME twin `tests/unit/scripts/cause-composers-classify.test.ts`,
+ * which walks this same map and fails on a composer it has no case for.
+ *
+ * EXEMPTIONS
+ * ----------
+ * A site that deliberately omits its cause is listed in {@link EXEMPTIONS} by
+ * file, error class and enclosing function, with the EXACT number of sites it
+ * covers and the reason. A count that no longer matches fails, in both
+ * directions: a new dropped site in an exempted function is not absorbed, and
+ * an exemption the code no longer needs is not left behind.
  *
  * HOW THE RULE WAS CALIBRATED
  * ---------------------------
@@ -91,35 +123,34 @@
  *     analyzed on every run before the real tree is touched. Making
  *     `isThreaded` return true unconditionally fails the self-probe.
  *
- * SCOPE, AND THE MEASUREMENT BEHIND IT
- * ------------------------------------
- * The default root is `src/provisioning/providers`, which is #2040's subject,
- * and the tree is CLEAN there. The root is a parameter rather than a constant
- * because the same defect DOES exist elsewhere — running this with
- * `--providers-dir=src` reports 6 sites (4 `AssetError` in
- * `src/assets/docker-asset-publisher.ts`, 2 `StateError` in
- * `src/state/s3-state-backend.ts`), which is where #2040's "6-of-363" review
- * estimate came from. Those files were outside that PR's edit scope, so the set
- * with ZERO defects is regression-guarded and the set with SIX is not. Widening
- * this default once they are fixed is issue
- * https://github.com/go-to-k/cdkd/issues/2075.
+ * SCOPE
+ * -----
+ * The default root is all of `src/` (issue #2075). It started as
+ * `src/provisioning/providers`, #2040's subject; widened over `src/` on
+ * 2026-10-02 the run flagged 17 sites in 10 files: 10 sat behind a composer
+ * the rule could not see yet, 4 were genuine drops under `src/local/`
+ * (threaded since), and 3 are the deliberate omissions in {@link EXEMPTIONS}. The providers subtree
+ * keeps its own file floor so the original subject cannot drop out of a scan
+ * that is otherwise large enough.
  *
  * USAGE
  *   node --experimental-strip-types scripts/check-provider-error-cause.ts
  *   node --experimental-strip-types scripts/check-provider-error-cause.ts --json
  *   node --experimental-strip-types scripts/check-provider-error-cause.ts \
- *     --providers-dir=/tmp/scratch-copy      (test seam; probes never touch src/)
+ *     --root=/tmp/scratch-copy/src      (test seam; probes never touch src/)
  */
 
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript-v6';
 
 const SCRIPT_DIR = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
-const DEFAULT_PROVIDERS_DIR = join(REPO_ROOT, 'src', 'provisioning', 'providers');
+const DEFAULT_ROOT = join(REPO_ROOT, 'src');
+/** The providers subtree, ROOT-relative: #2040's subject keeps its own floor. */
+const PROVIDERS_SUBTREE = 'provisioning/providers/';
 const ERROR_HANDLER_PATH = join(REPO_ROOT, 'src', 'utils', 'error-handler.ts');
 
 /** The root of cdkd's error hierarchy; every checked class descends from it. */
@@ -128,33 +159,49 @@ const ERROR_ROOT = 'CdkdError';
 // ---------------------------------------------------------------------------
 // FLOORS
 // ---------------------------------------------------------------------------
-/** Minimum provider files a healthy scan sees. */
+// Measured over `src/` on 2026-10-02: 432 files (87 under the providers
+// subtree), 996 constructions, 438 catch-sited, 15 helper-sited, 450 threaded,
+// 13 of them through a composer, 3 exempt. Each floor sits below its measurement with
+// slack for ordinary churn, not at it.
+
+/** Minimum files a healthy scan of `src/` sees. */
+const MIN_FILES = 350;
+/** Minimum files under the providers subtree, #2040's original subject. */
 const MIN_PROVIDER_FILES = 60;
 /** Minimum error constructions a healthy scan sees across those files. */
-const MIN_ERROR_CONSTRUCTIONS = 600;
+const MIN_ERROR_CONSTRUCTIONS = 800;
 /** Minimum catch-sited constructions a healthy scan sees. */
-const MIN_CATCH_SITED_CONSTRUCTIONS = 250;
+const MIN_CATCH_SITED_CONSTRUCTIONS = 350;
 /**
  * Minimum HELPER-sited constructions a healthy scan sees.
  *
- * Measured at exactly 5 — the five `wrapError` / `wrapUpdateError` helpers,
- * each of which is ONE construction serving MANY throw sites (33 in total:
- * appsync 9, the three rds-dbproxy files 21, microvm 3). The floor counts
- * constructions because that is what this critic classifies, but the blast
- * radius of one regression here is the throw-site count, not 1.
+ * Measured at 15 over `src/` (5 under the providers subtree — the
+ * `wrapError` / `wrapUpdateError` helpers, each ONE construction serving MANY
+ * throw sites). The floor counts constructions because that is what this
+ * critic classifies, but the blast radius of one regression here is the
+ * throw-site count, not 1.
  *
  * The floor is what stops the helper analysis from silently regressing back to
- * the purely-lexical rule: that regression moves all 5 into `no-cause-in-scope`
- * and leaves every other count identical, so nothing else would notice.
+ * the purely-lexical rule: that regression moves every helper site into
+ * `no-cause-in-scope` and leaves every other count identical, so nothing else
+ * would notice.
  */
-const MIN_HELPER_SITED_CONSTRUCTIONS = 5;
+const MIN_HELPER_SITED_CONSTRUCTIONS = 12;
 /** Minimum ALREADY-THREADED constructions a healthy scan sees. */
-const MIN_THREADED_CONSTRUCTIONS = 250;
+const MIN_THREADED_CONSTRUCTIONS = 350;
+/**
+ * Minimum constructions threaded THROUGH a registered composer — a floor per
+ * input SHAPE the critic claims to handle. The arm failing to resolve is
+ * already loud (its sites turn `dropped`); this guards the quiet direction,
+ * the population drifting off composers until only the self-probe exercises
+ * the arm.
+ */
+const MIN_COMPOSER_THREADED_CONSTRUCTIONS = 10;
 /** Minimum size of the DERIVED error-class table. */
 const MIN_ERROR_CLASSES = 20;
 
 export type SiteContext = 'catch' | 'catch-no-binding' | 'helper' | 'no-catch';
-export type SiteVerdict = 'threaded' | 'dropped' | 'no-cause-in-scope';
+export type SiteVerdict = 'threaded' | 'dropped' | 'exempt' | 'no-cause-in-scope';
 
 export interface CauseSite {
   readonly file: string;
@@ -163,6 +210,10 @@ export interface CauseSite {
   readonly context: SiteContext;
   /** Name(s) of the caught value in scope, when there is one. */
   readonly caughtBinding?: string;
+  /** The nearest NAMED enclosing function, which an exemption is keyed on. */
+  readonly within?: string;
+  /** Threaded only by way of a registered {@link CAUSE_COMPOSERS} entry. */
+  readonly viaComposer?: boolean;
   readonly verdict: SiteVerdict;
 }
 
@@ -172,14 +223,84 @@ export interface CauseReport {
   readonly catchSited: number;
   readonly helperSited: number;
   readonly threaded: number;
+  readonly composerThreaded: number;
   readonly dropped: number;
+  readonly exempt: number;
   readonly validation: number;
+  readonly providerFiles: number;
   readonly errorClasses: number;
   readonly sites: readonly CauseSite[];
 }
 
 /** Error class name -> zero-based index of its `cause` constructor parameter. */
 export type ErrorClassTable = ReadonlyMap<string, number>;
+
+// ---------------------------------------------------------------------------
+// Cause composers + exemptions — both REGISTERED, both reviewed in this file
+// ---------------------------------------------------------------------------
+
+export interface CauseComposer {
+  /** ROOT-relative module the name must be imported from. */
+  readonly module: string;
+  /** Zero-based position of the argument that must be the caught value. */
+  readonly argument: number;
+}
+
+/**
+ * Functions that DERIVE a cause while keeping what the classifiers read. A
+ * new entry needs a case in `tests/unit/scripts/cause-composers-classify.test.ts`,
+ * which fails on any composer here it has no case for.
+ */
+export const CAUSE_COMPOSERS: ReadonlyMap<string, CauseComposer> = new Map([
+  // Redacts the docker argv out of the message (go-to-k/cdkd#2440); copies the
+  // classification fields and the non-retryable marker across.
+  ['redactedDockerCause', { module: 'utils/docker-cmd.ts', argument: 0 }],
+  // Rewrites an SDK `Unknown` message; chains the original as its `cause`.
+  ['normalizeAwsError', { module: 'utils/error-handler.ts', argument: 0 }],
+  // Clones every link of the chain with all own property descriptors.
+  ['maskSecretsInError', { module: 'deployment/secret-redaction.ts', argument: 0 }],
+]);
+
+export interface CauseExemption {
+  /** ROOT-relative file. */
+  readonly file: string;
+  readonly errorClass: string;
+  /** Nearest NAMED enclosing function of the construction. */
+  readonly within: string;
+  /** EXACTLY how many dropped sites this covers; any other count fails. */
+  readonly count: number;
+  readonly reason: string;
+}
+
+export const EXEMPTIONS: readonly CauseExemption[] = [
+  {
+    file: 'synthesis/assembly-reader.ts',
+    errorClass: 'SynthesisError',
+    within: 'extractStackInfo',
+    count: 1,
+    reason:
+      'a local template-file read failure, not an AWS error: no classifier reads it, and a ' +
+      '`Caused by:` line would print the path echo `describeFileReadFailure` removed (go-to-k/cdkd#3617)',
+  },
+  {
+    file: 'synthesis/stack-messages.ts',
+    errorClass: 'SynthesisError',
+    within: 'collectStackMessages',
+    count: 1,
+    reason:
+      'a local metadata-file read failure, not an AWS error: same path-echo reason as ' +
+      'assembly-reader.ts (go-to-k/cdkd#3617)',
+  },
+  {
+    file: 'local/docker-image-builder.ts',
+    errorClass: 'LocalInvokeBuildError',
+    within: 'buildContainerImage',
+    count: 1,
+    reason:
+      "re-brands cdk-local's own build error into cdkd's class with the SAME message; it is " +
+      'not an AWS error, and a cause would print that message twice',
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Error-class table — DERIVED, never hardcoded
@@ -338,7 +459,19 @@ function nearestDeclaration(use: ts.Node, name: string): ts.Node | undefined {
  * those is the realistic regression: it looks like threading, reads like
  * threading, and is exactly as inert as passing nothing.
  */
-function isThreaded(expression: ts.Node, targets: ReadonlySet<string>, depth = 0): boolean {
+interface ThreadingContext {
+  /** Local identifier -> the registered composer it is an import of. */
+  readonly composers: ReadonlyMap<string, CauseComposer>;
+}
+
+const NO_COMPOSERS: ThreadingContext = { composers: new Map() };
+
+function isThreaded(
+  expression: ts.Node,
+  targets: ReadonlySet<string>,
+  context: ThreadingContext,
+  depth = 0
+): boolean {
   if (depth > 8) return false;
   const node = unwrap(expression);
 
@@ -348,12 +481,20 @@ function isThreaded(expression: ts.Node, targets: ReadonlySet<string>, depth = 0
     // A local alias (`const cause = error instanceof Error ? error : undefined`)
     // is the reference shape, so it must resolve — but only through its OWN
     // nearest declaration, and only to something itself accepted.
-    return declaration ? isThreaded(declaration, targets, depth + 1) : false;
+    return declaration ? isThreaded(declaration, targets, context, depth + 1) : false;
+  }
+
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+    const composer = context.composers.get(node.expression.text);
+    // A `const` of the same name in an enclosing block shadows the import.
+    if (!composer || nearestDeclaration(node, node.expression.text)) return false;
+    const argument = node.arguments[composer.argument];
+    return argument !== undefined && isThreaded(argument, targets, context, depth + 1);
   }
 
   if (ts.isConditionalExpression(node)) {
     const branches = [node.whenTrue, node.whenFalse];
-    const accepted = branches.filter((branch) => isThreaded(branch, targets, depth + 1));
+    const accepted = branches.filter((branch) => isThreaded(branch, targets, context, depth + 1));
     const inert = branches.filter((branch) => isUndefinedLiteral(branch));
     return accepted.length > 0 && accepted.length + inert.length === branches.length;
   }
@@ -366,15 +507,73 @@ function isThreaded(expression: ts.Node, targets: ReadonlySet<string>, depth = 0
       operator === ts.SyntaxKind.AmpersandAmpersandToken
     ) {
       return (
-        isThreaded(node.left, targets, depth + 1) || isThreaded(node.right, targets, depth + 1)
+        isThreaded(node.left, targets, context, depth + 1) ||
+        isThreaded(node.right, targets, context, depth + 1)
       );
     }
     return false;
   }
 
-  // Everything else — a property access, a call, a `new`, a literal, an object
-  // or template expression — is a DERIVED value, not the caught one.
+  // Everything else — a property access, an unregistered call, a `new`, a
+  // literal, an object or template expression — is a DERIVED value, not the
+  // caught one.
   return false;
+}
+
+/**
+ * The registered composers this file IMPORTS, keyed by their LOCAL name, and
+ * only when the import specifier resolves to the registered module. Resolution
+ * is ROOT-relative (`moduleId` is the file's path under the scanned root), so a
+ * scratch copy of `src/` resolves exactly as the real tree does.
+ */
+function importedComposers(source: ts.SourceFile, moduleId: string): Map<string, CauseComposer> {
+  const found = new Map<string, CauseComposer>();
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
+      continue;
+    }
+    const specifier = statement.moduleSpecifier.text;
+    if (!specifier.startsWith('.')) continue;
+    const resolved = posix
+      .normalize(posix.join(posix.dirname(moduleId), specifier))
+      .replace(/\.js$/, '.ts');
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings) || statement.importClause?.isTypeOnly) continue;
+    for (const element of bindings.elements) {
+      if (element.isTypeOnly) continue;
+      const imported = (element.propertyName ?? element.name).text;
+      const composer = CAUSE_COMPOSERS.get(imported);
+      if (composer && composer.module === resolved) found.set(element.name.text, composer);
+    }
+  }
+  return found;
+}
+
+/** The nearest NAMED enclosing function-like, for exemption keys. */
+function enclosingName(node: ts.Node): string | undefined {
+  let current: ts.Node | undefined = node.parent;
+  while (current) {
+    if (
+      (ts.isMethodDeclaration(current) ||
+        ts.isFunctionDeclaration(current) ||
+        ts.isGetAccessorDeclaration(current) ||
+        ts.isSetAccessorDeclaration(current)) &&
+      current.name &&
+      ts.isIdentifier(current.name)
+    ) {
+      return current.name.text;
+    }
+    if (ts.isConstructorDeclaration(current)) return 'constructor';
+    if (
+      (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) &&
+      ts.isVariableDeclaration(current.parent) &&
+      ts.isIdentifier(current.parent.name)
+    ) {
+      return current.parent.name.text;
+    }
+    current = current.parent;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -431,7 +630,8 @@ function calleeName(call: ts.CallExpression): string | undefined {
  */
 function resolveHelperBindings(
   source: ts.SourceFile,
-  functions: ReadonlyMap<string, FunctionLike[]>
+  functions: ReadonlyMap<string, FunctionLike[]>,
+  context: ThreadingContext
 ): Map<ts.Node, Set<string>> {
   const helperTargets = new Map<ts.Node, Set<string>>();
 
@@ -464,7 +664,7 @@ function resolveHelperBindings(
           const candidates = name ? (functions.get(name) ?? []) : [];
           for (const candidate of candidates) {
             node.arguments.forEach((argument, index) => {
-              if (!isThreaded(argument, targets)) return;
+              if (!isThreaded(argument, targets, context)) return;
               const parameter = candidate.parameters[index];
               if (!parameter) return;
               const existing = helperTargets.get(candidate.node) ?? new Set<string>();
@@ -493,17 +693,24 @@ function baseTable(): ErrorClassTable {
   return baseTableCache;
 }
 
+/**
+ * `moduleId` is the file's path under the scanned ROOT, which is what a
+ * composer's import is resolved against; it defaults to `fileName` for a
+ * synthetic source.
+ */
 export function analyzeFile(
   fileName: string,
   sourceText: string,
-  table: ErrorClassTable = baseTable()
+  table: ErrorClassTable = baseTable(),
+  moduleId: string = fileName
 ): CauseSite[] {
   const source = parseSource(fileName, sourceText);
   // Provider-LOCAL error classes (route53's HostedZoneNameNotFoundError) are
   // declared in the same file they are constructed in.
   const classes = collectErrorClasses(source, new Map(table));
   const functions = collectFunctions(source);
-  const helperTargets = resolveHelperBindings(source, functions);
+  const context: ThreadingContext = { composers: importedComposers(source, moduleId) };
+  const helperTargets = resolveHelperBindings(source, functions, context);
   const sites: CauseSite[] = [];
 
   const visit = (node: ts.Node): void => {
@@ -511,7 +718,9 @@ export function analyzeFile(
       const errorClass = node.expression.text;
       const causeIndex = classes.get(errorClass);
       if (causeIndex !== undefined) {
-        sites.push(classify(node, errorClass, causeIndex, fileName, source, helperTargets));
+        sites.push(
+          classify(node, errorClass, causeIndex, fileName, source, helperTargets, context)
+        );
       }
     }
     ts.forEachChild(node, visit);
@@ -527,10 +736,12 @@ function classify(
   causeIndex: number,
   fileName: string,
   source: ts.SourceFile,
-  helperTargets: ReadonlyMap<ts.Node, ReadonlySet<string>>
+  helperTargets: ReadonlyMap<ts.Node, ReadonlySet<string>>,
+  threading: ThreadingContext
 ): CauseSite {
   const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
-  const base = { file: fileName, line, errorClass } as const;
+  const within = enclosingName(node);
+  const base = { file: fileName, line, errorClass, ...(within ? { within } : {}) } as const;
 
   const targets = new Set<string>();
   let context: SiteContext = 'no-catch';
@@ -564,12 +775,14 @@ function classify(
   }
 
   const argument = (node.arguments ?? [])[causeIndex];
-  const threaded = argument !== undefined && isThreaded(argument, targets);
+  const threaded = argument !== undefined && isThreaded(argument, targets, threading);
+  const viaComposer = threaded && !isThreaded(argument, targets, NO_COMPOSERS);
 
   return {
     ...base,
     context,
     caughtBinding: [...targets].join('/'),
+    ...(viaComposer ? { viaComposer } : {}),
     verdict: threaded ? 'threaded' : 'dropped',
   };
 }
@@ -682,6 +895,38 @@ const SELF_PROBES: readonly SelfProbe[] = [
     expected: ['dropped'],
   },
   {
+    name: 'a registered composer IMPORTED from its module, handed the caught value, threads',
+    source: `import { redactedDockerCause } from '../utils/docker-cmd.js';
+    try { go(); } catch (err) {
+      throw new AssetError('m', redactedDockerCause(err, ['tag']));
+    }`,
+    expected: ['threaded'],
+  },
+  {
+    name: 'a same-named composer imported from ANOTHER module is dropped',
+    source: `import { redactedDockerCause } from '../utils/elsewhere.js';
+    try { go(); } catch (err) {
+      throw new AssetError('m', redactedDockerCause(err, ['tag']));
+    }`,
+    expected: ['dropped'],
+  },
+  {
+    name: 'a same-named LOCAL function is not the composer and is dropped',
+    source: `function redactedDockerCause(e: unknown, a: string[]) { return new Error(String(e)); }
+    try { go(); } catch (err) {
+      throw new AssetError('m', redactedDockerCause(err, ['tag']));
+    }`,
+    expected: ['dropped'],
+  },
+  {
+    name: 'a registered composer handed something OTHER than the caught value is dropped',
+    source: `import { redactedDockerCause } from '../utils/docker-cmd.js';
+    try { go(); } catch (err) {
+      throw new AssetError('m', redactedDockerCause(new Error('x'), ['tag']));
+    }`,
+    expected: ['dropped'],
+  },
+  {
     name: 'ResourceUpdateNotSupportedError uses its own cause position',
     source: `try { go(); } catch (error) {
       throw new ResourceUpdateNotSupportedError('t', 'l', String(error));
@@ -695,7 +940,12 @@ export function runSelfProbes(table: ErrorClassTable = baseTable()): string[] {
   for (const probe of SELF_PROBES) {
     let actual: SiteVerdict[];
     try {
-      actual = analyzeFile(`self-probe/${probe.name}.ts`, probe.source, table).map((s) => s.verdict);
+      actual = analyzeFile(
+        `self-probe/${probe.name}.ts`,
+        probe.source,
+        table,
+        'self-probe/probe.ts'
+      ).map((s) => s.verdict);
     } catch (error) {
       failures.push(
         `self-probe "${probe.name}" threw: ${error instanceof Error ? error.message : String(error)}`
@@ -745,25 +995,67 @@ function listProviderFiles(dir: string): string[] {
   return out;
 }
 
-export function buildReport(providersDir: string, table: ErrorClassTable = baseTable()): CauseReport {
-  const files = listProviderFiles(providersDir);
+/** A ROOT-relative path, with `/` separators on every platform. */
+function rootRelative(root: string, file: string): string {
+  return relative(root, file).split(sep).join('/');
+}
+
+export interface ExemptionMismatch {
+  readonly exemption: CauseExemption;
+  readonly matched: number;
+}
+
+export function buildReport(
+  root: string,
+  table: ErrorClassTable = baseTable(),
+  exemptions: readonly CauseExemption[] = EXEMPTIONS
+): CauseReport & { readonly exemptionMismatches: readonly ExemptionMismatch[] } {
+  const files = listProviderFiles(root);
   const sites: CauseSite[] = [];
+  const moduleIds = new Map<string, string>();
 
   for (const file of files) {
     const rel = relative(REPO_ROOT, file);
-    sites.push(...analyzeFile(rel, readFileSync(file, 'utf8'), table));
+    const moduleId = rootRelative(root, file);
+    moduleIds.set(rel, moduleId);
+    sites.push(...analyzeFile(rel, readFileSync(file, 'utf8'), table, moduleId));
   }
+
+  // Exemptions apply to `dropped` sites only, and must match EXACTLY.
+  const matches = (site: CauseSite, exemption: CauseExemption): boolean =>
+    site.verdict === 'dropped' &&
+    moduleIds.get(site.file) === exemption.file &&
+    site.errorClass === exemption.errorClass &&
+    site.within === exemption.within;
+  const exemptionMismatches: ExemptionMismatch[] = [];
+  const exemptSites = new Set<CauseSite>();
+  for (const exemption of exemptions) {
+    const matched = sites.filter((site) => matches(site, exemption));
+    if (matched.length === exemption.count) {
+      for (const site of matched) exemptSites.add(site);
+    } else {
+      exemptionMismatches.push({ exemption, matched: matched.length });
+    }
+  }
+  const finalSites = sites.map((site) =>
+    exemptSites.has(site) ? { ...site, verdict: 'exempt' as const } : site
+  );
 
   return {
     filesScanned: files.length,
-    constructions: sites.length,
-    catchSited: sites.filter((s) => s.context === 'catch').length,
-    helperSited: sites.filter((s) => s.context === 'helper').length,
-    threaded: sites.filter((s) => s.verdict === 'threaded').length,
-    dropped: sites.filter((s) => s.verdict === 'dropped').length,
-    validation: sites.filter((s) => s.verdict === 'no-cause-in-scope').length,
+    providerFiles: [...moduleIds.values()].filter((id) => id.startsWith(PROVIDERS_SUBTREE))
+      .length,
+    constructions: finalSites.length,
+    catchSited: finalSites.filter((s) => s.context === 'catch').length,
+    helperSited: finalSites.filter((s) => s.context === 'helper').length,
+    threaded: finalSites.filter((s) => s.verdict === 'threaded').length,
+    composerThreaded: finalSites.filter((s) => s.verdict === 'threaded' && s.viaComposer).length,
+    dropped: finalSites.filter((s) => s.verdict === 'dropped').length,
+    exempt: finalSites.filter((s) => s.verdict === 'exempt').length,
+    validation: finalSites.filter((s) => s.verdict === 'no-cause-in-scope').length,
     errorClasses: table.size,
-    sites,
+    exemptionMismatches,
+    sites: finalSites,
   };
 }
 
@@ -772,14 +1064,14 @@ export function buildReport(providersDir: string, table: ErrorClassTable = baseT
 // ---------------------------------------------------------------------------
 
 function main(argv: readonly string[]): number {
-  let providersDir = DEFAULT_PROVIDERS_DIR;
+  let root = DEFAULT_ROOT;
   let json = false;
 
   for (const arg of argv) {
     if (arg === '--json') {
       json = true;
-    } else if (arg.startsWith('--providers-dir=')) {
-      providersDir = resolve(arg.slice('--providers-dir='.length));
+    } else if (arg.startsWith('--root=')) {
+      root = resolve(arg.slice('--root='.length));
     } else {
       process.stderr.write(`Unrecognized argument: ${arg}\n`);
       return 2;
@@ -820,9 +1112,9 @@ function main(argv: readonly string[]): number {
     }
   }
 
-  let report: CauseReport | undefined;
+  let report: ReturnType<typeof buildReport> | undefined;
   try {
-    report = buildReport(providersDir, table);
+    report = buildReport(root, table);
   } catch (error) {
     failures.push(error instanceof Error ? error.message : String(error));
   }
@@ -832,11 +1124,17 @@ function main(argv: readonly string[]): number {
 
     // COLLAPSE TOWARD ZERO.
     const floors: [number, number, string][] = [
-      [report.filesScanned, MIN_PROVIDER_FILES, 'provider files scanned'],
+      [report.filesScanned, MIN_FILES, 'files scanned'],
+      [report.providerFiles, MIN_PROVIDER_FILES, `files under ${PROVIDERS_SUBTREE}`],
       [report.constructions, MIN_ERROR_CONSTRUCTIONS, 'error constructions'],
       [report.catchSited, MIN_CATCH_SITED_CONSTRUCTIONS, 'catch-sited constructions'],
       [report.helperSited, MIN_HELPER_SITED_CONSTRUCTIONS, 'helper-sited constructions'],
       [report.threaded, MIN_THREADED_CONSTRUCTIONS, 'cause-threaded constructions'],
+      [
+        report.composerThreaded,
+        MIN_COMPOSER_THREADED_CONSTRUCTIONS,
+        'constructions threaded through a registered composer',
+      ],
     ];
     for (const [actual, minimum, label] of floors) {
       if (actual < minimum) {
@@ -853,7 +1151,19 @@ function main(argv: readonly string[]): number {
           `The transient-error classifiers walk \`.cause\`, so this AWS failure is ` +
           `classified on its interpolated message alone. Thread the caught value itself: ` +
           `\`const cause = ${binding} instanceof Error ? ${binding} : undefined;\` — note a ` +
-          `DERIVED value (\`new Error(${binding}.message)\`) is just as inert.`
+          `DERIVED value (\`new Error(${binding}.message)\`) is just as inert, unless it comes ` +
+          `from a registered composer (${[...CAUSE_COMPOSERS.keys()].join(', ')}) imported ` +
+          `from its own module.`
+      );
+    }
+
+    for (const { exemption, matched } of report.exemptionMismatches) {
+      failures.push(
+        `exemption ${exemption.file} ${exemption.errorClass} in ${exemption.within}() covers ` +
+          `exactly ${exemption.count} dropped site(s), but the scan found ${matched}. ` +
+          (matched > exemption.count
+            ? 'A NEW site dropped its cause in an exempted function: thread it, do not raise the count.'
+            : 'The exemption no longer matches: delete it (or correct its key).')
       );
     }
   }
@@ -868,8 +1178,9 @@ function main(argv: readonly string[]): number {
   process.stdout.write(
     `provider error-cause check OK — ${report?.filesScanned} files, ` +
       `${report?.constructions} error constructions across ${report?.errorClasses} error classes ` +
-      `(${report?.threaded} cause-threaded: ${report?.catchSited} in a catch + ` +
-      `${report?.helperSited} via a helper; ${report?.validation} validation / no cause in scope; ` +
+      `(${report?.threaded} cause-threaded, ${report?.composerThreaded} of them through a ` +
+      `registered composer; ${report?.catchSited} in a catch + ${report?.helperSited} via a ` +
+      `helper; ${report?.exempt} exempt; ${report?.validation} validation / no cause in scope; ` +
       `${report?.dropped} dropped)\n`
   );
   return 0;

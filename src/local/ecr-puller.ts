@@ -3,6 +3,7 @@ import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
   describeDockerFailure,
   formatDockerLoginError,
+  redactedDockerCause,
   runDockerForeground,
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
@@ -438,7 +439,8 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     await runDockerForeground(pullArgs);
   } catch (err) {
     throw new LocalInvokeBuildError(
-      `docker pull ${canonicalUri} failed: ${describeDockerFailure(err, pullArgs)}`
+      `docker pull ${canonicalUri} failed: ${describeDockerFailure(err, pullArgs)}`,
+      redactedDockerCause(err, pullArgs)
     );
   }
 
@@ -497,7 +499,8 @@ async function assumeRoleForEcr(
     const reason = err instanceof Error ? err.message : String(err);
     throw new LocalInvokeBuildError(
       `Failed to assume role ${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} for ECR pull: ${displaySafe(reason)}. ` +
-        "Verify the role exists and its trust policy permits the caller's identity to assume it."
+        "Verify the role exists and its trust policy permits the caller's identity to assume it.",
+      err instanceof Error ? err : undefined
     );
   } finally {
     sts.destroy();
@@ -554,7 +557,8 @@ async function ecrLogin(
     await runDockerStreaming(loginArgs, { input: password });
   } catch (err) {
     throw new LocalInvokeBuildError(
-      `ECR login failed: ${formatDockerLoginError(describeDockerFailure(err, loginArgs), endpoint)}`
+      `ECR login failed: ${formatDockerLoginError(describeDockerFailure(err, loginArgs), endpoint)}`,
+      redactedDockerCause(err, loginArgs)
     );
   }
 }

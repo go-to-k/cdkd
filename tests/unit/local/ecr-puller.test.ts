@@ -535,15 +535,19 @@ describe('pullEcrImage', () => {
   });
 
   it('--ecr-role-arn AssumeRole failure surfaces actionable LocalInvokeBuildError', async () => {
+    const stsFailure = new Error('AccessDenied: not authorized to AssumeRole');
     stsSendMock
       .mockResolvedValueOnce({ Account: '111111111111' })
-      .mockRejectedValueOnce(new Error('AccessDenied: not authorized to AssumeRole'));
-    await expect(
-      pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
-        skipPull: false,
-        ecrRoleArn: 'arn:aws:iam::999999999999:role/Bad',
-      })
-    ).rejects.toThrow(/Failed to assume role .* for ECR pull.*AccessDenied/);
+      .mockRejectedValueOnce(stsFailure);
+    const err = await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+      ecrRoleArn: 'arn:aws:iam::999999999999:role/Bad',
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LocalInvokeBuildError);
+    expect((err as Error).message).toMatch(/Failed to assume role .* for ECR pull.*AccessDenied/);
+    // go-to-k/cdkd#2075: the STS error itself is the cause, so a throttled
+    // AssumeRole stays visible to the classifiers that walk `.cause`.
+    expect((err as Error).cause).toBe(stsFailure);
   });
 
   it.each([
@@ -1166,6 +1170,39 @@ describe('pullEcrImage', () => {
         'docker pull 111111111111.dkr.ecr.us-east-1.amazonaws.com/Team/App:V1 failed: ' +
           'docker exited with code 1'
       );
+      // go-to-k/cdkd#2075: the redacted composer's cause, not the raw spawn error.
+      expect(((err as Error).cause as Error | undefined)?.message).toBe('docker exited with code 1');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('docker login failure threads a redacted cause carrying the exit status (go-to-k/cdkd#2075)', async () => {
+    vi.stubEnv('CDK_DOCKER', '');
+    try {
+      stsSendMock.mockResolvedValue({ Account: '111111111111' });
+      ecrSendMock.mockResolvedValue({
+        authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
+      });
+      process.env['AWS_REGION'] = 'us-east-1';
+      runDockerMock.mockRejectedValueOnce(
+        Object.assign(new Error('login failed'), {
+          stderr: 'Error response from daemon: unauthorized',
+          stdout: '',
+          exitCode: 1,
+        })
+      );
+
+      const err = await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+        skipPull: false,
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(LocalInvokeBuildError);
+      expect((err as Error).message).toMatch(/^ECR login failed: /);
+      const cause = (err as Error).cause as (Error & { exitCode?: number }) | undefined;
+      expect(cause?.exitCode).toBe(1);
+      // The password goes in on stdin; nothing of it may ride the cause.
+      expect(JSON.stringify({ ...cause, message: cause?.message })).not.toContain('dummypw');
     } finally {
       vi.unstubAllEnvs();
     }

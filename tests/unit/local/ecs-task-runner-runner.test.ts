@@ -645,6 +645,10 @@ describe('runEcsTask — image preparation (G1)', () => {
     );
     expect(m).toContain(`for ECS container ${JSON.stringify(NAME)}: `);
     expect(m.replace(/"(?:[^"\\]|\\.)*"/g, '')).not.toContain('Tagged cleanly');
+    // go-to-k/cdkd#2075: the redacted composer's cause rides the wrapper,
+    // derived from the spawn failure rather than being it.
+    expect(err?.cause).toBeInstanceOf(Error);
+    expect((err?.cause as Error).message).toContain('tag: BOOM');
   });
 
   it('cdk-asset with a plain `directory` source → wrapError renders it bare', async () => {

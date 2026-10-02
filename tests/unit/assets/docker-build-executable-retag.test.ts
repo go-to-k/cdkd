@@ -115,4 +115,46 @@ describe('publisher (docker-asset-publisher): executable source re-tag', () => {
       /re-tagging 'user-script-image:v2' → 'cdkd-asset-feedface'/
     );
   });
+
+  // go-to-k/cdkd#2075: ONE wrap over the raw spawn failure. The cause is the
+  // redacted composer's, carrying docker's exit status, and the message renders
+  // docker's diagnostic once rather than nesting a second "Docker tag failed:".
+  it('threads a redacted cause carrying the exit status, and renders the failure once', async () => {
+    mockBuildDockerImage.mockResolvedValueOnce('user-script-image:v3');
+    mockRunDocker.mockImplementationOnce(async (args: string[]) => {
+      if (args[0] === 'tag') {
+        throw Object.assign(new Error('tag failed'), {
+          stderr: 'Error response from daemon: No such image',
+          stdout: '',
+          exitCode: 1,
+        });
+      }
+      return { stdout: '', stderr: '' };
+    });
+    const { DockerAssetPublisher } = await import(
+      '../../../src/assets/docker-asset-publisher.js'
+    );
+    let caught: unknown;
+    try {
+      await new DockerAssetPublisher().build(
+        {
+          displayName: 'X',
+          source: { executable: ['./build.sh'] },
+          destinations: {},
+        },
+        '/cdk.out',
+        'cdkd-asset-cafe',
+        '/cdk.out'
+      );
+    } catch (err) {
+      caught = err;
+    }
+    const message = (caught as Error).message;
+    expect(message.match(/No such image/g)).toHaveLength(1);
+    expect(message).not.toContain('Docker tag failed: ');
+    const cause = (caught as Error).cause as Error & { exitCode?: number };
+    expect(cause).toBeInstanceOf(Error);
+    expect(cause.exitCode).toBe(1);
+    expect(cause.message).toContain('No such image');
+  });
 });

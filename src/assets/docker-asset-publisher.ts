@@ -257,18 +257,18 @@ export class DockerAssetPublisher {
     });
     if (actualTag !== tag) {
       this.logger.debug(`Re-tagging executable-built image '${actualTag}' → '${tag}'`);
+      // Spawned HERE rather than through `this.tagImage`, which already wraps
+      // the failure in an AssetError: re-wrapping that would render its
+      // message a second time, and adopting its `.cause` is a shape the
+      // error-cause critic cannot tell from dropping the caught value
+      // (go-to-k/cdkd#2075). One wrap, over the raw spawn failure.
+      const retagArgs = ['tag', actualTag, tag];
       try {
-        await this.tagImage(actualTag, tag);
+        await runDockerStreaming(retagArgs);
       } catch (err) {
-        // `this.tagImage` ALREADY wrapped the spawn failure in an AssetError
-        // carrying a redacted cause, so re-wrapping `err` here would render
-        // the message a second time and copy `AssetError`'s own class token
-        // into the cause's `code` as a fabricated classification. Adopt the
-        // inner cause, which is the one holding docker's exit status.
-        const e = err as { message?: string; cause?: unknown };
         throw new AssetError(
-          `Docker tag failed re-tagging '${actualTag}' → '${tag}': ${e.message ?? String(err)}`,
-          e.cause instanceof Error ? e.cause : redactedDockerCause(err, ['tag', actualTag, tag])
+          `Docker tag failed re-tagging '${actualTag}' → '${tag}': ${describeDockerFailure(err, retagArgs)}`,
+          redactedDockerCause(err, retagArgs)
         );
       }
     }
