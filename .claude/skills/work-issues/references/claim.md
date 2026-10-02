@@ -47,9 +47,8 @@ For EACH issue you start — PROMOTING a QUEUED one included — first re-check
 `gh issue view <n> --json state`, §2's open-PR `files` query, and §3's premise
 check on CURRENT `origin/main` — in a call BEFORE the claim, never chained with
 it. Triage's findings date from TRIAGE time: a peer can fix and close a queued
-issue, or open a PR holding its files, before its turn (#3700/#3704: claimed
-after closing; #3979: a chained claim posted before the query showed #3975
-holding its files).
+issue, or open a PR holding its files, before its turn (#3979: a chained claim
+posted before the query showed #3975 holding its files).
 Then:
 
 ```bash
@@ -58,6 +57,11 @@ Claiming to avoid collision with parallel agents."
 ```
 
 Mandatory, BEFORE the first edit (the issue-level DISJOINT-FILE rule).
+**`<files>` is every file the lane will EDIT, and the lane is dispatched with
+that list**: beside the fix and its unit test, the integ fixture §8-c will
+extend (`grep -rl '<type's last segment>' tests/integration/*/lib`) and, when a
+provider gains `context?: UpdateContext`, triage.md §2's checker/test pair — a
+narrower list stops the lane mid-run to ask (go-to-k/cdkd#1160).
 
 **Correct the classification lines in the same turn as the claim**, the first
 moment the run holds evidence: rewrite a legacy packed body to the four-line
