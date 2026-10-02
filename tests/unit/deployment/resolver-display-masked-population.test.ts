@@ -206,12 +206,19 @@ function referencesByEnclosingMethod(name: string): { line: number; method: stri
         node.parent.name === node;
       // Not a call either: the augmentation's `typeof name`, and the
       // `Host.prototype.name = mixin.name` wiring line.
+      // Only the SAME name on both sides: `Host.prototype.x = mixin.x`. An
+      // alias (`prototype.y = mixin.maskSecretsRaw`) is a reach and stays in.
+      const wiring = ts.isPropertyAccessExpression(node.parent) ? node.parent.parent : undefined;
       const isWiring =
         ts.isTypeQueryNode(node.parent) ||
-        (ts.isPropertyAccessExpression(node.parent) &&
-          ts.isBinaryExpression(node.parent.parent) &&
-          node.parent.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-          /\.prototype\.\w+$/.test(node.parent.parent.left.getText()));
+        (wiring !== undefined &&
+          ts.isBinaryExpression(wiring) &&
+          wiring.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isPropertyAccessExpression(wiring.left) &&
+          ts.isPropertyAccessExpression(wiring.right) &&
+          /\.prototype$/.test(wiring.left.expression.getText()) &&
+          wiring.left.name.text === name &&
+          wiring.right.name.text === name);
       if (!isDeclarationName && !isWiring) {
         let p: ts.Node | undefined = node.parent;
         let method = '<module scope>';
