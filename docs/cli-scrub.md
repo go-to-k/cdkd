@@ -54,7 +54,10 @@ Stage failed to load, whether or not other stacks did synthesize: the Stage's
 stacks would go unexamined while the run reported the state clean. The refusal
 lists any stacks that did synthesize and names the Stage; name the stacks to
 scrub explicitly, or fix the Stage. It exits `2`, as [every refusal](#refusals)
-does.
+does. With no stack named, a one-stack app is scrubbed without a name — unless
+a Stage failed to load, where the one stack that synthesized is not known to be
+the only one (or none synthesized), and scrub refuses the same way, with exit
+`2` (`SCRUB_AUTO_PICK_PARTIAL_APP`).
 
 `cdkd scrub` takes no `--parameters`, which is load-bearing in two places
 below: which `Fn::If` branch it evaluates, and which `Export.Name` values it
@@ -541,6 +544,7 @@ These error codes stop the run rather than reporting it clean. All exit `2`.
 | `SCRUB_NESTED_TEMPLATE_TREE_MALFORMED` | The nested template tree under a stack is cyclic, too deep or too large, or names an absolute or escaping `aws:asset:path` — a hand-modified or non-CDK assembly. | Re-synthesize the app with CDK. Nothing in that stack or under it was written; any nested record under it is refused too. |
 | `SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED` | scrub had an undeclared output key to [drop](#a-key-the-template-can-no-longer-name-is-dropped), and the state bucket's listing or another stack's record could not be read to confirm nothing reads it. Raised after the summary, with or without `--fail`. | Fix the read (usually an S3 permission, or a damaged record the warning names) and re-run. The stack was still scrubbed for everything else; no key was dropped. |
 | `SCRUB_ALL_PARTIAL_APP` | `--all` was given and a CDK Stage failed to load, so the Stage's stacks would go unexamined — including when no stack survived at all. Raised before any state read, `--dry-run` included. | Fix each Stage that failed to load so it synthesizes, or name the stacks to scrub explicitly. |
+| `SCRUB_AUTO_PICK_PARTIAL_APP` | No stack was named, at most one stack synthesized, and a CDK Stage failed to load, so the app's stacks would go unexamined — the one that synthesized is not known to be the only one, or none did. Raised before any state read, `--dry-run` included. | Fix each Stage that failed to load so it synthesizes, or name the stacks to scrub explicitly. |
 | `SCRUB_EXPORT_INDEX_INCOMPLETE` | `state.json` was rewritten and an entry of the [exports index](#the-exports-index) was not — a refused write, or a region whose index could not be read. | Clear the cause (usually an S3 permission on `{state-prefix}/_index/...`) and re-run. The re-run writes only the entries still differing. |
 
 Everything else the per-item best-effort handler swallows is unchanged: a

@@ -1112,7 +1112,112 @@ describe('cdkd destroy: empty selection names a Stage that failed to load (go-to
     expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('Other');
   });
 
-  it('names the Stage on the no-pattern arm when the only deployed stack sat under it', async () => {
+  // A bare `cdkd destroy` auto-selected the one deployed survivor as if the
+  // app held only that stack (go-to-k/cdkd#3507).
+  it('refuses the single-stack auto-pick when a Stage failed to load', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other')],
+      failedStages,
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Other', region: 'us-east-1' },
+      { stackName: 'MyStage-MyStack', region: 'us-east-1' },
+    ]);
+
+    await expect(runDestroy(['--yes'])).rejects.toThrow('process.exit-mock');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    // Refused before the bucket is even listed, as --all is.
+    expect(mockListStacks).not.toHaveBeenCalled();
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toContain(
+      `With no stack named, cdkd would destroy only part of this app; refusing. Synthesized: Other. ${note}`
+    );
+  });
+
+  it('refuses a bare run with SEVERAL synthesized stacks beside a failed Stage, before listing the bucket', async () => {
+    // Was "Multiple stacks found" after listing the bucket; now the same
+    // partial-app refusal as one survivor, since no stack is named either way.
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other'), makeStackInfo('Second')],
+      failedStages,
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Other', region: 'us-east-1' },
+      { stackName: 'Second', region: 'us-east-1' },
+    ]);
+
+    await expect(runDestroy(['--yes'])).rejects.toThrow('process.exit-mock');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(mockListStacks).not.toHaveBeenCalled();
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toContain(
+      `With no stack named, cdkd would destroy only part of this app; refusing. Synthesized: Other, Second. ${note}`
+    );
+    expect(messages).not.toContain('Multiple stacks found');
+  });
+
+  it('still destroys a NAMED survivor beside a failed Stage', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other')],
+      failedStages,
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+
+    await runDestroy(['Other', '--yes']);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('Other');
+  });
+
+  it('still auto-picks the single deployed stack when every Stage loaded', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other')],
+      failedStages: [],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+
+    await runDestroy(['--yes']);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('Other');
+  });
+
+  it('control: with every Stage loaded, a bare run whose app stack has no state record still ends clean', async () => {
+    // The `No stacks found in state` arm (exit 0) stays for a WHOLE app: no
+    // Stage failed, so "nothing deployed" is a verdict over every stack.
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('NeverDeployed')],
+      failedStages: [],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'SomeOtherApp', region: 'us-east-1' }]);
+
+    await runDestroy(['--yes']);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    expect(infoText()).toContain('No stacks found in state');
+  });
+
+  it('refuses, rather than exiting 0, when the only deployed stack sat under the failed Stage', async () => {
+    // The synthesized survivor has no state record, so the bare run used to end
+    // with "No stacks found in state" and exit 0 -- deciding "nothing to
+    // destroy" from part of the app (go-to-k/cdkd#3507).
     mockSynthesize.mockResolvedValue({
       manifest: {},
       assemblyDir: '/tmp/cdk.out',
@@ -1121,9 +1226,15 @@ describe('cdkd destroy: empty selection names a Stage that failed to load (go-to
     });
     mockListStacks.mockResolvedValue([{ stackName: 'MyStage-MyStack', region: 'us-east-1' }]);
 
-    await runDestroy(['--yes']);
+    await expect(runDestroy(['--yes'])).rejects.toThrow('process.exit-mock');
 
-    expect(infoText()).toContain(`No stacks found in state. ${note}`);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(mockListStacks).not.toHaveBeenCalled();
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toContain(
+      `With no stack named, cdkd would destroy only part of this app; refusing. Synthesized: NeverDeployed. ${note}`
+    );
+    expect(infoText()).not.toContain('No stacks found in state');
   });
 
   it('names the Stage when the whole app sat under it and no stack was named', async () => {

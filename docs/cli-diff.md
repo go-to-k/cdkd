@@ -55,7 +55,8 @@ Selection follows the same rules as `cdkd deploy` and `cdkd destroy`:
   did synthesize ([the failed-Stage note](cli-deploy-safety.md#a-pre-synthesized-assembly-is-trusted-input)).
 - **No argument** is accepted only when the app contains exactly one stack.
   With more than one, cdkd lists the available stacks and exits `1` rather than
-  guessing.
+  guessing. When a CDK Stage failed to load, it is refused too: the one stack
+  that synthesized is not known to be the app's only stack.
 - **No match** is an error, not an empty diff: cdkd names the patterns it tried
   and lists what the assembly actually contains.
 

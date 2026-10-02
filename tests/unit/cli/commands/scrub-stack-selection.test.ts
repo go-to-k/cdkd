@@ -145,10 +145,10 @@ describe('cdkd scrub: empty selection names a Stage that failed to load (go-to-k
     expect(expandMacros.calls).toEqual([]);
   });
 
-  it('refuses --all over a zero-stack app as a refusal (exit 2) when a Stage failed', async () => {
-    // Every stack sat under the failed Stage, so `--all` would examine none of
-    // them: exit 2 ("declined to look"), not 1, which `--fail` reserves for
-    // "plaintext found". A pattern or no argument stays a plain selection error.
+  it('refuses --all over a zero-stack app as a refusal (exit 2) when a Stage failed, and a bare run too', async () => {
+    // Every stack sat under the failed Stage, so `--all` or a bare run would
+    // examine none of them: exit 2 ("declined to look"), not 1, which `--fail`
+    // reserves for "plaintext found". A pattern stays a plain selection error.
     synthResult.failedStages = FAILED;
 
     const caught = (stacks: string[], overrides: Partial<ScrubOptions>) =>
@@ -162,7 +162,11 @@ describe('cdkd scrub: empty selection names a Stage that failed to load (go-to-k
       exitCode: 2,
       message: `No stacks found in assembly. ${NOTE}`,
     });
-    expect(await caught([], {})).not.toHaveProperty('exitCode');
+    expect(await caught([], { dryRun: true, fail: true })).toMatchObject({
+      code: 'SCRUB_AUTO_PICK_PARTIAL_APP',
+      exitCode: 2,
+      message: `No stacks found in assembly. ${NOTE}`,
+    });
     expect(await caught(['MyStage/MyStack'], {})).not.toHaveProperty('exitCode');
   });
 
@@ -230,6 +234,41 @@ describe('cdkd scrub --all refuses a partial app when a Stage failed to load (go
     expect(err).toMatchObject({ code: 'SCRUB_ALL_PARTIAL_APP', exitCode: 2 });
     expect((err as Error).message).toContain('--all would scrub only part of this app; refusing.');
     expect(expandMacros.calls).toEqual([]);
+  });
+
+  // A bare `cdkd scrub --dry-run --fail` auto-selected the one survivor and
+  // reported it clean, as if the app held only that stack.
+  it('refuses the single-stack auto-pick when a Stage failed to load, as a refusal (exit 2)', async () => {
+    synthResult.stacks = [stack('Other')];
+    synthResult.failedStages = FAILED;
+
+    const err = await scrubCommand([], options({ dryRun: true, fail: true })).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+
+    expect(err).toMatchObject({ code: 'SCRUB_AUTO_PICK_PARTIAL_APP', exitCode: 2 });
+    expect((err as Error).message).toBe(
+      'With no stack named, cdkd would scrub only part of this app; refusing. ' +
+        `Synthesized: Other. ${NOTE}. ` +
+        'Fix each Stage that failed to load so it synthesizes, or name the stacks to scrub explicitly.'
+    );
+    expect(expandMacros.calls).toEqual([]);
+  });
+
+  it('still scrubs a NAMED survivor beside a failed Stage', async () => {
+    synthResult.stacks = [stack('Other')];
+    synthResult.failedStages = FAILED;
+
+    expect(await scrubError(['Other'])).toBe(REACHED_EXPANSION);
+    expect(expandMacros.calls).toEqual([['Other']]);
+  });
+
+  it('still auto-picks the single stack when every Stage loaded', async () => {
+    synthResult.stacks = [stack('Other')];
+
+    expect(await scrubError([])).toBe(REACHED_EXPANSION);
+    expect(expandMacros.calls).toEqual([['Other']]);
   });
 
   it('still selects every stack with --all when every Stage loaded', async () => {

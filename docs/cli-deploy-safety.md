@@ -1319,6 +1319,14 @@ acting on the survivors and exiting 0 would report a partial run as a whole
 one. The refusal lists the stacks that did synthesize and names the Stage; name
 the stacks you want explicitly, or fix the Stage.
 
+The same applies with NO stack named, where a command auto-selects the app's
+only stack (`cdkd deploy`, `destroy`, `diff`, `publish-assets`, `scrub`,
+`import` and `export`): when a Stage failed to load, the one stack that
+synthesized is not known to be the app's only stack, so the command refuses
+with the same message, led by `With no stack named` instead of `--all`.
+`cdkd orphan` always names its stack in the construct path; a path under a
+Stage that failed to load is refused with the Stage named.
+
 Every other refusal under a Stage — an escaping or absent `templateFile`, an
 unreadable template, an escaping asset manifest, an absolute `aws:asset:path` —
 aborts the run, with the Stage named ahead of the refusal

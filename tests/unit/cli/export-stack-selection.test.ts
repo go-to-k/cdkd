@@ -202,6 +202,29 @@ describe('cdkd export: selection names a Stage that failed to load (go-to-k/cdkd
     expectNoStateTouched();
   });
 
+  // A bare `cdkd export` auto-selected the one survivor as if the app held
+  // only that stack.
+  it('refuses the single-stack auto-pick when a Stage failed to load', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([other()], failedStages));
+
+    await runExport(['--yes']);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorText()).toContain(
+      `With no stack named, cdkd would export only part of this app; refusing. Synthesized: Other. ${note}`
+    );
+    expectNoStateTouched();
+  });
+
+  it('control: the single-stack auto-pick reaches the state read when every Stage loaded', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([other()], []));
+
+    await runExport(['--yes']);
+
+    expect(errorText()).not.toContain('refusing');
+    expect(mockGetState).toHaveBeenCalled();
+  });
+
   it('says export matches exactly when the argument looks like a wildcard', async () => {
     mockSynthesize.mockResolvedValue(synthesized([stack('MyStage-Api', 'MyStage/Api')], []));
 

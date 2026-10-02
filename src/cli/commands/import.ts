@@ -81,7 +81,11 @@ import { commandHole, plainOrDescribed, quotedOrDescribed } from '../../utils/pa
 import { remedyLogicalId } from '../../provisioning/import-helpers.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
-import { describeStack, renderNoStackMatch } from '../stack-matcher.js';
+import {
+  describeStack,
+  renderAutoPickWithFailedStages,
+  renderNoStackMatch,
+} from '../stack-matcher.js';
 import {
   displayAssemblyPath,
   renderAssemblyPathEscape,
@@ -330,6 +334,14 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         throw new Error(renderNoStackMatch(stackPatterns, result.stacks, result) + exactOnly);
       }
     } else if (result.stacks.length === 1) {
+      // No stack named and one survived: a Stage that failed to load may hold
+      // the rest of the app, so auto-selecting would guess (#3507).
+      const partial = renderAutoPickWithFailedStages(
+        'import resources into',
+        result.stacks,
+        result
+      );
+      if (partial !== undefined) throw new Error(partial);
       stackInfo = result.stacks[0]!;
     } else {
       throw new Error(

@@ -56,7 +56,9 @@ against the display path, one without it against the physical name. Wildcards
 work in both forms (`cdkd destroy 'MyStage/*'`). Display-path matching needs
 synthesis to succeed, because a state record only carries physical names — so
 `cdkd state destroy`, which never synthesizes, matches physical names only.
-When the app defines a single stack, no name is needed.
+When the app defines a single stack, no name is needed — unless a CDK Stage
+failed to load, in which case the one stack that synthesized is not known to be
+the only one and `destroy` refuses until you name it.
 
 `--all` targets every stack in the current CDK app. Whenever more than one stack
 is selected — by `--all` or by naming several — they are ordered so that a

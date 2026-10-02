@@ -146,10 +146,39 @@ export function renderAllWithFailedStages(
   available: readonly StackLike[],
   assembly: { failedStages: readonly FailedStage[] | undefined }
 ): string | undefined {
+  return renderPartialAppRefusal('--all', verb, available, assembly);
+}
+
+/**
+ * The refusal a command raises INSTEAD of auto-selecting the only stack that
+ * synthesized when no stack was named and a CDK Stage failed to load, or
+ * `undefined` when none did — shared by every command with a single-stack
+ * auto-pick ([#3507](https://github.com/go-to-k/cdkd/issues/3507)).
+ *
+ * The auto-pick exists because a one-stack app leaves nothing to choose. A
+ * Stage that failed to load makes that premise unknowable: its stacks are
+ * missing from `available`, so "one stack synthesized" no longer means "the
+ * app has one stack". The same sentence as the `--all` refusal, because the
+ * run would act on part of the app as if it were all of it.
+ */
+export function renderAutoPickWithFailedStages(
+  verb: string,
+  available: readonly StackLike[],
+  assembly: { failedStages: readonly FailedStage[] | undefined }
+): string | undefined {
+  return renderPartialAppRefusal('With no stack named, cdkd', verb, available, assembly);
+}
+
+function renderPartialAppRefusal(
+  selector: string,
+  verb: string,
+  available: readonly StackLike[],
+  assembly: { failedStages: readonly FailedStage[] | undefined }
+): string | undefined {
   const note = failedStageNote([], assembly.failedStages);
   if (note === '') return undefined;
   return (
-    `--all would ${verb} only part of this app; refusing. ` +
+    `${selector} would ${verb} only part of this app; refusing. ` +
     `Synthesized: ${available.map(describeStack).join(', ')}${note}. ` +
     `Fix each Stage that failed to load so it synthesizes, or name the stacks to ${verb} explicitly.`
   );

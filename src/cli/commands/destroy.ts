@@ -53,6 +53,7 @@ import {
   matchStacks,
   describeStack,
   renderAllWithFailedStages,
+  renderAutoPickWithFailedStages,
   type StackLike,
 } from '../stack-matcher.js';
 import { failedStageNote, type FailedStage } from '../../synthesis/failed-stages.js';
@@ -432,6 +433,14 @@ async function destroyCommand(
     if (options.all) {
       const partial = renderAllWithFailedStages('destroy', appStacks, { failedStages });
       if (partial !== undefined) throw new Error(partial);
+    } else if (stackPatterns.length === 0 && appStacks.length > 0) {
+      // The same with NO stack named: the bare run auto-selects from the stacks
+      // that synthesized, and a failed Stage's stacks are not among them, so
+      // the one candidate is not known to be the only one -- and "no candidate
+      // in state" would end the run with exit 0 over part of the app (#3507).
+      // Refused before the bucket is listed, as `--all` is.
+      const partial = renderAutoPickWithFailedStages('destroy', appStacks, { failedStages });
+      if (partial !== undefined) throw new Error(partial);
     }
 
     // Determine candidate stacks. State only carries physical names + regions
@@ -531,10 +540,13 @@ async function destroyCommand(
       // Explicit stack names or wildcards
       stackNames = matchStacks(candidateStacks, stackPatterns).map((s) => s.stackName);
     } else if (candidateStacks.length === 1) {
-      // Single stack: auto-select (CDK CLI compatible)
+      // Single stack: auto-select (CDK CLI compatible). A Stage that failed
+      // to load was refused above, before the bucket was listed (#3507).
       stackNames = candidateStacks.map((s) => s.stackName);
     } else if (candidateStacks.length === 0) {
-      logger.info(safeMsg`No stacks found in state${failedStageNote([], failedStages)}`);
+      // No failed-Stage note: with a Stage that failed to load, a bare run is
+      // refused before the bucket is listed (#3507), so none can reach here.
+      logger.info('No stacks found in state');
       return;
     } else {
       throw new Error(

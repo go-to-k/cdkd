@@ -5,6 +5,7 @@ import {
   describeStack,
   renderNoStackMatch,
   renderAllWithFailedStages,
+  renderAutoPickWithFailedStages,
 } from '../../../src/cli/stack-matcher.js';
 import { PATHOLOGICAL_PATTERN, withoutRegExp } from '../_without-regexp.js';
 
@@ -289,5 +290,34 @@ describe('renderAllWithFailedStages', () => {
 
     expect(message).toContain(`Synthesized: ${JSON.stringify(forgingStack)}.`);
     expect(message).toContain(`Stage ${JSON.stringify(forgingStage)} failed to load`);
+  });
+});
+
+// Issue go-to-k/cdkd#3507: the single-stack auto-pick beside a Stage that
+// failed to load -- the one survivor is not known to be the app's only stack.
+describe('renderAutoPickWithFailedStages', () => {
+  it('returns undefined when every Stage loaded, so the auto-pick proceeds', () => {
+    expect(renderAutoPickWithFailedStages('deploy', [stacks[0]!], { failedStages: [] })).toBeUndefined();
+    expect(
+      renderAutoPickWithFailedStages('deploy', [stacks[0]!], { failedStages: undefined })
+    ).toBeUndefined();
+  });
+
+  it('words the refusal as the --all one, with the bare command as the selector', () => {
+    const failedStages = [{ stagePath: 'Prod', reason: 'ENOENT reading assembly-Prod/manifest.json' }];
+
+    const message = renderAutoPickWithFailedStages('deploy', [stacks[0]!], { failedStages });
+
+    expect(message).toBe(
+      'With no stack named, cdkd would deploy only part of this app; refusing. ' +
+        'Synthesized: TopStack. ' +
+        'Stage Prod failed to load, so stacks under it are missing from this list rather than ' +
+        'missing from the app: ENOENT reading assembly-Prod/manifest.json. ' +
+        'Fix each Stage that failed to load so it synthesizes, or name the stacks to deploy explicitly.'
+    );
+    // Same sentence after the selector as the --all refusal.
+    expect(message!.replace('With no stack named, cdkd', '--all')).toBe(
+      renderAllWithFailedStages('deploy', [stacks[0]!], { failedStages })
+    );
   });
 });
