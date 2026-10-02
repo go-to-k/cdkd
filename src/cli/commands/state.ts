@@ -4018,7 +4018,7 @@ async function refreshObservedForStack(
           // remaining open row is named on that function.
           //
           // `STATE_SOURCED_BASELINE_RULES` is the row this write site occupies
-          // in `secret-redaction.ts`'s generation table ("observed walk,
+          // in `secret-redaction/rules.ts`'s generation table ("observed walk,
           // own-record source"): the source is THIS record's own persisted bag,
           // so it is the same GENERATION as the bag beside it and holds no
           // PUBLIC ssm expression — a `String` parameter is stored resolved

@@ -102,7 +102,7 @@ describe('the dynamic-reference token pattern agrees with the resolver (issue #1
     expect(isSingleDynamicReferenceToken('not a reference at all')).toBe(false);
   });
 
-  it('builds the token pattern in exactly two places, both in this module', () => {
+  it('builds the token pattern in exactly three places, the resolver and secret-redaction', () => {
     // ENUMERATING BAD SPELLINGS LOSES THE RACE. Three earlier revisions of this
     // fence each closed one more spelling (a bare class after `resolve:`, an
     // escaped colon, the resolver's capturing form) and a review immediately
@@ -116,8 +116,8 @@ describe('the dynamic-reference token pattern agrees with the resolver (issue #1
     //
     // So state the GOOD condition instead and all four collapse: a regex that
     // matches a `{{resolve:` token must escape both braces, in a literal
-    // (`\{\{resolve`) or a constructor template (`\\{\\{resolve`), and this
-    // module is the only place allowed to write one. A plain string test like
+    // (`\{\{resolve`) or a constructor template (`\\{\\{resolve`), and the
+    // OWNERS below are the only places allowed to write one. A plain string test like
     // drift.ts's `value.includes('{{resolve:')` has no backslashes and is
     // deliberately NOT matched — those are substring checks, not patterns.
     const CONSTRUCTS_TOKEN_PATTERN = /\\+\{\\+\{resolve/g;
@@ -127,8 +127,10 @@ describe('the dynamic-reference token pattern agrees with the resolver (issue #1
     // there, and the resolver is precisely where that would matter most.
     const OWNERS: Record<string, number> = {
       'src/deployment/intrinsic-resolver/dynamic-refs.ts': 1,
-      // WHOLE_DYNAMIC_REFERENCE_PATTERN and DYNAMIC_REFERENCE_TOKEN_SCAN.
-      'src/deployment/secret-redaction.ts': 2,
+      // WHOLE_DYNAMIC_REFERENCE_PATTERN (rules.ts) and DYNAMIC_REFERENCE_TOKEN_SCAN
+      // (redact-path.ts), split from `secret-redaction.ts` (#4415).
+      'src/deployment/secret-redaction/rules.ts': 1,
+      'src/deployment/secret-redaction/redact-path.ts': 1,
     };
 
     for (const [relative, expected] of Object.entries(OWNERS)) {

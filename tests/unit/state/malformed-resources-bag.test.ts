@@ -7255,9 +7255,11 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
    * not a rule about what reaches this code.
    */
   const NUL_JOINS_THAT_ARE_NOT_RECORD_KEYS: ReadonlyArray<readonly [string, number, string]> = [
+    // `secret-redaction.ts` split into `secret-redaction/*.ts` (#4415); one reason
+    // covers all three, so it is stated once on the first.
     [
-      'src/deployment/secret-redaction.ts',
-      5,
+      'src/deployment/secret-redaction/fresh-noecho.ts',
+      3,
       'maskedOutputKey (four parts since go-to-k/cdkd#3691: a credential-identity ' +
         'fingerprint, JSON and so NUL-free, then stack / region / output key), ' +
         'CROSS_STACK_KEY_SEPARATOR and UNKNOWN_PART_PLACEHOLDER (a ' +
@@ -7268,6 +7270,8 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
         'keeping one spelling in record-keys.ts protects is the reason it is not ' +
         're-spelled here.) See go-to-k/cdkd#3496',
     ],
+    ['src/deployment/secret-redaction/cross-stack.ts', 1, 'CROSS_STACK_KEY_SEPARATOR: see the maskedOutputKey row above'],
+    ['src/deployment/secret-redaction/positions.ts', 1, 'UNKNOWN_PART_PLACEHOLDER (a sentinel): see the maskedOutputKey row above'],
     [
       'src/provisioning/providers/efs-provider.ts',
       1,

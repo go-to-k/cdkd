@@ -164,7 +164,7 @@ about: two names over one implementation cannot drift, two implementations can.
 
 ## What was examined and deliberately NOT changed
 
-`crossStackSourceKey` in `src/deployment/secret-redaction.ts` joins with a
+`crossStackSourceKey` in `src/deployment/secret-redaction/cross-stack.ts` joins with a
 separator over attacker-influenced strings and is the same SHAPE. It is left
 alone because its contract differs: it already states that the key is **not
 unique per producer**, and safety there comes from SCOPE (a `WeakMap` keyed by
