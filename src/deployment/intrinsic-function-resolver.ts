@@ -1,4 +1,4 @@
-import { CloudFormationClient, type Export as CfnExport } from '@aws-sdk/client-cloudformation';
+import type { CloudFormationClient, Export as CfnExport } from '@aws-sdk/client-cloudformation';
 import { DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 import type { ServiceDiscoveryClient } from '@aws-sdk/client-servicediscovery';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
