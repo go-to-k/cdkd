@@ -99,6 +99,7 @@ import type {
   IndeterminateGuard,
 } from '../types/resource.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
+import { ambientRegion } from '../utils/stack-aws-scope.js';
 
 /**
  * AWS Cloud Control API Provider
@@ -887,6 +888,17 @@ export class CloudControlProvider implements ResourceProvider {
     { region: string; provider: ResourceProvider }
   >();
 
+  /**
+   * The SDK `ASGProvider` a protected Cloud Control-routed group's delete is
+   * delegated to (issue #798), one per {@link ambientRegion} -- the region the
+   * delegate binds its clients to at construction, so a call in another region
+   * still gets a delegate of its own, as building one per call did. Kept across
+   * calls for the reason {@link sdkDeleteDelegates} is (issue #4400): its group
+   * and instance `--remove-protection` flip registries latch across a
+   * re-entered delete, which a fresh delegate per call would forget.
+   */
+  private readonly asgDeleteDelegates = new Map<string | undefined, ResourceProvider>();
+
   constructor() {
     const awsClients = getAwsClients();
     this.cloudControlClient = awsClients.cloudControl;
@@ -1520,7 +1532,15 @@ export class CloudControlProvider implements ResourceProvider {
       // interface's `Promise<void | ResourceDeleteResult>` that keeps this
       // forwarding correct if `ASGProvider.delete` widens its own concrete
       // return type later, so no edit is needed here when it does.
-      const asgProvider: ResourceProvider = new ASGProvider();
+      //
+      // Looked up AFTER the import's `await`, so two concurrent deletes in one
+      // region cannot each build a delegate and leave one's flips behind.
+      const delegateRegion = ambientRegion();
+      let asgProvider = this.asgDeleteDelegates.get(delegateRegion);
+      if (asgProvider === undefined) {
+        asgProvider = new ASGProvider();
+        this.asgDeleteDelegates.set(delegateRegion, asgProvider);
+      }
       // Issue #2301 item 3: the pre-flight ran HERE, before the delegation, so
       // its verdict is this provider's to report — the delegate never saw it
       // and cannot. Merged into whichever outcome the delegate returned rather

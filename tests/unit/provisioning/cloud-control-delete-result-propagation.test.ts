@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
  * Issue #1778 class 1: `CloudControlProvider` runs ANOTHER provider's delete in
  * two places and used to discard the `ResourceDeleteResult` at both.
  *
- * 1. The `--remove-protection` ASG DELEGATION (`new ASGProvider().delete(...)`)
+ * 1. The `--remove-protection` ASG DELEGATION (`ASGProvider.delete(...)`)
  *    — a skip inside the delegate surfaced to the destroy runner as a plain
  *    successful delete, the exact mis-report issue #1752 exists to prevent, one
  *    level up. The contract chosen is PROPAGATE (matching
