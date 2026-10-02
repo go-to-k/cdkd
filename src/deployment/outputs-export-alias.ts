@@ -105,14 +105,14 @@
  *   flipping deploy's verdict; a key stored by a pre-#1919 binary, which
  *   records no verdict).
  *
- * The message builders live here for the reason
- * `src/provisioning/nested-stack-messages.ts` gives: a test that pins behavior
- * on a warning must not pin it on a hand-copied string, or a reword silently
- * makes the test vacuous.
+ * The message builders live in this family (`outputs-export-alias/warnings.ts`)
+ * for the reason `src/provisioning/nested-stack-messages.ts` gives: a test that
+ * pins behavior on a warning must not pin it on a hand-copied string, or a
+ * reword silently makes the test vacuous.
  *
- * Unlike that module this one is NOT import-free — it takes `secret-redaction`,
- * which is itself a documented no-import leaf, so no cycle is reachable through
- * it.
+ * Unlike that module this family is NOT import-free — `secret-scan.ts` and
+ * `warnings.ts` take `secret-redaction`, which is itself a documented leaf, so
+ * no cycle is reachable through it.
  *
  * KNOWN RESIDUALS of the secret-bearing-name refusal, all of the same shape —
  * it can only see what the RESOLVER recorded — and all inherited rather than

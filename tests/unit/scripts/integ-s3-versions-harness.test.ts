@@ -2295,7 +2295,7 @@ const FALSIFIED_CLAIMS: readonly {
     // in the pattern.
     //
     // `case` is excluded from the noun list: `src/deployment/recreate-targets
-    // .ts:1057`'s "general soft-fail covers the same case." is an unrelated
+    // /probe.ts`'s "general soft-fail covers the same case." is an unrelated
     // TRUE sentence, and the only hit the wider list took across the scanned
     // corpus. Measured at this commit: 0 non-fence hits, while the pattern
     // still matches both shipped spellings, the reflow above, and a reworded

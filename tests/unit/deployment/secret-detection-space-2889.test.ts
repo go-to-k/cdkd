@@ -31,7 +31,7 @@ const EXPR = '{{resolve:secretsmanager:my-secret:SecretString:password::}}';
 
 const MN = /\p{Mn}/u;
 const ACUTE = String.fromCharCode(0x0301);
-/** The printed-space class, copied from `outputs-export-alias.ts` for the transcription below. */
+/** The printed-space class, copied from `outputs-export-alias/secret-scan.ts` for the transcription below. */
 const PRINTED_CLASS = /[\p{Cc}\p{Cf}\p{Me}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
 /**

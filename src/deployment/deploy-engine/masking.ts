@@ -797,7 +797,7 @@ export function maskedRecordRemedyFor(
   // `src/cli/commands/retire-cfn-stack.ts`, and a CLI -> deployment import
   // edge for one string literal is the wrong trade.
   // Several modules keep their own copy for that same reason; no count is
-  // given, following `recreate-targets.ts`'s own note that an unfenced number
+  // given, following `recreate-targets/validate.ts`'s own note that an unfenced number
   // in a comment is one that goes stale. Theirs sit at module scope, this one
   // is function-local because this is its only reader.
   const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';

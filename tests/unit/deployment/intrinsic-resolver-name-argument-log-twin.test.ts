@@ -2666,7 +2666,7 @@ describe('issue #3234: the Fn::GetStackOutput state read', () => {
     // override `src/utils/display-safe.ts` names as a rendering hazard in its
     // own docstring. The predicate uses the Unicode classes the repo already
     // spells for this question: `src/utils/display-safe.ts:33-35` states them
-    // in prose and `src/deployment/outputs-export-alias.ts:313`
+    // in prose and `src/deployment/outputs-export-alias/secret-scan.ts`
     // (`SECRET_SCAN_INVISIBLES`) is the live regex, which carries one MORE
     // (`\p{Me}`) and the `g` this use has no need of. Five rather than six is
     // deliberate and inert: `\p{Me}` adds 13 code points, all at or above
