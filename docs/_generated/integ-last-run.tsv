@@ -39,7 +39,7 @@ cc-final-snapshot-handlers	2026-09-30T17:44:01Z	PASS	1223	verify.sh	PR #4234 (#4
 cc-getatt-readback	2026-10-02T09:06:41Z	PASS	96	verify.sh	rc ok, orph clean (#4416 r2)
 cc-protection-flip	2026-10-01T20:42:06Z	PASS	531	verify.sh	rc ok, orph clean (#4374)
 cc-protection-flip-eks	2026-10-01T21:17:00Z	PASS	2625	verify.sh	rc ok, orph clean (#4374)
-cc-to-sdk-reroute	2026-10-02T05:05:32Z	PASS	230	verify.sh	rc ok, orph clean; #2651 phase 5c premise + recreate
+cc-to-sdk-reroute	2026-10-02T13:30:55Z	PASS	235	verify.sh	rc ok, orph clean; #4383 regression
 cc-write-only-create-only	2026-10-02T09:06:41Z	PASS	150	verify.sh	rc ok, orph clean (#4416 r2)
 ci-cd	2026-09-27T14:43:09Z	PASS	70	verify.sh	rc ok, orph clean (#3866)
 cloudfront-function-url	2026-10-01T10:13:53Z	PASS	261	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 7 deleted 0 errors, orph clean
@@ -269,7 +269,8 @@ rds-dbinstance-backfill	2026-09-30T17:44:01Z	PASS	777	verify.sh	PR #4234 (#4111 
 rds-full-stack	2026-10-02T08:38:07Z	PASS	1163	verify.sh	#1160 PR #4401; rc ok, orph clean
 recreate-mixed-direction	2026-09-25T09:51:57Z	PASS	105	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 recreate-nested-logical-id-collision	2026-09-24T18:20:06Z	PASS	120	verify.sh	rc ok, orph clean; PR #3668 head
-recreate-via-cc-api	2026-10-02T09:33:03Z	PASS	106	verify.sh	rc ok, orph clean (#4414)
+recreate-target-readers	2026-10-02T13:30:55Z	PASS	110	verify.sh	rc ok, orph clean; #4383 first run
+recreate-via-cc-api	2026-10-02T13:30:55Z	PASS	130	verify.sh	rc ok, orph clean; #4383 regression
 recreate-via-sdk-provider	2026-10-02T09:33:03Z	PASS	100	verify.sh	rc ok, orph clean (#4414)
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
