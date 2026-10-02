@@ -71,6 +71,7 @@ import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
+import { unchangedBehindSecretReference } from './secret-reference-immutable.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { getTopLevelReadOnlyProperties } from './read-only-properties.js';
 import { getPrimaryIdentifierFields, toCloudControlIdentifier } from './cc-import-identifier.js';
@@ -1189,6 +1190,8 @@ export class CloudControlProvider implements ResourceProvider {
 
     try {
       // Strip null/undefined values and stringify JSON properties before generating patch
+      // `stripNullValues` builds a fresh object, so the #4275 loop below may
+      // rewrite keys of it without touching the caller's bag.
       const cleanPreviousProperties = stringifyJsonProperties(
         resourceType,
         stripNullValues(previousProperties) as Record<string, unknown>
@@ -1197,6 +1200,31 @@ export class CloudControlProvider implements ResourceProvider {
         resourceType,
         stripNullValues(properties) as Record<string, unknown>
       );
+
+      // go-to-k/cdkd#4275: state keeps a secret-derived leaf as its
+      // `{{resolve:...}}` expression while `properties` holds the resolved
+      // value, so an unchanged reference differs on every update. On a key
+      // the engine replaces on any change (a create-only path), the engine
+      // already decided this is no change, and an op there asks Cloud Control
+      // to update what it cannot (after a rotation, to a value the resource
+      // does not have): take the desired value as the previous one.
+      for (const key of Object.keys(cleanPreviousProperties)) {
+        if (!Object.prototype.hasOwnProperty.call(cleanProperties, key)) continue;
+        const previous = cleanPreviousProperties[key];
+        const desired = cleanProperties[key];
+        if (previous === desired) continue;
+        if (
+          await unchangedBehindSecretReference({
+            resourceType,
+            key,
+            desired,
+            previous,
+            maskSecrets: context?.maskSecrets,
+          })
+        ) {
+          cleanPreviousProperties[key] = desired;
+        }
+      }
 
       // Generate JSON Patch document
       let patch = this.patchGenerator.generatePatch(cleanPreviousProperties, cleanProperties);
@@ -1223,6 +1251,12 @@ export class CloudControlProvider implements ResourceProvider {
       // createOnlyProperties whose read-back form differs from the stored
       // form. The DescribeType lookup is cached per type and degrades to the
       // minimal patch (with a warning) when the API is unavailable.
+      //
+      // A key both create-only and write-only is re-added here even when the
+      // #4275 loop above matched it: the read handler cannot return it, so it
+      // must be sent. The trade-off (pre-existing #809 behavior, not changed by
+      // #4275): after a secret rotation under an unchanged reference, that op
+      // carries a value the resource does not have.
       const writeOnlyProperties = await getTopLevelWriteOnlyProperties(resourceType);
       if (writeOnlyProperties.size > 0) {
         const previousWithoutWriteOnly = { ...cleanPreviousProperties };

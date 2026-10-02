@@ -5191,6 +5191,7 @@
         "retain-orphan-redeploy",
         "route53",
         "scheduled-task",
+        "secret-derived-immutable-names",
         "stepfunctions-logging",
         "tags-propagation",
         "type-change-replacement"
@@ -5272,6 +5273,10 @@
         ],
         "scheduled-task": [
           "l2"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
+          "literal"
         ],
         "stepfunctions-logging": [
           "l2"

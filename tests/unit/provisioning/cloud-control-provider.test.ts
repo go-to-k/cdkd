@@ -106,6 +106,7 @@ import {
 } from '../../../src/provisioning/cloud-control-provider.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 import { clearReadOnlyPropertiesCache } from '../../../src/provisioning/read-only-properties.js';
+import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
 
 describe('CloudControlProvider delete region verification', () => {
@@ -1978,5 +1979,142 @@ describe('CloudControlProvider - malformed model log hygiene (issue #1908)', () 
     const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).not.toContain(SECRET);
     expect(warned).toContain('no readable key names');
+  });
+});
+
+describe('CloudControlProvider update: a recorded secret reference on a create-only path (go-to-k/cdkd#4275)', () => {
+  // State keeps a secret-derived leaf as its `{{resolve:...}}` expression,
+  // while `update()` receives the RESOLVED plaintext as its desired side, so
+  // the two sides of an unchanged reference never compare equal. On a
+  // create-only path that put an op in the patch on every in-place update,
+  // asking Cloud Control to update a create-only property.
+  let provider: CloudControlProvider;
+
+  const TYPE = 'AWS::Logs::MetricFilter';
+  const SCHEMA = JSON.stringify({
+    createOnlyProperties: ['/properties/FilterName', '/properties/LogGroupName'],
+  });
+  const REF = '{{resolve:secretsmanager:cdkd-sdin:SecretString:filter::}}';
+  const NAME = 'sdin-filter-x7q';
+  const TRANSFORMS = [{ MetricName: 'm', MetricNamespace: 'ns', MetricValue: '1' }];
+  const masker = (text: string): string => text.split(NAME).join('***');
+
+  function wireUpdateSuccess(): void {
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'UpdateResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-update' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({ ProgressEvent: { OperationStatus: 'SUCCESS', Identifier: 'mf' } });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  function updateCalls(): Array<Array<{ op: string; path: string; value?: unknown }>> {
+    return mockCloudControlSend.mock.calls
+      .filter((c) => c[0]?.constructor?.name === 'UpdateResourceCommand')
+      .map(
+        (c) =>
+          JSON.parse((c[0] as { input: { PatchDocument: string } }).input.PatchDocument) as Array<{
+            op: string;
+            path: string;
+            value?: unknown;
+          }>
+      );
+  }
+
+  const recorded = (filterName: unknown, pattern: string): Record<string, unknown> => ({
+    FilterName: filterName,
+    LogGroupName: 'lg',
+    FilterPattern: pattern,
+    MetricTransformations: TRANSFORMS,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearWriteOnlyPropertiesCache();
+    clearCreateOnlyPropertiesCache();
+    mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
+    mockCloudFormationSend.mockResolvedValue({ Schema: SCHEMA });
+    wireUpdateSuccess();
+    provider = new CloudControlProvider();
+  });
+
+  it('leaves an unchanged secret-derived create-only name out of the patch', async () => {
+    const previous = recorded(REF, 'a');
+    await provider.update('Filter', 'mf', TYPE, recorded(NAME, 'b'), previous, {
+      maskSecrets: masker,
+    });
+
+    expect(updateCalls()).toEqual([[{ op: 'replace', path: '/FilterPattern', value: 'b' }]]);
+    // The substitution works on a copy: the caller's recorded bag is untouched.
+    expect(previous.FilterName).toBe(REF);
+  });
+
+  it('still re-adds a key that is both create-only and write-only (issue #809)', async () => {
+    // Pre-existing #809 behavior, not changed by #4275: the read handler cannot
+    // return a write-only key, so it is sent even when only its secret
+    // reference differs.
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: ['/properties/FilterName', '/properties/LogGroupName'],
+        writeOnlyProperties: ['/properties/FilterName'],
+      }),
+    });
+
+    await provider.update('Filter', 'mf', TYPE, recorded(NAME, 'b'), recorded(REF, 'a'), {
+      maskSecrets: masker,
+    });
+
+    const patch = updateCalls()[0];
+    expect(patch).toContainEqual({ op: 'replace', path: '/FilterPattern', value: 'b' });
+    expect(patch).toContainEqual({ op: 'add', path: '/FilterName', value: NAME });
+    expect(patch).toHaveLength(2);
+  });
+
+  it('sends nothing when the secret-derived create-only name is the only difference', async () => {
+    const result = await provider.update(
+      'Filter',
+      'mf',
+      TYPE,
+      recorded(NAME, 'a'),
+      recorded(REF, 'a'),
+      { maskSecrets: masker }
+    );
+
+    expect(updateCalls()).toEqual([]);
+    expect(result).toEqual({ physicalId: 'mf', wasReplaced: false });
+  });
+
+  it('keeps the op when the masker does not recognise the desired value', async () => {
+    // A literal now stands where the record holds a reference: a template
+    // change, not a resolved reference, so the patch carries it and Cloud
+    // Control decides.
+    await provider.update('Filter', 'mf', TYPE, recorded('literal-name', 'b'), recorded(REF, 'a'), {
+      maskSecrets: masker,
+    });
+
+    expect(updateCalls()[0]).toContainEqual({
+      op: 'replace',
+      path: '/FilterName',
+      value: 'literal-name',
+    });
+  });
+
+  it('keeps the op when the caller supplied no masker', async () => {
+    await provider.update('Filter', 'mf', TYPE, recorded(NAME, 'b'), recorded(REF, 'a'));
+
+    expect(updateCalls()[0]).toContainEqual({ op: 'replace', path: '/FilterName', value: NAME });
+  });
+
+  it('still sends a secret-derived value on a path that is not create-only', async () => {
+    // Only create-only keys are exempted: a mutable key is re-sent as before.
+    await provider.update('Filter', 'mf', TYPE, recorded('n', NAME), recorded('n', REF), {
+      maskSecrets: masker,
+    });
+
+    expect(updateCalls()).toEqual([[{ op: 'replace', path: '/FilterPattern', value: NAME }]]);
   });
 });
