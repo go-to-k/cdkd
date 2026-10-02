@@ -125,16 +125,18 @@ export function renderNoStackMatch(
 
 /**
  * The refusal `--all` raises when a CDK Stage failed to load, or `undefined`
- * when none did — shared by `deploy`, `destroy`, `diff` and `publish-assets`
+ * when none did — shared by `deploy`, `destroy`, `diff`, `publish-assets` and
+ * `scrub`
  * ([#3507](https://github.com/go-to-k/cdkd/issues/3507)).
  *
  * Reading a Stage stays tolerant so a run targeting OTHER stacks is not
  * aborted ([#3482](https://github.com/go-to-k/cdkd/issues/3482)). `--all` is
  * not such a run: it targets every stack in the app, the failed Stage's
  * included, so proceeding would act on a silently smaller set and exit 0 —
- * a deploy, diff or publish reporting success over stacks it never examined,
- * or a destroy leaving the Stage's stacks running. Naming the surviving stacks
- * (or a pattern) is the way through, because that selection is the user's.
+ * a deploy, diff, publish or scrub reporting success over stacks it never
+ * examined, or a destroy leaving the Stage's stacks running. Naming the
+ * surviving stacks (or a pattern) is the way through, because that selection is
+ * the user's.
  *
  * `available` is non-empty at every call site: a zero-stack app is refused
  * earlier by each command with its own message.

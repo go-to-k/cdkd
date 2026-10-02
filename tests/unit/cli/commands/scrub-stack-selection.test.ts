@@ -145,17 +145,97 @@ describe('cdkd scrub: empty selection names a Stage that failed to load (go-to-k
     expect(expandMacros.calls).toEqual([]);
   });
 
+  it('refuses --all over a zero-stack app as a refusal (exit 2) when a Stage failed', async () => {
+    // Every stack sat under the failed Stage, so `--all` would examine none of
+    // them: exit 2 ("declined to look"), not 1, which `--fail` reserves for
+    // "plaintext found". A pattern or no argument stays a plain selection error.
+    synthResult.failedStages = FAILED;
+
+    const caught = (stacks: string[], overrides: Partial<ScrubOptions>) =>
+      scrubCommand(stacks, options(overrides)).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    expect(await caught([], { all: true })).toMatchObject({
+      code: 'SCRUB_ALL_PARTIAL_APP',
+      exitCode: 2,
+      message: `No stacks found in assembly. ${NOTE}`,
+    });
+    expect(await caught([], {})).not.toHaveProperty('exitCode');
+    expect(await caught(['MyStage/MyStack'], {})).not.toHaveProperty('exitCode');
+  });
+
   it('refuses a zero-stack app without a Stage note when no Stage failed', async () => {
     expect(await scrubError([])).toBe('No stacks found in assembly');
     expect(await scrubError([], { all: true })).toBe('No stacks found in assembly');
+    // Nothing failed to load, so nothing went unexamined: not the refusal.
+    const err = await scrubCommand([], options({ all: true })).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).not.toHaveProperty('exitCode');
   });
 
-  it('control: a pattern that matches proceeds past selection', async () => {
+  it('control: a pattern that matches proceeds past selection, even beside a failed Stage', async () => {
     synthResult.stacks = [stack('Other'), stack('MyStage-Api', 'MyStage/Api')];
     synthResult.failedStages = FAILED;
 
     expect(await scrubError(['MyStage/Api'])).toBe(REACHED_EXPANSION);
+    expect(expandMacros.calls).toEqual([['MyStage-Api']]);
+  });
+});
+
+describe('cdkd scrub --all refuses a partial app when a Stage failed to load (go-to-k/cdkd#3507)', () => {
+  beforeEach(() => {
+    synthResult.stacks = [];
+    synthResult.failedStages = [];
+    expandMacros.calls = [];
+  });
+
+  it('refuses --all with surviving stacks, naming the survivors and the Stage', async () => {
+    // Before the refusal, --all scrubbed `Other` and `MyStage-Api` and reported
+    // the state clean, while the failed Stage's stacks were never examined.
+    synthResult.stacks = [stack('Other'), stack('MyStage-Api', 'MyStage/Api')];
+    synthResult.failedStages = FAILED;
+
+    const err = await scrubCommand([], options({ all: true })).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    // Exit 2, scrub's "declined to look": exit 1 is `--fail`'s "plaintext
+    // found", and a CI gate reading the code alone must not take this for a leak.
+    expect(err).toMatchObject({ code: 'SCRUB_ALL_PARTIAL_APP', exitCode: 2 });
+    const message = (err as Error).message;
+
+    expect(message).toBe(
+      '--all would scrub only part of this app; refusing. ' +
+        `Synthesized: Other, MyStage-Api (MyStage/Api). ${NOTE}. ` +
+        'Fix each Stage that failed to load so it synthesizes, or name the stacks to scrub explicitly.'
+    );
+    expect(expandMacros.calls).toEqual([]);
+  });
+
+  it('refuses --all even when positional patterns are also given', async () => {
+    // `--all` wins over patterns in the branch chain, so it must be refused
+    // there rather than falling through to the pattern arm.
+    synthResult.stacks = [stack('Other')];
+    synthResult.failedStages = FAILED;
+
+    const err = await scrubCommand(['Other'], options({ all: true })).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+
+    expect(err).toMatchObject({ code: 'SCRUB_ALL_PARTIAL_APP', exitCode: 2 });
+    expect((err as Error).message).toContain('--all would scrub only part of this app; refusing.');
+    expect(expandMacros.calls).toEqual([]);
+  });
+
+  it('still selects every stack with --all when every Stage loaded', async () => {
+    synthResult.stacks = [stack('Other'), stack('MyStage-Api', 'MyStage/Api')];
+
     expect(await scrubError([], { all: true })).toBe(REACHED_EXPANSION);
-    expect(expandMacros.calls).toEqual([['MyStage-Api'], ['Other', 'MyStage-Api']]);
+    expect(expandMacros.calls).toEqual([['Other', 'MyStage-Api']]);
   });
 });
