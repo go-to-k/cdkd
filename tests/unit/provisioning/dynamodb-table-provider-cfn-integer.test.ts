@@ -294,8 +294,13 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
   });
 
   describe('PointInTimeRecoverySpecification.RecoveryPeriodInDays', () => {
-    // The fifth site, found by the parent review round on PR #3148. It carries
-    // no `?? default`, so the announced arm is the DROP an absent member takes.
+    // The fifth site, found by the parent review round on PR #3148. A spelling
+    // CloudFormation rejects is REFUSED on the template path before any call
+    // (issue #3255): the old drop-and-announce let `UpdateContinuousBackups`
+    // SUCCEED at DynamoDB's default period while state recorded the declared
+    // value, so drift reported it forever. A STATE-borne bag keeps the drop.
+    //
+    // `sent: undefined` = refused on the template path, dropped on a replay.
     const rows: ReadonlyArray<{ value: unknown; sent: number | undefined; before: string }> = [
       { value: 7, sent: 7, before: '7' },
       { value: '7', sent: 7, before: '7' },
@@ -304,46 +309,215 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
       // narrowed to `/^\d+$/` here would red nothing.
       { value: '+8', sent: 8, before: '8' },
       { value: '010', sent: 10, before: '10' },
+      // The API's documented range, both ends inside and out.
+      { value: 1, sent: 1, before: '1' },
+      { value: 35, sent: 35, before: '35' },
+      { value: 0, sent: undefined, before: '0' },
+      { value: 36, sent: undefined, before: '36' },
       { value: ' 7 ', sent: undefined, before: '7' },
       { value: '0x9', sent: undefined, before: '9' },
       { value: '1e1', sent: undefined, before: '10' },
       { value: 'abc', sent: undefined, before: 'NaN' },
+      { value: null, sent: undefined, before: 'NaN' },
       { value: { Ref: 'Unset' }, sent: undefined, before: 'NaN' },
     ];
 
+    it('the matrix keeps rows on both sides of the verdict', () => {
+      // A floor: a matrix that lost its refused rows would leave every case
+      // below green and inert.
+      expect(rows.filter((r) => r.sent === undefined).length).toBeGreaterThanOrEqual(8);
+      expect(rows.filter((r) => r.sent !== undefined).length).toBeGreaterThanOrEqual(6);
+    });
+
+    const pitr = (value: unknown) => ({
+      PointInTimeRecoveryEnabled: true,
+      RecoveryPeriodInDays: value,
+    });
+
+    const createWith = (value: unknown, replayingState?: boolean) =>
+      provider.create(
+        'L',
+        RESOURCE_TYPE,
+        {
+          TableName: TABLE_NAME,
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+          BillingMode: 'PAY_PER_REQUEST',
+          PointInTimeRecoverySpecification: pitr(value),
+        },
+        replayingState === undefined ? undefined : { replayingState }
+      );
+
     for (const row of rows) {
-      it(`create: ${label(row.value)} -> ${String(row.sent)} (was: ${row.before})`, async () => {
+      it(`create: ${label(row.value)} -> ${row.sent === undefined ? 'REFUSED' : String(row.sent)} (was: ${row.before})`, async () => {
         primeGeneric();
-        await provider.create('L', RESOURCE_TYPE, {
+        if (row.sent === undefined) {
+          await expect(createWith(row.value)).rejects.toThrow(
+            /PointInTimeRecoverySpecification\.RecoveryPeriodInDays must be an integer between 1 and 35 .*Fix the template value/
+          );
+          // Refused BEFORE any call: no table is created only to be deleted.
+          expect(mockSend).not.toHaveBeenCalled();
+          return;
+        }
+        await createWith(row.value);
+        const backups = findCalls(UpdateContinuousBackupsCommand)[0];
+        expect(backups?.input.PointInTimeRecoverySpecification).toEqual({
+          PointInTimeRecoveryEnabled: true,
+          RecoveryPeriodInDays: row.sent,
+        });
+        expect(warnings()).not.toContain('RecoveryPeriodInDays');
+      });
+
+      it(`update: ${label(row.value)} -> ${row.sent === undefined ? 'REFUSED' : String(row.sent)}`, async () => {
+        primeGeneric({ billingMode: 'PAY_PER_REQUEST' });
+        const run = provider.update(
+          'L',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          {
+            TableName: TABLE_NAME,
+            BillingMode: 'PAY_PER_REQUEST',
+            PointInTimeRecoverySpecification: pitr(row.value),
+          },
+          { TableName: TABLE_NAME, BillingMode: 'PAY_PER_REQUEST' }
+        );
+        if (row.sent === undefined) {
+          await expect(run).rejects.toThrow(
+            /AWS::DynamoDB::Table L: .*RecoveryPeriodInDays must be an integer between 1 and 35 .*Nothing was applied to the table; fix the template value/
+          );
+          expect(mockSend).not.toHaveBeenCalled();
+          return;
+        }
+        await run;
+        const backups = findCalls(UpdateContinuousBackupsCommand)[0];
+        expect(backups?.input.PointInTimeRecoverySpecification).toEqual({
+          PointInTimeRecoveryEnabled: true,
+          RecoveryPeriodInDays: row.sent,
+        });
+      });
+    }
+
+    it('refuses a non-object block on both paths, which the applier read as "disabled"', async () => {
+      for (const block of ['true', [], 7]) {
+        mockSend.mockReset();
+        primeGeneric();
+        await expect(
+          provider.create('L', RESOURCE_TYPE, {
+            TableName: TABLE_NAME,
+            KeySchema: KEY_SCHEMA,
+            AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+            BillingMode: 'PAY_PER_REQUEST',
+            PointInTimeRecoverySpecification: block,
+          })
+        ).rejects.toThrow(/PointInTimeRecoverySpecification must be an object/);
+        expect(mockSend).not.toHaveBeenCalled();
+
+        primeGeneric({ billingMode: 'PAY_PER_REQUEST' });
+        await expect(
+          provider.update(
+            'L',
+            TABLE_NAME,
+            RESOURCE_TYPE,
+            {
+              TableName: TABLE_NAME,
+              BillingMode: 'PAY_PER_REQUEST',
+              PointInTimeRecoverySpecification: block,
+            },
+            { TableName: TABLE_NAME, BillingMode: 'PAY_PER_REQUEST' }
+          )
+        ).rejects.toThrow(/PointInTimeRecoverySpecification must be an object/);
+        expect(mockSend).not.toHaveBeenCalled();
+      }
+    });
+
+    it('names the shape, never the value: a resolved secret stays out of both refusals', async () => {
+      // The bag arrives RESOLVED, so the period can be `{{resolve:...}}`
+      // plaintext. Both throws must carry the shape only.
+      const SECRET = 's3cr3t-period-value';
+      primeGeneric();
+      const createError = await createWith(SECRET).catch((e: unknown) => e);
+      expect(String(createError)).toContain('RecoveryPeriodInDays must be an integer');
+      expect(String(createError)).not.toContain(SECRET);
+
+      primeGeneric({ billingMode: 'PAY_PER_REQUEST' });
+      const updateError = await provider
+        .update(
+          'L',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          {
+            TableName: TABLE_NAME,
+            BillingMode: 'PAY_PER_REQUEST',
+            PointInTimeRecoverySpecification: pitr(SECRET),
+          },
+          { TableName: TABLE_NAME, BillingMode: 'PAY_PER_REQUEST' }
+        )
+        .catch((e: unknown) => e);
+      expect(String(updateError)).toContain('RecoveryPeriodInDays must be an integer');
+      expect(String(updateError)).not.toContain(SECRET);
+    });
+
+    it('refuses even with PITR disabled: CloudFormation rejects the spelling either way', async () => {
+      primeGeneric();
+      await expect(
+        provider.create('L', RESOURCE_TYPE, {
           TableName: TABLE_NAME,
           KeySchema: KEY_SCHEMA,
           AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
           BillingMode: 'PAY_PER_REQUEST',
           PointInTimeRecoverySpecification: {
-            PointInTimeRecoveryEnabled: true,
-            RecoveryPeriodInDays: row.value,
+            PointInTimeRecoveryEnabled: false,
+            RecoveryPeriodInDays: ' 7 ',
           },
-        });
+        })
+      ).rejects.toThrow(/RecoveryPeriodInDays must be an integer/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('a create REPLAYING a state record keeps the warn-and-drop (no template-side remedy)', async () => {
+      primeGeneric();
+      await createWith('1e1', true);
+
+      const backups = findCalls(UpdateContinuousBackupsCommand)[0];
+      // PITR is still ENABLED — the drop is of the period, not of the feature.
+      expect(backups?.input.PointInTimeRecoverySpecification).toEqual({
+        PointInTimeRecoveryEnabled: true,
+      });
+      expect(warnings()).toContain('RecoveryPeriodInDays');
+      expect(warnings()).toContain('decimal digits');
+    });
+
+    for (const flag of ['replayingState', 'desiredFromAwsReadback'] as const) {
+      it(`an update under ${flag} keeps the warn-and-drop rather than refusing`, async () => {
+        // The rollback executor's revert arms and `drift --revert` hand a bag
+        // the user cannot edit from the template, so a refusal would leave
+        // the table un-rollbackable.
+        primeGeneric({ billingMode: 'PAY_PER_REQUEST' });
+        await provider.update(
+          'L',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          {
+            TableName: TABLE_NAME,
+            BillingMode: 'PAY_PER_REQUEST',
+            PointInTimeRecoverySpecification: pitr('1e1'),
+          },
+          { TableName: TABLE_NAME, BillingMode: 'PAY_PER_REQUEST' },
+          { [flag]: true }
+        );
 
         const backups = findCalls(UpdateContinuousBackupsCommand)[0];
-        // PITR is still ENABLED in every row — the drop is of the period, not
-        // of the feature, and a change that skipped the whole call would
-        // otherwise read as a pass.
-        expect(backups?.input.PointInTimeRecoverySpecification?.PointInTimeRecoveryEnabled).toBe(
-          true
-        );
-        expect(backups?.input.PointInTimeRecoverySpecification?.RecoveryPeriodInDays).toBe(
-          row.sent
-        );
-        expect(warnings().includes('RecoveryPeriodInDays')).toBe(row.sent === undefined);
+        expect(backups?.input.PointInTimeRecoverySpecification).toEqual({
+          PointInTimeRecoveryEnabled: true,
+        });
+        expect(warnings()).toContain('RecoveryPeriodInDays');
       });
     }
 
-    it('drops the period on the UPDATE path too, and warns rather than throwing', async () => {
-      // The update path is replay-reachable (the rollback executor's revert
-      // arms, `drift --revert`), so the answer here must be a warning: a
-      // refusal would leave the table un-rollbackable with no template-side
-      // remedy.
+    it('an UNCHANGED malformed block on the template path is not refused and sends nothing', async () => {
+      // The refusal takes the applier's own change gate: a record an older
+      // binary wrote is not a pending operation, and refusing it would wedge
+      // every later deploy of the stack on a value nothing sends.
       primeGeneric({ billingMode: 'PAY_PER_REQUEST' });
       await provider.update(
         'L',
@@ -352,19 +526,18 @@ describe('AWS::DynamoDB::Table Integer forwarders read CloudFormation grammar (#
         {
           TableName: TABLE_NAME,
           BillingMode: 'PAY_PER_REQUEST',
-          PointInTimeRecoverySpecification: {
-            PointInTimeRecoveryEnabled: true,
-            RecoveryPeriodInDays: '1e1',
-          },
+          PointInTimeRecoverySpecification: pitr(' 7 '),
         },
-        { TableName: TABLE_NAME, BillingMode: 'PAY_PER_REQUEST' }
+        {
+          TableName: TABLE_NAME,
+          BillingMode: 'PAY_PER_REQUEST',
+          PointInTimeRecoverySpecification: pitr(' 7 '),
+        }
       );
 
-      const backups = findCalls(UpdateContinuousBackupsCommand)[0];
-      expect(backups?.input.PointInTimeRecoverySpecification).toEqual({
-        PointInTimeRecoveryEnabled: true,
-      });
-      expect(warnings()).toContain('RecoveryPeriodInDays');
+      // The update RAN (a call went out) and still sent no backups call.
+      expect(findCalls(DescribeTableCommand).length).toBeGreaterThan(0);
+      expect(findCalls(UpdateContinuousBackupsCommand)).toHaveLength(0);
     });
   });
 

@@ -52,7 +52,12 @@ import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
-import { coerceCfnInteger, replayWarn, requireConfigString } from '../config-shape.js';
+import {
+  coerceCfnInteger,
+  configIntegerRefusal,
+  replayWarn,
+  requireConfigString,
+} from '../config-shape.js';
 import {
   WARM_THROUGHPUT_MEMBERS,
   coerceWarmThroughput as coerceWarmThroughputSpec,
@@ -199,6 +204,36 @@ export function mapSSESpecification(
 function readCapacityNumber(block: unknown, member: string): number | undefined {
   if (!isPlainCapacityBlock(block)) return undefined;
   return coerceCfnInteger(block[member]);
+}
+
+/**
+ * The template-path refusal for `PointInTimeRecoverySpecification` (issue
+ * [#3255](https://github.com/go-to-k/cdkd/issues/3255)), run by `create()` and
+ * `update()` before their first AWS call.
+ *
+ * A `RecoveryPeriodInDays` spelling CloudFormation rejects used to be DROPPED
+ * and announced, so `UpdateContinuousBackups` SUCCEEDED at DynamoDB's default
+ * period while the state record kept the declared value: `readCurrentState`
+ * reads the default back, and every drift run reported a difference that
+ * `drift --revert` re-sent forever. Refusing it instead keeps cdkd at
+ * CloudFormation parity — the AWS CDK CLI cannot deploy this template either —
+ * and leaves nothing recorded to drift against.
+ *
+ * The FIELD half is {@link coerceCfnInteger}, the function the applier reads
+ * the member with, so the two cannot disagree on a spelling. The range is the
+ * API's documented 1-35, which `UpdateContinuousBackups` rejects outside of:
+ * refused here, a create no longer makes the table only to delete it again.
+ * A non-object block is refused by the CONTAINER half — the applier read one
+ * as "PITR disabled". The message names shapes only, never the value.
+ */
+function pointInTimeRecoveryRefusal(spec: unknown): string | undefined {
+  return configIntegerRefusal(
+    spec,
+    'RecoveryPeriodInDays',
+    'AWS::DynamoDB::Table PointInTimeRecoverySpecification',
+    1,
+    35
+  );
 }
 
 /**
@@ -1716,6 +1751,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
         if (streamRefusal !== undefined) {
           throw new Error(`${streamRefusal}. Fix the template value`);
         }
+        // `PointInTimeRecoverySpecification.RecoveryPeriodInDays` (issue
+        // #3255), for the same reason and under the same replay stand-down:
+        // a replayed record keeps `applyPointInTimeRecovery`'s warn-and-drop.
+        const pitrRefusal = pointInTimeRecoveryRefusal(
+          properties['PointInTimeRecoverySpecification']
+        );
+        if (pitrRefusal !== undefined) {
+          throw new Error(`${pitrRefusal}. Fix the template value`);
+        }
       }
 
       const createParams: CreateTableCommandInput = {
@@ -2119,6 +2163,34 @@ export class DynamoDBTableProvider implements ResourceProvider {
             logicalId,
             physicalId,
             error instanceof Error ? error : undefined
+          );
+        }
+      }
+
+      // A `PointInTimeRecoverySpecification.RecoveryPeriodInDays` spelling
+      // CloudFormation rejects is REFUSED on the template path (issue #3255),
+      // here — before any call — rather than dropped by
+      // `applyPointInTimeRecovery`, whose call then SUCCEEDED at DynamoDB's
+      // default period while state recorded the declared one: permanent
+      // drift. Gated on the block having CHANGED, the applier's own gate, so
+      // an unchanged value (nothing is sent for it) is not refused; the two
+      // state-borne callers keep the applier's warn-and-drop.
+      if (
+        context?.replayingState !== true &&
+        context?.desiredFromAwsReadback !== true &&
+        JSON.stringify(properties['PointInTimeRecoverySpecification']) !==
+          JSON.stringify(previousProperties['PointInTimeRecoverySpecification'])
+      ) {
+        const pitrRefusal = pointInTimeRecoveryRefusal(
+          properties['PointInTimeRecoverySpecification']
+        );
+        if (pitrRefusal !== undefined) {
+          throw new ProvisioningError(
+            `AWS::DynamoDB::Table ${logicalId}: ${pitrRefusal}. Nothing was applied to the ` +
+              `table; fix the template value`,
+            resourceType,
+            logicalId,
+            physicalId
           );
         }
       }
@@ -3977,16 +4049,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // SDK serializes and AWS rejects with a message naming neither cdkd
         // nor the property.
         //
-        // The site carries no `?? default` arithmetic, so the announced arm
-        // is the one an ABSENT member already takes: the member is DROPPED
-        // and `UpdateContinuousBackups` goes out carrying only
+        // A template-borne value this rejects never gets here: `create()` and
+        // `update()` refuse it before their first call (issue #3255,
+        // `pointInTimeRecoveryRefusal`). What remains is a STATE-borne bag
+        // (the rollback executor's replay arms, `drift --revert`), where a
+        // refusal would leave the table un-rollbackable with no template-side
+        // remedy, so the member is DROPPED and announced instead —
+        // `UpdateContinuousBackups` goes out carrying only
         // `PointInTimeRecoveryEnabled`, i.e. PITR is enabled at DynamoDB's own
-        // default period. Warned rather than thrown because this method is
-        // reached from `update()` as well, where the desired bag can BE a cdkd
-        // state record (the rollback executor's revert arms,
-        // `drift --revert`) and a refusal would leave the table un-rollbackable
-        // with no template-side remedy — the repo's warn-never-throw rule for
-        // the UPDATE path.
+        // default period.
         const rawRecoveryPeriod = s['RecoveryPeriodInDays'];
         recoveryPeriodInDays = coerceCfnInteger(rawRecoveryPeriod);
         if (recoveryPeriodInDays === undefined) {
