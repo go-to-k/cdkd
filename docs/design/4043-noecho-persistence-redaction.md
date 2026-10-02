@@ -479,7 +479,7 @@ inherits it through `redactOutputs`.
 
 - **In process.** `rememberRecoverableMaskedOutputs` (`deploy-engine/masking.ts`)
   already remembers the plaintext for every `***` output of this run.
-  `reresolveCrossStackValue` (`intrinsic-function-resolver.ts:9163`, mask arm
+  `reresolveCrossStackValue` (`intrinsic-resolver/cross-stack.ts`, mask arm
   at `:9225`) recovers it for a consumer in the same `cdkd deploy`, and
   registers it fresh in the consumer's bag.
 - **Out of process.** A consumer deployed by an earlier or a separate run is
