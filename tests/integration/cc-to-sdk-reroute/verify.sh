@@ -14,7 +14,8 @@
 # Phases: deploy on the SDK route -> force the resource onto Cloud Control
 # (--recreate-via-cc-api) -> assert the plan ANNOUNCES the return -> redeploy
 # with a real property change -> assert the physical id is UNCHANGED and the
-# record flipped to 'sdk' -> assert --pin-cc-api declines the flip -> destroy.
+# record flipped to 'sdk' -> assert --pin-cc-api declines the flip -> recreate
+# on Cloud Control from an UNCHANGED template (issue #2651) -> destroy.
 
 set -euo pipefail
 
@@ -146,13 +147,9 @@ echo "==> Phase 2: force the resource onto Cloud Control (--recreate-via-cc-api)
 # NOT a binary swap against a released cdkd: seeding via the auto-route would
 # need a property that is still a silent drop in THAT release, which is a
 # moving target as issue 609's backfill lands. This shape needs one binary.
-# CDKD_TEST_PHASE=seed, not base: measured 2026-09-07, `--recreate-via-cc-api`
-# on an otherwise-unchanged template PRINTS its "will destroy + recreate"
-# warning and then does nothing -- the differ classifies the resource
-# NO_CHANGE, so the engine never provisions it and the flag no-ops -- issue
-# go-to-k/cdkd#2651, which this run confirmed live. Here it just means the
-# seeding phase must carry a real property change like every other routing
-# phase.
+# CDKD_TEST_PHASE=seed, not base: the seed carries its own DisplayName so the
+# check below can read the Cloud Control write back off AWS. The recreate of an
+# UNCHANGED template (go-to-k/cdkd#2651) is phase 5c's arm.
 env CDKD_TEST_PHASE=seed \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
     --recreate-via-cc-api "${LOGICAL_ID}" --yes
@@ -287,10 +284,62 @@ printf '%s' "${DRIFT_OUT}" | grep -q 'MaximumMessageSize' && {
 }
 echo "    OK: member removed, live value reset to 262144, no drift reported (drift rc=0)"
 
-echo "==> Phase 6: Destroy (now SDK-routed) + gone-probe"
+echo "==> Phase 5c: --recreate-via-cc-api on an UNCHANGED template recreates (issue #2651)"
+# The same template as phase 5b, so the differ calls the topic NO_CHANGE --
+# the shape that used to print the recreate plan, then "No changes detected",
+# and exit 0 with the record still on 'sdk'. Moving a resource between layers
+# is not a template edit, so this is the ordinary way the flag is used.
+# Two witnesses, because the record alone could be rewritten without AWS
+# being touched: the layer flips, AND the unmanaged subscription attached in
+# phase 2 dies with the old topic (it survived every in-place phase above).
+#
+# PREMISE: the diff really is empty. If this template diffed to an UPDATE, a
+# binary predating the fix would recreate the topic too and every assertion
+# below would pass on old code. `--fail` exits 1 on a change, 0 on none, and
+# anything else is a failed run that proves nothing either way.
+set +e
+PREMISE_OUT=$(env CDKD_TEST_PHASE=removed \
+  node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    --fail 2>&1)
+PREMISE_RC=$?
+set -e
+[ "${PREMISE_RC}" -eq 0 ] || {
+  printf '%s\n' "${PREMISE_OUT}" >&2
+  echo "FAIL: premise: cdkd diff --fail exited ${PREMISE_RC} on the phase 5c template (expected 0, no changes). 1 means the topic diffs to a change, so this phase would not witness go-to-k/cdkd#2651; anything else is a failed diff run." >&2
+  exit 1
+}
+echo "    OK: premise: the phase 5c template diffs to no changes"
+RECREATE_OUT=$(env CDKD_TEST_PHASE=removed \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    --recreate-via-cc-api "${LOGICAL_ID}" --yes 2>&1) || {
+  printf '%s\n' "${RECREATE_OUT}" >&2
+  echo "FAIL: the unchanged-template --recreate-via-cc-api deploy failed" >&2
+  exit 1
+}
+printf '%s\n' "${RECREATE_OUT}"
+P4=$(record '.physicalId')
+LAYER4=$(record '.provisionedBy')
+[ "${LAYER4}" = "cc-api" ] || { echo "FAIL: --recreate-via-cc-api on an unchanged template left provisionedBy=${LAYER4}, expected cc-api: the named target was ignored because its diff was NO_CHANGE (go-to-k/cdkd#2651)" >&2; exit 1; }
+[ "${P4}" = "${P3}" ] || { echo "FAIL: the recreate changed the ARN (${P3} -> ${P4}); the topic name is fixed, so something else moved" >&2; exit 1; }
+# Polled for up to 90 s: the subscription list of a topic recreated under the same
+# ARN is read through SNS's eventually consistent listing.
+for _ in $(seq 1 18); do
+  SUBS_RECREATED=$(aws sns list-subscriptions-by-topic --topic-arn "${P4}" --region "${REGION}" \
+    --query 'length(Subscriptions)' --output text 2>&1) || SUBS_RECREATED="probe failed: ${SUBS_RECREATED}"
+  [ "${SUBS_RECREATED}" = "0" ] && break
+  sleep 5
+done
+[ "${SUBS_RECREATED}" = "0" ] || { echo "FAIL: the unmanaged subscription survived (subscriptions=${SUBS_RECREATED}, expected 0), so the topic was not destroyed and recreated although the record says cc-api" >&2; exit 1; }
+printf '%s' "${RECREATE_OUT}" | grep -q 'No changes detected' && {
+  echo "FAIL: the deploy recreated the topic but still reported 'No changes detected'" >&2
+  exit 1
+}
+echo "    OK: recreated on Cloud Control from an unchanged template (subscription gone, record cc-api)"
+
+echo "==> Phase 6: Destroy (now Cloud Control-routed) + gone-probe"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_gone "SNS topic ${P3} survived destroy" \
-  aws sns get-topic-attributes --topic-arn "${P3}" --region "${REGION}"
+assert_gone "SNS topic ${P4} survived destroy" \
+  aws sns get-topic-attributes --topic-arn "${P4}" --region "${REGION}"
 echo "    OK: destroyed clean"
 
 echo "PASS: cc-to-sdk-reroute (physicalId parity observed on a live resource)"

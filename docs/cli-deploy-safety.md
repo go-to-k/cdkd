@@ -32,7 +32,7 @@ cdkd deploy MyStack --no-cfn-fallback        # cdkd-state-only cross-stack resol
 | `--recreate-via-sdk-provider <LogicalId>` | deploy | The reverse: destroy + recreate one resource via cdkd's SDK provider. |
 | `--pin-cc-api <LogicalId>` | deploy | Decline the automatic return to the SDK provider for one resource, keeping it on Cloud Control for this deploy. |
 | `--replace` | deploy | Replace (DELETE + CREATE) a resource whose in-place update AWS has no API for. |
-| `--force-stateful-recreation` | deploy | Bypass the [stateful-resource guard](#stateful-resource-guard) for every target in the run. |
+| `--force-stateful-recreation` | deploy | Bypass the [stateful-resource guard](#stateful-resource-guard) for every target in the run, nested stacks included. |
 | `--strict-getatt` | deploy | Fail on any `Fn::GetAtt` that falls back to a physical ID, and on any unresolvable Output. |
 | `--allow-unaddressed` | deploy | Exit 0 instead of 2 when the deploy left a resource alive that it no longer tracks. |
 | `--no-cfn-fallback` | deploy, diff | Do not fall back to CloudFormation when a cross-stack reference is missing from cdkd state. |
@@ -284,6 +284,13 @@ cdkd deploy MyStack \
   --force-stateful-recreation \
   --yes
 ```
+
+The template does not have to change. Moving a resource between provisioning
+layers is not a template edit, so a target is recreated even when its diff is
+otherwise empty, and the deploy counts it as an update. Both `--recreate-via-*`
+flags behave this way. A target this deploy deletes instead (for example, its
+`Condition` now evaluates false) is not recreated, and cdkd prints a warning
+naming it.
 
 ### When to use it
 
@@ -1618,6 +1625,30 @@ The flag is a boolean with **no per-resource granularity**. When set, EVERY
 named recreate or replacement target in the run bypasses the stateful guard.
 That is deliberate: you are opting into a footgun, and a per-resource form
 would imply a precision the flag does not have.
+
+**"The run" includes every nested stack the deploy reaches.** The flag names no
+resource, so unlike the `--recreate-via-*` targets (which apply only to the
+stack you deploy — see [Nested stacks](#nested-stacks)) it is passed unchanged
+to each nested child stack's deploy. Inside a child it does two things:
+
+- A child resource whose OWN template change forces a replacement is replaced
+  even when it is stateful, instead of being refused with
+  `STATEFUL_REPLACE_BLOCKED`. The same holds for a stateful child resource
+  whose in-place update AWS rejects and cdkd then replaces (the update-failure
+  fallback; see [The stateful guard on this path](#the-stateful-guard-on-this-path)).
+- The delete of the replaced resource empties it first: a non-empty S3 bucket
+  (general purpose or directory) has its objects deleted, and an ECR repository
+  is deleted with its images. Without the flag, cdkd refuses to delete either
+  while it holds data, as CloudFormation does, unless the resource opted in
+  itself (CDK's `autoDeleteObjects`, `emptyOnDelete` or `autoDeleteImages`).
+
+The recreate confirmation prompt lists only the `--recreate-via-*` targets of
+the stack you deploy, so it does not show these child resources. Before passing
+the flag to a stack with nested stacks, check each child's diff
+(`cdkd diff --recursive`) for a replacement of a stateful resource. The diff
+shows only the replacements the template drives. A replacement that follows
+a rejected in-place update is decided during the deploy and does not appear
+there.
 
 For a CI run on a stateful resource, the full opt-in is three flags:
 

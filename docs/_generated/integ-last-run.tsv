@@ -39,7 +39,7 @@ cc-final-snapshot-handlers	2026-09-30T17:44:01Z	PASS	1223	verify.sh	PR #4234 (#4
 cc-getatt-readback	2026-09-19T20:26:58Z	PASS	110	verify.sh	rc ok, orph clean; #1852 stale-attribute heal
 cc-protection-flip	2026-10-01T20:42:06Z	PASS	531	verify.sh	rc ok, orph clean (#4374)
 cc-protection-flip-eks	2026-10-01T21:17:00Z	PASS	2625	verify.sh	rc ok, orph clean (#4374)
-cc-to-sdk-reroute	2026-09-28T09:23:32Z	PASS	145	verify.sh	#3939 PR #3947 head d643c04f5, stdin /dev/null; cdkd diff rc 0 with summary (probe copy); rc ok, orph clean
+cc-to-sdk-reroute	2026-10-02T05:05:32Z	PASS	230	verify.sh	rc ok, orph clean; #2651 phase 5c premise + recreate
 ci-cd	2026-09-27T14:43:09Z	PASS	70	verify.sh	rc ok, orph clean (#3866)
 cloudfront-function-url	2026-10-01T10:13:53Z	PASS	261	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 7 deleted 0 errors, orph clean
 cloudtrail-trail	2026-09-28T07:22:06Z	PASS	196	verify.sh	#3885 log-group sweep; rc ok, orph clean, /aws/lambda/<stack>- groups 0 after run
