@@ -133,9 +133,8 @@ echo "==> Pre-run cleanup"
 cleanup
 
 # Every routing phase carries a real property delta (RuntimeManagementConfig
-# toggles): a deploy the differ classifies NO_CHANGE never reaches the
-# provider, so a recreate flag on an unchanged template does nothing
-# (go-to-k/cdkd#2651).
+# toggles), the AWS-side witness of each recreate. (Before go-to-k/cdkd#2651
+# was fixed it was also what made a recreate flag act at all.)
 lambda_layer() { # usage: lambda_layer "<state json>"
   printf '%s' "$1" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first // ""'
 }
@@ -167,7 +166,7 @@ CDKD_INTEG_PHASE=seed node "${LOCAL_DIST}" deploy "${STACK}" \
 STATE_1=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 PROVISIONED_1=$(lambda_layer "${STATE_1}")
 if [ "${PROVISIONED_1}" != "cc-api" ]; then
-  echo "FAIL: baseline Lambda has provisionedBy='${PROVISIONED_1}', expected 'cc-api'. The --recreate-via-cc-api seeding step did not seed, so every assertion below would be vacuous. Likely cause: the flag no-opped (the differ saw NO_CHANGE between the base and seed templates -- go-to-k/cdkd#2651 -- check that lib/recreate-stack.ts still toggles RuntimeManagementConfig on CDKD_INTEG_PHASE=seed), or --recreate-via-cc-api itself regressed (run the recreate-via-cc-api fixture). This baseline does NOT depend on any property being unhandled by the SDK provider." >&2
+  echo "FAIL: baseline Lambda has provisionedBy='${PROVISIONED_1}', expected 'cc-api'. The --recreate-via-cc-api seeding step did not seed, so every assertion below would be vacuous. Likely cause: --recreate-via-cc-api regressed, including a return of go-to-k/cdkd#2651 (run the recreate-via-cc-api and cc-to-sdk-reroute fixtures). This baseline does NOT depend on any property being unhandled by the SDK provider." >&2
   echo "${STATE_1}" | jq .
   exit 1
 fi

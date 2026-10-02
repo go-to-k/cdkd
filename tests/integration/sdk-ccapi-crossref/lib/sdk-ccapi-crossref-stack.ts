@@ -45,11 +45,11 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *     so its create resolves `Fn::GetAtt(CcLambda, 'Arn')` against the record
  *     the Cloud Control create just wrote.
  *
- * `RuntimeManagementConfig` toggles with the phase because routing is decided
- * while PROVISIONING: a deploy the differ classifies NO_CHANGE never reaches
- * the provider, so a recreate flag on an unchanged resource does nothing
- * (go-to-k/cdkd#2651). Both layers handle the property; it is the property
- * delta and an AWS-side witness, NOT a routing trigger.
+ * `RuntimeManagementConfig` toggles with the phase as the AWS-side witness of
+ * the recreate. It was also the property delta a recreate flag needed before
+ * go-to-k/cdkd#2651 was fixed, when a flagged resource whose diff was
+ * NO_CHANGE was never provisioned. Both layers handle the property; it is NOT
+ * a routing trigger.
  *
  * Cross-references (consumer -> producer):
  *   (A) SDK -> CC GetAtt: `ArchiveArnParam.Value = Fn::GetAtt(Archive, 'Arn')`.

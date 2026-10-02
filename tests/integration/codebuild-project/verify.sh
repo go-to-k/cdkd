@@ -221,9 +221,9 @@ PROJECT_CREATED_P1="$(project_field '.created')"
 # AWS::CodeBuild::Project has no Cloud Control handlers. `--recreate-via-cc-api`
 # deletes the resource through its SDK provider BEFORE asking Cloud Control to
 # create the replacement, so the refusal must come before any delete. This
-# redeploys the Phase 1 template unchanged, and a recreate target whose diff is
-# NO_CHANGE is ignored today (#2651), so the pre-#3887 binary exited 0 here:
-# the exit code and the refusal wording discriminate. The project is also
+# redeploys the Phase 1 template unchanged, and a recreate target whose diff was
+# NO_CHANGE was ignored until #2651 was fixed, so the pre-#3887 binary exited 0
+# here: the exit code and the refusal wording discriminate. The project is also
 # asserted untouched -- same ARN and same creation time, since the ARN alone is
 # derived from the fixed name and survives a same-name re-create.
 echo "==> Phase 1b: --recreate-via-cc-api on the project is refused, project intact (issue #3887)"
