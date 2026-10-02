@@ -30,11 +30,13 @@ const walk = (dir: string): string[] =>
     return statSync(p).isDirectory() ? walk(p) : p.endsWith('.ts') ? [p] : [];
   });
 
-const familyFiles = new Set(
-  FAMILIES.flatMap(({ host, dir }) => [
-    host,
-    ...readdirSync(join(REPO_ROOT, dir)).map((f) => `${dir}/${f}`),
-  ])
+/** Repo-relative file -> the index of the family it belongs to. */
+const familyOf = new Map<string, number>(
+  FAMILIES.flatMap(({ host, dir }, i) =>
+    [host, ...readdirSync(join(REPO_ROOT, dir)).map((f) => `${dir}/${f}`)].map(
+      (file) => [file, i] as const
+    )
+  )
 );
 
 const isInternal = (decl: ts.Declaration): boolean =>
@@ -44,9 +46,9 @@ const isInternal = (decl: ts.Declaration): boolean =>
 function outsideReaches(): { reaches: string[]; scanned: number } {
   // Every non-family file, not only the ones that NAME a host: a re-export
   // (`src/index.ts`) or an inferred type reaches a host with no path in sight.
-  const roots = walk(join(REPO_ROOT, 'src')).filter(
-    (abs) => !familyFiles.has(abs.slice(REPO_ROOT.length + 1))
-  );
+  // Every src file: a member of one family reaching another family's
+  // `@internal` member is as much an outside caller as any other module.
+  const roots = walk(join(REPO_ROOT, 'src'));
   const config = ts.parseJsonConfigFileContent(
     ts.readConfigFile(join(REPO_ROOT, 'tsconfig.json'), (p) => ts.sys.readFile(p)).config,
     ts.sys,
@@ -70,8 +72,9 @@ function outsideReaches(): { reaches: string[]; scanned: number } {
         }
       }
       if (decl !== undefined) {
-        const declFile = decl.getSourceFile().fileName.slice(REPO_ROOT.length + 1);
-        if (familyFiles.has(declFile) && isInternal(decl)) {
+        const declFamily = familyOf.get(decl.getSourceFile().fileName.slice(REPO_ROOT.length + 1));
+        const callerFamily = familyOf.get(abs.slice(REPO_ROOT.length + 1));
+        if (declFamily !== undefined && declFamily !== callerFamily && isInternal(decl)) {
           const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
           reaches.push(`${abs.slice(REPO_ROOT.length + 1)}:${line} ${node.getText(sf).slice(0, 80)}`);
         }
