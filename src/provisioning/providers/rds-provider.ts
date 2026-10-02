@@ -33,8 +33,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
-import { clearOnUpdateRemoval } from '../update-removal.js';
+import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -141,6 +142,27 @@ export class RDSProvider implements ResourceProvider {
    * `./deletion-protection-compensation.ts`).
    */
   private readonly protectionFlips = new ProtectionFlipRegistry();
+
+  /**
+   * Issue #1160: the CFn default a property REMOVED from the template is
+   * reset to — the Modify/Update API keeps an absent field's live value.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::RDS::DBCluster',
+      new Map<string, unknown>([
+        ['DeletionProtection', false],
+        ['EnableIAMDatabaseAuthentication', false],
+      ]),
+    ],
+    [
+      'AWS::RDS::DBInstance',
+      new Map<string, unknown>([
+        ['DeletionProtection', false],
+        ['EnableIAMDatabaseAuthentication', false],
+      ]),
+    ],
+  ]);
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -310,8 +332,16 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     switch (resourceType) {
       case 'AWS::RDS::DBSubnetGroup':
         return this.updateDBSubnetGroup(
@@ -790,7 +820,7 @@ export class RDSProvider implements ResourceProvider {
       // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
       // the template must be sent as its explicit CFn-default reset value
-      // via `clearOnUpdateRemoval` (see the helper's JSDoc). Deliberately
+      // via `removalDefaults` or a local `clearOnUpdateRemoval`. Deliberately
       // NOT reset here:
       //   * EngineVersion — removal would imply moving to the engine's
       //     default version, a risky (possibly major) version change cdkd
@@ -813,11 +843,7 @@ export class RDSProvider implements ResourceProvider {
           EngineVersion: properties['EngineVersion'] as string | undefined,
           // CFn default: deletion protection isn't enabled by default
           // (ModifyDBClusterMessage doc).
-          DeletionProtection: clearOnUpdateRemoval(
-            properties['DeletionProtection'] as boolean | undefined,
-            previousProperties['DeletionProtection'] as boolean | undefined,
-            false
-          ),
+          DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
           // CFn/API default for Aurora: 1 day (ModifyDBClusterMessage doc).
           BackupRetentionPeriod: clearOnUpdateRemoval(
             properties['BackupRetentionPeriod'] != null
@@ -857,11 +883,9 @@ export class RDSProvider implements ResourceProvider {
             0
           ),
           // CFn default: IAM database authentication isn't enabled.
-          EnableIAMDatabaseAuthentication: clearOnUpdateRemoval(
-            properties['EnableIAMDatabaseAuthentication'] as boolean | undefined,
-            previousProperties['EnableIAMDatabaseAuthentication'] as boolean | undefined,
-            false
-          ),
+          EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
+            | boolean
+            | undefined,
           ...(hasServerlessV2 && {
             ServerlessV2ScalingConfiguration: {
               MinCapacity: serverlessV2Config.MinCapacity,
@@ -1256,7 +1280,7 @@ export class RDSProvider implements ResourceProvider {
       // #1160 reset-on-removal — ModifyDBInstance has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
       // the template must be sent as its explicit CFn-default reset value
-      // via `clearOnUpdateRemoval` (see the helper's JSDoc). Deliberately
+      // via `removalDefaults` or a local `clearOnUpdateRemoval`. Deliberately
       // NOT reset here:
       //   * EngineVersion — removal would imply moving to the engine's
       //     default version, a risky (possibly major) version change cdkd
@@ -1290,11 +1314,7 @@ export class RDSProvider implements ResourceProvider {
           }),
           // CFn default: deletion protection isn't enabled by default
           // (ModifyDBInstanceMessage doc).
-          DeletionProtection: clearOnUpdateRemoval(
-            properties['DeletionProtection'] as boolean | undefined,
-            previousProperties['DeletionProtection'] as boolean | undefined,
-            false
-          ),
+          DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
           ...(newEngineVersion !== undefined && {
             EngineVersion: newEngineVersion,
             ...(allowMajorVersionUpgrade && { AllowMajorVersionUpgrade: true }),
@@ -1338,11 +1358,9 @@ export class RDSProvider implements ResourceProvider {
             0
           ),
           // CFn default: IAM database authentication isn't enabled.
-          EnableIAMDatabaseAuthentication: clearOnUpdateRemoval(
-            properties['EnableIAMDatabaseAuthentication'] as boolean | undefined,
-            previousProperties['EnableIAMDatabaseAuthentication'] as boolean | undefined,
-            false
-          ),
+          EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
+            | boolean
+            | undefined,
         })
       );
 

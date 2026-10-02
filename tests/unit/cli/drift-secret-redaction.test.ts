@@ -848,6 +848,25 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
   // provider warning naming a mis-shaped property value prints the secret --
   // on the one command a user reaches for when something is already wrong.
   // The bag is provably plaintext here: the test above asserts exactly that.
+  // Issue #1160: removal is judged template-vs-template. The previous side of
+  // a revert is the AWS READBACK, so nothing reads as removed, and a provider's
+  // `withRemovalDefaults` must not inject a reset because the readback holds a
+  // value the recorded template never declared.
+  it('--revert tells the provider nothing was removed (issue #1160)', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ SECRET_PASSWORD: 'tampered-in-the-console' }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    const context = update.mock.calls[0]![5] as { removedProperties?: ReadonlySet<string> };
+    expect(context.removedProperties).toEqual(new Set());
+  });
+
   it('--revert hands provider.update a WORKING secret masker (issue #1932 item 3)', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);

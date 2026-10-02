@@ -53,6 +53,7 @@ import {
   inlineCodeFileNameForRuntime,
 } from '../../../src/provisioning/providers/lambda-function-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import * as zlib from 'node:zlib';
 
 describe('LambdaFunctionProvider', () => {
@@ -486,6 +487,56 @@ describe('LambdaFunctionProvider', () => {
       expect(cmd.input.Layers).toEqual([]);
       expect(cmd.input.TracingConfig).toEqual({ Mode: 'PassThrough' });
       expect(cmd.input.EphemeralStorage).toEqual({ Size: 512 });
+    });
+
+    it('the engine-injected path sends the same resets with the same SDK call count (issue #1160)', async () => {
+      // What the deploy engine does: `prepareRemovalForUpdate` injects the
+      // declared resets and sets `removedProperties`, so update() takes them
+      // from the bag. The wire and the number of SDK calls must match the
+      // direct-call test above exactly: the mechanism adds no AWS call.
+      const prime = (): void => {
+        mockLambdaSend
+          .mockResolvedValueOnce({})
+          .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+          .mockResolvedValueOnce({
+            Configuration: {
+              FunctionName: 'fn-core-clear',
+              FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-core-clear',
+            },
+          });
+      };
+      const desired = { Role: 'arn:aws:iam::123456789012:role/exec' };
+      const previous = {
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        Timeout: 30,
+        MemorySize: 256,
+        Description: 'old description',
+        Environment: { Variables: { FOO: 'bar' } },
+        Layers: ['arn:aws:lambda:us-east-1:123456789012:layer:l1:1'],
+        TracingConfig: { Mode: 'Active' },
+        EphemeralStorage: { Size: 2048 },
+      };
+
+      prime();
+      await provider.update('CoreClearFn', 'fn-core-clear', 'AWS::Lambda::Function', desired, previous);
+      const directCalls = mockLambdaSend.mock.calls.length;
+      const directInput = mockLambdaSend.mock.calls[0][0].input;
+      mockLambdaSend.mockClear();
+
+      prime();
+      const removal = prepareRemovalForUpdate(provider, 'AWS::Lambda::Function', desired, previous);
+      await provider.update(
+        'CoreClearFn',
+        'fn-core-clear',
+        'AWS::Lambda::Function',
+        removal.properties,
+        previous,
+        removal.context
+      );
+
+      expect(mockLambdaSend.mock.calls.length).toBe(directCalls);
+      expect(mockLambdaSend.mock.calls[0][0].input).toEqual(directInput);
+      expect(directInput.Timeout).toBe(3);
     });
 
     it('normalizes a Variables-less Environment block to an explicit clear (issue #1158)', async () => {

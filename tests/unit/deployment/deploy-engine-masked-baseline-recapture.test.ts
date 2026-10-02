@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import {
   redactSecretsForState,
   STATE_SOURCED_BASELINE_RULES,
@@ -199,6 +200,23 @@ describe('DeployEngine - deploy-start re-capture of a fail-closed-masked baselin
     const text = JSON.stringify(mockStateBackend.saveState.mock.calls);
     expect(text).not.toContain(ALPHA_PT);
     expect(text).not.toContain(BRAVO_PT);
+  });
+
+  // The readback can carry the plaintext the re-capture just resolved, so it
+  // runs inside that bag's sink scope (the #4362 class, reported by #4378's
+  // security review).
+  it('reads back with the resolved secret bag bound', async () => {
+    let bound: string[] = [];
+    mockProvider.readCurrentState.mockImplementation(async () => {
+      await Promise.resolve();
+      bound = [...(getCurrentResourceSecrets()?.keys() ?? [])].sort();
+      return liveReadback();
+    });
+    mockStateBackend.getState.mockResolvedValue({ state: stateWith({ TaskDef: record() }), etag: 'e' });
+    await makeEngine().deploy(stackName, template);
+
+    expect(mockProvider.readCurrentState).toHaveBeenCalledTimes(1);
+    expect(bound).toEqual([ALPHA_PT, BRAVO_PT].sort());
   });
 
   it('keeps a position the map cannot certify (a rotated secret) masked', async () => {

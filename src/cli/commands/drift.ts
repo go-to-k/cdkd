@@ -6419,6 +6419,11 @@ async function runRevert(
                   maskSecrets: createSecretMasker(secrets),
                   expectedRegion: report.region,
                   recordedAttributes: stateResource.attributes,
+                  // Issue #1160: nothing reads as REMOVED here, so no
+                  // provider `removalDefaults` value is injected. Removal is
+                  // judged template-vs-template, and the previous side above
+                  // is an AWS readback, never a template declaration.
+                  removedProperties: new Set<string>(),
                 }
               ),
             outcome.logicalId,

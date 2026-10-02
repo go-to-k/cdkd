@@ -21,7 +21,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { clearOnUpdateRemoval } from '../update-removal.js';
+import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -30,6 +30,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
@@ -128,6 +129,27 @@ export class NeptuneProvider implements ResourceProvider {
    */
   private readonly protectionFlips = new ProtectionFlipRegistry();
 
+  /**
+   * Issue #1160: the CFn default a property REMOVED from the template is
+   * reset to — the Modify/Update API keeps an absent field's live value.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::Neptune::DBCluster',
+      new Map<string, unknown>([
+        ['DeletionProtection', false],
+        ['IamAuthEnabled', false],
+      ]),
+    ],
+    [
+      'AWS::Neptune::DBInstance',
+      new Map<string, unknown>([
+        ['AutoMinorVersionUpgrade', true],
+        ['DeletionProtection', false],
+      ]),
+    ],
+  ]);
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::Neptune::DBSubnetGroup',
@@ -217,8 +239,16 @@ export class NeptuneProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     switch (resourceType) {
       case 'AWS::Neptune::DBSubnetGroup':
         return this.updateDBSubnetGroup(
@@ -541,7 +571,7 @@ export class NeptuneProvider implements ResourceProvider {
       // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
       // the template must be sent as its explicit CFn-default reset value
-      // via `clearOnUpdateRemoval` (see the helper's JSDoc). Deliberately
+      // via `removalDefaults` or a local `clearOnUpdateRemoval`. Deliberately
       // NOT reset here:
       //   * EngineVersion — removal would imply moving to the engine's
       //     default version, a risky (possibly major) version change cdkd
@@ -565,11 +595,7 @@ export class NeptuneProvider implements ResourceProvider {
           EngineVersion: properties['EngineVersion'] as string | undefined,
           // CFn default: deletion protection isn't enabled by default
           // (ModifyDBClusterMessage doc).
-          DeletionProtection: clearOnUpdateRemoval(
-            properties['DeletionProtection'] as boolean | undefined,
-            previousProperties['DeletionProtection'] as boolean | undefined,
-            false
-          ),
+          DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
           // CFn/API default: 1 day (ModifyDBClusterMessage doc).
           BackupRetentionPeriod: clearOnUpdateRemoval(
             properties['BackupRetentionPeriod'] != null
@@ -590,11 +616,7 @@ export class NeptuneProvider implements ResourceProvider {
           // CFn default: IAM database authentication isn't enabled
           // (ModifyDBClusterMessage doc: "Default: false"). CFn property
           // `IamAuthEnabled` maps to `EnableIAMDatabaseAuthentication`.
-          EnableIAMDatabaseAuthentication: clearOnUpdateRemoval(
-            properties['IamAuthEnabled'] as boolean | undefined,
-            previousProperties['IamAuthEnabled'] as boolean | undefined,
-            false
-          ),
+          EnableIAMDatabaseAuthentication: properties['IamAuthEnabled'] as boolean | undefined,
           ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
           Port:
             properties['DBPort'] != null
@@ -859,7 +881,7 @@ export class NeptuneProvider implements ResourceProvider {
       // #1160 reset-on-removal — ModifyDBInstance has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
       // the template must be sent as its explicit CFn-default reset value
-      // via `clearOnUpdateRemoval` (see the helper's JSDoc). Deliberately
+      // via `removalDefaults` or a local `clearOnUpdateRemoval`. Deliberately
       // NOT reset here:
       //   * DBParameterGroupName — the default is the
       //     engine-version-dependent `default.neptune1.x` family name;
@@ -877,18 +899,10 @@ export class NeptuneProvider implements ResourceProvider {
           // CFn/API default: true (CreateDBInstanceMessage doc:
           // "Default: true"); the change applies during the maintenance
           // window, so the reset is non-disruptive.
-          AutoMinorVersionUpgrade: clearOnUpdateRemoval(
-            properties['AutoMinorVersionUpgrade'] as boolean | undefined,
-            previousProperties['AutoMinorVersionUpgrade'] as boolean | undefined,
-            true
-          ),
+          AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
           // CFn default: deletion protection isn't enabled by default
           // (ModifyDBInstanceMessage doc).
-          DeletionProtection: clearOnUpdateRemoval(
-            properties['DeletionProtection'] as boolean | undefined,
-            previousProperties['DeletionProtection'] as boolean | undefined,
-            false
-          ),
+          DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
           ApplyImmediately: true,
         })
       );

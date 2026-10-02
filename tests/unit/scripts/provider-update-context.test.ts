@@ -188,10 +188,12 @@ describe('provider UpdateContext fence — the real tree', () => {
       'ApiGatewayV2Provider',
       'AppSyncProvider',
       'BudgetsBudgetProvider',
+      'CloudTrailProvider',
       'CloudWatchAnomalyDetectorProvider',
       'CodeCommitRepositoryProvider',
       'CognitoUserPoolProvider',
       'CustomResourceProvider',
+      'DocDBProvider',
       'DynamoDBGlobalTableProvider',
       'DynamoDBTableProvider',
       'EC2Provider',
@@ -201,6 +203,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'EMRClusterProvider',
       'EMRInstanceFleetConfigProvider',
       'EMRInstanceGroupConfigProvider',
+      'ElastiCacheProvider',
       'GlueConnectionProvider',
       'GlueCrawlerProvider',
       'GlueJobProvider',
@@ -222,10 +225,12 @@ describe('provider UpdateContext fence — the real tree', () => {
       'LambdaPermissionProvider',
       'LambdaUrlProvider',
       'LogsLogGroupProvider',
+      'NeptuneProvider',
       'NestedStackProvider',
       'RDSDBProxyEndpointProvider',
       'RDSDBProxyProvider',
       'RDSDBProxyTargetGroupProvider',
+      'RDSProvider',
       'Route53Provider',
       'S3BucketProvider',
       'S3VectorsProvider',
@@ -622,7 +627,7 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[floor]');
     expect(result.stderr).toContain('not seeing the provider tree');
-    // A stale-entry finding for all 67 names is the second, louder signal.
+    // A stale-entry finding for every listed name is the second, louder signal.
     expect(result.stderr).toContain('[stale-entry]');
   }, SPAWN_TIMEOUT_MS);
 });

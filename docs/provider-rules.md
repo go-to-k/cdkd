@@ -1208,21 +1208,43 @@ the old value. Permanent, undetectable divergence from CloudFormation
 
 **Rule: every optional, mutable property passed to a merge-semantics update
 API needs an explicit reset when it was present before and is absent now.**
-The shared helper is `clearOnUpdateRemoval` in
-`src/provisioning/update-removal.ts` (extracted in #1223 from the per-provider
-copies that Lambda #1157 / ECS #1164 / RDS #1222 / ASG #1224 shipped):
+There are two shapes, both in `src/provisioning/update-removal.ts` (issue
+#1160):
+
+- **Declare it** when the reset is a CONSTANT, CFn-shaped, top-level value
+  that `update()` forwards verbatim. `ResourceProvider.removalDefaults` maps
+  type → property → value; the update CALLER (the deploy's in-place update,
+  both rollback revert arms) injects it into the bag `update()` receives, and
+  only there: state keeps the template, and a reset echoed back through
+  `effectiveProperties` is taken out again. `update()` starts with
+  `properties = withRemovalDefaults(this.removalDefaults, resourceType, properties,
+  previousProperties, context)`, which injects the same values on a direct
+  call and is a no-op once the caller did.
+- **Keep a local `clearOnUpdateRemoval`** for anything else: a coerced value
+  (`Number(...)`), an aliased key, a clear that depends on another property
+  or on the logical id, a nested member, or an SDK-shaped value.
 
 ```typescript
-import { clearOnUpdateRemoval } from '../update-removal.js';
+removalDefaults = new Map([
+  ['AWS::Lambda::Function', new Map<string, unknown>([['Timeout', 3], ['MemorySize', 128]])],
+]);
 
 // clearOnUpdateRemoval(newValue, previousValue, clearValue):
 //   present -> pass through; removed -> explicit reset; never set -> stay absent.
-// Usage — the reset value is the property's CFn default or the
-// SDK-documented clear sentinel:
-Timeout: clearOnUpdateRemoval(newTimeout, prevTimeout, 3),
-MemorySize: clearOnUpdateRemoval(newMem, prevMem, 128),
-Environment: clearOnUpdateRemoval(newEnv, prevEnv, { Variables: {} }),
+MaxInstanceLifetime: clearOnUpdateRemoval(newLifetime, prevLifetime, 0),
 ```
+
+A type whose `update()` has been audited for EVERY property also declares
+`removalHandledInUpdate`: the properties whose removal `update()` handles
+itself (a local reset, a diff, a required or create-only property). The
+caller then warns once per resource for any removed property in neither
+map, naming it as left at its current AWS value. A type without that entry
+is never warned about, because cdkd cannot say what its `update()` does.
+
+`drift --revert` injects nothing: its previous side is an AWS readback, not a
+template, so `UpdateContext.removedProperties` is empty there. A local
+`clearOnUpdateRemoval` still reads that readback, which is what reverts a
+console change the baseline records as unset (a placeholder).
 
 Checklist when writing or reviewing an `update()`:
 

@@ -29,7 +29,7 @@ import {
   tagPlanWarning,
   refuseMalformedDesiredTags,
 } from '../tag-list.js';
-import { clearOnUpdateRemoval } from '../update-removal.js';
+import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import { requireConfigArray } from '../config-shape.js';
 import type {
   ResourceProvider,
@@ -37,6 +37,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -168,6 +169,20 @@ export class CloudTrailProvider implements ResourceProvider {
   private client: CloudTrailClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('CloudTrailProvider');
+
+  /**
+   * Issue #1160: the CFn default a property REMOVED from the template is
+   * reset to — the Modify/Update API keeps an absent field's live value.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::CloudTrail::Trail',
+      new Map<string, unknown>([
+        ['IsMultiRegionTrail', false],
+        ['EnableLogFileValidation', false],
+      ]),
+    ],
+  ]);
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -332,8 +347,16 @@ export class CloudTrailProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     this.logger.debug(`Updating CloudTrail Trail ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -420,11 +443,7 @@ export class CloudTrailProvider implements ResourceProvider {
       emptyToUndefined(previousProperties['S3KeyPrefix']),
       ''
     );
-    const isMultiRegionTrail = clearOnUpdateRemoval(
-      properties['IsMultiRegionTrail'] as boolean | undefined,
-      previousProperties['IsMultiRegionTrail'] as boolean | undefined,
-      false
-    );
+    const isMultiRegionTrail = properties['IsMultiRegionTrail'] as boolean | undefined;
     // AWS rejects a multi-region trail that excludes global service events
     // ("Multi-Region trail must include global service events"), so the
     // reset is skipped while the trail stays multi-region. In the A/B both
@@ -448,11 +467,7 @@ export class CloudTrailProvider implements ResourceProvider {
             false
           )
         : (properties['IncludeGlobalServiceEvents'] as boolean | undefined);
-    const enableLogFileValidation = clearOnUpdateRemoval(
-      properties['EnableLogFileValidation'] as boolean | undefined,
-      previousProperties['EnableLogFileValidation'] as boolean | undefined,
-      false
-    );
+    const enableLogFileValidation = properties['EnableLogFileValidation'] as boolean | undefined;
     const isLogging = properties['IsLogging'] as boolean | undefined;
     // The CloudWatch Logs pair keys on PRESENCE, not emptiness (issue #1565).
     // `emptyToUndefined` conflates two different desired sides:

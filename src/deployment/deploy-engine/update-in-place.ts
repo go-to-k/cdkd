@@ -5,6 +5,11 @@ import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import { STICKY_CC_MIGRATION_EXEMPT } from '../../provisioning/provider-registry.js';
 import { withoutGeneratedFallbackName } from '../../provisioning/resource-name.js';
 import {
+  prepareRemovalForUpdate,
+  removalWarning,
+  withoutInjectedRemovals,
+} from '../../provisioning/update-removal.js';
+import {
   isStatefulRecreateTargetForReplace,
   renderStatefulReason,
 } from '../../provisioning/stateful-types.js';
@@ -205,6 +210,19 @@ export async function updateInPlace(
     );
   }
 
+  // Issue #1160: a property the previous template declared and this one
+  // omits. Computed once, outside the retry loop, against the SAME previous
+  // bag the provider diffs (the state record, never an AWS readback); the
+  // provider's declared reset values go into the bag it is handed, and an
+  // audited type's undeclared removal is named once the in-place update
+  // succeeded (a replacement fallback leaves no value in place).
+  const removal = prepareRemovalForUpdate(
+    updateProvider,
+    resourceType,
+    updateProps,
+    previousForUpdate
+  );
+
   let result;
   let resultProvisionedBy = updateDecision.provisionedBy;
   // The provider the observed-properties capture below reads the
@@ -251,7 +269,7 @@ export async function updateInPlace(
             logicalId,
             currentResource.physicalId,
             resourceType,
-            updateProps,
+            removal.properties,
             // `currentPropsAsWritten` (issue #2750): the ONE consumer
             // of the previous side that is asking what AWS holds.
             // `CloudControlProvider.update` diffs this into a JSON
@@ -285,6 +303,7 @@ export async function updateInPlace(
               expectedRegion: this.stackRegion,
               recordedAttributes: currentResource.attributes,
               ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
+              ...removal.context,
             }
           )
         ),
@@ -293,6 +312,11 @@ export async function updateInPlace(
       undefined,
       updateProvider
     );
+    // An injected reset is sent, never recorded: state keeps the template.
+    result = withoutInjectedRemovals(result, removal.injected);
+    if (removal.unhandled.length > 0) {
+      this.logger.warn(removalWarning(logicalId, resourceType, removal.unhandled));
+    }
   } catch (updateError) {
     // If UPDATE is not supported, fall back to a replacement. Two
     // triggers:
@@ -1100,7 +1124,8 @@ export async function updateInPlace(
       result.physicalId,
       resourceType,
       resolvedProps,
-      { ...updateCaptureSiblings, afterOwnWrite: true }
+      { ...updateCaptureSiblings, afterOwnWrite: true },
+      updateSecrets
     );
   }
 

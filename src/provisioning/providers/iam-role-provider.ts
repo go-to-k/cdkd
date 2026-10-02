@@ -29,7 +29,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { clearOnUpdateRemoval } from '../update-removal.js';
+import { withRemovalDefaults } from '../update-removal.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
   createMaskedLogSinks,
@@ -95,6 +95,41 @@ export class IAMRoleProvider implements ResourceProvider {
         'Description',
         'MaxSessionDuration',
         'Path',
+        'PermissionsBoundary',
+        'ManagedPolicyArns',
+        'Policies',
+        'Tags',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160: IAM `UpdateRole` has merge semantics — an ABSENT input field
+   * means "no change" (live-verified 2026-07-27) — while CFn resets a
+   * template-removed property to its default.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::IAM::Role',
+      new Map<string, unknown>([
+        // The AWS-documented clear sentinel.
+        ['Description', ''],
+        // The IAM / CFn default.
+        ['MaxSessionDuration', 3600],
+      ]),
+    ],
+  ]);
+
+  /** Issue #1160: every other property, each removal handled by `update()`. */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::IAM::Role',
+      new Set([
+        // Create-only, or required.
+        'RoleName',
+        'Path',
+        'AssumeRolePolicyDocument',
+        // Each diffed by its own call, removal included.
         'PermissionsBoundary',
         'ManagedPolicyArns',
         'Policies',
@@ -315,6 +350,19 @@ export class IAMRoleProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // The re-create below takes the template bag: a reset is an UPDATE value,
+    // so a key the caller injected one for (#1160) is taken back out.
+    const templateProperties: Record<string, unknown> = { ...properties };
+    for (const key of context?.removedProperties ?? []) {
+      if (this.removalDefaults.get(resourceType)?.has(key) === true) delete templateProperties[key];
+    }
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const derivedRoleName = generateResourceNameWithFallback(
@@ -397,6 +445,9 @@ export class IAMRoleProvider implements ResourceProvider {
       // else: this context never carries `replayingState`, so a create-side
       // pre-flight refusal would still fire on a rollback replay (see
       // `CreateContext`).
+      // Rebound rather than passed by its own name, so the wiring generator
+      // still traces the bag into `create()`.
+      properties = templateProperties;
       const createResult = await this.create(logicalId, resourceType, properties, {
         maskSecrets: log.mask,
       });
@@ -455,32 +506,17 @@ export class IAMRoleProvider implements ResourceProvider {
         RoleName: physicalId,
       };
 
-      // Both fields are routed through `clearOnUpdateRemoval` (issue
-      // #1160): IAM `UpdateRole` has merge semantics — an ABSENT input
-      // field means "no change" (live-verified 2026-07-27: an update
-      // omitting either field keeps the old live value) — while CFn
-      // resets a template-removed property to its default. So a removal
-      // (present before, absent now) must send an explicit reset:
-      //  - Description -> '' (the AWS-documented clear sentinel; an
-      //    explicit user-supplied '' passes through the same way — the
-      //    `!== undefined` behavior that fixed the `cdkd drift --revert`
-      //    "reverted but re-detected" symptom is preserved, a truthy
-      //    gate would silently drop the empty string).
-      //  - MaxSessionDuration -> 3600 (the IAM / CFn default).
-      // A field that was never set stays absent (no spurious reset).
-      const descriptionInput = clearOnUpdateRemoval(
-        properties['Description'] as string | undefined,
-        previousProperties['Description'] as string | undefined,
-        ''
-      );
+      // A REMOVED field arrives as its `removalDefaults` reset (issue
+      // #1160); a field that was never set stays absent (no spurious
+      // reset). An explicit user-supplied '' Description passes through
+      // too — the `!== undefined` behavior that fixed the `cdkd drift
+      // --revert` "reverted but re-detected" symptom; a truthy gate would
+      // silently drop the empty string.
+      const descriptionInput = properties['Description'] as string | undefined;
       if (descriptionInput !== undefined) {
         updateParams.Description = descriptionInput;
       }
-      const maxSessionDurationInput = clearOnUpdateRemoval(
-        properties['MaxSessionDuration'] as number | undefined,
-        previousProperties['MaxSessionDuration'] as number | undefined,
-        3600
-      );
+      const maxSessionDurationInput = properties['MaxSessionDuration'] as number | undefined;
       if (maxSessionDurationInput !== undefined) {
         updateParams.MaxSessionDuration = maxSessionDurationInput;
       }

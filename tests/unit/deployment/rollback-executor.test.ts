@@ -590,7 +590,7 @@ describe('replayRollback', () => {
       { a: 2 },
       // `expectedRegion` is `ctx.region`, threaded for issue #2301 item 1 so a
       // Cloud-Control-routed revert cannot be applied from the wrong region.
-      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {} }
+      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {}, removedProperties: new Set() }
     );
     expect(state.B).toBe(prev);
   });
@@ -1130,7 +1130,7 @@ describe('replayRollback', () => {
     const result = await replayRollback(ops, state, 'S', ctx);
 
     expect(result.failures).toBe(0);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {} });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {}, removedProperties: new Set() });
     // The update went THROUGH withRetry, not around it.
     expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
@@ -1742,7 +1742,7 @@ describe('replayFailedOperations (#1198)', () => {
       { a: 2 },
       // `expectedRegion` is `ctx.region`, threaded for issue #2301 item 1 so a
       // Cloud-Control-routed revert cannot be applied from the wrong region.
-      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {} }
+      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {}, removedProperties: new Set() }
     );
     expect(state.B).toBe(prev);
     expect(result.failures).toBe(0);
@@ -1764,7 +1764,7 @@ describe('replayFailedOperations (#1198)', () => {
     const result = await replayFailedOperations(failedOps, state, 'S', ctx);
 
     expect(result.failures).toBe(0);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {} });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {}, removedProperties: new Set() });
     expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
   });
@@ -1864,7 +1864,7 @@ describe('replayFailedOperations (#1198)', () => {
     ];
     const state = { B: resT({ physicalId: 'phys-B', properties: { a: 1 } }) };
     await replayFailedOperations(failedOps, state, 'S', ctx);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 1 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {} });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 1 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {}, removedProperties: new Set() });
   });
 
   it('deletes a partially-recorded failed CREATE and drops it from state', async () => {
@@ -3045,5 +3045,115 @@ describe('rollback of a Glue replacement that kept the id (issue #3892)', () => 
     expect(del.mock.calls[0]![3]).toEqual(NEW);
     expect(silentLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('name-idempotent'));
     expect(state.B).toMatchObject({ physicalId: ID, properties: OLD });
+  });
+});
+
+describe('rollback revert arms apply removalDefaults (issue #1160)', () => {
+  // Both arms hand two STATE records to `update()`, so a key the record being
+  // reverted FROM carries and the record being restored omits is a removal.
+  function removalProvider(update: ReturnType<typeof vi.fn>) {
+    return {
+      update,
+      removalDefaults: new Map([['T', new Map<string, unknown>([['Timeout', 3]])]]),
+      removalHandledInUpdate: new Map([['T', new Set<string>()]]),
+    };
+  }
+  const removalWarnings = (): string[] =>
+    (silentLogger.warn as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes('absent from the state being restored'));
+
+  beforeEach(() => {
+    (silentLogger.warn as ReturnType<typeof vi.fn>).mockClear();
+  });
+
+  it("the 'revert' arm injects the declared value, warns for the rest, and records the record as-is", async () => {
+    const update = vi.fn().mockImplementation(
+      (_l: string, _p: string, _t: string, props: Record<string, unknown>) =>
+        Promise.resolve({ physicalId: 'phys-B', effectiveProperties: { ...props } })
+    );
+    const { ctx } = makeCtx(removalProvider(update));
+    const prev = resT({ physicalId: 'phys-B', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T', physicalId: 'phys-B', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: resT({ physicalId: 'phys-B', properties: { a: 1, Timeout: 30, Extra: 'x' } }),
+    };
+
+    const result = await replayRollback(ops, state, 'S', ctx);
+
+    expect(result.failures).toBe(0);
+    expect(update.mock.calls[0]![3]).toEqual({ a: 1, Timeout: 3 });
+    expect([...(update.mock.calls[0]![5] as { removedProperties: Set<string> }).removedProperties]).toEqual([
+      'Timeout',
+      'Extra',
+    ]);
+    expect(removalWarnings()).toHaveLength(1);
+    expect(removalWarnings()[0]).toBe(
+      'B (T): property Extra is absent from the state being restored; the rollback leaves the value the failed deploy applied in place (CloudFormation would reset it to its default).'
+    );
+    expect(state['B']!.properties).toEqual({ a: 1 });
+  });
+
+  it('a revert that fails prints no removal warning', async () => {
+    const update = vi.fn().mockRejectedValue(new Error('AccessDenied'));
+    const { ctx } = makeCtx(removalProvider(update));
+    const prev = resT({ physicalId: 'phys-B', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T', physicalId: 'phys-B', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: resT({ physicalId: 'phys-B', properties: { a: 1, Extra: 'x' } }),
+    };
+
+    const result = await replayRollback(ops, state, 'S', ctx);
+
+    expect(result.failures).toBe(1);
+    expect(removalWarnings()).toEqual([]);
+  });
+
+  it("the single-shot (disableOuterRetry) revert also injects and strips the echo", async () => {
+    const update = vi.fn().mockImplementation(
+      (_l: string, _p: string, _t: string, props: Record<string, unknown>) =>
+        Promise.resolve({ physicalId: 'phys-B', effectiveProperties: { ...props } })
+    );
+    const { ctx } = makeCtx({ ...removalProvider(update), disableOuterRetry: true });
+    const prev = resT({ physicalId: 'phys-B', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T', physicalId: 'phys-B', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: resT({ physicalId: 'phys-B', properties: { a: 1, Timeout: 30 } }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    expect(update.mock.calls[0]![3]).toEqual({ a: 1, Timeout: 3 });
+    expect(state['B']!.properties).toEqual({ a: 1 });
+  });
+
+  it("the 'revert-failed-update' arm judges the removal against the attempted bag", async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx } = makeCtx(removalProvider(update));
+    const prev = resT({ physicalId: 'phys-B', properties: { a: 1 } });
+    const failedOps: FailedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'T',
+        physicalId: 'phys-B',
+        previousState: prev,
+        attemptedProperties: { a: 1, Timeout: 30 },
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: resT({ physicalId: 'phys-B', properties: { a: 1 } }),
+    };
+
+    await replayFailedOperations(failedOps, state, 'S', ctx);
+
+    expect(update.mock.calls[0]![3]).toEqual({ a: 1, Timeout: 3 });
+    expect(removalWarnings()).toEqual([]);
   });
 });

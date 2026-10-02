@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
+import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import type { CloudFormationTemplate, CreateContext, UpdateContext } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 
@@ -319,7 +320,7 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
 
     const updateContext = mockProvider.update.mock.calls[0]![5] as UpdateContext | undefined;
     expect(updateContext).toBeDefined();
-    expect(Object.keys(updateContext ?? {}).sort()).toEqual(['expectedRegion', 'maskSecrets', 'recordedAttributes']);
+    expect(Object.keys(updateContext ?? {}).sort()).toEqual(['expectedRegion', 'maskSecrets', 'recordedAttributes', 'removedProperties']);
     // The sibling flag stays off for the same reason: this bag is a template,
     // not an AWS readback.
     expect(updateContext?.desiredFromAwsReadback).toBeUndefined();
@@ -473,5 +474,95 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
     );
     expect(byLogicalId.get('Pool')!.maskSecrets!(SECRET_PLAINTEXT)).toBe(SECRET_MASK);
     expect(byLogicalId.get('Other')!.maskSecrets!(SECRET_PLAINTEXT)).toBe(SECRET_PLAINTEXT);
+  });
+
+  // go-to-k/cdkd#4362: the post-write observed-state readback runs inside the
+  // bag the provider write bound, on every path that kicks one off. Read from
+  // INSIDE `readCurrentState` (after an await, as a real SDK read would), so a
+  // caller that stops passing its bag fails here, not only the helper's test.
+  describe('the observed-state readback is bound to the same secret bag (issue #4362)', () => {
+    // The deploy-start schema-upgrade refresh of a version-8 record reads too,
+    // with NO bag (it holds no plaintext), so only the post-write read is
+    // counted: exactly one bound read.
+    const boundReads = (): number => boundDuringRead.filter(Boolean).length;
+    function captureEngine(): DeployEngine {
+      return new DeployEngine(
+        mockStateBackend as never,
+        mockLockManager as never,
+        mockDagBuilder as never,
+        mockDiffCalculator as never,
+        mockProviderRegistry as never,
+        { dryRun: false, captureObservedState: true, forceStatefulRecreation: true } as never,
+        'us-east-1'
+      );
+    }
+    let boundDuringRead: boolean[];
+    beforeEach(() => {
+      boundDuringRead = [];
+      mockProvider.readCurrentState.mockImplementation(async () => {
+        await Promise.resolve();
+        boundDuringRead.push(getCurrentResourceSecrets()?.has(SECRET_PLAINTEXT) === true);
+        return undefined;
+      });
+    });
+
+    it('CREATE', async () => {
+      mockStateBackend.getState!.mockResolvedValue({ state: null, etag: undefined });
+      mockDiffCalculator.calculateDiff!.mockResolvedValue(
+        new Map<string, ResourceChange>([
+          [
+            'Pool',
+            {
+              logicalId: 'Pool',
+              changeType: 'CREATE',
+              resourceType: RESOURCE_TYPE,
+              desiredProperties: secretProps,
+            },
+          ],
+        ])
+      );
+      await captureEngine().deploy(stackName, {
+        Resources: { Pool: { Type: RESOURCE_TYPE, Properties: secretProps } },
+      });
+      expect(boundReads()).toBe(1);
+    });
+
+    it('in-place UPDATE', async () => {
+      const template = primeUpdatePath();
+      await captureEngine().deploy(stackName, template);
+      expect(mockProvider.update).toHaveBeenCalledTimes(1);
+      expect(boundReads()).toBe(1);
+    });
+
+    it('replacement', async () => {
+      const template = primeUpdatePath();
+      const changes = (await (mockDiffCalculator.calculateDiff! as unknown as () => Promise<unknown>)()) as Map<string, ResourceChange>;
+      changes.get('Pool')!.propertyChanges = [
+        { path: 'UserPoolName', oldValue: 'old-pool', newValue: 'pool', requiresReplacement: true },
+      ];
+      changes.get('Pool')!.currentProperties = { UserPoolName: 'old-pool', EnabledMfas: 'PREVIOUS' };
+      mockStateBackend.getState!.mockResolvedValue({
+        state: {
+          version: 8,
+          stackName,
+          region: 'us-east-1',
+          resources: {
+            Pool: {
+              physicalId: 'phys',
+              resourceType: RESOURCE_TYPE,
+              properties: { UserPoolName: 'old-pool', EnabledMfas: 'PREVIOUS' },
+            },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'etag-old',
+      });
+      mockDiffCalculator.calculateDiff!.mockResolvedValue(changes);
+      mockProvider.create.mockResolvedValue({ physicalId: 'phys-2' });
+      await captureEngine().deploy(stackName, template);
+      expect(mockProvider.create).toHaveBeenCalledTimes(1);
+      expect(boundReads()).toBe(1);
+    });
   });
 });

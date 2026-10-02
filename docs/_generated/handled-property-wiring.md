@@ -18,7 +18,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 - Declared properties: **1143** (**1141** with read evidence)
 - Fully wired classes: **83**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **27**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **35**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -42,30 +42,38 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | --- | --- |
 | `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()` |
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in refuseChangedMalformedGraphQLApiBlocks()`, `computed key in updateDataSource()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()`, `object spread in withEnvironmentVariablesRecord()` |
-| `ASGProvider` (asg-provider.ts) | `computed key in canonicalizeDriftProperties()`, `object spread in canonicalizeDriftProperties()` |
+| `ASGProvider` (asg-provider.ts) | `computed key in canonicalizeDriftProperties()`, `object spread in canonicalizeDriftProperties()`, `withRemovalDefaults(...) in update()` |
+| `CloudTrailProvider` (cloudtrail-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `CognitoUserPoolProvider` (cognito-provider.ts) | `object spread in narrowMfaConfiguration()` |
+| `DocDBProvider` (docdb-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `computed key in canonicalizeDriftProperties()`, `computed key in collectDesiredKeyAttributeNames()`, `computed key in update()`, `extractLocalTags(...) in update()`, `object spread in canonicalizeDriftProperties()`, `object spread in create()`, `object spread in stripProvisionedCapacityKeys()` |
 | `DynamoDBTableProvider` (dynamodb-table-provider.ts) | `computed key in canonicalizeDriftPair()`, `object spread in canonicalizeDriftProperties()` |
 | `EC2Provider` (ec2-provider.ts) | `computed key in narrowRouteDestinations()`, `object spread in canonicalizeSgInlineRuleProtocols()`, `object spread in createSecurityGroupIngress()`, `object spread in narrowIngressIpProtocol()`, `object spread in narrowRouteDestinations()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
+| `ECSProvider` (ecs-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
+| `ElastiCacheProvider` (elasticache-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `ELBv2Provider` (elbv2-provider.ts) | `computed key in canonicalizeDriftPair()`, `computed key in updateLoadBalancer()`, `computed key in updateTargetGroup()`, `Object.keys(...) in updateLoadBalancer()` |
 | `EMRClusterProvider` (emr-cluster-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EMRInstanceFleetConfigProvider` (emr-instance-fleet-config-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EMRInstanceGroupConfigProvider` (emr-instance-group-config-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `FirehoseProvider` (firehose-provider.ts) | `computed key in applyUpdate()` |
 | `FSxFileSystemProvider` (fsx-filesystem-provider.ts) | `computed key in detectVariantConfigKey()`, `computed key in update()` |
+| `IAMRoleProvider` (iam-role-provider.ts) | `object spread in update()`, `withRemovalDefaults(...) in update()` |
 | `IAMUserGroupProvider` (iam-user-group-provider.ts) | `computed key in derivedNamePairs()` |
 | `KinesisStreamProvider` (kinesis-provider.ts) | `object spread in canonicalizeDesiredProperties()`, `object spread in effectiveMetricsProperties()` |
 | `LambdaEventInvokeConfigProvider` (lambda-event-invoke-config-provider.ts) | `computed key in update()`, `object spread in canonicalizeDriftProperties()` |
 | `LambdaEventSourceMappingProvider` (lambda-eventsource-provider.ts) | `computed key in applyUpdate()` |
-| `LambdaFunctionProvider` (lambda-function-provider.ts) | `walk(...) in jsonEscapedPairs()` |
+| `LambdaFunctionProvider` (lambda-function-provider.ts) | `walk(...) in jsonEscapedPairs()`, `withRemovalDefaults(...) in update()` |
 | `LambdaMicrovmImageProvider` (lambda-microvm-image-provider.ts) | `computed key in update()` |
 | `LambdaUrlProvider` (lambda-url-provider.ts) | `computed key in update()`, `object spread in update()` |
+| `NeptuneProvider` (neptune-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `RDSDBProxyTargetGroupProvider` (rds-dbproxy-targetgroup-provider.ts) | `rest-destructure in withoutKey()` |
+| `RDSProvider` (rds-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `S3BucketProvider` (s3-bucket-provider.ts) | `computed key in applyAllSubConfigsForCreate()`, `computed key in applySubConfigDiffs()`, `computed key in canonicalizeItemList()`, `computed key in versioningOrLoggingRefusal()`, `hasCdkAutoDeleteTag(...) in delete()`, `hasObjectLock(...) in applySubConfigDiffs()`, `object spread in applyEffectiveOverrides()`, `object spread in canonicalizeItemList()`, `S3BucketProvider.applyEffectiveOverrides(...) in create()`, `S3BucketProvider.applyEffectiveOverrides(...) in update()`, `S3BucketProvider.versioningOrLoggingRefusal(...) in update()`, `this.maskedView(createMaskedLogSinks(this.logger, context?.maskSecrets)).create(...) in create()`, `this.maskedView(sinks).update(...) in update()`, `this.noWriteProbe().applySubConfigDiffs(...) in update()` |
 | `S3DirectoryBucketProvider` (s3-directory-bucket-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
-| `SecretsManagerSecretProvider` (secretsmanager-secret-provider.ts) | `object spread in retainPreviousGenerateBlock()` |
+| `SecretsManagerSecretProvider` (secretsmanager-secret-provider.ts) | `object spread in retainPreviousGenerateBlock()`, `withRemovalDefaults(...) in update()` |
+| `ServiceDiscoveryProvider` (servicediscovery-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `SNSTopicProvider` (sns-topic-provider.ts) | `computed key in applyUpdate()` |
 
 ## Full classification

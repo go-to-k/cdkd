@@ -20,7 +20,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { clearOnUpdateRemoval } from '../update-removal.js';
+import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -36,6 +36,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -66,6 +67,17 @@ export class ElastiCacheProvider implements ResourceProvider {
   private client?: ElastiCacheClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ElastiCacheProvider');
+
+  /**
+   * Issue #1160: the CFn default a property REMOVED from the template is
+   * reset to — the Modify/Update API keeps an absent field's live value.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::ElastiCache::CacheCluster',
+      new Map<string, unknown>([['AutoMinorVersionUpgrade', true]]),
+    ],
+  ]);
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -156,8 +168,16 @@ export class ElastiCacheProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     switch (resourceType) {
       case 'AWS::ElastiCache::SubnetGroup':
         return this.updateSubnetGroup(
@@ -512,7 +532,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       // #1160 reset-on-removal — ModifyCacheCluster has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
       // the template must be sent as its explicit CFn-default reset value
-      // via `clearOnUpdateRemoval` (see the helper's JSDoc). Deliberately
+      // via `removalDefaults` or a local `clearOnUpdateRemoval`. Deliberately
       // NOT reset here:
       //   * EngineVersion — removal would imply moving to the engine's
       //     default version, a risky version change cdkd must not
@@ -572,11 +592,7 @@ export class ElastiCacheProvider implements ResourceProvider {
           // Service default when omitted at create: enabled (live-verified
           // 2026-07-27 — a bare CreateCacheCluster reports
           // AutoMinorVersionUpgrade=true on DescribeCacheClusters).
-          AutoMinorVersionUpgrade: clearOnUpdateRemoval(
-            properties['AutoMinorVersionUpgrade'] as boolean | undefined,
-            previousProperties['AutoMinorVersionUpgrade'] as boolean | undefined,
-            true
-          ),
+          AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
           NotificationTopicArn: notificationTopicArn,
           ...(notificationRemoved && { NotificationTopicStatus: 'inactive' }),
           ...(notificationTopicArn !== undefined && { NotificationTopicStatus: 'active' }),

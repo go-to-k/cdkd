@@ -33,6 +33,11 @@
 #       the backfill. The durable/tenancy function must keep its blocks (their
 #       removal is a replacement, not an in-place edit).
 #
+# Issue #1160 rider: `RecursiveLoop: Allow` is set in phase 1 and removed in
+# phase 2. cdkd declares no reset for it, so the phase-2 deploy must print ONE
+# warning naming it, and AWS must still hold `Allow` (the companion removals
+# above prove the update ran).
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -122,6 +127,10 @@ durablecfg() {
 # --- issue #609 readback helpers -------------------------------------------
 # Each is a STRICT capture: an AWS failure propagates to `set -e` instead of
 # being defaulted into a value that would satisfy the assertion.
+recursive_loop() { # -> RecursiveLoop of the main function
+  aws lambda get-function-recursion-config --function-name "${FN}" --region "${REGION}" \
+    --query 'RecursiveLoop' --output text
+}
 runtime_mgmt() { # -> UpdateRuntimeOn of the main function
   aws lambda get-runtime-management-config --function-name "${FN}" --region "${REGION}" \
     --query 'UpdateRuntimeOn' --output text
@@ -255,6 +264,12 @@ if [ "${TENANCY}" != "PER_TENANT" ]; then
   exit 1
 fi
 echo "    #609 properties delivered: RuntimeManagementConfig, CodeSigningConfigArn, DurableConfig, TenancyConfig"
+RL="$(recursive_loop)"
+if [ "${RL}" != "Allow" ]; then
+  echo "FAIL: RecursiveLoop not delivered (want Allow, got '${RL}')" >&2
+  exit 1
+fi
+echo "    RecursiveLoop delivered (Allow)"
 
 # Routing guard: these assertions are only meaningful for the SDK provider —
 # a silent-drop property would have re-routed the resource to Cloud Control.
@@ -269,8 +284,8 @@ echo "    both functions routed through the SDK provider (provisionedBy=sdk)"
 
 # --- Phase 2: remove all six fields ------------------------------------
 echo "==> Phase 2: re-deploy with all six fields removed (must reset to CFn defaults)"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+DEPLOY2_OUT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee /dev/stderr)"
 
 T="$(fncfg Timeout)"; M="$(fncfg MemorySize)"; D="$(fncfg Description)"
 F="$(fncfg 'Environment.Variables.FOO')"; E="$(fncfg 'EphemeralStorage.Size')"
@@ -313,6 +328,29 @@ if [ "${CS_AFTER}" != "GONE" ]; then
   exit 1
 fi
 echo "    RuntimeManagementConfig reset to Auto; code-signing config detached"
+
+# --- Phase 2c: issue #1160, the removal cdkd does NOT reset is named ---------
+# Sentinel: any line naming RecursiveLoop as removed must carry the rest of the
+# sentence too, so a reworded warning fails here instead of reading as absent.
+WARN_LINES="$(printf '%s\n' "${DEPLOY2_OUT}" | grep -F 'removed from the template' || true)"
+if printf '%s\n' "${WARN_LINES}" | grep -qF 'RecursiveLoop' \
+  && ! printf '%s\n' "${WARN_LINES}" | grep -qF 'cdkd leaves the current AWS value in place'; then
+  echo "FAIL: the RecursiveLoop removal warning changed wording: ${WARN_LINES}" >&2; exit 1
+fi
+if ! printf '%s\n' "${WARN_LINES}" | grep -qF 'property RecursiveLoop was removed from the template'; then
+  echo "FAIL: no warning named the RecursiveLoop removal (got: '${WARN_LINES}')" >&2; exit 1
+fi
+# The six reset fields are DECLARED, so they must not be named as left in place.
+for declared in Timeout MemorySize Description Environment EphemeralStorage TracingConfig; do
+  if printf '%s\n' "${WARN_LINES}" | grep -qw "${declared}"; then
+    echo "FAIL: the removal warning names ${declared}, which cdkd resets: ${WARN_LINES}" >&2; exit 1
+  fi
+done
+RL_AFTER="$(recursive_loop)"
+if [ "${RL_AFTER}" != "Allow" ]; then
+  echo "FAIL: RecursiveLoop changed after the removal (want Allow kept, got '${RL_AFTER}')" >&2; exit 1
+fi
+echo "    RecursiveLoop removal warned and left in place (Allow)"
 
 # The durable/tenancy function keeps both blocks across the update — a drop
 # there would be a replacement, not an in-place edit (see the stack docstring).
