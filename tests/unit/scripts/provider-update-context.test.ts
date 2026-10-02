@@ -204,6 +204,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'EMRInstanceFleetConfigProvider',
       'EMRInstanceGroupConfigProvider',
       'ElastiCacheProvider',
+      'FSxFileSystemProvider',
       'GlueConnectionProvider',
       'GlueCrawlerProvider',
       'GlueJobProvider',

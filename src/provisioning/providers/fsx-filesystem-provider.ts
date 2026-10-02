@@ -37,6 +37,7 @@ import {
 } from '@aws-sdk/client-fsx';
 import { createHash } from 'node:crypto';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -48,6 +49,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -219,6 +221,45 @@ const TOP_LEVEL_IMMUTABLE_PROPS = [
   'BackupId',
 ] as const;
 
+/**
+ * Top-level mutable properties whose removal cdkd leaves in place (issue
+ * #1160): `UpdateFileSystem` keeps a field it is not sent, and none has a safe
+ * constant reset — a capacity cannot shrink, a Lustre version cannot
+ * downgrade (its default depends on `DeploymentType`), and the storage-type
+ * and network-type defaults are migrations, not clears. `update()` names a
+ * removal in its own warning rather than the shared caller's, whose line
+ * claims a CloudFormation reset that is false for `StorageCapacity` and
+ * unmeasured for the rest.
+ */
+const TOP_LEVEL_LEFT_IN_PLACE_PROPS = [
+  'StorageCapacity',
+  'StorageType',
+  'FileSystemTypeVersion',
+  'NetworkType',
+] as const;
+
+/**
+ * The ONE warning line for properties whose removal cdkd leaves in place
+ * (issue #1160): top-level names as-is, variant sub-properties as
+ * `<Variant>Configuration.<key>`. Names are template-borne, so they go through
+ * `safeMsg`. It claims nothing about CloudFormation's behavior, which is
+ * unmeasured. A rollback revert restores an earlier state record, so there
+ * the property is one the failed deploy ADDED, and the line says that instead
+ * (the shared `removalWarning`'s `'rollback'` arm).
+ */
+const leftInPlaceWarning = (
+  logicalId: string,
+  names: readonly string[],
+  caller: 'deploy' | 'rollback'
+): string => {
+  const one = names.length === 1;
+  const subject = one ? 'property' : 'properties';
+  const verb = one ? 'is' : 'are';
+  return caller === 'rollback'
+    ? safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} absent from the state being restored; UpdateFileSystem keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
+    : safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
+};
+
 const toNumber = (v: unknown): number | undefined => (v === undefined ? undefined : Number(v));
 
 const toBoolean = (v: unknown): boolean | undefined => {
@@ -243,9 +284,10 @@ const toBoolean = (v: unknown): boolean | undefined => {
  *  - `create` → `CreateFileSystem` (or `CreateFileSystemFromBackup` when
  *    `BackupId` is set) + poll `DescribeFileSystems` until `AVAILABLE`.
  *  - `update` → `UpdateFileSystem` for the mutable surface (StorageCapacity,
- *    Lustre mutable sub-props, StorageType, FileSystemTypeVersion,
- *    NetworkType) + `TagResource`/`UntagResource` for `Tags`; polls back to
- *    `AVAILABLE`.
+ *    StorageType, FileSystemTypeVersion, NetworkType, and each variant's
+ *    mutable sub-properties) + `TagResource`/`UntagResource` for `Tags`;
+ *    polls back to `AVAILABLE`. A removal `UpdateFileSystem` cannot express
+ *    is warned about and left in place, never sent (issue #1160).
  *  - `delete` → `DeleteFileSystem` + poll until the file system is GONE
  *    (`FileSystemNotFound` / dropped from the Describe response). A timeout
  *    here is a hard error — a lingering FSx file system bills per hour.
@@ -302,6 +344,28 @@ export class FSxFileSystemProvider implements ResourceProvider {
   ]);
 
   unhandledByDesign = new Map<string, ReadonlyMap<string, string>>();
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every property,
+   * each removal handled by `update()` — so the shared caller warns about
+   * none of them.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::FSx::FileSystem',
+      new Set([
+        // Required or create-only: a removal is refused or replaces.
+        ...TOP_LEVEL_IMMUTABLE_PROPS,
+        // Diffed by TagResource / UntagResource, removal included.
+        'Tags',
+        // Left in place and named in update()'s own warning (no reset).
+        ...TOP_LEVEL_LEFT_IN_PLACE_PROPS,
+        // Each sub-property removal is refused (immutable) or named in
+        // update()'s own warning.
+        ...Object.values(VARIANT_CONFIG_KEY),
+      ]),
+    ],
+  ]);
 
   private getClient(): FSxClient {
     if (!this.client) {
@@ -758,7 +822,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -788,7 +853,11 @@ export class FSxFileSystemProvider implements ResourceProvider {
     // subset and rejecting every other changed sub-field with a --replace
     // pointer. At most ONE variant block is present per file system.
     const variantConfigKey = this.detectVariantConfigKey(properties, previousProperties);
-    const { diff: variantDiff, hasMutableDiff: variantHasMutableDiff } = variantConfigKey
+    const {
+      diff: variantDiff,
+      hasMutableDiff: variantHasMutableDiff,
+      leftInPlace,
+    } = variantConfigKey
       ? this.computeVariantConfigDiff(
           resourceType,
           logicalId,
@@ -796,7 +865,29 @@ export class FSxFileSystemProvider implements ResourceProvider {
           (properties[variantConfigKey] ?? {}) as Record<string, unknown>,
           (previousProperties[variantConfigKey] ?? {}) as Record<string, unknown>
         )
-      : { diff: {}, hasMutableDiff: false };
+      : { diff: {}, hasMutableDiff: false, leftInPlace: [] };
+    // Issue #1160: named once, and only after the update SUCCEEDED (the
+    // shared caller's own warning has the same timing) — a retried attempt
+    // would repeat it, and a failure falling back to replacement would make
+    // "stays in place" false. Not on `drift --revert`: its previous side is
+    // an AWS readback, so a key the baseline lacks was never removed from a
+    // template, and the revert sent nothing for it before either.
+    const leftInPlaceNames = [
+      ...TOP_LEVEL_LEFT_IN_PLACE_PROPS.filter(
+        (key) => properties[key] === undefined && previousProperties[key] !== undefined
+      ),
+      ...leftInPlace.map((key) => `${variantConfigKey}.${key}`),
+    ];
+    const warnLeftInPlace = (): void => {
+      if (leftInPlaceNames.length === 0 || context?.desiredFromAwsReadback) return;
+      this.logger.warn(
+        leftInPlaceWarning(
+          logicalId,
+          leftInPlaceNames,
+          context?.replayingState ? 'rollback' : 'deploy'
+        )
+      );
+    };
 
     // §3b Class 2 wire-layer sanitize. `readCurrentState` emits
     // `StorageCapacity ?? 0` as its always-emit placeholder, and the 0 is
@@ -823,10 +914,16 @@ export class FSxFileSystemProvider implements ResourceProvider {
         `Suppressing non-positive StorageCapacity (${resolvedStorageCapacity}) for FSx FileSystem ${logicalId}: this is the readCurrentState placeholder for a capacity-less file system (Lustre Intelligent-Tiering), not a desired value.`
       );
     }
-    const storageCapacityChanged = changed('StorageCapacity') && !storageCapacityIsPlaceholder;
-    const storageTypeChanged = changed('StorageType');
-    const typeVersionChanged = changed('FileSystemTypeVersion');
-    const networkTypeChanged = changed('NetworkType');
+    // Issue #1160: a top-level property REMOVED from the desired side has
+    // nothing to send — `UpdateFileSystem` keeps a field it is not sent, and
+    // cdkd sends no reset for these (`TOP_LEVEL_LEFT_IN_PLACE_PROPS`; the
+    // removal is named in `warnLeftInPlace`). Counting it as a change would
+    // only issue an `UpdateFileSystem` carrying no update field.
+    const sendsChange = (key: string): boolean => changed(key) && properties[key] !== undefined;
+    const storageCapacityChanged = sendsChange('StorageCapacity') && !storageCapacityIsPlaceholder;
+    const storageTypeChanged = sendsChange('StorageType');
+    const typeVersionChanged = sendsChange('FileSystemTypeVersion');
+    const networkTypeChanged = sendsChange('NetworkType');
     const tagsChanged = changed('Tags');
 
     if (
@@ -838,6 +935,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       !tagsChanged
     ) {
       this.logger.debug(`No mutable diff for FSx FileSystem ${logicalId}, skipping update`);
+      warnLeftInPlace();
       return { physicalId, wasReplaced: false };
     }
 
@@ -953,6 +1051,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       }
 
       this.logger.debug(`Successfully updated FSx FileSystem ${logicalId}`);
+      warnLeftInPlace();
 
       return {
         physicalId,
@@ -994,6 +1093,14 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * `UpdateFileSystem<Variant>Configuration` shape. A changed sub-field that
    * is NOT in the variant's mutable set is rejected with a `--replace`
    * pointer (UpdateFileSystem cannot express it).
+   *
+   * A mutable sub-property REMOVED from the desired block (issue #1160) is
+   * returned in `leftInPlace` instead of being mapped: `UpdateFileSystem`
+   * keeps a field it is not sent, and cdkd sends no reset, so mapping it to
+   * `undefined` silently dropped the removal (and issued an
+   * `UpdateFileSystem` with an empty variant block when it was the only
+   * change). `RouteTableIds` is the exception — its removal IS expressible,
+   * as a `RemoveRouteTableIds` delta.
    */
   private computeVariantConfigDiff(
     resourceType: string,
@@ -1001,10 +1108,11 @@ export class FSxFileSystemProvider implements ResourceProvider {
     configKey: string,
     next: Record<string, unknown>,
     prev: Record<string, unknown>
-  ): { diff: Record<string, unknown>; hasMutableDiff: boolean } {
+  ): { diff: Record<string, unknown>; hasMutableDiff: boolean; leftInPlace: string[] } {
     const mutable = VARIANT_MUTABLE_SUBPROPS[configKey] ?? new Set<string>();
     const keys = new Set([...Object.keys(next), ...Object.keys(prev)]);
     const diff: Record<string, unknown> = {};
+    const leftInPlace: string[] = [];
     let hasMutableDiff = false;
     for (const key of keys) {
       const nextVal = next[key];
@@ -1016,6 +1124,10 @@ export class FSxFileSystemProvider implements ResourceProvider {
           logicalId,
           `AWS FSx FileSystem ${configKey}.${key} is immutable on AWS — UpdateFileSystem cannot change it after creation. Re-deploy with cdkd deploy --replace --force-stateful-recreation (the type is in cdkd's stateful-recreate guard set, so a bare --replace is refused a second time with STATEFUL_REPLACE_BLOCKED), or destroy + redeploy the stack.`
         );
+      }
+      if (nextVal === undefined && key !== 'RouteTableIds') {
+        leftInPlace.push(key);
+        continue;
       }
       const ctx: VariantFieldContext = { resourceType, logicalId, configKey };
       const applied =
@@ -1030,7 +1142,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       // trigger a no-op UpdateFileSystem call for it.
       if (applied) hasMutableDiff = true;
     }
-    return { diff, hasMutableDiff };
+    return { diff, hasMutableDiff, leftInPlace };
   }
 
   /**
