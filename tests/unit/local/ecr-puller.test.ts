@@ -1185,13 +1185,12 @@ describe('pullEcrImage', () => {
         authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
       });
       process.env['AWS_REGION'] = 'us-east-1';
-      runDockerMock.mockRejectedValueOnce(
-        Object.assign(new Error('login failed'), {
-          stderr: 'Error response from daemon: unauthorized',
-          stdout: '',
-          exitCode: 1,
-        })
-      );
+      const raw = Object.assign(new Error('login failed'), {
+        stderr: 'Error response from daemon: unauthorized',
+        stdout: '',
+        exitCode: 1,
+      });
+      runDockerMock.mockRejectedValueOnce(raw);
 
       const err = await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
         skipPull: false,
@@ -1201,8 +1200,10 @@ describe('pullEcrImage', () => {
       expect((err as Error).message).toMatch(/^ECR login failed: /);
       const cause = (err as Error).cause as (Error & { exitCode?: number }) | undefined;
       expect(cause?.exitCode).toBe(1);
-      // The password goes in on stdin; nothing of it may ride the cause.
-      expect(JSON.stringify({ ...cause, message: cause?.message })).not.toContain('dummypw');
+      // The REDACTED composer's cause, never the raw spawn error: the raw one
+      // carries the unredacted streams (go-to-k/cdkd#2440).
+      expect(cause).not.toBe(raw);
+      expect(cause).not.toHaveProperty('stderr');
     } finally {
       vi.unstubAllEnvs();
     }
