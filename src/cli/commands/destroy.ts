@@ -49,7 +49,12 @@ import { withNestedStackContext } from '../../provisioning/nested-stack-context.
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
-import { matchStacks, describeStack, type StackLike } from '../stack-matcher.js';
+import {
+  matchStacks,
+  describeStack,
+  renderAllWithFailedStages,
+  type StackLike,
+} from '../stack-matcher.js';
 import { failedStageNote, type FailedStage } from '../../synthesis/failed-stages.js';
 import { runDestroyForStack } from './destroy-runner.js';
 import {
@@ -419,6 +424,14 @@ async function destroyCommand(
         'DESTROY_NO_APP_SCOPE',
         synthError
       );
+    }
+
+    // A Stage that failed to load dropped its stacks from `appStacks`, so
+    // `--all` would destroy the rest of the app and leave the Stage's stacks
+    // running, exiting 0 (#3507). Refused before the bucket is listed.
+    if (options.all) {
+      const partial = renderAllWithFailedStages('destroy', appStacks, { failedStages });
+      if (partial !== undefined) throw new Error(partial);
     }
 
     // Determine candidate stacks. State only carries physical names + regions

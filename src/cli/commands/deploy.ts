@@ -83,7 +83,12 @@ import {
   resolveUseCdkBootstrapAssets,
   warnDeprecatedNoPrefixCliFlag,
 } from '../config-loader.js';
-import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
+import {
+  matchStacks,
+  describeStack,
+  renderAllWithFailedStages,
+  renderNoStackMatch,
+} from '../stack-matcher.js';
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
@@ -410,6 +415,10 @@ async function deployCommand(
     }
 
     if (options.all) {
+      // A Stage that failed to load dropped its stacks from `allStacks`, so
+      // `--all` would deploy part of the app and exit 0 (#3507).
+      const partial = renderAllWithFailedStages('deploy', allStacks, result);
+      if (partial !== undefined) throw new Error(partial);
       targetStacks = allStacks;
     } else if (stackPatterns.length > 0) {
       targetStacks = matchStacks(allStacks, stackPatterns);

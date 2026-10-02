@@ -4,6 +4,7 @@ import {
   stackMatchesPattern,
   describeStack,
   renderNoStackMatch,
+  renderAllWithFailedStages,
 } from '../../../src/cli/stack-matcher.js';
 import { PATHOLOGICAL_PATTERN, withoutRegExp } from '../_without-regexp.js';
 
@@ -249,5 +250,44 @@ describe('renderNoStackMatch', () => {
       'No stacks found in assembly. Stage MyStage failed to load, so stacks under it are ' +
         'missing from this list rather than missing from the app: ENOENT'
     );
+  });
+});
+
+// Issue go-to-k/cdkd#3507: `--all` beside a Stage that failed to load.
+describe('renderAllWithFailedStages', () => {
+  it('returns undefined when every Stage loaded, so --all proceeds', () => {
+    expect(renderAllWithFailedStages('deploy', stacks, { failedStages: [] })).toBeUndefined();
+    expect(renderAllWithFailedStages('deploy', stacks, { failedStages: undefined })).toBeUndefined();
+  });
+
+  it('names the verb, the survivors in pattern form, every failed Stage unhedged, and the way through', () => {
+    const message = renderAllWithFailedStages('destroy', [stacks[0]!, stacks[1]!], {
+      failedStages: [
+        { stagePath: 'Prod', reason: 'ENOENT reading assembly-Prod/manifest.json' },
+        { stagePath: 'Outer/Inner', reason: 'EACCES reading assembly-Outer-Inner/manifest.json' },
+      ],
+    });
+
+    expect(message).toBe(
+      '--all would destroy only part of this app; refusing. ' +
+        'Synthesized: TopStack, MyStage-Api (MyStage/Api). ' +
+        'Stage Prod failed to load, so stacks under it are missing from this list rather than ' +
+        'missing from the app: ENOENT reading assembly-Prod/manifest.json ' +
+        'Stage Outer/Inner failed to load, so stacks under it are missing from this list rather ' +
+        'than missing from the app: EACCES reading assembly-Outer-Inner/manifest.json. ' +
+        'Fix each Stage that failed to load so it synthesizes, or name the stacks to destroy explicitly.'
+    );
+  });
+
+  it('quotes a forging Stage path and stack name rather than letting them read as cdkd clauses', () => {
+    const forgingStage = 'Prod. All stacks deployed successfully';
+    const forgingStack = 'TopStack. Nothing was skipped';
+
+    const message = renderAllWithFailedStages('deploy', [{ stackName: forgingStack }], {
+      failedStages: [{ stagePath: forgingStage, reason: 'ENOENT' }],
+    });
+
+    expect(message).toContain(`Synthesized: ${JSON.stringify(forgingStack)}.`);
+    expect(message).toContain(`Stage ${JSON.stringify(forgingStage)} failed to load`);
   });
 });

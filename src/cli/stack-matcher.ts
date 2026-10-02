@@ -124,6 +124,36 @@ export function renderNoStackMatch(
 }
 
 /**
+ * The refusal `--all` raises when a CDK Stage failed to load, or `undefined`
+ * when none did — shared by `deploy`, `destroy`, `diff` and `publish-assets`
+ * ([#3507](https://github.com/go-to-k/cdkd/issues/3507)).
+ *
+ * Reading a Stage stays tolerant so a run targeting OTHER stacks is not
+ * aborted ([#3482](https://github.com/go-to-k/cdkd/issues/3482)). `--all` is
+ * not such a run: it targets every stack in the app, the failed Stage's
+ * included, so proceeding would act on a silently smaller set and exit 0 —
+ * a deploy, diff or publish reporting success over stacks it never examined,
+ * or a destroy leaving the Stage's stacks running. Naming the surviving stacks
+ * (or a pattern) is the way through, because that selection is the user's.
+ *
+ * `available` is non-empty at every call site: a zero-stack app is refused
+ * earlier by each command with its own message.
+ */
+export function renderAllWithFailedStages(
+  verb: string,
+  available: readonly StackLike[],
+  assembly: { failedStages: readonly FailedStage[] | undefined }
+): string | undefined {
+  const note = failedStageNote([], assembly.failedStages);
+  if (note === '') return undefined;
+  return (
+    `--all would ${verb} only part of this app; refusing. ` +
+    `Synthesized: ${available.map(describeStack).join(', ')}${note}. ` +
+    `Fix each Stage that failed to load so it synthesizes, or name the stacks to ${verb} explicitly.`
+  );
+}
+
+/**
  * `*` matches any run of characters and every other character is literal —
  * `globMatches` owns that rule for this matcher and for the failed-Stage
  * attribution alike ([#3508](https://github.com/go-to-k/cdkd/issues/3508)).

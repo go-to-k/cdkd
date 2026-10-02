@@ -39,6 +39,10 @@
 #   3e. (Phase 2e) `orphan --dry-run` by a construct path that starts with
 #      the Stage resolves the Stage stack and writes nothing (go-to-k/cdkd#3943).
 #   3f. (Phase 2f) the same as 3d for `export --dry-run` (go-to-k/cdkd#3507).
+#   3g. (Phase 2g) add a second, never-synthesized Stage to the top-level
+#      manifest and assert `--all` refuses in deploy / diff / publish-assets /
+#      destroy, with this stack as the survivor, leaving state untouched
+#      (go-to-k/cdkd#3507).
 #   4. destroy -> assert clean (0 errors): both Lambdas gone, OUR pushed image
 #      gone from ECR by tag, state file gone.
 #
@@ -113,6 +117,10 @@ cleanup() {
   if [ -n "${STAGE_DIR:-}" ] && [ -f "${STAGE_DIR}/manifest.json.hidden" ]; then
     mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
   fi
+  # ...and one inside Phase 2g with the ghost Stage still in the top-level one.
+  if [ -f cdk.out/manifest.json.orig ]; then
+    mv cdk.out/manifest.json.orig cdk.out/manifest.json
+  fi
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -163,6 +171,9 @@ if [ ! -d node_modules ]; then
 fi
 
 echo "==> Pre-run cleanup"
+# A run killed inside Phase 2g leaves this behind, and cleanup would otherwise
+# move it over the manifest this run synthesizes.
+rm -f cdk.out/manifest.json.orig
 node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
   --region "${REGION}" --yes >/dev/null 2>&1 || true
 
@@ -476,6 +487,77 @@ if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
   exit 1
 fi
 echo "    OK: Stage named, state untouched"
+
+# --- Phase 2g: --all refuses when a Stage failed beside a surviving stack ---
+# Phases 2b-2f hide the app's ONLY Stage, so no stack survives and `--all` takes
+# the zero-stack refusal. Here a second Stage whose directory was never
+# synthesized is added to the top-level manifest, so this fixture's Stage still
+# loads and its stack is the survivor. `--all` targets every stack, the ghost
+# Stage's included, so each command must refuse rather than act on the survivor
+# and exit 0 -- destroy, run last, would otherwise tear down the Phase 1 stack
+# (go-to-k/cdkd#3507). The diff control over the intact assembly runs first, so
+# the refusals are attributable to the ghost Stage.
+echo "==> Phase 2g: --all with a Stage that failed to load beside a surviving stack"
+set +e
+CONTROL_OUT=$(node "${LOCAL_DIST}" diff --all --app cdk.out \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+CONTROL_RC=$?
+set -e
+printf '%s\n' "${CONTROL_OUT}"
+if [ "${CONTROL_RC}" -ne 0 ] || printf '%s' "${CONTROL_OUT}" | grep -qF "refusing"; then
+  echo "FAIL: control diff --all over the intact assembly exited ${CONTROL_RC} or refused" >&2
+  exit 1
+fi
+ETAG_BEFORE=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ -z "${ETAG_BEFORE}" ]; then
+  echo "FAIL: could not read the state object's ETag before Phase 2g" >&2
+  exit 1
+fi
+cp cdk.out/manifest.json cdk.out/manifest.json.orig
+jq '.artifacts["assembly-CdkdGhostStage"] = {"type": "cdk:cloud-assembly", "properties": {"directoryName": "assembly-CdkdGhostStage", "displayName": "CdkdGhostStage"}}' \
+  cdk.out/manifest.json.orig > cdk.out/manifest.json
+for verb in deploy diff publish-assets destroy; do
+  case "${verb}" in
+    deploy) phrase="deploy"; extra="--yes" ;;
+    diff) phrase="diff"; extra="" ;;
+    publish-assets) phrase="publish assets for"; extra="" ;;
+    destroy) phrase="destroy"; extra="--force" ;;
+  esac
+  set +e
+  # ${extra} unquoted on purpose: empty for diff / publish-assets.
+  # shellcheck disable=SC2086
+  ALL_OUT=$(AWS_REGION="${REGION}" node "${LOCAL_DIST}" "${verb}" --all --app cdk.out \
+    --state-bucket "${STATE_BUCKET}" ${extra} 2>&1)
+  ALL_RC=$?
+  set -e
+  printf '%s\n' "${ALL_OUT}"
+  if [ "${ALL_RC}" -eq 0 ]; then
+    mv cdk.out/manifest.json.orig cdk.out/manifest.json
+    echo "FAIL: ${verb} --all with a ghost Stage exited 0, expected a refusal" >&2
+    exit 1
+  fi
+  # One needle: the verb, the survivor in its pattern form, and the ghost Stage
+  # named unhedged, since --all carries no pattern.
+  if ! printf '%s' "${ALL_OUT}" | grep -qF -- "--all would ${phrase} only part of this app; refusing. Synthesized: ${STACK} (${STACK_PATH}). Stage CdkdGhostStage failed to load"; then
+    mv cdk.out/manifest.json.orig cdk.out/manifest.json
+    echo "FAIL: ${verb} --all did not refuse naming the survivor and the ghost Stage" >&2
+    exit 1
+  fi
+  echo "    OK: ${verb} --all refused"
+done
+mv cdk.out/manifest.json.orig cdk.out/manifest.json
+ETAG_AFTER=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
+  echo "FAIL: state object changed across the refused --all runs (${ETAG_BEFORE} -> ${ETAG_AFTER})" >&2
+  exit 1
+fi
+if gone_probe aws lambda get-function --function-name "${ZIP_FN}" --region "${REGION}"; then
+  echo "FAIL: zip Lambda ${ZIP_FN} is gone after a refused destroy --all" >&2
+  exit 1
+fi
+echo "    OK: every --all refused, state and stack untouched"
 
 # --- Phase 3: destroy + leak assertions -------------------------------------
 echo "==> Phase 3: destroy"

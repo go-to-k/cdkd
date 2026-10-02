@@ -328,7 +328,7 @@ sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN bui
 sqs-esm-max-concurrency	2026-09-27T12:27:25Z	PASS	80	verify.sh	rc ok, orph clean (#3861)
 ssm-secure-dynamic-ref	2026-09-27T14:06:33Z	PASS	135	verify.sh	go-to-k/cdkd#3870 head e6df2f358: rc ok, 0 surviving object versions, orph clean
 stack-lock-renewal	2026-10-01T10:51:21Z	PASS	426	verify.sh	rc ok, orph clean (PR #4311 stack-lock guard)
-stage-assets	2026-10-01T18:54:38Z	PASS	130	verify.sh	rc ok, orph clean; #3507 export arm
+stage-assets	2026-10-02T03:48:56Z	PASS	115	verify.sh	rc ok, orph clean; #3507 phase 2g --all refusals
 stale-attribute-heal	2026-09-30T01:53:12Z	PASS	75	verify.sh	go-to-k/cdkd#4140 head bc9a46a8f: rc ok, orph clean; phase 3 diff previews the healed ParamArn
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
 state-info-command	2026-09-30T02:50:34Z	PASS	170	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers

@@ -35,7 +35,12 @@ import {
   resolveStateBucketWithDefault,
   resolveUseCdkBootstrapAssets,
 } from '../config-loader.js';
-import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
+import {
+  matchStacks,
+  describeStack,
+  renderAllWithFailedStages,
+  renderNoStackMatch,
+} from '../stack-matcher.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 
 interface PublishAssetsOptions {
@@ -137,6 +142,10 @@ async function publishAssetsCommand(
   }
 
   if (options.all) {
+    // A Stage that failed to load dropped its stacks from `allStacks`, so
+    // `--all` would publish part of the app's assets and exit 0 (#3507).
+    const partial = renderAllWithFailedStages('publish assets for', allStacks, result);
+    if (partial !== undefined) throw new Error(partial);
     targetStacks = allStacks;
   } else if (stackPatterns.length > 0) {
     targetStacks = matchStacks(allStacks, stackPatterns);

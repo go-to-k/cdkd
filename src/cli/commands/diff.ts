@@ -34,7 +34,12 @@ import {
   resolveStateBucketWithDefault,
   resolveUseCdkBootstrapAssets,
 } from '../config-loader.js';
-import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
+import {
+  matchStacks,
+  describeStack,
+  renderAllWithFailedStages,
+  renderNoStackMatch,
+} from '../stack-matcher.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
@@ -228,6 +233,10 @@ async function diffCommand(
     }
 
     if (options.all) {
+      // A Stage that failed to load dropped its stacks from `allStacks`, so
+      // `--all` would report on part of the app as if it were all of it (#3507).
+      const partial = renderAllWithFailedStages('diff', allStacks, result);
+      if (partial !== undefined) throw new Error(partial);
       targetStacks = allStacks;
     } else if (stackPatterns.length > 0) {
       targetStacks = matchStacks(allStacks, stackPatterns);
