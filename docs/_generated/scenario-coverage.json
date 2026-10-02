@@ -573,6 +573,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-write-only-create-only",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ci-cd",
       "annotated": true,
       "scenarios": []
@@ -3126,6 +3131,7 @@
     "cc-api-fallback-transitions",
     "cc-final-snapshot-handlers",
     "cc-to-sdk-reroute",
+    "cc-write-only-create-only",
     "cloudtrail-trail",
     "codebuild-project",
     "codedeploy-lambda-deployment-group",

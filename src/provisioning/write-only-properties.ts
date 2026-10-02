@@ -16,7 +16,9 @@
  * `/properties/Foo/Bar` strips to `Foo` — re-adding the whole containing
  * property is sufficient and matches terraform-provider-awscc's approach of
  * clearing write-only attribute paths in the prior state so the patch
- * generator always emits `add` ops for them).
+ * generator always emits `add` ops for them). A key whose value holds a
+ * create-only path a write-only path covers is the exception
+ * ({@link getTopLevelKeysHoldingUnreadableCreateOnly}, go-to-k/cdkd#4416).
  *
  * Only SUCCESSFUL lookups are cached per resource type for the process
  * (deploy) lifetime — `cloudformation:DescribeType` is throttled per-account,
@@ -33,6 +35,7 @@
  */
 
 import { describeTypeWithThrottleRetry, hasNoRegistrySchema } from './describe-type.js';
+import { parseCreateOnlyPropertyPointers } from './create-only-paths.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
 
@@ -53,11 +56,19 @@ const writeOnlyPropertiesCache = new Map<string, Promise<ReadonlySet<string>>>()
 const settledWriteOnlyProperties = new Map<string, ReadonlySet<string>>();
 
 /**
+ * Per settled success, the create-only paths a write-only path covers, read
+ * from the same DescribeType schema, for
+ * {@link getTopLevelKeysHoldingUnreadableCreateOnly}.
+ */
+const settledUnreadableCreateOnlyPaths = new Map<string, ReadonlyArray<readonly string[]>>();
+
+/**
  * Clear the per-type cache. Test-only helper.
  */
 export function clearWriteOnlyPropertiesCache(): void {
   writeOnlyPropertiesCache.clear();
   settledWriteOnlyProperties.clear();
+  settledUnreadableCreateOnlyPaths.clear();
 }
 
 /**
@@ -153,11 +164,16 @@ async function fetchTopLevelWriteOnlyProperties(
   const response = await describeTypeWithThrottleRetry(resourceType);
 
   const result = new Set<string>();
+  const paths: string[][] = [];
+  const unreadableCreateOnlyPaths: string[][] = [];
   // A response without a Schema (e.g. a still-registering / publisher type)
   // carries no writeOnlyProperties to extract; treat it as "none" without a
   // warning — it is a successful, cacheable lookup, not a failure.
   if (response.Schema) {
-    const parsed = JSON.parse(response.Schema) as { writeOnlyProperties?: unknown };
+    const parsed = JSON.parse(response.Schema) as {
+      writeOnlyProperties?: unknown;
+      createOnlyProperties?: unknown;
+    };
     const writeOnly = parsed.writeOnlyProperties;
     if (Array.isArray(writeOnly)) {
       for (const path of writeOnly) {
@@ -168,16 +184,76 @@ async function fetchTopLevelWriteOnlyProperties(
         const match = /^\/properties\/([^/]+)/.exec(path);
         if (match?.[1]) {
           result.add(unescapeJsonPointerSegment(match[1]));
+          paths.push(
+            path
+              .slice('/properties/'.length)
+              .split('/')
+              .filter((segment) => segment.length > 0)
+              .map(unescapeJsonPointerSegment)
+          );
         }
+      }
+    }
+    for (const createOnly of parseCreateOnlyPropertyPointers(parsed.createOnlyProperties)) {
+      if (paths.some((writeOnly) => pathCovers(writeOnly, createOnly))) {
+        unreadableCreateOnlyPaths.push(createOnly);
       }
     }
   }
 
+  settledUnreadableCreateOnlyPaths.set(resourceType, unreadableCreateOnlyPaths);
   logger.debug(
     `Resolved ${result.size} top-level write-only properties for ${resourceType}` +
       (result.size > 0 ? `: ${[...result].join(', ')}` : '')
   );
   return result;
+}
+
+/**
+ * The top-level keys of `properties` whose value holds a create-only path the
+ * read handler cannot return, because a write-only path covers it
+ * (go-to-k/cdkd#4416): `AWS::Cognito::ManagedLoginBranding` `ClientId`
+ * (write-only AND create-only), or an `AWS::Pipes::Pipe` `SourceParameters`
+ * (write-only) holding the create-only `KinesisStreamParameters/StartingPosition`.
+ *
+ * Cloud Control refuses any patch that brings such a value into the model it
+ * read, unchanged or not ("createOnlyProperties [...] cannot be updated";
+ * measured on both types), so `CloudControlProvider.update` must not re-add
+ * these keys. Judged on the VALUE, not the schema alone: an SQS-source pipe's
+ * `SourceParameters` holds no such path, and re-adding it is what keeps it.
+ *
+ * Read from the schema {@link getTopLevelWriteOnlyProperties} fetched, so call
+ * it after that lookup resolved; a failed lookup yields an empty set.
+ */
+export function getTopLevelKeysHoldingUnreadableCreateOnly(
+  resourceType: string,
+  properties: Record<string, unknown>
+): ReadonlySet<string> {
+  const result = new Set<string>();
+  for (const path of settledUnreadableCreateOnlyPaths.get(resourceType) ?? []) {
+    if (holdsValueAt(properties, path)) result.add(path[0]!);
+  }
+  return result;
+}
+
+/** A value is present at `path` under `node`; `*` stands for every array element. */
+function holdsValueAt(node: unknown, path: readonly string[]): boolean {
+  if (path.length === 0) return node !== undefined && node !== null;
+  const [segment, ...rest] = path;
+  if (segment === '*') {
+    return Array.isArray(node) && node.some((element) => holdsValueAt(element, rest));
+  }
+  if (typeof node !== 'object' || node === null || Array.isArray(node)) return false;
+  if (!Object.prototype.hasOwnProperty.call(node, segment!)) return false;
+  return holdsValueAt((node as Record<string, unknown>)[segment!], rest);
+}
+
+/**
+ * `prefix` equals or is an ancestor of `path`. Segments compare literally:
+ * schemas spell an array element `*` on both sides.
+ */
+function pathCovers(prefix: readonly string[], path: readonly string[]): boolean {
+  return prefix.length <= path.length && prefix.every((segment, index) => segment === path[index]);
 }
 
 /**

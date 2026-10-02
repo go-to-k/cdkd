@@ -730,7 +730,12 @@ always carries `add` ops for write-only properties present in the desired
 properties. Cloud Control applies patches read-modify-write and read handlers
 cannot return write-only properties, so any write-only property absent from
 the patch would be dropped from the desired state on every UPDATE (issue #809;
-e.g. `AWS::ECS::Service.VolumeConfigurations`). If `DescribeType` is
+e.g. `AWS::ECS::Service.VolumeConfigurations`). The exception is a
+write-only property whose value holds a create-only path a write-only path
+covers (`AWS::Cognito::ManagedLoginBranding.ClientId`, a Kinesis-source
+`AWS::Pipes::Pipe`'s `SourceParameters`): Cloud Control refuses any patch
+bringing such a value in, even unchanged, so it stays on the previous side and
+an unchanged one sends no op (issue #4416). If `DescribeType` is
 unavailable (missing permission, throttling), cdkd warns and falls back to
 the minimal patch.
 
