@@ -35,7 +35,6 @@ import {
   type LustreReadCacheSizingMode,
   type Tag,
 } from '@aws-sdk/client-fsx';
-import { createHash } from 'node:crypto';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getLogger } from '../../utils/logger.js';
@@ -43,6 +42,10 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
+import { stackScopedCreateToken } from './idempotency-token.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
+import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -312,6 +315,15 @@ export class FSxFileSystemProvider implements ResourceProvider {
   private client: FSxClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('FSxFileSystemProvider');
+  /**
+   * When THIS process first sent each ClientRequestToken whose create has not
+   * yet returned (go-to-k/cdkd#4428). FSx answers a repeated token with the
+   * file system already holding it, so a retry is handed the one its earlier
+   * attempt made — or, the token being deterministic per stack, one an earlier
+   * destroy RETAINED. `create()` takes -- records, or cleans up on failure --
+   * only a file system created after the first send, and refuses any other.
+   */
+  private readonly createTokenFirstSentAt = new Map<string, number>();
 
   private readonly pollIntervalMs: number;
   private readonly maxWaitMs: number;
@@ -426,14 +438,16 @@ export class FSxFileSystemProvider implements ResourceProvider {
 
     this.logger.debug(`Creating FSx FileSystem ${logicalId}`);
 
-    // ClientRequestToken is FSx's idempotency key: a retried Create with
-    // the SAME token returns the existing file system instead of creating
-    // a duplicate (load-bearing for a lost-response retry under the deploy
-    // engine's outer withRetry). It must be STABLE across retries of THIS
-    // create but DIFFER between the old and new file system during a
-    // property-driven REPLACEMENT — hash ONLY the immutable (createOnly)
-    // inputs in a fixed order (same rationale as EFSProvider's
-    // CreationToken derivation in efs-provider.ts).
+    // ClientRequestToken is FSx's idempotency key: a Create with a token
+    // whose file system still exists and whose parameters match is answered
+    // with THAT file system instead of a new one (load-bearing for a
+    // lost-response retry under the deploy engine's outer withRetry). It must
+    // be STABLE across retries of THIS create, DIFFER between the old and new
+    // file system during a property-driven REPLACEMENT (so hash ONLY the
+    // immutable, createOnly inputs), and be SCOPED to this stack — a token
+    // shared with another stack's copy of this logical id is handed that
+    // stack's file system (go-to-k/cdkd#4428). `stackScopedCreateToken` owns
+    // all three; EFSProvider's CreationToken takes the same derivation.
     //
     // NOTE the hash deliberately covers only the REGISTRY-createOnly
     // top-level properties, not the provider-classified immutable Lustre
@@ -442,23 +456,19 @@ export class FSxFileSystemProvider implements ResourceProvider {
     // engine's --replace replacement is DELETE → wait-for-gone → CREATE,
     // so the old file system (and its token) no longer exists when the new
     // create runs — no token collision is possible on that path.
-    const tokenHash = createHash('sha256')
-      .update(
-        [
-          properties['FileSystemType'],
-          properties['SubnetIds'],
-          properties['SecurityGroupIds'],
-          properties['KmsKeyId'],
-          properties['BackupId'],
-        ]
-          .map((v) => JSON.stringify(v ?? null))
-          .join(' ')
-      )
-      .digest('hex')
-      .slice(0, 12);
-    // FSx ClientRequestToken max length is 63 chars — truncate long CDK
-    // logical ids and keep the hash suffix for uniqueness.
-    const clientRequestToken = `cdkd-${logicalId.slice(0, 45)}-${tokenHash}`;
+    //
+    // FSx ClientRequestToken max length is 63 chars.
+    const clientRequestToken = stackScopedCreateToken({
+      logicalId,
+      immutableInputs: [
+        properties['FileSystemType'],
+        properties['SubnetIds'],
+        properties['SecurityGroupIds'],
+        properties['KmsKeyId'],
+        properties['BackupId'],
+      ],
+      maxLength: 63,
+    });
 
     const common = {
       ClientRequestToken: clientRequestToken,
@@ -490,40 +500,77 @@ export class FSxFileSystemProvider implements ResourceProvider {
     };
 
     let fileSystemId: string | undefined;
+    const firstSentAt = this.createTokenFirstSentAt.get(clientRequestToken) ?? Date.now();
+    this.createTokenFirstSentAt.set(clientRequestToken, firstSentAt);
 
     try {
       let created: FileSystem | undefined;
+      // Recorded per command: AWS's `Date` for the answered attempt, so the
+      // creation-time gate below runs on AWS's clock, not this host's.
+      let createCommand: object;
       if (backupId !== undefined) {
         // BackupId routes to a DIFFERENT API — CreateFileSystemFromBackup
         // (FileSystemType is derived from the backup and not a valid param).
-        const response = await this.getClient().send(
+        const command = withServerClock(
           new CreateFileSystemFromBackupCommand({ ...common, BackupId: backupId })
         );
+        createCommand = command;
+        const response = await this.getClient().send(command);
         created = response.FileSystem;
       } else {
-        const response = await this.getClient().send(
+        const command = withServerClock(
           new CreateFileSystemCommand({
             ...common,
             FileSystemType: fileSystemType as FileSystemType,
           })
         );
+        createCommand = command;
+        const response = await this.getClient().send(command);
         created = response.FileSystem;
       }
 
-      fileSystemId = created?.FileSystemId;
-      if (!fileSystemId) {
+      const returnedId = created?.FileSystemId;
+      if (!returnedId) {
         throw new ProvisioningError(
           `FSx CreateFileSystem for ${logicalId} returned no FileSystemId`,
           resourceType,
           logicalId
         );
       }
+      // FSx answers a token that still names a file system with THAT file
+      // system. The token is deterministic per stack, so besides this
+      // create's own earlier attempt it is also held by one an earlier destroy
+      // kept (RETAIN / RetainExceptOnCreate) or one a `state rm` forgot.
+      // Recording such a file system as CREATED would hand it to every delete
+      // path a create owns -- the cleanup below, a rollback of this deploy --
+      // so only one created after this create's FIRST send is taken; anything
+      // older, or carrying no creation time, is refused and left untouched.
+      // The comparison is on AWS's clock (`earliestOwnCreationTime`): a host
+      // clock running fast must not refuse an ordinary create.
+      const createdAt = created?.CreationTime?.getTime();
+      if (
+        createdAt === undefined ||
+        createdAt < earliestOwnCreationTime(firstSentAt, serverClockReading(createCommand))
+      ) {
+        const inspect = withPasteableAwsProfile('aws fsx describe-file-systems');
+        throw markNonRetryable(
+          new ProvisioningError(
+            safeMsg`FSx answered the create of ${logicalId} with file system ${returnedId}, which ${
+              createdAt === undefined ? 'carries no creation time' : 'predates this create'
+            }: the create token cdkd derives for this stack's file system is held by it, and it is NOT recorded in cdkd state. It is either kept by an earlier destroy of this stack (an FSx file system's RemovalPolicy defaults to RETAIN) or left over from an earlier interrupted deploy, and it may hold data, so cdkd neither records nor deletes it. Inspect it with: ${inspect} --file-system-ids ${returnedId} -- then import it into this stack, or delete it once you are sure its data is not needed, and deploy again.`,
+            resourceType,
+            logicalId
+          )
+        );
+      }
+      fileSystemId = returnedId;
 
       // FSx creation is async (typically 5-10 min for Lustre SCRATCH,
       // longer for PERSISTENT) — poll until AVAILABLE.
       const fs = await this.waitForFileSystemAvailable(fileSystemId, logicalId, resourceType);
 
       this.logger.debug(`Successfully created FSx FileSystem ${logicalId}: ${fileSystemId}`);
+      this.createTokenFirstSentAt.delete(clientRequestToken);
 
       return {
         physicalId: fileSystemId,
@@ -534,10 +581,13 @@ export class FSxFileSystemProvider implements ResourceProvider {
       // file system went FAILED, or the wait timed out), create() is about
       // to throw without returning a physicalId — the deploy engine cannot
       // roll it back, and an orphaned FSx file system bills per hour.
-      // Best-effort delete it here.
+      // Best-effort delete it here. `fileSystemId` is set only once the
+      // returned file system passed the creation-time check above, so this
+      // never deletes one FSx handed back from before this create.
       if (fileSystemId !== undefined) {
         try {
           await this.getClient().send(new DeleteFileSystemCommand({ FileSystemId: fileSystemId }));
+          this.createTokenFirstSentAt.delete(clientRequestToken);
           this.logger.warn(`Rolled back partially-created FSx FileSystem ${fileSystemId}`);
         } catch (cleanupError) {
           this.logger.warn(

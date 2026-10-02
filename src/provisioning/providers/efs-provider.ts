@@ -24,6 +24,9 @@ import {
   MountTargetNotFound,
   AccessPointNotFound,
   AccessPointAlreadyExists,
+  FileSystemAlreadyExists,
+  type CreateFileSystemCommandInput,
+  type FileSystemDescription,
   type PerformanceMode,
   type ThroughputMode,
   type LifecyclePolicy,
@@ -34,20 +37,22 @@ import {
   type PosixUser,
   type RootDirectory,
 } from '@aws-sdk/client-efs';
-import { createHash } from 'node:crypto';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { acquireIdempotencyToken } from './idempotency-token.js';
+import { acquireIdempotencyToken, stackScopedCreateToken } from './idempotency-token.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
 import {
+  isAmbiguousOutcomeError,
   isThrottlingError,
   isTransientServerError,
   markNonRetryable,
+  markReplayMayCollide,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import type {
@@ -68,6 +73,7 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
 
 /**
  * Whether an access point's `PosixUser` is the one a `CreateAccessPoint`
@@ -137,6 +143,17 @@ export class EFSProvider implements ResourceProvider {
   private client: EFSClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('EFSProvider');
+  /**
+   * File-system creation tokens under which THIS process may hold a file
+   * system that no `createFileSystem` call has yet returned or deleted: the
+   * create was answered and a later step failed, or the create ended
+   * AMBIGUOUS (a 5xx, a timeout, a reset) with no response read. Each maps to
+   * the time of the FIRST such send. Only such a token's
+   * `FileSystemAlreadyExists` can be a replay of this process's own create —
+   * see `sendCreateFileSystem`. The token is stack- and region-scoped, so one
+   * entry never speaks for another stack.
+   */
+  private readonly unconfirmedCreationTokens = new Map<string, number>();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -534,37 +551,29 @@ export class EFSProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     log.debug(`Creating EFS FileSystem ${logicalId}`);
 
-    // The CreationToken is EFS's idempotency key: a retried CreateFileSystem
-    // with the SAME token returns the existing file system instead of creating
-    // a duplicate (load-bearing for a lost-response retry). It must therefore be
-    // STABLE across `withRetry` re-invocations of THIS create — but it must also
-    // DIFFER between the old and new file system during a property-driven
-    // REPLACEMENT (the deploy engine creates the new FS while the old still
-    // exists; a bare `cdkd-${logicalId}` token collides with the old FS's token
-    // and EFS rejects the create with "already exists with creation token ..."
-    // because the immutable params differ). Hash ONLY the immutable (createOnly)
-    // inputs, in a FIXED order, each value serialized independently with
-    // `JSON.stringify`: identical immutable inputs (a retry) hash to the same
-    // token, while a replacement — which by definition changed an immutable
-    // property — hashes to a different token, so the new FS coexists with the
-    // old. Per-value `JSON.stringify` (rather than `JSON.stringify(obj,
-    // allowlist)`, whose array replacer recursively strips nested keys) keeps
-    // the digest faithful for any value shape — defensive even though these
-    // four properties are always intrinsic-resolved scalars by create() time.
-    const tokenHash = createHash('sha256')
-      .update(
-        [
-          properties['AvailabilityZoneName'],
-          properties['Encrypted'],
-          properties['KmsKeyId'],
-          properties['PerformanceMode'],
-        ]
-          .map((v) => JSON.stringify(v ?? null))
-          .join('\0')
-      )
-      .digest('hex')
-      .slice(0, 12);
-    const creationToken = `cdkd-${logicalId}-${tokenHash}`;
+    // The CreationToken is EFS's idempotency key. A CreateFileSystem whose
+    // token is already bound to a file system in this account and region does
+    // NOT create a second one: EFS refuses it with `FileSystemAlreadyExists`,
+    // naming the existing file system's id (CreateFileSystem API reference).
+    // So the token must be STABLE across `withRetry` re-invocations of THIS
+    // create — a replay after a lost response then learns the id from that
+    // refusal, see `sendCreateFileSystem` — DIFFER between the old and new
+    // file system during a property-driven REPLACEMENT (the deploy engine
+    // creates the new FS while the old still exists, so hash ONLY the
+    // immutable, createOnly inputs), and be SCOPED to this stack, or a second
+    // copy of this stack in the account is refused (go-to-k/cdkd#4428).
+    // `stackScopedCreateToken` owns all three. EFS caps the token at 64
+    // characters.
+    const creationToken = stackScopedCreateToken({
+      logicalId,
+      immutableInputs: [
+        properties['AvailabilityZoneName'],
+        properties['Encrypted'],
+        properties['KmsKeyId'],
+        properties['PerformanceMode'],
+      ],
+      maxLength: 64,
+    });
 
     const tags = properties['FileSystemTags'] as Array<{ Key: string; Value: string }> | undefined;
 
@@ -574,29 +583,32 @@ export class EFSProvider implements ResourceProvider {
     let fileSystemId: string | undefined;
 
     try {
-      const response = await this.getClient().send(
-        new CreateFileSystemCommand({
-          CreationToken: creationToken,
-          Encrypted: properties['Encrypted'] as boolean | undefined,
-          KmsKeyId: properties['KmsKeyId'] as string | undefined,
-          PerformanceMode: properties['PerformanceMode'] as PerformanceMode | undefined,
-          ThroughputMode: properties['ThroughputMode'] as ThroughputMode | undefined,
-          ProvisionedThroughputInMibps: properties['ProvisionedThroughputInMibps'] as
-            | number
-            | undefined,
-          // AvailabilityZoneName — One Zone EFS. Rides on CreateFileSystem and
-          // is immutable (create-only); a change later is routed through
-          // DELETE+CREATE by the replacement-detection layer.
-          AvailabilityZoneName: properties['AvailabilityZoneName'] as string | undefined,
-          Tags: tags?.map((t) => ({ Key: t.Key, Value: t.Value })),
-        })
-      );
+      const created = await this.sendCreateFileSystem(logicalId, resourceType, {
+        CreationToken: creationToken,
+        Encrypted: properties['Encrypted'] as boolean | undefined,
+        KmsKeyId: properties['KmsKeyId'] as string | undefined,
+        PerformanceMode: properties['PerformanceMode'] as PerformanceMode | undefined,
+        ThroughputMode: properties['ThroughputMode'] as ThroughputMode | undefined,
+        ProvisionedThroughputInMibps: properties['ProvisionedThroughputInMibps'] as
+          | number
+          | undefined,
+        // AvailabilityZoneName — One Zone EFS. Rides on CreateFileSystem and
+        // is immutable (create-only); a change later is routed through
+        // DELETE+CREATE by the replacement-detection layer.
+        AvailabilityZoneName: properties['AvailabilityZoneName'] as string | undefined,
+        Tags: tags?.map((t) => ({ Key: t.Key, Value: t.Value })),
+      });
 
-      fileSystemId = response.FileSystemId!;
-      const arn = response.FileSystemArn!;
+      fileSystemId = created.fileSystemId;
 
       // Wait for FileSystem to become available
-      await this.waitForFileSystemAvailable(fileSystemId, logicalId, resourceType, log);
+      const available = await this.waitForFileSystemAvailable(
+        fileSystemId,
+        logicalId,
+        resourceType,
+        log
+      );
+      const arn = created.arn ?? available.FileSystemArn;
 
       // LifecyclePolicies / BackupPolicy / FileSystemPolicy /
       // FileSystemProtection do NOT ride on CreateFileSystem — each is a
@@ -615,6 +627,8 @@ export class EFSProvider implements ResourceProvider {
       await this.applyFileSystemProtection(fileSystemId, properties['FileSystemProtection'], log);
 
       log.debug(`Successfully created EFS FileSystem ${logicalId}: ${fileSystemId}`);
+      // Confirmed: a later create with this token is a NEW create, not a replay.
+      this.unconfirmedCreationTokens.delete(creationToken);
 
       return {
         physicalId: fileSystemId,
@@ -635,6 +649,8 @@ export class EFSProvider implements ResourceProvider {
         markAuxiliaryFailure(error, logicalId);
         try {
           await this.getClient().send(new DeleteFileSystemCommand({ FileSystemId: fileSystemId }));
+          // Deleted, so no longer a file system a replay may adopt.
+          this.unconfirmedCreationTokens.delete(creationToken);
           log.debug(`Rolled back partially-created EFS FileSystem ${fileSystemId}`);
         } catch (cleanupError) {
           log.warn(
@@ -659,6 +675,195 @@ export class EFSProvider implements ResourceProvider {
           )
       );
     }
+  }
+
+  /**
+   * Send `CreateFileSystem`, and recognise a REPLAY of this process's own
+   * create (go-to-k/cdkd#4428).
+   *
+   * EFS's two documents disagree about a repeated creation token. The
+   * CreateFileSystem API reference says the repeat is refused with
+   * `FileSystemAlreadyExists`, naming the existing file system's id, and that
+   * this refusal is how a client "can learn of its existence"; the EFS User
+   * Guide's "Creation token and idempotency" section says a reuse within one
+   * minute of a successful request returns the original request's details.
+   * Both are handled. A success is taken only when the file system it
+   * returns was created after this create's first send -- otherwise it is a
+   * file system this create did not make and is refused as below. Every such
+   * comparison runs on AWS's clock (`earliestOwnCreationTime`, from the
+   * response's HTTP `Date`), so a host clock running fast never refuses an
+   * ordinary create. A refusal is read by the
+   * state of the file system it names:
+   *
+   *  - `deleting` / `deleted`, or a read-back that finds it gone or fails
+   *    transiently: the token is still bound to a file system on its way out
+   *    — in steady state, the one a delete-first re-create
+   *    (`--recreate-via-*`, the `--replace` delete-first fallback, a rollback
+   *    re-create) just deleted, since `deleteFileSystem` does not wait for it
+   *    to be gone — or ownership is unknown. EFS's own error is rethrown so the
+   *    caller's message keeps its "already exists" wording, which those sites'
+   *    retry filter (`isRecreateRetryableError`, message-based) waits out. It
+   *    is stamped `markReplayMayCollide`, so `isNameCollisionErrorFrom`
+   *    withholds the collision verdict and no delete-first site acts on a
+   *    holder whose ownership cdkd has not established.
+   *  - live, and this process may have made it: ADOPTED. That needs BOTH an
+   *    earlier attempt of this create that sent the token and never saw it
+   *    confirmed (an AMBIGUOUS failure, or an answered create whose later step
+   *    failed without the cleanup deleting it) or an SDK resend of this very
+   *    request (`$metadata.attempts > 1`), AND a `CreationTime` no earlier than
+   *    the first such send, on AWS's clock. The time
+   *    check is what keeps a file system an earlier destroy RETAINED (CDK's
+   *    `efs.FileSystem` default), which carries this same deterministic token,
+   *    from being adopted and then deleted by the partial-create cleanup.
+   *  - anything else: refused, non-retryably, in words a name-collision
+   *    classifier does not match — a `--replace` delete-first would delete the
+   *    LIVE old file system and then collide again, since what holds the token
+   *    is not it.
+   */
+  private async sendCreateFileSystem(
+    logicalId: string,
+    resourceType: string,
+    input: CreateFileSystemCommandInput & { CreationToken: string }
+  ): Promise<{ fileSystemId: string; arn: string | undefined }> {
+    const token = input.CreationToken;
+    const sentAt = Date.now();
+    const earlierSentAt = this.unconfirmedCreationTokens.get(token);
+    const firstSentAt = earlierSentAt ?? sentAt;
+    // Records AWS's `Date` for the answered attempt -- the refusal's too.
+    const command = withServerClock(new CreateFileSystemCommand(input));
+    try {
+      const response = await this.getClient().send(command);
+      if (!response.FileSystemId) {
+        throw new ProvisioningError(
+          `EFS CreateFileSystem for ${logicalId} returned no FileSystemId`,
+          resourceType,
+          logicalId
+        );
+      }
+      // The EFS User Guide reads a reuse within about a minute of a
+      // successful request as RETURNING that request's file system, so a
+      // success can also hand back one this create did not make -- one an
+      // earlier destroy kept a moment ago. Taken only when created after this
+      // create's first send, as on the refusal arm below.
+      const createdAt = response.CreationTime?.getTime();
+      if (
+        createdAt === undefined ||
+        createdAt < earliestOwnCreationTime(firstSentAt, serverClockReading(command))
+      ) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            this.foreignHolderMessage(
+              logicalId,
+              token,
+              response.FileSystemId,
+              createdAt === undefined
+                ? ' The create answered with no creation time, so cdkd cannot tell whether this deploy made it.'
+                : ' The create answered with it, but it predates this create.'
+            ),
+            resourceType,
+            logicalId
+          )
+        );
+      }
+      // This process now holds a file system under the token. Until
+      // `createFileSystem` returns it (or deletes it), a retry's refusal is
+      // this create's own; that method drops the entry at either point.
+      this.unconfirmedCreationTokens.set(token, firstSentAt);
+      return { fileSystemId: response.FileSystemId, arn: response.FileSystemArn };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const alreadyExists =
+        error instanceof FileSystemAlreadyExists ||
+        (error as { name?: string } | undefined)?.name === 'FileSystemAlreadyExists';
+      if (!alreadyExists) {
+        // Only an ambiguous failure can have left a file system behind; a
+        // declared failure (a 4xx, a throttle) made none, so it adds nothing,
+        // and it clears nothing an EARLIER ambiguous attempt recorded.
+        if (isAmbiguousOutcomeError(error)) {
+          this.unconfirmedCreationTokens.set(token, firstSentAt);
+        }
+        throw error;
+      }
+      const named = (error as { FileSystemId?: unknown }).FileSystemId;
+      const holderId = typeof named === 'string' && named !== '' ? named : undefined;
+      const attempts = (error as { $metadata?: { attempts?: unknown } }).$metadata?.attempts;
+      const sdkReplayed = typeof attempts === 'number' && attempts > 1;
+
+      let holder: FileSystemDescription | undefined;
+      let holderUnreadable: string | undefined;
+      if (holderId !== undefined) {
+        try {
+          const described = await this.getClient().send(
+            new DescribeFileSystemsCommand({ FileSystemId: holderId })
+          );
+          holder = described.FileSystems?.[0];
+        } catch (describeError) {
+          // Gone by now (it finished deleting after the refusal), or a read
+          // that may answer on the next attempt: EFS's own error goes back to
+          // the caller, whose retry decides — a delete-first re-create's next
+          // attempt finds the token free. Only a definite refusal to read (an
+          // access denial) is reported as unreadable.
+          if (
+            describeError instanceof FileSystemNotFound ||
+            (describeError as { name?: string } | undefined)?.name === 'FileSystemNotFound' ||
+            isTransientServerError(describeError) ||
+            isThrottlingError(describeError)
+          ) {
+            throw markReplayMayCollide(error);
+          }
+          holderUnreadable = describeAwsFailure(describeError).summary;
+        }
+      }
+
+      if (holder?.LifeCycleState === 'deleting' || holder?.LifeCycleState === 'deleted') {
+        throw markReplayMayCollide(error);
+      }
+
+      const createdAt = holder?.CreationTime?.getTime();
+      const madeAfterFirstSend =
+        createdAt !== undefined &&
+        createdAt >= earliestOwnCreationTime(firstSentAt, serverClockReading(command));
+      if (
+        holderId !== undefined &&
+        (earlierSentAt !== undefined || sdkReplayed) &&
+        madeAfterFirstSend
+      ) {
+        this.logger.debug(
+          safeMsg`EFS CreateFileSystem for ${logicalId} was a replay of this deploy's own create; using ${holderId}`
+        );
+        this.unconfirmedCreationTokens.set(token, firstSentAt);
+        return { fileSystemId: holderId, arn: holder?.FileSystemArn };
+      }
+
+      this.unconfirmedCreationTokens.delete(token);
+      const why =
+        holderUnreadable !== undefined
+          ? ` cdkd could not read it back (${holderUnreadable}), so it cannot tell whether this deploy made it.`
+          : '';
+      throw markNonRetryable(
+        new ProvisioningError(
+          this.foreignHolderMessage(logicalId, token, holderId, why),
+          resourceType,
+          logicalId,
+          undefined,
+          error instanceof Error ? error : undefined
+        )
+      );
+    }
+  }
+
+  /**
+   * The refusal message for a creation token held by a file system this create
+   * did not make (go-to-k/cdkd#4428). Thrown non-retryable, and worded so no
+   * name-collision classifier reads it as one.
+   */
+  private foreignHolderMessage(
+    logicalId: string,
+    token: string,
+    holderId: string | undefined,
+    why: string
+  ): string {
+    return `EFS refused CreateFileSystem for ${logicalId}: the creation token cdkd derives for this stack's file system (${token}) is held by file system ${holderId ?? '(not named by EFS)'}, which is NOT recorded in cdkd state and was not created by this deploy.${why} It is either kept by an earlier destroy of this stack (an EFS file system's RemovalPolicy defaults to RETAIN) or left over from an earlier interrupted deploy, and it may hold data. Inspect it with: ${withPasteableAwsProfile('aws efs describe-file-systems')} --creation-token ${token} -- then import it into this stack, or delete it once you are sure its data is not needed, and deploy again.`;
   }
 
   // ─── Post-ACTIVE control-plane helpers ─────────────────────────────
@@ -878,7 +1083,7 @@ export class EFSProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     log: MaskedLogSinks
-  ): Promise<void> {
+  ): Promise<FileSystemDescription> {
     const pollIntervalMs = 2000;
     const maxWaitMs = 60000;
     const startTime = Date.now();
@@ -889,7 +1094,7 @@ export class EFSProvider implements ResourceProvider {
       );
       const fs = response.FileSystems?.[0];
       if (fs?.LifeCycleState === 'available') {
-        return;
+        return fs;
       }
       log.debug(`FileSystem ${fileSystemId} state: ${fs?.LifeCycleState ?? 'unknown'}, waiting...`);
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));

@@ -7273,15 +7273,6 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     ['src/deployment/secret-redaction/cross-stack.ts', 1, 'CROSS_STACK_KEY_SEPARATOR: see the maskedOutputKey row above'],
     ['src/deployment/secret-redaction/positions.ts', 1, 'UNKNOWN_PART_PLACEHOLDER (a sentinel): see the maskedOutputKey row above'],
     [
-      'src/provisioning/providers/efs-provider.ts',
-      1,
-      'join() over elements ALREADY through JSON.stringify, which escapes every ' +
-        'character below 0x20 — so no element can carry a raw NUL and the join IS ' +
-        'injective. That clause is the whole justification: the digest becomes an EFS ' +
-        'CreationToken, a creation-idempotency identity, so dropping the .map() would ' +
-        'leave a real identity key with no argument behind it',
-    ],
-    [
       'src/provisioning/providers/idempotency-token.ts',
       2,
       'the DIGEST input, where the separator is domain separation rather than ' +

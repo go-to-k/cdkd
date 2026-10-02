@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll, afterEach } from 'vite-plus/test';
 import { canonicalizeUnorderedArraysAtPaths } from '../../../../src/analyzer/drift-normalize.js';
 
 const mockSend = vi.hoisted(() => vi.fn());
@@ -53,6 +53,22 @@ import {
 } from '../../../../src/utils/error-handler.js';
 import { getLogger } from '../../../../src/utils/logger.js';
 import { prepareRemovalForUpdate } from '../../../../src/provisioning/update-removal.js';
+import {
+  isMarkedNonRetryable,
+  isNameCollisionErrorFrom,
+} from '../../../../src/deployment/retryable-errors.js';
+import { withStackName } from '../../../../src/provisioning/resource-name.js';
+import { recordServerClockForTests } from '../../../../src/provisioning/providers/server-clock.js';
+import { allowUnscopedCreateTokensForTests } from '../../../../src/provisioning/providers/idempotency-token.js';
+
+// These cases drive create() directly, outside a withStackName scope, so the
+// stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
+beforeAll(() => {
+  allowUnscopedCreateTokensForTests(true);
+});
+afterAll(() => {
+  allowUnscopedCreateTokensForTests(false);
+});
 
 /**
  * The mocked child logger the provider writes to. `child: () => childLogger`
@@ -198,7 +214,7 @@ describe('FSxFileSystemProvider create', () => {
   it('sends CreateFileSystem, polls through CREATING to AVAILABLE, and returns attributes', async () => {
     routeSend({
       CreateFileSystemCommand: {
-        FileSystem: { FileSystemId: FS_ID, Lifecycle: 'CREATING' },
+        FileSystem: { FileSystemId: FS_ID, Lifecycle: 'CREATING', CreationTime: new Date() },
       },
       DescribeFileSystemsCommand: [
         { FileSystems: [{ FileSystemId: FS_ID, Lifecycle: 'CREATING' }] },
@@ -230,7 +246,7 @@ describe('FSxFileSystemProvider create', () => {
 
   it('coerces string-typed numeric properties to numbers', async () => {
     routeSend({
-      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
       DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
     });
 
@@ -256,7 +272,7 @@ describe('FSxFileSystemProvider create', () => {
 
   it('derives a STABLE ClientRequestToken across retries but a DIFFERENT one when an immutable input changes', async () => {
     routeSend({
-      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
       DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
     });
 
@@ -275,9 +291,196 @@ describe('FSxFileSystemProvider create', () => {
     );
   });
 
+  it('scopes the ClientRequestToken to the stack, so a second stack copy is not handed the first one\'s file system (go-to-k/cdkd#4428)', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const provider = newProvider();
+    await withStackName('DevStack', () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
+    await withStackName('StagingStack', () =>
+      provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS })
+    );
+    await withStackName('DevStack', () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
+
+    const tokens = callsOf(CreateFileSystemCommand).map((c) => c.input['ClientRequestToken']);
+    expect(tokens[0]).not.toBe(tokens[1]);
+    expect(tokens[0]).toBe(tokens[2]);
+  });
+
+  it('keeps a long logical id\'s ClientRequestToken within FSx\'s 63-character limit', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().create(`Fs${'X'.repeat(120)}`, RESOURCE_TYPE, { ...LUSTRE_PROPS });
+
+    const [create] = callsOf(CreateFileSystemCommand);
+    expect(String(create.input['ClientRequestToken']).length).toBe(63);
+  });
+
+  describe('a handed-back file system that predates this create (go-to-k/cdkd#4428)', () => {
+    // FSx answers this stack's deterministic token with a file system an
+    // earlier destroy kept (RETAIN / RetainExceptOnCreate) or a `state rm`
+    // forgot. Recording it as CREATED would let this deploy's rollback delete
+    // it, and deleting it in the cleanup would take its data with it.
+    const T0 = new Date('2026-10-02T00:00:00Z').getTime();
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(T0);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /**
+     * Answer the create with a file system created at `creationTime`; when
+     * `serverDateMs` is given, the response also carries AWS's `Date` (what
+     * `withServerClock` records off the wire), else it carries none.
+     */
+    const createAnswering = async (
+      creationTime: Date | undefined,
+      serverDateMs?: number
+    ): Promise<unknown> => {
+      routeSend({
+        CreateFileSystemCommand: {
+          FileSystem: { FileSystemId: FS_ID, ...(creationTime ? { CreationTime: creationTime } : {}) },
+        },
+        DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+      });
+      const routed = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation(async (cmd: object) => {
+        if (serverDateMs !== undefined && cmd instanceof CreateFileSystemCommand) {
+          recordServerClockForTests(cmd, {
+            sentAtMs: Date.now(),
+            receivedAtMs: Date.now(),
+            serverDateMs,
+          });
+        }
+        return routed(cmd);
+      });
+      return newProvider()
+        .create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS })
+        .then(
+          (r) => r,
+          (e: unknown) => e
+        );
+    };
+
+    it('is refused, non-retryably and not as a name collision, and neither recorded nor deleted', async () => {
+      const result = await createAnswering(new Date(T0 - 3_600_000), T0);
+      expect(result).toBeInstanceOf(ProvisioningError);
+      const message = (result as Error).message;
+      expect(message).toContain(FS_ID);
+      expect(message).toContain('predates this create');
+      expect(message).toContain('--file-system-ids');
+      expect(isMarkedNonRetryable(result)).toBe(true);
+      expect(isNameCollisionErrorFrom(result, 'MyFs')).toBe(false);
+      expect(callsOf(DeleteFileSystemCommand)).toHaveLength(0);
+      // Refused before the wait: nothing about it is read or recorded.
+      expect(callsOf(DescribeFileSystemsCommand)).toHaveLength(0);
+    });
+
+    it('is refused when it carries no CreationTime', async () => {
+      const result = await createAnswering(undefined, T0);
+      expect((result as Error).message).toContain('carries no creation time');
+      expect(callsOf(DeleteFileSystemCommand)).toHaveLength(0);
+    });
+
+    it('is taken when created 4s before the send on AWS\'s clock (inside the margin)', async () => {
+      const result = await createAnswering(new Date(T0 - 4_000), T0);
+      expect((result as { physicalId: string }).physicalId).toBe(FS_ID);
+    });
+
+    it('is refused when created 6s before the send on AWS\'s clock (outside the margin)', async () => {
+      const result = await createAnswering(new Date(T0 - 6_000), T0);
+      expect((result as Error).message).toContain('predates this create');
+    });
+
+    it('does NOT refuse an ordinary create when the local clock runs 30s ahead of AWS', async () => {
+      // This host reads T0+30s; AWS stamped the file system at T0 and answered
+      // with `Date: T0+1s`. A local-clock comparison would refuse it.
+      vi.setSystemTime(T0 + 30_000);
+      const result = await createAnswering(new Date(T0), T0 + 1_000);
+      expect((result as { physicalId: string }).physicalId).toBe(FS_ID);
+    });
+
+    it('still refuses a file system kept hours ago when the local clock runs ahead', async () => {
+      vi.setSystemTime(T0 + 30_000);
+      const result = await createAnswering(new Date(T0 - 3 * 3_600_000), T0 + 1_000);
+      expect((result as Error).message).toContain('predates this create');
+    });
+
+    describe('with no Date header (falls back to the 5-minute SigV4 bound on the local clock)', () => {
+      it('takes a file system created a minute before the send', async () => {
+        const result = await createAnswering(new Date(T0 - 60_000));
+        expect((result as { physicalId: string }).physicalId).toBe(FS_ID);
+      });
+
+      it('refuses one created six minutes before the send', async () => {
+        const result = await createAnswering(new Date(T0 - 6 * 60_000));
+        expect((result as Error).message).toContain('predates this create');
+      });
+    });
+  });
+
+  it('still rolls back a file system an EARLIER attempt of this create made, when a retry is handed it back', async () => {
+    // Only `Date` is faked: the retry runs a minute after the first attempt,
+    // past the clock-skew margin, so only the FIRST send's time admits the
+    // file system that attempt made.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const provider = newProvider();
+      const firstAttemptAt = new Date('2026-10-02T00:00:00Z');
+      vi.setSystemTime(firstAttemptAt);
+      let call = 0;
+      mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+        const name = cmd.constructor.name;
+        if (name === 'CreateFileSystemCommand') {
+          call += 1;
+          if (call === 1) {
+            // FSx made the file system; the response was lost.
+            throw Object.assign(new Error('internal'), { $metadata: { httpStatusCode: 500 } });
+          }
+          // AWS's clock agrees with ours: only the memoised FIRST send, not
+          // this retry's own, admits a file system made a second after it.
+          recordServerClockForTests(cmd, {
+            sentAtMs: Date.now(),
+            receivedAtMs: Date.now(),
+            serverDateMs: Date.now(),
+          });
+          return {
+            FileSystem: {
+              FileSystemId: FS_ID,
+              CreationTime: new Date(firstAttemptAt.getTime() + 1_000),
+            },
+          };
+        }
+        if (name === 'DescribeFileSystemsCommand') {
+          return {
+            FileSystems: [
+              { FileSystemId: FS_ID, Lifecycle: 'FAILED', FailureDetails: { Message: 'boom' } },
+            ],
+          };
+        }
+        return {};
+      });
+
+      await expect(provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS })).rejects.toThrow();
+      vi.setSystemTime(new Date(firstAttemptAt.getTime() + 60_000));
+      await expect(provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS })).rejects.toThrow();
+
+      expect(callsOf(DeleteFileSystemCommand)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('routes BackupId creates through CreateFileSystemFromBackup without FileSystemType', async () => {
     routeSend({
-      CreateFileSystemFromBackupCommand: { FileSystem: { FileSystemId: FS_ID } },
+      CreateFileSystemFromBackupCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
       DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
     });
 
@@ -309,7 +512,7 @@ describe('FSxFileSystemProvider create', () => {
     'rejects FileSystemType %s (an Object.prototype member name) before any SDK call (#3515)',
     async (fileSystemType) => {
       routeSend({
-        CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+        CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
         DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
       });
 
@@ -333,7 +536,7 @@ describe('FSxFileSystemProvider create', () => {
   // is the only "present" branch the guard has.
   it('still lets a supported FileSystemType (LUSTRE) through the guard to CreateFileSystem (#3515 control)', async () => {
     routeSend({
-      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
       DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
     });
 
@@ -347,7 +550,7 @@ describe('FSxFileSystemProvider create', () => {
 
   it('throws and best-effort deletes the file system when creation goes FAILED', async () => {
     routeSend({
-      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
       DescribeFileSystemsCommand: {
         FileSystems: [
           { FileSystemId: FS_ID, Lifecycle: 'FAILED', FailureDetails: { Message: 'boom' } },
@@ -364,7 +567,7 @@ describe('FSxFileSystemProvider create', () => {
 
   it('throws ProvisioningError when the AVAILABLE wait times out (and rolls back)', async () => {
     routeSend({
-      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
       DescribeFileSystemsCommand: {
         FileSystems: [{ FileSystemId: FS_ID, Lifecycle: 'CREATING' }],
       },
@@ -386,7 +589,7 @@ describe('FSxFileSystemProvider create transient poll tolerance', () => {
   it('absorbs a transient throttle mid-poll instead of failing the create', async () => {
     const throttle = Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
     routeSend({
-      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
       DescribeFileSystemsCommand: [
         { FileSystems: [{ FileSystemId: FS_ID, Lifecycle: 'CREATING' }] },
         throttle,
@@ -403,7 +606,7 @@ describe('FSxFileSystemProvider create transient poll tolerance', () => {
   it('propagates a non-transient poll error (after rollback)', async () => {
     const denied = Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' });
     routeSend({
-      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
       DescribeFileSystemsCommand: denied,
       DeleteFileSystemCommand: {},
     });
@@ -2267,7 +2470,7 @@ describe('FSxFileSystemProvider WINDOWS variant', () => {
 
   it('sends CreateFileSystem with FileSystemType WINDOWS and the mapped WindowsConfiguration', async () => {
     routeSend({
-      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
       DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
     });
 
@@ -2315,7 +2518,7 @@ describe('FSxFileSystemProvider WINDOWS variant', () => {
 
   it('maps FsrmConfiguration on create (incl. FsrmServiceEnabled boolean coercion)', async () => {
     routeSend({
-      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
       DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
     });
 
@@ -2420,7 +2623,7 @@ describe('FSxFileSystemProvider ONTAP variant', () => {
 
   it('sends CreateFileSystem with FileSystemType ONTAP and the mapped OntapConfiguration', async () => {
     routeSend({
-      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
       DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
     });
 
@@ -2519,7 +2722,7 @@ describe('FSxFileSystemProvider OPENZFS variant', () => {
 
   it('sends CreateFileSystem with FileSystemType OPENZFS and the mapped OpenZFSConfiguration (incl. root volume)', async () => {
     routeSend({
-      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } },
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
       DescribeFileSystemsCommand: {
         FileSystems: [availableFs({ OpenZFSConfiguration: { RootVolumeId: 'fsvol-abc' } })],
       },

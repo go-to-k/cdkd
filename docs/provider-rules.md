@@ -739,7 +739,12 @@ name it is about to send (`src/provisioning/providers/create-ownership.ts`).
 Only the service's own not-found answer licenses the partial-create cleanup. A
 name that was held, or a lookup that could not answer, leaves the resource in
 place with a warning saying why and the manual delete command. A new provider
-of such a type gates its cleanup the same way.
+of such a type gates its cleanup the same way. A create that hands back by
+idempotency TOKEN rather than by name (FSx `CreateFileSystem`) cannot be looked
+up beforehand, so `FSxFileSystemProvider` takes -- records, and so may later
+clean up -- only a file system whose `CreationTime` is no earlier than that
+token's first send in this process, on AWS's clock, and refuses any other
+([#4428](https://github.com/go-to-k/cdkd/issues/4428)).
 
 ## Reporting a skipped delete
 
@@ -1111,12 +1116,31 @@ Three rules, each of which has a failure mode behind it:
   `CreateAccessPoint` sends went out with different UUIDs, and a
   caller-supplied value went out verbatim.
 
-`EFSProvider`'s FILE SYSTEM `CreationToken` and `FSxFileSystemProvider`'s
-`ClientRequestToken` deliberately do NOT use the helper: those APIs enforce token
-uniqueness only among LIVE file systems, so a deterministic hash of the immutable
-create inputs is right there (it also lets the new file system coexist with the
-old one during a replacement). That reasoning is per-API, not per-provider --
-the same `EFSProvider` DOES take the helper for `CreateAccessPoint`. That choice
+`EFSProvider`'s FILE SYSTEM `CreationToken`, `FSxFileSystemProvider`'s
+`ClientRequestToken` and `CloudFrontOAIProvider`'s `CallerReference`
+deliberately do NOT use `acquireIdempotencyToken`: those APIs bind the token to
+the resource for its LIFETIME, so a deterministic hash of the immutable create
+inputs is right there (it also lets the new file system coexist with the old one
+during a replacement). Derive it with `stackScopedCreateToken`, which also
+hashes the stack name and region, and refuses to run outside a `withStackName`
+scope: without them, two copies of one stack in an account sent the same token,
+and FSx and CloudFront handed the second stack the first one's resource (#4428).
+A token stable across runs is also held by a resource an earlier destroy KEPT
+(RETAIN / RetainExceptOnCreate) or a `state rm` forgot, so a create takes a
+handed-back or named file system only when it was created after that create's
+FIRST send in this process -- judged on AWS's clock, never the host's: a host
+clock running fast would otherwise refuse every ordinary create.
+`src/provisioning/providers/server-clock.ts` reads the response's HTTP `Date`
+(`withServerClock` / `earliestOwnCreationTime`) and falls back to SigV4's
+five-minute bound without one. FSx refuses an older one outright, and
+`EFSProvider.sendCreateFileSystem` (EFS refuses a repeated `CreationToken` with
+`FileSystemAlreadyExists`) adopts the named one only when this process's own
+earlier attempt may have made it. A holder still `deleting`, or one whose
+read-back fails transiently, rethrows EFS's own error stamped
+`markReplayMayCollide`: a delete-first re-create's message-based retry waits it
+out, and no delete-first site acts on a holder cdkd does not own. That reasoning is
+per-API, not per-provider --
+the same `EFSProvider` DOES take `acquireIdempotencyToken` for `CreateAccessPoint`. That choice
 does not rest on knowing how long the token lives, because the process-scoped
 derivation is right under both readings: if the token retires quickly,
 stability across runs buys nothing (no two deploys are that close together on

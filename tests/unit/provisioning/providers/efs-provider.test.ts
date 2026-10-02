@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vite-plus/test';
 import {
   CreateFileSystemCommand,
   DeleteFileSystemCommand,
@@ -55,6 +55,16 @@ vi.mock('../../../../src/utils/logger.js', () => {
 
 import { EFSProvider } from '../../../../src/provisioning/providers/efs-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
+import { allowUnscopedCreateTokensForTests } from '../../../../src/provisioning/providers/idempotency-token.js';
+
+// These cases drive create() directly, outside a withStackName scope, so the
+// stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
+beforeAll(() => {
+  allowUnscopedCreateTokensForTests(true);
+});
+afterAll(() => {
+  allowUnscopedCreateTokensForTests(false);
+});
 
 describe('EFSProvider', () => {
   let provider: EFSProvider;
@@ -72,6 +82,7 @@ describe('EFSProvider', () => {
         mockSend
           .mockResolvedValueOnce({
             FileSystemId: 'fs-12345678',
+            CreationTime: new Date(),
             FileSystemArn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-12345678',
           })
           .mockResolvedValueOnce({
@@ -102,6 +113,7 @@ describe('EFSProvider', () => {
           mockSend
             .mockResolvedValueOnce({
               FileSystemId: 'fs-1',
+              CreationTime: new Date(),
               FileSystemArn: 'arn:aws:elasticfilesystem:us-east-1:1:file-system/fs-1',
             })
             .mockResolvedValueOnce({ FileSystems: [{ LifeCycleState: 'available' }] });
@@ -137,6 +149,7 @@ describe('EFSProvider', () => {
         mockSend
           .mockResolvedValueOnce({
             FileSystemId: 'fs-encrypted',
+            CreationTime: new Date(),
             FileSystemArn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-encrypted',
           })
           .mockResolvedValueOnce({
@@ -179,6 +192,7 @@ describe('EFSProvider', () => {
           if (cmd instanceof CreateFileSystemCommand) {
             return Promise.resolve({
               FileSystemId: fsId,
+              CreationTime: new Date(),
               FileSystemArn: `arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/${fsId}`,
             });
           }
@@ -280,6 +294,7 @@ describe('EFSProvider', () => {
           if (cmd instanceof CreateFileSystemCommand) {
             return Promise.resolve({
               FileSystemId: 'fs-retry',
+              CreationTime: new Date(),
               FileSystemArn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-retry',
             });
           }
@@ -312,6 +327,7 @@ describe('EFSProvider', () => {
           if (cmd instanceof CreateFileSystemCommand) {
             return Promise.resolve({
               FileSystemId: 'fs-rollback',
+              CreationTime: new Date(),
               FileSystemArn:
                 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-rollback',
             });

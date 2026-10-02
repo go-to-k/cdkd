@@ -48,9 +48,9 @@
  * unaffected, and hashing the immutable inputs is what lets the new file system
  * coexist with the old one during a replacement. EC2 is the opposite shape —
  * the token survives the resource's own termination — so a value that is stable
- * across RUNS is a liability there rather than an asset. Both providers keep
- * their existing derivation; this module is for the APIs where the token must
- * be scoped to one process and one create.
+ * across RUNS is a liability there rather than an asset. Both providers derive
+ * theirs with {@link stackScopedCreateToken}; the rest of this module is for
+ * the APIs where the token must be scoped to one process and one create.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -221,6 +221,92 @@ export function acquireIdempotencyToken(options: AcquireIdempotencyTokenOptions)
       generations.set(key, generation);
     },
   };
+}
+
+/** TEST-ONLY opt-out from {@link stackScopedCreateToken}'s stack-scope requirement. */
+let unscopedCreateTokensAllowed = false;
+
+/**
+ * Let {@link stackScopedCreateToken} derive a token with no stack in scope.
+ * TEST-ONLY, for suites that drive a provider's `create()` directly; returns
+ * the previous setting so a suite can restore it.
+ */
+export function allowUnscopedCreateTokensForTests(allowed: boolean): boolean {
+  const previous = unscopedCreateTokensAllowed;
+  unscopedCreateTokensAllowed = allowed;
+  return previous;
+}
+
+/** Hex digits of the {@link stackScopedCreateToken} digest suffix. */
+const STACK_SCOPED_DIGEST_LENGTH = 12;
+
+export interface StackScopedCreateTokenOptions {
+  /** The template logical id of the resource being created. */
+  logicalId: string;
+  /**
+   * The create-only inputs, in a FIXED order. Each is serialized on its own
+   * with `JSON.stringify` (absent as `null`), so any value shape hashes
+   * faithfully and a change to any one of them yields a different token.
+   */
+  immutableInputs: readonly unknown[];
+  /** Max token length the target API accepts. */
+  maxLength: number;
+}
+
+/**
+ * A DETERMINISTIC create token, for an API whose token binds for the life of
+ * the resource it created (EFS `CreateFileSystem` `CreationToken`, FSx
+ * `CreateFileSystem` `ClientRequestToken`, CloudFront's origin access identity
+ * `CallerReference`) — see the module note for why the file-system tokens do
+ * not take {@link acquireIdempotencyToken}; the OAI reference keeps the
+ * deterministic shape its bare logical id already had.
+ *
+ * The digest covers the STACK NAME and REGION as well as the logical id and the
+ * immutable inputs (go-to-k/cdkd#4428). Without the stack, two copies of one
+ * stack in an account and region (a Dev and a Staging copy sharing a VPC) sent
+ * the same token: FSx answered the second stack's create with the FIRST stack's
+ * file system, which the second then recorded and could later delete, and EFS
+ * refused the second deploy with `FileSystemAlreadyExists`. The region is in it
+ * because cdkd's identity for a resource is `{stackName}/{region}/{logicalId}`,
+ * the same tuple the {@link acquireIdempotencyToken} memo keys on; AWS already
+ * scopes both tokens to one account and region, so the account adds nothing.
+ *
+ * Stable across every retry of one create (each input is a value the retry
+ * re-invocation reproduces exactly) and across cdkd runs of the same stack, so
+ * a replayed create after an ambiguous failure still reaches the file system
+ * the first attempt made. Different when an immutable input changes, which is
+ * what lets a replacement's new file system coexist with the old one.
+ *
+ * The logical id is kept as a readable prefix, truncated to fit `maxLength`;
+ * the digest covers the WHOLE id, so two ids sharing a truncated prefix still
+ * differ.
+ */
+export function stackScopedCreateToken(options: StackScopedCreateTokenOptions): string {
+  const { logicalId, immutableInputs, maxLength } = options;
+  const stackName = getCurrentStackName();
+  // No stack in scope means the token would be shared by EVERY stack's copy of
+  // this logical id -- the very collision this function exists to prevent --
+  // so refuse rather than derive it. Every production create runs inside a
+  // `withStackName` scope; only a unit test may opt out, explicitly.
+  if (stackName === undefined && !unscopedCreateTokensAllowed) {
+    throw new Error(
+      `cdkd internal error: a create token for ${logicalId} was requested outside a stack scope (withStackName), so it cannot be scoped to its stack`
+    );
+  }
+  const digest = createHash('sha256')
+    .update(
+      injectiveKey(
+        stackName ?? '',
+        ambientRegion() ?? '',
+        logicalId,
+        ...immutableInputs.map((v) => JSON.stringify(v ?? null))
+      )
+    )
+    .digest('hex')
+    .slice(0, STACK_SCOPED_DIGEST_LENGTH);
+  // `cdkd-` + prefix + `-` + digest.
+  const prefixLength = maxLength - 'cdkd-'.length - 1 - STACK_SCOPED_DIGEST_LENGTH;
+  return `cdkd-${logicalId.slice(0, prefixLength)}-${digest}`;
 }
 
 /**

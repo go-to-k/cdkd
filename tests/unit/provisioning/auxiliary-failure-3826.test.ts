@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vite-plus/test';
 
 /**
  * Issue #3826: a provider `create()` whose AUXILIARY call (a rule, a tag, an
@@ -97,6 +97,16 @@ import type { ResourceProvider } from '../../../src/types/resource.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { codeLines } from '../_code-lines.js';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
+import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
+
+// These cases drive create() directly, outside a withStackName scope, so the
+// stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
+beforeAll(() => {
+  allowUnscopedCreateTokensForTests(true);
+});
+afterAll(() => {
+  allowUnscopedCreateTokensForTests(false);
+});
 
 /** An SDK client class; its `send` lives on the shared Smithy base prototype. */
 type ClientClass = { prototype: object };
@@ -387,7 +397,7 @@ const CASES: Case[] = [
     main: 'CreateFileSystemCommand',
     aux: 'PutBackupPolicyCommand',
     responses: {
-      CreateFileSystemCommand: { FileSystemId: 'fs-1', FileSystemArn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-1' },
+      CreateFileSystemCommand: { FileSystemId: 'fs-1', CreationTime: new Date(), FileSystemArn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-1' },
       DescribeFileSystemsCommand: { FileSystems: [{ FileSystemId: 'fs-1', LifeCycleState: 'available' }] },
     },
   },

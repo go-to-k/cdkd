@@ -9,9 +9,10 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { readConfigString } from '../config-shape.js';
+import { stackScopedCreateToken } from './idempotency-token.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -70,7 +71,19 @@ export class CloudFrontOAIProvider implements ResourceProvider {
       const response = await this.cloudFrontClient.send(
         new CreateCloudFrontOriginAccessIdentityCommand({
           CloudFrontOriginAccessIdentityConfig: {
-            CallerReference: logicalId,
+            // CloudFront answers a repeated CallerReference whose config is
+            // identical with the ORIGINAL identity, account-wide. A bare
+            // logical id is therefore shared by every copy of this stack in
+            // the account (CDK's default OAI comment is a constant), and the
+            // second copy was handed the first one's identity — so the
+            // reference is scoped to the stack and region (go-to-k/cdkd#4428).
+            // Still deterministic, so a retry after a lost response is
+            // answered with the identity the first attempt made.
+            CallerReference: stackScopedCreateToken({
+              logicalId,
+              immutableInputs: [],
+              maxLength: 64,
+            }),
             Comment: comment,
           },
         })
@@ -105,7 +118,10 @@ export class CloudFrontOAIProvider implements ResourceProvider {
    * Update a CloudFront Origin Access Identity.
    *
    * Only the `Comment` field is mutable on an OAI; `CallerReference` is set
-   * by cdkd at create time and cannot be changed. AWS exposes a single
+   * by cdkd at create time and cannot be changed, so the update sends back the
+   * one read from AWS -- a bare logical id for an identity created before
+   * go-to-k/cdkd#4428, the stack-scoped token since -- and refuses when AWS
+   * returns none rather than re-deriving it. AWS exposes a single
    * `UpdateCloudFrontOriginAccessIdentity` call that requires the current
    * `ETag` (fetched via `GetCloudFrontOriginAccessIdentity`) and overwrites
    * the entire `CloudFrontOriginAccessIdentityConfig`.
@@ -145,16 +161,29 @@ export class CloudFrontOAIProvider implements ResourceProvider {
         throw new Error('GetCloudFrontOriginAccessIdentity did not return ETag');
       }
 
+      // CallerReference is immutable, so the update must send back exactly the
+      // one the identity was created with. It is never re-derived: an identity
+      // created before go-to-k/cdkd#4428 carries its bare logical id, one
+      // created since carries the stack-scoped token, and a guess between them
+      // is rejected by AWS at best.
+      const callerReference =
+        getResponse.CloudFrontOriginAccessIdentity?.CloudFrontOriginAccessIdentityConfig
+          ?.CallerReference;
+      if (!callerReference) {
+        throw new ProvisioningError(
+          `GetCloudFrontOriginAccessIdentity returned no CallerReference for ${logicalId} (${physicalId}), which an update must send back unchanged`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+
       await this.cloudFrontClient.send(
         new UpdateCloudFrontOriginAccessIdentityCommand({
           Id: physicalId,
           IfMatch: etag,
           CloudFrontOriginAccessIdentityConfig: {
-            // CallerReference is immutable; preserve whatever the OAI was
-            // created with so AWS does not reject the update.
-            CallerReference:
-              getResponse.CloudFrontOriginAccessIdentity?.CloudFrontOriginAccessIdentityConfig
-                ?.CallerReference ?? logicalId,
+            CallerReference: callerReference,
             Comment: comment,
           },
         })
@@ -171,6 +200,7 @@ export class CloudFrontOAIProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update CloudFront OAI ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
