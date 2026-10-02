@@ -52,7 +52,8 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
 // END of the chain rather than a substring of the provider's own message: what
 // matters is that the wrapped error is still routed to the dense IAM grid, and
 // only the real predicate answers that. `retryable-errors.ts` is a graph leaf
-// (one leaf import, `aws-failure-text.ts`), so pulling it in here mocks nothing and reaches no AWS client.
+// (one leaf import, `aws-failure-text.ts`), so pulling it in here mocks
+// nothing and reaches no AWS client.
 import {
   isIamPropagationError,
   isRetryableTransientError,
