@@ -1,7 +1,7 @@
 # Intrinsics Torture Test #2
 
 A second torture fixture for cdkd's CloudFormation intrinsic-function resolver
-(`src/deployment/intrinsic-function-resolver.ts`). The sibling
+(`src/deployment/intrinsic-function-resolver.ts` and `intrinsic-resolver/*.ts`). The sibling
 `intrinsic-functions` / `intrinsics-torture` fixtures cover the common shapes;
 the first torture run surfaced bug **#838** (`Fn::Join` over a list-returning
 intrinsic crashed). This fixture goes after the NEXT tier — the harder /
