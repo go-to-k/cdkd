@@ -199,7 +199,7 @@ faithful to CFn.
 
 - Schema: [`src/types/state.ts`](https://github.com/go-to-k/cdkd/blob/main/src/types/state.ts)
 - Index store: [`src/state/export-index-store.ts`](https://github.com/go-to-k/cdkd/blob/main/src/state/export-index-store.ts)
-- Resolver: [`src/deployment/intrinsic-function-resolver.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-function-resolver.ts)
+- Resolver: [`src/deployment/intrinsic-function-resolver.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-function-resolver.ts); `Fn::ImportValue` / `Fn::GetStackOutput` in [`src/deployment/intrinsic-resolver/cross-stack.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-resolver/cross-stack.ts)
 - Destroy scan: [`src/cli/commands/destroy-runner.ts`](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/destroy-runner.ts)
 - Error class: [`src/utils/error-handler.ts`](https://github.com/go-to-k/cdkd/blob/main/src/utils/error-handler.ts)
 

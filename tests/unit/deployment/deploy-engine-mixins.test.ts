@@ -75,8 +75,16 @@ const HOSTS = [
   {
     module: 'intrinsic-function-resolver',
     cls: IntrinsicFunctionResolver,
-    files: ['intrinsic-resolver/getatt.ts'],
-    members: ['resolveGetAtt', 'constructAttribute', 'refuseUnconstructibleAttribute'],
+    files: ['intrinsic-resolver/cross-stack.ts', 'intrinsic-resolver/dynamic-refs.ts', 'intrinsic-resolver/getatt.ts'],
+    members: [
+      'resolveGetAtt',
+      'constructAttribute',
+      'refuseUnconstructibleAttribute',
+      'resolveImportValue',
+      'resolveGetStackOutput',
+      'resolveDynamicReferencesWithLogTwin',
+      'sendWithThrottleRetry',
+    ],
   },
 ] as const;
 

@@ -4352,8 +4352,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     expect(src.indexOf('refuseMalformedNestedChildOutputs(')).toBeLessThan(derefIndex);
   });
 
-  it('src/deployment/intrinsic-function-resolver.ts REFUSES its Fn::GetStackOutput read', () => {
-    const file = 'src/deployment/intrinsic-function-resolver.ts';
+  it('src/deployment/intrinsic-resolver/cross-stack.ts REFUSES its Fn::GetStackOutput read', () => {
+    const file = 'src/deployment/intrinsic-resolver/cross-stack.ts';
     const src = code(file);
     // The ONE reader in this class that RE-APPLIES rather than displays:
     // `Object.hasOwn('abcdef', '0')` is true, so a fabricated character
@@ -4364,7 +4364,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
         `Fn::GetStackOutput can again resolve one CHARACTER of a damaged record as its value.`
     ).toBe(true);
     expect(
-      src.includes('MalformedProducerRecordRefusalError'),
+      // The CONSTRUCTION, not the name: an import line alone carries the name.
+      src.includes('new MalformedProducerRecordRefusalError('),
       `${file} no longer raises the dedicated class, so 'cdkd scrub' can no longer tell this ` +
         `refusal from its user-fixable siblings and refuses the whole consumer stack.`
     ).toBe(true);

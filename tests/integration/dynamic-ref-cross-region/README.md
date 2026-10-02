@@ -18,7 +18,7 @@ own region. This fixture covers both, in two different phases — see
 Secrets Manager secrets and SSM parameters are REGIONAL — the same NAME in
 `us-east-1` and `ap-northeast-1` is two independent values, routinely two
 different credentials. cdkd resolves `{{resolve:...}}` expressions itself
-(`resolveDynamicReferences` in `src/deployment/intrinsic-function-resolver.ts`)
+(`resolveDynamicReferences` in `src/deployment/intrinsic-resolver/dynamic-refs.ts`)
 and caches the resolved value so a second reference costs no extra API call.
 
 That cache used to be a MODULE-GLOBAL map keyed by the expression string

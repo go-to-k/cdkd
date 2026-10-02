@@ -21,7 +21,7 @@ import { readResolverFamily } from '../_resolver-family.js';
  *
  * WHY THIS FILE IS A SYNC FENCE RATHER THAN A BEHAVIOUR TEST. The correct fix
  * is a typed error at the throw site, but that site is in
- * `src/deployment/intrinsic-function-resolver.ts` — cross-cutting deploy code,
+ * `src/deployment/intrinsic-resolver/dynamic-refs.ts` — cross-cutting deploy code,
  * so typing it turns a no-real-AWS change into one owing a broad-set integ
  * run. The fix therefore stayed on the CONSUMER
  * side and matched the resolver's message, which made scrub a consumer of a

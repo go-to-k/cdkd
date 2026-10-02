@@ -11,7 +11,7 @@ import { Construct } from 'constructs';
  * (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}`).
  *
  * cdkd resolves these itself in `resolveDynamicReferences`
- * (src/deployment/intrinsic-function-resolver.ts) BEFORE handing the
+ * (src/deployment/intrinsic-resolver/dynamic-refs.ts) BEFORE handing the
  * property to the provider — CloudFormation never sees them. This fixture
  * surfaces bugs where a dynamic reference resolves to the WRONG value or
  * stays as the literal `{{resolve:...}}` string in the deployed resource.

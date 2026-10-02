@@ -4,7 +4,7 @@
 # Failure-seeking test for CloudFormation DYNAMIC REFERENCES
 # (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}`). cdkd resolves
 # these itself in `resolveDynamicReferences`
-# (src/deployment/intrinsic-function-resolver.ts) BEFORE the property reaches
+# (src/deployment/intrinsic-resolver/dynamic-refs.ts) BEFORE the property reaches
 # the provider, so AWS never sees the literal token.
 #
 # The fixture deploys:

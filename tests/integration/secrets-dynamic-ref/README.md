@@ -7,7 +7,7 @@ resource properties:
 - `{{resolve:ssm:...}}`
 
 cdkd resolves these itself in `resolveDynamicReferences`
-([src/deployment/intrinsic-function-resolver.ts](../../../src/deployment/intrinsic-function-resolver.ts))
+([src/deployment/intrinsic-resolver/dynamic-refs.ts](../../../src/deployment/intrinsic-resolver/dynamic-refs.ts))
 BEFORE the property is handed to the provider — CloudFormation never sees the
 literal `{{resolve:...}}` token. This test surfaces bugs where a dynamic
 reference resolves to the **wrong value** or **stays literal** in the deployed

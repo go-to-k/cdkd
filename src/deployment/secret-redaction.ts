@@ -4045,7 +4045,7 @@ export function isSecretExpressionByVerdictOrSpelling(expression: string): boole
  *
  * **THE AUTHORITY IS THE RESOLVER.**
  * `IntrinsicFunctionResolver.resolveDynamicReferences`
- * (`src/deployment/intrinsic-function-resolver.ts`) scans with
+ * (`src/deployment/intrinsic-resolver/dynamic-refs.ts`) scans with
  * `/\{\{resolve:([^}]+)\}\}/g`, so what cdkd will actually RESOLVE is exactly
  * `{{resolve:` followed by one or more non-`}` characters followed by `}}`.
  * A predicate that answers a different question than that scan is answering
@@ -5110,7 +5110,7 @@ function writeFramedTokenWithinScanBound(
  *    of a secret-classified path is masked and `runAccept` refuses to persist
  *    the mask, leaving `--revert` (the harmful button) or a redeploy. A
  *    consumer stack's cross-stack read (`reresolveCrossStackValue`,
- *    `intrinsic-function-resolver.ts`: `Fn::ImportValue`, `Fn::GetStackOutput`,
+ *    `intrinsic-resolver/cross-stack.ts`: `Fn::ImportValue`, `Fn::GetStackOutput`,
  *    a parent's `Fn::GetAtt Nested.Outputs.X`) needs nothing at all: the
  *    outputs bag is marked, so a sub-floor write reaches `state.outputs`, and
  *    an ORDINARY deploy of the consumer after the sibling rotates hands the

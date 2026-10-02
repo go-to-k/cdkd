@@ -70,7 +70,7 @@ export interface InferCrossStackStackDepsOptions {
  * - `Fn::GetStackOutput`'s `StackName` argument names the producer stack
  *   DIRECTLY (the intrinsic arg is an object `{ StackName, OutputName,
  *   Region?, RoleArn? }` — see
- *   `src/deployment/intrinsic-function-resolver.ts`). If that stack is in the
+ *   `src/deployment/intrinsic-resolver/cross-stack.ts`). If that stack is in the
  *   set, add the edge.
  * - Non-literal `Fn::ImportValue` / `Fn::GetStackOutput` args (intrinsic
  *   nesting, etc.) are skipped without crashing — they cannot be statically
