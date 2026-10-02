@@ -27,7 +27,7 @@ import {
 } from './holder-probe.js';
 import { CASE_INSENSITIVE_NAME_TYPES, ownEntry, SENT_NAME_REWRITTEN } from './name-keys.js';
 import { reverseReplacementTrustsGeneratedName } from './rewritten.js';
-import { type ReplacementNameChange } from './deploy-name.js';
+import type { ReplacementNameChange } from './deploy-name.js';
 
 /** The Route 53 record-set rule: see {@link reverseReplacementNewHoldsName}. */
 function recordSetHolds(

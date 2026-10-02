@@ -810,7 +810,7 @@ describe('the rewriting-types table matches every caller of generateResourceName
     expect(specCalls).toBeGreaterThanOrEqual(1);
     expect(callers.sort()).toEqual(Object.keys(FILE_TYPES).sort());
     // No caller outside the providers directory, except the generator's own
-    // module and this helper, which derives the sent name with it.
+    // module and this helper's modules, which derive the sent name with it.
     const src = join(process.cwd(), 'src');
     const everywhere = (readdirSync(src, { recursive: true }) as string[])
       .filter((f) => f.endsWith('.ts'))
@@ -819,7 +819,8 @@ describe('the rewriting-types table matches every caller of generateResourceName
       .sort();
     expect(everywhere).toEqual(
       [
-        // Split into `replacement-name-holder/*.ts` (#4463); these three name it.
+        // `replacement-name-holder/*.ts` (#4463): holder.ts and rewritten.ts call
+        // it; name-keys.ts only names it in a doc comment, which the text match counts.
         'deployment/replacement-name-holder/holder.ts',
         'deployment/replacement-name-holder/name-keys.ts',
         'deployment/replacement-name-holder/rewritten.ts',

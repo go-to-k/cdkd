@@ -3,7 +3,7 @@
  * {@link replacementRequestsDifferentName} (deploy: a KNOWN different explicit
  * name), and one proof per direction, sharing one rule —
  * {@link reverseReplacementNewHoldsName} (rollback) and
- * {@link replacementOldHoldsSentName} (deploy `--replace`), further down.
+ * {@link replacementOldHoldsSentName} (deploy `--replace`), in `holder.ts`.
  *
  * Does a replacement ask for a physical name the resource being replaced does
  * NOT hold? (issue [#3808](https://github.com/go-to-k/cdkd/issues/3808))
