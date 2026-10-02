@@ -407,7 +407,7 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
         { ...op, provisionedBy: 'not-a-route' },
         { ...op, provisionedBy: 7 },
         // The sibling fields no check names. `updateReplacePolicy` is read at
-        // `rollback-executor.ts`'s `?? prev.updateReplacePolicy === 'Retain'`,
+        // `rollback-executor/plan.ts`'s `?? prev.updateReplacePolicy === 'Retain'`,
         // so a future tightening there would be silent without this row.
         { ...op, previousState: { updateReplacePolicy: 9, attributes: 'x' } },
       ]),

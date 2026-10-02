@@ -6,9 +6,9 @@ import {
   rewrittenNameSpellings,
 } from '../replacement-name-holder.js';
 import { explicitNamePropertyFor, withSkipPrefix } from '../../provisioning/resource-name.js';
-// Issues #2038 / #4037: every `withRetry` site's `RetryLogger`, and the
-// derived-name masks, run over one op's masker (`createOpMasker`) — the
-// providers' shared module, not a second copy of that security contract.
+// Issues #2038 / #4037: the derived-name masks run over one op's masker
+// (`createOpMasker`) — the providers' shared module, not a second copy of
+// that security contract.
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
@@ -620,15 +620,3 @@ export async function prepareCreateRollbackFinalSnapshot(
       throw unsupportedFinalSnapshotError(logicalId, resourceType, SKIP_FINAL_SNAPSHOT_FLAG);
   }
 }
-
-/**
- * Retry schedule for a re-create that must wait out a name-release delay:
- * an async delete's late name release ("already exists") or the SQS 60s
- * same-name cooldown (issue #1206). 2s/4s/8s then capped at 10s over 8
- * retries ≈ 64s of total sleep — enough to cover the full cooldown window.
- */
-export const RECREATE_RETRY_SCHEDULE = {
-  maxRetries: 8,
-  initialDelayMs: 2_000,
-  maxDelayMs: 10_000,
-} as const;

@@ -10,12 +10,26 @@ import {
   removalWarning,
   withoutInjectedRemovals,
 } from '../../provisioning/update-removal.js';
+// Issues #2038 / #4037: every `withRetry` site's `RetryLogger` runs over one
+// op's masker (`createOpMasker`) — the providers' shared module, not a second
+// copy of that security contract.
 import { createMaskedRetryLogger, type MaskerFn } from '../../provisioning/masked-retry-logger.js';
 import { type RecordedSecretValues } from '../secret-redaction.js';
 import { withRetry } from '../retry.js';
 import { type RollbackExecutorContext } from './types.js';
 import { safe } from './messages.js';
-import { RECREATE_RETRY_SCHEDULE } from './names.js';
+
+/**
+ * Retry schedule for a re-create that must wait out a name-release delay:
+ * an async delete's late name release ("already exists") or the SQS 60s
+ * same-name cooldown (issue #1206). 2s/4s/8s then capped at 10s over 8
+ * retries ≈ 64s of total sleep — enough to cover the full cooldown window.
+ */
+const RECREATE_RETRY_SCHEDULE = {
+  maxRetries: 8,
+  initialDelayMs: 2_000,
+  maxDelayMs: 10_000,
+} as const;
 
 export async function updateWithRollbackRetry(
   provider: ResourceProvider,
@@ -60,7 +74,7 @@ export async function updateWithRollbackRetry(
     // deploy engine binds its own provider calls.
     () => withCurrentResourceSecrets(secrets, () => provider.update(...revertArgs)),
     // A LABEL to `withRetry` -- it names the operation in the retry / give-up
-    // lines and is used for nothing else -- so it takes this file's rendering
+    // lines and is used for nothing else -- so it takes the replay's rendering (`safe`)
     // (issue #3092): `retry.ts` sanitizes its label too, but a label is not
     // always an identifier there, so the boundary quoting and the cap are
     // decided here, where the value is known to be a journal field.

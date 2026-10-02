@@ -18,9 +18,10 @@ export const ROLLBACK_FAMILY: readonly string[] = [
     .map((f) => `src/deployment/rollback-executor/${f}`),
 ];
 
-// A floor: a renamed directory would leave the family as the host alone, and
-// every fence counting an ABSENCE over it would shrink silently rather than red.
-if (ROLLBACK_FAMILY.length < 2) {
+// A floor at the host plus the seven modules of #4426: a renamed directory or a
+// module moved out of it would shrink the family, and every fence counting an
+// ABSENCE over it would shrink silently rather than red.
+if (ROLLBACK_FAMILY.length < 8) {
   throw new Error(`the rollback family resolved to ${ROLLBACK_FAMILY.join(', ')} only`);
 }
 

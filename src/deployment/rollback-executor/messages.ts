@@ -53,7 +53,7 @@ export function throwIfDeleteSkipped(
   throw new Error(deleteSkippedMessage(logicalId, physicalId, reason, duringClause));
 }
 
-/** The `--skip-final-snapshot` flag name cited by every refusal below. */
+/** The `--skip-final-snapshot` flag name cited by every final-snapshot refusal (`names.ts`). */
 export const SKIP_FINAL_SNAPSHOT_FLAG = '--skip-final-snapshot';
 
 /**
@@ -89,7 +89,7 @@ export const SKIP_FINAL_SNAPSHOT_FLAG = '--skip-final-snapshot';
  *
  * What issue [#3141](https://github.com/go-to-k/cdkd/issues/3141) changed is
  * that the INFORMATION now exists on that path — `UpdateContext` carries its
- * own `replayingState`, set by both revert arms below — so such a provider
+ * own `replayingState`, set by both revert arms in `rollback-executor.ts` — so such a provider
  * could build a `CreateContext` from it instead of relying on the constraint.
  * None does today: none of the five sites forwards `replayingState`. Read
  * that as a route that opened, not as a constraint that lifted.
@@ -146,7 +146,7 @@ export function replayingStateCreateContext(secrets: RecordedSecretValues): Crea
  */
 export function maskedRollbackEventError(error: unknown, mask: MaskerFn): DeploymentEventError {
   const extracted = extractDeploymentEventError(error);
-  // One of this module's own refusals (#4099 review): the two collision
+  // One of the replay's own refusals (#4099 review): the two collision
   // refusals are masked at CONSTRUCTION bar their re-run and `--orphan`
   // commands, which must reach the reader intact; the unroutable refusal
   // carries no physical id or name at all (logical id, types, fixed prose).
@@ -207,15 +207,15 @@ export function safe(value: unknown): string {
 }
 
 /**
- * The three refusal OBJECTS this module creates that end on
+ * The three refusal OBJECTS the replay creates that end on
  * {@link orphanRemedy}'s labelled LINE, registered at their throw sites by
  * {@link ownRemedyError}.
  *
  * Keyed on IDENTITY, not on an error code (M7 of the go-to-k/cdkd#3764
- * review): `NAMED_REPLACEMENT_COLLISION` is not private to this file —
+ * review): `NAMED_REPLACEMENT_COLLISION` is not private to the replay —
  * `deploy-engine.ts` throws it too, with the raw logical id, resource type and
  * AWS text in the message, and a provider call that re-enters the deploy
- * engine can deliver that error to this module's per-op catch with its code
+ * engine can deliver that error to the replay's per-op catch with its code
  * intact. The review measured it through a nested-stack UPDATE revert; since
  * go-to-k/cdkd#3829 that revert replays the child's journal instead, but the
  * key must not depend on which routes exist today. A code-keyed trust

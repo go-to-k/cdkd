@@ -1595,7 +1595,7 @@ function collectSecretMaskPaths(value: unknown, into: SecretPathSet, path = ''):
  * [#2108](https://github.com/go-to-k/cdkd/issues/2108)).
  *
  * The structural twin of the rollback replay's `ReplayResolvers`
- * (`src/deployment/rollback-executor.ts`), and deliberately a SEPARATE class
+ * (`src/deployment/rollback-executor/replay-secrets.ts`), and deliberately a SEPARATE class
  * rather than an export of that one: the two are ~20 lines of caching around a
  * constructor, and exporting the replay's would put a rollback-internal name on
  * the drift command's contract for no behavioural gain. What is SHARED is the
@@ -2108,7 +2108,7 @@ async function resolveDriftLeafByRegion(
  * `{{resolve:...}}` string to the live resource.
  *
  * The counterpart of the rollback replay's `resolveReplayProps`
- * (`src/deployment/rollback-executor.ts`), and for the same reason: both
+ * (`src/deployment/rollback-executor/replay-props.ts`), and for the same reason: both
  * commands are synth-free, so the expression string in the persisted record is
  * the only thing there is to resolve from. Every plaintext is recorded into
  * `secrets` so the caller can redact it back out of anything it PRINTS or

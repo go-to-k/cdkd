@@ -173,7 +173,7 @@ export async function resolveReplayProps(
  * at all — `previousState.properties` IS its only source — so there is nothing
  * to fall back to. Failing the ONE op with an actionable message is strictly
  * better than writing a value cdkd knows is wrong, and the per-op failure
- * accounting this file already has is what carries it.
+ * accounting the replay already has is what carries it.
  *
  * CALLED ON THE WRITTEN SIDE ONLY. Each revert arm resolves two bags; the other
  * one becomes the provider's `previousProperties`, where a mask is harmless (a

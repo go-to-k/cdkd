@@ -95,7 +95,7 @@ export class ReplayResolvers {
 /**
  * The refusal an `ambiguous` replay reference throws (issue #2057).
  *
- * A plain throw, like the final-snapshot refusals above and for the same
+ * A plain throw, like the final-snapshot refusals in `names.ts` and for the same
  * reason: the per-op catch in {@link replaySingle} /
  * {@link replayFailedOperations} counts it as a failure, which keeps the
  * journal segment and lets the user re-run once the reference is disambiguated.
