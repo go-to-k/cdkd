@@ -1253,7 +1253,10 @@ export class CloudControlProvider implements ResourceProvider {
       // minimal patch (with a warning) when the API is unavailable.
       //
       // A key both create-only and write-only is re-added here even when the
-      // #4275 loop above matched it, so the resolved value still rides along.
+      // #4275 loop above matched it: the read handler cannot return it, so it
+      // must be sent. The trade-off (pre-existing #809 behavior, not changed by
+      // #4275): after a secret rotation under an unchanged reference, that op
+      // carries a value the resource does not have.
       const writeOnlyProperties = await getTopLevelWriteOnlyProperties(resourceType);
       if (writeOnlyProperties.size > 0) {
         const previousWithoutWriteOnly = { ...cleanPreviousProperties };

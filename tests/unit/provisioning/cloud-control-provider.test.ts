@@ -2043,11 +2043,35 @@ describe('CloudControlProvider update: a recorded secret reference on a create-o
   });
 
   it('leaves an unchanged secret-derived create-only name out of the patch', async () => {
-    await provider.update('Filter', 'mf', TYPE, recorded(NAME, 'b'), recorded(REF, 'a'), {
+    const previous = recorded(REF, 'a');
+    await provider.update('Filter', 'mf', TYPE, recorded(NAME, 'b'), previous, {
       maskSecrets: masker,
     });
 
     expect(updateCalls()).toEqual([[{ op: 'replace', path: '/FilterPattern', value: 'b' }]]);
+    // The substitution works on a copy: the caller's recorded bag is untouched.
+    expect(previous.FilterName).toBe(REF);
+  });
+
+  it('still re-adds a key that is both create-only and write-only (issue #809)', async () => {
+    // Pre-existing #809 behavior, not changed by #4275: the read handler cannot
+    // return a write-only key, so it is sent even when only its secret
+    // reference differs.
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: ['/properties/FilterName', '/properties/LogGroupName'],
+        writeOnlyProperties: ['/properties/FilterName'],
+      }),
+    });
+
+    await provider.update('Filter', 'mf', TYPE, recorded(NAME, 'b'), recorded(REF, 'a'), {
+      maskSecrets: masker,
+    });
+
+    const patch = updateCalls()[0];
+    expect(patch).toContainEqual({ op: 'replace', path: '/FilterPattern', value: 'b' });
+    expect(patch).toContainEqual({ op: 'add', path: '/FilterName', value: NAME });
+    expect(patch).toHaveLength(2);
   });
 
   it('sends nothing when the secret-derived create-only name is the only difference', async () => {
