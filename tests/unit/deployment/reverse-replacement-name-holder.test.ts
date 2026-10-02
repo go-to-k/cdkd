@@ -819,7 +819,10 @@ describe('the rewriting-types table matches every caller of generateResourceName
       .sort();
     expect(everywhere).toEqual(
       [
-        'deployment/replacement-name-holder.ts',
+        // Split into `replacement-name-holder/*.ts` (#4463); these three name it.
+        'deployment/replacement-name-holder/holder.ts',
+        'deployment/replacement-name-holder/name-keys.ts',
+        'deployment/replacement-name-holder/rewritten.ts',
         'provisioning/resource-name.ts',
         ...Object.keys(FILE_TYPES).map((f) => `provisioning/providers/${f}`),
       ].sort()
