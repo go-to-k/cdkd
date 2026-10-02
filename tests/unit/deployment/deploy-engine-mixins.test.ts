@@ -76,11 +76,14 @@ const HOSTS = [
     module: 'intrinsic-function-resolver',
     cls: IntrinsicFunctionResolver,
     files: [
+      'intrinsic-resolver/cfn-fallback.ts',
       'intrinsic-resolver/cross-stack.ts',
       'intrinsic-resolver/dynamic-refs.ts',
       'intrinsic-resolver/functions.ts',
       'intrinsic-resolver/getatt.ts',
       'intrinsic-resolver/masking.ts',
+      'intrinsic-resolver/stack-output.ts',
+      'intrinsic-resolver/stack-state.ts',
       'intrinsic-resolver/string-functions.ts',
     ],
     members: [
@@ -89,6 +92,8 @@ const HOSTS = [
       'refuseUnconstructibleAttribute',
       'resolveImportValue',
       'resolveGetStackOutput',
+      'lookupCfnExport',
+      'getCrossAccountStackState',
       'resolveDynamicReferencesWithLogTwin',
       'sendWithThrottleRetry',
       'resolveSub',

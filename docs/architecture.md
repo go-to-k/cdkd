@@ -642,8 +642,9 @@ here with its options interface; its other module-scope helpers and types,
 including `ResolverContext`, live in
 `intrinsic-resolver/support.ts` and the `ref-values.ts`, `context.ts` and
 `account-drain.ts` it re-exports; the method groups live beside them in
-`intrinsic-resolver/` (`getatt.ts`, `cross-stack.ts`, `dynamic-refs.ts`,
-`string-functions.ts`, `functions.ts`, `masking.ts`).
+`intrinsic-resolver/` (`getatt.ts`, `cross-stack.ts`, `cfn-fallback.ts`,
+`stack-output.ts`, `stack-state.ts`, `dynamic-refs.ts`, `string-functions.ts`,
+`functions.ts`, `masking.ts`).
 
 **Resolution Context**:
 
