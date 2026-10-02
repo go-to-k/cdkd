@@ -128,7 +128,10 @@ describe('the dynamic-reference token pattern agrees with the resolver (issue #1
     const OWNERS: Record<string, number> = {
       'src/deployment/intrinsic-resolver/dynamic-refs.ts': 1,
       // WHOLE_DYNAMIC_REFERENCE_PATTERN and DYNAMIC_REFERENCE_TOKEN_SCAN.
-      'src/deployment/secret-redaction.ts': 2,
+      // WHOLE_DYNAMIC_REFERENCE_PATTERN and DYNAMIC_REFERENCE_TOKEN_SCAN, split into
+      // `secret-redaction/` (#4415).
+      'src/deployment/secret-redaction/rules.ts': 1,
+      'src/deployment/secret-redaction/redact-path.ts': 1,
     };
 
     for (const [relative, expected] of Object.entries(OWNERS)) {

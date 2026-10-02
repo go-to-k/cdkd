@@ -3491,7 +3491,7 @@ export async function captureObservedForImportedResources(
           // the readback against them, with the skip never firing.
           //
           // `STATE_SOURCED_BASELINE_RULES` is the row this write site occupies
-          // in `secret-redaction.ts`'s generation table ("observed walk,
+          // in `secret-redaction/rules.ts`'s generation table ("observed walk,
           // own-record source"). The BASELINE constant, not the plain readback
           // one, because DESTINATION is what selects it and this writer has
           // exactly one: `observedProperties`, which is a drift BASELINE and

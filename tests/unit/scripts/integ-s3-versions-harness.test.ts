@@ -2388,7 +2388,7 @@ const FALSIFIED_CLAIMS: readonly {
   {
     retired: 'On today\'s code the plaintext does NOT reach state -- the GHSA-p5qg-v9gv-hc7w fix', // falsified sample
     why:
-      'FALSE on the DEPLOY path: `secret-redaction.ts`\'s own table carries three `LEAK (#2012)` rows ' +
+      'FALSE on the DEPLOY path: `secret-redaction/rules.ts`\'s own table carries three `LEAK (#2012)` rows ' +
       'reachable by a plain `cdkd deploy`, whose `drainObservedCaptures` baseline reaches the persist ' +
       'choke point with an empty secrets map. The redaction substitutes only where it can certify the ' +
       'position; say that, rather than asserting the outcome. This sentence had THREE verbatim copies.',
@@ -2473,7 +2473,7 @@ describe('claims this lane corrected stay corrected TREE-WIDE', () => {
     ['.claude/rules', '.claude/rules/testing.md'],
     ['tests/unit/scripts', 'tests/unit/scripts/integ-secret-fixture-sweep.test.ts'],
     ['tests/integration', 'tests/integration/s3-versions.sh'],
-    ['src', 'src/deployment/secret-redaction.ts'],
+    ['src', 'src/deployment/secret-redaction/rules.ts'],
     ['plugins', 'plugins/cdkd-skills/skills/cdkd/SKILL.md'],
   ];
 

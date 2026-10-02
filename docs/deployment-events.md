@@ -143,7 +143,7 @@ HERE rather than only at the log sites, because a durable sink keeps whatever
 gets through:
 
 - **Secrets shorter than 4 characters are not substituted**
-  (`MIN_NEEDLE_LENGTH` in `src/deployment/secret-redaction.ts`) unless the whole
+  (`MIN_NEEDLE_LENGTH` in `src/deployment/secret-redaction/rules.ts`) unless the whole
   message IS the secret. A 1-3 character needle would rewrite unrelated text
   across every message, so the substring scan declines it.
 - **Only a VERBATIM occurrence is matched.** A message that quotes the value

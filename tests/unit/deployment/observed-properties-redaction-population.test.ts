@@ -163,7 +163,7 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
     sites: 1,
     why: '`cdkd state refresh-observed` — the issue #1926 site, the first of this class.',
   },
-  'src/deployment/secret-redaction.ts': {
+  'src/deployment/secret-redaction/redact-state.ts': {
     sites: 1,
     why:
       '`scrubResourceRecord` — the redactor itself, shared by the deploy persist ' +
