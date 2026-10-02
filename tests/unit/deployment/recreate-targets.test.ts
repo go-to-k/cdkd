@@ -2467,3 +2467,157 @@ describe('--recreate-via-cc-api on a type Cloud Control cannot create (#3887)', 
     expect(v.blockedNoCcRoute).toEqual([]);
   });
 });
+
+describe('a protected stateful target says the flag alone cannot remove it (#2610 site 11)', () => {
+  const NOTE_MARKER = 'cdkd deploy has no --remove-protection flag to clear it';
+  const validate = (
+    properties: Record<string, unknown>,
+    extra: { observed?: Record<string, unknown>; updateReplacePolicy?: 'Retain' } = {}
+  ) =>
+    validateRecreateTargets({
+      template: {
+        Resources: {
+          MyDB: {
+            Type: 'AWS::RDS::DBInstance',
+            Properties: {},
+            ...(extra.updateReplacePolicy !== undefined && {
+              UpdateReplacePolicy: extra.updateReplacePolicy,
+            }),
+          },
+        },
+      },
+      state: st('S', {
+        MyDB: res('AWS::RDS::DBInstance', {
+          physicalId: 'db-1',
+          properties,
+          ...(extra.observed !== undefined && { observedProperties: extra.observed }),
+        }),
+      }),
+      recreateViaCcApi: ['MyDB'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+
+  it('renders the note under the target when its record carries the flag', () => {
+    const v = validate({ DeletionProtection: true });
+    expect(v.blockedStatefulTargets[0]!.protectionEvidence).toBe(
+      "cdkd's recorded properties for this resource carry DeletionProtection: true"
+    );
+    const error = renderRecreateTargetsErrors(v)!;
+    const lines = error.split('\n');
+    const at = lines.findIndex((l) => l.startsWith('  - MyDB (AWS::RDS::DBInstance)'));
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(lines[at + 1]).toMatch(/^ {4}cdkd's recorded properties for this resource carry /);
+    expect(lines[at + 1]).toContain(NOTE_MARKER);
+    expect(lines[at + 1]).toContain(
+      'so --force-stateful-recreation alone does not remove the old resource'
+    );
+  });
+
+  it('reads the observed bag too', () => {
+    const v = validate({}, { observed: { DeletionProtection: true } });
+    expect(v.blockedStatefulTargets[0]!.protectionEvidence).toBe(
+      'the AWS read-back cdkd stored for this resource carries DeletionProtection: true'
+    );
+  });
+
+  it('renders no note when the record says protection is off', () => {
+    const v = validate({ DeletionProtection: false });
+    expect(v.blockedStatefulTargets).toHaveLength(1);
+    expect(v.blockedStatefulTargets[0]!.protectionEvidence).toBeUndefined();
+    expect(renderRecreateTargetsErrors(v)).not.toContain(NOTE_MARKER);
+  });
+
+  it('renders no note under UpdateReplacePolicy: Retain, where the recreate deletes nothing', () => {
+    const v = validate({ DeletionProtection: true }, { updateReplacePolicy: 'Retain' });
+    expect(v.blockedStatefulTargets).toHaveLength(1);
+    expect(v.blockedStatefulTargets[0]!.protectionEvidence).toBeUndefined();
+    expect(renderRecreateTargetsErrors(v)).not.toContain(NOTE_MARKER);
+  });
+
+  it('keeps the evidence through the live-probe revalidation', async () => {
+    const v = validate({ DeletionProtection: true });
+    expect(v.blockedStatefulTargets[0]!.protectionEvidence).toBeDefined();
+    const revalidated = await probeAndRevalidateStateful({
+      validation: v,
+      clients: {} as never,
+      forceStatefulRecreation: false,
+    });
+    expect(revalidated.blockedStatefulTargets[0]!.protectionEvidence).toBe(
+      v.blockedStatefulTargets[0]!.protectionEvidence
+    );
+  });
+
+  it('keeps the evidence on a log group the live probe PROMOTES to stateful', async () => {
+    // No recorded retention: the sync verdict defers, and only the
+    // DescribeLogStreams probe makes it `has-log-events` — a promotion path
+    // the RDS cases above never take.
+    const v = validateRecreateTargets({
+      template: { Resources: { Logs: { Type: 'AWS::Logs::LogGroup', Properties: {} } } },
+      state: st('S', {
+        Logs: res('AWS::Logs::LogGroup', {
+          physicalId: '/my/group',
+          properties: { LogGroupName: '/my/group', DeletionProtectionEnabled: true },
+        }),
+      }),
+      recreateViaCcApi: ['Logs'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.blockedStatefulTargets).toEqual([]);
+    expect(v.targets[0]!.protectionEvidence).toBeDefined();
+    const send = vi.fn().mockResolvedValue({ logStreams: [{ logStreamName: 's' }] });
+    const revalidated = await probeAndRevalidateStateful({
+      validation: v,
+      clients: { s3: {} as never, cloudWatchLogs: { send } as never, sleep: async () => {} },
+      forceStatefulRecreation: false,
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(revalidated.blockedStatefulTargets).toHaveLength(1);
+    expect(revalidated.blockedStatefulTargets[0]!.statefulReason).toBe('has-log-events');
+    expect(revalidated.blockedStatefulTargets[0]!.protectionEvidence).toBe(
+      "cdkd's recorded properties for this resource carry DeletionProtectionEnabled: true"
+    );
+    expect(renderRecreateTargetsErrors(revalidated)).toContain(NOTE_MARKER);
+  });
+
+  it("reads a global table's replica flag in the STATE record's region", () => {
+    const validateGlobal = (region: string) =>
+      validateRecreateTargets({
+        template: {
+          Resources: { GT: { Type: 'AWS::DynamoDB::GlobalTable', Properties: {} } },
+        },
+        state: {
+          ...st('S', {
+            GT: res('AWS::DynamoDB::GlobalTable', {
+              physicalId: 'gt',
+              properties: {
+                Replicas: [
+                  { Region: 'us-east-1', DeletionProtectionEnabled: false },
+                  { Region: 'eu-west-1', DeletionProtectionEnabled: true },
+                ],
+              },
+            }),
+          }),
+          region,
+        },
+        recreateViaCcApi: ['GT'],
+        allowUnsupportedProperties: new Set(),
+        forceStatefulRecreation: false,
+      });
+    expect(validateGlobal('eu-west-1').targets[0]!.protectionEvidence).toBe(
+      "cdkd's recorded properties for this resource carry DeletionProtectionEnabled for the " +
+        'deploy region: true'
+    );
+    expect(validateGlobal('us-east-1').targets[0]!.protectionEvidence).toBeUndefined();
+  });
+
+  it('the header points at the per-resource note only when a target is protected', () => {
+    const header = (props: Record<string, unknown>) =>
+      renderRecreateTargetsErrors(validate(props))!.split('\n')[0]!;
+    expect(header({ DeletionProtection: true })).toContain(
+      'A resource carrying deletion protection needs more than that flag: see the note under it.'
+    );
+    expect(header({ DeletionProtection: false })).not.toContain('deletion protection');
+  });
+});

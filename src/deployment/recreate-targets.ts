@@ -57,6 +57,10 @@ import {
 } from '../provisioning/stateful-types.js';
 import { findActionableSilentDrops } from '../provisioning/property-coverage.js';
 import {
+  recordedProtectionEvidence,
+  recordedProtectionNote,
+} from '../provisioning/recorded-protection.js';
+import {
   hasNoCloudControlHandlers,
   NO_CC_HANDLERS_REASON,
 } from '../provisioning/unsupported-types.js';
@@ -112,6 +116,15 @@ export interface RecreateTarget {
    * asymmetry.
    */
   probeUnresolved?: boolean;
+  /**
+   * Issue [#2610] site 11: the clause naming the bag that says this resource
+   * carries a deletion / termination protection flag, or `undefined`. The
+   * recreate's delete never carries `removeProtection`, so the stateful
+   * refusal's `--force-stateful-recreation` cannot remove such a resource on
+   * its own. Unset under a template `UpdateReplacePolicy: Retain`, where the
+   * recreate deletes nothing.
+   */
+  protectionEvidence?: string;
 }
 
 /**
@@ -385,6 +398,15 @@ export function validateRecreateTargets(input: {
       ),
       direction,
     };
+    if (templateResource.UpdateReplacePolicy !== 'Retain') {
+      const protectionEvidence = recordedProtectionEvidence(
+        resourceType,
+        recordedResource.properties,
+        recordedResource.observedProperties,
+        input.state.region
+      );
+      if (protectionEvidence !== undefined) target.protectionEvidence = protectionEvidence;
+    }
     targets.push(target);
 
     // Multi-region refusal (design §8 — out of scope for v1). Refused
@@ -650,13 +672,22 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
       `${FLAG_UMBRELLA} would destroy + recreate ` +
         `${validation.blockedStatefulTargets.length} stateful resource(s). ` +
         `Recreate loses ALL data — no automatic data migration. Re-run with ` +
-        `--force-stateful-recreation to acknowledge the data-loss footgun.`
+        `--force-stateful-recreation to acknowledge the data-loss footgun.` +
+        (validation.blockedStatefulTargets.some((t) => t.protectionEvidence !== undefined)
+          ? ` A resource carrying deletion protection needs more than that flag: see ` +
+            `the note under it.`
+          : '')
     );
     for (const blocked of validation.blockedStatefulTargets) {
       lines.push(
         `  - ${blocked.logicalId} (${recordedTypeShown(blocked.resourceType)}) — ` +
           `${renderStatefulReason(blocked.statefulReason)}`
       );
+      if (blocked.protectionEvidence !== undefined) {
+        lines.push(
+          `    ${recordedProtectionNote(blocked.protectionEvidence, '--force-stateful-recreation')}`
+        );
+      }
     }
   }
 

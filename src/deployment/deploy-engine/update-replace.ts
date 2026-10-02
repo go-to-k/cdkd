@@ -1,6 +1,10 @@
 import { type DeployEngine, InterruptedError } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { ccBrokenReason } from '../../provisioning/provider-registry.js';
+import {
+  recordedProtectionEvidence,
+  recordedProtectionNote,
+} from '../../provisioning/recorded-protection.js';
 import { applyDefaultNameForFallback } from '../../provisioning/resource-name.js';
 import {
   isStatefulRecreateTargetForReplace,
@@ -136,13 +140,25 @@ export async function updateByReplacement(
       // guard below; both are declarations, not fixes for an observed
       // retry (the throws are outside `withRetry` today, but a nested
       // stack's child engine re-throws into the parent's).
+      // Issue #2610 site 9: the advised flag cannot remove a resource AWS
+      // protects, since the replacement's delete never carries
+      // `removeProtection`. Read off the OLD resource's record, like the guard.
+      const protection = recordedProtectionEvidence(
+        oldResourceType,
+        currentProps,
+        currentResource.observedProperties,
+        this.stackRegion
+      );
       throw markNonRetryable(
         new CdkdError(
           `${logicalId} (${oldResourceType}) requires replacement (immutable property changed: ` +
             `${immutableProps}${typeChanged ? `, to ${resourceType}` : ''}) but it is a stateful resource — ` +
-            `${renderStatefulReason(statefulReason)}. Re-run with ` +
-            `--force-stateful-recreation to confirm the data loss, or change the resource ` +
-            `definition to avoid the immutable-property change.`,
+            `${renderStatefulReason(statefulReason)}. ` +
+            (protection
+              ? `${recordedProtectionNote(protection, '--force-stateful-recreation')} Or change ` +
+                `the resource's definition to avoid the immutable-property change.`
+              : `Re-run with --force-stateful-recreation to confirm the data loss, or change the ` +
+                `resource definition to avoid the immutable-property change.`),
           'STATEFUL_REPLACE_BLOCKED'
         )
       );
