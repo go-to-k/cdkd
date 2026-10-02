@@ -62,10 +62,10 @@ tests passing is necessary but NOT sufficient:
   template grepped instead) — an existing fixture takes the new arm
   (go-to-k/cdkd#4369).
 - **A change to what cdkd PRINTS or DECIDES** (a message's text or line split,
-  a refuse / adopt outcome) → `grep -rlF --include='*.sh'
-  --exclude-dir=node_modules '<old text>' tests/integration` (`verify.sh` and
-  `run.sh` both grep output; a hit in a top-level helper means every fixture
-  sourcing it) and run each fixture it names before merge, whatever the
+  a refuse / adopt outcome) → `grep -rlF --include='*.sh' --include='*.ts'
+  --include='*.mjs' --exclude-dir=node_modules '<old text>' tests/integration`
+  (`verify.sh`, `run.sh` and helpers such as `inject-drift.ts` read output; a
+  hit in a top-level helper means every fixture sourcing it) and run each fixture it names before merge, whatever the
   change's own tier: no vitest run executes them, so a reshaped line leaves a
   fixture red on `main` until the next lane runs it (go-to-k/cdkd#4394).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
@@ -91,19 +91,23 @@ read which one fired**, then restore and rebuild. A failure HINT's needle is
 copied from that red run, never reasoned (go-to-k/cdkd#4336); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
 `s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert by
-COPY, from a COMMITTED, clean lane**, inside `bash -c` (zsh neither word-splits an
-unquoted `$(…)` nor reads `$B:src/…` as a path), each copy written to scratch
-FIRST — a redirect onto the file truncates it even when `git show` fails:
+COPY, from a COMMITTED, clean lane**, inside `bash -c` (zsh does not word-split an
+unquoted `$var`, and reads `$B:src/…` as a history modifier), each copy written
+to scratch FIRST — a redirect onto the file truncates it even when `git show`
+fails:
 
 ```bash
 bash -c 'B=$(git merge-base origin/main HEAD); R=$B; S=<scratch>; mkdir -p "$S"
+[ "$R" = HEAD ] || [ -z "$(git -C <lane tree> status --porcelain)" ] \
+  || { echo "tree not clean - commit first"; exit 1; }
 for f in $(git diff --name-only --no-renames --diff-filter=M "$B" HEAD -- src/); do
   k=${f//\//_}; git show "$R:$f" > "$S/$k" && cp "$S/$k" "$f"
 done'
 ```
 
-`R=$B` reverts; the same loop with `R=HEAD` restores — run it until
-`git status --porcelain` is EMPTY. For §8-c's hook / CI BEFORE tree, replace
+`R=$B` reverts, refusing a tree with uncommitted edits (the restore reads
+`HEAD`, so it would destroy them); the same loop with `R=HEAD` restores — run
+it once; `git status --porcelain` must then be EMPTY. For §8-c's hook / CI BEFORE tree, replace
 `src/` with the changed command's own paths. A file NEW in the PR stays,
 unimported by pre-fix code; one the fix DELETED or moved is restored by hand.
 The pre-fix run executes the BUG on real AWS and can mint resources the
