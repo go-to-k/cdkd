@@ -528,6 +528,25 @@ describe('provider error-cause critic — registered cause composers', () => {
     ).toEqual(['threaded']);
   });
 
+  it('does NOT treat a SIBLING loop variable as shadowing (its scope ends with the loop)', () => {
+    const imp = "import { redactedDockerCause } from '../utils/docker-cmd.js';";
+    for (const loop of [
+      'for (const redactedDockerCause of fns) { void redactedDockerCause; }',
+      'for (let redactedDockerCause = 0; redactedDockerCause < 1; redactedDockerCause++) {}',
+    ]) {
+      expect(
+        verdicts(`${imp}
+          export function f(fns: unknown[]): void {
+            ${loop}
+            try { go(); } catch (err) {
+              throw new AssetError('m', redactedDockerCause(err, ['tag']));
+            }
+          }`),
+        loop
+      ).toEqual(['threaded']);
+    }
+  });
+
   it('refuses an UNREGISTERED call even when it is handed the caught value', () => {
     expect(
       verdicts(
