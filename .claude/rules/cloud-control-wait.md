@@ -2,11 +2,12 @@
 description: Cloud Control poll failures and the CloudControlWaitAbandonedError contract
 paths:
   - 'src/deployment/retryable-errors.ts'
+  - 'src/deployment/retryable-errors/**'
 ---
 
 # `waitForOperation`: the poll's transport fence
 
-Issue [#3236](https://github.com/go-to-k/cdkd/issues/3236); mechanism: `cloud-control-provider.ts` JSDoc.
+Issue #3236; mechanism: `cloud-control-provider.ts` JSDoc.
 
 **Never add a transport / throttle / 5xx pattern to
 `RETRYABLE_ERROR_MESSAGE_PATTERNS` to make a failed poll recoverable** — that

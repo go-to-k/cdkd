@@ -259,7 +259,7 @@ describe('CloudControlProvider.delete -- S3 bucket identity confirmation (issue 
 
     // `isNotFoundMessage` would let a caller treat this deterministic refusal
     // as "the resource is gone"; `does not exist` is additionally a literal
-    // member of the transient-message table in retryable-errors.ts.
+    // member of the transient-message table in retryable-errors/patterns.ts.
     expect(isNotFoundMessage(error.message)).toBe(false);
     expect(error.message).not.toMatch(/does not exist|not found|no such/i);
     // It must still name both regions, or the operator cannot act on it.

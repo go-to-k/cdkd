@@ -234,7 +234,7 @@ assert_propagation_retry() {
   if [ "${propagation_hits}" -gt 0 ]; then
     echo "FAIL: propagation retries fired but none carried the ${label} phrase." >&2
     echo "      Either AWS reworded the message (update the pattern in" >&2
-    echo "      src/deployment/retryable-errors.ts and this grep), or ${wrong_window_hint}." >&2
+    echo "      src/deployment/retryable-errors/patterns.ts and this grep), or ${wrong_window_hint}." >&2
     dump_retry_evidence
     exit 1
   fi

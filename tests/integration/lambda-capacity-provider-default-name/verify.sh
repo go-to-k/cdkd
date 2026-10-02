@@ -306,7 +306,7 @@ done
 # here. The hard guard above is what keeps the reporting honest; these numbers
 # are for the human reading the run.
 #
-# The spellings are the ENTRIES from `src/deployment/retryable-errors.ts`,
+# The spellings are the ENTRIES from `src/deployment/retryable-errors/patterns.ts`,
 # matched with `grep -F` so the apostrophe and the periods stay literal. The
 # TOTAL is every retry line, not the sum of the three: a total exceeding the
 # sum means a retry on a wording this block does not know -- either an

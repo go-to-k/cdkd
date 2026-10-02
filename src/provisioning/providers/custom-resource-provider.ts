@@ -895,7 +895,7 @@ const CR_AUTHZ_MAX_RETRIES_CEILING = 10;
 /**
  * Bound for the `.cause` walks in this file, matching the depth
  * `isMarkedNonRetryable` / `isThrottlingError` use in
- * `src/deployment/retryable-errors.ts`. Bounded rather than unbounded so a
+ * `src/deployment/retryable-errors/marks.ts`. Bounded rather than unbounded so a
  * cyclic chain cannot hang the classifier.
  */
 const CR_ERROR_CAUSE_MAX_DEPTH = 5;

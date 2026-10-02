@@ -774,6 +774,10 @@ stage_filter_change "src/deployment/rollback-executor.ts" "const REPLAY_LIMIT = 
 run_case "diff filter: rollback-executor.ts is delete-touching (#2042)" 2 stale "$filter_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
+stage_filter_change "src/deployment/retryable-errors/transient.ts" "const RETRYABLE_STATUS = [500, 502, 504];"
+run_case "diff filter: retryable-errors/*.ts is delete-touching (#4452)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
 # Its split modules (#4426) are strict too: a helper moved out of the host
 # must not leave the gate's strict bucket.
 stage_filter_change "src/deployment/rollback-executor/plan.ts" "const REPLAY_LIMIT = 3;"

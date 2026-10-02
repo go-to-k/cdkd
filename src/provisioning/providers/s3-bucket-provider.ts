@@ -5981,7 +5981,7 @@ export class S3BucketProvider implements ResourceProvider {
    * full budget before surfacing the same message, which reads as flaky AWS.
    * The wording avoids the phrase "does not exist" for the same reason -- it is
    * a literal member of `OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS`
-   * (`retryable-errors.ts`), so a message containing it is classified transient
+   * (`retryable-errors/patterns.ts`), so a message containing it is classified transient
    * even when the throw is not.
    *
    * Issue [#2227](https://github.com/go-to-k/cdkd/issues/2227). Note the

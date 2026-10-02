@@ -336,7 +336,7 @@ const POLL_TRANSPORT_CODE_IN_MESSAGE = new RegExp(
 );
 
 /**
- * The `.cause` walk depth. It is `retryable-errors.ts`'s `MAX_CAUSE_CHAIN_DEPTH`
+ * The `.cause` walk depth. It is `retryable-errors/marks.ts`'s `MAX_CAUSE_CHAIN_DEPTH`
  * VALUE, and equality is the requirement rather than a coincidence: a transport
  * code this predicate finds at a depth `isThrottlingError` /
  * `isMarkedNonRetryable` / `isRetryableTransientError` structurally cannot
@@ -529,7 +529,7 @@ export function isNotFoundMessage(message: string): boolean {
  *
  * Wording constraint: the hint is appended to an error message that
  * downstream matchers test against (isNotFoundMessage above, the
- * retryable-error message table in src/deployment/retryable-errors.ts), so it
+ * retryable-error message table in src/deployment/retryable-errors/patterns.ts), so it
  * must not introduce a "not found" / "does not exist" / "no such" match nor
  * any retryable-pattern substring. Pinned by a unit test.
  */

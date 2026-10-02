@@ -51,7 +51,7 @@
 const WAIT_ABANDONED_MARKER = Symbol.for('cdkd.waitAbandoned');
 
 /**
- * The `.cause` walk depth, the same bound `retryable-errors.ts` uses. cdkd
+ * The `.cause` walk depth, the same bound `retryable-errors/marks.ts` uses. cdkd
  * wraps errors, so the marked error is routinely one or two hops down.
  */
 const MAX_CAUSE_CHAIN_DEPTH = 5;
