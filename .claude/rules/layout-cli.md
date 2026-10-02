@@ -45,7 +45,7 @@ Index of every area: [code-layout.md](code-layout.md).
   Each of the first seven also throws it on a ZERO-stack assembly BEFORE its
   branch chain, which otherwise answers `Multiple stacks found: .`.
   `renderAllWithFailedStages` is the `--all` refusal when a Stage failed beside
-  surviving stacks (deploy / destroy / diff / publish-assets; scrub not yet).
+  surviving stacks (deploy / destroy / diff / publish-assets / scrub).
   **`synth` reaches the same message by a different route and has no branch
   chain to sit before** ([#3550](https://github.com/go-to-k/cdkd/issues/3550)):
   its selection is unconditional, so a zero-stack assembly and a pattern

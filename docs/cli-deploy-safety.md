@@ -1266,12 +1266,11 @@ path, so the sentence is then prefixed `Possibly unrelated:` rather than
 claimed as the explanation.
 
 `--all` is refused whenever a Stage failed to load, even when other stacks did
-synthesize, in `cdkd deploy`, `cdkd destroy`, `cdkd diff` and
-`cdkd publish-assets`: it targets every stack in the app, so acting on the
-survivors and exiting 0 would report a partial run as a whole one. The refusal
-lists the stacks that did synthesize and names the Stage; name the stacks you
-want explicitly, or fix the Stage. `cdkd scrub --all` still scrubs only the
-survivors.
+synthesize, in `cdkd deploy`, `cdkd destroy`, `cdkd diff`,
+`cdkd publish-assets` and `cdkd scrub`: it targets every stack in the app, so
+acting on the survivors and exiting 0 would report a partial run as a whole
+one. The refusal lists the stacks that did synthesize and names the Stage; name
+the stacks you want explicitly, or fix the Stage.
 
 Every other refusal under a Stage — an escaping or absent `templateFile`, an
 unreadable template, an escaping asset manifest, an absolute `aws:asset:path` —

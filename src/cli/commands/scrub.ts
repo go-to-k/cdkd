@@ -50,7 +50,12 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
-import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
+import {
+  matchStacks,
+  describeStack,
+  renderAllWithFailedStages,
+  renderNoStackMatch,
+} from '../stack-matcher.js';
 import {
   IntrinsicFunctionResolver,
   carriesDynamicReference,
@@ -1042,10 +1047,23 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     // and `--all` would answer `No stacks matched.` -- zero stacks being
     // exactly what an app whose only stacks live in a Stage that failed to
     // load produces (issue go-to-k/cdkd#3507).
-    throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
+    const message = renderNoStackMatch(stackPatterns, allStacks, result);
+    // `--all` beside a failed Stage is the partial-app refusal below with no
+    // survivors: exit 2 like it, never 1, which `--fail` reserves for
+    // "plaintext found".
+    if (options.all && result.failedStages.length > 0) {
+      throw new ScrubRefusalError(message, 'SCRUB_ALL_PARTIAL_APP');
+    }
+    throw new Error(message);
   }
   let targetStacks: StackInfo[];
   if (options.all) {
+    // A Stage that failed to load dropped its stacks from `allStacks`, so
+    // `--all` would scrub part of the app and report it clean (#3507). A
+    // REFUSAL (exit 2), not a plain error (exit 1): `--fail` reserves 1 for
+    // "plaintext found", and this run declined to look at the Stage's stacks.
+    const partial = renderAllWithFailedStages('scrub', allStacks, result);
+    if (partial !== undefined) throw new ScrubRefusalError(partial, 'SCRUB_ALL_PARTIAL_APP');
     targetStacks = allStacks;
   } else if (stackPatterns.length > 0) {
     targetStacks = matchStacks(allStacks, stackPatterns);

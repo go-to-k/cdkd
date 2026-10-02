@@ -41,8 +41,8 @@
 #   3f. (Phase 2f) the same as 3d for `export --dry-run` (go-to-k/cdkd#3507).
 #   3g. (Phase 2g) add a second, never-synthesized Stage to the top-level
 #      manifest and assert `--all` refuses in deploy / diff / publish-assets /
-#      destroy, with this stack as the survivor, leaving state untouched
-#      (go-to-k/cdkd#3507).
+#      scrub / destroy, with this stack as the survivor, leaving state
+#      untouched (go-to-k/cdkd#3507).
 #   4. destroy -> assert clean (0 errors): both Lambdas gone, OUR pushed image
 #      gone from ECR by tag, state file gone.
 #
@@ -517,11 +517,14 @@ fi
 cp cdk.out/manifest.json cdk.out/manifest.json.orig
 jq '.artifacts["assembly-CdkdGhostStage"] = {"type": "cdk:cloud-assembly", "properties": {"directoryName": "assembly-CdkdGhostStage", "displayName": "CdkdGhostStage"}}' \
   cdk.out/manifest.json.orig > cdk.out/manifest.json
-for verb in deploy diff publish-assets destroy; do
+for verb in deploy diff publish-assets scrub destroy; do
   case "${verb}" in
     deploy) phrase="deploy"; extra="--yes" ;;
     diff) phrase="diff"; extra="" ;;
     publish-assets) phrase="publish assets for"; extra="" ;;
+    # --dry-run, as in Phase 2c: a scrub that did not refuse would report the
+    # survivor clean and exit 0, which the rc check below reads either way.
+    scrub) phrase="scrub"; extra="--dry-run" ;;
     destroy) phrase="destroy"; extra="--force" ;;
   esac
   set +e
@@ -535,6 +538,13 @@ for verb in deploy diff publish-assets destroy; do
   if [ "${ALL_RC}" -eq 0 ]; then
     mv cdk.out/manifest.json.orig cdk.out/manifest.json
     echo "FAIL: ${verb} --all with a ghost Stage exited 0, expected a refusal" >&2
+    exit 1
+  fi
+  # scrub's refusal is exit 2 ("declined to look"); 1 is --fail's "plaintext
+  # found", so a CI gate must be able to tell the two apart.
+  if [ "${verb}" = "scrub" ] && [ "${ALL_RC}" -ne 2 ]; then
+    mv cdk.out/manifest.json.orig cdk.out/manifest.json
+    echo "FAIL: scrub --all with a ghost Stage exited ${ALL_RC}, expected 2" >&2
     exit 1
   fi
   # One needle: the verb, the survivor in its pattern form, and the ghost Stage
