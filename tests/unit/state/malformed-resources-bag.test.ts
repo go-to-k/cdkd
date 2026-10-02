@@ -4352,8 +4352,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     expect(src.indexOf('refuseMalformedNestedChildOutputs(')).toBeLessThan(derefIndex);
   });
 
-  it('src/deployment/intrinsic-resolver/cross-stack.ts REFUSES its Fn::GetStackOutput read', () => {
-    const file = 'src/deployment/intrinsic-resolver/cross-stack.ts';
+  it('src/deployment/intrinsic-resolver/stack-output.ts REFUSES its Fn::GetStackOutput read', () => {
+    const file = 'src/deployment/intrinsic-resolver/stack-output.ts';
     const src = code(file);
     // The ONE reader in this class that RE-APPLIES rather than displays:
     // `Object.hasOwn('abcdef', '0')` is true, so a fabricated character

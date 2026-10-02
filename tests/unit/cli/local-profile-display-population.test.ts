@@ -191,7 +191,7 @@ function isProfileSite(expression: string): boolean {
  *   - `src/local/**` — the `cdkd local` surface go-to-k/cdkd#3390 covered;
  *   - `src/utils/role-arn.ts` — `--role-arn` / `CDKD_ROLE_ARN`, and the
  *     cross-account `Fn::GetStackOutput` assume;
- *   - `src/deployment/intrinsic-resolver/cross-stack.ts` — `Fn::GetStackOutput`'s
+ *   - `src/deployment/intrinsic-resolver/stack-output.ts` — `Fn::GetStackOutput`'s
  *     `RoleArn`, a literal the template author wrote.
  *
  * What the widening actually bought, which is the argument for doing it at all
@@ -1009,7 +1009,7 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
       'src/cli/commands/drift.ts',
       'src/cli/commands/rollback.ts',
       'src/utils/role-arn.ts',
-      'src/deployment/intrinsic-resolver/cross-stack.ts',
+      'src/deployment/intrinsic-resolver/stack-output.ts',
     ]) {
       expect(arnFiles.has(file), `no role-ARN site in ${file}`).toBe(true);
     }
