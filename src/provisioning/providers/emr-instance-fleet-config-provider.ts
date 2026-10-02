@@ -83,6 +83,38 @@ const toNumber = (v: unknown): number | undefined => {
 const jsonEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /**
+ * Mutable properties whose REMOVAL from the template cdkd leaves in place
+ * (issue #1160). `ModifyInstanceFleet` keeps a field it is not sent, and
+ * neither has a constant reset: a fleet provisions nothing without instance
+ * types, and
+ * the resize specification's defaults are per-strategy AWS choices, not a
+ * value CloudFormation documents. Whether CloudFormation's (unpublished)
+ * handler does anything on such a removal is unmeasured. `update()` names the
+ * removal in its own warning rather than the shared caller's, whose line
+ * claims a CloudFormation reset.
+ */
+const LEFT_IN_PLACE_ON_REMOVAL = ['ResizeSpecifications', 'InstanceTypeConfigs'] as const;
+
+/**
+ * The ONE warning line for {@link LEFT_IN_PLACE_ON_REMOVAL} removals. Names
+ * are template-borne, so they go through `safeMsg`. A rollback revert restores
+ * an earlier state record, so there the property is one the failed deploy
+ * ADDED, and the line says that instead.
+ */
+const leftInPlaceWarning = (
+  logicalId: string,
+  names: readonly string[],
+  caller: 'deploy' | 'rollback'
+): string => {
+  const one = names.length === 1;
+  const subject = one ? 'property' : 'properties';
+  const verb = one ? 'is' : 'are';
+  return caller === 'rollback'
+    ? safeMsg`${logicalId} (AWS::EMR::InstanceFleetConfig): ${subject} ${names.join(', ')} ${verb} absent from the state being restored; ModifyInstanceFleet keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
+    : safeMsg`${logicalId} (AWS::EMR::InstanceFleetConfig): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; ModifyInstanceFleet keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
+};
+
+/**
  * Retry-safety state for `AddInstanceFleet`, which mints the instance fleet id and
  * carries no idempotency token (issue
  * [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
@@ -115,7 +147,9 @@ export function resetEMRInstanceFleetCreateRetryStateForTests(): void {
  *    error.
  *  - `update` → only the AWS-mutable properties: `TargetOnDemandCapacity`,
  *    `TargetSpotCapacity`, `ResizeSpecifications`, and `InstanceTypeConfigs`
- *    (all via `ModifyInstanceFleet`; the resize is polled until settled).
+ *    (all via `ModifyInstanceFleet`; the resize is polled until settled). A
+ *    removed capacity is sent as 0; a removed `ResizeSpecifications` /
+ *    `InstanceTypeConfigs` is warned about and left in place (issue #1160).
  *    `Name` / `LaunchSpecifications` / `InstanceFleetType` are
  *    registry-createOnly → routed through DELETE+CREATE by the
  *    replacement-detection layer; a createOnly change that reaches `update()`
@@ -171,6 +205,29 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
         'ResizeSpecifications',
         'TargetOnDemandCapacity',
         'TargetSpotCapacity',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every property,
+   * each removal handled by `update()` — so the shared caller warns about
+   * none of them.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::EMR::InstanceFleetConfig',
+      new Set([
+        // Required or create-only: a removal is refused or replaces.
+        'ClusterId',
+        'InstanceFleetType',
+        'LaunchSpecifications',
+        'Name',
+        // Sent as 0: ModifyInstanceFleet needs both capacities.
+        'TargetOnDemandCapacity',
+        'TargetSpotCapacity',
+        // Left in place and named in update()'s own warning (no reset).
+        ...LEFT_IN_PLACE_ON_REMOVAL,
       ]),
     ],
   ]);
@@ -396,9 +453,37 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       }
     }
 
-    const anyMutableChanged = [...MUTABLE].some((k) => changed(k));
+    // Issue #1160: a LEFT_IN_PLACE_ON_REMOVAL property removed from the
+    // desired side has nothing to send — ModifyInstanceFleet keeps a field it
+    // is not sent, and cdkd sends no reset. Counting it as a change only
+    // issued a ModifyInstanceFleet (and a resize wait) changing nothing. Named
+    // once, and only after the update SUCCEEDED (the shared caller's warning
+    // has the same timing): a retried attempt would repeat it. Not on
+    // `drift --revert`: its previous side is an AWS readback, so a key the
+    // desired side lacks was never removed from a template.
+    const removed = context?.removedProperties;
+    const leftInPlaceNames = LEFT_IN_PLACE_ON_REMOVAL.filter((key) =>
+      removed !== undefined
+        ? removed.has(key)
+        : properties[key] === undefined && previousProperties[key] !== undefined
+    );
+    const warnLeftInPlace = (): void => {
+      if (leftInPlaceNames.length === 0 || context?.desiredFromAwsReadback) return;
+      this.logger.warn(
+        leftInPlaceWarning(
+          logicalId,
+          leftInPlaceNames,
+          context?.replayingState ? 'rollback' : 'deploy'
+        )
+      );
+    };
+    const leftInPlace = new Set<string>(LEFT_IN_PLACE_ON_REMOVAL);
+    const anyMutableChanged = [...MUTABLE].some(
+      (k) => changed(k) && !(leftInPlace.has(k) && properties[k] === undefined)
+    );
     if (!anyMutableChanged) {
       this.logger.debug(`No mutable diff for EMR instance fleet ${logicalId}, skipping update`);
+      warnLeftInPlace();
       return { physicalId, wasReplaced: false };
     }
 
@@ -472,6 +557,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       );
 
       this.logger.debug(`Successfully updated EMR instance fleet ${logicalId}`);
+      warnLeftInPlace();
       return { physicalId, wasReplaced: false, attributes: { Id: physicalId } };
     } catch (error) {
       if (error instanceof ProvisioningError || error instanceof ResourceUpdateNotSupportedError) {

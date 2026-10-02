@@ -77,6 +77,7 @@ import type {
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { commandHole } from '../../utils/pasteable-command.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -119,6 +120,36 @@ const MUTABLE_TOP_LEVEL_PROPS = new Set<string>([
   'ManagedScalingPolicy',
   'AutoTerminationPolicy',
 ]);
+
+/**
+ * Mutable properties whose REMOVAL from the template cdkd leaves in place
+ * (issue #1160). `ModifyCluster` keeps a `StepConcurrencyLevel` it is not
+ * sent, and cdkd sends no reset: CloudFormation documents a default of 1, but
+ * whether its (unpublished) handler issues that reset on a removal is
+ * unmeasured, and where CloudFormation does not reset, a reset is the bug.
+ * `update()` names the removal in its own warning rather than the shared
+ * caller's, whose line claims a CloudFormation reset.
+ */
+const LEFT_IN_PLACE_ON_REMOVAL = ['StepConcurrencyLevel'] as const;
+
+/**
+ * The ONE warning line for {@link LEFT_IN_PLACE_ON_REMOVAL} removals. Names
+ * are template-borne, so they go through `safeMsg`. A rollback revert restores
+ * an earlier state record, so there the property is one the failed deploy
+ * ADDED, and the line says that instead.
+ */
+const leftInPlaceWarning = (
+  logicalId: string,
+  names: readonly string[],
+  caller: 'deploy' | 'rollback'
+): string => {
+  const one = names.length === 1;
+  const subject = one ? 'property' : 'properties';
+  const verb = one ? 'is' : 'are';
+  return caller === 'rollback'
+    ? safeMsg`${logicalId} (AWS::EMR::Cluster): ${subject} ${names.join(', ')} ${verb} absent from the state being restored; ModifyCluster keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
+    : safeMsg`${logicalId} (AWS::EMR::Cluster): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; ModifyCluster keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
+};
 
 const toNumber = (v: unknown): number | undefined => {
   if (v === undefined) return undefined;
@@ -214,7 +245,8 @@ export function emrClusterProtectionSite(
  *    best-effort terminated so it does not bill.
  *  - `update` → the limited mutable surface only: `SetTerminationProtection`
  *    (`Instances.TerminationProtected`), `SetVisibleToAllUsers`,
- *    `ModifyCluster` (`StepConcurrencyLevel`), managed-scaling / auto-
+ *    `ModifyCluster` (`StepConcurrencyLevel`; a removal is warned about and
+ *    left in place, issue #1160), managed-scaling / auto-
  *    termination policy APIs, and `AddTags`/`RemoveTags`. Everything else
  *    (instance topology, applications, release label, ...) is createOnly →
  *    replacement via the schema fallback; a change that reaches `update()`
@@ -286,6 +318,34 @@ export class EMRClusterProvider implements ResourceProvider {
         'Steps',
         'Tags',
         'VisibleToAllUsers',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every property,
+   * each removal handled by `update()` — so the shared caller warns about
+   * none of them.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::EMR::Cluster',
+      new Set([
+        // Create-only (a removal replaces), or `Instances`: required, and a
+        // removed sub-field is refused except `TerminationProtected`, which is
+        // sent as false.
+        ...[...(this.handledProperties.get('AWS::EMR::Cluster') ?? [])].filter(
+          (key) => !MUTABLE_TOP_LEVEL_PROPS.has(key)
+        ),
+        // Diffed by AddTags / RemoveTags.
+        'Tags',
+        // Sent as false, CloudFormation's documented default for this type.
+        'VisibleToAllUsers',
+        // Removed through RemoveManagedScalingPolicy / RemoveAutoTerminationPolicy.
+        'ManagedScalingPolicy',
+        'AutoTerminationPolicy',
+        // Left in place and named in update()'s own warning (no reset).
+        ...LEFT_IN_PLACE_ON_REMOVAL,
       ]),
     ],
   ]);
@@ -772,8 +832,34 @@ export class EMRClusterProvider implements ResourceProvider {
       }
     }
 
+    // Issue #1160: a LEFT_IN_PLACE_ON_REMOVAL property removed from the
+    // desired side has nothing to send — ModifyCluster keeps a field it is not
+    // sent, and cdkd sends no reset. Counting it as a change only issued a
+    // ModifyCluster carrying no update field. Named once, and only after the
+    // update SUCCEEDED (the shared caller's warning has the same timing): a
+    // retried attempt would repeat it. Not on `drift --revert`: its previous
+    // side is an AWS readback, so a key the desired side lacks was never
+    // removed from a template.
+    const removed = context?.removedProperties;
+    const leftInPlaceNames = LEFT_IN_PLACE_ON_REMOVAL.filter((key) =>
+      removed !== undefined
+        ? removed.has(key)
+        : properties[key] === undefined && previousProperties[key] !== undefined
+    );
+    const warnLeftInPlace = (): void => {
+      if (leftInPlaceNames.length === 0 || context?.desiredFromAwsReadback) return;
+      this.logger.warn(
+        leftInPlaceWarning(
+          logicalId,
+          leftInPlaceNames,
+          context?.replayingState ? 'rollback' : 'deploy'
+        )
+      );
+    };
+
     const visibleChanged = changed('VisibleToAllUsers');
-    const stepConcurrencyChanged = changed('StepConcurrencyLevel');
+    const stepConcurrencyChanged =
+      changed('StepConcurrencyLevel') && properties['StepConcurrencyLevel'] !== undefined;
     const managedScalingChanged = changed('ManagedScalingPolicy');
     const autoTerminationChanged = changed('AutoTerminationPolicy');
     const tagsChanged = changed('Tags');
@@ -787,6 +873,7 @@ export class EMRClusterProvider implements ResourceProvider {
       !tagsChanged
     ) {
       this.logger.debug(`No mutable diff for EMR Cluster ${logicalId}, skipping update`);
+      warnLeftInPlace();
       return { physicalId, wasReplaced: false };
     }
 
@@ -885,6 +972,7 @@ export class EMRClusterProvider implements ResourceProvider {
       }
 
       this.logger.debug(`Successfully updated EMR Cluster ${logicalId}`);
+      warnLeftInPlace();
 
       return {
         physicalId,

@@ -30,6 +30,15 @@ import type { Construct } from 'constructs';
  * All near-instant API calls against the SAME running cluster — the ClusterId
  * must stay unchanged (no replacement).
  *
+ * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true, issue #1160):
+ *   - StepConcurrencyLevel is DROPPED from the template (live value 5, set by
+ *     the UPDATE phase; AWS's default is 1). ModifyCluster keeps a field it is
+ *     not sent and cdkd sends no reset, so the value must stay 5 and the
+ *     deploy must name the removal in a warning instead of dropping it
+ *     silently.
+ *   - A `removal` tag is ADDED in the same deploy, a companion change proving
+ *     the update ran with the removal beside it.
+ *
  * NOTE: `VisibleToAllUsers` is intentionally NOT toggled/asserted here — AWS
  * deprecated it, so `SetVisibleToAllUsers(false)` is a no-op and the value
  * stays `true` (the provider still issues the call; its unit tests cover the
@@ -40,6 +49,7 @@ export class EmrClusterStack extends cdk.Stack {
     super(scope, id, props);
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
 
     // VPC with 1 AZ, public subnet only, no NAT (cheapest legal shape).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -91,7 +101,8 @@ export class EmrClusterStack extends cdk.Stack {
       releaseLabel: 'emr-7.9.0',
       serviceRole: serviceRole.roleArn,
       jobFlowRole: instanceProfile.ref,
-      stepConcurrencyLevel: isUpdate ? 5 : 1,
+      // Absent from the REMOVAL phase's template (issue #1160).
+      ...(isRemoval ? {} : { stepConcurrencyLevel: isUpdate ? 5 : 1 }),
       // Cap orphan cost if a destroy is ever skipped. 1h/2h are well beyond
       // the normal deploy+verify+destroy window, so it never races the test.
       // The UPDATE phase bumps it to exercise PutAutoTerminationPolicy.
@@ -165,6 +176,9 @@ export class EmrClusterStack extends cdk.Stack {
         { key: 'env', value: isUpdate ? 'changed' : 'test' },
         // Removed in the UPDATE phase — exercises RemoveTags.
         ...(isUpdate ? [] : [{ key: 'dropme', value: 'yes' }]),
+        // Added in the REMOVAL phase — the companion change beside the
+        // StepConcurrencyLevel removal (AddTags).
+        ...(isRemoval ? [{ key: 'removal', value: 'yes' }] : []),
       ],
     });
 

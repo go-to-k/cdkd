@@ -48,6 +48,17 @@ import type { Construct } from 'constructs';
  * changing it here would make a failed capacity assertion ambiguous between the
  * resize and the config conversion.
  *
+ * The TASK fleet also declares `ResizeSpecifications` (an On-Demand resize
+ * timeout of 25 minutes) in the baseline and UPDATE phases.
+ *
+ * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true, issue #1160):
+ *   - ResizeSpecifications is DROPPED from the TASK fleet. ModifyInstanceFleet
+ *     keeps a field it is not sent and cdkd sends no reset, so the live
+ *     timeout must stay 25 and the deploy must name the removal in a warning
+ *     instead of dropping it silently.
+ *   - TargetOnDemandCapacity goes 2 -> 1 in the same deploy, a companion
+ *     change proving ModifyInstanceFleet fired with the removal beside it.
+ *
  * DELETE: there is no standalone "delete instance fleet" API in EMR. The fleet
  * is released when the cluster terminates (`TerminateJobFlows`); the
  * InstanceFleetConfig provider's delete additionally best-effort scales a TASK
@@ -60,6 +71,7 @@ export class EmrInstanceFleetsStack extends cdk.Stack {
     super(scope, id, props);
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
 
     // VPC with 1 AZ, public subnet only, no NAT (cheapest legal shape).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -173,7 +185,11 @@ export class EmrInstanceFleetsStack extends cdk.Stack {
       clusterId: cluster.ref,
       instanceFleetType: 'TASK',
       name: 'cdkd-integ-task-fleet',
-      targetOnDemandCapacity: isUpdate ? 2 : 1,
+      targetOnDemandCapacity: isUpdate && !isRemoval ? 2 : 1,
+      // Absent from the REMOVAL phase's template (issue #1160).
+      ...(isRemoval
+        ? {}
+        : { resizeSpecifications: { onDemandResizeSpecification: { timeoutDurationMinutes: 25 } } }),
       instanceTypeConfigs: [
         {
           instanceType: 'm5.xlarge',

@@ -19,6 +19,11 @@
 #      (VisibleToAllUsers is intentionally NOT exercised — AWS deprecated it,
 #      so SetVisibleToAllUsers(false) is a no-op; the provider still issues the
 #      call and its unit tests cover the mapping.)
+#   2b. Re-deploy with CDKD_TEST_REMOVAL=true (issue #1160): StepConcurrencyLevel
+#      is DROPPED from the template while a `removal` tag is added. Assert the
+#      deploy succeeds and warns naming the removed property (with no
+#      CloudFormation-reset claim), the live StepConcurrencyLevel stays 5 (cdkd
+#      sends no reset), and the companion tag landed.
 #   3. Import round-trip (issue #1090, follow-up to PR #1080 which added the
 #      provider's `import()` / `readCurrentState()`): drop ONLY the cluster
 #      row from cdkd state via `cdkd orphan <stack>/<constructPath>` (AWS
@@ -90,6 +95,19 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 CLUSTER_NAME="cdkd-integ-emr"
 CLEANUP_TAG_KEY="cdkd-integ"
 CLEANUP_TAG_VALUE="emr-cluster"
+# Phase 2b (issue #1160): the provider's removal warning. The needle names the
+# removed property; the sentinel is an independent substring of the same line,
+# so a reworded warning fails loudly instead of reading as "not fired".
+REMOVAL_NEEDLE="(AWS::EMR::Cluster): property StepConcurrencyLevel was removed from the template"
+REMOVAL_SENTINEL="ModifyCluster keeps a setting it is not sent"
+# The shared caller's line for a removal no provider handles. It claims a
+# CloudFormation reset, which is unmeasured for this property, so it must not
+# name the cluster.
+SHARED_REMOVAL_CLAIM="(CloudFormation would reset it to its default)"
+# Deploy logs, streamed through `tee` and read back for the greps; removed by
+# cleanup on every exit path.
+PHASE2_LOG=""
+PHASE2B_LOG=""
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -199,6 +217,8 @@ wait_cluster_terminated() {
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  [ -n "${PHASE2_LOG:-}" ] && rm -f "${PHASE2_LOG}"
+  [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
   # ORDER MATTERS — the tag-scoped cluster sweep MUST run before
   # `state destroy`. The sweep finds the cluster by NAME + TAG, so it works
   # whether or not the cluster is still tracked in cdkd state; `state destroy`
@@ -399,7 +419,7 @@ cluster_logical_id() {
 
 # --- Phase 1: deploy baseline ------------------------------------------
 echo "==> Phase 1: deploy single-node EMR cluster (this takes ~5-15 min)"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 CID_P1="$(output_value ClusterId)"
@@ -508,8 +528,24 @@ echo "    HadoopJarStep StepProperties reached AWS"
 
 # --- Phase 2: in-place update ------------------------------------------
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (step concurrency, auto-termination, tags)"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+PHASE2_LOG="$(mktemp)"
+set +e
+env -u CDKD_TEST_REMOVAL CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2_LOG}"
+PHASE2_RC=${PIPESTATUS[0]}
+set -e
+if [ "${PHASE2_RC}" -ne 0 ]; then
+  echo "FAIL [phase 2]: deploy exited ${PHASE2_RC}" >&2
+  exit 1
+fi
+PHASE2_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${PHASE2_LOG}")"
+# Negative control for Phase 2b's needle: this deploy CHANGES
+# StepConcurrencyLevel and removes nothing, so the removal warning must not
+# appear here.
+if grep -qF "${REMOVAL_SENTINEL}" <<<"${PHASE2_PLAIN}"; then
+  echo "FAIL [phase 2]: the #1160 removal warning fired on a deploy that removed no property" >&2
+  exit 1
+fi
 
 CID_P2="$(output_value ClusterId)"
 if [ "${CID_P1}" != "${CID_P2}" ]; then
@@ -543,6 +579,64 @@ if [ "${DROPME_P2}" != "None" ] && [ -n "${DROPME_P2}" ]; then
   exit 1
 fi
 echo "    update reached AWS (StepConcurrencyLevel 5, AutoTerminationPolicy IdleTimeout 7200, env=changed, dropme removed)"
+
+# --- Phase 2b: removal of StepConcurrencyLevel (issue #1160) ------------
+# StepConcurrencyLevel leaves the template while its live value is 5 (asserted
+# in Phase 2; AWS's default is 1). ModifyCluster keeps a field it is not sent
+# and cdkd sends no reset, so: the deploy succeeds, the value STAYS 5, and the
+# deploy names the removal in a warning (pre-fix it was dropped silently). A
+# `removal` tag is ADDED in the same deploy, so the update demonstrably runs
+# beside the removal. Phase 3 below still holds: it reads StepConcurrencyLevel
+# 5 and env=changed from the live cluster, and ignores the extra tag.
+echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (StepConcurrencyLevel dropped, removal tag added)"
+PHASE2B_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2B_LOG}"
+PHASE2B_RC=${PIPESTATUS[0]}
+set -e
+if [ "${PHASE2B_RC}" -ne 0 ]; then
+  echo "FAIL [phase 2b]: removing StepConcurrencyLevel failed the deploy (exit ${PHASE2B_RC}); cdkd must leave it in place and warn" >&2
+  exit 1
+fi
+PHASE2B_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${PHASE2B_LOG}")"
+# Needle and sentinel are independent substrings of the SAME warning line: the
+# sentinel without the needle means the wording drifted, not that the warning
+# did not fire.
+if ! grep -qF "${REMOVAL_NEEDLE}" <<<"${PHASE2B_PLAIN}"; then
+  if grep -qF "${REMOVAL_SENTINEL}" <<<"${PHASE2B_PLAIN}"; then
+    echo "FAIL [phase 2b]: a removal warning fired but no longer reads '${REMOVAL_NEEDLE}' -- the wording drifted; update this fixture" >&2
+  else
+    echo "FAIL [phase 2b]: removing StepConcurrencyLevel produced no warning (issue #1160: the removal was dropped silently)" >&2
+  fi
+  exit 1
+fi
+# One process, not `grep | grep -q`: under pipefail the second grep exiting
+# early on a match SIGPIPEs the first, and the pipeline then reads as "no match".
+if awk -v a="(AWS::EMR::Cluster)" -v b="${SHARED_REMOVAL_CLAIM}" 'index($0, a) && index($0, b) { f = 1 } END { exit !f }' <<<"${PHASE2B_PLAIN}"; then
+  echo "FAIL [phase 2b]: the shared removal warning claimed a CloudFormation reset for the cluster; the provider must handle the removal itself" >&2
+  exit 1
+fi
+echo "    deploy warned that StepConcurrencyLevel is left in place"
+
+CID_P2B="$(output_value ClusterId)"
+if [ "${CID_P2}" != "${CID_P2B}" ]; then
+  echo "FAIL: cluster was REPLACED in Phase 2b (${CID_P2} -> ${CID_P2B})" >&2
+  exit 1
+fi
+read -r STEP_P2B REMOVAL_TAG_P2B <<EOF
+$(aws emr describe-cluster --cluster-id "${CID_P2B}" --region "${REGION}" \
+  --query "Cluster.[StepConcurrencyLevel,Tags[?Key=='removal'].Value | [0]]" --output text)
+EOF
+if [ "${STEP_P2B}" != "5" ]; then
+  echo "FAIL [phase 2b]: expected StepConcurrencyLevel to stay 5 (cdkd sends no reset), got '${STEP_P2B}'" >&2
+  exit 1
+fi
+if [ "${REMOVAL_TAG_P2B}" != "yes" ]; then
+  echo "FAIL [phase 2b]: expected the companion tag removal=yes, got '${REMOVAL_TAG_P2B}' (the update did not apply)" >&2
+  exit 1
+fi
+echo "    removal left in place (StepConcurrencyLevel 5) beside an applied change (tag removal=yes)"
 
 # --- Phase 3: import round-trip (issue #1090) ----------------------------
 # Adopt the LIVE cluster back into cdkd state after dropping its row. This is
@@ -620,7 +714,7 @@ echo "    sibling witness: ${VPC_LID} -> ${VPC_PHYS_PRE}"
 # left AWS_REGION unset (REGION defaults to us-east-1 in that case, and the
 # two must not diverge). Verified against `cdkd orphan --help` and
 # src/cli/options.ts (deprecatedRegionOption, lines 71-73).
-AWS_REGION="${REGION}" env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" orphan "${STACK}/Cluster" \
+AWS_REGION="${REGION}" env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" orphan "${STACK}/Cluster" \
   --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --yes
 
 if [ -n "$(cluster_logical_id)" ]; then
@@ -662,7 +756,7 @@ echo "    re-adopting via cdkd import --resource ${CLUSTER_LID}=${CID_P2}"
 # 'us-east-1'`, and since the option is never declared the env var is the
 # only live source. Set it explicitly here so the binding does not depend on
 # how verify.sh itself was invoked. Verified against `cdkd import --help`.
-AWS_REGION="${REGION}" env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" import "${STACK}" \
+AWS_REGION="${REGION}" env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" import "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --resource "${CLUSTER_LID}=${CID_P2}" --yes
 
@@ -865,4 +959,4 @@ if ! printf '%s' "${HEAD_ERR}" | grep -qiE '404|Not Found'; then
 fi
 echo "    cdkd state removed (confirmed via a 404, not an ambiguous error)"
 
-echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + import round-trip (orphan -> import -> observedProperties from live AWS) + destroy (TERMINATED) all passed"
+echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + StepConcurrencyLevel removal warning + import round-trip (orphan -> import -> observedProperties from live AWS) + destroy (TERMINATED) all passed"
