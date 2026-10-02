@@ -6155,6 +6155,7 @@
           "l2"
         ],
         "iam-role-policies-drift-clean": [
+          "l1",
           "l2"
         ],
         "intrinsics-torture": [

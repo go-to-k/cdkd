@@ -180,6 +180,13 @@ These are surfaced in the plan rather than applied silently.
     cannot see those regions, so it refuses every such reference. The
     operation fails and the journal is kept; set the property yourself, or
     spell the reference as a full ARN.
+- An **IAM inline policy name** moved between resources on one role, group or
+  user in the failed deploy (two `AWS::IAM::Policy` resources swapping names, or
+  a policy renamed away from a name the role's own `Policies` took) is kept by
+  each revert that would remove it once another revert of the same rollback has
+  put it back. A policy CREATED under a name another policy still held is
+  deleted with that name, so the other policy loses its grant until it next
+  changes or `cdkd drift --revert` runs.
 - A re-run after a snapshot succeeded but its delete failed **re-snapshots** the
   name-keyed types (Redshift, ElastiCache), which resume only an in-flight
   snapshot. EBS volumes are reused via their `cdkd:final-snapshot-of` tag. The

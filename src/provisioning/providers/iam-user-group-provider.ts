@@ -68,6 +68,7 @@ import { injectiveKey } from '../../state/record-keys.js';
 import type {
   CreateContext,
   UpdateContext,
+  InlinePolicyClaimed,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -397,7 +398,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          log
+          log,
+          context?.inlinePolicyClaimed
         );
       case 'AWS::IAM::Group':
         return this.updateGroup(
@@ -406,7 +408,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          log
+          log,
+          context?.inlinePolicyClaimed
         );
       case 'AWS::IAM::UserToGroupAddition':
         return this.updateUserToGroupAddition(
@@ -663,7 +666,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    claimed: InlinePolicyClaimed | undefined
   ): Promise<ResourceUpdateResult> {
     const { value: v } = log;
     log.debug(`Updating IAM user ${logicalId}: ${v(physicalId)}`);
@@ -792,7 +796,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
         previousProperties['Policies'] as
           | Array<{ PolicyName: string; PolicyDocument: unknown }>
           | undefined,
-        log
+        log,
+        claimed
       );
 
       // Get updated user info
@@ -1175,7 +1180,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
     userName: string,
     newPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
     oldPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    claimed: InlinePolicyClaimed | undefined
   ): Promise<void> {
     const { value: v } = log;
     const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
@@ -1195,8 +1201,18 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
 
     // Delete removed policies
+    // go-to-k/cdkd#4225: a name another resource has ALREADY written onto
+    // this user in the same run is not removed. Set by a rollback revert,
+    // where the policy that took this name over may have been put back
+    // before this principal's own revert drops it.
     for (const policyName of oldMap.keys()) {
       if (!newMap.has(policyName)) {
+        if (claimed?.('user', userName, policyName) === true) {
+          log.debug(
+            `Kept inline policy ${v(policyName)} on user ${v(userName)}: another resource of this deploy or rollback wrote it`
+          );
+          continue;
+        }
         try {
           await this.iamClient.send(
             new DeleteUserPolicyCommand({
@@ -1349,7 +1365,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    claimed: InlinePolicyClaimed | undefined
   ): Promise<ResourceUpdateResult> {
     const { value: v } = log;
     log.debug(`Updating IAM group ${logicalId}: ${v(physicalId)}`);
@@ -1372,7 +1389,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
         previousProperties['Policies'] as
           | Array<{ PolicyName: string; PolicyDocument: unknown }>
           | undefined,
-        log
+        log,
+        claimed
       );
 
       // Get updated group info
@@ -1597,7 +1615,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
     groupName: string,
     newPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
     oldPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    claimed: InlinePolicyClaimed | undefined
   ): Promise<void> {
     const { value: v } = log;
     const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
@@ -1617,8 +1636,18 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
 
     // Delete removed policies
+    // go-to-k/cdkd#4225: a name another resource has ALREADY written onto
+    // this group in the same run is not removed. Set by a rollback revert,
+    // where the policy that took this name over may have been put back
+    // before this principal's own revert drops it.
     for (const policyName of oldMap.keys()) {
       if (!newMap.has(policyName)) {
+        if (claimed?.('group', groupName, policyName) === true) {
+          log.debug(
+            `Kept inline policy ${v(policyName)} on group ${v(groupName)}: another resource of this deploy or rollback wrote it`
+          );
+          continue;
+        }
         try {
           await this.iamClient.send(
             new DeleteGroupPolicyCommand({

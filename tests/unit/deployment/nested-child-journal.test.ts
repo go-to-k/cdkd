@@ -97,6 +97,8 @@ import {
   type SettledNestedRows,
 } from '../../../src/deployment/nested-child-journal.js';
 import { getCurrentNestedStackContext } from '../../../src/provisioning/nested-stack-context.js';
+import { replayRollback } from '../../../src/deployment/rollback-executor.js';
+import { RollbackInlinePolicyWriters } from '../../../src/deployment/inline-policy-claims.js';
 import {
   getCurrentSkipPrefix,
   getCurrentStackName,
@@ -215,6 +217,22 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     await h.run('run-1');
 
     expect(replay.calls.map((c) => c.ops)).toEqual([['New1'], ['Old1']]);
+  });
+
+  it('hands every segment replay ONE record of completed writes (go-to-k/cdkd#4225)', async () => {
+    // An older segment's revert must see the inline policy names a newer
+    // segment's reverts put back, over the one state bag they share.
+    const h = harness({ segments: [seg('run-1', ['Old1']), seg('run-1', ['New1'])] });
+    vi.mocked(replayRollback).mockClear();
+
+    await h.run('run-1');
+
+    const handed = vi
+      .mocked(replayRollback)
+      .mock.calls.map((c) => (c[4] as { inlinePolicyWriters?: unknown }).inlinePolicyWriters);
+    expect(handed).toHaveLength(2);
+    expect(handed[0]).toBeInstanceOf(RollbackInlinePolicyWriters);
+    expect(handed[1]).toBe(handed[0]);
   });
 
   it('runs each replay as the child: its name, no templates, the same run', async () => {

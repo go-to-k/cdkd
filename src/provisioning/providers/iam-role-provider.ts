@@ -43,6 +43,7 @@ import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable
 import type {
   CreateContext,
   UpdateContext,
+  InlinePolicyClaimed,
   ResourceProvider,
   ResourceCreateResult,
   ResourceDeleteResult,
@@ -585,7 +586,8 @@ export class IAMRoleProvider implements ResourceProvider {
         previousProperties['Policies'] as
           | Array<{ PolicyName: string; PolicyDocument: unknown }>
           | undefined,
-        log
+        log,
+        context?.inlinePolicyClaimed
       );
 
       // Update tags
@@ -900,7 +902,8 @@ export class IAMRoleProvider implements ResourceProvider {
     roleName: string,
     newPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
     oldPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    claimed?: InlinePolicyClaimed
   ): Promise<void> {
     const { value: v } = log;
     const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
@@ -921,8 +924,18 @@ export class IAMRoleProvider implements ResourceProvider {
     }
 
     // Delete removed policies
+    // go-to-k/cdkd#4225: a name another resource has ALREADY written onto
+    // this role in the same run is not removed. Set by a rollback revert,
+    // where the policy that took this name over may have been put back
+    // before this principal's own revert drops it.
     for (const policyName of oldMap.keys()) {
       if (!newMap.has(policyName)) {
+        if (claimed?.('role', roleName, policyName) === true) {
+          log.debug(
+            `Kept inline policy ${v(policyName)} on role ${v(roleName)}: another resource of this deploy or rollback wrote it`
+          );
+          continue;
+        }
         await this.iamClient.send(
           new DeleteRolePolicyCommand({
             RoleName: roleName,

@@ -23,6 +23,9 @@
 #      Default Policy sibling.
 #   2. Run `cdkd drift` (twice) and assert NO drift on any AWS::IAM::Role.
 #   2b. Rename an inline policy in place (go-to-k/cdkd#4152).
+#   2c-rollback. The 2c hand-off (minus its delete-beside-create pair) with a
+#       failing queue after it: the rollback must leave every name with its
+#       FIRST owner (go-to-k/cdkd#4225).
 #   2c. Hand inline policy names between resources on the role in ONE deploy
 #       (go-to-k/cdkd#4156): a swap of two policies' names, a delete beside a
 #       create of the same name, and a rename away from a name the role's own
@@ -76,6 +79,11 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 FN_NAME="cdkd-iam-drift-clean-test-fn"
 QUEUE_NAME="cdkd-iam-drift-clean-test-queue"
 ROLE_NAME="cdkd-iam-drift-clean-test-role"
+# Phase 2c-rollback's failing queue: AWS rejects it, so it never exists.
+FAILING_QUEUE_NAME="cdkd-iam-drift-clean-test-failing-queue"
+# Only Phase 2c-rollback's own deploy may inject the failing queue: an
+# inherited value would fail every later deploy too.
+unset CDKD_TEST_HANDOFF_FAIL
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -86,7 +94,7 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
-    env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+    env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF -u CDKD_TEST_HANDOFF_FAIL node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws lambda delete-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   QUEUE_URL="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
@@ -94,6 +102,13 @@ cleanup() {
   if [ -n "${QUEUE_URL}" ] && [ "${QUEUE_URL}" != "None" ]; then
     aws sqs delete-queue --queue-url "${QUEUE_URL}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
+  # Phase 2c-rollback's queue is rejected by AWS; swept in case it ever is not.
+  FAILING_URL="$(aws sqs get-queue-url --queue-name "${FAILING_QUEUE_NAME}" --region "${REGION}" \
+    --query 'QueueUrl' --output text 2>/dev/null)"
+  if [ -n "${FAILING_URL}" ] && [ "${FAILING_URL}" != "None" ]; then
+    aws sqs delete-queue --queue-url "${FAILING_URL}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  rm -f "${ROLLBACK_LOG:-}"
   # The standalone role keeps its inline + sibling-managed policies; delete
   # them before the role or DeleteRole 409s.
   for pn in $(aws iam list-role-policies --role-name "${ROLE_NAME}" --region "${REGION}" \
@@ -108,6 +123,7 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1 || true
   fi
   set -eu
 }
@@ -260,6 +276,80 @@ handoff_mismatch() { # -> prints every name whose holder is wrong; empty when al
     [ "${got}" = "${want}" ] || printf '%s (want %s, got %s) ' "${name}" "${want}" "${got:-<missing>}"
   done
 }
+first_owner_mismatch() { # -> prints every name not held by its FIRST owner; empty when all match
+  local pair name want got
+  for pair in \
+    "cdkd-iam-drift-clean-swap-x=sqs:ListQueueTags" \
+    "cdkd-iam-drift-clean-swap-y=sqs:ListDeadLetterSourceQueues" \
+    "cdkd-iam-drift-clean-handoff=sqs:ChangeMessageVisibility" \
+    "cdkd-iam-drift-clean-to-role=sqs:PurgeQueue"; do
+    name="${pair%%=*}"
+    want="${pair#*=}"
+    got="$(policy_action "${name}")"
+    [ "${got}" = "${want}" ] || printf '%s (want %s, got %s) ' "${name}" "${want}" "${got:-<missing>}"
+  done
+}
+
+# --- Phase 2c-rollback: the same hand-off, rolled back (go-to-k/cdkd#4225) ---
+# A failing queue depends on every hand-off resource, so the swap, the role's
+# update and the to-role rename all complete before the deploy fails. The
+# rollback then reverses them newest-first: SwapB before SwapA, ToRolePolicy
+# before the role. Before the fix SwapA's reversal removed `swap-y`, which
+# SwapB's had just put back, and the role's revert removed `to-role`, which
+# ToRolePolicy's had just put back. The delete-beside-create pair is left out
+# of this deploy (go-to-k/cdkd#4408).
+echo "==> Phase 2c-rollback: a failed hand-off deploy must roll every name back to its first owner"
+ROLLBACK_LOG="$(mktemp)"
+set +e
+CDKD_TEST_RENAME=true CDKD_TEST_HANDOFF=true CDKD_TEST_HANDOFF_FAIL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${ROLLBACK_LOG}" 2>&1
+fail_rc=$?
+set -e
+sed 's/^/    | /' "${ROLLBACK_LOG}"
+if [ "${fail_rc}" -eq 0 ]; then
+  echo "FAIL: the hand-off deploy with the failing queue SUCCEEDED; it must fail and roll back" >&2
+  exit 1
+fi
+# Non-vacuous only if the hand-off really ran and was reversed: a deploy that
+# failed before touching the role leaves every name with its first owner too.
+# `Rolling back` is the independent marker: present while a per-resource line
+# is missing means the wording drifted, not that the hand-off was skipped.
+if ! grep -q 'Rolling back [0-9]* completed operation' "${ROLLBACK_LOG}"; then
+  echo "FAIL: the failed deploy did not roll back (no 'Rolling back N completed operation(s)' line)" >&2
+  exit 1
+fi
+for lid in SwapA SwapB ToRolePolicy; do
+  if ! grep -qE "Rollback: ${lid} (replacement reversed|restored successfully)" "${ROLLBACK_LOG}"; then
+    echo "FAIL: the rollback ran but logged no reversal of ${lid}; the hand-off did not complete before the failure, or the rollback wording drifted" >&2
+    exit 1
+  fi
+done
+if ! grep -qE 'Rollback: WorkerRole[0-9A-Fa-f]* restored successfully' "${ROLLBACK_LOG}"; then
+  echo "FAIL: the rollback ran but logged no revert of the role's own Policies (WorkerRole...)" >&2
+  exit 1
+fi
+rm -f "${ROLLBACK_LOG}"
+assert_gone "failing queue ${FAILING_QUEUE_NAME} exists; AWS should have rejected it" \
+  aws sqs get-queue-url --queue-name "${FAILING_QUEUE_NAME}" --region "${REGION}"
+rolled_back_ok=0
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if [ -z "$(first_owner_mismatch)" ]; then
+    rolled_back_ok=1
+    break
+  fi
+  sleep 5
+done
+if [ "${rolled_back_ok}" -ne 1 ]; then
+  echo "FAIL: after the rollback the role lost or mis-holds: $(first_owner_mismatch)(role holds: $(role_policies)) — a rollback revert removed a name another revert had put back" >&2
+  exit 1
+fi
+# The renamed-to name must be gone: a strict gone-probe, since an empty
+# `policy_action` read can also mean a failed probe.
+assert_gone "cdkd-iam-drift-clean-to-role-moved is still on ${ROLE_NAME} after the rollback" \
+  aws iam get-role-policy --role-name "${ROLE_NAME}" --policy-name cdkd-iam-drift-clean-to-role-moved --region "${REGION}"
+echo "    every name is back with its first owner"
+assert_no_role_drift "after the rolled-back hand-off" true
+
 echo "==> Phase 2c: hand inline policy names over between resources on the role in one deploy"
 # Premise: before the hand-off each name is held by its FIRST owner, so the
 # phase moves real grants (a swap of two absent names would pass vacuously).

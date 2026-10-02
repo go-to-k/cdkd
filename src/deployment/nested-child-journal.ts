@@ -53,6 +53,7 @@ import {
   refuseMalformedState,
 } from '../state/malformed-resources-bag.js';
 import { replayRollback, type RollbackExecutorContext } from './rollback-executor.js';
+import { RollbackInlinePolicyWriters } from './inline-policy-claims.js';
 import { producerRegionsFromState } from './secret-region-classification.js';
 import { inheritProducerRegions, type ProducerRegionEvidence } from './producer-regions-scope.js';
 import { markNonRetryable } from './retryable-errors.js';
@@ -543,6 +544,8 @@ export async function revertNestedChildFromJournal(args: {
 
     let failures = 0;
     let warnings = 0;
+    // go-to-k/cdkd#4225: one record of completed writes across the segments.
+    const inlinePolicyWriters = new RollbackInlinePolicyWriters();
     // The grandchildren THIS replay completed, merged over its segments.
     const settledBelow: SettledNestedRows = new Map();
     for (let s = segments.length - 1; s >= 0; s--) {
@@ -560,7 +563,11 @@ export async function revertNestedChildFromJournal(args: {
                 stateResources,
                 childStackName,
                 execCtx,
-                { afterOp: save, onOrphan: (record) => mintedOrphans.push(record) }
+                {
+                  afterOp: save,
+                  onOrphan: (record) => mintedOrphans.push(record),
+                  inlinePolicyWriters,
+                }
               );
               for (const [id, below] of inner.settled) settledBelow.set(id, below);
               return { ...replayed, warnings: replayed.warnings + inner.warnings };

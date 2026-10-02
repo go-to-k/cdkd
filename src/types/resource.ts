@@ -769,9 +769,13 @@ export interface UpdateContext extends SecretMaskingContext {
    * `IAMPolicyProvider` then keeps that name rather than strip the other
    * resource's live grant. Only a COMPLETED write counts, read from what that
    * resource recorded, so any doubt answers `false` and the removal proceeds.
-   * Set by the deploy's in-place UPDATE of an `AWS::IAM::Policy` only; absent
-   * elsewhere (a rollback revert, `drift --revert`), where every removal
-   * proceeds.
+   * Set by the deploy's in-place UPDATE of an `AWS::IAM::Policy`, and by both
+   * rollback revert arms, where "this deploy" is the rollback and its writers
+   * are the reverts that completed before this one (go-to-k/cdkd#4225,
+   * `RollbackInlinePolicyWriters`). A rollback also sets it on an
+   * `AWS::IAM::Role` / `Group` / `User` revert, whose provider asks it before
+   * removing a name its own `Policies` drops. Absent on `drift --revert`,
+   * where every removal proceeds.
    */
   inlinePolicyClaimed?: InlinePolicyClaimed | undefined;
 
