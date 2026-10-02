@@ -613,16 +613,15 @@ export class IAMPolicyProvider implements ResourceProvider {
       // to a new policy or to the principal's own `Policies`) is not removed
       // from it; `context.inlinePolicyClaimed` answers that live, from what
       // the other resource recorded. One that has not written yet loses
-      // nothing to the removal: its later put restores the name.
+      // nothing to the removal: its later put restores the name. A rollback
+      // revert asks the same of the reverts that completed before it
+      // (go-to-k/cdkd#4225).
       //
       // Known limits (go-to-k/cdkd#4152, #4156):
       //  - Two writers of one name with no dependency between them run
       //    concurrently; a removal racing the other's put can still strip the
       //    name (fail-closed: less privilege, restored by the next change or
       //    `cdkd drift --revert`; go-to-k/cdkd#4227).
-      //  - A rollback revert gets no claims, so reverting a same-deploy swap or
-      //    hand-off can remove the name the sibling's revert restores
-      //    (go-to-k/cdkd#4225).
       //  - A revert of a failed update removes the ATTEMPTED name from every
       //    recorded principal, retained or leaving, so a hand-made inline
       //    policy of that name on one of them goes too.
@@ -652,7 +651,7 @@ export class IAMPolicyProvider implements ResourceProvider {
           for (const policyName of stays.has(name.toLowerCase()) ? renamedAway : oldPolicyNames) {
             if (context?.inlinePolicyClaimed?.(kind, name, policyName) === true) {
               log.debug(
-                `Kept inline policy ${v(policyName)} on ${kind} ${v(name)}: another resource of this deploy wrote it`
+                `Kept inline policy ${v(policyName)} on ${kind} ${v(name)}: another resource of this deploy or rollback wrote it`
               );
               continue;
             }
@@ -928,7 +927,7 @@ export class IAMPolicyProvider implements ResourceProvider {
         return false;
       }
       this.logger.debug(
-        safeMsg`Kept inline policy ${policyName} on ${kind} ${mask(name)}: another resource of this deploy wrote it`
+        safeMsg`Kept inline policy ${policyName} on ${kind} ${mask(name)}: another resource of this deploy or rollback wrote it`
       );
       return true;
     };

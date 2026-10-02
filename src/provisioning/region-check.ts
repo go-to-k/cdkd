@@ -96,8 +96,13 @@ export interface DeleteContext {
   /**
    * go-to-k/cdkd#4156: the delete twin of `UpdateContext.inlinePolicyClaimed`,
    * set by the deploy's DELETE phase for an `AWS::IAM::Policy` (which runs
-   * after every create and update). Absent on `cdkd destroy`, a rollback, and
-   * a replacement's or fallback's delete of the old copy.
+   * after every create and update), and by a rollback delete of one (a
+   * created copy, or the new copy of a reversed rename or re-adopted
+   * replacement), answering from the rollback's own completed reverts
+   * (go-to-k/cdkd#4225). A rollback also hands it to a role / group / user
+   * delete, whose provider does not read it.
+   * Absent on `cdkd destroy` and on a deploy replacement's or fallback's
+   * delete of the old copy.
    */
   inlinePolicyClaimed?: InlinePolicyClaimed | undefined;
 

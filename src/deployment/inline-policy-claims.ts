@@ -1,4 +1,4 @@
-import type { InlinePolicyPrincipalKind } from '../types/resource.js';
+import type { InlinePolicyClaimed, InlinePolicyPrincipalKind } from '../types/resource.js';
 import type { ResourceChange, ResourceState } from '../types/state.js';
 
 /**
@@ -89,6 +89,108 @@ export function isInlinePolicyClaimedByCompletedWriter(
     if (declares) return true;
   }
   return false;
+}
+
+/**
+ * go-to-k/cdkd#4225: the rollback twin of the deploy engine's writer map. A
+ * rollback revert of an `AWS::IAM::Policy` removes names from principals just
+ * as a deploy update does, so reverting a same-deploy swap or hand-off (A
+ * `x -> y` and B `y -> x` on one role) let the second revert remove the name
+ * the first one had just restored.
+ *
+ * One instance spans a whole replay, failed-op reverts included. It records
+ * each op whose provider write COMPLETED — a revert as `'update'`, a reverse
+ * replacement's re-create as `'create'` — together with the state record that
+ * write produced, and the predicate {@link claimedFor} hands out reads it
+ * through {@link isInlinePolicyClaimedByCompletedWriter} at the moment of each
+ * removal. Every rule of that predicate holds unchanged here. The rollback
+ * adds the identity rule, the `policiesChanged` rule and the route rule, each
+ * answering `false` (the removal proceeds):
+ *
+ * - A writer counts only while the live record is still the one its write
+ *   produced. A later op of the same replay that replaced or dropped that
+ *   record (an older segment's revert or delete, a re-adopt) wrote something
+ *   else, or nothing.
+ * - A rollback has no deploy diff, so a role / group / user revert counts as
+ *   having put its `Policies` only when the two records the revert was handed
+ *   differ there (`policiesChanged`).
+ * - A write whose ACTUAL route was Cloud Control is not recorded (see
+ *   {@link RollbackInlinePolicyWriters.record}).
+ */
+export class RollbackInlinePolicyWriters {
+  private readonly entries = new Map<
+    string,
+    { write: InlinePolicyWrite; record: ResourceState; policiesChanged: boolean }
+  >();
+
+  /**
+   * Record a completed provider write. `record` is the object the caller has
+   * just stored in the replay's state bag for `logicalId`; `via` is the route
+   * the write ACTUALLY took. A revert keeps its previous record's
+   * `provisionedBy` while it is routed by the journaled op's, so a write
+   * through Cloud Control can sit under an `'sdk'` record: such a write is
+   * not recorded, for the reason the predicate skips a `'cc-api'` record.
+   */
+  record(
+    logicalId: string,
+    write: InlinePolicyWrite,
+    record: ResourceState,
+    policiesChanged: boolean,
+    via: 'sdk' | 'cc-api' | undefined
+  ): void {
+    if (via === 'cc-api') {
+      this.entries.delete(logicalId);
+      return;
+    }
+    this.entries.set(logicalId, { write, record, policiesChanged });
+  }
+
+  /**
+   * The predicate an `AWS::IAM::Policy` update or delete of this replay is
+   * handed, and an `AWS::IAM::Role` / `Group` / `User` revert too, whose
+   * provider asks it before removing a name its own `Policies` drops (a
+   * hand-off to the principal's `Policies`, reverted: the policy's reverse
+   * re-create puts the name back first, then the principal's revert would
+   * remove it). `undefined` for every other type.
+   */
+  claimedFor(
+    resourceType: string,
+    logicalId: string,
+    stateResources: Record<string, ResourceState>
+  ): InlinePolicyClaimed | undefined {
+    if (resourceType !== 'AWS::IAM::Policy' && !Object.hasOwn(PRINCIPAL_KINDS, resourceType)) {
+      return undefined;
+    }
+    return (kind, principal, policyName) => {
+      const writers = new Map<string, InlinePolicyWrite>();
+      const changes = new Map<string, ResourceChange>();
+      for (const [lid, entry] of this.entries) {
+        if (!Object.hasOwn(stateResources, lid) || stateResources[lid] !== entry.record) continue;
+        writers.set(lid, entry.write);
+        if (entry.policiesChanged) {
+          changes.set(lid, {
+            logicalId: lid,
+            changeType: 'UPDATE',
+            resourceType: entry.record.resourceType,
+            propertyChanges: [
+              {
+                path: 'Policies',
+                oldValue: undefined,
+                newValue: undefined,
+                requiresReplacement: false,
+              },
+            ],
+          });
+        }
+      }
+      return isInlinePolicyClaimedByCompletedWriter(
+        { selfLogicalId: logicalId, writers, changes, stateResources },
+        kind,
+        principal,
+        policyName
+      );
+    };
+  }
 }
 
 /** IAM's role / group / user / inline policy name charset. */

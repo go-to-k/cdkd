@@ -144,7 +144,7 @@ iam-access-key	2026-10-01T03:22:05Z	PASS	85	verify.sh	rc ok, orph clean (#4257)
 iam-managed-policy	2026-10-01T11:06:17Z	PASS	75	verify.sh	rc ok, orph clean; #4265 IAM skip-reason wording
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
 iam-propagation-stress	2026-09-29T09:52:03Z	PASS	116	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean; swept the runtime-created WorkerFn log group
-iam-role-policies-drift-clean	2026-09-30T14:27:46Z	PASS	160	verify.sh	PR #4216 (#4156) re-run on the rebase over #4218: rc ok, Phase 2c hand-off (swap, delete beside create, to-role) kept every name with its new owner; pre-fix revert (earlier run) went RED at Phase 2c; 11 deleted 0 errors, orph clean
+iam-role-policies-drift-clean	2026-10-02T07:45:13Z	PASS	191	verify.sh	rc ok, orph clean (PR #4412 rollback hand-off; pre-fix arm RED: swap-y + to-role missing)
 iam-role-prefixed-name-update	2026-10-01T03:49:42Z	PASS	75	verify.sh	PR #4252 re-run after rebase onto #4257 (iam-role overlap) at 601842396; rc ok, orph clean
 iam-role-prefixed-name-update 65	2026-10-02T01:44:21Z	PASS		verify.sh	PR #4378 removalDefaults; rc ok, orph clean
 iam-secret-derived-principals	2026-10-01T03:22:05Z	PASS	256	verify.sh	rc ok, orph clean (#4257)

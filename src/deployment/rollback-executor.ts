@@ -142,6 +142,7 @@ import {
 } from './retryable-errors.js';
 import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
+import { RollbackInlinePolicyWriters } from './inline-policy-claims.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 
 /**
@@ -2219,9 +2220,19 @@ async function replayRollbackUnbound(
      * implementation.
      */
     onOrphan?: (record: StackOrphanRecord) => void;
+    /**
+     * go-to-k/cdkd#4225: the completed writes an `AWS::IAM::Policy` revert or
+     * delete, or a role / group / user revert, asks about before removing an
+     * inline policy name. A caller that
+     * replays more than once over one state bag (a segment's failed ops, then
+     * its completed ops, then older segments) passes ONE instance to every
+     * call; absent, this replay keeps its own.
+     */
+    inlinePolicyWriters?: RollbackInlinePolicyWriters;
   } = {}
 ): Promise<RollbackReplayResult> {
   const orphanLogicalIds = options.orphanLogicalIds ?? new Set<string>();
+  const inlinePolicyWriters = options.inlinePolicyWriters ?? new RollbackInlinePolicyWriters();
   const result: RollbackReplayResult = {
     failures: 0,
     warnings: 0,
@@ -2269,6 +2280,7 @@ async function replayRollbackUnbound(
       orphanLogicalIds,
       result,
       options.onOrphan,
+      inlinePolicyWriters,
       options.afterOp,
       options.isInterrupted
     );
@@ -2291,6 +2303,7 @@ async function replayRollbackUnbound(
         orphanLogicalIds,
         result,
         options.onOrphan,
+        inlinePolicyWriters,
         options.afterOp,
         options.isInterrupted
       );
@@ -3205,6 +3218,8 @@ async function replaySingle(
   orphanLogicalIds: Set<string>,
   result: RollbackReplayResult,
   onOrphan: ((record: StackOrphanRecord) => void) | undefined,
+  /** go-to-k/cdkd#4225: the replay's completed writes ({@link replayRollback}). */
+  inlinePolicyWriters: RollbackInlinePolicyWriters,
   afterOp?: (logicalId: string) => Promise<void> | void,
   isInterrupted?: () => boolean
 ): Promise<void> {
@@ -3496,6 +3511,13 @@ async function replaySingle(
           resourceType: op.resourceType,
           provisionedBy: deleteProvisionedBy,
         });
+        // go-to-k/cdkd#4225: a name a completed revert of this replay has put
+        // back on a principal is not removed by this delete.
+        const createRollbackClaimed = inlinePolicyWriters.claimedFor(
+          op.resourceType,
+          op.logicalId,
+          stateResources
+        );
         const createRollbackDelete = await provider.delete(
           op.logicalId,
           op.physicalId,
@@ -3503,6 +3525,7 @@ async function replaySingle(
           op.properties,
           {
             expectedRegion: ctx.region,
+            ...(createRollbackClaimed && { inlinePolicyClaimed: createRollbackClaimed }),
             ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
             ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
             // Issue #4029: the classified policy, so a Cloud Control-routed
@@ -3616,6 +3639,12 @@ async function replaySingle(
             current,
             op.provisionedBy
           );
+          // go-to-k/cdkd#4225: as on the reverse replacement's deletes below.
+          const readoptClaimed = inlinePolicyWriters.claimedFor(
+            op.resourceType,
+            op.logicalId,
+            stateResources
+          );
           const readoptDelete = await newDeleteProvider.delete(
             op.logicalId,
             current.physicalId,
@@ -3623,6 +3652,7 @@ async function replaySingle(
             current.properties,
             {
               expectedRegion: ctx.region,
+              ...(readoptClaimed && { inlinePolicyClaimed: readoptClaimed }),
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               // Issue #4029: the NEW copy's UpdateReplacePolicy governs.
               deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
@@ -3963,6 +3993,20 @@ async function replaySingle(
             resourceType: op.resourceType,
             provisionedBy: current.provisionedBy ?? op.provisionedBy,
           }).provider;
+        // go-to-k/cdkd#4225: an `AWS::IAM::Policy` rename is journaled with a
+        // new physical id (its name), so its rollback reverses it here: the
+        // re-create puts the old name, and the delete of the new copy after it
+        // removes the new one. A name a completed revert of this replay has put
+        // back on a principal (the other half of a swap) is kept. Read live at
+        // the removal. The delete-new-FIRST arm asks nothing: it runs only after
+        // the re-create collides on a name, and an `AWS::IAM::Policy` create is
+        // a `Put*Policy`, which overwrites and never collides; a role, group or
+        // user delete removes the whole principal.
+        const newCopyClaimed = inlinePolicyWriters.claimedFor(
+          op.resourceType,
+          op.logicalId,
+          stateResources
+        );
 
         // Create-first (the old resource's revival is the point). A
         // user-supplied physical name still held by the NEW resource collides
@@ -4455,6 +4499,21 @@ async function replaySingle(
           secrets,
           prevRecord.properties
         );
+        // go-to-k/cdkd#4225: the re-create put the old resource's inline
+        // policies, as the deploy's replacement create does. A re-create that
+        // returned the live NEW resource is not counted: its record may not
+        // describe what is live. (No claim type reaches that arm: an
+        // `AWS::IAM::Policy` re-create of a rename has a new id, and a role,
+        // group or user create is not name-idempotent.)
+        if (!adoptedLiveNewResource) {
+          inlinePolicyWriters.record(
+            op.logicalId,
+            'create',
+            stateResources[op.logicalId]!,
+            false,
+            createProvisionedBy
+          );
+        }
         await afterOp?.(op.logicalId);
 
         // Survivor record for this arm's retain branch -- see the twin binding
@@ -4494,6 +4553,7 @@ async function replaySingle(
               current.properties,
               {
                 expectedRegion: ctx.region,
+                ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
                 ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
                 deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
                 recordedAttributes: current.attributes,
@@ -4730,6 +4790,13 @@ async function replaySingle(
           logicalId: op.logicalId,
           physicalIds: [current.physicalId],
         });
+        // go-to-k/cdkd#4225: an `AWS::IAM::Policy` revert keeps a name a
+        // completed revert of this replay has put back on a principal.
+        const revertClaimed = inlinePolicyWriters.claimedFor(
+          op.resourceType,
+          op.logicalId,
+          stateResources
+        );
         // Issue #4024: an IAM Role / ManagedPolicy `update()` re-derives the
         // name and REPLACES the resource when it differs from the physical id,
         // so the revert runs under the prefix setting that derives THIS id.
@@ -4799,6 +4866,7 @@ async function replaySingle(
                 expectedRegion: ctx.region,
                 replayingState: true,
                 recordedAttributes: current.attributes,
+                ...(revertClaimed && { inlinePolicyClaimed: revertClaimed }),
               },
             ],
             op.logicalId,
@@ -4813,6 +4881,17 @@ async function replaySingle(
           secrets,
           previousState.properties
         );
+        // go-to-k/cdkd#4225: a PARTIAL revert is no completed writer, as on
+        // the deploy side.
+        if (updatePartialReason(revertResult) === undefined) {
+          inlinePolicyWriters.record(
+            op.logicalId,
+            'update',
+            stateResources[op.logicalId]!,
+            !deepEqual(previousState.properties?.['Policies'], current.properties?.['Policies']),
+            revertVia
+          );
+        }
         // Issue #1819: the rollback restored the resource, but the provider may
         // have left something behind (a replacement whose old resource
         // survives). Saying "restored successfully" over that is the same
@@ -4931,8 +5010,11 @@ async function replayFailedOperationsUnbound(
      * emitting the envelope — keeping `cdkd events` output symmetric.
      */
     emitEnvelope?: boolean;
+    /** go-to-k/cdkd#4225: as on {@link replayRollback}. */
+    inlinePolicyWriters?: RollbackInlinePolicyWriters;
   } = {}
 ): Promise<FailedOpReplayResult> {
+  const inlinePolicyWriters = options.inlinePolicyWriters ?? new RollbackInlinePolicyWriters();
   const result: FailedOpReplayResult = {
     failures: 0,
     warnings: 0,
@@ -5128,6 +5210,12 @@ async function replayFailedOperationsUnbound(
           // property a delete ADDRESSES through is a custom resource's
           // `ServiceToken`; its provider skips an expression there with a named
           // reason (go-to-k/cdkd#3960), which `throwIfDeleteSkipped` surfaces.
+          // go-to-k/cdkd#4225, as on the completed-CREATE arm.
+          const failedCreateClaimed = inlinePolicyWriters.claimedFor(
+            op.resourceType,
+            op.logicalId,
+            stateResources
+          );
           const failedCreateDelete = await provider.delete(
             op.logicalId,
             op.physicalId!,
@@ -5135,6 +5223,7 @@ async function replayFailedOperationsUnbound(
             op.attemptedProperties,
             {
               expectedRegion: ctx.region,
+              ...(failedCreateClaimed && { inlinePolicyClaimed: failedCreateClaimed }),
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
               deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
@@ -5262,6 +5351,12 @@ async function replayFailedOperationsUnbound(
             logicalId: op.logicalId,
             physicalIds: [current.physicalId, op.physicalId],
           });
+          // go-to-k/cdkd#4225, the `revert` arm's twin.
+          const revertFailedClaimed = inlinePolicyWriters.claimedFor(
+            op.resourceType,
+            op.logicalId,
+            stateResources
+          );
           // Issue #4024, the `revert` arm's twin: the in-place update runs
           // under the prefix setting that derives this resource's own id.
           const inOriginalPrefix = replayPrefixScope(
@@ -5308,6 +5403,7 @@ async function replayFailedOperationsUnbound(
                   expectedRegion: ctx.region,
                   replayingState: true,
                   recordedAttributes: current.attributes,
+                  ...(revertFailedClaimed && { inlinePolicyClaimed: revertFailedClaimed }),
                 },
               ],
               op.logicalId,
@@ -5322,6 +5418,20 @@ async function replayFailedOperationsUnbound(
             secrets,
             prev.properties
           );
+          // go-to-k/cdkd#4225, the `revert` arm's twin: its previous side is
+          // the failed attempt's bag.
+          if (updatePartialReason(revertFailedResult) === undefined) {
+            inlinePolicyWriters.record(
+              op.logicalId,
+              'update',
+              stateResources[op.logicalId]!,
+              !deepEqual(
+                prev.properties?.['Policies'],
+                (op.attemptedProperties ?? current.properties)?.['Policies']
+              ),
+              revertVia
+            );
+          }
           // Issue #1819: the FOURTH `provider.update()` call site -- the
           // `--revert-failed` arm. Missing it left `cdkd rollback
           // --revert-failed` printing "reverted successfully" over a stranded

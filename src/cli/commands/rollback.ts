@@ -48,6 +48,7 @@ import {
   type RollbackPlanItem,
   type FailedOpPlanItem,
 } from '../../deployment/rollback-executor.js';
+import { RollbackInlinePolicyWriters } from '../../deployment/inline-policy-claims.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   describeRegionValueKind,
@@ -1085,6 +1086,10 @@ export async function rollbackCommand(
       const oldestInitialDeploy = journal.segments[0]?.initialDeploy === true;
       let totalFailures = 0;
       let totalWarnings = 0;
+      // go-to-k/cdkd#4225: ONE record of completed writes across every replay
+      // below, all over `stateResources`, so a revert keeps an inline policy
+      // name an earlier replay (a failed op, an earlier segment) put back.
+      const inlinePolicyWriters = new RollbackInlinePolicyWriters();
       try {
         while (journal.segments.length > 0) {
           if (interrupted) break;
@@ -1151,6 +1156,7 @@ export async function rollbackCommand(
                         // returns is absent from every intermediate save
                         // (issue #2934).
                         onOrphan: (record) => mintedOrphans.push(record),
+                        inlinePolicyWriters,
                       }
                     );
                     failedOpFailures = failedResult.failures;
@@ -1212,6 +1218,7 @@ export async function rollbackCommand(
                       // on return would be missing from every intermediate save
                       // — and a crash there loses it for good (issue #2934).
                       onOrphan: (record) => mintedOrphans.push(record),
+                      inlinePolicyWriters,
                     }
                   );
                   return {

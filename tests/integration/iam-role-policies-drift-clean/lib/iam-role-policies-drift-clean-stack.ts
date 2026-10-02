@@ -34,7 +34,9 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * asserts the role holds only the NEW-named policy (go-to-k/cdkd#4152). A
  * HAND-OFF phase then moves inline policy names between resources on the same
  * role in one deploy, and asserts the receiving resource keeps each name
- * (go-to-k/cdkd#4156).
+ * (go-to-k/cdkd#4156). Before it, a FORCED-ROLLBACK phase deploys the same
+ * hand-off with a failing resource after it, and asserts the rollback leaves
+ * every name with its first owner (go-to-k/cdkd#4225).
  */
 export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -66,6 +68,10 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
     // on this role in ONE deploy. Each resource's document carries its own
     // action, so verify.sh can tell WHOSE policy holds a name. Fixed names.
     const handoff = process.env.CDKD_TEST_HANDOFF === 'true';
+    // go-to-k/cdkd#4225: the hand-off deploy with a failing resource that
+    // depends on every hand-off resource, so they all complete first and the
+    // rollback reverts them.
+    const handoffFail = handoff && process.env.CDKD_TEST_HANDOFF_FAIL === 'true';
     const doc = (action: string): iam.PolicyDocument =>
       new iam.PolicyDocument({
         statements: [new iam.PolicyStatement({ actions: [action], resources: [queue.queueArn] })],
@@ -119,24 +125,40 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
       handoff ? 'cdkd-iam-drift-clean-swap-y' : 'cdkd-iam-drift-clean-swap-x',
       'sqs:ListQueueTags'
     );
-    inlinePolicy(
+    const swapB = inlinePolicy(
       'SwapB',
       handoff ? 'cdkd-iam-drift-clean-swap-x' : 'cdkd-iam-drift-clean-swap-y',
       'sqs:ListDeadLetterSourceQueues'
-    ).addDependency(swapA);
+    );
+    swapB.addDependency(swapA);
     // Hand-off 2: a policy is dropped while a NEW one takes its name. The
     // deploy deletes after every create, so before the fix the delete removed
-    // the name the create had just put.
-    if (handoff) {
+    // the name the create had just put. Not in the forced-rollback deploy: its
+    // rollback deletes the new policy, and the old one's name, which the
+    // create overwrote, goes with it (go-to-k/cdkd#4408).
+    if (handoff && !handoffFail) {
       inlinePolicy('HandoffNew', 'cdkd-iam-drift-clean-handoff', 'sqs:DeleteMessage');
     } else {
       inlinePolicy('HandoffOld', 'cdkd-iam-drift-clean-handoff', 'sqs:ChangeMessageVisibility');
     }
-    inlinePolicy(
+    const toRole = inlinePolicy(
       'ToRolePolicy',
       handoff ? 'cdkd-iam-drift-clean-to-role-moved' : 'cdkd-iam-drift-clean-to-role',
       'sqs:PurgeQueue'
     );
+    // go-to-k/cdkd#4225: AWS rejects this queue (MessageRetentionPeriod is
+    // out of range), failing the deploy only after the swap, the role's
+    // update and the to-role rename completed. The rollback then reverses
+    // them newest-first: SwapB before SwapA, ToRolePolicy before the role.
+    if (handoffFail) {
+      const failing = new sqs.CfnQueue(this, 'FailingQueue', {
+        queueName: 'cdkd-iam-drift-clean-test-failing-queue',
+        messageRetentionPeriod: 9999999,
+      });
+      failing.addDependency(swapB);
+      failing.addDependency(toRole);
+      failing.addDependency(role.node.defaultChild as cdk.CfnResource);
+    }
 
     new cdk.CfnOutput(this, 'FnName', { value: fn.functionName });
     new cdk.CfnOutput(this, 'WorkerRoleName', { value: role.roleName });
