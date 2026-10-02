@@ -32,12 +32,15 @@ turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
 **FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** The integ ledger
 `docs/_generated/integ-last-run.tsv` gains a row at the same place on every lane
 that ran one, so a commit-by-commit rebase re-conflicts once per commit; the
-repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch:
-when the harness denies `git reset`, push any unpushed commits plainly and take
-`references/gates-and-pr.md` §7's merge arm from that tip; when it denies the
-`--force-with-lease` push, take that arm directly; when it denies the REBASE
-after a flatten, `git reset --soft <pushed tip>`, commit and push plainly what
-`git diff --cached --stat` still shows, then that arm (go-to-k/cdkd#4327).
+repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch;
+§7's MERGE ARM, spelled here since a denial also blocks re-reading §7, is
+`git checkout -B <branch> origin/<branch> && git merge origin/main`, a ledger
+conflict kept both, normalized and committed, then a plain push. When the
+harness denies `git reset`, push any unpushed commits plainly and take that arm
+from that tip; on a denied `--force-with-lease`, take it directly; when it
+denies the REBASE after a flatten, `git reset --soft <pushed tip>`, commit and
+push plainly what `git diff --cached --stat` still shows, then that arm
+(go-to-k/cdkd#4327).
 Otherwise:
 
 ```bash
@@ -103,9 +106,9 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   as it blocks even after re-runs pass (#3664).
 - **`gh pr merge`'s output is not the verdict — `gh pr view <N> --json state`
   = `MERGED` is**, read in its OWN call before anything presuming the merge (the
-  thank-you, the claim release, the pull). It lies both ways: from the PR's own
-  worktree `--delete-branch` prints `fatal: 'main' is already used by worktree
-  ...` over a SUCCESS, and a chained thank-you followed a FAILED merge.
+  thank-you, the claim release, the pull): from the PR's own worktree
+  `--delete-branch` prints `fatal: 'main' is already used by worktree ...` over
+  a SUCCESS.
 - **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
   onto it. A RED check can equally be a peer's just-merged content your local
   green never saw — fetch, rebase, re-run.
