@@ -21,7 +21,11 @@ import {
   retryClassificationText,
 } from './retryable-errors.js';
 import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
-import { isAuxiliaryFailure, markAuxiliaryFailure } from '../provisioning/auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  RETRY_AUXILIARY_OWNER,
+} from '../provisioning/auxiliary-failure.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 
 export interface RetryLogger {
@@ -231,15 +235,6 @@ export interface WithRetryOptions {
   isRetryable?: (classificationText: string, error: unknown) => boolean;
 }
 
-/**
- * The auxiliary mark's owner (go-to-k/cdkd#4222): a fixed word, never the
- * label. A label can carry a physical name — `<table name> (<dimension>)`, a
- * policy name, and an all-alphanumeric physical name reads no differently from
- * a logical id — and the mark is the one `logicalId` `maskSecretsInError`
- * copies verbatim.
- */
-const RETRY_MARK_OWNER = 'withRetry';
-
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -408,15 +403,18 @@ export async function withRetry<T>(
   // `CloudControlOperationFailedError` carries the owner's id and no `cause`.
   // `markReplayMayCollide` is read by the collision classifier alone, so it
   // closes that gap without widening the update-path cost above. The mark's
-  // owner is `RETRY_MARK_OWNER`, never the label: the anchor needs only the
+  // owner is `RETRY_AUXILIARY_OWNER`, never the label: the anchor needs only the
   // `/auxiliary` suffix, never the id before it.
   //
-  // Both also silence the #2902 orphan advice on an ordinary CREATE, since it
-  // reads the same verdict -- including after an ambiguous attempt, where the
-  // collided resource is most likely this run's own orphan. Tracked as #3984.
+  // The #2902 orphan advice on an ordinary CREATE reads the stamp the other
+  // way (#3984): a replayed collision gets its own line saying this create's
+  // earlier attempt most likely made the resource, seeing through THIS mark
+  // (and only this one) to the collision under it.
   let replayMayCollide = false;
   const settle = (error: unknown): unknown =>
-    replayMayCollide ? markReplayMayCollide(markAuxiliaryFailure(error, RETRY_MARK_OWNER)) : error;
+    replayMayCollide
+      ? markReplayMayCollide(markAuxiliaryFailure(error, RETRY_AUXILIARY_OWNER))
+      : error;
 
   for (let attempt = 0; attempt <= attemptCeiling; attempt++) {
     try {
