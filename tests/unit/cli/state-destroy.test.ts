@@ -75,6 +75,36 @@ vi.mock('../../../src/cli/commands/destroy-runner.js', () => ({
   runDestroyForStack: mockRunDestroyForStack,
 }));
 
+// Issue #2423: capture every deployment-event recorder the command opens. The
+// store itself is mocked, NOT `deployment-events-run.js`, so the real
+// RUN_STARTED / RUN_FINISHED bracket runs and these cases assert what it
+// records. One entry per `new DeploymentEventsStore(...)`, in creation order.
+interface CapturedRecorder {
+  options: Record<string, unknown>;
+  events: Array<Record<string, unknown>>;
+  finalized: unknown[];
+}
+const createdRecorders = vi.hoisted(() => [] as CapturedRecorder[]);
+vi.mock('../../../src/state/deployment-events-store.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/state/deployment-events-store.js')>();
+  class FakeDeploymentEventsStore {
+    readonly cdkdVersion = '0.0.0-test';
+    readonly captured: CapturedRecorder;
+    constructor(_backend: unknown, options: Record<string, unknown>) {
+      this.captured = { options, events: [], finalized: [] };
+      createdRecorders.push(this.captured);
+    }
+    record(event: Record<string, unknown>): void {
+      this.captured.events.push(event);
+    }
+    async finalize(result: unknown): Promise<void> {
+      this.captured.finalized.push(result);
+    }
+  }
+  return { ...actual, DeploymentEventsStore: FakeDeploymentEventsStore };
+});
+
 // Mock readline so a prompt this command raised by itself would be observable.
 // It raises none since `--all` and its batch prompt were removed
 // (go-to-k/cdkd#3865); the per-stack prompt lives in the mocked runner.
@@ -152,6 +182,7 @@ describe('cdkd state destroy', () => {
     mockVerifyBucketExists.mockReset();
     mockVerifyBucketExists.mockResolvedValue();
     mockRunDestroyForStack.mockReset();
+    createdRecorders.length = 0;
     // Complete, not partial: `DestroyRunnerResult` requires every counter, and
     // a mock that omits them makes `totalSkipped` NaN at runtime while the
     // types still say `number` (issue #1752 review).
@@ -516,5 +547,207 @@ describe('cdkd state destroy', () => {
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(2);
     expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('A');
     expect(mockRunDestroyForStack.mock.calls[1]?.[0]).toBe('B');
+  });
+
+  describe('deployment events (go-to-k/cdkd#2423)', () => {
+    function runFinished(rec: CapturedRecorder): Record<string, unknown> {
+      const finished = rec.events.filter((e) => e['eventType'] === 'RUN_FINISHED');
+      expect(finished).toHaveLength(1);
+      return finished[0]!;
+    }
+
+    it('records a destroy run for a clean destroy and threads the recorder into the runner', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'eu-west-1' }]);
+      mockGetState.mockResolvedValue({
+        state: makeStackState('MyStack', 'eu-west-1'),
+        etag: '"abc"',
+      });
+
+      await runStateDestroy(['destroy', 'MyStack', '--yes']);
+
+      expect(createdRecorders).toHaveLength(1);
+      const rec = createdRecorders[0]!;
+      // Keyed by the TARGET's region (the state record's key), under the same
+      // `destroy` command literal `cdkd destroy` records.
+      expect(rec.options).toMatchObject({
+        stackName: 'MyStack',
+        region: 'eu-west-1',
+        command: 'destroy',
+      });
+      expect(rec.events[0]).toMatchObject({
+        eventType: 'RUN_STARTED',
+        stackName: 'MyStack',
+        command: 'destroy',
+        region: 'eu-west-1',
+      });
+      expect(runFinished(rec)).toMatchObject({
+        result: 'SUCCEEDED',
+        counts: { created: 0, updated: 0, deleted: 1 },
+      });
+      expect(rec.finalized).toEqual(['SUCCEEDED']);
+      // The per-resource events come from the runner, so the SAME recorder must
+      // reach it -- a recorder that only brackets the run records no resource.
+      const ctx = mockRunDestroyForStack.mock.calls[0]?.[2] as Record<string, unknown>;
+      expect(ctx['eventRecorder']).toBeDefined();
+      expect((ctx['eventRecorder'] as { captured: CapturedRecorder }).captured).toBe(rec);
+    });
+
+    it('records FAILED with the failed count when the runner reports resource errors', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'Bad', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({ state: makeStackState('Bad', 'us-east-1'), etag: '"x"' });
+      mockRunDestroyForStack.mockResolvedValueOnce({
+        stackName: 'Bad',
+        cancelled: false,
+        skippedEmpty: false,
+        deletedCount: 1,
+        retainedCount: 0,
+        skippedCount: 0,
+        errorCount: 2,
+        interrupted: false,
+      });
+
+      await expect(runStateDestroy(['destroy', 'Bad', '--yes'])).rejects.toThrow();
+      expect(exitSpy).toHaveBeenCalledWith(2);
+
+      const finished = runFinished(createdRecorders[0]!);
+      expect(finished['result']).toBe('FAILED');
+      expect(finished['counts']).toEqual({ created: 0, updated: 0, deleted: 1, failed: 2 });
+      expect(createdRecorders[0]!.finalized).toEqual(['FAILED']);
+    });
+
+    it('records FAILED naming the skip when the runner SKIPPED a resource (issue #1752 parity)', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'Skipper', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({
+        state: makeStackState('Skipper', 'us-east-1'),
+        etag: '"x"',
+      });
+      mockRunDestroyForStack.mockResolvedValueOnce({
+        stackName: 'Skipper',
+        cancelled: false,
+        skippedEmpty: false,
+        deletedCount: 2,
+        retainedCount: 0,
+        skippedCount: 1,
+        errorCount: 0,
+        interrupted: false,
+      });
+
+      await expect(runStateDestroy(['destroy', 'Skipper', '--yes'])).rejects.toThrow();
+      expect(exitSpy).toHaveBeenCalledWith(2);
+
+      const finished = runFinished(createdRecorders[0]!);
+      expect(finished['result']).toBe('FAILED');
+      expect(finished['counts']).toEqual({ created: 0, updated: 0, deleted: 2, skipped: 1 });
+      expect(createdRecorders[0]!.finalized).toEqual(['FAILED']);
+    });
+
+    it('records FAILED with the error metadata, and still finalizes, when the runner throws', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'Boom', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({ state: makeStackState('Boom', 'us-east-1'), etag: '"x"' });
+      mockRunDestroyForStack.mockRejectedValueOnce(new Error('lock acquisition failed'));
+
+      await expect(runStateDestroy(['destroy', 'Boom', '--yes'])).rejects.toThrow();
+      expect(exitSpy).toHaveBeenCalledWith(1);
+
+      const finished = runFinished(createdRecorders[0]!);
+      expect(finished['result']).toBe('FAILED');
+      expect(finished['error']).toMatchObject({ name: 'Error' });
+      expect(finished['counts']).toBeUndefined();
+      expect(createdRecorders[0]!.finalized).toEqual(['FAILED']);
+    });
+
+    it('opens one run per target, each under its own stack name and region', async () => {
+      mockListStacks.mockResolvedValue([
+        { stackName: 'A', region: 'us-east-1' },
+        { stackName: 'B', region: 'ap-northeast-1' },
+      ]);
+      mockGetState.mockImplementation(async (name: string) => ({
+        state: makeStackState(name, name === 'A' ? 'us-east-1' : 'ap-northeast-1'),
+        etag: '"x"',
+      }));
+
+      await runStateDestroy(['destroy', 'A', 'B', '--yes']);
+
+      expect(createdRecorders.map((r) => [r.options['stackName'], r.options['region']])).toEqual([
+        ['A', 'us-east-1'],
+        ['B', 'ap-northeast-1'],
+      ]);
+      for (const rec of createdRecorders) {
+        expect(runFinished(rec)['result']).toBe('SUCCEEDED');
+        expect(rec.finalized).toEqual(['SUCCEEDED']);
+      }
+      // Each runner call carries ITS target's recorder, not a shared one.
+      const threaded = mockRunDestroyForStack.mock.calls.map(
+        (c) => (c[2] as { eventRecorder: { captured: CapturedRecorder } }).eventRecorder.captured
+      );
+      expect(threaded).toEqual([createdRecorders[0], createdRecorders[1]]);
+      expect(threaded[0]).not.toBe(threaded[1]);
+    });
+
+    it('opens no run for a target it never dispatches', async () => {
+      // `--stack-region` matches no record of B, so B is warn-and-skipped: no
+      // RUN_STARTED may be written for a stack nothing touched.
+      mockListStacks.mockResolvedValue([
+        { stackName: 'A', region: 'us-east-1' },
+        { stackName: 'B', region: 'eu-west-1' },
+      ]);
+      mockGetState.mockImplementation(async (name: string) => ({
+        state: makeStackState(name, 'us-east-1'),
+        etag: '"x"',
+      }));
+
+      await runStateDestroy(['destroy', 'A', 'B', '--stack-region', 'us-east-1', '--yes']);
+
+      expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+      expect(createdRecorders).toHaveLength(1);
+      expect(createdRecorders[0]!.options['stackName']).toBe('A');
+    });
+
+    it('opens no run for a target whose state record vanished before the read', async () => {
+      // The inner loop's `getState` -> null `continue`: listed, but gone by the
+      // time it is read, so nothing is dispatched and nothing may be recorded.
+      mockListStacks.mockResolvedValue([
+        { stackName: 'Gone', region: 'us-east-1' },
+        { stackName: 'Kept', region: 'us-east-1' },
+      ]);
+      mockGetState.mockImplementation(async (name: string) =>
+        name === 'Gone' ? null : { state: makeStackState(name, 'us-east-1'), etag: '"x"' }
+      );
+
+      await runStateDestroy(['destroy', 'Gone', 'Kept', '--yes']);
+
+      expect(mockRunDestroyForStack.mock.calls.map((c) => c[0])).toEqual(['Kept']);
+      expect(createdRecorders.map((r) => r.options['stackName'])).toEqual(['Kept']);
+    });
+
+    it('records a SUCCEEDED run with nothing deleted when the user declines the prompt', async () => {
+      // Parity with `cdkd destroy`: a declined per-stack prompt is not a
+      // failure, so the run is SUCCEEDED with zero deletes -- the record says
+      // the destroy was attempted and removed nothing.
+      mockListStacks.mockResolvedValue([{ stackName: 'Declined', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({
+        state: makeStackState('Declined', 'us-east-1'),
+        etag: '"x"',
+      });
+      mockRunDestroyForStack.mockResolvedValueOnce({
+        stackName: 'Declined',
+        cancelled: true,
+        skippedEmpty: false,
+        deletedCount: 0,
+        retainedCount: 0,
+        skippedCount: 0,
+        errorCount: 0,
+        interrupted: false,
+      });
+
+      await runStateDestroy(['destroy', 'Declined']);
+
+      expect(createdRecorders).toHaveLength(1);
+      expect(runFinished(createdRecorders[0]!)).toMatchObject({
+        result: 'SUCCEEDED',
+        counts: { created: 0, updated: 0, deleted: 0 },
+      });
+      expect(createdRecorders[0]!.finalized).toEqual(['SUCCEEDED']);
+    });
   });
 });

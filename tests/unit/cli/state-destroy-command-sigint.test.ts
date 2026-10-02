@@ -81,6 +81,25 @@ vi.mock('../../../src/cli/commands/destroy-runner.js', () => ({
   runDestroyForStack: mockRunDestroyForStack,
 }));
 
+// go-to-k/cdkd#2423: count the deployment-event recorders the command opens, so
+// a case can pin that a target stopped BEFORE dispatch opens none (a
+// RUN_STARTED for a stack nothing touched). The store is the only thing mocked;
+// the real `startRunRecorder` bracket runs.
+const openedRecorderStacks = vi.hoisted(() => [] as string[]);
+vi.mock('../../../src/state/deployment-events-store.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/state/deployment-events-store.js')>();
+  class FakeDeploymentEventsStore {
+    readonly cdkdVersion = '0.0.0-test';
+    constructor(_backend: unknown, options: { stackName: string }) {
+      openedRecorderStacks.push(options.stackName);
+    }
+    record(): void {}
+    async finalize(): Promise<void> {}
+  }
+  return { ...actual, DeploymentEventsStore: FakeDeploymentEventsStore };
+});
+
 /**
  * `state.ts` guards its single `forwardSigtermToSigint()` call with a catch that
  * disposes the watch before re-throwing, and that catch had no coverage:
@@ -189,6 +208,7 @@ describe('cdkd state destroy <stacks...>: a Ctrl-C the runner never reported sto
 
   beforeEach(() => {
     vi.clearAllMocks();
+    openedRecorderStacks.length = 0;
     mockListStacks.mockResolvedValue(STACKS.map((s) => ({ stackName: s, region: REGION })));
     mockGetState.mockImplementation(async (stackName: string) => ({
       state: makeStackState(stackName),
@@ -249,6 +269,9 @@ describe('cdkd state destroy <stacks...>: a Ctrl-C the runner never reported sto
 
     expect(mockRunDestroyForStack).not.toHaveBeenCalled();
     expect(exitSpy).toHaveBeenCalledWith(2);
+    // The recorder is opened BELOW that guard: a stack stopped before dispatch
+    // must not get a RUN_STARTED that nothing finalizes (go-to-k/cdkd#2423).
+    expect(openedRecorderStacks).toEqual([]);
   });
 
   /**

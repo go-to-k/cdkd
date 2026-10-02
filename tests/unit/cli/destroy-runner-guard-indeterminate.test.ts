@@ -322,10 +322,10 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
     expect(allWarn()).toContain('Other');
   });
 
-  it('still counts and warns when NO recorder is supplied (cdkd state destroy)', async () => {
-    // `cdkd state destroy` threads no `eventRecorder` at all, so the summary is
-    // the ONLY surface it has. Reading the count off the recorder would have
-    // left that verb silently unguarded.
+  it('still counts and warns when NO recorder is supplied (a nested-stack child)', async () => {
+    // `NestedStackProvider.delete` threads no `eventRecorder` into a child's
+    // destroy, so the summary is the ONLY surface it has. Reading the count off
+    // the recorder would have left that path silently unguarded.
     mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
 
     const result = await runDestroyForStack(
@@ -347,11 +347,11 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
     const warned = allWarn();
     expect(warned).not.toContain('cdkd events TestStack');
     expect(warned).toContain('this run wrote no deployment events');
-    // CALLER-AGNOSTIC on purpose: `cdkd state destroy` is not the only caller
-    // threading no recorder -- `NestedStackProvider.delete` drives this runner
-    // for a child stack with none, under ANY verb. Naming `state destroy` alone
-    // would tell someone already running `cdkd destroy` to re-run it.
+    // Names the one caller that threads no recorder. `cdkd state destroy` used
+    // to be the other (go-to-k/cdkd#2423) and now records events, so naming it
+    // would send its user to look for a gap that is closed.
     expect(warned).toContain('nested-stack child');
+    expect(warned).not.toContain('state destroy');
     expect(warned).toContain('pre-flight safety check(s) could NOT be completed');
   });
 

@@ -59,7 +59,7 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  *   The AWS resource is kept ON PURPOSE and the state record is dropped.
  * - `RESOURCE_SKIPPED` — a skip where cdkd could NOT address the resource
  *   (issue [#1752](https://github.com/go-to-k/cdkd/issues/1752)). Emitted by
- *   `cdkd destroy` AND, since issue
+ *   `cdkd destroy` / `cdkd state destroy` AND, since issue
  *   [#1762](https://github.com/go-to-k/cdkd/issues/1762), by the `cdkd deploy`
  *   DELETE branch for a resource removed from the template.
  *   Since issue [#1819](https://github.com/go-to-k/cdkd/issues/1819) it is ALSO

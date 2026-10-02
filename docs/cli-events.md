@@ -6,7 +6,7 @@ description: "Read deployment-event history with cdkd events, and purge old hist
 # cdkd events
 
 `cdkd events '<stack>'` reads back the structured deployment events cdkd records
-for every `cdkd deploy` / `cdkd destroy` run — cdkd's equivalent of
+for every `cdkd deploy` / `cdkd destroy` / `cdkd state destroy` run — cdkd's equivalent of
 CloudFormation's `DescribeStackEvents`. Reach for it when you want to know what
 a past run actually did, including a run whose stack no longer exists.
 
@@ -57,10 +57,10 @@ for what that does and does not cover.
 
 ## `cdkd events prune`
 
-The store self-bounds to the newest 20 runs at write time, and `cdkd destroy`
-deliberately keeps event history as post-mortem context — so an object listing
-of the bucket is never empty after a teardown alone. `cdkd events prune '<stack>'`
-is the explicit purge.
+The store self-bounds to the newest 20 runs at write time, and `cdkd destroy` /
+`cdkd state destroy` deliberately keep event history as post-mortem context —
+so an object listing of the bucket is never empty after a teardown alone.
+`cdkd events prune '<stack>'` is the explicit purge.
 
 It empties the LISTING, not the bucket: the state bucket is versioned and the
 delete carries no version id, so earlier versions of the pruned keys survive
