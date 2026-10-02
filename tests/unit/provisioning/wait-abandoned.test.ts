@@ -38,7 +38,7 @@ describe('markWaitAbandoned / isWaitAbandonedError', () => {
   });
 
   it('stops at the bound rather than walking forever', () => {
-    // The bound is `retryable-errors.ts`'s, and equality is the requirement:
+    // The bound is `retryable-errors/marks.ts`'s, and equality is the requirement:
     // a marker this predicate finds deeper than `isMarkedNonRetryable` can
     // reach means two classifiers disagreeing about one chain. Depth 5 is the
     // last hop INSIDE the bound; 5 wrappers puts the marker at index 5, one

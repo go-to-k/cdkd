@@ -501,7 +501,7 @@ const REVERSE_REPLACEMENT_NAME_KEYS: Readonly<Record<string, NameKey>> = {
  * name-shaped create-only property names a PARENT, or — a nested stack — the
  * child's `<parent>~<logicalId>` is a state key AWS never sees, so no AWS
  * collision can be the stack's own (a child resource's collision reaches the
- * parent only through the anchor residual in `retryable-errors.ts`).
+ * parent only through the anchor residual in `retryable-errors/name-collision.ts`).
  */
 const NOT_NAME_KEYED_TYPES: ReadonlySet<string> = new Set([
   'AWS::CertificateManager::Certificate',

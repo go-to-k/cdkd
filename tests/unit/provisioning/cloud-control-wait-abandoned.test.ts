@@ -2142,7 +2142,7 @@ describe('round-8 mutation gaps in the abandonment path (#3236)', () => {
     expect(isTransientPollFailure(atBound)).toBe(true);
     expect(isTransientPollFailure(pastBound)).toBe(false);
 
-    // The constant's doc comment states EQUALITY with `retryable-errors.ts`'s
+    // The constant's doc comment states EQUALITY with `retryable-errors/marks.ts`'s
     // own `MAX_CAUSE_CHAIN_DEPTH` — "a transport code this predicate finds at a
     // depth the retry classifiers structurally cannot reach means two
     // classifiers answering differently about one chain". That claim needs a

@@ -51,8 +51,8 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
 // The engine's classifier, imported so the #2901 cases below can assert the
 // END of the chain rather than a substring of the provider's own message: what
 // matters is that the wrapped error is still routed to the dense IAM grid, and
-// only the real predicate answers that. `retryable-errors.ts` is a zero-import
-// graph leaf, so pulling it in here mocks nothing and reaches no AWS client.
+// only the real predicate answers that. `retryable-errors.ts` is a graph leaf
+// (one leaf import, `aws-failure-text.ts`), so pulling it in here mocks nothing and reaches no AWS client.
 import {
   isIamPropagationError,
   isRetryableTransientError,
@@ -525,7 +525,7 @@ describe('CognitoUserPoolProvider', () => {
   });
 
   // The SMS-role trust-propagation race (issue #2901). These cases exist
-  // because `src/deployment/retryable-errors.ts`'s new pattern carries a
+  // because `src/deployment/retryable-errors/patterns.ts`'s new pattern carries a
   // comment ASSERTING how this file behaves -- that the inner control-plane
   // retry rethrows this class immediately, so the engine's outer `withRetry`
   // is the loop that rides the window out. Prose about another module's
@@ -614,7 +614,7 @@ describe('CognitoUserPoolProvider', () => {
     // catch and its OWN wrapping sentence, so the create-path cases above say
     // nothing about it -- a reword or a redaction there would silently make
     // this path single-shot again with every other test green. The entry in
-    // `retryable-errors.ts` claims to cover EVERY call that validates the role;
+    // `retryable-errors/patterns.ts` claims to cover EVERY call that validates the role;
     // without this case that half of the claim rests on assumption.
     it('a rejection on the UPDATE path stays classifiable too', async () => {
       // `mockImplementation`, not `*Once` priming: `update()` reads live state

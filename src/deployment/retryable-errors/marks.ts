@@ -232,7 +232,7 @@ export function markNonRetryable<E extends Error>(error: E): E {
  * parallel lane added two sites in `nested-stack-provider.ts`. Marking is a
  * per-site judgement any lane can make, so any tally written here is a
  * snapshot of one moment that then reads as complete — which is the defect
- * {@link file://../utils/error-handler.ts}'s own enumeration warning
+ * {@link file://../../utils/error-handler.ts}'s own enumeration warning
  * describes. What is stable, and all a reader needs, is the RULE above.
  */
 export function isMarkedNonRetryable(error: unknown): boolean {

@@ -336,7 +336,7 @@ const POLL_TRANSPORT_CODE_IN_MESSAGE = new RegExp(
 );
 
 /**
- * The `.cause` walk depth. It is `retryable-errors.ts`'s `MAX_CAUSE_CHAIN_DEPTH`
+ * The `.cause` walk depth. It is `retryable-errors/marks.ts`'s `MAX_CAUSE_CHAIN_DEPTH`
  * VALUE, and equality is the requirement rather than a coincidence: a transport
  * code this predicate finds at a depth `isThrottlingError` /
  * `isMarkedNonRetryable` / `isRetryableTransientError` structurally cannot

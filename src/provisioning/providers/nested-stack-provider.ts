@@ -40,7 +40,8 @@ import { getLogger } from '../../utils/logger.js';
 // this builder from anywhere on the provider/destroy-runner ring re-creates the
 // cycle it was extracted to break.
 import { nestedStackChildFailureMessage } from '../nested-stack-messages.js';
-// `retryable-errors.ts` has ZERO imports of its own, so importing it here
+// `retryable-errors.ts` is a graph LEAF (its family's only outside import is
+// the zero-import `aws-failure-text.ts`), so importing it here
 // cannot close a cycle — which is also why the marker cannot live in
 // `nested-stack-messages.ts` instead: that module is required to stay
 // import-free (its own header says so), so the mark belongs at the THROW

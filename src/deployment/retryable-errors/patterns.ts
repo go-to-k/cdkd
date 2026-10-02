@@ -11,7 +11,7 @@
  * so `withRetry` polls it on a dense sub-second schedule instead of the
  * generic 1s/2s/4s/8s exponential backoff (which is right for throttling and
  * for long resource-state transitions, and wrong here — see
- * {@link file://../deployment/retry.ts}).
+ * {@link file://../retry.ts}).
  *
  * When adding a new pattern: put it here if the fix is "wait a moment and ask
  * IAM again", and in `OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS` otherwise. A

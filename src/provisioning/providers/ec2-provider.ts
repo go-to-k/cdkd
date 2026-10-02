@@ -7637,7 +7637,7 @@ const AUTHORIZE_SOCKET_RESEND_DELAY_MS = 500;
 
 /**
  * Node socket codes raised when the connection was never established, so the
- * request never reached AWS (the set `retryable-errors.ts` keeps out of its
+ * request never reached AWS (the set `retryable-errors/transient.ts` keeps out of its
  * ambiguous codes for that reason), plus `EAI_AGAIN` (DNS lookup failed).
  */
 const NEVER_CONNECTED_SOCKET_CODES: ReadonlySet<string> = new Set([

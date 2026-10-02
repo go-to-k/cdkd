@@ -1114,7 +1114,7 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       // Unreachable here: no CR `Invoke` failure carries this text.
       "The operator role is invalid or doesn't have sufficient permissions",
       // Issue #805, argument (a), and the reason this list did not start at
-      // one: the entry's own comment in `retryable-errors.ts` says "any
+      // one: the entry's own comment in `retryable-errors/patterns.ts` says "any
       // CC-provisioned type that validates a same-stack role at create time
       // can hit this", which is the same post-acceptance shape. Unreachable
       // here for the same reason -- the text is a Cloud Control handler's,
