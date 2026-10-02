@@ -283,18 +283,26 @@ if [ "${REFUSED_RC}" -eq 0 ]; then
   echo "[verify] FAIL: cdkd rollback SUCCEEDED over a squatter on ${ROLE_A} — the re-create did not send ${ROLE_A}"
   exit 1
 fi
-# The parsed marker names the SENT name; the sentinel is the refusal's own
-# opening, independent of it. Sentinel without marker = the wording drifted or
-# a different name was sent — never read as "no refusal".
-SENT_MARKER="which its provider sends as \"${ROLE_A}\""
+# The refusal names the collision and points at a `Collision diagnosis:` line
+# of its own below it (go-to-k/cdkd#4214), so the parsed marker naming the SENT
+# name lives on THAT line. Its sentinel is the diagnosis line's own opening,
+# independent of the marker. Sentinel without marker = the wording drifted or a
+# different name was sent — never read as "no refusal".
 SENTINEL="Cannot reverse the replacement of NamedRole"
+DIAG_SENTINEL="Collision diagnosis: the re-create asked for RoleName"
+SENT_MARKER="which its provider sends as \"${ROLE_A}\""
 if ! grep -qF "${SENTINEL}" "${LOG_DIR}/refused.log"; then
   echo "[verify] FAIL: rollback exited ${REFUSED_RC} without the #4010 holder refusal (output above)"
   exit 1
 fi
-if ! grep -F "${SENTINEL}" "${LOG_DIR}/refused.log" | grep -qF "${SENT_MARKER}"; then
-  echo "[verify] FAIL: the refusal is present but does not say the re-create sent ${ROLE_A} (wording drifted, or a different name was sent):"
-  grep -F "${SENTINEL}" "${LOG_DIR}/refused.log" | sed 's/^/  /'
+if ! grep -qF "${DIAG_SENTINEL}" "${LOG_DIR}/refused.log"; then
+  echo "[verify] FAIL: the refusal is present but its collision diagnosis line is missing (wording drifted):"
+  grep -F "Collision diagnosis" "${LOG_DIR}/refused.log" | sed 's/^/  /' || true
+  exit 1
+fi
+if ! grep -F "${DIAG_SENTINEL}" "${LOG_DIR}/refused.log" | grep -qF "${SENT_MARKER}"; then
+  echo "[verify] FAIL: the collision diagnosis does not say the re-create sent ${ROLE_A} (wording drifted, or a different name was sent):"
+  grep -F "${DIAG_SENTINEL}" "${LOG_DIR}/refused.log" | sed 's/^/  /'
   exit 1
 fi
 if [ "$(role_description "${ROLE_A}")" != "${SQUATTER_DESCRIPTION}" ]; then
