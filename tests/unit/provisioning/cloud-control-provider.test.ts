@@ -1987,7 +1987,7 @@ describe('CloudControlProvider update: a recorded secret reference on a create-o
   // while `update()` receives the RESOLVED plaintext as its desired side, so
   // the two sides of an unchanged reference never compare equal. On a
   // create-only path that put an op in the patch on every in-place update,
-  // and Cloud Control refuses a patch touching a create-only property.
+  // asking Cloud Control to update a create-only property.
   let provider: CloudControlProvider;
 
   const TYPE = 'AWS::Logs::MetricFilter';

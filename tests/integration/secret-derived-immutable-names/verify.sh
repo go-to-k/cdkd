@@ -21,6 +21,8 @@
 #   3. PREMISE: state records each secret-derived property as the
 #      {{resolve:secretsmanager: expression, and each resource lives under the
 #      name (path, description) the secret holds.
+#   3b. ROTATE the secret's `filter` field only (every other field keeps its
+#      value), so the update's resolved FilterName differs from the live one.
 #   4. LOAD-BEARING: the update (CDKD_TEST_UPDATE=true: only the Stages'
 #      Description, the Service's EnableECSManagedTags, the Policy's document,
 #      the API's XrayEnabled, the DataSource's Description and the Queue's
@@ -52,8 +54,10 @@
 # mask": that provider debug line prints the queue URL, name and all, raw.
 # Revert src/provisioning/cloud-control-provider.ts ALONE and step 4 is
 # expected to fail on Cloud Control's refusal of the patch op on the
-# create-only /FilterName (the message is not yet measured: copy it from the
-# probe's red log into the refusal list below).
+# create-only /FilterName, now carrying the ROTATED name (the message is not
+# yet measured: copy it from the probe's red log into the refusal list below).
+# With the fix the patch leaves FilterName out, so the filter keeps its
+# pre-rotation name, as CloudFormation leaves an unchanged reference alone.
 #
 # BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
 
@@ -116,6 +120,7 @@ GQL_API_NAME="sdin_gql_${SUFFIX//-/_}"
 DS_NAME="sdin_ds_${SUFFIX//-/_}"
 QUEUE_NAME="sdin-q-${SUFFIX}"
 FILTER_NAME="sdin-mf-${SUFFIX}"
+FILTER_NAME_ROTATED="sdin-mfr-${SUFFIX}"
 export SDIN_SECRET_NAME="cdkd-integ-sdin-secret-${SUFFIX}"
 SEEDED_SECRET=0
 # Set just before the first deploy: the stack name is fixed, so a run refused by
@@ -317,6 +322,16 @@ for v in SECRET_STAGE_CREATED PLAIN_STAGE_CREATED SERVICE_CREATED FILTER_CREATED
   if [ -z "${!v}" ] || [ "${!v}" = "None" ]; then echo "FAIL: ${v} unreadable" >&2; exit 1; fi
 done
 
+echo "==> Step 3b: rotate the secret's filter field only"
+SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" \
+  > "${SECRET_FILE}"
+aws secretsmanager put-secret-value --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
+  --secret-string "file://${SECRET_FILE}" >/dev/null
+rm -f "${SECRET_FILE}"
+echo "    OK: rotated"
+
 echo "==> Step 4 (LOAD-BEARING): update - only ordinary in-place properties change"
 set +e
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -360,7 +375,9 @@ fi
 # Over the WHOLE log, engine progress lines included: a hit there is a loud
 # FAIL, never a vacuous pass, but look at the engine's lines before the
 # providers' when it fires (a Stage's physical id IS its name).
-for needle in "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}"; do
+# FILTER_NAME is the PRE-rotation value, which this deploy's masker never
+# resolved; it is reported below rather than asserted.
+for needle in "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}"; do
   # A here-string, not a pipe: see state_holds.
   if grep -qF -- "${needle}" <<< "${UPDATE_LOG_BODY}"; then
     echo "FAIL: the update log carries a secret-derived value in plaintext" >&2
@@ -368,6 +385,9 @@ for needle in "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}
   fi
 done
 echo "    OK: the update log carries no secret-derived value"
+if grep -qF -- "${FILTER_NAME}" <<< "${UPDATE_LOG_BODY}"; then
+  echo "    NOTE: the update log names SecretFilter's pre-rotation FilterName in plaintext (the go-to-k/cdkd#4339 class, for the Cloud Control provider)"
+fi
 
 echo "==> Step 5 (LOAD-BEARING): the update landed IN PLACE"
 expect_eq "SecretStage's Description after the update" "cdkd integ: updated" "$(stage_field "${STAGE_NAME}" Description)"
@@ -389,6 +409,9 @@ expect_eq "SecretQueue's VisibilityTimeout after the update" "60" \
     --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
 expect_eq "SecretQueue's URL (not replaced)" "${QUEUE_URL}" "$(state_physical_id SecretQueue)"
 expect_eq "SecretFilter's FilterPattern after the update" "ERROR" "$(filter_field filterPattern)"
+expect_eq "no filter took the rotated name" "None" \
+  "$(aws logs describe-metric-filters --region "${REGION}" --log-group-name "${FILTER_LOG_GROUP}" \
+    --filter-name-prefix "${FILTER_NAME_ROTATED}" --query 'metricFilters[0].filterName' --output text)"
 expect_eq "SecretFilter's creation time (not replaced)" "${FILTER_CREATED}" "$(filter_field creationTime)"
 expect_eq "SecretFilter's physical id" "${FILTER_ID}" "$(state_physical_id SecretFilter)"
 expect_eq "SecretStage's recorded StageName after the update" \

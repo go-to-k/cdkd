@@ -47,7 +47,9 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  *     to Cloud Control), `FilterName` from the secret. `FilterName` is
  *     create-only, and Cloud Control's `update()` built its JSON Patch from
  *     the recorded bag: the recorded reference against the resolved name put
- *     an op on that create-only path in every update's patch.
+ *     an op on that create-only path in every update's patch. `verify.sh`
+ *     rotates the secret's `filter` field before the update, so that op
+ *     would carry a name the filter does not have.
  *
  * A Scheduler Schedule's secret-derived `GroupName` stays refused on purpose
  * (go-to-k/cdkd#4275: nothing non-secret in the record identifies the group),

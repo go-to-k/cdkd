@@ -1190,14 +1190,12 @@ export class CloudControlProvider implements ResourceProvider {
 
     try {
       // Strip null/undefined values and stringify JSON properties before generating patch
-      // A copy: the #4275 loop below rewrites keys of it, and the caller's bag
-      // must not change.
-      const cleanPreviousProperties = {
-        ...stringifyJsonProperties(
-          resourceType,
-          stripNullValues(previousProperties) as Record<string, unknown>
-        ),
-      };
+      // `stripNullValues` builds a fresh object, so the #4275 loop below may
+      // rewrite keys of it without touching the caller's bag.
+      const cleanPreviousProperties = stringifyJsonProperties(
+        resourceType,
+        stripNullValues(previousProperties) as Record<string, unknown>
+      );
       const cleanProperties = stringifyJsonProperties(
         resourceType,
         stripNullValues(properties) as Record<string, unknown>
@@ -1253,6 +1251,9 @@ export class CloudControlProvider implements ResourceProvider {
       // createOnlyProperties whose read-back form differs from the stored
       // form. The DescribeType lookup is cached per type and degrades to the
       // minimal patch (with a warning) when the API is unavailable.
+      //
+      // A key both create-only and write-only is re-added here even when the
+      // #4275 loop above matched it, so the resolved value still rides along.
       const writeOnlyProperties = await getTopLevelWriteOnlyProperties(resourceType);
       if (writeOnlyProperties.size > 0) {
         const previousWithoutWriteOnly = { ...cleanPreviousProperties };
