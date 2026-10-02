@@ -788,8 +788,8 @@ function effectiveNotificationConfiguration(config: unknown): unknown {
  * that declares no EventBridge block at all is one key short of the readback.
  * That is NOT this class — nothing was declared, so there is no spelling to
  * normalize, and supplying the key would record one the template does not have
- * on EVERY notification-configured bucket (the shape #1723 records as the
- * reason its own arm was left unanswered). `readNotification`'s own comment
+ * on EVERY notification-configured bucket (the shape #1723 could record only
+ * once a twin folded the same key into both diff sides). `readNotification`'s own comment
  * already scopes that difference: it is a ONE-TIME, self-clearing drift on the
  * `properties`-fallback baseline, deliberately accepted by #1430, not the
  * permanent phantom drift this fold exists to remove.

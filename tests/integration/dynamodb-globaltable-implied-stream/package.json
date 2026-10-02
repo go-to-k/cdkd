@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-dynamodb-globaltable-implied-stream",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd GlobalTable records the stream it auto-enables for an L1 with two replicas and no StreamSpecification (#1723)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
