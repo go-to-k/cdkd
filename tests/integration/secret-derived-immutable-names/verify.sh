@@ -52,10 +52,12 @@
 # updates either way. Revert src/utils/logger.ts ALONE (go-to-k/cdkd#2177) and
 # step 4 fails "SecretQueue's 'Updating SQS queue' line carries no '***'
 # mask": that provider debug line prints the queue URL, name and all, raw.
-# Revert src/provisioning/cloud-control-provider.ts ALONE and step 4 is
-# expected to fail on Cloud Control's refusal of the patch op on the
-# create-only /FilterName, now carrying the ROTATED name (the message is not
-# yet measured: copy it from the probe's red log into the refusal list below).
+# Revert src/provisioning/cloud-control-provider.ts ALONE and step 4 fails
+# "update deploy exited 1": Cloud Control refuses the patch op on the
+# create-only /FilterName, now carrying the ROTATED name, with
+# NotUpdatableException "Invalid patch update: createOnlyProperties
+# [/properties/FilterName] cannot be updated" (measured by that probe, read
+# from the run's persisted deployment event).
 # With the fix the patch leaves FilterName out, so the filter keeps its
 # pre-rotation name, as CloudFormation leaves an unchanged reference alone.
 #
@@ -341,7 +343,7 @@ set -e
 if [ "${UPDATE_RC}" -ne 0 ]; then
   for refusal in "StageName is immutable" "Cannot update ServiceName" \
     "GraphqlApi.Name is immutable" "DataSource.Name is immutable" \
-    "A policy called"; do
+    "A policy called" "createOnlyProperties [/properties/FilterName] cannot be updated"; do
     if grep -qF "${refusal}" "${DEPLOY_LOG}"; then
       echo "FAIL: the update failed with '${refusal}': the recorded secret reference was compared with the resolved value (go-to-k/cdkd#4275)" >&2
     fi
