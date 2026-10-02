@@ -242,7 +242,6 @@ export const OMITS_UPDATE_CONTEXT: readonly string[] = [
   'ECRProvider',
   'EventBridgeBusProvider',
   'EventBridgeRuleProvider',
-  'FSxFileSystemProvider',
   'FirehoseProvider',
   'GlueSecurityConfigurationProvider',
   'KMSProvider',

@@ -26,6 +26,18 @@ the SDK provider, built on the CDK L2 (`aws-fsx.LustreFileSystem`).
    LZ4` (`UpdateFileSystem` — a mutable Lustre sub-property), tag value
    change AND tag removal (`TagResource` / `UntagResource`). Asserts the
    FileSystemId is unchanged (in-place, no replacement).
+   - **Removal** (`CDKD_TEST_REMOVAL=true`, issue #1160):
+     `DataCompressionType` is dropped from the template while its live
+     value is `LZ4`, and `WeeklyMaintenanceStartTime` is added in the same
+     deploy. `UpdateFileSystem` keeps a field it is not sent and cdkd sends
+     no reset, so this asserts that:
+     - the deploy succeeds;
+     - the deploy warns, naming `LustreConfiguration.DataCompressionType`;
+     - the value stays `LZ4`;
+     - the maintenance window landed, which proves the call fired.
+
+     Phase 2's output is the negative control: that deploy removes nothing,
+     so it must not carry the warning.
 3. **Destroy** and assert the file system + VPC are gone from AWS and
    the cdkd state file is removed. A leftover FSx file system is never
    acceptable (per-hour billing) — the cleanup trap force-deletes any

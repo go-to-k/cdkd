@@ -52,6 +52,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../../src/utils/error-handler.js';
 import { getLogger } from '../../../../src/utils/logger.js';
+import { prepareRemovalForUpdate } from '../../../../src/provisioning/update-removal.js';
 
 /**
  * The mocked child logger the provider writes to. `child: () => childLogger`
@@ -1852,7 +1853,20 @@ describe('FSxFileSystemProvider nested sub-block update arms', () => {
     expect(update.input['OntapConfiguration']).not.toHaveProperty('RemoveRouteTableIds');
   });
 
-  it('drops a nested sub-block to undefined when it is removed from the template', async () => {
+});
+
+// Issue #1160: UpdateFileSystem keeps a field it is not sent, and cdkd sends
+// no reset for any of these removals, so each one must WARN rather than be
+// silently dropped — and must never issue an UpdateFileSystem carrying no
+// update field.
+describe('FSxFileSystemProvider update removal (#1160)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const warnings = (): string[] => childLogger.warn.mock.calls.map((c) => String(c[0]));
+
+  it('warns and sends nothing when a nested sub-block is removed from a kept variant block', async () => {
     routeSend({
       UpdateFileSystemCommand: {},
       DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
@@ -1866,7 +1880,7 @@ describe('FSxFileSystemProvider nested sub-block update arms', () => {
       },
     };
 
-    await newProvider().update(
+    const result = await newProvider().update(
       'MyFs',
       FS_ID,
       RESOURCE_TYPE,
@@ -1874,11 +1888,312 @@ describe('FSxFileSystemProvider nested sub-block update arms', () => {
       prev
     );
 
+    expect(result).toEqual({ physicalId: FS_ID, wasReplaced: false });
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property WindowsConfiguration.FsrmConfiguration is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+    ]);
+  });
+
+  const fsrmPrev = {
+    ...WINDOWS_PROPS,
+    WindowsConfiguration: {
+      ...WINDOWS_PROPS.WindowsConfiguration,
+      FsrmConfiguration: { FsrmServiceEnabled: true },
+    },
+  };
+  const fsrmDesired = { ...fsrmPrev, WindowsConfiguration: { ...WINDOWS_PROPS.WindowsConfiguration } };
+
+  it('words the warning for a rollback revert (replayingState)', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, fsrmDesired, fsrmPrev, {
+      replayingState: true,
+    });
+
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property WindowsConfiguration.FsrmConfiguration is absent from the state being restored; UpdateFileSystem keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.',
+    ]);
+  });
+
+  it('does not warn on drift --revert (desiredFromAwsReadback): nothing was removed from a template', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, fsrmDesired, fsrmPrev, {
+      desiredFromAwsReadback: true,
+    });
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('does not warn when the update itself fails (the warning follows success only)', async () => {
+    routeSend({
+      UpdateFileSystemCommand: new Error('ServiceUnavailable'),
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await expect(
+      newProvider().update(
+        'MyFs',
+        FS_ID,
+        RESOURCE_TYPE,
+        {
+          ...fsrmDesired,
+          WindowsConfiguration: { ...fsrmDesired.WindowsConfiguration, ThroughputCapacity: 64 },
+        },
+        fsrmPrev
+      )
+    ).rejects.toThrow(ProvisioningError);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('ships the kept change and warns only about the removed sub-properties (mixed)', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const prev = {
+      ...LUSTRE_PROPS,
+      LustreConfiguration: {
+        DeploymentType: 'PERSISTENT_2',
+        DataCompressionType: 'LZ4',
+        AutoImportPolicy: 'NEW_CHANGED',
+        AutomaticBackupRetentionDays: 7,
+      },
+    };
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...prev,
+        LustreConfiguration: { DeploymentType: 'PERSISTENT_2', AutomaticBackupRetentionDays: 3 },
+      },
+      prev
+    );
+
     const [update] = callsOf(UpdateFileSystemCommand);
     expect(update.input).toEqual({
       FileSystemId: FS_ID,
-      WindowsConfiguration: { FsrmConfiguration: undefined },
+      LustreConfiguration: { AutomaticBackupRetentionDays: 3 },
     });
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toContain(
+      'properties LustreConfiguration.DataCompressionType, LustreConfiguration.AutoImportPolicy are no longer declared'
+    );
+  });
+
+  it('does not warn for a sub-property that was never declared', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { ...LUSTRE_PROPS, LustreConfiguration: { DeploymentType: 'SCRATCH_2', DataCompressionType: 'LZ4' } },
+      { ...LUSTRE_PROPS }
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      LustreConfiguration: { DataCompressionType: 'LZ4' },
+    });
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('warns per sub-property when a mutable-only variant block is removed whole', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const { LustreConfiguration: _dropped, ...withoutBlock } = LUSTRE_PROPS;
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, withoutBlock, {
+      ...withoutBlock,
+      LustreConfiguration: { DataCompressionType: 'LZ4', WeeklyMaintenanceStartTime: '1:05:00' },
+    });
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toContain(
+      'LustreConfiguration.DataCompressionType, LustreConfiguration.WeeklyMaintenanceStartTime are no longer declared'
+    );
+  });
+
+  it('still expresses a removed RouteTableIds as a RemoveRouteTableIds delta (no warning)', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const { RouteTableIds: _rt, ...ontapWithoutRoutes } = ONTAP_PROPS.OntapConfiguration;
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { ...ONTAP_PROPS, OntapConfiguration: ontapWithoutRoutes },
+      { ...ONTAP_PROPS }
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      OntapConfiguration: { RemoveRouteTableIds: ['rtb-aaa', 'rtb-bbb'] },
+    });
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  for (const [key, value] of [
+    ['StorageCapacity', 2400],
+    ['StorageType', 'HDD'],
+    ['FileSystemTypeVersion', '2.15'],
+    ['NetworkType', 'DUAL'],
+  ] as const) {
+    it(`issues no UpdateFileSystem when top-level ${key} is the only removal`, async () => {
+      routeSend({
+        UpdateFileSystemCommand: {},
+        DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+      });
+
+      const { [key]: _removed, ...desired } = { ...LUSTRE_PROPS, [key]: value } as Record<
+        string,
+        unknown
+      >;
+      const result = await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, {
+        ...LUSTRE_PROPS,
+        [key]: value,
+      });
+
+      expect(result).toEqual({ physicalId: FS_ID, wasReplaced: false });
+      expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+      // Named by the provider's own line, which claims no CloudFormation reset.
+      expect(warnings()).toEqual([
+        `MyFs (AWS::FSx::FileSystem): property ${key} is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`,
+      ]);
+    });
+  }
+
+  it('names top-level and sub-property removals in ONE warning', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    const prev = {
+      ...LUSTRE_PROPS,
+      NetworkType: 'DUAL',
+      LustreConfiguration: { DeploymentType: 'SCRATCH_2', DataCompressionType: 'LZ4' },
+    };
+    const { NetworkType: _nt, ...desired } = {
+      ...prev,
+      LustreConfiguration: { DeploymentType: 'SCRATCH_2' },
+    };
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev);
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toContain(
+      'properties NetworkType, LustreConfiguration.DataCompressionType are no longer declared'
+    );
+  });
+
+  it('words a top-level removal for a rollback revert, and is silent on drift --revert', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+    const prev = { ...LUSTRE_PROPS, StorageType: 'HDD' };
+    const { StorageType: _st, ...desired } = prev;
+
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev, {
+      replayingState: true,
+    });
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property StorageType is absent from the state being restored; UpdateFileSystem keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.',
+    ]);
+
+    childLogger.warn.mockClear();
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev, {
+      desiredFromAwsReadback: true,
+    });
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('still refuses removing an IMMUTABLE sub-property from a kept block (no call, no warning)', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const prev = {
+      ...LUSTRE_PROPS,
+      LustreConfiguration: { DeploymentType: 'SCRATCH_2', DataCompressionType: 'LZ4' },
+    };
+    await expect(
+      newProvider().update(
+        'MyFs',
+        FS_ID,
+        RESOURCE_TYPE,
+        { ...prev, LustreConfiguration: { DataCompressionType: 'LZ4' } },
+        prev
+      )
+    ).rejects.toThrow(/LustreConfiguration\.DeploymentType is immutable/);
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('ships a real change alongside a removed top-level property, omitting the removed one', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { ...LUSTRE_PROPS, StorageCapacity: 2400 },
+      { ...LUSTRE_PROPS, NetworkType: 'DUAL' }
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({ FileSystemId: FS_ID, StorageCapacity: 2400 });
+  });
+
+  it('untags every key when Tags is removed whole (a handled removal)', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+      UntagResourceCommand: {},
+    });
+
+    const { Tags: _tags, ...withoutTags } = LUSTRE_PROPS;
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, withoutTags, { ...LUSTRE_PROPS });
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    const [untag] = callsOf(UntagResourceCommand);
+    expect(untag.input).toEqual({ ResourceARN: FS_ARN, TagKeys: ['env'] });
+  });
+
+  it('declares every handled property removal-handled, so the shared caller warns about none', () => {
+    const provider = newProvider();
+    const previous = {
+      ...LUSTRE_PROPS,
+      StorageType: 'SSD',
+      FileSystemTypeVersion: '2.15',
+      NetworkType: 'DUAL',
+    };
+    const desired = { FileSystemType: 'LUSTRE', SubnetIds: ['subnet-111'] };
+
+    const prep = prepareRemovalForUpdate(provider, RESOURCE_TYPE, desired, previous);
+
+    expect(prep.injected).toEqual([]);
+    // Covers the four left-in-place props too: update() names them itself,
+    // so the shared line (which claims a CloudFormation reset) never fires.
+    expect(prep.unhandled).toEqual([]);
+    expect([...provider.removalHandledInUpdate.get(RESOURCE_TYPE)!].sort()).toEqual(
+      [...provider.handledProperties.get(RESOURCE_TYPE)!].sort()
+    );
   });
 });
 

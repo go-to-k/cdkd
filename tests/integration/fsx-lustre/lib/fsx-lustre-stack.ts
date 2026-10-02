@@ -21,12 +21,22 @@ import type { Construct } from 'constructs';
  *     sub-property)
  *   - Tag value change + tag REMOVAL (TagResource / UntagResource)
  * Both must keep the FileSystemId unchanged (no replacement).
+ *
+ * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true, issue #1160):
+ *   - DataCompressionType is DROPPED from the template (live value LZ4,
+ *     AWS's non-default). UpdateFileSystem keeps a field it is not sent and
+ *     cdkd sends no reset, so the value must stay LZ4 and the deploy must
+ *     name the removal in a warning instead of dropping it silently.
+ *   - WeeklyMaintenanceStartTime is ADDED in the same deploy, a companion
+ *     change proving UpdateFileSystem fired with the removal beside it.
  */
 export class FsxLustreStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
+    const isMaintAlt = process.env.CDKD_TEST_MAINT_ALT === 'true';
 
     // VPC with 1 AZ, public subnet only, no NAT (cheapest legal shape).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -47,9 +57,22 @@ export class FsxLustreStack extends cdk.Stack {
       storageCapacityGiB: 1200,
       lustreConfiguration: {
         deploymentType: fsx.LustreDeploymentType.SCRATCH_2,
-        dataCompressionType: isUpdate
-          ? fsx.LustreDataCompressionType.LZ4
-          : fsx.LustreDataCompressionType.NONE,
+        ...(isRemoval
+          ? {
+              // Sunday 03:30 UTC -> "7:03:30" on the wire, or Monday 04:45
+              // -> "1:04:45" under CDKD_TEST_MAINT_ALT=true, which verify.sh
+              // picks when AWS already holds the first.
+              weeklyMaintenanceStartTime: new fsx.LustreMaintenanceTime(
+                isMaintAlt
+                  ? { day: fsx.Weekday.MONDAY, hour: 4, minute: 45 }
+                  : { day: fsx.Weekday.SUNDAY, hour: 3, minute: 30 }
+              ),
+            }
+          : {
+              dataCompressionType: isUpdate
+                ? fsx.LustreDataCompressionType.LZ4
+                : fsx.LustreDataCompressionType.NONE,
+            }),
       },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
