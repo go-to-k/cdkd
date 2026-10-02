@@ -63,6 +63,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - [How cdkd Prevents Orphans](#how-cdkd-prevents-orphans)
   - [A warning that a KMS key, Cognito user pool or AppSync API may be an orphan](#a-warning-that-a-kms-key-cognito-user-pool-or-appsync-api-may-be-an-orphan)
   - [A warning that an API Gateway API, authorizer, integration or deployment may be an orphan](#a-warning-that-an-api-gateway-api-authorizer-integration-or-deployment-may-be-an-orphan)
+  - [A warning that an EMR cluster, instance fleet or instance group may be an orphan](#a-warning-that-an-emr-cluster-instance-fleet-or-instance-group-may-be-an-orphan)
   - [`DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for](#distributionalreadyexists-on-a-cloudfront-deploy-and-a-distribution-you-did-not-ask-for)
   - [an ACM certificate deploy fails with "did not reach ISSUED status"](#an-acm-certificate-deploy-fails-with-did-not-reach-issued-status)
   - [Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`](#reverting-a-failed-no-rollback-interrupted-deploy-cdkd-rollback)
@@ -2604,6 +2605,35 @@ API. The lookup needs `apigateway:GET` (on the API, or on the API list for
 `CreateApi`); without it cdkd warns that
 it could not look, and the deploy proceeds. A reset connection or a timeout
 after the request was sent is not covered, as for the three creates above.
+
+### A warning that an EMR cluster, instance fleet or instance group may be an orphan
+
+`RunJobFlow`, `AddInstanceFleet` and `AddInstanceGroups` carry no idempotency
+token either, and a duplicate here bills per instance-hour. cdkd turns off the
+AWS SDK's own retry of a 5xx for them, and after one fails with HTTP 500 / 502 /
+503 / 504, cdkd's retry first lists what the failed attempt may have made and
+warns about each match created during that attempt:
+
+- a cluster with the same name that is not already terminating or terminated.
+  The warning gives `aws emr describe-cluster`, then `aws emr terminate-clusters`
+  to run only after confirming the cluster is this deploy's orphan. When the
+  template turns termination protection on, it adds that a candidate
+  `describe-cluster` shows as protected needs `modify-cluster-attributes
+  --no-termination-protected` first; that command is not chained onto the
+  terminate, since the candidate may be another deploy's protected cluster;
+- a TASK instance fleet or group with the same name (any name, when the
+  template sets none) in the same cluster. The warning gives the cluster's
+  `list-instance-fleets` / `list-instance-groups`, then a `modify-instance-fleet`
+  / `modify-instance-groups` that scales the candidate to zero: EMR has no call
+  that removes a fleet or group from a running cluster, so scaling it down is
+  what stops its instances billing, and it goes with its cluster.
+
+cdkd neither adopts, terminates nor scales a candidate, and then creates the
+resource again. A MASTER or CORE fleet or group is not looked up: a cluster
+holds at most one of each. The cluster lookup needs
+`elasticmapreduce:ListClusters`; without it cdkd warns that it could not look,
+and the deploy proceeds. A reset connection or a timeout after the request was
+sent is not covered, as for the creates above.
 
 ### `DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for
 

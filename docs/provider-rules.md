@@ -1144,8 +1144,9 @@ Where the API has no token and nothing can be deleted safely,
 `src/provisioning/providers/ambiguous-create.ts` is the shared shape (issue
 [#2080](https://github.com/go-to-k/cdkd/issues/2080): `CreateKey`,
 `CreateUserPool`, `CreateGraphqlApi`, and API Gateway's `CreateAuthorizer`,
-`CreateDeployment`, `CreateApi` and `CreateIntegration`, whose shared report is
-`apigateway-orphan-report.ts`):
+`CreateDeployment`, `CreateApi` and `CreateIntegration`, and EMR's
+`RunJobFlow`, `AddInstanceFleet` and `AddInstanceGroups`, whose shared report
+is `orphan-report.ts`):
 
 - **Keep the SDK from replaying a 5xx.** Send the create through a dedicated
   client wrapped by `withoutServerErrorRetries`: the SDK's own retry of a 5xx

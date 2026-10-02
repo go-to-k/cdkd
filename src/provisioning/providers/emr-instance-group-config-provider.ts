@@ -10,13 +10,28 @@ import {
   type InstanceGroupConfig,
   type InstanceGroupState,
   type InstanceRoleType,
+  type AddInstanceGroupsCommandOutput,
 } from '@aws-sdk/client-emr';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { toSdkConfigurations } from '../emr-configuration.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { createMaskedLogSinks } from '../masked-retry-logger.js';
+import {
+  collectOrphanIds,
+  orphanCommandRegionArg,
+  reportPossibleOrphans,
+} from './orphan-report.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  isInsideWindow,
+  withoutServerErrorRetries,
+} from './ambiguous-create.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -68,6 +83,23 @@ const toNumber = (v: unknown): number | undefined => {
 const jsonEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /**
+ * Retry-safety state for `AddInstanceGroups`, which mints the instance group id and
+ * carries no idempotency token (issue
+ * [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
+ * `orphan-report.ts`. Module-scoped: a provider instance is per
+ * registry, and one process can build several.
+ */
+const addInstanceGroupsLatch = new AmbiguousCreateLatch('emr:AddInstanceGroups');
+/** Instance groups this process created and recorded, never reported as orphan candidates. */
+const groupsCreatedByThisProcess = new RecentIdSet();
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetEMRInstanceGroupCreateRetryStateForTests(): void {
+  addInstanceGroupsLatch.resetForTests();
+  groupsCreatedByThisProcess.resetForTests();
+}
+
+/**
  * SDK Provider for `AWS::EMR::InstanceGroupConfig` (issue #1070).
  *
  * This type adds a standalone instance group (MASTER / CORE / TASK) to an
@@ -114,6 +146,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
   readonly disableCcApiFallback = true;
 
   private client: EMRClient | undefined;
+  private createClient: EMRClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('EMRInstanceGroupConfigProvider');
 
@@ -154,6 +187,23 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
     return this.client;
   }
 
+  /**
+   * The client `AddInstanceGroups` goes through: SDK retries on, except a 5xx
+   * (`withoutServerErrorRetries`, issue #2080). Separate so every other call
+   * keeps the full SDK retry.
+   */
+  private getCreateClient(): EMRClient {
+    if (!this.createClient) {
+      this.createClient = withoutServerErrorRetries(
+        new EMRClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
+    }
+    return this.createClient;
+  }
+
   getMinResourceTimeoutMs(): number {
     // Poll ceiling PLUS one interval so the internal wait times out before the
     // deploy engine's non-cancelling external deadline (see EMRClusterProvider).
@@ -165,7 +215,8 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     if (resourceType !== 'AWS::EMR::InstanceGroupConfig') {
       throw new ProvisioningError(
@@ -188,10 +239,67 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
 
     try {
       const group = this.toInstanceGroupConfig(properties);
-      const response = await this.getClient().send(
-        new AddInstanceGroupsCommand({ JobFlowId: jobFlowId, InstanceGroups: [group] })
-      );
+      // Issue #2080: after an earlier ambiguous attempt, name the instance group
+      // it may have added before a second AddInstanceGroups is sent. Detection
+      // only -- see `orphan-report.ts`. Only a TASK instance group can
+      // be duplicated: a cluster holds at most one MASTER and one CORE, so a
+      // replay of either cannot add a second one.
+      const orphanWindow = addInstanceGroupsLatch.take(logicalId);
+      if (orphanWindow !== undefined && group.InstanceRole === 'TASK') {
+        const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+        const aws = pasteableAwsCommand(log.mask);
+        const regionArg = await orphanCommandRegionArg(this.getClient(), aws);
+        const name = group.Name;
+        await reportPossibleOrphans(logicalId, orphanWindow, log, {
+          action: 'AddInstanceGroups',
+          service: 'EMR',
+          listAction: 'ListInstanceGroups',
+          subject: `a TASK instance group${name !== undefined ? ` named ${log.value(name)}` : ''} in cluster ${log.value(jobFlowId)}`,
+          noun: 'TASK instance group(s)',
+          list: () =>
+            collectOrphanIds(
+              async (marker) => {
+                const page = await this.getClient().send(
+                  new ListInstanceGroupsCommand({
+                    ClusterId: jobFlowId,
+                    ...(marker && { Marker: marker }),
+                  })
+                );
+                return { items: page.InstanceGroups ?? [], next: page.Marker };
+              },
+              (item) =>
+                item.Id &&
+                item.InstanceGroupType === 'TASK' &&
+                (name === undefined || item.Name === name) &&
+                isInsideWindow(item.Status?.Timeline?.CreationDateTime, orphanWindow) &&
+                !groupsCreatedByThisProcess.has(item.Id)
+                  ? item.Id
+                  : undefined
+            ),
+          // No call reads one instance group by id: list the cluster's.
+          inspect: () =>
+            aws`aws emr list-instance-groups --cluster-id ${jobFlowId}${regionArg}`.render(),
+          remove: (id) =>
+            aws`aws emr modify-instance-groups --cluster-id ${jobFlowId} --instance-groups InstanceGroupId=${id},InstanceCount=0${regionArg}`.render(),
+          removeVerb:
+            'scale it to zero, which releases its instances (EMR has no call that removes an instance group; it ends with its cluster)',
+        });
+      }
+      const attemptStartMs = Date.now();
+      let response: AddInstanceGroupsCommandOutput;
+      try {
+        response = await this.getCreateClient().send(
+          new AddInstanceGroupsCommand({
+            JobFlowId: jobFlowId,
+            InstanceGroups: [group],
+          })
+        );
+      } catch (error) {
+        addInstanceGroupsLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
       const groupId = response.InstanceGroupIds?.[0];
+      if (groupId) groupsCreatedByThisProcess.add(groupId);
       if (!groupId) {
         throw new ProvisioningError(
           `EMR AddInstanceGroups for ${logicalId} returned no instance group id`,

@@ -3,7 +3,9 @@
  * for their tokenless creates (issue
  * [#2080](https://github.com/go-to-k/cdkd/issues/2080), Plan C: v1
  * `CreateAuthorizer` / `CreateDeployment`, v2 `CreateApi` /
- * `CreateIntegration` / `CreateAuthorizer`). The latch, the 5xx-refusing
+ * `CreateIntegration` / `CreateAuthorizer`), and the EMR providers reuse for
+ * `RunJobFlow` / `AddInstanceFleet` / `AddInstanceGroups` (naming their
+ * service through {@link OrphanLookup.service}). The latch, the 5xx-refusing
  * client and the window come from `ambiguous-create.ts`; this module is only
  * the lookup-and-report step a provider runs at the top of the next attempt.
  *
@@ -19,7 +21,26 @@
 
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { MaskedLogSinks } from '../masked-retry-logger.js';
+import type { PasteableAwsCommand, pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type { AmbiguousCreateWindow } from './ambiguous-create.js';
+
+/**
+ * ` --region <r>` for a report's pasteable commands, built with the report's
+ * own `aws` tag, or nothing when `client`'s region cannot be read -- the
+ * command is still worth printing without it.
+ */
+export async function orphanCommandRegionArg(
+  client: { config: { region: () => Promise<string> } },
+  aws: ReturnType<typeof pasteableAwsCommand>
+): Promise<PasteableAwsCommand> {
+  let region: string | undefined;
+  try {
+    region = await client.config.region();
+  } catch {
+    region = undefined;
+  }
+  return region ? aws` --region ${region}` : aws``;
+}
 
 /** Page ceiling for an orphan lookup's list call. */
 export const MAX_ORPHAN_LIST_PAGES = 20;
@@ -31,6 +52,8 @@ const MAX_REPORTED_ORPHANS = 5;
 export interface OrphanLookup {
   /** The create call, e.g. `CreateApi`. */
   readonly action: string;
+  /** The service the report says may have created the resource; `API Gateway` when absent. */
+  readonly service?: string;
   /** The list call the lookup pages through, e.g. `GetApis`. */
   readonly listAction: string;
   /** What the earlier attempt may have made, every value already masked. */
@@ -48,6 +71,12 @@ export interface OrphanLookup {
    * create, so the report offers no delete command.
    */
   readonly remove?: (id: string) => string;
+  /**
+   * What the report tells the reader to do with {@link remove}'s command, e.g.
+   * `terminate it`; `delete it` when absent. For a resource no API deletes
+   * (an EMR instance fleet), the command releases what it bills for instead.
+   */
+  readonly removeVerb?: string;
 }
 
 /** What a lookup's list step found. */
@@ -83,7 +112,7 @@ export async function collectOrphanIds<T>(
 
 /**
  * After an attempt at a tokenless create ended AMBIGUOUS (in practice a 5xx,
- * the only ambiguous failure the engine retries: API Gateway may have made the
+ * the only ambiguous failure the engine retries: the service may have made the
  * resource and lost the answer), name the resources that could be its orphan,
  * before the create is sent again.
  *
@@ -108,6 +137,7 @@ export async function reportPossibleOrphans(
   const since = new Date(window.floorMs).toISOString();
   const until = new Date(window.ceilingMs).toISOString();
   const remove = lookup.remove;
+  const service = lookup.service ?? 'API Gateway';
   const when = remove !== undefined ? `between ${since} and ${until}` : `at ${since}`;
   let found: OrphanIds;
   try {
@@ -116,7 +146,7 @@ export async function reportPossibleOrphans(
     const failure = describeAwsFailure(error);
     log.debug(`${lookup.listAction} failed with: ${log.value(failure.detail)}`);
     log.warn(
-      `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer (${when}), so API Gateway may have created ${lookup.subject} that no cdkd state records, and cdkd could not look for it (${lookup.listAction}: ${failure.summary}). Creating it again; check for a duplicate.`
+      `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer (${when}), so ${service} may have created ${lookup.subject} that no cdkd state records, and cdkd could not look for it (${lookup.listAction}: ${failure.summary}). Creating it again; check for a duplicate.`
     );
     return;
   }
@@ -136,15 +166,19 @@ export async function reportPossibleOrphans(
 
   const shown = found.ids.slice(0, MAX_REPORTED_ORPHANS);
   const more = found.ids.length > shown.length ? ', ...' : '';
-  const inspect = shown.map((id) => lookup.inspect(id)).join(' ; ');
+  // De-duplicated: a child with no per-id read call (an EMR instance group)
+  // is inspected by listing its parent, the same command for every id.
+  const inspect = [...new Set(shown.map((id) => lookup.inspect(id)))].join(' ; ');
   if (remove !== undefined) {
-    const deletion = shown.map((id) => remove(id)).join(' ; ');
+    // De-duplicated like `inspect`: a parent id the command cannot name
+    // withholds every candidate's command identically.
+    const deletion = [...new Set(shown.map((id) => remove(id)))].join(' ; ');
     log.warn(
-      `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer, and API Gateway may have created ${lookup.subject} then that no cdkd state records. ${found.ids.length} ${lookup.noun} were created ${when} that this deploy did not record: ${shown.join(', ')}${more}. cdkd does not adopt or delete them: nothing listed proves which deploy created one. Creating a new one now. First inspect each candidate: ${inspect}. Only after confirming one is this deploy's orphan and not another deploy's, delete it: ${deletion}.${incomplete}`
+      `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer, and ${service} may have created ${lookup.subject} then that no cdkd state records. ${found.ids.length} ${lookup.noun} were created ${when} that this deploy did not record: ${shown.join(', ')}${more}. cdkd does not adopt or delete them: nothing listed proves which deploy created one. Creating a new one now. First inspect each candidate: ${inspect}. Only after confirming one is this deploy's orphan and not another deploy's, ${lookup.removeVerb ?? 'delete it'}: ${deletion}.${incomplete}`
     );
     return;
   }
   log.warn(
-    `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer (${when}), and API Gateway may have created ${lookup.subject} then that no cdkd state records. ${found.ids.length} ${lookup.noun} match that this deploy did not record: ${shown.join(', ')}${more}. API Gateway reports no creation time for them, so any of them may instead be this stack's own recorded one, another stack's, or older than this deploy; cdkd does not adopt or delete them. Creating a new one now. Inspect each before deleting anything: ${inspect}.${incomplete}`
+    `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer (${when}), and ${service} may have created ${lookup.subject} then that no cdkd state records. ${found.ids.length} ${lookup.noun} match that this deploy did not record: ${shown.join(', ')}${more}. ${service} reports no creation time for them, so any of them may instead be this stack's own recorded one, another stack's, or older than this deploy; cdkd does not adopt or delete them. Creating a new one now. Inspect each before deleting anything: ${inspect}.${incomplete}`
   );
 }

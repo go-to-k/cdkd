@@ -324,6 +324,9 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
       expect(remove).toBeGreaterThan(read);
       expect(line).toContain('does not adopt or delete');
       expect(line).toContain('Only after confirming');
+      // The shared report's defaults: the service and the remove verb.
+      expect(line).toContain('API Gateway may have created');
+      expect(line).toContain('delete it:');
     });
 
     it('does not report an API created before the window, recorded, of another name or protocol', async () => {
@@ -473,6 +476,9 @@ describe('ApiGatewayV2Provider tokenless create retry safety (issue #2080, detec
         'aws apigatewayv2 get-integration --api-id httpapi1 --integration-id int1 --region eu-west-3'
       );
       expect(line).not.toContain('delete-integration');
+      // The shared report's default service name, on the undated arm too.
+      expect(line).toContain('API Gateway may have created');
+      expect(line).toContain('API Gateway reports no creation time');
     });
 
     it('does not report one recorded, of another type, URI or API', async () => {

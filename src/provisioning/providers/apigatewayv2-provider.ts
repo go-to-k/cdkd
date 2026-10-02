@@ -82,7 +82,7 @@ import {
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import { pasteableAwsCommand, type PasteableAwsCommand } from '../replacement-protection-advice.js';
-import { collectOrphanIds, reportPossibleOrphans } from './apigateway-orphan-report.js';
+import { collectOrphanIds, reportPossibleOrphans } from './orphan-report.js';
 import {
   AmbiguousCreateLatch,
   RecentIdSet,
@@ -95,7 +95,7 @@ import {
  * and carry no idempotency token, `CreateApi`, `CreateIntegration` and
  * `CreateAuthorizer` (issue
  * [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
- * `apigateway-orphan-report.ts`. Module-scoped: a provider instance is per
+ * `orphan-report.ts`. Module-scoped: a provider instance is per
  * registry, and one process can build several.
  */
 const createApiLatch = new AmbiguousCreateLatch('apigatewayv2:CreateApi');
@@ -596,7 +596,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     try {
       // Issue #2080: after an earlier ambiguous attempt, name the API it may
       // have made before a second CreateApi is sent. Detection only -- see
-      // `apigateway-orphan-report.ts`.
+      // `orphan-report.ts`.
       const orphanWindow = createApiLatch.take(logicalId);
       if (orphanWindow !== undefined) {
         const aws = pasteableAwsCommand(log.mask);
@@ -955,7 +955,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       const integrationUri = properties['IntegrationUri'] as string | undefined;
       // Issue #2080: after an earlier ambiguous attempt, name the integration
       // it may have made before a second CreateIntegration is sent. Detection
-      // only -- see `apigateway-orphan-report.ts`.
+      // only -- see `orphan-report.ts`.
       const orphanWindow = createIntegrationLatch.take(logicalId);
       if (orphanWindow !== undefined) {
         const aws = pasteableAwsCommand(log.mask);
@@ -1256,7 +1256,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     try {
       // Issue #2080: after an earlier ambiguous attempt, name the authorizer
       // it may have made before a second CreateAuthorizer is sent. Detection
-      // only -- see `apigateway-orphan-report.ts`.
+      // only -- see `orphan-report.ts`.
       const orphanWindow = createAuthorizerLatch.take(logicalId);
       if (orphanWindow !== undefined) {
         const aws = pasteableAwsCommand(log.mask);
