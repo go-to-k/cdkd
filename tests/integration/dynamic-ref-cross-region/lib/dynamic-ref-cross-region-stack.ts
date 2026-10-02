@@ -53,7 +53,7 @@ export interface DynamicRefCrossRegionStackProps extends cdk.StackProps {
  * value and region B's with another.
  *
  * cdkd resolves the expression itself (`resolveDynamicReferences` in
- * `src/deployment/intrinsic-function-resolver.ts`) before the value reaches
+ * `src/deployment/intrinsic-resolver/dynamic-refs.ts`) before the value reaches
  * the provider, so what lands in each region's echo parameter is exactly the
  * value cdkd resolved for that stack. Before issue #1933 the resolved-value
  * cache was a process-global map keyed by the expression alone, so whichever

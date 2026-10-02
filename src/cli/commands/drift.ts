@@ -1501,7 +1501,7 @@ function carriesRecordedSecret(value: string, secrets: RecordedSecretValues): bo
  */
 function survivingDynamicReferences(value: string): string[] {
   // Built from `secret-redaction.ts`'s `DYNAMIC_REFERENCE_INNER`, which is
-  // byte-identical to `intrinsic-function-resolver.ts`'s own
+  // byte-identical to `intrinsic-resolver/dynamic-refs.ts`'s own
   // `/\{\{resolve:([^}]+)\}\}/` scan capture — the AUTHORITY on what cdkd will
   // try to resolve. The two MUST agree or a token the resolver tried and left
   // behind is reported by neither; a `{` inside a token

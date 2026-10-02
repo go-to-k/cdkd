@@ -268,7 +268,7 @@ fi
 # cdkd surfaces a missing Fn::ImportValue export as a ProvisioningError whose
 # CAUSE is the resolver's own message. The full output (logger.error line +
 # the handleError `Caused by:` line) reads, verbatim from
-# src/deployment/intrinsic-function-resolver.ts:
+# src/deployment/intrinsic-resolver/cross-stack.ts:
 #
 #   Fn::ImportValue: export 'ChainDerivedValue' not found in any stack.
 #   Searched N state record(s). Make sure the exporting stack has been

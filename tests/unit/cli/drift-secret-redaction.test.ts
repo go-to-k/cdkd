@@ -2342,7 +2342,7 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
   });
 
   it('reports a token containing `{`, which the RESOLVER matches', async () => {
-    // The two regexes must agree. `intrinsic-function-resolver.ts` scans with
+    // The two regexes must agree. `intrinsic-resolver/dynamic-refs.ts` scans with
     // `[^}]+`, so `{{resolve:notaservice:/a{b}}` IS a token to it — it tries the
     // reference, warns, and leaves the literal. Scanning with `[^{}]*` here
     // would miss it, so nothing reports it: the warning is lost and the
