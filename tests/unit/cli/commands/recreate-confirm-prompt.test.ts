@@ -87,7 +87,7 @@ describe('promptRecreateConfirm (#649)', () => {
     const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
     expect(warnLines).toContain('--recreate-via-cc-api will destroy + recreate 1');
     expect(warnLines).toContain('MyLambda (AWS::Lambda::Function)');
-    expect(warnLines).toContain('per-resource; sibling resources are unaffected');
+    expect(warnLines).toContain('through a create-only property (listed above) are replaced');
   });
 
   it('returns true on "y" response', async () => {
@@ -329,7 +329,7 @@ describe('promptRecreateConfirm (#649)', () => {
     expect(warnLines).toContain("Downstream consumers of Producer's outputs");
     expect(warnLines).toContain('- StackB (us-east-1) reads ProducerArn via Fn::ImportValue');
     expect(warnLines).toContain('- StackC (us-east-1) reads OtherArn via Fn::ImportValue');
-    expect(warnLines).toContain('per-resource; sibling resources are unaffected');
+    expect(warnLines).toContain('through a create-only property (listed above) are replaced');
   });
 
   it('skips downstream enumeration section when the list is empty (#650)', async () => {
@@ -342,7 +342,74 @@ describe('promptRecreateConfirm (#649)', () => {
     });
     const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
     expect(warnLines).not.toContain("Downstream consumers of Producer's outputs");
-    expect(warnLines).toContain('per-resource; sibling resources are unaffected');
+    expect(warnLines).toContain('through a create-only property (listed above) are replaced');
+  });
+
+  it('names the same-stack readers replaced if the id changes, a stateful one as DATA LOSS (go-to-k/cdkd#4383)', async () => {
+    await promptRecreateConfirm({
+      stackName: 'S',
+      targets: [target({ logicalId: 'MyKey', resourceType: 'AWS::KMS::Key' })],
+      yes: true,
+      forceStatefulRecreation: true,
+      replacedReaders: [
+        {
+          logicalId: 'MyVolume',
+          resourceType: 'AWS::EC2::Volume',
+          reads: 'MyKey',
+          properties: ['KmsKeyId'],
+          statefulReason: 'always',
+        },
+        {
+          logicalId: 'MyAlias',
+          resourceType: 'AWS::SSM::Parameter',
+          reads: 'MyKey',
+          properties: ['Name'],
+          statefulReason: null,
+        },
+      ],
+    });
+    const warnLines = warnSpy.mock.calls.map((c) => c[0] as string);
+    const all = warnLines.join('\n');
+    expect(all).toContain('Replaced if the id changes');
+    expect(warnLines).toContain(
+      '  - **DATA LOSS** MyVolume (AWS::EC2::Volume) reads MyKey via KmsKeyId — stateful (destroy loses all data in the resource); --force-stateful-recreation acknowledged'
+    );
+    expect(all).toContain('DATA: all data in MyVolume will be lost if it is replaced');
+    expect(warnLines).toContain('  - MyAlias (AWS::SSM::Parameter) reads MyKey via Name');
+    expect(all).not.toContain('sibling resources are unaffected');
+  });
+
+  it('says a stateful replaced reader needs --force-stateful-recreation when the flag is absent', async () => {
+    await promptRecreateConfirm({
+      stackName: 'S',
+      targets: [target({ logicalId: 'MyKey', resourceType: 'AWS::KMS::Key' })],
+      yes: true,
+      forceStatefulRecreation: false,
+      replacedReaders: [
+        {
+          logicalId: 'MyVolume',
+          resourceType: 'AWS::EC2::Volume',
+          reads: 'MyKey',
+          properties: ['KmsKeyId'],
+          statefulReason: 'always',
+        },
+      ],
+    });
+    expect(warnSpy.mock.calls.map((c) => c[0] as string)).toContain(
+      '  - **DATA LOSS** MyVolume (AWS::EC2::Volume) reads MyKey via KmsKeyId — stateful (destroy loses all data in the resource); needs --force-stateful-recreation: the deploy refuses it before changing anything'
+    );
+  });
+
+  it('prints no replaced-reader section when there is none', async () => {
+    await promptRecreateConfirm({
+      stackName: 'S',
+      targets: [target()],
+      yes: true,
+      forceStatefulRecreation: false,
+      replacedReaders: [],
+    });
+    const all = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
+    expect(all).not.toContain('Replaced if the id changes');
   });
 
   it('throws an actionable error in a non-TTY environment when --yes is not set', async () => {

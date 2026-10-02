@@ -35,7 +35,8 @@ import {
 } from '../no-change-outputs-merge.js';
 import { refuseNoValueOutputs } from '../output-value-preflight.js';
 import { withProducerRegions } from '../producer-regions-scope.js';
-import { promoteRecreateTargets } from '../recreate-target-promotion.js';
+import { promoteRecreateTargets, recreateTargetIdsFor } from '../recreate-target-promotion.js';
+import { refuseStatefulReplacedReaders } from '../recreate-target-readers.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { hasMaskableValues } from '../secret-redaction.js';
 import {
@@ -519,7 +520,12 @@ export async function doDeployWithPrefetch(
         diffResolverContext.recordedSecretValues,
         effectiveTemplate,
         parameterValues
-      )
+      ),
+      // go-to-k/cdkd#4383: a recreate target is destroyed and re-created, so
+      // its same-stack readers are promoted as for a property-driven
+      // replacement, before anything below counts the changes. This stack's
+      // targets only, never a nested child's or another stack's.
+      recreateTargetIdsFor(this.options.recreateTargets, stackName)
     );
     // The diff was the prefetch's only consumer: withdraw what it did not
     // need, so it stops spending the account's DescribeType quota that the
@@ -596,6 +602,23 @@ export async function doDeployWithPrefetch(
           ? safeMsg`${flag} ${logicalId}: not recreated, this deploy has no such resource.`
           : safeMsg`${flag} ${logicalId}: not recreated, this deploy will ${changeType.toLowerCase()} it instead.`
       );
+    }
+
+    // go-to-k/cdkd#4383: a stateful resource the recreate would REPLACE (it
+    // holds a target in a create-only property) needs
+    // `--force-stateful-recreation`, as a stateful target does. Refused HERE,
+    // on the condition-evaluated template this diff ran on and before any
+    // provider call (and before `--dry-run` returns), rather than by the
+    // replacement guard once the target has been destroyed and recreated.
+    const ownRecreateTargets = recreateTargetIdsFor(this.options.recreateTargets, stackName);
+    if (ownRecreateTargets !== undefined) {
+      await refuseStatefulReplacedReaders({
+        template: effectiveTemplate,
+        state: currentState,
+        targetIds: [...ownRecreateTargets],
+        conditions,
+        forceStatefulRecreation: this.options.forceStatefulRecreation === true,
+      });
     }
 
     const hasChanges = this.diffCalculator.hasChanges(changes);

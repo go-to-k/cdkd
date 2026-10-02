@@ -1880,6 +1880,11 @@
       "scenarios": []
     },
     {
+      "name": "recreate-target-readers",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "recreate-via-cc-api",
       "annotated": false,
       "scenarios": []
@@ -3213,6 +3218,7 @@
     "rds-dbinstance-backfill",
     "recreate-mixed-direction",
     "recreate-nested-logical-id-collision",
+    "recreate-target-readers",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
     "remove-protection-compensation",

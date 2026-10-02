@@ -31,6 +31,7 @@ import {
   renderRecreateTargetsErrors,
   probeAndRevalidateStateful,
 } from '../../deployment/recreate-targets.js';
+import { findReplacedReadersOfRecreateTargets } from '../../deployment/recreate-target-readers.js';
 import { promptRecreateConfirm } from './recreate-confirm-prompt.js';
 import {
   refuseMalformedResourceEntriesForDeploy,
@@ -964,6 +965,26 @@ async function deployCommand(
             ),
           };
           if (recreateTargets.viaCcApi.size > 0 || recreateTargets.viaSdkProvider.size > 0) {
+            // go-to-k/cdkd#4383 — the same-stack readers the recreate REPLACES
+            // when a target's id moves (a create-only property holds the
+            // reference), named by the prompt below. Advisory: read off the
+            // raw template, before parameters and conditions are resolved, so
+            // it can over-name. The REFUSAL of a stateful one is the engine's
+            // (`refuseStatefulReplacedReaders`), on the template it diffs and
+            // before any provider call.
+            const replacedReaders = await findReplacedReadersOfRecreateTargets({
+              template: stackInfo.template,
+              state: stateForRecreateCheck?.state ?? {
+                version: STATE_SCHEMA_VERSION_CURRENT,
+                stackName: stackInfo.stackName,
+                region: stackRegion,
+                resources: {},
+                outputs: {},
+                lastModified: Date.now(),
+              },
+              targetIds: validation.targets.map((t) => t.logicalId),
+            });
+
             // Issue [#650] — enumerate downstream `Fn::ImportValue`
             // consumers via the state bucket walk so the warn block
             // names them by stack. Soft-fail (returns []) on read
@@ -990,6 +1011,7 @@ async function deployCommand(
               // so a conditional type's `null` reason proves nothing there.
               forceStatefulRecreation: options.forceStatefulRecreation ?? false,
               downstreamConsumers,
+              replacedReaders,
             });
             if (!proceed) {
               return;

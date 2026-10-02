@@ -292,6 +292,53 @@ flags behave this way. A target this deploy deletes instead (for example, its
 `Condition` now evaluates false) is not recreated, and cdkd prints a warning
 naming it.
 
+A recreated resource whose physical id AWS assigns (an
+`AWS::EC2::SecurityGroup`, an `AWS::ApiGateway::RestApi`) comes back under a
+new id, and the resources in the same stack that read it through `Ref` or
+`Fn::GetAtt` follow it in the same deploy, as they do for a replacement a
+property change causes:
+
+- A reader whose referencing property can be updated in place is updated to
+  the new id.
+- A reader whose referencing property is create-only (an `AWS::EC2::Volume`'s
+  `KmsKeyId`, say) is **replaced**, and so are the create-only readers of that
+  reader in turn. The confirmation prompt lists them under "Replaced if the id
+  changes", with **DATA LOSS** on a stateful one.
+- A stateful reader that would be replaced needs `--force-stateful-recreation`
+  exactly as a stateful target does, and the same flag covers both. Without
+  it, the deploy (and `--dry-run`) is refused after the diff and before any
+  resource is touched (`STATEFUL_REPLACE_BLOCKED`), naming the reader. A
+  reader with `UpdateReplacePolicy: Retain` keeps its old resource and is not
+  refused, and neither is one a false `Condition` removes from the deploy or
+  one that reads the target only on an untaken `Fn::If` arm. The prompt's list
+  is read before conditions are evaluated, so it can name such a reader.
+- A target whose physical id is its name, fixed as a literal in the template
+  and equal to the recorded one (a function with an explicit
+  `FunctionName`), keeps that id across the recreate. A reader that
+  references it only by `Ref` (or `${Target}` in an `Fn::Sub`) is neither
+  listed nor refused, and the deploy leaves it as it is. A reader of one of
+  its attributes (`Fn::GetAtt`, `${Target.Attr}`) still is: a fixed-name
+  recreate keeps the id but can change an attribute, such as a DynamoDB
+  table's `StreamArn` or a database's endpoint. Any other target (an
+  AWS-assigned id, a generated or computed name, a type whose name cdkd
+  rewrites) is treated as one whose id moves.
+- The list and that early refusal cover a direct chain of create-only
+  references only. A stateful resource reached through an in-place hop (it
+  reads a custom resource's `Data`, and the custom resource reads the
+  target), through a nested stack's `Parameters` into a resource of the child
+  stack, or replaced by the Cloud Control `UnsupportedActionException`
+  update fallback, is neither listed nor refused early: the replacement guard
+  refuses it mid-deploy, after the target was recreated, and
+  `--force-stateful-recreation` covers it there too.
+
+The plan, `--dry-run` included, counts every reader as an update, since whether
+the id moves is known for certain only once the target is recreated. Where the
+recreate keeps the id after all, a create-only reader that the plan (and, for a
+target not known to keep it, the prompt) shows as a possible replacement is
+left in place, and a reader with nothing to change is skipped. Readers in other
+stacks are covered by
+[cross-stack reference propagation](#cross-stack-reference-propagation).
+
 ### When to use it
 
 **First check whether you need it at all.** Adding a silent-drop property to an
@@ -1309,6 +1356,7 @@ Every path that consults this guard:
 | `--replace` | Mid-deploy, when the immutable-update rejection is caught |
 | Cloud Control `UnsupportedActionException` auto-fallback | Mid-deploy, when AWS rejects the in-place update — no flag needed to reach it |
 | Property-driven replacement on a plain `cdkd deploy` | Mid-deploy, from the diff |
+| A resource a `--recreate-via-*` deploy replaces because it reads a target through a direct chain of create-only properties | After the diff, before any resource is touched (other paths fall to the rows above, mid-deploy) |
 
 ### Deletion protection blocks a replacement, and deploy cannot clear it
 

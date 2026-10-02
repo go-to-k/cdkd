@@ -42,12 +42,16 @@
 
 import readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
-import { plainIdentOr } from '../../utils/display-safe.js';
+import { plainIdentOr, safeMsg } from '../../utils/display-safe.js';
 import type { RecreateTarget } from '../../deployment/recreate-targets.js';
 import {
   isStatefulRecreateTargetForReplace,
   renderStatefulReason,
 } from '../../provisioning/stateful-types.js';
+import {
+  shownType,
+  type RecreateTargetReplacedReader,
+} from '../../deployment/recreate-target-readers.js';
 import {
   renderDownstreamConsumers,
   type DownstreamConsumer,
@@ -72,6 +76,15 @@ export async function promptRecreateConfirm(input: {
    * below the corresponding target.
    */
   downstreamConsumers?: ReadonlyArray<DownstreamConsumer>;
+  /**
+   * Same-stack resources replaced along with the targets when a target's id
+   * changes (go-to-k/cdkd#4383): each reads one through a create-only
+   * property. Read off the raw template, so it may name one a false
+   * `Condition` or an untaken `Fn::If` arm keeps out of the deploy. Without
+   * `--force-stateful-recreation` the engine refuses a stateful one that IS in
+   * the deploy, after the diff and before any provider call.
+   */
+  replacedReaders?: ReadonlyArray<RecreateTargetReplacedReader>;
 }): Promise<boolean> {
   if (input.targets.length === 0) return true;
 
@@ -192,6 +205,33 @@ export async function promptRecreateConfirm(input: {
       );
     }
   }
+  const replacedReaders = input.replacedReaders ?? [];
+  if (replacedReaders.length > 0) {
+    logger.warn(
+      '  Replaced if the id changes (same-stack resources reading a recreated resource ' +
+        'through a create-only property):'
+    );
+    // Template-controlled ids, one line each: a newline in one cannot forge a
+    // row of this data-loss list.
+    for (const r of replacedReaders) {
+      const stateful = r.statefulReason !== null;
+      const row = safeMsg`${r.logicalId} (${shownType(r.resourceType)}) reads ${r.reads} via ${r.properties.join(', ')}`;
+      logger.warn(
+        stateful
+          ? safeMsg`  - **DATA LOSS** ${row} — stateful (${renderStatefulReason(r.statefulReason)}); ${
+              input.forceStatefulRecreation
+                ? '--force-stateful-recreation acknowledged'
+                : 'needs --force-stateful-recreation: the deploy refuses it before changing anything'
+            }`
+          : safeMsg`  - ${row}`
+      );
+      if (stateful) {
+        logger.warn(
+          safeMsg`    DATA: all data in ${r.logicalId} will be lost if it is replaced (no automatic data migration)`
+        );
+      }
+    }
+  }
   // Issue [#650] — per-target downstream consumer enumeration.
   // Fires once (consumers are stack-wide, not per-target — every
   // Fn::ImportValue from this stack lands in the same list).
@@ -200,7 +240,9 @@ export async function promptRecreateConfirm(input: {
     if (rendered) logger.warn(rendered);
   }
   logger.warn(
-    '  The destroy + recreate cycle is per-resource; sibling resources are unaffected. ' +
+    '  A recreated resource whose physical id AWS assigns comes back under a new one: ' +
+      'same-stack resources reading it are updated to it, and those reading it through a ' +
+      'create-only property (listed above) are replaced. ' +
       "Downstream consumers of any recreated resource's outputs (Fn::GetStackOutput / " +
       'Fn::ImportValue) will need a re-deploy to see the new physical id.'
   );
