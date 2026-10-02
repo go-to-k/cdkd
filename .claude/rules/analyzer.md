@@ -2,7 +2,7 @@
 description: cdkd analyzer layer (intrinsic resolution, dependency analysis, DAG)
 paths:
   - 'src/analyzer/**'
-  - 'src/deployment/intrinsic-resolver/support.ts'
+  - 'src/deployment/intrinsic-resolver/ref-values.ts'
 ---
 
 # Analyzer
@@ -10,7 +10,7 @@ paths:
 ## Intrinsic function resolution
 
 `IntrinsicFunctionResolver` lives in
-`src/deployment/intrinsic-function-resolver.ts` — there is NO resolver under
+`src/deployment/intrinsic-function-resolver.ts` — NO resolver lives under
 `src/analyzer/`, and a new intrinsic extends its `resolveValue()`.
 
 `Ref` resolves to the CFn `Ref` value (`cfnRefValueFromPhysicalId` holds the

@@ -8,7 +8,7 @@ Cognito UserPool-child family (found by a `/hunt-bugs` sweep, 2026-06-28).
 they route through Cloud Control. cdkd stores their physical id as the CC
 compound `<userPoolId>|<child>`, but CloudFormation's `Ref` returns only the
 trailing `<child>` segment. Until these types were added to
-`REF_RETURNS_SEGMENT_AFTER_PIPE` in `src/deployment/intrinsic-resolver/support.ts`,
+`REF_RETURNS_SEGMENT_AFTER_PIPE` in `src/deployment/intrinsic-resolver/ref-values.ts`,
 cdkd handed the whole compound id back to AWS.
 
 The fixture wires a `UserPoolClient` whose `AllowedOAuthScopes` references the

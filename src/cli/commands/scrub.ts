@@ -4616,7 +4616,7 @@ function isRegionAmbiguousRefusal(err: unknown): boolean {
 // `NAMELESS_DYNAMIC_REFERENCE_MARKERS` and `DYNAMIC_REFERENCE_PREFIX` used to
 // be declared here. Neither is imported any more: scrub delegates the whole
 // PREDICATE to `isNamelessDynamicReferenceError`, which lives in
-// `intrinsic-resolver/support.ts`, beside the resolver whose throws it reads
+// `intrinsic-resolver/context.ts`, beside the resolver whose throws it reads
 // (issue go-to-k/cdkd#3181). They moved
 // BESIDE the throws when the resolver grew the same partition internally: two
 // spellings of one predicate is what issue #1936 forbids, and the consumer
@@ -4992,7 +4992,7 @@ function foldAbandonedUnitVerdict(
 }
 
 // Kept as a COMMENT, not JSDoc: the function it documented moved to
-// `intrinsic-resolver/support.ts` (issue go-to-k/cdkd#3181), so a `/** */`
+// `intrinsic-resolver/context.ts` (issue go-to-k/cdkd#3181), so a `/** */`
 // block here attaches to whatever declaration follows. The residuals below
 // still describe this predicate's BAG-scoped use, which is the throw path.
 //
@@ -5040,7 +5040,7 @@ function foldAbandonedUnitVerdict(
 //
 // go-to-k/cdkd#3181 is the fix that removes the need for any of these proxies.
 //
-// The function moved to `intrinsic-resolver/support.ts` and is imported above
+// The function moved to `intrinsic-resolver/context.ts` and is imported above
 // (issue go-to-k/cdkd#3181). It is unchanged; what changed is that the resolver
 // now needs the same predicate, to record `carriedFetchableReference` per
 // abandoned UNIT, and issue #1936 forbids a second spelling of the token
