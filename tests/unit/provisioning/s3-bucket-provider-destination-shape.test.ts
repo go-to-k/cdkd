@@ -182,7 +182,7 @@ describe('item 2: a malformed Destination is REFUSED on the create path', () => 
   });
 
   it('downgrades to a warning when create() is replaying a STATE record', async () => {
-    // `rollback-executor.ts`'s reverse-replacement arm revives the OLD resource
+    // `rollback-executor/replay-reverse-replacement.ts`'s reverse-replacement arm revives the OLD resource
     // through create() with `replayingState: true`. A refusal there would leave
     // a bucket recorded by a pre-fix binary unrestorable, with only a hand-edit
     // of state.json as a remedy.

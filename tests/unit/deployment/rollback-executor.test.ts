@@ -2835,6 +2835,44 @@ describe('rollback route reporting + plan route stamping (#1366)', () => {
  * journaled route too.
  */
 describe('ROLLBACK_RESOURCE_FAILED route reporting (#1366)', () => {
+  // The orphan arms (#4426): each writes the route onto the replay scope before
+  // its state save, so a failing save reports the RECORD's route. Also the only
+  // cases a rejection from these arms must reach `replaySingle`'s catch through.
+  for (const arm of ['orphan-retain', 'orphan-flag'] as const) {
+    it(`${arm}: a failing state save reports the record route, not the journal one`, async () => {
+      const { ctx, events } = makeCtx({ delete: vi.fn() });
+      const state: Record<string, ResourceState> = {
+        Res: res({
+          physicalId: 'phys-res',
+          provisionedBy: 'cc-api',
+          ...(arm === 'orphan-retain' && { deletionPolicy: 'Retain' as const }),
+        }),
+      };
+      const result = await replayRollback(
+        [
+          {
+            logicalId: 'Res',
+            changeType: 'CREATE',
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'phys-res',
+            provisionedBy: 'sdk',
+          },
+        ],
+        state,
+        'S',
+        ctx,
+        {
+          ...(arm === 'orphan-flag' && { orphanLogicalIds: new Set(['Res']) }),
+          afterOp: vi.fn().mockRejectedValue(new Error('PutObject denied')),
+        }
+      );
+      expect(result.failures).toBe(1);
+      expect(events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_FAILED')?.provisionedBy).toBe(
+        'cc-api'
+      );
+    });
+  }
+
   it('a refused Snapshot delete reports the route the delete WOULD have taken', async () => {
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx, events } = makeCtx({ delete: del });

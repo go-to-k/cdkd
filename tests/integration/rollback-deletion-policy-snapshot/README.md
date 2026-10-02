@@ -27,7 +27,7 @@ first, then delete.
 `AWS::EC2::Volume` is the cheapest CFn-documented Snapshot-capable type and is
 CC-API-routed, so the rollback exercises the engine-side pre-delete
 `CreateSnapshot`+wait from `src/provisioning/final-snapshot.ts` reached through
-`src/deployment/rollback-executor.ts`'s `delete-with-final-snapshot` action.
+`src/deployment/rollback-executor/replay-orphan-delete.ts`'s `delete-with-final-snapshot` action.
 The atomic-parameter path (RDS / Neptune / DocDB / ElastiCache CacheCluster)
 and the refusal paths are pinned by unit tests instead.
 

@@ -2732,7 +2732,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
     //
     // #1471 closed that by THROWING here. #1605 downgraded the UPDATE path to
     // warn-and-skip, because this path is replay-reachable
-    // (`rollback-executor.ts`'s revert arm and `cdkd drift --revert` both call
+    // (`rollback-executor/replay-revert.ts`'s revert arm and `cdkd drift --revert` both call
     // `update(..., previousState.properties, ...)`), so a throw fires on a
     // cdkd STATE record the user cannot edit. The LOAD-BEARING half is
     // unchanged and is what both issues are actually about: no suspend is

@@ -744,7 +744,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       //
       // LIVE. `streamSpecSubstituted` can only be set when
       // `context.replayingState` is true, and the sole caller that sets that
-      // flag is `rollback-executor.ts`'s reverse-replacement arm — which
+      // flag is `rollback-executor/replay-reverse-replacement.ts`'s reverse-replacement arm — which
       // HONOURS `effectiveProperties` as of issue #1682 (PR #1696): the bag
       // handed to `create()` IS `previousState.properties`, so what this arm
       // returns replaces the record's `properties` wholesale. Before that the

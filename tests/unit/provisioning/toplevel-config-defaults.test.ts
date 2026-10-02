@@ -194,7 +194,7 @@ describe('AWS::EC2::SecurityGroupIngress IpProtocol (create)', () => {
 
 describe('the CREATE guard on a REPLAY path (reviewer finding, issue #1513)', () => {
   // The first cut of this PR asserted that create() is "always template-borne".
-  // It is not: `rollback-executor.ts`'s reverse-replacement arm revives the OLD
+  // It is not: `rollback-executor/replay-reverse-replacement.ts`'s reverse-replacement arm revives the OLD
   // resource with `provider.create(..., previousState.properties,
   // REPLAYING_STATE_CREATE_CONTEXT)` — a STATE record. Refusing there would make
   // such a resource un-rollbackable, which is what `.claude/rules/providers.md`
@@ -299,7 +299,7 @@ describe('SecurityGroupIngress UPDATE re-creates, so its guard must WARN', () =>
   });
 
   it('WARNS on a replay CREATE of the rule, not just on update', async () => {
-    // `rollback-executor.ts`'s reverse-replacement arm calls create() with a
+    // `rollback-executor/replay-reverse-replacement.ts`'s reverse-replacement arm calls create() with a
     // STATE record. The dispatch has to thread the downgrade too — the first
     // fix threaded EIP and Instance but missed this case.
     mockSend.mockResolvedValue({});

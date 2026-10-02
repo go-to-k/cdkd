@@ -47,7 +47,7 @@ const BUCKET_NAME = 'my-bucket';
  * replay-reachable paths.
  *
  * `.claude/rules/providers.md` records the rule these close: an UPDATE-path or
- * replay-reachable refusal must DOWNGRADE, because `rollback-executor.ts`'s
+ * replay-reachable refusal must DOWNGRADE, because `rollback-executor/replay-revert.ts`'s
  * revert arm and `cdkd drift --revert` both call
  * `update(..., previousState.properties, ...)` and the reverse-replacement arm
  * calls `create(..., previousState.properties, REPLAYING_STATE_CREATE_CONTEXT)`

@@ -238,7 +238,7 @@ implementation. Three details are worth copying:
   no remedy at all — only hand-editing `state.json`. Concretely:
 
   - **`update()` — refuse on the template path, warn on a replay.**
-    `rollback-executor.ts`'s two revert arms call
+    The rollback executor's two revert arms call
     `provider.update(..., op.previousState.properties, ...)` with
     `UpdateContext.replayingState`, and `cdkd drift --revert` sets
     `desiredFromAwsReadback`; the deploy engine sets neither. Refuse only when

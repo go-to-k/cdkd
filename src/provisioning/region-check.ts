@@ -196,7 +196,7 @@ export interface DeleteContext {
    *
    * Threaded by every `delete()` caller from the record whose `physicalId` it
    * passes: `destroy-runner.ts`, the deploy engine's template-removal and
-   * replacement deletes, and `rollback-executor.ts`'s delete arms (a CREATE
+   * replacement deletes, and the rollback executor's delete arms (a CREATE
    * rollback's only when the state record names the op's physical id).
    *
    * Read-only evidence. ABSENT, or a key missing from it, means "no recorded

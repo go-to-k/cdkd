@@ -7,7 +7,8 @@ paths:
 
 # The replay-CREATE bag
 
-Both arms live in `replaySingle`'s `reverse-replacement` branch: create-first,
+Both arms live in the `reverse-replacement` branch
+(`deployment/rollback-executor/replay-reverse-replacement.ts`): create-first,
 and the delete-new-first fallback the name-collision catch routes to.
 **`effectiveProperties` is honoured**
 (#1682): `create()` gets
@@ -16,7 +17,7 @@ wholesale, reporting none keeps it. Do not re-narrow that result type.
 
 **When the ROUTING DECISION is `cc-api`, both arms run the bag through
 `applyDefaultNameForFallback`**
-([#3199](https://github.com/go-to-k/cdkd/issues/3199)), filling a
+(#3199), filling a
 `FALLBACK_NAME_RULES` name the recorded bag leaves unset exactly as
 `preparePropertiesForCcApi` does at the engine's three create sites;
 otherwise the replay is a FOURTH create site sending no name and AWS mints a
@@ -40,4 +41,4 @@ Both entry points bind `withStackName`, making the replayed name EQUAL the
 forward create's: `generateResourceName` reads it from `AsyncLocalStorage`.
 The prefix flag is the segment's (#4018) unless the old physical id shows the
 OTHER flag created it: then both arms and the holder proof run under that one
-(`replayPrefixScope`, [#4024](https://github.com/go-to-k/cdkd/issues/4024)).
+(`replayPrefixScope`, #4024).

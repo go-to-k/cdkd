@@ -89,7 +89,8 @@ export const SKIP_FINAL_SNAPSHOT_FLAG = '--skip-final-snapshot';
  *
  * What issue [#3141](https://github.com/go-to-k/cdkd/issues/3141) changed is
  * that the INFORMATION now exists on that path — `UpdateContext` carries its
- * own `replayingState`, set by both revert arms in `rollback-executor.ts` — so such a provider
+ * own `replayingState`, set by both revert arms (`replay-revert.ts` and the
+ * failed-operations replay in `rollback-executor.ts`) — so such a provider
  * could build a `CreateContext` from it instead of relying on the constraint.
  * None does today: none of the five sites forwards `replayingState`. Read
  * that as a route that opened, not as a constraint that lifted.

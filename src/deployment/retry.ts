@@ -109,8 +109,8 @@ export const IAM_PROPAGATION_MAX_RETRIES = 26;
  *
  * **Where the numbers come from — precedent, not a fresh guess.** They are the
  * delete-then-re-create sites' existing budget, chosen for this exact window
- * (`deploy-engine/replacement.ts`'s `--replace` fallback and `rollback-executor.ts`'s
- * reverse-replacement both pass `maxRetries: 8, initialDelayMs: 2_000,
+ * (`deploy-engine/replacement.ts`'s `--replace` fallback and the rollback replay's
+ * reverse-replacement (`rollback-executor/replay-retry.ts`) both pass `maxRetries: 8, initialDelayMs: 2_000,
  * maxDelayMs: 10_000`). Adopting it here makes the ordinary create path and
  * the re-create sites ride the SAME window with the SAME budget, which is the
  * property #2116 is about: whether a cooldown is survivable must not depend on
@@ -139,7 +139,7 @@ export const IAM_PROPAGATION_MAX_RETRIES = 26;
  * call sites wrap a DEFAULT-schedule `withRetry` inside their own outer loop
  * (`deploy-engine/replacement.ts`'s `--replace` fallback,
  * `deploy-engine/update-replace.ts`'s named replacement, and
- * `rollback-executor.ts`'s reverse-replacement). The inner loop is the one
+ * `rollback-executor/replay-reverse-replacement.ts`'s reverse-replacement). The inner loop is the one
  * this grid changes, and the outer one re-enters it per attempt, so the
  * product grows with it: total sleep on a cooldown at those sites measures
  * **487s -> 640s (8.1 -> 10.7 min)**. That is accepted, not overlooked -- it

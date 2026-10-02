@@ -371,7 +371,7 @@ export async function updateInPlace(
       //     would have swapped one internal divergence (retain there,
       //     delete here) for another (retain there, refuse here), and
       //     CloudFormation itself retains on replacement.
-      //   - `rollback-executor.ts`'s replacement rollback ALREADY
+      //   - the rollback replay (`rollback-executor/replay-revert.ts`) ALREADY
       //     assumes it: an op classified `reverse-replacement-readopt`
       //     deletes the new resource and points state back at the old
       //     physical id WITHOUT re-creating it. With the old resource

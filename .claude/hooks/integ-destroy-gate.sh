@@ -148,7 +148,7 @@ cd "$target_dir" 2>/dev/null || exit 0
 #   `provider-registry.ts` joined for the same reason (issue #2720): its
 #   `getProviderFor` picks the provider that DELETES a resource --
 #   `deploy-engine/delete.ts`'s plain delete, the `deploy-engine/update-*.ts` old-deletes,
-#   `destroy-runner.ts`, and seven sites in `rollback-executor.ts` all
+#   `destroy-runner.ts`, and seven sites in `rollback-executor{.ts,/*.ts}` all
 #   read it -- so one routing change reroutes DELETE for every resource
 #   in a template. Hunk-filtering it was measured to be a fail-open: five
 #   realistic routing edits across three shapes (a type added to

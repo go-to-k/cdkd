@@ -474,8 +474,9 @@ describe('GlueProvider read-update round-trip', () => {
 
   // ─── #1463: CreateContext.replayingState downgrades the refusal ──────
   //
-  // The create-side twin of the update asymmetry above. `rollback-executor`'s
-  // reverse-replacement arm revives the OLD resource by calling `create()`
+  // The create-side twin of the update asymmetry above. The rollback
+  // replay's reverse-replacement arm (`replay-reverse-replacement.ts`)
+  // revives the OLD resource by calling `create()`
   // with `previousState.properties` — a cdkd STATE record, not a template — so
   // the refusal would fail that rollback operation and leave the old table
   // gone, with no template-side remedy. `CreateContext.replayingState` is how
