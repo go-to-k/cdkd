@@ -1,3 +1,4 @@
+import { childLostWithRecreatedParent } from '../child-of-recreated-parent.js';
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import {
@@ -218,6 +219,43 @@ export async function provisionUpdate(
   // exception, where the cost would be a REPLACEMENT: the ceiling block
   // below reads the resource back from AWS to decide that one
   // (go-to-k/cdkd#3729).
+  // go-to-k/cdkd#4411: a resource AWS stores INSIDE a parent this deploy
+  // destroyed and re-created under the same physical id (a fixed-name
+  // function recreated, and its `AWS::Lambda::Permission`) went with the old
+  // parent. Its references resolve exactly as recorded, so neither skip below
+  // may fire and no ceiling may lower it: it is re-created, without deleting
+  // the old one, which no longer exists.
+  // A child naming several parents (`reput`) only bypasses the skips: its
+  // in-place update writes the policy to each parent it names.
+  //
+  // Only when the parent-naming value did NOT move: a child the same deploy
+  // re-points from a surviving parent to the recreated one still has its old
+  // copy on the surviving parent, and takes the ordinary replacement, whose
+  // delete removes that copy.
+  const lostCandidate = childLostWithRecreatedParent({
+    resourceType,
+    templateProperties: desiredProps,
+    recreatedUnderSameId: this.recreatedUnderSameId,
+    recordedTypeOf: (id) =>
+      Object.hasOwn(stateResources, id) ? stateResources[id]?.resourceType : undefined,
+    conditions,
+  });
+  const lostChild =
+    lostCandidate !== undefined &&
+    Object.hasOwn(resolvedProps, lostCandidate.property) &&
+    Object.hasOwn(currentProps, lostCandidate.property) &&
+    keyOrderFreeJson(resolvedProps[lostCandidate.property]) ===
+      keyOrderFreeJson(currentProps[lostCandidate.property])
+      ? lostCandidate
+      : undefined;
+  if (lostChild?.mode === 'reput' && currentResource.provisionedBy === 'cc-api') {
+    // Cloud Control patches record against template, which agree here, so
+    // nothing reaches the recreated parent: say so rather than report it done.
+    this.logger.warn(
+      safeMsg`  ⚠ ${logicalId} went with ${lostChild.parent}, which was re-created, but it is recorded on Cloud Control, whose update sends no change for it; its policy may be missing from ${lostChild.parent}. Re-run with --recreate-via-sdk-provider ${logicalId} to write it again.`
+    );
+  }
+  const lostWithParent = lostChild?.mode === 'recreate' ? lostChild.parent : undefined;
   const suppliesFreshMaskOnlyValue = carriesFreshNoEchoValue(resolvedProps, updateSecrets);
   const desiredForSkipCheck = redactSecretsForState(
     markSameGenerationBag({ ...resolvedProps }),
@@ -258,6 +296,7 @@ export async function provisionUpdate(
   if (
     !typeChanged &&
     !suppliesFreshMaskOnlyValue &&
+    lostChild === undefined &&
     this.recreateDirectionFor(stackName, logicalId) === undefined &&
     keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten)
   ) {
@@ -425,6 +464,7 @@ export async function provisionUpdate(
   if (
     noEchoHeldPaths.size > 0 &&
     !typeChanged &&
+    lostChild === undefined &&
     this.recreateDirectionFor(stackName, logicalId) === undefined &&
     keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten) &&
     Object.entries(resolvedProps).every(
@@ -480,7 +520,8 @@ export async function provisionUpdate(
   // lists, so at most one of these two booleans is true at a time.
   const recreateViaSdkProvider = recreateTargets?.viaSdkProvider.has(logicalId) ?? false;
   const recreateFlagged = recreateViaCcApi || recreateViaSdkProvider;
-  const needsReplacement = propertyDrivenReplacement || recreateFlagged;
+  const needsReplacement =
+    propertyDrivenReplacement || recreateFlagged || lostWithParent !== undefined;
 
   // The label `provisionResource` chose left ceilings out; one that
   // stood (the value moved, or it is a fresh `NoEcho` value AWS could
@@ -562,6 +603,7 @@ export async function provisionUpdate(
       typeChanged,
       updateReplacePolicy,
       updateSecrets,
+      lostWithParent,
     });
   }
   return this.updateInPlace({

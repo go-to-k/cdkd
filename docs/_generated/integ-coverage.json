@@ -4099,6 +4099,7 @@
         "rds-dbinstance-backfill",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
+        "recreate-parent-child-permission",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "retain-orphan-redeploy",
@@ -4323,6 +4324,9 @@
         ],
         "recreate-nested-logical-id-collision": [
           "l2"
+        ],
+        "recreate-parent-child-permission": [
+          "l1"
         ],
         "recreate-via-cc-api": [
           "l2"
@@ -4728,6 +4732,7 @@
         "propagation-races-2",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
+        "recreate-parent-child-permission",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "redacted-delete-address",
@@ -5048,6 +5053,10 @@
           "l1",
           "literal"
         ],
+        "recreate-parent-child-permission": [
+          "l1",
+          "literal"
+        ],
         "recreate-via-cc-api": [
           "l1"
         ],
@@ -5170,6 +5179,7 @@
         "export",
         "migrate-from-cfn",
         "propagation-races-2",
+        "recreate-parent-child-permission",
         "rename-refactor",
         "s3-event-notification",
         "secrets-rotation-schedule",
@@ -5197,6 +5207,10 @@
           "literal"
         ],
         "propagation-races-2": [
+          "l1",
+          "literal"
+        ],
+        "recreate-parent-child-permission": [
           "l1",
           "literal"
         ],

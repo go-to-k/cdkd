@@ -339,6 +339,21 @@ left in place, and a reader with nothing to change is skipped. Readers in other
 stacks are covered by
 [cross-stack reference propagation](#cross-stack-reference-propagation).
 
+Some resources live inside another one and are deleted with it: a Lambda
+function's permissions, versions, aliases and event invoke config, an SNS
+topic's subscriptions and policies, an SQS queue's or S3 bucket's policy, a log
+group's streams and metric and subscription filters, a role's inline policies. When a deploy
+destroys such a parent and re-creates it under the same physical id (a
+fixed-name function recreated by this flag, or the delete-first `--replace` of
+a replacement), each of those children in the same stack is re-created too,
+without a delete: the old one went with the old parent. A child the same
+deploy moves from another parent onto the recreated one is replaced as usual,
+which removes its copy from the parent it left. A policy that names
+several parents (a topic or queue policy, an IAM policy on several roles) is
+written again in place instead. A Lambda function URL, an IAM managed policy
+attachment and an instance profile's role are not handled this way, nor is a
+resource re-created by the update-failure fallback rather than a replacement.
+
 ### When to use it
 
 **First check whether you need it at all.** Adding a silent-drop property to an

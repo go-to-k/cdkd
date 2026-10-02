@@ -634,6 +634,16 @@ export class DeployEngine {
   retainedOldOnReplacement = new Set<string>();
 
   /**
+   * go-to-k/cdkd#4411: logical ids this deploy destroyed and re-created under
+   * the SAME physical id (a fixed-name recreate, a delete-first `--replace`).
+   * What AWS stored inside the old resource went with it, so the UPDATE arm
+   * re-creates such a child (`child-of-recreated-parent.ts`) rather than
+   * skipping it as unchanged. Cleared per `deploy()`.
+   */
+  /** @internal */
+  recreatedUnderSameId = new Set<string>();
+
+  /**
    * The pre-deploy state records, as loaded — the #1852 heal's eligibility
    * baseline. A record is healed only while it is still the one this deploy
    * LOADED (same physical id, same `attributes` object): once a provider has
@@ -781,6 +791,7 @@ export class DeployEngine {
     // here would tell the next run's rollback to re-adopt an id this run
     // deleted. Reset in the same block as the other per-run bags.
     this.retainedOldOnReplacement = new Set();
+    this.recreatedUnderSameId = new Set();
     // Issue #1852: per-deploy, like every bag above — a reused engine must not
     // serve last deploy's read, nor persist it against today's records.
     this.healBaseline = {};
