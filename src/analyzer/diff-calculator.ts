@@ -275,7 +275,21 @@ export class DiffCalculator {
      * unmasked, since the engine compares and provisions from them. Absent
      * prints unmasked, as before.
      */
-    maskForLog?: MaskerFn
+    maskForLog?: MaskerFn,
+    /**
+     * The `--recreate-via-*` targets of THIS stack (go-to-k/cdkd#4383),
+     * already scoped by the caller to the stack the ids were validated
+     * against. The flag moves a resource between provisioning layers, which
+     * is no template edit, so nothing in the diff says it will be replaced;
+     * but it is destroyed and re-created, and a type whose physical id AWS
+     * assigns (`restApiId`, a security group's `GroupId`) comes back under a
+     * new one. Each target with a record to recreate (a `NO_CHANGE` or
+     * `UPDATE` row) seeds the replacement pass as a property-driven
+     * replacement would, so its `Ref` / `Fn::GetAtt` readers are promoted.
+     * The target's own row is left as diffed: the engine routes it to the
+     * replacement from the flag, not from this set.
+     */
+    recreateTargets?: ReadonlySet<string>
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
 
@@ -617,6 +631,15 @@ export class DiffCalculator {
       }
     }
 
+    // The `--recreate-via-*` targets that seed the replacement pass below
+    // (go-to-k/cdkd#4383). A recreate target with no record to recreate (a
+    // CREATE or DELETE row, or none) replaces nothing, so it seeds nothing.
+    const forcedReplacements = new Set<string>();
+    for (const logicalId of recreateTargets ?? []) {
+      const changeType = changes.get(logicalId)?.changeType;
+      if (changeType === 'NO_CHANGE' || changeType === 'UPDATE') forcedReplacements.add(logicalId);
+    }
+
     // Propagate replacements to dependents (issue #807): a dependent whose
     // only "change" is a Ref / Fn::GetAtt to a resource that will be
     // REPLACED resolves against CURRENT state above and lands on NO_CHANGE,
@@ -651,10 +674,16 @@ export class DiffCalculator {
       changes,
       desiredTemplate,
       rawGetAttRefs,
-      freshParameters
+      freshParameters,
+      forcedReplacements
     );
     do {
-      this.promoteReplacementDependents(changes, desiredTemplate, syntheticCreateOnlyPaths);
+      this.promoteReplacementDependents(
+        changes,
+        desiredTemplate,
+        syntheticCreateOnlyPaths,
+        forcedReplacements
+      );
     } while (
       this.promoteInPlaceAttributeDependents(
         changes,
@@ -677,9 +706,10 @@ export class DiffCalculator {
    * The CFn-schema createOnly paths for every resource type a promotion pass
    * could query (go-to-k/cdkd#3803), loaded once here because both passes are
    * synchronous. Only a resource REACHABLE from something that can seed a
-   * promotion is considered: an UPDATE (a replacement or an in-place update) or
-   * a fresh parameter, followed transitively along reverse reference edges. An
-   * unchanged stack therefore loads nothing and calls no `DescribeType`. Among
+   * promotion is considered: an UPDATE (a replacement or an in-place update), a
+   * recreate target (go-to-k/cdkd#4383) or a fresh parameter, followed
+   * transitively along reverse reference edges. An unchanged stack with no
+   * recreate target therefore loads nothing and calls no `DescribeType`. Among
    * those, only a type with a registry-unclassified property holding an
    * intrinsic is loaded, since only such a property can be promoted and reach
    * the schema fallback. The lookups are the ordinary diff's own
@@ -690,12 +720,15 @@ export class DiffCalculator {
     changes: Map<string, ResourceChange>,
     desiredTemplate: CloudFormationTemplate,
     rawGetAttRefs: Map<string, Map<string, Map<string, Set<string>>>>,
-    freshParameters: ReadonlySet<string> | undefined
+    freshParameters: ReadonlySet<string> | undefined,
+    forcedReplacements: ReadonlySet<string>
   ): Promise<Map<string, ReadonlyArray<readonly string[]>>> {
     const loaded = new Map<string, ReadonlyArray<readonly string[]>>();
     const queue: string[] = [...(freshParameters ?? [])];
     for (const [logicalId, change] of changes) {
-      if (change.changeType === 'UPDATE') queue.push(logicalId);
+      if (change.changeType === 'UPDATE' || forcedReplacements.has(logicalId)) {
+        queue.push(logicalId);
+      }
     }
     if (queue.length === 0) return loaded;
 
@@ -846,18 +879,25 @@ export class DiffCalculator {
    * their own (non-replacement) property changes — their referencing
    * property gains a synthetic PropertyChange so a replacement cascade is
    * not masked by an unrelated in-place change.
+   *
+   * `forcedReplacements` (go-to-k/cdkd#4383) seeds the walk with this
+   * stack's `--recreate-via-*` targets, whose diff carries no replacing
+   * property change, whatever their row says.
    */
   private promoteReplacementDependents(
     changes: Map<string, ResourceChange>,
     desiredTemplate: CloudFormationTemplate,
-    syntheticCreateOnlyPaths: ReadonlyMap<string, ReadonlyArray<readonly string[]>>
+    syntheticCreateOnlyPaths: ReadonlyMap<string, ReadonlyArray<readonly string[]>>,
+    forcedReplacements: ReadonlySet<string>
   ): void {
-    // Seed queue: resources whose computed diff already requires replacement.
+    // Seed queue: resources whose computed diff already requires replacement,
+    // and the recreate targets.
     const queue: string[] = [];
     for (const [logicalId, change] of changes) {
       if (
-        change.changeType === 'UPDATE' &&
-        change.propertyChanges?.some((pc) => pc.requiresReplacement)
+        forcedReplacements.has(logicalId) ||
+        (change.changeType === 'UPDATE' &&
+          change.propertyChanges?.some((pc) => pc.requiresReplacement))
       ) {
         queue.push(logicalId);
       }

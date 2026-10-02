@@ -289,6 +289,7 @@
         "local-start-api-container",
         "local-start-api-websocket",
         "migrate-from-cfn",
+        "recreate-target-readers",
         "redacted-delete-address",
         "secret-derived-immutable-names",
         "serverless-api"
@@ -325,6 +326,10 @@
         ],
         "migrate-from-cfn": [
           "l2"
+        ],
+        "recreate-target-readers": [
+          "l1",
+          "literal"
         ],
         "redacted-delete-address": [
           "l1",
@@ -6432,6 +6437,7 @@
         "outputs-only-export",
         "rds-full-stack",
         "recreate-nested-logical-id-collision",
+        "recreate-target-readers",
         "redshift-cluster-getatt",
         "rename-refactor",
         "replacement-fanout",
@@ -6658,6 +6664,10 @@
         ],
         "recreate-nested-logical-id-collision": [
           "l1"
+        ],
+        "recreate-target-readers": [
+          "l1",
+          "literal"
         ],
         "redshift-cluster-getatt": [
           "l1"

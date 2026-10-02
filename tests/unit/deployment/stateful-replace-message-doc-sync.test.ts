@@ -265,6 +265,10 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     //   deploy-engine/update-in-place.ts -> --replace,
     //     (update-failure fallback)   Cloud Control auto-fallback
     //                                 (one guard, two triggers)
+    //   recreate-target-readers.ts -> a resource a --recreate-via-* deploy
+    //                                 replaces through a create-only reference
+    //                                 to a target (go-to-k/cdkd#4383; the
+    //                                 deploy pre-flight's refusal)
     //   rollback-executor.ts       -> NO row. It is an ADVISORY reader: it
     //                                 warns that a reverse-replacement cannot
     //                                 bring the data back, and gates nothing.
@@ -360,6 +364,7 @@ describe('the stateful-replace refusal and its documented example stay in sync',
       'src/cli/commands/recreate-confirm-prompt.ts',
       'src/deployment/deploy-engine/update-in-place.ts',
       'src/deployment/deploy-engine/update-replace.ts',
+      'src/deployment/recreate-target-readers.ts',
       'src/deployment/recreate-targets.ts',
       'src/deployment/rollback-executor.ts',
     ]);
@@ -373,6 +378,6 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     const table = afterMarker.slice(0, afterMarker.indexOf('\n#'));
     const rows = table.split('\n').filter((line) => line.startsWith('| ') && line.includes(' | '));
     // Header row + separator row + one row per documented path.
-    expect(rows).toHaveLength(2 + 5);
+    expect(rows).toHaveLength(2 + 6);
   });
 });

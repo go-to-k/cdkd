@@ -10,6 +10,23 @@ export interface UnreachedRecreateTarget {
 }
 
 /**
+ * go-to-k/cdkd#4383: the `--recreate-via-*` target ids of `stackName`, for
+ * the diff to seed the replacement pass with, so a target's same-stack
+ * `Ref` / `Fn::GetAtt` readers are re-provisioned against the id the
+ * recreate mints. `undefined` for any other stack — a nested child engine
+ * receives the parent's option bag, and the ids were validated against the
+ * parent's template only (issue #2567).
+ */
+export function recreateTargetIdsFor(
+  recreateTargets: DeployEngineOptions['recreateTargets'],
+  stackName: string
+): ReadonlySet<string> | undefined {
+  if (recreateTargets === undefined || recreateTargets.stackName !== stackName) return undefined;
+  const ids = new Set([...recreateTargets.viaCcApi, ...recreateTargets.viaSdkProvider]);
+  return ids.size > 0 ? ids : undefined;
+}
+
+/**
  * Issue #2651: make every validated `--recreate-via-*` target reach the
  * UPDATE arm, where the recreate is decided.
  *
