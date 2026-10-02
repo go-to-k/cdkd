@@ -114,8 +114,10 @@ ecs-fargate	2026-10-01T19:38:04Z	PASS	456	verify.sh	rc ok, orph clean; Phase 3 I
 ecs-schedule-targets	2026-10-01T19:45:46Z	PASS	80	verify.sh	rc ok, orph clean; client-ecs 3.1144.0 (#4324)
 ecs-service-update-props	2026-10-01T19:29:01Z	PASS	120	verify.sh	rc ok, orph clean; client-ecs 3.1144.0 (#4324)
 efs-immutable-replacement	2026-09-30T08:37:29Z	PASS	75	verify.sh	PR #4182 (#2177 EFS masker) re-run after merging main (#4201, #4206) @08b6268; rc ok, orph clean
+efs-immutable-replacement 85 #4428 regression	2026-10-02T23:58:36Z	PASS		verify.sh	rc ok, orph clean; efs-immutable-replacement 85 #4428 regression
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
 efs-standalone	2026-10-01T03:22:05Z	PASS	160	verify.sh	rc ok, orph clean (#4257)
+efs-standalone 170 #4428 regression	2026-10-02T23:58:36Z	PASS		verify.sh	rc ok, orph clean; efs-standalone 170 #4428 regression
 elasticache-replicationgroup-getatt	2026-09-29T14:00:50Z	PASS	776	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 elbv2-same-name-replacement	2026-10-02T19:41:51Z	PASS	100	verify.sh	rc ok, orph clean (#4464)
 emr-cluster	2026-10-02T13:48:51Z	PASS	701	verify.sh	#1160 PR #4432: phase 2b StepConcurrencyLevel removal warned + kept 5; pre-fix probe red at phase 2b; rc ok, orph clean
@@ -134,6 +136,7 @@ export	2026-10-02T18:05:07Z	PASS	280	verify.sh	rc ok, orph clean (#4455)
 export-nested-stack	2026-10-01T18:54:38Z	PASS	190	verify.sh	rc ok, orph clean; #3507 export arm
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
 fsx-lustre	2026-10-02T10:50:28Z	PASS	922	verify.sh	#1160 PR #4398: phase 2b removal warning + LZ4 kept; pre-fix provider probe went red at phase 2b; rc ok, orph clean
+fsx-lustre 1017 #4428 FSx regression	2026-10-02T23:58:36Z	PASS		verify.sh	rc ok, orph clean; fsx-lustre 1017 #4428 FSx regression
 fsx-ontap	2026-10-02T10:50:28Z	PASS	1613	verify.sh	#1160 PR #4398; rc ok, orph clean, no final backup
 fsx-openzfs	2026-10-02T10:50:28Z	PASS	1232	verify.sh	#1160 PR #4398; rc ok; untagged OpenZFS final backup deleted by hand (#1113)
 fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup
@@ -306,6 +309,7 @@ route53	2026-10-01T04:09:54Z	PASS	471	verify.sh	rc ok, orph clean; #4226 import-
 s3-analytics-inventory	2026-10-01T04:09:54Z	PASS	185	verify.sh	rc ok, orph clean; #4226 bucket policy provider (4 del/0 err)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-10-01T13:26:54Z	PASS	306	verify.sh	rc ok, orph clean; #4295 cloudfront distribution provider
+s3-cloudfront 255 #4428 OAI regression	2026-10-02T23:58:36Z	PASS		verify.sh	rc ok, orph clean; s3-cloudfront 255 #4428 OAI regression
 s3-directory-bucket	2026-09-29T11:17:28Z	PASS	90	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 s3-event-notification	2026-09-28T17:37:17Z	PASS	106	verify.sh	rc ok, orph clean (#3996, after merging main)
 s3-lifecycle	2026-10-02T02:56:29Z	PASS	436	verify.sh	rc ok, orph clean; PR #4370 (#2423 state destroy events), head e54e72d2e; phases 0/0b re-pointed to the #4344 named-create refusal
@@ -344,6 +348,7 @@ sns-subscription-update	2026-09-17T17:34:54Z	PASS	372	verify.sh	issue 3329: fixt
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-09-27T12:27:25Z	PASS	80	verify.sh	rc ok, orph clean (#3861)
 ssm-secure-dynamic-ref	2026-10-02T08:46:06Z	PASS	265	verify.sh	rc ok, orph clean (#4417)
+stack-copy-create-tokens 1818 #4428 first run: EFS/OAI copies, RETAIN refusal, FSx copies	2026-10-02T23:58:36Z	PASS		verify.sh	rc ok, orph clean; stack-copy-create-tokens 1818 #4428 first run: EFS/OAI copies, RETAIN refusal, FSx copies
 stack-lock-renewal	2026-10-01T10:51:21Z	PASS	426	verify.sh	rc ok, orph clean (PR #4311 stack-lock guard)
 stage-assets	2026-10-02T16:16:32Z	PASS	246	verify.sh	rc ok, orph clean; #3507 auto-pick bare + --all arms
 stale-attribute-heal	2026-09-30T01:53:12Z	PASS	75	verify.sh	go-to-k/cdkd#4140 head bc9a46a8f: rc ok, orph clean; phase 3 diff previews the healed ParamArn
