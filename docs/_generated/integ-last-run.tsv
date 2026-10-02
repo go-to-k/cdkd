@@ -261,6 +261,7 @@ orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness r
 output-never-resolved-diff	2026-09-25T11:43:35Z	PASS	200	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
 outputs-only-export	2026-09-28T07:22:06Z	PASS	115	verify.sh	#3885 log-group sweep; rc ok, orph clean, /aws/lambda/<stack>- groups 0 after run
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
+partial-create-handback	2026-10-02T12:31:59Z	PASS	446	verify.sh	rc ok, orph clean; #4403 tg/topic/rule/lb H+C arms
 propagation-races-2	2026-09-10T09:48:41Z	PASS	116	verify.sh	rc0, 22 deleted/0 err/0 orph; round-2 re-run; edge5 window 0ms (3rd)
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
 rds-aurora	2026-10-02T08:38:07Z	PASS	4959	verify.sh	#1160 PR #4401: dropped DBProxy DebugLogging warned + kept True live; rc ok, orph clean
