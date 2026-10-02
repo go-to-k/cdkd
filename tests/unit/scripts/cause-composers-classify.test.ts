@@ -131,6 +131,15 @@ describe('registered cause composers keep the classifier verdict (issue #2075)',
     }
   }
 
+  it('maskSecretsInError: the derived cause carries no plaintext secret', () => {
+    const composer = COMPOSERS['maskSecretsInError'];
+    if (!composer) throw new Error('maskSecretsInError case missing');
+    const inner = composer.prepare(failure('transient'));
+    expect(inner.message).toContain(SECRET);
+    const cause = composer.derive(inner);
+    expect(cause?.message).not.toContain(SECRET);
+  });
+
   it('the harness FAILS an inert composer on every signal (negative control)', () => {
     for (const signal of SIGNALS) {
       const { derived, classified } = verdict(INERT, signal);

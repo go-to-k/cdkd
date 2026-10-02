@@ -491,6 +491,17 @@ describe('provider error-cause critic — registered cause composers', () => {
         const { redactedDockerCause } = fake;
         try { go(); } catch (err) { ${call} }
       }`,
+      `export function f(fns: any[]): void {
+        for (const redactedDockerCause of fns) { try { go(); } catch (err) { ${call} } }
+      }`,
+      `export function f(n: number): void {
+        for (let redactedDockerCause = 0; redactedDockerCause < n; redactedDockerCause++) {
+          try { go(); } catch (err) { ${call} }
+        }
+      }`,
+      `export function f(o: object): void {
+        for (const redactedDockerCause in o) { try { go(); } catch (err) { ${call} } }
+      }`,
       `export function f(x: boolean): void {
         if (x) { var redactedDockerCause = (e: unknown, a: string[]) => new Error(String(e)); }
         try { go(); } catch (err) { ${call} }

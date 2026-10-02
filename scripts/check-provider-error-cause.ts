@@ -570,6 +570,16 @@ function isShadowed(use: ts.Node, name: string): boolean {
     if (ts.isCatchClause(current) && current.variableDeclaration) {
       if (bindingNames(current.variableDeclaration.name).includes(name)) return true;
     }
+    // A `for` / `for-of` / `for-in` initializer binds in the loop's own scope,
+    // which holds no `.statements` for the walk below to read.
+    if (
+      (ts.isForStatement(current) || ts.isForOfStatement(current) || ts.isForInStatement(current)) &&
+      current.initializer &&
+      ts.isVariableDeclarationList(current.initializer) &&
+      current.initializer.declarations.some((d) => bindingNames(d.name).includes(name))
+    ) {
+      return true;
+    }
     if (ts.isFunctionLike(current)) {
       for (const parameter of current.parameters) {
         if (bindingNames(parameter.name).includes(name)) return true;
@@ -1004,6 +1014,16 @@ const SELF_PROBES: readonly SelfProbe[] = [
       function redactedDockerCause(e: unknown, a: string[]) { return new Error(String(e)); }
       try { go(); } catch (err) {
         throw new AssetError('m', redactedDockerCause(err, ['tag']));
+      }
+    }`,
+    expected: ['dropped'],
+  },
+  {
+    name: 'a for-of loop variable SHADOWING the composer import is dropped',
+    source: `import { redactedDockerCause } from '../utils/docker-cmd.js';
+    function f(fns: any[]) {
+      for (const redactedDockerCause of fns) {
+        try { go(); } catch (err) { throw new AssetError('m', redactedDockerCause(err, ['t'])); }
       }
     }`,
     expected: ['dropped'],

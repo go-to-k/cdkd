@@ -1136,7 +1136,9 @@ function bucketNames(bucket: string | undefined): {
  */
 export function normalizeAwsError(err: unknown, context: NormalizeAwsErrorContext = {}): Error {
   if (!(err instanceof Error)) {
-    return new Error(String(err));
+    // Chained too: the error-cause critic counts `normalizeAwsError(err)` as
+    // threading `err`, so no arm may drop it (go-to-k/cdkd#2075).
+    return new Error(String(err), { cause: err });
   }
 
   // Detect the AWS SDK v3 "Unknown" synthetic exception. Other errors pass

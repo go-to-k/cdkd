@@ -49,6 +49,8 @@ describe('normalizeAwsError', () => {
 
     expect(result).toBeInstanceOf(Error);
     expect(result.message).toBe('boom');
+    // go-to-k/cdkd#2075: the thrown value rides along as the cause.
+    expect(result.cause).toBe('boom');
   });
 
   it('detects via err.name === "Unknown"', () => {
