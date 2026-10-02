@@ -45,9 +45,28 @@ import {
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * Issue #1160: the optional, mutable properties whose REMOVAL from the
+ * template leaves the live value in place. `ModifyDBProxy` keeps any setting
+ * it is not sent, and cdkd sends no reset on purpose: CloudFormation's
+ * published DBProxy handler
+ * (aws-cloudformation-resource-providers-rds-proxy, `UpdateHandler`) forwards
+ * the desired model's null the same way, so a reset would diverge from it.
+ * The update warns instead of staying silent. `RoleArn` is required, and the
+ * create-only properties replace the proxy, so neither belongs here.
+ */
+const RETAINED_ON_REMOVAL: readonly string[] = [
+  'Auth',
+  'RequireTLS',
+  'IdleClientTimeout',
+  'DebugLogging',
+  'VpcSecurityGroupIds',
+];
 
 /**
  * AWS RDS DBProxy Provider
@@ -68,7 +87,8 @@ const POLL_TIMEOUT_MS = 30 * 60 * 1000;
  *   `Endpoint` / `DBProxyArn` / `VpcId` in attributes.
  * - `update`: `ModifyDBProxyCommand` for the mutable fields (Auth /
  *   DebugLogging / IdleClientTimeout / RequireTLS / RoleArn /
- *   SecurityGroups). Tags handled via separate `AddTagsToResource` /
+ *   SecurityGroups); a removed field is left at its live value and warned
+ *   about (`RETAINED_ON_REMOVAL`). Tags handled via separate `AddTagsToResource` /
  *   `RemoveTagsFromResource` diff. EngineFamily and VpcSubnetIds are
  *   immutable on AWS; a diff in those surfaces as `ResourceReplacement`
  *   from the deploy engine, not handled here.
@@ -320,6 +340,9 @@ export class RDSDBProxyProvider implements ResourceProvider {
       'VpcSecurityGroupIds',
     ];
     for (const key of mutableFields) {
+      // A removed field has nothing to send: ModifyDBProxy keeps an omitted
+      // setting (warned about below), so it never makes a call by itself.
+      if (properties[key] === undefined) continue;
       if (JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key])) {
         // Translate VpcSecurityGroupIds → SecurityGroups (CFn → SDK shape).
         const sdkKey = key === 'VpcSecurityGroupIds' ? 'SecurityGroups' : key;
@@ -357,7 +380,44 @@ export class RDSDBProxyProvider implements ResourceProvider {
       mask
     );
 
+    // Only once the update succeeded, as the shared removal warning is: the
+    // caller retries the whole update(), and a failed one leaves the previous
+    // state in place, so the next deploy warns again.
+    this.warnOnRetainedRemovals(logicalId, resourceType, properties, previousProperties, context);
+
     return { physicalId, wasReplaced: false };
+  }
+
+  /**
+   * Issue #1160: one warning naming each {@link RETAINED_ON_REMOVAL} property
+   * the template dropped. The removed set is the caller's (template against
+   * template, EMPTY on `drift --revert`, whose previous side is a readback);
+   * a direct call applies the same presence test (`removedTemplateKeys`).
+   */
+  private warnOnRetainedRemovals(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): void {
+    const removed = context?.removedProperties;
+    const retained: string[] = [];
+    for (const key of RETAINED_ON_REMOVAL) {
+      const isRemoved =
+        removed !== undefined
+          ? removed.has(key)
+          : previousProperties[key] !== undefined && properties[key] === undefined;
+      if (isRemoved) retained.push(key);
+    }
+    if (retained.length === 0) return;
+    const one = retained.length === 1;
+    const names = `${one ? 'property' : 'properties'} ${retained.join(', ')}`;
+    this.logger.warn(
+      context?.replayingState === true
+        ? safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'is' : 'are'} absent from the state being restored; ModifyDBProxy keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.`
+        : safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'was' : 'were'} removed from the template; ModifyDBProxy keeps a setting it is not sent, so the proxy keeps its current value. Declare the property with the value you want to change it.`
+    );
   }
 
   async delete(

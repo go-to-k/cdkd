@@ -22,6 +22,12 @@
 # would make the destroy fail. Phase 2 asserts both reset to their CFn
 # defaults (false / false) via DescribeDBClusters.
 #
+# #1160 (DBProxy removal kept + warned): the proxy sets DebugLogging=true in
+# phase 1 and DROPS it in phase 2. ModifyDBProxy keeps an omitted setting and
+# CloudFormation's DBProxy handler sends the same omission, so cdkd sends no
+# reset: phase 2 asserts the live DebugLogging is STILL true and the deploy
+# printed the warning naming DebugLogging as left in place.
+#
 # #3993 (no Cloud Control final snapshot): the L2 AuroraCluster is routed via
 # Cloud Control (asserted, so the arm cannot pass vacuously), whose registry
 # delete handler took an untagged `rds-snapshot-<random>` on every delete. The
@@ -119,6 +125,8 @@ OOB_INSTANCE_ID=""
 DESTROY_2B_LOG=""
 # Phase 1c's captured deploy output (issue #4087), removed by cleanup likewise.
 DEPLOY_1C_LOG=""
+# Phase 2's captured deploy output (issue #1160 DBProxy arm), likewise.
+DEPLOY_2_LOG=""
 # Issue #3993: the L2 cluster's identifier, and when this run began (UTC,
 # second precision, the prefix AWS's SnapshotCreateTime is compared on).
 AURORA_CLUSTER_ID=""
@@ -181,6 +189,7 @@ cleanup() {
   set +eu
   [ -n "${DESTROY_2B_LOG}" ] && rm -f "${DESTROY_2B_LOG}"
   [ -n "${DEPLOY_1C_LOG}" ] && rm -f "${DEPLOY_1C_LOG}"
+  [ -n "${DEPLOY_2_LOG}" ] && rm -f "${DEPLOY_2_LOG}"
   if [ -n "${OOB_INSTANCE_ID}" ]; then
     delete_oob_instance "${OOB_INSTANCE_ID}" || true
   fi
@@ -513,12 +522,59 @@ if [ "${PRE_MAX_CONN}" = "90" ]; then
 fi
 echo "    OK: #3945 premise: proxy ${PROXY_NAME} target group records [${AURORA_CLUSTER_ID}], MaxConnectionsPercent=${PRE_MAX_CONN}"
 
+# --- #1160 DBProxy removal premise: DebugLogging is set, live and recorded --
+# The proxy must be SDK-routed (Cloud Control's update would never print the
+# provider's warning), its record must carry DebugLogging=true (or phase 2
+# removes nothing), and AWS must hold true (or "kept" is indistinguishable
+# from the default false).
+PROXY_LOGICAL=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBProxy") | .key] | first // ""')
+PROXY_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBProxy") | .value.provisionedBy // "sdk"] | first // ""')
+if [ "${PROXY_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: #1160 DBProxy premise: ${PROXY_LOGICAL} is routed via '${PROXY_PROVISIONED_BY}', expected 'sdk'" >&2
+  exit 1
+fi
+RECORDED_DEBUG=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBProxy") | .value.properties | if has("DebugLogging") then .DebugLogging | tostring else "absent" end] | first // ""')
+if [ "${RECORDED_DEBUG}" != "true" ]; then
+  echo "FAIL: #1160 DBProxy premise: ${PROXY_LOGICAL} records DebugLogging=${RECORDED_DEBUG}, expected true" >&2
+  exit 1
+fi
+PRE_DEBUG=$(aws rds describe-db-proxies --db-proxy-name "${PROXY_NAME}" --region "${REGION}" \
+  --query 'DBProxies[0].DebugLogging' --output text)
+if [ "${PRE_DEBUG}" != "True" ]; then
+  echo "FAIL: #1160 DBProxy premise: live DebugLogging is '${PRE_DEBUG}' before phase 2, expected True" >&2
+  exit 1
+fi
+echo "    OK: #1160 DBProxy premise: ${PROXY_LOGICAL} (sdk) records and holds DebugLogging=true"
+
 # --- Phase 2: UPDATE pass (#1160 reset-on-removal) --------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication; set proxy MaxConnectionsPercent=90)"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication; drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
+DEPLOY_2_LOG="$(mktemp)"
+if ! CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes
+  --yes >"${DEPLOY_2_LOG}" 2>&1; then
+  cat "${DEPLOY_2_LOG}" >&2
+  rm -f "${DEPLOY_2_LOG}"
+  echo "FAIL: the phase-2 UPDATE deploy failed" >&2
+  exit 1
+fi
+DEPLOY_2_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DEPLOY_2_LOG}")"
+rm -f "${DEPLOY_2_LOG}"
+DEPLOY_2_LOG=""
+printf '%s\n' "${DEPLOY_2_PLAIN}"
+
+# --- #1160 DBProxy removal: kept on AWS, and warned about -------------
+if ! grep -qF "${PROXY_LOGICAL} (AWS::RDS::DBProxy): property DebugLogging was removed from the template; ModifyDBProxy keeps a setting it is not sent" <<<"${DEPLOY_2_PLAIN}"; then
+  echo "FAIL: #1160: phase 2 dropped DebugLogging from ${PROXY_LOGICAL}, but the deploy printed no warning naming it as left in place" >&2
+  exit 1
+fi
+POST_DEBUG=$(aws rds describe-db-proxies --db-proxy-name "${PROXY_NAME}" --region "${REGION}" \
+  --query 'DBProxies[0].DebugLogging' --output text)
+if [ "${POST_DEBUG}" != "True" ]; then
+  echo "FAIL: #1160: after phase 2 dropped DebugLogging, live DebugLogging is '${POST_DEBUG}', expected True (cdkd sends no reset, matching CloudFormation's DBProxy handler)" >&2
+  exit 1
+fi
+echo "    OK: #1160: dropping DebugLogging kept the live value (True) and the deploy warned about it"
 
 # The removed fields must have reset to their CFn defaults (false / false),
 # NOT kept the phase-1 values (the merge-semantics silent drop #1160 closes).

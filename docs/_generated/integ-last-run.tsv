@@ -257,9 +257,9 @@ outputs-only-export	2026-09-28T07:22:06Z	PASS	115	verify.sh	#3885 log-group swee
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 propagation-races-2	2026-09-10T09:48:41Z	PASS	116	verify.sh	rc0, 22 deleted/0 err/0 orph; round-2 re-run; edge5 window 0ms (3rd)
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-09-30T17:44:01Z	PASS	4949	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, new INFO line seen live, final snapshot cleaned, no leftovers
+rds-aurora	2026-10-02T08:38:07Z	PASS	4959	verify.sh	#1160 PR #4401: dropped DBProxy DebugLogging warned + kept True live; rc ok, orph clean
 rds-dbinstance-backfill	2026-09-30T17:44:01Z	PASS	777	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, new INFO line seen live, final snapshot cleaned
-rds-full-stack	2026-09-29T16:14:14Z	PASS	1047	verify.sh	rc ok, orph clean (#4029 PR #4080, final rebased head)
+rds-full-stack	2026-10-02T08:38:07Z	PASS	1163	verify.sh	#1160 PR #4401; rc ok, orph clean
 recreate-mixed-direction	2026-09-25T09:51:57Z	PASS	105	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 recreate-nested-logical-id-collision	2026-09-24T18:20:06Z	PASS	120	verify.sh	rc ok, orph clean; PR #3668 head
 recreate-via-cc-api	2026-10-01T22:26:45Z	PASS	110	verify.sh	rc ok, orph clean (#4374)
