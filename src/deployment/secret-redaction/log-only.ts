@@ -8,10 +8,13 @@ import { type SecretMasker } from './mask-errors.js';
  * PRINTED, but that cdkd has no business rewriting in anything it PERSISTS.
  * Keyed by the pass's map like {@link freshNoEchoValuesOf}.
  *
- * The one writer is the resolver, for the value of a `NoEcho: true` template
+ * The resolver writes it for the value of a `NoEcho: true` template
  * PARAMETER at the point a `Ref` (or an `Fn::Sub` variable) serves it, for
  * the `Fn::Base64` encoding of text that embeds one, and for each `Fn::Split`
- * piece's share of one ({@link recordLogOnlySplitFragments}).
+ * piece's share of one ({@link recordLogOnlySplitFragments}). So do a nested
+ * child's carry ({@link carryLogOnlyValuesCarriedBy}) and the up-front callers
+ * of {@link recordLogOnlyParameterValue} (the diff log masker, the export-name
+ * seed).
  *
  * WHY A SIDE SET AND NOT THE MAP. The map's VALUE is what a plaintext is
  * rewritten to on the way into state: an expression, or {@link SECRET_MASK}
@@ -30,6 +33,11 @@ import { type SecretMasker } from './mask-errors.js';
  * `Fn::Base64` recording and its unsupported-service refusal ask "did the
  * recorded needles change this text", and a log-only needle answering yes
  * there would put `***` into state or refuse a deploy that succeeds today.
+ * ONE verdict is the exception, by design (go-to-k/cdkd#4043): the export-name
+ * refusal (`exportNameSecretExposure`) reads this set through
+ * {@link printingCorpusOf}, by containment only, because what it decides is
+ * whether to WITHHOLD a key. A log-only needle answering yes there drops an
+ * alias; it never rewrites anything persisted.
  *
  * THE FLOOR is {@link maskSecretsInText}'s own, unchanged: a whole text equal
  * to a log-only value is masked at any length, and an embedded one only at or
@@ -366,8 +374,9 @@ export function literalSplitDelimitersOf(
  * a printer that tests a name against a map rather than calling
  * {@link maskSecretsInText} (`outputs-export-alias.ts`'s warnings). Returns
  * `secrets` itself when it holds no log-only needle. A NEW map otherwise, so
- * never hand it to anything that persists, positions or decides what is
- * published: the verdicts there read the map alone.
+ * never hand it to anything that persists or positions: those read the map
+ * alone. The one verdict that takes it is the export-name refusal
+ * (go-to-k/cdkd#4043), which only withholds a key.
  */
 export function printingCorpusOf(secrets: RecordedSecretValues): RecordedSecretValues {
   const logOnly = logOnlyValuesOf.get(secrets);

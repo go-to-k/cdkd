@@ -535,13 +535,13 @@ collide. Publishing it would put the value in `state.json`, `exportNames` and
 the bucket-wide exports index, which any stack's reader can list.
 
 - `exportNameSecretExposure` (`src/deployment/outputs-export-alias.ts:666`) is
-  called with two bags (`deploy-engine.ts:10613`):
+  called with two bags (`deploy-engine/outputs.ts`, pass 3):
   - the name's own recording bag `nameSecrets`, counted wholesale;
   - the pass map as `recordedThisPass`, scanned by bounded containment
     (`secretsPresentIn`, `outputs-export-alias.ts:518`).
 
   `nameSecrets`'s map entries are the name's own. Its log-only set is SHARED
-  with the whole outputs pass (`shareLogOnlyValues`, `deploy-engine.ts:10517`),
+  with the whole outputs pass (`shareLogOnlyValues`, `deploy-engine/outputs.ts`),
   so it cannot be counted wholesale: one output reading a `NoEcho` value would
   refuse every export name.
   - **Phase A** adds the log-only needles to the containment test only. The
@@ -575,17 +575,20 @@ the bucket-wide exports index, which any stack's reader can list.
 - The residual note at `outputs-export-alias.ts:119-128` is replaced.
 - **The containment scan is pass-wide from Phase A on.** The corpus
   `printingCorpusOf(nameSecrets)` holds the log-only set the whole outputs pass
-  shares (`deploy-engine.ts:10517`). When a name is decided, that set holds the
-  `NoEcho` values every output VALUE read, plus those the `Export.Name`s
-  resolved BEFORE it read: pass 2 resolves and decides each name in
-  declaration order. Phase B sees the same set through the map. A name that
+  shares (`deploy-engine/outputs.ts`). When a name is decided, that set holds the
+  `NoEcho` values every output VALUE and every `Export.Name` read: since
+  Phase B, pass 2 resolves every name before pass 3 decides any alias, and
+  the verdict is also seeded with every `NoEcho` value the stack holds
+  (`noEchoParameterValueSeed`). A name that
   merely contains one at 4 or more characters is refused. For a low-entropy
   value (`prod`), that refuses ordinary names. This is the same bound #1919
   accepted for secrets, and the warning names the output.
 - **`cdkd diff` previews the same verdict** (Phase A). Its Outputs pass
-  resolves every value, then every `Export.Name` in declaration order, into
-  bags of its own that mirror the deploy's (never the resource pass's bag,
-  which holds every `NoEcho` value up front). The up-front values reach the
+  resolves every value, then every `Export.Name`, into bags of its own that
+  mirror the deploy's. Since Phase B it decides every alias only after all of
+  them, in a separate pass (the deploy's pass 3). It never decides against the
+  resource pass's bag, whose derived needles (an `Fn::Base64` encoding, an
+  `Fn::Split` piece) would refuse an alias the deploy publishes. The up-front values reach the
   resolver's own lines through a print-only corpus
   (`ResolverContext.printingSecrets`) that no verdict reads. The two sides are
   kept at parity: a residual below that changes the deploy changes the diff
@@ -594,13 +597,13 @@ the bucket-wide exports index, which any stack's reader can list.
 
   | Residual | Closed by |
   | --- | --- |
-  | A name holding a value that only a LATER output's `Export.Name` reads | Phase B: pass 2 resolves every name first, then decides every alias (`deploy-engine.ts`), and the diff follows |
+  | A name holding a value that only a LATER output's `Export.Name` reads | Closed in Phase B: pass 2 resolves every name, pass 3 decides every alias (`deploy-engine/outputs.ts`), and the diff follows |
   | A 1-3 character value embedded in a longer name, even one substituted into it | Phase B: the positional twin above |
-  | A value reaching the name without a `Ref`: an echoed attribute, a nested output, `Fn::ImportValue` | Phase B: the declared-attribute mechanism (section 3.3) and the cross-stack recovery (section 4.7) |
+  | A value reaching the name without a `Ref`: an echoed attribute, a nested output, `Fn::ImportValue` | Phase B's seed refuses this stack's own raw value by any route. Still published: a DERIVED spelling (an `Fn::Split` piece, an `Fn::Base64` encoding) a resource or nested child computes and an attribute echoes, closed in Phase B by the declared-attribute mechanism (section 3.3); a hand-authored child's own `NoEcho`, also Phase B (section 3.3); and another stack's value through `Fn::ImportValue`, closed in Phase B by the cross-stack recovery (section 4.7, in `intrinsic-resolver/cross-stack.ts` and `deploy-engine/masking.ts`, Phase B's resolver and engine files) |
   | A failed output's alias the no-change merge carries forward (`no-change-outputs-merge.ts`) | Phase B: the merge re-runs this verdict over each carried alias name |
-  | A LITERAL name spelling a value only a resource reads | Phase B: the verdict is seeded with every `NoEcho` parameter value, at the #1919 floor (maintainer decision on #4043); the cost is that an unrelated name containing a short or common value is refused |
-  | `cdkd diff`: a #2740-skipped output is resolved into the Outputs bag to record its needles, which issues its lookups and can over-refuse where the deploy's value pass fails before the `NoEcho` `Ref` | Accepted bound of the preview; revisited with Phase B's seeding, which makes it moot |
-  | `cdkd diff` of a nested child: a value reaching the child through the parent's printing corpus rather than its own row is recorded by the child's Outputs pass, so the preview can refuse an alias the child's deploy publishes. That corpus also holds the pieces of an `Fn::Split` the parent's diff resolved over the value (#4049), so a piece can be refused the same way | Phase B, with the echo residual above: the child's verdict then holds the value either way |
+  | A LITERAL name spelling a value only a resource reads | Closed in Phase B: the verdict is seeded with every `NoEcho` parameter value, at the #1919 floor (maintainer decision on #4043); the cost is that an unrelated name containing a short or common value is refused |
+  | `cdkd diff`: a #2740-skipped output is resolved into the Outputs bag to record its needles, which issues its lookups and can over-refuse where the deploy's value pass fails before the `NoEcho` `Ref` | Accepted bound of the preview. Phase B's seeding makes it moot for the value itself; a derived needle (an `Fn::Base64` encoding, an `Fn::Split` piece) can still differ |
+  | `cdkd diff` of a nested child: a value reaching the child through the parent's printing corpus rather than its own row is recorded by the child's Outputs pass, so the preview can refuse an alias the child's deploy publishes. That corpus also holds the pieces of an `Fn::Split` the parent's diff resolved over the value (#4049), so a piece can be refused the same way | Closed in Phase B for a value the parent's row reads by `Ref` or an `Fn::Sub` variable: both sides seed a child's verdict with each parent `NoEcho` value a child parameter carries. The deploy's inherited bag holds only what the row read by `Ref`, while the diff's corpus holds every parent value up front (and their split pieces), so a value reaching a child parameter another way (an echoed `Fn::GetAtt`) is published by the deploy and refused by the preview (fail-closed); closed in Phase B by the declared-attribute mechanism (section 3.3) |
   | `cdkd scrub` keeping an unnamed possible-alias key when a declared alias is refused (fail-safe) | Phase C, with scrub's key report |
   | A nested child's rollback re-persisting a pre-run alias an older binary wrote (`nested-child-journal.ts`) | Phase C, with the rollback replay |
 - **An `Fn::Split` piece of a value is a log-only needle too** (#4049): the
@@ -732,7 +735,7 @@ Each phase lane re-checks, at lane start, which open PRs hold its files:
 | --- | --- | --- |
 | A | Export-name refusal and its `cdkd diff` preview (section 5) | `outputs-export-alias.ts`, `outputs-diff.ts`, `diff-recursive.ts`, the resolver's print-only corpus, rules, fixture, tests, changelog |
 | B | The core: both arms, the v11 bump and migration, diff promotion, readback | the resolver, redaction, engine and diff files; `state.ts`; rules; a new fixture |
-| C | Readers without a template (section 4.3-4.8) | the rollback, drift, state, import, scrub and export commands; their docs |
+| C | Readers without a template (sections 4.3-4.6 and 4.8; the section 4.7 cross-stack recovery is Phase B) | the rollback, drift, state, import, scrub and export commands; their docs |
 
 **Phase A** refuses an `Export.Name` equal to or embedding a `NoEcho` value,
 from the log-only set, and `cdkd diff` previews the same verdict. Files:
@@ -755,11 +758,16 @@ Section 5 lists what Phase A leaves and which phase closes each item.
 - the decision 5 rotation guidance;
 - the section 5 residuals marked Phase B: the resolve-then-decide split of
   the outputs pass 2 (and the diff's twin), the verdict over the no-change
-  merge's carried aliases, seeding the verdict with every `NoEcho` value; and
-  the side-set doc comment Phase A left.
+  merge's carried aliases, seeding the verdict with every `NoEcho` value,
+  another stack's value through `Fn::ImportValue` (the section 4.7
+  recovery), and the declared-attribute residuals (section 3.3); and the
+  side-set doc comment Phase A left. The split, the seed and the doc
+  comment landed first, ahead of the schema work, since none of them changes
+  what a record holds.
 
 Its files: `secret-redaction.ts`, `intrinsic-function-resolver.ts`,
-`deploy-engine.ts`, `src/deployment/no-change-outputs-merge.ts`,
+`src/deployment/intrinsic-resolver/cross-stack.ts`,
+`src/deployment/deploy-engine/masking.ts`, `deploy-engine.ts`, `src/deployment/no-change-outputs-merge.ts`,
 `src/analyzer/diff-calculator.ts`, `src/analyzer/outputs-diff.ts`,
 `diff-recursive.ts`, `src/types/state.ts`, `.claude/rules/state-schema.md`,
 `.claude/rules/layout-deployment-secrets.md`, `docs/state-management.md`, and
@@ -787,7 +795,8 @@ Files: `rollback-executor.ts`, `src/deployment/nested-child-journal.ts`,
   holding the value.
 - The export-name containment scan (section 5).
 
-B cannot be split. Once one leaf persists `***`, the diff, the skip, the
+B's schema core cannot be split (the export-name residuals above landed ahead
+of it, since none changes what a record holds). Once one leaf persists `***`, the diff, the skip, the
 readback and the bump must all hold, or a deploy updates or replaces the
 resource forever.
 

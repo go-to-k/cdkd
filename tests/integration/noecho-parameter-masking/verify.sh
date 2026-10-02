@@ -19,7 +19,10 @@
 #      so a change to it is a visible decision, not a silent one.
 #      NoEchoAliasProbe's Export.Name IS a second NoEcho value: the alias is
 #      refused with a masked warning, and neither state.json, its exportNames
-#      nor the exports index holds it (#4043).
+#      nor the exports index holds it (#4043). So are a literal name spelling
+#      NoEchoToken's value, which only a resource reads, and an earlier literal
+#      name spelling the Fn::Base64 encoding a LATER name records (#4043,
+#      Phase B: the seed, and the resolve-then-decide order).
 #      NoEchoSplitConsumer reads the second piece of an Fn::Split over a third
 #      NoEcho value: the `Resolved Fn::Split` line prints neither piece, AWS
 #      and state.json hold the piece, and NoEchoSplitAliasProbe's Export.Name,
@@ -149,11 +152,24 @@ SCRATCH_FILES=()
 # the value: these paths exist to detect a masking regression, and echoing the
 # log there would print exactly what failed to be masked.
 diag_output() { # diag_output <text>
-  if [[ "$1" == *"${TOKEN}"* ]] || [[ "$1" == *"${SPLIT_A}"* ]] || [[ "$1" == *"${SPLIT_B}"* ]]; then
-    echo "    (output withheld: it carries a NoEcho value or split piece)" >&2
+  if [[ "$1" == *"${TOKEN}"* ]] || [[ "$1" == *"${SPLIT_A}"* ]] || [[ "$1" == *"${SPLIT_B}"* ]] \
+    || [[ "$1" == *"${ALIAS_TOKEN}"* ]] || [[ -n "${ALIAS_ENCODING:-}" && "$1" == *"${ALIAS_ENCODING}"* ]]; then
+    echo "    (output withheld: it carries a NoEcho value, split piece or encoding)" >&2
   else
     printf '%s\n' "$1" | tail -40 >&2
   fi
+}
+
+# Replace every LITERAL occurrence of each needle with *** (awk index(), so a
+# base64 `+` `/` `=` is never read as a pattern). Used only on FAIL paths.
+mask_literals() { # mask_literals <text> <needle>...
+  local text="$1"
+  shift
+  local needle
+  for needle in "$@"; do
+    text=$(awk -v n="${needle}" '{ while (n != "" && (i = index($0, n)) > 0) $0 = substr($0, 1, i - 1) "***" substr($0, i + length(n)); print }' <<< "${text}")
+  done
+  printf '%s' "${text}"
 }
 
 # A split piece of NoEchoSplitToken in a captured output is a #4049 leak.
@@ -343,11 +359,78 @@ if ! gone_probe aws s3api get-object --bucket "${STATE_BUCKET}" --key "${INDEX_K
   fi
   P1_INDEX_ENTRIES=$(jq -r --arg stack "${STACK}" '[.exports // {} | to_entries[] | select(.value.producerStack == $stack)] | length' "${P1_INDEX}")
   if [ "${P1_INDEX_ENTRIES}" != "0" ]; then
-    echo "FAIL: the exports index holds ${P1_INDEX_ENTRIES} entr(ies) for ${STACK}, which exports nothing once its only alias is refused (issue #4043)" >&2
+    echo "FAIL: the exports index holds ${P1_INDEX_ENTRIES} entr(ies) for ${STACK}, which exports nothing once every alias is refused (issue #4043)" >&2
     exit 1
   fi
 fi
 echo "    OK: the NoEcho export alias is refused, masked in its warning, and in neither state nor the exports index"
+
+# PHASE B ALIASES (#4043): the SEED and the resolve-then-decide ORDER. PREMISE:
+# NoEchoLiteralAliasProbe's literal name spells NoEchoToken's value, which only
+# a resource reads (no output's Value or Export.Name refers to NoEchoToken);
+# NoEchoEarlyAliasProbe's literal name spells the Fn::Base64 encoding of the
+# alias value, and is declared BEFORE NoEchoLateEncodedProbe, whose name is
+# that Fn::Base64.
+ALIAS_ENCODING=$(printf '%s' "${ALIAS_TOKEN}" | base64 | tr -d '\n')
+if [ "${#ALIAS_ENCODING}" -lt 20 ]; then
+  echo "FAIL: premise: could not encode the NoEcho alias value" >&2
+  exit 1
+fi
+PHASE_B_SHAPE=$(jq -r --arg tok "${TOKEN}" --arg enc "${ALIAS_ENCODING}" '
+  (.Outputs.NoEchoLiteralAliasProbe.Export.Name == ("literal-" + $tok))
+  and ([.Outputs[] | select((.Value | tostring | contains("NoEchoToken"))
+        or (.Export.Name | tostring | contains("NoEchoToken")))] | length == 0)
+  and (.Outputs.NoEchoEarlyAliasProbe.Export.Name == ("early-" + $enc))
+  and (.Outputs.NoEchoLateEncodedProbe.Export.Name == {"Fn::Base64": {"Ref": "NoEchoAliasToken"}})
+  and ((.Outputs | keys_unsorted | index("NoEchoEarlyAliasProbe"))
+       < (.Outputs | keys_unsorted | index("NoEchoLateEncodedProbe")))
+' "${SYNTH_TEMPLATE}" 2>/dev/null || echo "unparsable")
+if [ "${PHASE_B_SHAPE}" != "true" ]; then
+  echo "FAIL: premise: the synthesized template does not declare the Phase B alias probes as expected (got ${PHASE_B_SHAPE})" >&2
+  exit 1
+fi
+for probe in NoEchoLiteralAliasProbe NoEchoEarlyAliasProbe NoEchoLateEncodedProbe; do
+  PROBE_LINE=$(grep -m1 -F -- "Output ${probe} ${REFUSAL_TEXT}" <<< "${DEPLOY_OUT_P1}" || true)
+  if [ -z "${PROBE_LINE}" ]; then
+    echo "FAIL: the Phase 1 deploy printed no export-name refusal for ${probe} -- its alias was published (issue #4043, Phase B)" >&2
+    exit 1
+  fi
+  if [[ "${PROBE_LINE}" != *'(masked: "'*'***'*'")'* ]]; then
+    echo "FAIL: the export-name refusal for ${probe} does not name the export masked (issue #4043, Phase B)" >&2
+    exit 1
+  fi
+done
+if [[ "${DEPLOY_OUT_P1}" == *"${ALIAS_ENCODING}"* ]]; then
+  echo "FAIL: the Phase 1 deploy output carries the encoding of the NoEcho alias value (issue #4043)" >&2
+  exit 1
+fi
+# Each probe's value only under its own key, and no refused name in
+# exportNames, the outputs keys or the exports index.
+for pair in NoEchoLiteralAliasProbe:literal-alias-probe-value \
+  NoEchoEarlyAliasProbe:early-alias-probe-value \
+  NoEchoLateEncodedProbe:late-encoded-probe-value; do
+  probe="${pair%%:*}"
+  probe_value="${pair#*:}"
+  PROBE_KEYS=$(jq -r --arg v "${probe_value}" '[(.outputs // {} | to_entries[] | select(.value == $v) | .key)] | join(",")' "${P1_STATE}")
+  if [ "${PROBE_KEYS}" != "${probe}" ]; then
+    echo "FAIL: state.json holds ${probe}'s value under keys [$(mask_literals "${PROBE_KEYS}" "${TOKEN}" "${ALIAS_ENCODING}")] -- an alias was published (issue #4043, Phase B)" >&2
+    exit 1
+  fi
+done
+P1_EXPORT_NAMES=$(jq -r '(.exportNames // []) | length' "${P1_STATE}")
+if [ "${P1_EXPORT_NAMES}" != "0" ]; then
+  echo "FAIL: state.json lists ${P1_EXPORT_NAMES} exportName(s); every alias of this stack is refused (issue #4043)" >&2
+  exit 1
+fi
+if grep -qF -- "${ALIAS_ENCODING}" "${P1_STATE}" || grep -qF -- "literal-${TOKEN}" "${P1_STATE}"; then
+  echo "FAIL: state.json carries a refused Phase B alias name (issue #4043)" >&2
+  exit 1
+fi
+if [ -s "${P1_INDEX}" ] && { grep -qF -- "${ALIAS_ENCODING}" "${P1_INDEX}" || grep -qF -- "literal-${TOKEN}" "${P1_INDEX}"; }; then
+  echo "FAIL: the exports index carries a refused Phase B alias name (issue #4043)" >&2
+  exit 1
+fi
+echo "    OK: a literal name spelling a resource-only NoEcho value, and an earlier name spelling a later name's encoding, are refused (#4043 Phase B)"
 
 # SPLIT PIECES (#4049). PREMISE: the template declares NoEchoSplitToken NoEcho
 # with this run's two pieces as its Default, NoEchoSplitConsumer reads the
@@ -515,6 +598,10 @@ while IFS= read -r event_key || [ -n "${event_key}" ]; do
     echo "FAIL: deployment events object ${event_key} carries the NoEcho value in plaintext (issue #1998)" >&2
     exit 1
   fi
+  if grep -qF -- "${ALIAS_TOKEN}" "${EVENT_FILE}" || grep -qF -- "${ALIAS_ENCODING}" "${EVENT_FILE}"; then
+    echo "FAIL: deployment events object ${event_key} carries the NoEcho alias value or its encoding (issue #4043)" >&2
+    exit 1
+  fi
   assert_no_split_piece "deployment events object ${event_key}" "$(cat "${EVENT_FILE}")"
   if grep -F 'Failed to create SSM parameter NoEchoReject' "${EVENT_FILE}" | grep -qiE "${REJECTION_RE}"; then
     EVENTS_REJECTION=$((EVENTS_REJECTION + 1))
@@ -614,13 +701,21 @@ if [ "${JSON_ROW}" != "1" ]; then
 fi
 # The refused alias (#4043) is not previewed: state holds no key for it, and a
 # preview publishing it would be a phantom export row on every run.
+# PREMISE: the Outputs section was computed, not suppressed. A suppressed
+# section with a would-be ADD always warns with one of these two lines, and
+# an empty outputChanges would then pass the check below for free.
+if [[ "${DIFF_JSON_P3A}${DIFF_JSON_STDERR_P3A}${DIFF_OUT_P3A}" == *"omitting the Outputs section"* ]] \
+  || [[ "${DIFF_JSON_P3A}${DIFF_JSON_STDERR_P3A}${DIFF_OUT_P3A}" == *"output(s) could not be resolved for this diff"* ]]; then
+  echo "FAIL: premise: the Phase 3a diff suppressed or partially resolved its Outputs section, so the alias check below would be vacuous" >&2
+  exit 1
+fi
 ALIAS_ROWS=$(jq -c '[.[] | .outputChanges[]? | select(.export == true or .changeType == "ADD")] | length' <<< "${DIFF_JSON_P3A}" 2>/dev/null || echo "unparsable")
 if [ "${ALIAS_ROWS}" != "0" ]; then
   echo "FAIL: the --json payload previews ${ALIAS_ROWS} added or export output row(s) -- the refused NoEcho alias is previewed as published (issue #4043)" >&2
   exit 1
 fi
-if [[ "${DIFF_JSON_P3A}${DIFF_JSON_STDERR_P3A}${DIFF_OUT_P3A}" == *"${ALIAS_TOKEN}"* ]]; then
-  echo "FAIL: the Phase 3a diff output carries the NoEcho alias value (issue #4043)" >&2
+if [[ "${DIFF_JSON_P3A}${DIFF_JSON_STDERR_P3A}${DIFF_OUT_P3A}" == *"${ALIAS_TOKEN}"* ]] || [[ "${DIFF_JSON_P3A}${DIFF_JSON_STDERR_P3A}${DIFF_OUT_P3A}" == *"${ALIAS_ENCODING}"* ]]; then
+  echo "FAIL: the Phase 3a diff output carries the NoEcho alias value or its encoding (issue #4043)" >&2
   exit 1
 fi
 echo "    OK: cdkd diff masks the NoEcho value on its rows, its --json payload and its replacement line"

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-// go-to-k/cdkd#4043, Phase A: an `Export.Name` that equals or embeds a
+// go-to-k/cdkd#4043, Phases A and B: an `Export.Name` that equals or embeds a
 // `NoEcho` parameter's value is REFUSED, as the #1919 rule refuses a
 // dynamic-reference secret. The alias is a state KEY and an exports-index key,
 // and a key cannot be masked. The refusal reads the outputs pass's LOG-ONLY
@@ -24,6 +24,8 @@ vi.mock('../../../src/utils/logger.js', () => {
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
+    // An SSM-typed parameter's lookup (go-to-k/cdkd#4043 round 2).
+    ssm: { send: vi.fn().mockResolvedValue({ Parameter: { Value: 'resolvedSsmSecret77' } }) },
   }),
 }));
 vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
@@ -31,6 +33,8 @@ vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
   exportNameSecretExposure,
+  isNoEchoOnlyExposure,
+  noEchoParameterValueSeed,
   secretBearingExportNameWarning,
 } from '../../../src/deployment/outputs-export-alias.js';
 import {
@@ -160,7 +164,7 @@ describe('secretBearingExportNameWarning - never prints the NoEcho value (go-to-
 
 // The ENGINE half, with the REAL resolver: the refused alias reaches neither
 // `state.outputs`, `exportNames`, nor the exports index.
-function harness(parameters: Record<string, string>) {
+function harness(parameters: Record<string, string>, inheritedSecrets?: RecordedSecretValues) {
   const props = { Name: '/app/param', Type: 'String', Value: { Ref: 'ResourceOnly' } };
   const provider = {
     create: vi.fn().mockResolvedValue({ physicalId: '/app/param' }),
@@ -215,7 +219,7 @@ function harness(parameters: Record<string, string>) {
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     } as never,
-    { dryRun: false, parameters },
+    { dryRun: false, parameters, ...(inheritedSecrets && { inheritedSecrets }) },
     'us-east-1',
     { updateForStack } as never
   );
@@ -311,15 +315,22 @@ describe('DeployEngine - an Export.Name holding a NoEcho value is refused (go-to
     expect(r.last.exportNames).toContain('plain-export');
   });
 
-  // Declaration ORDER: a name sees only the needles of the values and of the
-  // names resolved BEFORE it (a residual, and the diff mirrors it).
-  it('publishes an EARLIER literal name holding a value only a LATER name reads (a Phase B residual)', async () => {
+  // Declaration ORDER (Phase B): every name is resolved before any alias is
+  // decided, so an EARLIER name is decided against a LATER name's needles too.
+  // The needle here is the `Fn::Base64` encoding a later NAME records, which
+  // no output value reads and the `NoEcho` seed does not hold, so only the
+  // resolve-then-decide split can refuse the earlier name.
+  it('refuses an EARLIER literal name holding a needle only a LATER name records', async () => {
+    const encoded = Buffer.from(NOECHO).toString('base64');
     const r = await deployed(true, {
-      First: { Value: 'a', Export: { Name: `lit-${NOECHO}` } },
-      Second: { Value: 'b', Export: { Name: { Ref: 'Secret' } } },
+      First: { Value: 'a', Export: { Name: `lit-${encoded}` } },
+      Second: { Value: 'b', Export: { Name: { 'Fn::Base64': { Ref: 'Secret' } } } },
+      ...INNOCENT,
     });
-    expect(r.last.outputs[`lit-${NOECHO}`]).toBe('a');
-    expect(r.last.exportNames).not.toContain(NOECHO);
+    expect(Object.keys(r.last.outputs)).not.toContain(`lit-${encoded}`);
+    expect(r.last.exportNames).toEqual(['plain-export']);
+    expect(r.lines).toContain('Output First has an Export.Name that resolves to a value containing a secret');
+    expect(r.lines).not.toContain(encoded);
   });
 
   it('refuses a LATER literal name holding a value an EARLIER name read', async () => {
@@ -331,10 +342,292 @@ describe('DeployEngine - an Export.Name holding a NoEcho value is refused (go-to
     expect(JSON.stringify(r.last)).not.toContain(NOECHO);
   });
 
-  it('publishes a LITERAL name holding a value only a RESOURCE reads (a Phase B residual)', async () => {
+  // The SEED (Phase B, maintainer decision on #4043): every `NoEcho` value,
+  // whether or not an output reads it, at the #1919 floor.
+  it('refuses a LITERAL name holding a value only a RESOURCE reads', async () => {
     const r = await deployed(true, {
       Echo: { Value: 'v', Export: { Name: `exp-${RESOURCE_ONLY}` } },
+      ...INNOCENT,
     });
-    expect(r.last.outputs[`exp-${RESOURCE_ONLY}`]).toBe('v');
+    // The outputs and export names only: the resource's own property still
+    // persists the value (the state.json half of #4043, a later phase).
+    for (const state of r.states) {
+      expect(JSON.stringify(state.outputs)).not.toContain(RESOURCE_ONLY);
+      expect(JSON.stringify(state.exportNames ?? [])).not.toContain(RESOURCE_ONLY);
+    }
+    for (const index of r.indexed) expect(JSON.stringify(index)).not.toContain(RESOURCE_ONLY);
+    expect(r.last.outputs['Echo']).toBe('v');
+    expect(r.last.exportNames).toEqual(['plain-export']);
+    expect(r.lines).toContain('Output Echo has an Export.Name that resolves to a value containing a secret');
+    // The NoEcho reason, not a substituted secret's (the seed alone refused it).
+    expect(r.lines).toContain('The name contains the value of a NoEcho template parameter');
+    expect(r.lines).not.toContain(RESOURCE_ONLY);
+  });
+
+  it('publishes a literal name holding the value of a parameter that is not NoEcho (negative control)', async () => {
+    // `Secret` is declared without NoEcho here, and nothing reads it.
+    const r = await deployed(false, {
+      Echo: { Value: 'v', Export: { Name: `exp-${NOECHO}` } },
+    });
+    expect(r.last.outputs[`exp-${NOECHO}`]).toBe('v');
+    expect(r.last.exportNames).toEqual([`exp-${NOECHO}`]);
+  });
+});
+
+describe('DeployEngine - a nested child seeds its verdict from the parent (go-to-k/cdkd#4043, Phase B)', () => {
+  it("refuses a child's literal name spelling a parent NoEcho value a child parameter carries", async () => {
+    // A CDK child declares no NoEcho: only the inherited bag knows the value.
+    const inherited: RecordedSecretValues = new Map();
+    recordLogOnlyValue(inherited, NOECHO);
+    const h = harness({ Secret: `prefix-${NOECHO}`, ResourceOnly: RESOURCE_ONLY }, inherited);
+    const template = templateOf(
+      false,
+      { Echo: { Value: 'v', Export: { Name: `child-${NOECHO}` } }, ...INNOCENT },
+      h.props
+    );
+    await h.engine.deploy('s', template);
+    const states = h.saveState.mock.calls.map((call) => call[2] as StackState);
+    const last = states[states.length - 1]!;
+    expect(last.outputs['Echo']).toBe('v');
+    expect(last.exportNames).toEqual(['plain-export']);
+    for (const state of states) expect(JSON.stringify(state.outputs)).not.toContain(NOECHO);
+    const indexed = h.updateForStack.mock.calls.map((call) => call[2] as Record<string, unknown>);
+    expect(indexed.length).toBeGreaterThan(0);
+    for (const index of indexed) expect(JSON.stringify(index)).not.toContain(NOECHO);
+    const lines = logLines.join('\n');
+    expect(lines).toContain(
+      'Output Echo has an Export.Name that resolves to a value containing a secret (masked: "child-***")'
+    );
+    expect(lines).not.toContain(NOECHO);
+  });
+});
+
+describe('DeployEngine - a NoEcho value that is a whole {{resolve:...}} token (go-to-k/cdkd#4043, parity row)', () => {
+  it('publishes a literal name spelling the token: the deploy binds the parameter to the token text, not its plaintext', async () => {
+    const token = '{{resolve:ssm:/app/p}}';
+    const h = harness({ Secret: token, ResourceOnly: RESOURCE_ONLY });
+    const template = templateOf(true, { Echo: { Value: 'v', Export: { Name: `lit-${token}` } } }, h.props);
+    await h.engine.deploy('s', template);
+    const states = h.saveState.mock.calls.map((call) => call[2] as StackState);
+    const last = states[states.length - 1]!;
+    expect(last.outputs[`lit-${token}`]).toBe('v');
+    expect(last.exportNames).toEqual([`lit-${token}`]);
+  });
+});
+
+describe('DeployEngine - a NoEcho Number spelled by the operator (go-to-k/cdkd#4043)', () => {
+  it('refuses a literal name spelling the user value as written, though the parameter binds coerced', async () => {
+    const h = harness({ Secret: '0x1F2A', ResourceOnly: RESOURCE_ONLY });
+    const template = templateOf(true, { Echo: { Value: 'v', Export: { Name: 'exp-0x1F2A' } }, ...INNOCENT }, h.props);
+    template.Parameters!['Secret'] = { Type: 'Number', NoEcho: true };
+    await h.engine.deploy('s', template);
+    const states = h.saveState.mock.calls.map((call) => call[2] as StackState);
+    const last = states[states.length - 1]!;
+    expect(last.outputs['Echo']).toBe('v');
+    expect(last.exportNames).toEqual(['plain-export']);
+  });
+});
+
+describe('DeployEngine - a NoEcho SSM-typed parameter (go-to-k/cdkd#4043)', () => {
+  it('seeds the looked-up value, never the SSM parameter NAME the operator spelled', async () => {
+    const h = harness({ ResourceOnly: RESOURCE_ONLY });
+    const template = templateOf(
+      true,
+      {
+        ByName: { Value: 'n', Export: { Name: 'exp-DbPasswordArn' } },
+        ByValue: { Value: 'v', Export: { Name: 'exp-resolvedSsmSecret77' } },
+      },
+      h.props
+    );
+    template.Parameters!['Secret'] = {
+      Type: 'AWS::SSM::Parameter::Value<String>',
+      NoEcho: true,
+      Default: 'DbPassword',
+    };
+    // Referenced by a resource, so the deploy looks it up (an unreferenced
+    // SSM-typed parameter is never resolved).
+    (template.Resources['R']!.Properties as Record<string, unknown>)['Description'] = {
+      Ref: 'Secret',
+    };
+    await h.engine.deploy('s', template);
+    const states = h.saveState.mock.calls.map((call) => call[2] as StackState);
+    const last = states[states.length - 1]!;
+    // The name spelling the SSM path publishes; the one spelling the secret is refused.
+    expect(last.exportNames).toEqual(['exp-DbPasswordArn']);
+  });
+});
+
+describe('DeployEngine - an operator-supplied NoEcho SSM-typed value (go-to-k/cdkd#4043)', () => {
+  it('publishes a name spelling the SSM name, which the deploy binds without a lookup', async () => {
+    const h = harness({ Secret: 'DbPassword', ResourceOnly: RESOURCE_ONLY });
+    const template = templateOf(
+      true,
+      { ByName: { Value: 'n', Export: { Name: 'exp-DbPasswordArn' } } },
+      h.props
+    );
+    template.Parameters!['Secret'] = { Type: 'AWS::SSM::Parameter::Value<String>', NoEcho: true };
+    (template.Resources['R']!.Properties as Record<string, unknown>)['Description'] = {
+      Ref: 'Secret',
+    };
+    await h.engine.deploy('s', template);
+    const states = h.saveState.mock.calls.map((call) => call[2] as StackState);
+    expect(states[states.length - 1]!.exportNames).toEqual(['exp-DbPasswordArn']);
+  });
+});
+
+describe('secretBearingExportNameWarning - the NoEcho reason (go-to-k/cdkd#4043)', () => {
+  it('names a NoEcho parameter and the coincidental-match floor when only the seed refused the name', () => {
+    const seed = noEchoParameterValueSeed({ Env: { NoEcho: true } }, { Env: 'prod' });
+    const name: RecordedSecretValues = new Map();
+    const pass: RecordedSecretValues = new Map();
+    const exposure = exportNameSecretExposure('prod-VpcId', name, pass, seed)!;
+    expect(isNoEchoOnlyExposure(exposure, name, pass)).toBe(true);
+    const message = secretBearingExportNameWarning('Vpc', 'prod-VpcId', exposure, pass, true);
+    expect(message).toContain('(masked: "***-VpcId")');
+    expect(message).toContain('The name contains the value of a NoEcho template parameter');
+    expect(message).toContain('even where the match is a coincidence');
+    expect(message).toContain('An existing Fn::ImportValue of this name stops resolving');
+    expect(message).not.toContain('prod');
+  });
+
+  it('is not NoEcho-only when only the pass map holds the plaintext', () => {
+    const name: RecordedSecretValues = new Map();
+    const pass: RecordedSecretValues = new Map([['passOnlySecret9', '{{resolve:secretsmanager:P}}']]);
+    const exposure = exportNameSecretExposure('x-passOnlySecret9', name, pass)!;
+    expect([...exposure.keys()]).toEqual(['passOnlySecret9']);
+    expect(isNoEchoOnlyExposure(exposure, name, pass)).toBe(false);
+  });
+
+  it('keeps the secret wording when the name holds a substituted secret', () => {
+    const name: RecordedSecretValues = new Map([['s3cretValue', '{{resolve:secretsmanager:S}}']]);
+    const pass: RecordedSecretValues = new Map(name);
+    const exposure = exportNameSecretExposure('x-s3cretValue', name, pass)!;
+    expect(isNoEchoOnlyExposure(exposure, name, pass)).toBe(false);
+    expect(secretBearingExportNameWarning('O', 'x-s3cretValue', exposure, pass)).toContain(
+      'would persist the secret in plaintext'
+    );
+  });
+});
+
+describe('noEchoParameterValueSeed - the export-name verdict seed (go-to-k/cdkd#4043, Phase B)', () => {
+  const seeded = (exportName: string, seed: RecordedSecretValues): string[] | undefined => {
+    const exposure = exportNameSecretExposure(exportName, new Map(), new Map(), seed);
+    return exposure === undefined ? undefined : [...exposure.keys()];
+  };
+
+  it('seeds each NoEcho parameter value and no other parameter', () => {
+    const seed = noEchoParameterValueSeed(
+      { Hidden: { NoEcho: true }, Plain: {} },
+      { Hidden: 'hiddenValue1', Plain: 'plainValue1' }
+    );
+    expect(seeded('exp-hiddenValue1', seed)).toEqual(['hiddenValue1']);
+    expect(seeded('exp-plainValue1', seed)).toBeUndefined();
+  });
+
+  it('applies the #1919 floor: a whole name at any length, an embedded value at 4+', () => {
+    const seed = noEchoParameterValueSeed({ Short: { NoEcho: true } }, { Short: 'ab' });
+    expect(seeded('ab', seed)).toEqual(['ab']);
+    expect(seeded('x-ab-y', seed)).toBeUndefined();
+  });
+
+  it('seeds a Number and each element of a list, as a log line spells them', () => {
+    const seed = noEchoParameterValueSeed(
+      { Port: { NoEcho: true }, Hosts: { NoEcho: true } },
+      { Port: 73915, Hosts: ['alpha-host', 'beta-host'] }
+    );
+    expect(seeded('exp-73915', seed)).toEqual(['73915']);
+    expect(seeded('exp-beta-host', seed)).toEqual(['beta-host']);
+  });
+
+  it("seeds a nested child's parameter carrying a parent's NoEcho value, though the child declares no NoEcho", () => {
+    const inherited: RecordedSecretValues = new Map();
+    recordLogOnlyValue(inherited, 'parentNoEcho1');
+    const seed = noEchoParameterValueSeed(
+      { FromParent: { Type: 'String' } as { NoEcho?: unknown } },
+      { FromParent: 'prefix-parentNoEcho1', Other: 'ordinary' },
+      inherited
+    );
+    expect(seeded('exp-parentNoEcho1', seed)).toEqual(['parentNoEcho1']);
+    // Only what a parameter CARRIES: an inherited needle no parameter holds
+    // is not seeded.
+    recordLogOnlyValue(inherited, 'unrelatedNeedle');
+    const again = noEchoParameterValueSeed({}, { FromParent: 'prefix-parentNoEcho1' }, inherited);
+    expect(seeded('exp-unrelatedNeedle', again)).toBeUndefined();
+  });
+
+  it('leaves out a value that is a whole {{resolve:...}} token, alone or as a list', () => {
+    const seed = noEchoParameterValueSeed(
+      { Tok: { NoEcho: true }, Toks: { NoEcho: true } },
+      { Tok: '{{resolve:ssm:/p}}', Toks: ['{{resolve:ssm:/a}}', '{{resolve:ssm:/b}}'] }
+    );
+    expect(seeded('{{resolve:ssm:/p}}', seed)).toBeUndefined();
+    expect(seeded('x-{{resolve:ssm:/a}}', seed)).toBeUndefined();
+  });
+
+  it('seeds the operator spelling of a coerced Number value, from the user value or else the Default', () => {
+    const fromUser = noEchoParameterValueSeed(
+      { Port: { NoEcho: true } },
+      { Port: 7978 },
+      undefined,
+      { Port: '0x1F2A' }
+    );
+    expect(seeded('exp-0x1F2A', fromUser)).toEqual(['0x1F2A']);
+    const fromDefault = noEchoParameterValueSeed(
+      { Big: { NoEcho: true, Default: '1e10' } },
+      { Big: 10000000000 }
+    );
+    expect(seeded('exp-1e10-x', fromDefault)).toEqual(['1e10']);
+    // A user value wins over the Default.
+    const both = noEchoParameterValueSeed(
+      { Port: { NoEcho: true, Default: '0x0BAD' } },
+      { Port: 7978 },
+      undefined,
+      { Port: '0x1F2A' }
+    );
+    expect(seeded('exp-0x0BAD', both)).toBeUndefined();
+  });
+
+  it('does not seed the SSM parameter NAME of an SSM-typed NoEcho parameter', () => {
+    const seed = noEchoParameterValueSeed(
+      { Pw: { NoEcho: true, Type: 'AWS::SSM::Parameter::Value<String>', Default: 'DbPassword' } },
+      { Pw: 'lookedUpSecret1' }
+    );
+    expect(seeded('exp-DbPasswordArn', seed)).toBeUndefined();
+    expect(seeded('exp-lookedUpSecret1', seed)).toEqual(['lookedUpSecret1']);
+  });
+
+  it('does not seed an operator-supplied SSM-typed value bound unresolved (it is still the SSM name)', () => {
+    const seed = noEchoParameterValueSeed(
+      { Pw: { NoEcho: true, Type: 'AWS::SSM::Parameter::Value<String>' } },
+      { Pw: 'DbPassword' },
+      undefined,
+      { Pw: 'DbPassword' }
+    );
+    expect(seeded('exp-DbPasswordArn', seed)).toBeUndefined();
+    // A non-SSM NoEcho value equal to its spelling is still seeded.
+    const plain = noEchoParameterValueSeed(
+      { Pw: { NoEcho: true, Type: 'String' } },
+      { Pw: 'DbPassword' },
+      undefined,
+      { Pw: 'DbPassword' }
+    );
+    expect(seeded('exp-DbPasswordArn', plain)).toEqual(['DbPassword']);
+  });
+
+  it('seeds nothing when no parameter values are bound', () => {
+    expect(seeded('anything', noEchoParameterValueSeed({ Hidden: { NoEcho: true } }, undefined))).toBeUndefined();
+  });
+
+  it('seeds the comma-joined form of a list value', () => {
+    const seed = noEchoParameterValueSeed({ Hosts: { NoEcho: true } }, { Hosts: ['ab', 'cd'] });
+    expect(seeded('x-ab,cd-y', seed)).toEqual(['ab,cd']);
+  });
+
+  it('masks a seeded value in the refusal warning', () => {
+    const seed = noEchoParameterValueSeed({ Hidden: { NoEcho: true } }, { Hidden: 'hiddenValue1' });
+    const exposure = exportNameSecretExposure('exp-hiddenValue1', new Map(), new Map(), seed)!;
+    const message = secretBearingExportNameWarning('Echo', 'exp-hiddenValue1', exposure, new Map());
+    expect(message).toContain(`(masked: "exp-${SECRET_MASK}")`);
+    expect(message).not.toContain('hiddenValue1');
   });
 });

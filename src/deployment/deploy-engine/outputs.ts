@@ -7,7 +7,9 @@ import {
   exportAliasCollisionWarning,
   exportNameSecretExposure,
   isExportAliasCollision,
+  isNoEchoOnlyExposure,
   isOutputSuppressedByCondition,
+  noEchoParameterValueSeed,
   secretBearingExportNameWarning,
 } from '../outputs-export-alias.js';
 import { markNonRetryable } from '../retryable-errors.js';
@@ -202,10 +204,11 @@ export function handleOutputResolutionFailure(
  * Resolve stack outputs from template and resource attributes.
  *
  * Uses `IntrinsicFunctionResolver` for full CloudFormation intrinsic function
- * support, and runs in TWO passes — every value, then every export alias —
- * so an alias decision sees the complete set of secrets this pass resolved
- * rather than whatever the declaration order happened to have recorded by
- * then (issue #1919).
+ * support, and runs in THREE passes — every value, then every export name,
+ * then every alias decision — so an alias decision sees the complete set of
+ * secrets this pass resolved rather than whatever the declaration order
+ * happened to have recorded by then (issue #1919; the name/decision split is
+ * go-to-k/cdkd#4043).
  */
 export async function resolveOutputs(
   this: DeployEngine,
@@ -385,7 +388,7 @@ export async function resolveOutputs(
 
   let outputsPassCompleted = false;
   try {
-    // TWO passes, and the split is the fix for an ORDER dependence rather
+    // Values before aliases, and the split is the fix for an ORDER dependence rather
     // than tidiness (issue #1919 round-6 review). The alias decision consults
     // the secrets this pass has recorded so far; deciding inside the value
     // loop meant an output declared BEFORE the secret-bearing one was judged
@@ -445,7 +448,34 @@ export async function resolveOutputs(
       }
     }
 
-    // PASS 2 — export aliases, decided against the COMPLETE secrets map.
+    // Every `NoEcho` value the stack holds, whether or not an output reads
+    // it (go-to-k/cdkd#4043, Phase B): a LITERAL name spelling a value only a
+    // resource reads is refused too. `cdkd diff` builds its seed by the same
+    // rule. On a nested child the two inherited corpora differ: the diff's
+    // holds every parent `NoEcho` value, this one only those the parent's row
+    // read by `Ref` or an `Fn::Sub` variable (a residual in
+    // `outputs-export-alias.ts`).
+    const noEchoSeed = noEchoParameterValueSeed(
+      template.Parameters,
+      parameterValues,
+      context.inheritedSecrets,
+      this.options.parameters
+    );
+
+    // PASS 2 — every export NAME, resolved before any alias is decided
+    // (go-to-k/cdkd#4043, Phase B), for the reason values precede names: a
+    // name's resolution records needles too (a `NoEcho` `Ref`, an
+    // `Fn::Base64` encoding, a substituted secret), and deciding each name
+    // as it resolved let an EARLIER name holding a value only a LATER name
+    // read be published. PASS 3 below decides every alias against the
+    // complete pass.
+    const resolvedNames: Array<{
+      outputKey: string;
+      exportName: string;
+      value: unknown;
+      outputValue: unknown;
+      nameSecrets: RecordedSecretValues;
+    }> = [];
     for (const [outputKey, output] of Object.entries(template.Outputs)) {
       if (isOutputSuppressedByCondition(output, conditions)) continue;
       if (!output.Export?.Name) continue;
@@ -534,7 +564,12 @@ export async function resolveOutputs(
         continue;
       }
       if (typeof exportName !== 'string') continue;
+      resolvedNames.push({ outputKey, exportName, value, outputValue: output.Value, nameSecrets });
+    }
 
+    // PASS 3 — every alias, in declaration order, decided against the
+    // COMPLETE pass: every value's and every name's needles.
+    for (const { outputKey, exportName, value, outputValue, nameSecrets } of resolvedNames) {
       // TWO refusals guard this alias, and both are about the same thing:
       // this bag's KEYS (issue #1919).
       //
@@ -596,7 +631,8 @@ export async function resolveOutputs(
       const exposure = exportNameSecretExposure(
         exportName,
         nameSecrets,
-        context.recordedSecretValues
+        context.recordedSecretValues,
+        noEchoSeed
       );
       if (exposure) {
         // `exposure` stays the authoritative force-mask set; the recorded
@@ -608,7 +644,8 @@ export async function resolveOutputs(
             outputKey,
             exportName,
             exposure,
-            context.recordedSecretValues
+            context.recordedSecretValues,
+            isNoEchoOnlyExposure(exposure, nameSecrets, context.recordedSecretValues)
           )
         );
       } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
@@ -632,7 +669,7 @@ export async function resolveOutputs(
         // onto a sibling's expression (issue #1910 review). This bag feeds
         // `updateForStack`, so a collapsed alias hands a downstream
         // `Fn::ImportValue` consumer the WRONG reference.
-        this.outputsTemplateSource[exportName] = output.Value;
+        this.outputsTemplateSource[exportName] = outputValue;
       }
     }
     outputsPassCompleted = true;

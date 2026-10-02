@@ -33,6 +33,11 @@ import { Construct } from 'constructs';
  *   second `NoEcho` parameter (`CDKD_TEST_NOECHO_ALIAS_TOKEN`), so every
  *   deploy refuses the alias: it reaches neither state nor the exports index,
  *   and the warning names it masked.
+ * - `NoEchoLiteralAliasProbe`, `NoEchoEarlyAliasProbe` and
+ *   `NoEchoLateEncodedProbe` (go-to-k/cdkd#4043, Phase B): a literal name
+ *   spelling the value only a resource reads, and an earlier literal name
+ *   spelling the `Fn::Base64` encoding a LATER name records. Every deploy
+ *   refuses all three aliases.
  * - `NoEchoSplitConsumer` (go-to-k/cdkd#4049): an SSM String parameter whose
  *   value is the SECOND piece of an `Fn::Split` over a third `NoEcho`
  *   parameter holding two comma-separated pieces
@@ -104,6 +109,28 @@ export class NoechoParameterMaskingStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'NoEchoAliasProbe', {
       value: 'alias-probe-value',
       exportName: aliasToken.valueAsString,
+    });
+    // go-to-k/cdkd#4043 Phase B, the seed: a LITERAL name spelling the value
+    // only `NoEchoConsumer` (a resource) reads. No output reads `NoEchoToken`.
+    new cdk.CfnOutput(this, 'NoEchoLiteralAliasProbe', {
+      value: 'literal-alias-probe-value',
+      exportName: `literal-${process.env['CDKD_TEST_NOECHO_TOKEN'] ?? 'cdkd-noecho-unset-token'}`,
+    });
+    // go-to-k/cdkd#4043 Phase B, declaration order: an EARLIER literal name
+    // spelling the Fn::Base64 encoding that only the LATER name's resolution
+    // records. The seed holds the value, never its encoding.
+    const aliasEncoding = Buffer.from(
+      process.env['CDKD_TEST_NOECHO_ALIAS_TOKEN'] ?? 'CdkdNoEchoAliasUnset'
+    ).toString('base64');
+    new cdk.CfnOutput(this, 'NoEchoEarlyAliasProbe', {
+      value: 'early-alias-probe-value',
+      // A `Lazy` so CDK's export-name charset check (it reads only a literal)
+      // lets the encoding's `=` / `+` / `/` through; it synthesizes as a literal.
+      exportName: cdk.Lazy.string({ produce: () => `early-${aliasEncoding}` }),
+    });
+    new cdk.CfnOutput(this, 'NoEchoLateEncodedProbe', {
+      value: 'late-encoded-probe-value',
+      exportName: cdk.Fn.base64(aliasToken.valueAsString),
     });
 
     const splitToken = new cdk.CfnParameter(this, 'NoEchoSplitToken', {

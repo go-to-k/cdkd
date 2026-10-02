@@ -1,5 +1,5 @@
 /**
- * go-to-k/cdkd#4043, Phase A, the PREVIEW half: `cdkd diff` previews the
+ * go-to-k/cdkd#4043, Phases A and B, the PREVIEW half: `cdkd diff` previews the
  * outputs bag the deploy persists, so an export alias the deploy now refuses
  * (its name holds a `NoEcho` value the outputs pass read) must not preview as
  * an ADD, or `cdkd diff --fail` reports a phantom row on every run. Through
@@ -134,17 +134,21 @@ describe('cdkd diff previews the NoEcho export-name refusal (go-to-k/cdkd#4043)'
     ).toEqual([]);
   });
 
-  // Declaration ORDER, as the deploy decides it: each name sees the values'
-  // needles and those of the names resolved before it
-  // (`export-name-noecho-refusal-4043.test.ts` pins the deploy side).
-  it('publishes an EARLIER literal name holding a value only a LATER name reads, as the deploy does', async () => {
+  // Declaration ORDER, as the deploy decides it (Phase B): every name is
+  // resolved before any alias is decided
+  // (`export-name-noecho-refusal-4043.test.ts` pins the deploy side). The
+  // needle is the `Fn::Base64` encoding a LATER name records, which the
+  // `NoEcho` seed does not hold.
+  it('refuses an EARLIER literal name holding a needle only a LATER name records, as the deploy does', async () => {
+    const encoded = Buffer.from(NOECHO).toString('base64');
     const template = templateOf({
-      First: { Value: 'a', Export: { Name: `lit-${NOECHO}` } },
-      Second: { Value: 'b', Export: { Name: SUB_NAME } },
+      First: { Value: 'a', Export: { Name: `lit-${encoded}` } },
+      Second: { Value: 'b', Export: { Name: { 'Fn::Base64': { Ref: 'DbUser' } } } },
+      Innocent: { Value: 'w', Export: { Name: 'plain-export' } },
     });
-    expect(await outputChangesOf(stateWith({ First: 'a', Second: 'b' }), template)).toEqual([
-      `ADD lit-${NOECHO}`,
-    ]);
+    expect(
+      await outputChangesOf(stateWith({ First: 'a', Second: 'b', Innocent: 'w' }), template)
+    ).toEqual(['ADD plain-export']);
   });
 
   it('refuses a LATER literal name holding a value an EARLIER name read', async () => {
@@ -155,12 +159,96 @@ describe('cdkd diff previews the NoEcho export-name refusal (go-to-k/cdkd#4043)'
     expect(await outputChangesOf(stateWith({ First: 'b', Second: 'a' }), template)).toEqual([]);
   });
 
-  it('publishes a literal name holding a value only a RESOURCE reads, as the deploy does', async () => {
-    // The diff's resource pass records every NoEcho value; the Outputs pass
-    // must read its OWN bag, as the deploy's outputs pass does.
-    const template = templateOf({ Out: { Value: 'v', Export: { Name: `exp-${RESOURCE_ONLY}` } } });
+  it('refuses a literal name holding a value only a RESOURCE reads, as the deploy does (the seed)', async () => {
+    const template = templateOf({
+      Out: { Value: 'v', Export: { Name: `exp-${RESOURCE_ONLY}` } },
+      Innocent: { Value: 'w', Export: { Name: 'plain-export' } },
+    });
+    expect(await outputChangesOf(stateWith({ Out: 'v', Innocent: 'w' }), template)).toEqual([
+      'ADD plain-export',
+    ]);
+  });
+
+  it('publishes a literal name spelling a NoEcho value that is a whole {{resolve:...}} token (parity row)', async () => {
+    const template = {
+      Parameters: { Tok: { Type: 'String', NoEcho: true, Default: '{{resolve:ssm:/app/p}}' } },
+      Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+      Outputs: { Out: { Value: 'v', Export: { Name: 'lit-{{resolve:ssm:/app/p}}' } } },
+    } as unknown as CloudFormationTemplate;
     expect(await outputChangesOf(stateWith({ Out: 'v' }), template)).toEqual([
-      `ADD exp-${RESOURCE_ONLY}`,
+      'ADD lit-{{resolve:ssm:/app/p}}',
+    ]);
+  });
+
+  it('refuses a literal name spelling a NoEcho Number Default as written, though it binds coerced', async () => {
+    const template = {
+      Parameters: { Port: { Type: 'Number', NoEcho: true, Default: '0x1F2A' } },
+      Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+      Outputs: {
+        Out: { Value: 'v', Export: { Name: 'exp-0x1F2A' } },
+        Innocent: { Value: 'w', Export: { Name: 'plain-export' } },
+      },
+    } as unknown as CloudFormationTemplate;
+    expect(await outputChangesOf(stateWith({ Out: 'v', Innocent: 'w' }), template)).toEqual([
+      'ADD plain-export',
+    ]);
+  });
+
+  it('refuses a literal name spelling a NoEcho Number user value as written', async () => {
+    const template = {
+      Parameters: { Port: { Type: 'Number', NoEcho: true } },
+      Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+      Outputs: {
+        Out: { Value: 'v', Export: { Name: 'exp-0x1F2A' } },
+        Innocent: { Value: 'w', Export: { Name: 'plain-export' } },
+      },
+    } as unknown as CloudFormationTemplate;
+    const backend = { getState: async () => null } as unknown as S3StateBackend;
+    const result = await computeStackDiff(
+      stateWith({ Out: 'v', Innocent: 'w' }),
+      template,
+      'us-east-1',
+      'S',
+      backend,
+      new DiffCalculator(),
+      { parameters: { Port: '0x1F2A' } }
+    );
+    expect(result.outputChanges.map((c) => `${c.changeType} ${c.name}`)).toEqual([
+      'ADD plain-export',
+    ]);
+  });
+
+  it('publishes a literal name holding a parameter value that is not NoEcho (negative control)', async () => {
+    const template = templateOf({ Out: { Value: 'v', Export: { Name: `lit-${NOECHO}` } } }, false);
+    expect(await outputChangesOf(stateWith({ Out: 'v' }), template)).toEqual([`ADD lit-${NOECHO}`]);
+  });
+});
+
+describe("cdkd diff of a nested child seeds the verdict from the parent's corpus (go-to-k/cdkd#4043, Phase B)", () => {
+  it("refuses a child's literal name spelling a parent NoEcho value a child parameter carries", async () => {
+    // A CDK child declares no NoEcho: only the parent's corpus knows it.
+    const corpus: RecordedSecretValues = new Map();
+    recordLogOnlyValue(corpus, NOECHO);
+    const child = {
+      Parameters: { FromParent: { Type: 'String' } },
+      Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+      Outputs: {
+        Out: { Value: 'v', Export: { Name: `child-${NOECHO}` } },
+        Innocent: { Value: 'w', Export: { Name: 'plain-export' } },
+      },
+    } as unknown as CloudFormationTemplate;
+    const backend = { getState: async () => null } as unknown as S3StateBackend;
+    const result = await computeStackDiff(
+      stateWith({ Out: 'v', Innocent: 'w' }),
+      child,
+      'us-east-1',
+      'S',
+      backend,
+      new DiffCalculator(),
+      { parameters: { FromParent: `prefix-${NOECHO}` }, inheritedSecrets: corpus }
+    );
+    expect(result.outputChanges.map((c) => `${c.changeType} ${c.name}`)).toEqual([
+      'ADD plain-export',
     ]);
   });
 });

@@ -667,6 +667,8 @@ export async function resolveTemplateOutputs(
   outputsPass?: {
     resolveInto: (bag: RecordedSecretValues) => IntrinsicResolveFn;
     secrets: RecordedSecretValues;
+    /** The deploy's `noEchoParameterValueSeed`, built from this diff's inputs. */
+    noEchoParameterValues?: RecordedSecretValues;
   }
 ): Promise<ResolvedTemplateOutputs> {
   const resolveValue = outputsPass?.resolveInto(outputsPass.secrets) ?? resolveFn;
@@ -677,11 +679,19 @@ export async function resolveTemplateOutputs(
     value: unknown;
   }> = [];
   // The deploy's verdict (go-to-k/cdkd#4043) over this name's bag, whose
-  // log-only set is the pass's. Skipped while the pass holds no needle.
+  // log-only set is the pass's, and the stack's `NoEcho` seed. Skipped while
+  // neither holds a needle.
   const refusesNoEchoName = (exportName: string, nameBag: RecordedSecretValues): boolean =>
     outputsPass !== undefined &&
-    (hasMaskableValues(outputsPass.secrets) || nameBag.size > 0) &&
-    exportNameSecretExposure(exportName, nameBag, outputsPass.secrets) !== undefined;
+    (hasMaskableValues(outputsPass.secrets) ||
+      nameBag.size > 0 ||
+      hasMaskableValues(outputsPass.noEchoParameterValues)) &&
+    exportNameSecretExposure(
+      exportName,
+      nameBag,
+      outputsPass.secrets,
+      outputsPass.noEchoParameterValues
+    ) !== undefined;
   // The owner key as a debug line may show it: masked against the pass's
   // printing corpus, as the deploy's refusal warning masks it.
   const ownerDisplay = (outputKey: string): string =>
@@ -729,12 +739,8 @@ export async function resolveTemplateOutputs(
   // through a `Ref` to a parameter (a nested child's secret parameter, which
   // the diff passes on as its token) is not recorded in the deploy's pass map,
   // so counting it suppressed a section main published (#4145 review).
-  //
-  // Over-approximation, stated: the deploy's alias pass checks a literal name
-  // against the names resolved BEFORE it in declaration order, while this
-  // gate reads the whole pass; a literal declared before the only intrinsic
-  // name recording a secret is decided from state here and published there.
-  // Suppression, never a phantom row.
+  // This gate reads the whole pass, as the deploy's alias decisions do: they
+  // run after every name has resolved (go-to-k/cdkd#4043).
   let passResolvesSecret = false;
   // A leaf walk rather than `JSON.stringify`, which throws on a BigInt or a
   // cycle, and would count a key NAME spelling a token.
@@ -880,7 +886,9 @@ export async function resolveTemplateOutputs(
     // bag too, and the result discarded. Bound, stated: this issues the
     // lookups its resolution makes (an attribute heal, a CFn fallback), and
     // it can OVER-refuse, since the deploy's value pass may fail before
-    // reaching a `NoEcho` `Ref` this preview's resolution records.
+    // reaching what this preview's resolution records. Only a DERIVED needle
+    // (an `Fn::Base64` encoding, an `Fn::Split` piece) can differ: the
+    // `NoEcho` value itself is in both sides' seed either way.
     if (
       skippedOutputKeys?.has(outputKey) &&
       !(
@@ -956,13 +964,19 @@ export async function resolveTemplateOutputs(
     }
   }
 
-  // Pass 2, the deploy's alias pass: every `Export.Name`, AFTER every value,
-  // in declaration order. Each name resolves into a bag of its OWN sharing the
-  // pass's log-only set, with its entries forwarded into the pass bag once it
-  // resolves -- the deploy's `nameSecrets` (a `ForwardingSecrets` sharing the
-  // pass map's set) -- so each name is decided against the values' needles
-  // plus those of the names resolved before it, and an `Fn::Base64` in a name
-  // records its encoding exactly as the deploy's does.
+  // Pass 2, the deploy's name pass: every `Export.Name`, AFTER every value,
+  // resolved before any alias is decided (go-to-k/cdkd#4043, Phase B). Each
+  // name resolves into a bag of its OWN sharing the pass's log-only set, with
+  // its entries forwarded into the pass bag once it resolves -- the deploy's
+  // `nameSecrets` (a `ForwardingSecrets` sharing the pass map's set) -- so an
+  // `Fn::Base64` in a name records its encoding exactly as the deploy's does.
+  const resolvedNames: Array<{
+    outputKey: string;
+    exportName: string;
+    value: unknown;
+    declaredExportIsIntrinsic: boolean;
+    nameBag: RecordedSecretValues;
+  }> = [];
   for (const { outputKey, output, value } of exporting) {
     const nameBag: RecordedSecretValues = new Map();
     if (outputsPass !== undefined) shareLogOnlyValues(nameBag, outputsPass.secrets);
@@ -1002,51 +1016,7 @@ export async function resolveTemplateOutputs(
         passResolvesSecret = true;
       }
       if (typeof exportName === 'string' && !isUnresolvedValue(exportName, exportSourceUsedSub)) {
-        // The refusal order MIRRORS the deploy engine's — secret first, then
-        // collision — so a name matching both is attributed the same way on
-        // both sides. See `outputs-export-alias.ts`'s parity table for the full
-        // row-by-row correspondence this block is written against.
-        if (refusesNoEchoName(exportName, nameBag)) {
-          // A `NoEcho` value in the name (go-to-k/cdkd#4043), decided HERE, as
-          // the deploy decides it: after every value, against the values'
-          // needles plus those of the names resolved so far.
-          logger.debug(
-            safeMsg`Diff skipping export alias of ${ownerDisplay(outputKey)} — the name carries a value this pass recorded as secret`
-          );
-        } else if (declaredExportIsIntrinsic && keepsSecretReferenceToken(exportName)) {
-          // An INTRINSIC name that still carries a `{{resolve:...}}` token
-          // after this resolver's `skipDynamicReferences` pass is one the deploy
-          // WILL substitute plaintext into, and then refuse (the name would be a
-          // state KEY, which no redaction pass walks). The TOKEN decides, not
-          // the `secretsmanager` / `ssm-secure` spelling: a plain `ssm` token
-          // to a `SecureString` survives the pass too, and the spelling test
-          // published its alias as a phantom ADD (issue #4056). Gated on INTRINSIC
-          // deliberately: for a LITERAL name the deploy substitutes nothing —
-          // it uses the string verbatim as the key — so it publishes, and
-          // refusing here would be a phantom REMOVE on every run. That gate is
-          // the round-6 regression this replaces, which traded one divergence
-          // for two.
-          logger.debug(
-            `Diff skipping export alias of ${stripControlChars(outputKey)} — the name carries a secret reference`
-          );
-        } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
-          // Deploy skips this alias and keeps the colliding output's own value,
-          // so previewing it here would be a permanent phantom row. NOT a
-          // resolution failure: the bag matches what deploy writes, which is the
-          // point of the suppression flag, so nothing needs withholding.
-          logger.debug(
-            `Diff skipping export alias ${stripControlChars(exportName)} of ${stripControlChars(outputKey)} — collides with an output name`
-          );
-        } else {
-          // Written after the loop (a LITERAL one decided there, once
-          // `passResolvesSecret` is known).
-          pendingAliases.push({
-            outputKey,
-            exportName,
-            value,
-            literal: !declaredExportIsIntrinsic,
-          });
-        }
+        resolvedNames.push({ outputKey, exportName, value, declaredExportIsIntrinsic, nameBag });
       } else {
         // An Export.Name that stayed intrinsic means the alias key the deploy
         // WILL write is unknown, so the bag is incomplete — same suppression as
@@ -1059,6 +1029,62 @@ export async function resolveTemplateOutputs(
         for (const [plaintext, expression] of nameBag)
           outputsPass.secrets.set(plaintext, expression);
       }
+    }
+  }
+
+  // Pass 3, the deploy's alias decisions: in declaration order, each against
+  // every value's and every name's needles.
+  for (const {
+    outputKey,
+    exportName,
+    value,
+    declaredExportIsIntrinsic,
+    nameBag,
+  } of resolvedNames) {
+    // The refusal order MIRRORS the deploy engine's — secret first, then
+    // collision — so a name matching both is attributed the same way on
+    // both sides. See `outputs-export-alias.ts`'s parity table for the full
+    // row-by-row correspondence this block is written against.
+    if (refusesNoEchoName(exportName, nameBag)) {
+      // A `NoEcho` value in the name (go-to-k/cdkd#4043), decided HERE, as
+      // the deploy decides it: after every value and every name, against
+      // all their needles and the stack's `NoEcho` seed.
+      logger.debug(
+        safeMsg`Diff skipping export alias of ${ownerDisplay(outputKey)} — the name carries a value this pass recorded as secret`
+      );
+    } else if (declaredExportIsIntrinsic && keepsSecretReferenceToken(exportName)) {
+      // An INTRINSIC name that still carries a `{{resolve:...}}` token
+      // after this resolver's `skipDynamicReferences` pass is one the deploy
+      // WILL substitute plaintext into, and then refuse (the name would be a
+      // state KEY, which no redaction pass walks). The TOKEN decides, not
+      // the `secretsmanager` / `ssm-secure` spelling: a plain `ssm` token
+      // to a `SecureString` survives the pass too, and the spelling test
+      // published its alias as a phantom ADD (issue #4056). Gated on INTRINSIC
+      // deliberately: for a LITERAL name the deploy substitutes nothing —
+      // it uses the string verbatim as the key — so it publishes, and
+      // refusing here would be a phantom REMOVE on every run. That gate is
+      // the round-6 regression this replaces, which traded one divergence
+      // for two.
+      logger.debug(
+        `Diff skipping export alias of ${stripControlChars(outputKey)} — the name carries a secret reference`
+      );
+    } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
+      // Deploy skips this alias and keeps the colliding output's own value,
+      // so previewing it here would be a permanent phantom row. NOT a
+      // resolution failure: the bag matches what deploy writes, which is the
+      // point of the suppression flag, so nothing needs withholding.
+      logger.debug(
+        `Diff skipping export alias ${stripControlChars(exportName)} of ${stripControlChars(outputKey)} — collides with an output name`
+      );
+    } else {
+      // Written after the loop (a LITERAL one decided there, once
+      // `passResolvesSecret` is known).
+      pendingAliases.push({
+        outputKey,
+        exportName,
+        value,
+        literal: !declaredExportIsIntrinsic,
+      });
     }
   }
 
