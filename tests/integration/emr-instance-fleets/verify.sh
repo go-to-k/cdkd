@@ -25,6 +25,12 @@
 #      TargetOnDemandCapacity 1 -> 2 (ModifyInstanceFleet, polled until settled).
 #      Assert the fleet Id is UNCHANGED (in-place, no replace) and provisioned
 #      On-Demand capacity is 2.
+#   2b. Re-deploy with CDKD_TEST_REMOVAL=true (issue #1160): the TASK fleet's
+#      ResizeSpecifications is DROPPED from the template while its
+#      TargetOnDemandCapacity goes 2 -> 1. Assert the deploy succeeds and warns
+#      naming the removed property (with no CloudFormation-reset claim), the
+#      live On-Demand resize timeout stays 25 (cdkd sends no reset), and the
+#      companion resize landed.
 #   3. Destroy + assert the cluster is TERMINATED (it bills per instance-hour,
 #      so a leftover is never acceptable) with no ACTIVE cluster carrying the
 #      fixture tag, and the cdkd state file is removed. The standalone fleet is
@@ -84,6 +90,22 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 CLUSTER_NAME="cdkd-integ-emr-instance-fleets"
 CLEANUP_TAG_KEY="cdkd-integ"
 CLEANUP_TAG_VALUE="emr-instance-fleets"
+# The TASK fleet's templated On-Demand resize timeout (minutes). Phase 1 proves
+# it reached AWS; Phase 2b proves it survives its removal from the template.
+RESIZE_TIMEOUT="25"
+# Phase 2b (issue #1160): the provider's removal warning. The needle names the
+# removed property; the sentinel is an independent substring of the same line,
+# so a reworded warning fails loudly instead of reading as "not fired".
+REMOVAL_NEEDLE="(AWS::EMR::InstanceFleetConfig): property ResizeSpecifications was removed from the template"
+REMOVAL_SENTINEL="ModifyInstanceFleet keeps a setting it is not sent"
+# The shared caller's line for a removal no provider handles. It claims a
+# CloudFormation reset, which is unmeasured for this property, so it must not
+# name the fleet.
+SHARED_REMOVAL_CLAIM="(CloudFormation would reset it to its default)"
+# Deploy logs, streamed through `tee` and read back for the greps; removed by
+# cleanup on every exit path.
+PHASE2_LOG=""
+PHASE2B_LOG=""
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -190,6 +212,8 @@ wait_cluster_terminated() {
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  [ -n "${PHASE2_LOG:-}" ] && rm -f "${PHASE2_LOG}"
+  [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
   # Drop a stale lock BEFORE `state destroy`: an interrupted run leaves
   # lock.json behind, `state destroy` then refuses to acquire it and exits
   # without deleting anything. The tag sweep below still catches the cluster,
@@ -316,9 +340,16 @@ fleet_provisioned_ondemand() { # $1 = fleets json, $2 = fleet id
     '[ .[] | select(.Id == $fid) | .ProvisionedOnDemandCapacity ] | first // empty'
 }
 
+# On-Demand resize timeout (minutes) of the fleet with the given id; empty when
+# the fleet carries no ResizeSpecifications.
+fleet_ondemand_resize_timeout() { # $1 = fleets json, $2 = fleet id
+  printf '%s' "$1" | jq -r --arg fid "$2" \
+    '[ .[] | select(.Id == $fid) | .ResizeSpecifications.OnDemandResizeSpecification.TimeoutDurationMinutes ] | first // empty'
+}
+
 # --- Phase 1: deploy baseline ------------------------------------------
 echo "==> Phase 1: deploy fleet-based cluster + standalone TASK fleet (this takes ~10-20 min)"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 CID_P1="$(output_value ClusterId)"
@@ -367,6 +398,16 @@ if [ "${CAP_P1}" != "1" ]; then
 fi
 echo "    TASK fleet provisioned at capacity 1"
 
+# The baseline half of Phase 2b's removal assertion: the templated resize
+# timeout must be LIVE before its removal can be shown to leave it in place.
+TIMEOUT_P1="$(fleet_ondemand_resize_timeout "${FLEETS_P1}" "${FID_P1}")"
+if [ "${TIMEOUT_P1}" != "${RESIZE_TIMEOUT}" ]; then
+  echo "FAIL: Phase 1 expected TASK fleet OnDemandResizeSpecification.TimeoutDurationMinutes ${RESIZE_TIMEOUT}, got '${TIMEOUT_P1}'" >&2
+  echo "      raw fleets: ${FLEETS_P1}" >&2
+  exit 1
+fi
+echo "    TASK fleet ResizeSpecifications reached AWS (On-Demand timeout ${TIMEOUT_P1} min)"
+
 # --- Assertion: issue #1383 per-instance-type Configurations ------------
 # CFn spells the property bag `ConfigurationProperties`; the SDK member is
 # `Properties`, and the AWS SDK v3 serializer drops unknown members — so
@@ -382,8 +423,23 @@ echo "    all three InstanceTypeConfigs conversion sites verified against AWS (i
 
 # --- Phase 2: in-place resize ------------------------------------------
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (resize TASK fleet 1 -> 2)"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+PHASE2_LOG="$(mktemp)"
+set +e
+env -u CDKD_TEST_REMOVAL CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2_LOG}"
+PHASE2_RC=${PIPESTATUS[0]}
+set -e
+if [ "${PHASE2_RC}" -ne 0 ]; then
+  echo "FAIL [phase 2]: deploy exited ${PHASE2_RC}" >&2
+  exit 1
+fi
+PHASE2_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${PHASE2_LOG}")"
+# Negative control for Phase 2b's needle: this deploy resizes the fleet and
+# removes nothing, so the removal warning must not appear here.
+if grep -qF "${REMOVAL_SENTINEL}" <<<"${PHASE2_PLAIN}"; then
+  echo "FAIL [phase 2]: the #1160 removal warning fired on a deploy that removed no property" >&2
+  exit 1
+fi
 
 FID_P2="$(output_value TaskFleetId)"
 if [ "${FID_P1}" != "${FID_P2}" ]; then
@@ -402,6 +458,64 @@ if [ "${CAP_P2}" != "2" ]; then
   exit 1
 fi
 echo "    resize reached AWS (ProvisionedOnDemandCapacity 2)"
+
+# --- Phase 2b: removal of ResizeSpecifications (issue #1160) ------------
+# ResizeSpecifications leaves the TASK fleet's template while its live
+# On-Demand timeout is 25 (asserted in Phase 1). ModifyInstanceFleet keeps a
+# field it is not sent and cdkd sends no reset, so: the deploy succeeds, the
+# timeout STAYS 25, and the deploy names the removal in a warning (pre-fix it
+# was dropped silently). TargetOnDemandCapacity goes 2 -> 1 in the same
+# deploy, so ModifyInstanceFleet demonstrably fires beside the removal.
+echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (ResizeSpecifications dropped, TASK fleet 2 -> 1)"
+PHASE2B_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2B_LOG}"
+PHASE2B_RC=${PIPESTATUS[0]}
+set -e
+if [ "${PHASE2B_RC}" -ne 0 ]; then
+  echo "FAIL [phase 2b]: removing ResizeSpecifications failed the deploy (exit ${PHASE2B_RC}); cdkd must leave it in place and warn" >&2
+  exit 1
+fi
+PHASE2B_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${PHASE2B_LOG}")"
+# Needle and sentinel are independent substrings of the SAME warning line: the
+# sentinel without the needle means the wording drifted, not that the warning
+# did not fire.
+if ! grep -qF "${REMOVAL_NEEDLE}" <<<"${PHASE2B_PLAIN}"; then
+  if grep -qF "${REMOVAL_SENTINEL}" <<<"${PHASE2B_PLAIN}"; then
+    echo "FAIL [phase 2b]: a removal warning fired but no longer reads '${REMOVAL_NEEDLE}' -- the wording drifted; update this fixture" >&2
+  else
+    echo "FAIL [phase 2b]: removing ResizeSpecifications produced no warning (issue #1160: the removal was dropped silently)" >&2
+  fi
+  exit 1
+fi
+# One process, not `grep | grep -q`: under pipefail the second grep exiting
+# early on a match SIGPIPEs the first, and the pipeline then reads as "no match".
+if awk -v a="(AWS::EMR::InstanceFleetConfig)" -v b="${SHARED_REMOVAL_CLAIM}" 'index($0, a) && index($0, b) { f = 1 } END { exit !f }' <<<"${PHASE2B_PLAIN}"; then
+  echo "FAIL [phase 2b]: the shared removal warning claimed a CloudFormation reset for the fleet; the provider must handle the removal itself" >&2
+  exit 1
+fi
+echo "    deploy warned that ResizeSpecifications is left in place"
+
+FID_P2B="$(output_value TaskFleetId)"
+if [ "${FID_P2}" != "${FID_P2B}" ]; then
+  echo "FAIL: TASK fleet was REPLACED in Phase 2b (${FID_P2} -> ${FID_P2B})" >&2
+  exit 1
+fi
+FLEETS_P2B="$(list_instance_fleets_json "${CID_P1}")"
+TIMEOUT_P2B="$(fleet_ondemand_resize_timeout "${FLEETS_P2B}" "${FID_P2B}")"
+if [ "${TIMEOUT_P2B}" != "${RESIZE_TIMEOUT}" ]; then
+  echo "FAIL [phase 2b]: expected the On-Demand resize timeout to stay ${RESIZE_TIMEOUT} (cdkd sends no reset), got '${TIMEOUT_P2B}'" >&2
+  echo "      raw fleets: ${FLEETS_P2B}" >&2
+  exit 1
+fi
+CAP_P2B="$(fleet_provisioned_ondemand "${FLEETS_P2B}" "${FID_P2B}")"
+if [ "${CAP_P2B}" != "1" ]; then
+  echo "FAIL [phase 2b]: expected the companion resize to ProvisionedOnDemandCapacity 1, got '${CAP_P2B}' (ModifyInstanceFleet did not apply)" >&2
+  echo "      raw fleets: ${FLEETS_P2B}" >&2
+  exit 1
+fi
+echo "    removal left in place (timeout ${TIMEOUT_P2B} min) beside an applied resize (capacity 1)"
 
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy (EMR termination takes a few minutes)"
@@ -446,4 +560,4 @@ echo "    no active cluster with the fixture tag remains (verified, not inferred
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — AWS::EMR::InstanceFleetConfig SDK provider: deploy + in-place resize + destroy, with all three InstanceTypeConfigs conversion sites verified against AWS"
+echo "[verify] PASS — AWS::EMR::InstanceFleetConfig SDK provider: deploy + in-place resize + ResizeSpecifications removal warning + destroy, with all three InstanceTypeConfigs conversion sites verified against AWS"
