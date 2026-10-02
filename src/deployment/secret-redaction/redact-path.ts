@@ -12,6 +12,7 @@ import {
   positionByEmbeddedSpan,
   positionByCrossStackSource,
   positionByIntrinsicSkeleton,
+  positionByParameterPlaceholders,
   positionByIntrinsicFrame,
   positionListByCrossStackSource,
   identityKeyFor,
@@ -42,13 +43,17 @@ import {
  * fetch and no value matching.
  *
  * A source leaf that is an intrinsic OBJECT has no string to copy, so it goes
- * through three positioning passes before the value scan, in this order:
+ * through four positioning passes before the value scan, in this order:
  *
  * - {@link positionByCrossStackSource} (issue #2059), for the two CROSS-STACK
  *   spellings `Fn::ImportValue` / `Fn::GetStackOutput`. Those carry no text
  *   about their expression at all, so the skeleton below structurally cannot
  *   describe them; instead the RESOLVER recorded, while reading the producer,
  *   which `{{resolve:...}}` token this exact leaf identity reads.
+ * - {@link positionByParameterPlaceholders} (issue #2320), for an `Fn::Sub` /
+ *   `Fn::Join` over a nested-stack child's own parameters: each placeholder
+ *   takes the expression its `{Ref: <Param>}` association names, so a leaf
+ *   EMBEDDING a parameter persists what the diff side renders.
  * - {@link positionByIntrinsicSkeleton} (issue #1916), for `Fn::Join` /
  *   `Fn::Sub`: when the intrinsic's literal parts describe exactly one of the
  *   recorded secret expressions, THAT is persisted. This is the dominant CDK
@@ -191,6 +196,12 @@ export function redactByPath(
     // strictly better evidence than a pattern that matched everything.
     const certified = positionByCrossStackSource(bag, source, secrets);
     if (certified !== undefined) return certified;
+    // The EMBEDDING twin of the `{Ref: <Param>}` arm above (issue #2320): an
+    // `Fn::Sub` / `Fn::Join` over the child's own parameters, each placeholder
+    // answered from its OWN association. Before the skeleton arm, because an
+    // association is exact evidence where a pattern is a search.
+    const placeheld = positionByParameterPlaceholders(bag, source, secrets);
+    if (placeheld !== undefined) return placeheld;
     const positioned = positionByIntrinsicSkeleton(bag, source, secrets, secretExpressions);
     if (positioned !== undefined) return positioned;
     // The FRAME arm LAST (issue #2745): a leaf that EMBEDS one token inside
