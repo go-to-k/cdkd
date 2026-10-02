@@ -72,13 +72,16 @@
 # stand-down, so the CcInstance arm depends on the handler's message keeping
 # that wording.
 #
-# NOT YET OBSERVED (the ASG arm was added after the first passing run): that
+# OBSERVED in the ASG arm's first live run (2026-10-02, go-to-k/cdkd#4397):
 # Auto Scaling's AccessDenied for the deny role says "explicit deny" (phase 1c
 # counts only that; otherwise it fails its precondition naming the last
-# answer), and the exact wording of the `prevent-all-deletion` refusal and
-# that it matches no retryable pattern. A retryable one would end the destroy at the attempt cap,
-# where no compensation runs (issue #4318), and phase 2 would fail naming the
-# missing compensation line.
+# answer), and the `prevent-all-deletion` refusal is terminal, since phase 2
+# reached the instance compensation. The refusal's exact wording was not
+# captured. If it ever turned retryable, the destroy would end at the attempt
+# cap, where no compensation runs (issue #4318), and phase 2 would fail naming
+# the missing compensation line. The same run with the fix copy-reverted failed
+# exactly there ("no compensation line for 'EC2 Instance launched by
+# AutoScalingGroup ProtectedAsg: '").
 #
 # Not covered live here: the VerifiedPermissions PolicyStore's OBJECT-valued
 # guard (`{"Mode":"ENABLED"}`). Its compensation is unit-tested, and its flip
