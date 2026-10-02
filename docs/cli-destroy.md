@@ -503,17 +503,10 @@ on is turned back on. Nothing is put back once AWS has accepted
 being terminated with the group. When a re-enable fails and cdkd reads the
 instance back (`DescribeInstances`) as `shutting-down` or `terminated` (the
 group may have replaced it after the flip), it reports the instance as gone at
-**warn**, as for a not-found error below. Two cases restore nothing:
-
-- An instance detached from the group out of band after the flip, when the
-  group is then deleted or already gone: the delete counts as done and the
-  detached, live instance keeps its guard off.
-- A group whose state records `provisionedBy: cc-api` (for example, its
-  template set a property the SDK provider would drop) is deleted by a fresh
-  SDK provider on each attempt, which keeps no record of an earlier attempt's
-  flip. So once an attempt has turned the guards off and failed with a
-  retryable error, a later attempt that fails terminally restores neither the
-  group's `DeletionProtection` nor its instances' guards.
+**warn**, as for a not-found error below. An instance detached from the group
+out of band after the flip is not restored when the group is then deleted or
+already gone: the delete counts as done and the detached, live instance keeps
+its guard off.
 
 On the DynamoDB pair a Ctrl-C landing in a wait after the flip is compensated
 too. Four limits are deliberate:
