@@ -37,8 +37,8 @@ import { wholeStringLeavesOf } from './mask-only.js';
  *
  * DUPLICATED, deliberately: `intrinsic-resolver/context.ts` declares the same
  * literal under the same name (for the `Outputs.<Name>` re-resolution of issue
- * #2055). This module is a LEAF by design -- see the file header, it imports
- * nothing, because both the resolver and the deploy engine consume it -- so
+ * #2055). This family is a LEAF by design -- see the header of
+ * `secret-redaction.ts`, it imports nothing outside `secret-redaction/`, because both the resolver and the deploy engine consume it -- so
  * importing that spelling would close a cycle, and exporting this one for the
  * resolver to import would make the leaf a source of values rather than of
  * pure functions. The two cannot drift into DISAGREEMENT in any way that

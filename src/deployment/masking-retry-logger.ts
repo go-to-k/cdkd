@@ -20,7 +20,7 @@
  * silently satisfied by a raw `logger.warn`.
  *
  * **Why this module and not `secret-redaction.ts`.** That file is a documented
- * no-import LEAF (see its header) and this helper needs `RetryLogger`, which
+ * LEAF, importing nothing outside `secret-redaction/` (see its header) and this helper needs `RetryLogger`, which
  * lives in `retry.ts`. Homing it there would give the leaf an import edge; a
  * new module keeps both invariants and gives the eager callers —
  * `src/cli/commands/drift.ts` and the deploy engine's two `--replace` sites —

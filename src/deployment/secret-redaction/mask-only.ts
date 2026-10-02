@@ -32,7 +32,7 @@ import { MIN_NEEDLE_LENGTH } from './rules.js';
  * (issue #1901). Recording it here would pin it for the process.
  *
  * It lives in THIS module rather than in the resolver even though the resolver
- * is its only writer, for two reasons. This module is the LEAF — the resolver
+ * is its only writer, for two reasons. This family is the LEAF — the resolver
  * already imports it, so the store is reachable from the writer without adding
  * an edge, while the reverse (a leaf importing the resolver) would close a
  * cycle. And the READER is {@link isKnownSecretExpression} right here, so
@@ -491,4 +491,80 @@ export function carryMaskOnlyMarks(from: RecordedSecretValues, to: RecordedSecre
       if (isMaskOnlyPlaintext(to, plaintext)) sideSetOf(table, to).add(plaintext);
     }
   }
+}
+
+/**
+ * Is this template expression one whose resolved value is a SECRET?
+ *
+ * Two independent answers, and both are needed:
+ *
+ * - A `secretsmanager` reference is secret BY DEFINITION, so spelling settles
+ *   it with no lookup. This arm is what makes the #1904 fix work at all: when
+ *   two expressions resolve to the same value the value-keyed map keeps only the
+ *   last, so asking the map whether the LOSING expression was a secret answers
+ *   "no" — precisely for the pair the fix exists to separate.
+ * - An `ssm` reference is secret only when its parameter is a `SecureString`
+ *   (issue #1901), which is not derivable from the string, so that arm consults
+ *   what the resolver actually recorded.
+ *
+ * `secretExpressions` is what closes the ssm/ssm case (issue #1910). Derived
+ * from the value-keyed map it is useless for exactly this question — the map
+ * already collapsed the pair, so the losing expression is absent from
+ * `secrets.values()` — which is why callers pass the resolver's own SET of
+ * secret expressions instead. Callers that pass nothing fall back to the map's
+ * values, i.e. to the pre-#1910 behavior: the pair still collapses, but nothing
+ * leaks (both leaves are redacted, just onto one expression).
+ */
+export function isKnownSecretExpression(
+  expression: string,
+  secretExpressions: ReadonlySet<string>
+): boolean {
+  return (
+    isSecretExpressionByVerdictOrSpelling(expression) ||
+    // The pass's own map collapsed every group of expressions sharing a
+    // resolved value down to its last member, so the LOSING members reach this
+    // arm and only this arm (issue #1910).
+    secretExpressions.has(expression)
+  );
+}
+
+/**
+ * The arms of {@link isKnownSecretExpression} that need NO pass-local set:
+ * `secretsmanager` / `ssm-secure` by SPELLING, and anything this process
+ * PROVED secret.
+ *
+ * Split out so the resolver can ask the same question at the issue #2059
+ * recording seam, where no `secretExpressions` set is in hand. It must not
+ * acquire an argless default of its own — that is how a predicate silently
+ * starts answering about a narrower population than its caller believes.
+ *
+ * The omitted arm costs the caller only REFUSALS. A cross-REGION `ssm`
+ * `SecureString` is the one shape it can miss, because the producer-region
+ * resolver is a GUEST and `pinSecretVerdict` deliberately writes nothing
+ * process-wide from a guest (issue #1934's review) — so such a token is simply
+ * not recorded at the seam, and its leaf falls back to the value scan.
+ *
+ * GUEST SUPPRESSION ALSO CUTS THE OTHER WAY, and saying only the above would be
+ * one-sided. The same early return means a guest's DEFINITIVE PUBLIC verdict
+ * never RETRACTS a memo either, so if the consumer's own resolver already
+ * pinned that spelling as a `SecureString`, this answers `true` for a
+ * producer-region parameter that is really a plain `String`. The outcome is
+ * bounded to a spurious UPDATE (#1901's class) and can never be a plaintext:
+ * the answer persisted is still an EXPRESSION, and the presence test beside
+ * this one at the seam still requires the pass to have resolved it to a real
+ * needle. Closing it means keying the verdict store by region, which is a
+ * change to a store this function only reads.
+ */
+export function isSecretExpressionByVerdictOrSpelling(expression: string): boolean {
+  return (
+    // The two spellings that are secret whatever they point at — the same
+    // pair `SPELLED_SECRET_REFERENCE_PREFIXES` lists; `ssm-secure` joined here
+    // with issue #2482. The resolver still records that expression into the
+    // verdict store at its shared tail, but for ENUMERATION (the #1916
+    // losing-member recovery), not because the verdict needs a memo — the
+    // spelling answers here before anything has been resolved.
+    expression.startsWith('{{resolve:secretsmanager:') ||
+    expression.startsWith('{{resolve:ssm-secure:') ||
+    isRecordedSecretExpression(expression)
+  );
 }

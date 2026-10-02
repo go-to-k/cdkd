@@ -3,7 +3,6 @@ import {
   type PathSourceRules,
   isDynamicReferenceString,
   isSingleDynamicReferenceToken,
-  isKnownSecretExpression,
   isPlainObject,
   DYNAMIC_REFERENCE_INNER,
 } from './rules.js';
@@ -17,7 +16,11 @@ import {
   positionListByCrossStackSource,
   identityKeyFor,
 } from './positions.js';
-import { carriesSecretMask, isRecordedSecretExpression } from './mask-only.js';
+import {
+  carriesSecretMask,
+  isKnownSecretExpression,
+  isRecordedSecretExpression,
+} from './mask-only.js';
 
 /**
  * PATH-based redaction: walk `bag` alongside a SOURCE bag that still carries the

@@ -148,8 +148,8 @@ function literalStringOrUndefined(value: unknown): string | undefined {
  * would degrade to the plaintext-keyed value scan for exactly the nested-stack
  * OUTPUT references that positioning exists for. A shared function cannot drift.
  *
- * IT LIVES HERE, in a module that is a LEAF by design (see the file header --
- * it imports nothing, because both the resolver and the deploy engine consume
+ * IT LIVES HERE, in a family that is a LEAF by design (see the header of
+ * `secret-redaction.ts` -- it imports nothing outside `secret-redaction/`, because both the resolver and the deploy engine consume
  * it), rather than in the resolver: the resolver ALREADY imports this module,
  * so the dependency runs in the only direction that does not create a cycle.
  *
