@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
+import { familyLocation, readRollbackFamily } from '../_rollback-family.js';
 import {
   replayRollback,
   replayFailedOperations,
@@ -978,10 +978,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // a caller cannot forget; and a caller that pre-rendered it would hand a
     // quoted id to the helper, which is harmless today but would make the two
     // twins disagree about who owns the rule.
-    const src = readFileSync(
-      new URL('../../../src/deployment/rollback-executor.ts', import.meta.url),
-      'utf8'
-    );
+    const src = readRollbackFamily();
     const helper = (name: string): string => {
       const start = src.indexOf(`async function ${name}(`);
       expect(start).toBeGreaterThan(0);
@@ -1044,10 +1041,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // reverse-replacement sites no unit case drives (a re-create failure, a
     // delete-new failure) are pinned by shape; the collision `msg` is pinned
     // by shape here too, beside the runtime case above that drives it.
-    const src = readFileSync(
-      new URL('../../../src/deployment/rollback-executor.ts', import.meta.url),
-      'utf8'
-    );
+    const src = readRollbackFamily();
     const lines = src.split('\n');
     const free = /\$\{(\w+) instanceof Error \? \1\.message : String\(\1\)\}/;
     // The single exception is the `survivorReason` string, which is PERSISTED
@@ -1056,7 +1050,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     lines.forEach((line, i) => {
       if (!free.test(line)) return;
       if (!/\bsurvivorReason\s*=/.test(statementAround(lines, i))) {
-        offenders.push(`${i + 1}: ${line.trim()}`);
+        offenders.push(`${familyLocation(i + 1)}: ${line.trim()}`);
       }
     });
     expect(offenders).toEqual([]);
@@ -1192,10 +1186,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // `// reason: ...` comment can neither satisfy nor cut it. The
     // `previewState[op.logicalId]`-style bracket access is not `${...}` and is
     // correctly not matched.
-    const src = readFileSync(
-      new URL('../../../src/deployment/rollback-executor.ts', import.meta.url),
-      'utf8'
-    );
+    const src = readRollbackFamily();
     const lines = src.split('\n');
     const bare = /\$\{op\.(?:logicalId|resourceType|changeType)\}/g;
     const offenders: string[] = [];
@@ -1207,7 +1198,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       bareCount += n;
       const stmt = statementAround(lines, i);
       if (/^\s*reason:|\bsurvivorReason\s*=/m.test(stmt)) return;
-      offenders.push(`${i + 1}: ${line.trim()}`);
+      offenders.push(`${familyLocation(i + 1)}: ${line.trim()}`);
     });
 
     expect(offenders).toEqual([]);
@@ -1243,10 +1234,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // remedy, takes `safe()` for both -- pinned below), inside the
     // `stateClause` handed to `retainedSurvivorMessages` the helper wraps the
     // warn copy itself, and inside `survivorReason` it is persisted raw.
-    const src = readFileSync(
-      new URL('../../../src/deployment/rollback-executor.ts', import.meta.url),
-      'utf8'
-    );
+    const src = readRollbackFamily();
     const lines = src.split('\n');
     const bareOnLog = lines
       .map((l, i) => [i, l] as const)
@@ -1255,7 +1243,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       )
       // a `logger.*(` opener means the statement is a render
       .filter(([i]) => /logger\.(info|warn|error|debug)\(/.test(statementAround(lines, i)))
-      .map(([i, l]) => `${i + 1}: ${l.trim()}`);
+      .map(([i, l]) => `${familyLocation(i + 1)}: ${l.trim()}`);
     expect(bareOnLog).toEqual([]);
     // And the fence sees its input: the bare form exists -- the `stateClause`
     // argument to `retainedSurvivorMessages`, which wraps its warn copy itself.

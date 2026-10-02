@@ -117,6 +117,7 @@ const DESTROY_SCOPE_PIN = [
   'src/deployment/retry.ts',
   'src/deployment/retryable-errors.ts',
   'src/deployment/rollback-executor.ts',
+  'src/deployment/rollback-executor/**',
   'src/provisioning/cloud-control-provider.ts',
   'src/provisioning/provider-registry.ts',
   'src/provisioning/providers/**',
@@ -151,6 +152,7 @@ const DESTROY_STRICT_PIN = [
   'src/deployment/retry.ts',
   'src/deployment/retryable-errors.ts',
   'src/deployment/rollback-executor.ts',
+  'src/deployment/rollback-executor/**',
   'src/provisioning/provider-registry.ts',
 ];
 
@@ -301,14 +303,14 @@ function destroyIncludeScope(): string[] {
  * sharing one, which is ASSERTED below rather than assumed.
  */
 function destroyStrictBasenamesFromHookHeader(): string[] {
-  const m = /^# - "strict-delete" files \(((?:[a-z0-9-]+\.ts(?:,\s*(?:\n#\s+)?)?)+)\):/m.exec(
+  const m = /^# - "strict-delete" files \(((?:[a-z0-9-]+(?:\.ts|\/\*\*)(?:,\s*(?:\n#\s+)?)?)+)\):/m.exec(
     read(DESTROY_HOOK),
   );
   expect(
     m,
     'integ-destroy-gate.sh: could not find the header\'s `# - "strict-delete" files (a.ts, ' +
-      'b.ts, ...):` enumeration. The anchor was reworded, or an entry is no longer a bare ' +
-      '`<name>.ts`. This REFUSES rather than returning [], which would compare equal to an ' +
+      'b.ts, ...):` enumeration. The anchor was reworded, or an entry is neither a bare ' +
+      '`<name>.ts` nor a `<dir>/**`. This REFUSES rather than returning [], which would compare equal to an ' +
       'empty expectation and pass having compared nothing.',
   ).not.toBeNull();
   const out = m![1]
@@ -331,7 +333,13 @@ function destroyStrictPaths(): string[] {
 
 /** The same set as basenames, which is the shape the header comment writes. */
 function destroyStrictBasenamesFromPattern(): string[] {
-  return destroyStrictPaths().map((p) => p.slice(p.lastIndexOf('/') + 1));
+  // A directory entry (`<dir>/**`) keeps its directory name: the header writes
+  // `rollback-executor/**`, and a bare `**` would name no file.
+  return destroyStrictPaths().map((p) =>
+    p.endsWith('/**')
+      ? p.slice(p.lastIndexOf('/', p.length - 4) + 1)
+      : p.slice(p.lastIndexOf('/') + 1),
+  );
 }
 
 // ---------------------------------------------------------------------------

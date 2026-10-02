@@ -26,7 +26,7 @@
  *    does not itself spell becomes `SECRET_MASK`, a value the persisted-state
  *    consumers already model (`drift.ts`'s `collectSecretMaskPaths` /
  *    `preserveLiveValuesAtMaskedLeaves`, `runAccept`'s refusal,
- *    `rollback-executor.ts`'s `refuseMaskedReplayBaseline`).
+ *    `rollback-executor/replay-props.ts`'s `refuseMaskedReplayBaseline`).
  *
  * The tests are written against `redactSecretsForState` in the configuration
  * the writers reach it in — an EMPTY map plus `STATE_SOURCED_BASELINE_RULES` —

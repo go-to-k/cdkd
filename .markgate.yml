@@ -148,11 +148,12 @@ gates:
       # resource and re-creates the old one — so this is delete logic by any
       # reading. Found unscoped while fixing issue #2042, not named by it.
       - "src/deployment/rollback-executor.ts"
+      - "src/deployment/rollback-executor/**"
       # `getProviderFor` picks the provider that DELETES the resource, not just
       # the one that creates it: `deploy-engine.ts` reads it for the plain
       # delete and for a replacement's old-resource delete, `destroy-runner.ts`
       # for every `cdkd destroy`, and `rollback-executor.ts` at seven sites
-      # (`grep -c 'getProviderFor({' src/deployment/rollback-executor.ts` -- a
+      # (`grep -rc 'getProviderFor({' src/deployment/rollback-executor*` -- a
       # plain `grep getProviderFor` counts two comment mentions as well). So
       # the routing decision reroutes the delete path for every resource in a
       # template at once. It sits in the STRICT half of the hook rather than

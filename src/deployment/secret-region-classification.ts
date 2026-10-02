@@ -356,7 +356,7 @@ export function regionLessSecretName(expression: string): string | undefined {
  *     array, and leave a sibling MIXED leaf in plaintext — "a regression of
  *     shipped redaction, in the GHSA disclosure direction". That is reachable
  *     with a NON-EMPTY map on a `STATE_SOURCED_READBACK_RULES` caller, e.g.
- *     `rollback-executor.ts`'s `redactRollbackRecord` ->
+ *     `rollback-executor/replay-secrets.ts`'s `redactRollbackRecord` ->
  *     `scrubResourceRecord`. It is not what fires here: the case this
  *     paragraph is about records FEWER needles, not more, so nothing new can
  *     rewrite an anchor.

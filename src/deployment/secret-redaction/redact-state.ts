@@ -73,7 +73,7 @@ import {
  * `SECRET_MASK` is already a first-class persisted state with its own
  * downstream guards (`drift.ts`'s `collectSecretMaskPaths` /
  * `preserveLiveValuesAtMaskedLeaves`, `runAccept`'s refusal,
- * `rollback-executor.ts`'s `refuseMaskedReplayBaseline`), because the
+ * `rollback-executor/replay-props.ts`'s `refuseMaskedReplayBaseline`), because the
  * mask-only channel (issue #2274) already puts one there.
  *
  * WHY STRINGS ONLY. A recorded secret is a `string` by the type of

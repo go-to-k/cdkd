@@ -653,7 +653,7 @@ export function isPlainIdent(value: string, opts?: { maxCodePoints?: number }): 
  * deny-list that refused a leading `-`, and review defeated it with a leading
  * `~`. A deny-list has to enumerate every character a shell treats specially
  * BEFORE cdkd sees the word, and the set of things nobody thought of is
- * unbounded. The repo already settled this once — `rollback-executor.ts`'s
+ * unbounded. The repo already settled this once — `rollback-executor/messages.ts`'s
  * `PASTEABLE_LOGICAL_ID` is `/^[A-Za-z0-9]{1,255}$/`, with a comment naming
  * `~user` and `=x` by name.
  *

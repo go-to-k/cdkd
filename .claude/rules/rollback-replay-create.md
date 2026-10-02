@@ -2,6 +2,7 @@
 description: the rollback replay-CREATE bag and CC fallback-name fill
 paths:
   - 'src/deployment/rollback-executor.ts'
+  - 'src/deployment/rollback-executor/**'
 ---
 
 # The replay-CREATE bag
@@ -9,7 +10,7 @@ paths:
 Both arms live in `replaySingle`'s `reverse-replacement` branch: create-first,
 and the delete-new-first fallback the name-collision catch routes to.
 **`effectiveProperties` is honoured**
-([#1682](https://github.com/go-to-k/cdkd/issues/1682)): `create()` gets
+(#1682): `create()` gets
 `previousState.properties`; a RETURNED bag replaces the record's `properties`
 wholesale, reporting none keeps it. Do not re-narrow that result type.
 

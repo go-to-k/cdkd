@@ -162,7 +162,7 @@ declare module '../intrinsic-function-resolver.js' {
  * import is untouched.
  *
  * THE WALK BELOW IS A THIRD COPY, and that is recorded rather than fixed.
- * `rollback-executor.ts`'s `resolveReplayProps` carries the same descent, and
+ * `rollback-executor/replay-props.ts`'s `resolveReplayProps` carries the same descent, and
  * `drift.ts`'s `resolveStateSecretExpressions` the same idea. Extracting one
  * helper is the right end state and is NOT this change's to make: the natural
  * home is beside those callers, in files a parallel lane owns, and a

@@ -23,7 +23,7 @@ and why sanitizing the id in place would be wrong.
 ## The descriptor, and what it does NOT make safe
 
 The `stack (region)` descriptor renders through `displayIdent`
-([#3179](https://github.com/go-to-k/cdkd/issues/3179)), and the SPLIT is
+(#3179), and the SPLIT is
 available structurally as `parseStateKey`, so no caller re-parses the rendered
 form.
 
@@ -48,7 +48,7 @@ since every character it admits is already plain.
 
 ## The STRICTER sibling, and why it is not this one
 
-`rollback-executor.ts` keeps a private `PASTEABLE_LOGICAL_ID`
+`deployment/rollback-executor/messages.ts` keeps a private `PASTEABLE_LOGICAL_ID`
 (`/^[A-Za-z0-9]{1,255}$/`) for `cdkd rollback --orphan <id>`: CloudFormation's
 own logical-id charset, which admits nothing a shell treats specially.
 

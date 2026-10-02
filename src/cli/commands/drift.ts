@@ -6321,7 +6321,7 @@ async function runRevert(
             // is why the last sentence speaks of this refusal, not the mask.
             // The first two write the mask into `properties` as well, so the
             // sibling refusals reach that population too: `export.ts`'s
-            // blocker, `rollback-executor.ts`'s `refuseMaskedReplayBaseline`
+            // blocker, `rollback-executor/replay-props.ts`'s `refuseMaskedReplayBaseline`
             // and `deploy-engine/masking.ts`'s `refuseRedactedAttributeReads`
             // name the `Fn::Base64` writer with a remedy of their own (issue
             // #2881).

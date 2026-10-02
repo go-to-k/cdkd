@@ -2649,7 +2649,7 @@ export function findDroppedOutputReaders(
  * FOREIGN region an ARN-named secret reference asks for (issue
  * [#2109](https://github.com/go-to-k/cdkd/issues/2109)).
  *
- * The same shape as `rollback-executor.ts`'s `ReplayResolvers`, and for the
+ * The same shape as `rollback-executor/replay-secrets.ts`'s `ReplayResolvers`, and for the
  * same reasons. One instance per stack rather than per reference, because the
  * resolved-value cache lives on the resolver INSTANCE (issue #1933) — a
  * resolver per reference would re-fetch every secret once per reference. And
@@ -2710,7 +2710,7 @@ interface CrossRegionSecretContext {
 
 /**
  * The refusal a region-AMBIGUOUS reference raises (issue #2109), the twin of
- * `rollback-executor.ts`'s `regionAmbiguousReplaySecretError`.
+ * `rollback-executor/replay-secrets.ts`'s `regionAmbiguousReplaySecretError`.
  *
  * A `CdkdError`, so it leaves `scrubStack` -> `scrubCommand` ->
  * `withErrorHandling` as a NON-ZERO EXIT with the message printed. That
