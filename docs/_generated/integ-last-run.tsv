@@ -88,15 +88,15 @@ drift-revert-arrays	2026-09-29T23:22:50Z	PASS	185	verify.sh	PR #4053 (#4042 + #4
 drift-revert-vpc	2026-10-02T01:07:30Z	PASS	366	verify.sh	PR #4381 resolver cross-stack and dynamic-ref split; rc ok, orph clean
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-09-25T11:43:35Z	PASS	181	verify.sh	PR 3726 lane: scrub rotated read-name verdict, rebased onto #3725; rc ok, orph clean
-dynamodb-autoscaling	2026-09-27T21:04:33Z	PASS	75	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
+dynamodb-autoscaling	2026-10-02T02:19:18Z	PASS	76	verify.sh	rc ok, orph clean; PR #4371 (#3255 RecoveryPeriodInDays refusal), head 1f280fcd3
 dynamodb-globaltable	2026-10-01T05:58:25Z	PASS	1988	verify.sh	rc ok, orph clean (#4288)
-dynamodb-gsi-update	2026-09-27T20:52:47Z	PASS	1358	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean; Phase 2f (#3777) 3/3
-dynamodb-ondemand	2026-09-27T21:02:28Z	PASS	291	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
-dynamodb-sse	2026-09-27T21:03:18Z	PASS	50	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
-dynamodb-stream-filter	2026-09-27T21:07:59Z	PASS	71	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
-dynamodb-streams	2026-10-01T10:13:53Z	PASS	317	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 11 deleted 0 errors, orph clean
-dynamodb-tableclass-switch	2026-09-27T21:05:43Z	PASS	70	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
-dynamodb-ttl-attr-change	2026-09-27T21:06:48Z	PASS	65	verify.sh	PR #3901 merge-gate run (post-review head); rc ok, orph clean
+dynamodb-gsi-update	2026-10-02T02:48:21Z	PASS	1819	verify.sh	rc ok, orph clean; PR #4371 (#3255 RecoveryPeriodInDays refusal), head 1f280fcd3
+dynamodb-ondemand	2026-10-02T02:21:53Z	PASS	231	verify.sh	rc ok, orph clean; PR #4371 (#3255 RecoveryPeriodInDays refusal), head 1f280fcd3; phases 1.7a/1.7b refusal arms
+dynamodb-sse	2026-10-02T02:18:47Z	PASS	45	verify.sh	rc ok, orph clean; PR #4371 (#3255 RecoveryPeriodInDays refusal), head 1f280fcd3
+dynamodb-stream-filter	2026-10-02T02:19:03Z	PASS	60	verify.sh	rc ok, orph clean; PR #4371 (#3255 RecoveryPeriodInDays refusal), head 1f280fcd3
+dynamodb-streams	2026-10-02T02:22:13Z	PASS	250	verify.sh	rc ok, orph clean; PR #4371 (#3255 RecoveryPeriodInDays refusal), head 1f280fcd3
+dynamodb-tableclass-switch	2026-10-02T02:19:07Z	PASS	65	verify.sh	rc ok, orph clean; PR #4371 (#3255 RecoveryPeriodInDays refusal), head 1f280fcd3
+dynamodb-ttl-attr-change	2026-10-02T02:19:04Z	PASS	60	verify.sh	rc ok, orph clean; PR #4371 (#3255 RecoveryPeriodInDays refusal), head 1f280fcd3
 ec2-instance	2026-10-01T14:57:23Z	PASS	105	verify.sh	rc ok, orph clean (#4290)
 ec2-instance-fanout	2026-09-30T18:16:33Z	PASS	175	verify.sh	rc ok, orph clean (#4242)
 ec2-route-targets	2026-09-25T13:35:54Z	PASS	631	verify.sh	rc ok, orph clean (#3728)
