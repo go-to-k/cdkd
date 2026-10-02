@@ -1254,7 +1254,7 @@ value left in place that `update()` names in its own warning). The caller
 then warns once per resource for any removed property in neither map,
 naming it as left at its current AWS value AND saying CloudFormation would
 reset it to its default — so a property with no such reset (FSx
-`StorageCapacity` cannot shrink) goes into `removalHandledInUpdate` with its
+`StorageCapacity` cannot shrink), or one whose reset is unmeasured, goes into `removalHandledInUpdate` with its
 own warning, never into the shared line. A type without that entry is never
 warned about, because cdkd cannot say what its `update()` does.
 

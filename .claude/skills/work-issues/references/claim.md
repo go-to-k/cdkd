@@ -61,7 +61,7 @@ Mandatory, BEFORE the first edit (the issue-level DISJOINT-FILE rule).
 that list**: beside the fix and its unit test, the integ fixture §8-c will
 extend (`grep -rl '<type's last segment>' tests/integration/*/lib`) and, when a
 provider gains `context?: UpdateContext`, triage.md §2's checker/test pair — a
-narrower list stops the lane mid-run to ask (3 of 4 lanes on go-to-k/cdkd#1160).
+narrower list stops the lane mid-run to ask (go-to-k/cdkd#1160).
 
 **Correct the classification lines in the same turn as the claim**, the first
 moment the run holds evidence: rewrite a legacy packed body to the four-line
