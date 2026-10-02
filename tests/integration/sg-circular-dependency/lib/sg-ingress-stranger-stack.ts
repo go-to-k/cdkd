@@ -27,7 +27,7 @@ export class SgIngressStrangerStack extends cdk.Stack {
   constructor(
     scope: Construct,
     id: string,
-    props: cdk.StackProps & { groupId: string; cidr: string }
+    props: cdk.StackProps & { groupId: string; cidr: string; failAfter?: boolean }
   ) {
     super(scope, id, props);
 
@@ -40,7 +40,7 @@ export class SgIngressStrangerStack extends cdk.Stack {
     // same standalone `AWS::EC2::SecurityGroupIngress`.
     // verify.sh adds 10.63.0.0/16 out of band; the UPDATE arm first deploys
     // another range (`-c strangerCidr=...`) and then moves the rule onto it.
-    new ec2.CfnSecurityGroupIngress(this, 'StrangerIngress', {
+    const stranger = new ec2.CfnSecurityGroupIngress(this, 'StrangerIngress', {
       groupId: props.groupId,
       ipProtocol: 'tcp',
       fromPort: 5432,
@@ -48,5 +48,21 @@ export class SgIngressStrangerStack extends cdk.Stack {
       cidrIp: props.cidr,
       description: 'Identical to a rule another owner added (go-to-k/cdkd#4355)',
     });
+
+    // go-to-k/cdkd#4402 POP arm (`-c strangerFailAfter=1`): a rule on a group
+    // that does not exist, created only AFTER StrangerIngress, so the deploy
+    // fails with a definite InvalidGroup.NotFound once StrangerIngress has
+    // completed. The clean automatic rollback then reverts StrangerIngress and
+    // pops the run's segment — the real carry of `supersededLogicalIds`.
+    if (props.failAfter) {
+      const fail = new ec2.CfnSecurityGroupIngress(this, 'FailIngress', {
+        groupId: 'sg-0000000000000000f',
+        ipProtocol: 'tcp',
+        fromPort: 5433,
+        toPort: 5433,
+        cidrIp: '10.63.0.0/16',
+      });
+      fail.addDependency(stranger);
+    }
   }
 }

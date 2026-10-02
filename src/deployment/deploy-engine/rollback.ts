@@ -288,7 +288,13 @@ export async function settleJournalAfterSuccess(
     return;
   }
   await Promise.all([
-    this.deleteRollbackJournalBestEffort(stackName),
+    // go-to-k/cdkd#4402: this run's completed ops supersede every older
+    // failed attempt of their ids; if the delete fails they are carried onto
+    // the journal instead, so no older attempt counts as evidence again.
+    this.deleteRollbackJournalBestEffort(
+      stackName,
+      completedOperations.map((op) => op.logicalId)
+    ),
     dropNestedChildJournals({
       stateBackend: this.stateBackend,
       lockManager: this.lockManager,
@@ -305,16 +311,40 @@ export async function settleJournalAfterSuccess(
  * success path and after a clean automatic rollback. Never throws — a
  * failed delete only warns (the journal is advisory; the worst case is a
  * spurious "previous deploy failed" note on the next deploy).
+ *
+ * `supersededLogicalIds` (go-to-k/cdkd#4402): the ids this run's completed
+ * ops recorded. The delete is a segment removal like any other, so when it
+ * fails they are written onto the surviving journal's newest segment
+ * (`markRollbackJournalSuperseded`) — or an older failed attempt of one of
+ * them would count as adoption evidence again.
  */
 export async function deleteRollbackJournalBestEffort(
   this: DeployEngine,
-  stackName: string
+  stackName: string,
+  supersededLogicalIds: readonly string[] = []
 ): Promise<void> {
+  let deleted: boolean | void;
   try {
-    await this.stateBackend.deleteRollbackJournal(stackName, this.stackRegion);
+    // The backend REPORTS a DeleteObject failure (`false`) rather than
+    // throwing; a throw here comes from before the delete (client setup).
+    deleted = await this.stateBackend.deleteRollbackJournal(stackName, this.stackRegion);
   } catch (err) {
     this.logger.debug(
-      `Failed to delete rollback journal for ${stackName}: ${err instanceof Error ? err.message : String(err)}`
+      safeMsg`Failed to delete rollback journal for ${stackName}: ${err instanceof Error ? err.message : String(err)}`
+    );
+    deleted = false;
+  }
+  // Only an explicit `false` (or a throw) is a journal that may survive.
+  if (deleted !== false || supersededLogicalIds.length === 0) return;
+  try {
+    await this.stateBackend.markRollbackJournalSuperseded(
+      stackName,
+      this.stackRegion,
+      supersededLogicalIds
+    );
+  } catch (markErr) {
+    this.logger.debug(
+      safeMsg`Failed to record superseded logical ids on the rollback journal for ${stackName}: ${markErr instanceof Error ? markErr.message : String(markErr)}`
     );
   }
 }

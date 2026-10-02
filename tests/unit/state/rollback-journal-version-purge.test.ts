@@ -199,7 +199,8 @@ describe('deleteRollbackJournal purges noncurrent versions (issue #2346 site 4)'
     deleteBehaviour = (): Promise<unknown> =>
       Promise.reject(new NoSuchKey({ message: 'nope', $metadata: {} }));
 
-    await expect(backend().deleteRollbackJournal(STACK, REGION)).resolves.toBeUndefined();
+    // Never throws; already gone reports `true` (go-to-k/cdkd#4402).
+    await expect(backend().deleteRollbackJournal(STACK, REGION)).resolves.toBe(true);
 
     expect(names()).toContain('ListObjectVersionsCommand');
     expect(names()).toContain('DeleteObjectsCommand');
@@ -215,7 +216,8 @@ describe('deleteRollbackJournal purges noncurrent versions (issue #2346 site 4)'
     deleteBehaviour = (): Promise<unknown> =>
       Promise.reject(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
 
-    await expect(backend().deleteRollbackJournal(STACK, REGION)).resolves.toBeUndefined();
+    // Never throws; a journal that may survive reports `false` (go-to-k/cdkd#4402).
+    await expect(backend().deleteRollbackJournal(STACK, REGION)).resolves.toBe(false);
 
     expect(names()).toEqual([
       'DeleteObjectCommand',

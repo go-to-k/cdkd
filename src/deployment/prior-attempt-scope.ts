@@ -79,13 +79,31 @@ export function getPriorAttempts(logicalId: string): PriorAttemptLookup | undefi
 }
 
 /**
- * The CREATE or UPDATE bags `journal` holds for `logicalId` as `resourceType`
- * that no later op superseded: a completed op's recorded properties and a
- * failed op's attempted ones, walked in journal order (segments oldest first,
- * each segment's completed ops in completion order, then its failed ops). A
- * completed DELETE of the logical id clears every bag before it — the resource
- * those bags describe was deleted, so a rule matching them now is not ours. A
- * failed DELETE left the resource in place and clears nothing.
+ * The attempted bags of FAILED CREATE / UPDATE ops `journal` holds for
+ * `logicalId` as `resourceType` that no later op superseded — the writes this
+ * stack made and never recorded (go-to-k/cdkd#4355, #4402).
+ *
+ * Only a FAILED op is evidence. A completed op's resource was recorded in
+ * state by the failed deploy's own partial save, so a later CREATE of that
+ * logical id means the record is gone — the resource was reverted by a
+ * rollback, deleted by a (possibly partial) `cdkd destroy`, or superseded — and
+ * its bag would name a resource that no longer exists, adopting whoever
+ * re-added an identical one. A segment can keep such ops after its rollback
+ * already reverted them (an automatic rollback whose segment pop failed, a
+ * `cdkd rollback` with a per-op failure, an unsettled `nested-pending-parent`
+ * segment), and a partial destroy leaves the whole journal. The cost is
+ * fail-safe: a leftover this stack's state no longer records — a deploy whose
+ * partial save ALSO failed, or a `DeletionPolicy: Retain` resource a rollback
+ * orphaned — is refused, with the revoke command.
+ *
+ * Walked in journal order (segments oldest first, each segment's completed
+ * ops, then its failed ops). ANY completed op of the logical id — a CREATE,
+ * UPDATE or DELETE of whatever type — supersedes the failed attempts before
+ * it: the resource was then recorded, replaced or deleted. A failed CREATE
+ * that carries a physical id was recorded in state too, and a failed DELETE
+ * left the resource in place; neither is evidence. A segment's
+ * `supersededLogicalIds` (left by the removal of a newer segment that
+ * superseded it) clears the attempts up to its end.
  */
 export function priorAttemptsInJournal(
   journal: RollbackJournal | null,
@@ -94,22 +112,35 @@ export function priorAttemptsInJournal(
 ): Array<Record<string, unknown>> {
   let bags: Array<Record<string, unknown>> = [];
   for (const segment of journal?.segments ?? []) {
-    for (const op of segment.operations) {
-      if (op.logicalId !== logicalId) continue;
-      if (op.changeType === 'DELETE') {
-        bags = [];
-        continue;
-      }
-      if (op.resourceType !== resourceType || !isBag(op.properties)) continue;
-      bags.push(op.properties);
-    }
+    if (segment.operations.some((op) => op.logicalId === logicalId)) bags = [];
     for (const op of segment.failedOperations ?? []) {
       if (op.logicalId !== logicalId || op.resourceType !== resourceType) continue;
       if (op.changeType === 'DELETE' || !isBag(op.attemptedProperties)) continue;
+      if (recordedAsNewResource(op)) continue;
       bags.push(op.attemptedProperties);
     }
+    // A newer segment that superseded these attempts was removed after its
+    // revert; the backend left its ids here (`supersededLogicalIds`).
+    if (segment.supersededLogicalIds?.includes(logicalId)) bags = [];
   }
   return bags;
+}
+
+/**
+ * A failed op whose own resource state already records: a CREATE that carries
+ * a physical id, or an UPDATE whose physical id is not its previous record's
+ * (the replacement was recorded as a new resource). Destroy or a rollback can
+ * remove that resource, so its bag is not an unrecorded attempt.
+ */
+function recordedAsNewResource(op: {
+  changeType: string;
+  physicalId?: string | undefined;
+  previousState?: { physicalId?: string } | undefined;
+}): boolean {
+  if (typeof op.physicalId !== 'string' || op.physicalId === '') return false;
+  if (op.changeType === 'CREATE') return true;
+  const previous = op.previousState?.physicalId;
+  return typeof previous === 'string' && previous !== op.physicalId;
 }
 
 function isBag(value: unknown): value is Record<string, unknown> {

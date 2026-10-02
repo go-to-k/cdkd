@@ -44,6 +44,7 @@ if (strangerGroupId) {
   new SgIngressStrangerStack(app, 'CdkdSgIngressStrangerExample', {
     groupId: strangerGroupId,
     cidr: (app.node.tryGetContext('strangerCidr') as string | undefined) ?? '10.63.0.0/16',
+    failAfter: app.node.tryGetContext('strangerFailAfter') === '1',
     description:
       'Ownership arm for issue #4355 - one AWS::EC2::SecurityGroupIngress identical to a rule added by hand to a group this stack does not own. The deploy must refuse naming the existing rule instead of adopting it, and the hand-made rule must survive this stack destroy.',
     env: {

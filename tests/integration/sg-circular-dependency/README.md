@@ -57,9 +57,14 @@ create/destroy ordering.
    identical to it. The deploy must refuse naming the existing rule instead of
    adopting it, a second deploy must refuse too, a replacement moving the stack's
    own rule onto that range must refuse as well (keeping its own rule), and the
-   hand-made rule must survive each destroy. Finally the attempt is written into
+   hand-made rule must survive each destroy. A journal holding the rule only as
+   a completed CREATE (a stale entry a rollback or a partial destroy left
+   behind), or as a failed attempt a removed newer segment superseded (#4402),
+   must still refuse. Finally the attempt is written into
    the stack's rollback journal: the deploy must then adopt the rule, and the
-   destroy revoke it.
+   destroy revoke it. Last, a POP arm adopts in a deploy that then fails
+   (`-c strangerFailAfter=1`): the clean rollback's pop must carry the
+   supersede, so a rule re-added by hand is refused.
 
 ## Run
 

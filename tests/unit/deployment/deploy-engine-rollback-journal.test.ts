@@ -45,6 +45,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     appendRollbackJournalSegment: ReturnType<typeof vi.fn>;
     deleteRollbackJournal: ReturnType<typeof vi.fn>;
     loadRollbackJournal: ReturnType<typeof vi.fn>;
+    markRollbackJournalSuperseded: ReturnType<typeof vi.fn>;
     popRollbackJournalSegment: ReturnType<typeof vi.fn>;
   };
 
@@ -93,6 +94,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
       popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
     };
 
@@ -222,6 +224,43 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     await engine.deploy(stackName, template); // no failOn → succeeds
     expect(journal.deleteRollbackJournal).toHaveBeenCalledWith(stackName, 'us-east-1');
     expect(journal.appendRollbackJournalSegment).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#4402: the success delete is a segment removal too; when it
+  // fails, this run's completed ops must still supersede older failed attempts.
+  it('a successful deploy whose journal DELETE fails carries its completed ids onto the journal', async () => {
+    const changes = new Map([
+      ['A', makeChange('A')],
+      ['B', makeChange('B')],
+    ]);
+    const engine = buildEngine({ changes, deps: { A: [], B: [] }, currentEtag: 'e0' });
+    // The real backend REPORTS a failed DeleteObject (it never throws).
+    journal.deleteRollbackJournal.mockResolvedValue(false);
+
+    await engine.deploy(stackName, template);
+
+    expect(journal.markRollbackJournalSuperseded).toHaveBeenCalledTimes(1);
+    const [stack, region, ids] = journal.markRollbackJournalSuperseded.mock.calls[0]!;
+    expect([stack, region]).toEqual([stackName, 'us-east-1']);
+    expect([...(ids as string[])].sort()).toEqual(['A', 'B']);
+  });
+
+  it('a journal delete that THROWS (client setup) also marks', async () => {
+    const engine = buildEngine({ changes: new Map([['A', makeChange('A')]]), deps: { A: [] }, currentEtag: 'e0' });
+    journal.deleteRollbackJournal.mockRejectedValue(new Error('no client'));
+
+    await engine.deploy(stackName, template);
+
+    expect(journal.markRollbackJournalSuperseded).toHaveBeenCalledWith(stackName, 'us-east-1', ['A']);
+  });
+
+  it('a successful deploy whose journal delete succeeds writes no marker', async () => {
+    const engine = buildEngine({ changes: new Map([['A', makeChange('A')]]), deps: { A: [] }, currentEtag: 'e0' });
+    journal.deleteRollbackJournal.mockResolvedValue(true);
+
+    await engine.deploy(stackName, template);
+
+    expect(journal.markRollbackJournalSuperseded).not.toHaveBeenCalled();
   });
 
   it('a journal-write failure warns but does not mask the original deploy error', async () => {

@@ -280,30 +280,37 @@ describe('the deploy engine binds prior-attempt evidence per resource (#4355)', 
   });
 });
 
-describe('priorAttemptsInJournal (#4355)', () => {
+describe('priorAttemptsInJournal (#4355, #4402)', () => {
   const bag = (cidr: string) => ({ ...RULE, CidrIp: cidr });
   const journal = (segments: unknown[]): RollbackJournal =>
     ({ journalVersion: 1, stackName: 'S', region: 'r', segments }) as unknown as RollbackJournal;
+  const failed = (cidr: string, changeType = 'CREATE', extra: Record<string, unknown> = {}) => ({
+    logicalId: 'Rule',
+    changeType,
+    resourceType: TYPE,
+    attemptedProperties: bag(cidr),
+    ...extra,
+  });
+  const completed = (changeType: string, cidr = '9.0.0.0/8', resourceType = TYPE) => ({
+    logicalId: 'Rule',
+    changeType,
+    resourceType,
+    properties: bag(cidr),
+  });
 
-  it('collects completed CREATE / UPDATE properties and failed attempted properties from every segment', () => {
+  it('collects the attempted bags of FAILED CREATE / UPDATE ops from every segment', () => {
     const found = priorAttemptsInJournal(
       journal([
+        { operations: [], failedOperations: [failed('1.0.0.0/8')] },
+        // The real shape of a failed in-place UPDATE: execute.ts stamps its
+        // previous record, and its physical id falls back to that record's.
         {
-          operations: [
-            { logicalId: 'Rule', changeType: 'CREATE', resourceType: TYPE, properties: bag('1.0.0.0/8') },
-          ],
-        },
-        {
-          operations: [
-            { logicalId: 'Rule', changeType: 'UPDATE', resourceType: TYPE, properties: bag('2.0.0.0/8') },
-          ],
+          operations: [],
           failedOperations: [
-            {
-              logicalId: 'Rule',
-              changeType: 'UPDATE',
-              resourceType: TYPE,
-              attemptedProperties: bag('3.0.0.0/8'),
-            },
+            failed('3.0.0.0/8', 'UPDATE', {
+              physicalId: 'sg-1|tcp|5432|5432',
+              previousState: { physicalId: 'sg-1|tcp|5432|5432' },
+            }),
           ],
         },
       ]),
@@ -311,28 +318,109 @@ describe('priorAttemptsInJournal (#4355)', () => {
       TYPE
     );
 
-    expect(found).toEqual([bag('1.0.0.0/8'), bag('2.0.0.0/8'), bag('3.0.0.0/8')]);
+    expect(found).toEqual([bag('1.0.0.0/8'), bag('3.0.0.0/8')]);
   });
 
-  it('ignores a DELETE, another logical id, another type, and an op with no bag', () => {
+  // go-to-k/cdkd#4402: a completed op's resource was recorded in state by the
+  // failed deploy's partial save, so a later CREATE of that id means the
+  // record is gone — reverted, destroyed or superseded — and its bag is stale.
+  it.each([
+    ['an auto-rollback segment whose pop failed', 'auto-rollback-started'],
+    ['a segment a `cdkd rollback` per-op failure kept', 'no-rollback-failure'],
+    ['an unsettled nested-pending-parent segment', 'nested-pending-parent'],
+    ['a segment a partial `cdkd destroy` left behind', 'interrupted'],
+  ])('a COMPLETED op is never evidence: %s', (_shape, reason) => {
     const found = priorAttemptsInJournal(
       journal([
         {
-          operations: [
-            { logicalId: 'Rule', changeType: 'DELETE', resourceType: TYPE, properties: bag('1.0.0.0/8') },
-            { logicalId: 'Other', changeType: 'CREATE', resourceType: TYPE, properties: bag('2.0.0.0/8') },
-            {
-              logicalId: 'Rule',
-              changeType: 'CREATE',
-              resourceType: 'AWS::EC2::SecurityGroupEgress',
-              properties: bag('3.0.0.0/8'),
-            },
-            { logicalId: 'Rule', changeType: 'CREATE', resourceType: TYPE },
-            { logicalId: 'Rule', changeType: 'CREATE', resourceType: TYPE, properties: [bag('5.0.0.0/8')] },
-          ],
+          reason,
+          operations: [completed('CREATE', '1.0.0.0/8'), completed('UPDATE', '2.0.0.0/8')],
+        },
+      ]),
+      'Rule',
+      TYPE
+    );
+
+    expect(found).toEqual([]);
+  });
+
+  it.each([
+    ['a completed CREATE', 'CREATE'],
+    ['a completed UPDATE', 'UPDATE'],
+    ['a completed DELETE', 'DELETE'],
+  ])('%s of the logical id in a LATER segment supersedes the failed attempts before it', (_what, changeType) => {
+    const found = priorAttemptsInJournal(
+      journal([
+        { operations: [], failedOperations: [failed('1.0.0.0/8')] },
+        { operations: [completed(changeType)] },
+      ]),
+      'Rule',
+      TYPE
+    );
+
+    expect(found).toEqual([]);
+  });
+
+  it('a completed op of the id supersedes a failed attempt in an EARLIER segment, not a later one', () => {
+    const found = priorAttemptsInJournal(
+      journal([
+        { operations: [], failedOperations: [failed('1.0.0.0/8')] },
+        { operations: [completed('DELETE')], failedOperations: [failed('2.0.0.0/8')] },
+      ]),
+      'Rule',
+      TYPE
+    );
+
+    expect(found).toEqual([bag('2.0.0.0/8')]);
+  });
+
+  it('a completed op recorded under another type (a Type change) still supersedes the logical id', () => {
+    const found = priorAttemptsInJournal(
+      journal([
+        { operations: [], failedOperations: [failed('1.0.0.0/8')] },
+        { operations: [completed('DELETE', '9.0.0.0/8', 'AWS::EC2::SecurityGroupEgress')] },
+      ]),
+      'Rule',
+      TYPE
+    );
+
+    expect(found).toEqual([]);
+  });
+
+  it("another logical id's completed op supersedes nothing", () => {
+    const found = priorAttemptsInJournal(
+      journal([
+        { operations: [], failedOperations: [failed('1.0.0.0/8')] },
+        { operations: [{ ...completed('DELETE'), logicalId: 'Other' }] },
+      ]),
+      'Rule',
+      TYPE
+    );
+
+    expect(found).toEqual([bag('1.0.0.0/8')]);
+  });
+
+  it('a failed CREATE that carries a physical id was recorded in state: not evidence', () => {
+    const found = priorAttemptsInJournal(
+      journal([{ operations: [], failedOperations: [failed('1.0.0.0/8', 'CREATE', { physicalId: 'sg-1|tcp|5432|5432' })] }]),
+      'Rule',
+      TYPE
+    );
+
+    expect(found).toEqual([]);
+  });
+
+  it('ignores a failed DELETE, another logical id, another type, and an op with no bag', () => {
+    const found = priorAttemptsInJournal(
+      journal([
+        {
+          operations: [],
           failedOperations: [
             { logicalId: 'Rule', changeType: 'DELETE', resourceType: TYPE, attemptedProperties: bag('4.0.0.0/8') },
+            { ...failed('2.0.0.0/8'), logicalId: 'Other' },
+            { ...failed('3.0.0.0/8'), resourceType: 'AWS::EC2::SecurityGroupEgress' },
             { logicalId: 'Rule', changeType: 'CREATE', resourceType: TYPE },
+            { ...failed('5.0.0.0/8'), attemptedProperties: [bag('5.0.0.0/8')] },
           ],
         },
       ]),
@@ -343,51 +431,95 @@ describe('priorAttemptsInJournal (#4355)', () => {
     expect(found).toEqual([]);
   });
 
-  it('a later completed DELETE of the logical id clears the bags before it, in order', () => {
-    const create = (cidr: string) => ({ logicalId: 'Rule', changeType: 'CREATE', resourceType: TYPE, properties: bag(cidr) });
-    const del = { logicalId: 'Rule', changeType: 'DELETE', resourceType: TYPE, properties: bag('9.0.0.0/8') };
-
-    // Same segment: CREATE, DELETE, CREATE -> only the second CREATE survives.
+  // The spec review's shape: deploy 1's failed attempt is adopted by deploy 2
+  // (a completed CREATE), deploy 2's clean rollback reverts it and pops its
+  // segment. The backend leaves the id on the remaining segment, so the
+  // attempt the reverted adoption consumed does not count again.
+  it('a removed superseding segment\'s marker clears the attempts up to the end of its segment', () => {
     expect(
-      priorAttemptsInJournal(journal([{ operations: [create('1.0.0.0/8'), del, create('2.0.0.0/8')] }]), 'Rule', TYPE)
+      priorAttemptsInJournal(
+        journal([{ operations: [], failedOperations: [failed('1.0.0.0/8')], supersededLogicalIds: ['Rule'] }]),
+        'Rule',
+        TYPE
+      )
+    ).toEqual([]);
+    expect(
+      priorAttemptsInJournal(
+        journal([
+          { operations: [], failedOperations: [failed('1.0.0.0/8')], supersededLogicalIds: ['Rule'] },
+          { operations: [], failedOperations: [failed('2.0.0.0/8')] },
+        ]),
+        'Rule',
+        TYPE
+      )
     ).toEqual([bag('2.0.0.0/8')]);
-    // A LATER segment's DELETE clears an earlier segment's CREATE and failed attempt.
     expect(
       priorAttemptsInJournal(
-        journal([
-          {
-            operations: [create('1.0.0.0/8')],
-            failedOperations: [{ logicalId: 'Rule', changeType: 'CREATE', resourceType: TYPE, attemptedProperties: bag('3.0.0.0/8') }],
-          },
-          { operations: [del] },
-        ]),
-        'Rule',
-        TYPE
-      )
-    ).toEqual([]);
-    // A DELETE recorded under another type (a Type change) still deletes the logical id.
-    expect(
-      priorAttemptsInJournal(
-        journal([{ operations: [create('1.0.0.0/8'), { ...del, resourceType: 'AWS::EC2::SecurityGroupEgress' }] }]),
-        'Rule',
-        TYPE
-      )
-    ).toEqual([]);
-  });
-
-  it('a FAILED delete leaves the resource, so it clears nothing', () => {
-    expect(
-      priorAttemptsInJournal(
-        journal([
-          {
-            operations: [{ logicalId: 'Rule', changeType: 'CREATE', resourceType: TYPE, properties: bag('1.0.0.0/8') }],
-            failedOperations: [{ logicalId: 'Rule', changeType: 'DELETE', resourceType: TYPE }],
-          },
-        ]),
+        journal([{ operations: [], failedOperations: [failed('1.0.0.0/8')], supersededLogicalIds: ['Other'] }]),
         'Rule',
         TYPE
       )
     ).toEqual([bag('1.0.0.0/8')]);
+  });
+
+  // G1: a real segment holds every op the deploy completed, of many resources.
+  it('a completed op of the id anywhere in a MIXED segment supersedes', () => {
+    const found = priorAttemptsInJournal(
+      journal([
+        { operations: [], failedOperations: [failed('1.0.0.0/8')] },
+        {
+          operations: [
+            { ...completed('CREATE'), logicalId: 'Other' },
+            completed('CREATE'),
+            { ...completed('UPDATE'), logicalId: 'Other2' },
+          ],
+        },
+      ]),
+      'Rule',
+      TYPE
+    );
+
+    expect(found).toEqual([]);
+  });
+
+  it('a failed UPDATE with no previous record is still evidence', () => {
+    const found = priorAttemptsInJournal(
+      journal([{ operations: [], failedOperations: [failed('1.0.0.0/8', 'UPDATE', { physicalId: 'sg-1|tcp|5432|5432' })] }]),
+      'Rule',
+      TYPE
+    );
+
+    expect(found).toEqual([bag('1.0.0.0/8')]);
+  });
+
+  it('a failed CREATE with an EMPTY physical id identifies nothing: still evidence', () => {
+    const found = priorAttemptsInJournal(
+      journal([{ operations: [], failedOperations: [failed('1.0.0.0/8', 'CREATE', { physicalId: '' })] }]),
+      'Rule',
+      TYPE
+    );
+
+    expect(found).toEqual([bag('1.0.0.0/8')]);
+  });
+
+  it("a failed UPDATE whose physical id differs from its previous record's was recorded as a NEW resource: not evidence", () => {
+    const found = priorAttemptsInJournal(
+      journal([
+        {
+          operations: [],
+          failedOperations: [
+            failed('1.0.0.0/8', 'UPDATE', {
+              physicalId: 'sg-1|tcp|5433|5433',
+              previousState: { physicalId: 'sg-1|tcp|5432|5432' },
+            }),
+          ],
+        },
+      ]),
+      'Rule',
+      TYPE
+    );
+
+    expect(found).toEqual([]);
   });
 
   it('answers no attempts when the stack has no journal', () => {

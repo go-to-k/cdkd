@@ -2110,6 +2110,171 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
     expect(body.segments[0].reason).toBe('interrupted');
   });
 
+  // go-to-k/cdkd#4402: a pop / drop removes a segment after its ops were
+  // reverted; its completed ops superseded older failed attempts, so their ids
+  // are carried onto the nearest older remaining segment.
+  describe('carrying superseded logical ids on removal (go-to-k/cdkd#4402)', () => {
+    const op = (logicalId: string) => ({ logicalId, changeType: 'CREATE', resourceType: 'AWS::X::Y' });
+    const putBody = () => {
+      const put = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .find((cmd: unknown) => cmd instanceof PutObjectCommand) as PutObjectCommand;
+      return JSON.parse(put.input.Body as string);
+    };
+
+    it('a pop marks the new newest segment with the popped completed ops and the popped marker', async () => {
+      const older = { ...segment('auto-rollback-clean'), supersededLogicalIds: ['Kept'] };
+      const newest = { ...segment('auto-rollback-started', [op('Rule'), op('Other')]), supersededLogicalIds: ['Older'] };
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({ journalVersion: 1, stackName: 'S', region: 'us-east-1', segments: [older, newest] }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+
+      await backend.popRollbackJournalSegment('S', 'us-east-1');
+
+      expect(putBody().segments).toHaveLength(1);
+      expect([...putBody().segments[0].supersededLogicalIds].sort()).toEqual(['Kept', 'Older', 'Other', 'Rule']);
+    });
+
+    it('a pop of a segment with no completed ops and no marker leaves the older segment unmarked', async () => {
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [segment('interrupted'), segment('auto-rollback-clean')],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+
+      await backend.popRollbackJournalSegment('S', 'us-east-1');
+
+      expect(putBody().segments[0]).not.toHaveProperty('supersededLogicalIds');
+    });
+
+    // A marker-only segment (operations [], ids it carried) must carry on too:
+    // its ids superseded attempts in the segments before it.
+    it.each(['pop', 'drop'] as const)('a MARKER-ONLY removed segment still carries its ids (%s)', async (how) => {
+      const markerOnly = { ...segment('auto-rollback-clean'), runId: 'x', supersededLogicalIds: ['Rule'] };
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [{ ...segment('interrupted'), runId: 'keep' }, markerOnly],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+
+      if (how === 'pop') await backend.popRollbackJournalSegment('S', 'us-east-1');
+      else await backend.dropRollbackJournalSegments('S', 'us-east-1', (s) => s.runId === 'x');
+
+      expect(putBody().segments).toHaveLength(1);
+      expect(putBody().segments[0].supersededLogicalIds).toEqual(['Rule']);
+    });
+
+    // The success path deletes the whole journal; a DeleteObject failure is
+    // REPORTED (`false`), never thrown, so the caller can keep the supersede.
+    it('deleteRollbackJournal reports a non-NotFound DeleteObject failure as false, and the journal is re-put with the ids', async () => {
+      const journalBody = {
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [segment('auto-rollback-clean')],
+      };
+      s3Client.send.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof DeleteObjectCommand) {
+          return Promise.reject(Object.assign(new Error('Access Denied'), { name: 'AccessDenied' }));
+        }
+        if (cmd instanceof PutObjectCommand) return Promise.resolve({});
+        if ((cmd as { constructor: { name: string } }).constructor.name === 'GetObjectCommand') {
+          return Promise.resolve({ Body: rawBody(journalBody) });
+        }
+        return Promise.resolve({});
+      });
+
+      const deleted = await backend.deleteRollbackJournal('S', 'us-east-1');
+      expect(deleted).toBe(false);
+
+      await backend.markRollbackJournalSuperseded('S', 'us-east-1', ['Rule']);
+      expect(putBody().segments[0].supersededLogicalIds).toEqual(['Rule']);
+    });
+
+    it.each([
+      ['succeeds', () => Promise.resolve({})],
+      ['answers NoSuchKey (already gone)', () => Promise.reject(new NoSuchKey({ message: 'nope', $metadata: {} }))],
+    ])('deleteRollbackJournal reports true when the DeleteObject %s', async (_what, answer) => {
+      s3Client.send.mockImplementation((cmd: unknown) =>
+        cmd instanceof DeleteObjectCommand ? answer() : Promise.resolve({})
+      );
+
+      expect(await backend.deleteRollbackJournal('S', 'us-east-1')).toBe(true);
+    });
+
+    it('markRollbackJournalSuperseded unions the ids onto the NEWEST segment', async () => {
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [segment('interrupted'), { ...segment('auto-rollback-clean'), supersededLogicalIds: ['Kept'] }],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+
+      await backend.markRollbackJournalSuperseded('S', 'us-east-1', ['Rule']);
+
+      const body = putBody();
+      expect(body.segments[0]).not.toHaveProperty('supersededLogicalIds');
+      expect([...body.segments[1].supersededLogicalIds].sort()).toEqual(['Kept', 'Rule']);
+    });
+
+    it('markRollbackJournalSuperseded writes nothing without a journal or ids', async () => {
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'nope', $metadata: {} }));
+      await backend.markRollbackJournalSuperseded('S', 'us-east-1', ['Rule']);
+      await backend.markRollbackJournalSuperseded('S', 'us-east-1', []);
+      const cmds = s3Client.send.mock.calls.map((c: unknown[]) => c[0]);
+      expect(cmds.some((cmd: unknown) => cmd instanceof PutObjectCommand)).toBe(false);
+    });
+
+    it('consecutive drops all land on the nearest kept segment before them', async () => {
+      const seg = (runId: string, ops: unknown[] = []) => ({ ...segment('nested-pending-parent', ops), runId });
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [seg('keep'), seg('drop', [op('A')]), seg('drop', [op('B')])],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+
+      await backend.dropRollbackJournalSegments('S', 'us-east-1', (s) => s.runId === 'drop');
+
+      expect(putBody().segments).toHaveLength(1);
+      expect([...putBody().segments[0].supersededLogicalIds].sort()).toEqual(['A', 'B']);
+    });
+
+    it('a drop marks the nearest OLDER kept segment, not a newer one', async () => {
+      const seg = (runId: string, ops: unknown[] = []) => ({ ...segment('nested-pending-parent', ops), runId });
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [seg('keep-1'), seg('drop', [op('Rule')]), seg('keep-2')],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+
+      await backend.dropRollbackJournalSegments('S', 'us-east-1', (s) => s.runId === 'drop');
+
+      const [first, second] = putBody().segments;
+      expect(first.supersededLogicalIds).toEqual(['Rule']);
+      expect(second).not.toHaveProperty('supersededLogicalIds');
+    });
+  });
+
   describe('dropRollbackJournalSegments (issue #3754)', () => {
     const byRun = (runId: string) => ({ ...segment('nested-pending-parent' as never), runId });
 
@@ -2157,7 +2322,7 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
 
   it('deleteRollbackJournal tolerates a missing journal', async () => {
     s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'nope', $metadata: {} }));
-    await expect(backend.deleteRollbackJournal('S', 'us-east-1')).resolves.toBeUndefined();
+    await expect(backend.deleteRollbackJournal('S', 'us-east-1')).resolves.toBe(true);
   });
 
   it('setRollbackJournalFailedOperations([]) strips the field from the NEWEST segment only (#1198)', async () => {

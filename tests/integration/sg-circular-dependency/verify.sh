@@ -70,7 +70,11 @@
 #      ambiguity-arm SG, then `CdkdSgIngressStrangerExample` declaring the
 #      identical rule. Both deploys must refuse naming it (the first journaled
 #      without its attempted bag), an UPDATE onto it from another range must
-#      refuse too, and it must survive each such destroy. Then the ADOPT arm
+#      refuse too, and it must survive each such destroy. A journal holding
+#      the rule only as a COMPLETED CREATE, or as a failed attempt a removed
+#      newer segment superseded, must still refuse (#4402). A POP arm adopts in
+#      a deploy that then fails, so the clean rollback's real pop carries the
+#      supersede and a re-added rule is refused. Then the ADOPT arm
 #      writes the attempt into the journal: the deploy adopts the rule and the
 #      destroy revokes it.
 #
@@ -1042,12 +1046,99 @@ if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback
   echo "FAIL: could not read the rollback journal after the ADOPT arm's refused deploy: ${ADOPT_JOURNAL}" >&2
   exit 1
 fi
+# go-to-k/cdkd#4402: a COMPLETED op's bag is not evidence — its resource was
+# recorded in state, so a create of the id means it was reverted, destroyed or
+# replaced, and a matching rule now is someone else's. A segment holding the
+# identical rule as a completed CREATE (what a rollback whose cleanup failed,
+# or a partial destroy, leaves behind) must still refuse.
+echo "==> Phase 1e: STALE arm — a completed CREATE of the identical rule in the journal must NOT adopt"
+STALE_JOURNAL=$(printf '%s' "${ADOPT_JOURNAL}" | jq --arg g "${STRANGER_GROUP_ID}" '
+  .segments += [{
+    timestamp: 1, reason: "no-rollback-failure", initialDeploy: false,
+    operations: [{
+      logicalId: "StrangerIngress", changeType: "CREATE",
+      resourceType: "AWS::EC2::SecurityGroupIngress",
+      physicalId: ($g + "|tcp|5432|5432"),
+      properties: {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
+    }]
+  }]')
+printf '%s' "${STALE_JOURNAL}" | aws s3 cp - "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" \
+  --content-type application/json >/dev/null
+if STALE_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1); then
+  echo "FAIL: the deploy ADOPTED ${STRANGER_RULE_ID} on a completed op's bag (a stale journal entry). Full output:" >&2
+  printf '%s\n' "${STALE_RAW}" >&2
+  exit 1
+fi
+STALE_OUT=$(printf '%s' "${STALE_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
+if ! printf '%s\n' "${STALE_OUT}" | grep -qF "nothing in this stack's records shows cdkd created it"; then
+  echo "FAIL: the STALE arm's deploy failed, but not with the ownership refusal. Full output:" >&2
+  printf '%s\n' "${STALE_OUT}" >&2
+  exit 1
+fi
+# The refusal must come from a journal that WAS read: an unreadable one
+# refuses with the same sentence, which would make this arm pass vacuously.
+if printf '%s\n' "${STALE_OUT}" | grep -qF "could not be read"; then
+  echo "FAIL: the STALE arm refused because the journal could not be read, not because a completed op is no evidence. Full output:" >&2
+  printf '%s\n' "${STALE_OUT}" >&2
+  exit 1
+fi
+echo "    OK: a completed op's bag did not count as evidence"
+if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
+  echo "FAIL: could not read the rollback journal after the STALE arm's refused deploy: ${ADOPT_JOURNAL}" >&2
+  exit 1
+fi
+
+# The same, for the shape a removed newer segment leaves (#4402): a FAILED
+# attempt of the identical rule whose segment carries `supersededLogicalIds`
+# for it — what a clean rollback of the deploy that adopted it leaves after
+# popping that deploy's segment. Must refuse too.
+echo "==> Phase 1e: STALE-2 arm — a failed attempt a removed adoption superseded must NOT adopt"
+SUPERSEDED_JOURNAL=$(printf '%s' "${ADOPT_JOURNAL}" | jq --arg g "${STRANGER_GROUP_ID}" '
+  .segments += [{
+    timestamp: 2, reason: "auto-rollback-clean", initialDeploy: false, operations: [],
+    failedOperations: [{
+      logicalId: "StrangerIngress", changeType: "CREATE",
+      resourceType: "AWS::EC2::SecurityGroupIngress",
+      attemptedProperties: {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
+    }],
+    supersededLogicalIds: ["StrangerIngress"]
+  }]')
+printf '%s' "${SUPERSEDED_JOURNAL}" | aws s3 cp - "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" \
+  --content-type application/json >/dev/null
+if STALE2_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1); then
+  echo "FAIL: the deploy ADOPTED ${STRANGER_RULE_ID} on a failed attempt a removed segment superseded. Full output:" >&2
+  printf '%s\n' "${STALE2_RAW}" >&2
+  exit 1
+fi
+STALE2_OUT=$(printf '%s' "${STALE2_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
+if ! printf '%s\n' "${STALE2_OUT}" | grep -qF "nothing in this stack's records shows cdkd created it" \
+  || printf '%s\n' "${STALE2_OUT}" | grep -qF "could not be read"; then
+  echo "FAIL: the STALE-2 arm's deploy failed, but not with the ownership refusal over a READ journal. Full output:" >&2
+  printf '%s\n' "${STALE2_OUT}" >&2
+  exit 1
+fi
+echo "    OK: a superseded failed attempt did not count as evidence"
+if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
+  echo "FAIL: could not read the rollback journal after the STALE-2 arm's refused deploy: ${ADOPT_JOURNAL}" >&2
+  exit 1
+fi
+
 ADOPT_JOURNAL=$(printf '%s' "${ADOPT_JOURNAL}" | jq --arg g "${STRANGER_GROUP_ID}" '
   .segments |= map(.failedOperations |= ((. // []) | map(
     if .logicalId == "StrangerIngress" and .changeType == "CREATE"
     then .attemptedProperties = {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
     else . end)))')
-if [ "$(printf '%s' "${ADOPT_JOURNAL}" | jq '[.segments[].failedOperations[]? | select(.logicalId == "StrangerIngress" and has("attemptedProperties"))] | length')" -lt 1 ]; then
+# Only a bag in a segment that carries no superseded marker for it can be the
+# evidence the ADOPT arm relies on — the STALE-2 segment's bag cannot.
+if [ "$(printf '%s' "${ADOPT_JOURNAL}" | jq '[.segments[] | select(((.supersededLogicalIds // []) | index("StrangerIngress")) == null) | .failedOperations[]? | select(.logicalId == "StrangerIngress" and has("attemptedProperties"))] | length')" -lt 1 ]; then
   echo "FAIL: the journal rewrite added no attempted bag (no StrangerIngress failed CREATE to rewrite): ${ADOPT_JOURNAL}" >&2
   exit 1
 fi
@@ -1090,6 +1181,115 @@ fi
 echo "    OK: the destroy revoked the adopted rule"
 assert_gone "stranger-arm state file s3://${STATE_BUCKET}/${STRANGER_PREFIX}/state.json still exists after the ADOPT-arm destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STRANGER_PREFIX}/state.json"
 aws s3 rm "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" >/dev/null 2>&1 || true
+
+# --- go-to-k/cdkd#4402 POP arm: the REAL carry, no hand-written marker -------
+# Adopt on journal evidence in a deploy that then fails (FailIngress, created
+# after StrangerIngress, targets a group that does not exist). The clean
+# automatic rollback revokes the adopted rule and pops the run's segment;
+# `popRollbackJournalSegment` must leave StrangerIngress on the older segment's
+# `supersededLogicalIds`, so a rule re-added by hand is refused next deploy.
+add_stranger_rule() {
+  local out
+  out="$(aws ec2 authorize-security-group-ingress \
+    --group-id "${STRANGER_GROUP_ID}" \
+    --ip-permissions 'IpProtocol=tcp,FromPort=5432,ToPort=5432,IpRanges=[{CidrIp=10.63.0.0/16}]' \
+    --region "${REGION}" \
+    --output json)" || return 1
+  printf '%s' "${out}" | jq -r '.SecurityGroupRules[0].SecurityGroupRuleId // ""'
+}
+echo "==> Phase 1e: POP arm — re-add the rule, refuse once, give the journal the attempt"
+if ! STRANGER_RULE_ID=$(add_stranger_rule) || [ -z "${STRANGER_RULE_ID}" ]; then
+  echo "FAIL: could not re-add the out-of-band rule for the POP arm" >&2
+  exit 1
+fi
+if node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes >/dev/null 2>&1; then
+  echo "FAIL: the POP arm's first deploy SUCCEEDED over ${STRANGER_RULE_ID} with no journal evidence" >&2
+  exit 1
+fi
+if ! POP_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
+  echo "FAIL: could not read the rollback journal for the POP arm: ${POP_JOURNAL}" >&2
+  exit 1
+fi
+POP_JOURNAL=$(printf '%s' "${POP_JOURNAL}" | jq --arg g "${STRANGER_GROUP_ID}" '
+  .segments |= map(.failedOperations |= ((. // []) | map(
+    if .logicalId == "StrangerIngress" and .changeType == "CREATE"
+    then .attemptedProperties = {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
+    else . end)))')
+printf '%s' "${POP_JOURNAL}" | aws s3 cp - "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" \
+  --content-type application/json >/dev/null
+
+echo "==> Phase 1e: POP arm — adopt, then fail on FailIngress (clean automatic rollback)"
+if POP_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  -c "strangerFailAfter=1" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1); then
+  echo "FAIL: the POP arm's failing deploy SUCCEEDED — FailIngress did not fail. Full output:" >&2
+  printf '%s\n' "${POP_RAW}" >&2
+  exit 1
+fi
+POP_OUT=$(printf '%s' "${POP_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
+if ! printf '%s\n' "${POP_OUT}" | grep -qF "adopting the existing identical rule ${STRANGER_RULE_ID}"; then
+  echo "FAIL: the POP arm's deploy did not adopt ${STRANGER_RULE_ID} before failing — the arm cannot reach the pop. Full output:" >&2
+  printf '%s\n' "${POP_OUT}" >&2
+  exit 1
+fi
+if stranger_rule_present; then
+  echo "FAIL: ${STRANGER_RULE_ID} is still on ${STRANGER_GROUP_ID} after the clean rollback of the deploy that adopted it" >&2
+  exit 1
+fi
+if ! POP_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
+  echo "FAIL: no rollback journal after the POP arm's rollback: ${POP_JOURNAL}" >&2
+  exit 1
+fi
+if [ "$(printf '%s' "${POP_JOURNAL}" | jq '[.segments[] | select(((.supersededLogicalIds // []) | index("StrangerIngress")) != null)] | length')" -lt 1 ]; then
+  echo "FAIL: the clean rollback popped the adopting segment without carrying StrangerIngress onto supersededLogicalIds: ${POP_JOURNAL}" >&2
+  exit 1
+fi
+echo "    OK: the rollback revoked the adopted rule and the pop carried the supersede"
+
+echo "==> Phase 1e: POP arm — a rule re-added by hand must now be REFUSED"
+if ! STRANGER_RULE_ID=$(add_stranger_rule) || [ -z "${STRANGER_RULE_ID}" ]; then
+  echo "FAIL: could not re-add the out-of-band rule after the POP arm's rollback" >&2
+  exit 1
+fi
+if POP2_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1); then
+  echo "FAIL: the deploy ADOPTED ${STRANGER_RULE_ID} on an attempt the reverted adoption had consumed. Full output:" >&2
+  printf '%s\n' "${POP2_RAW}" >&2
+  exit 1
+fi
+POP2_OUT=$(printf '%s' "${POP2_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
+if ! printf '%s\n' "${POP2_OUT}" | grep -qF "nothing in this stack's records shows cdkd created it" \
+  || printf '%s\n' "${POP2_OUT}" | grep -qF "could not be read"; then
+  echo "FAIL: the POP arm's last deploy failed, but not with the ownership refusal over a READ journal. Full output:" >&2
+  printf '%s\n' "${POP2_OUT}" >&2
+  exit 1
+fi
+echo "    OK: a re-added identical rule was refused after the reverted adoption"
+node "${LOCAL_DIST}" destroy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force || true
+if ! stranger_rule_present; then
+  echo "FAIL: ${STRANGER_RULE_ID} is GONE after the POP arm's destroy — cdkd revoked a rule it never created" >&2
+  exit 1
+fi
+aws ec2 revoke-security-group-ingress \
+  --group-id "${STRANGER_GROUP_ID}" \
+  --security-group-rule-ids "${STRANGER_RULE_ID}" \
+  --region "${REGION}" >/dev/null
+aws s3 rm "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" >/dev/null 2>&1 || true
+echo "    OK: POP arm complete"
 
 echo "==> Phase 1d: destroy the ambiguity-arm stack"
 if ! node "${LOCAL_DIST}" destroy "${AMBIGUOUS_STACK}" \
