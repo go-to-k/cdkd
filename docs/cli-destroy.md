@@ -70,10 +70,9 @@ bucket can hold the stacks of every app sharing it; after a failed synthesis
 the synthesis error is printed beneath the refusal as its `Caused by:` line. In
 either case an exact physical stack name still resolves from state without a
 working app, and so does `cdkd state destroy '<stack>'`. When some stacks
-synthesize but
-a Stage failed to load, `--all` is refused too, because it would destroy the
-rest of the app and leave the Stage's stacks running; name the stacks to
-destroy explicitly.
+synthesize but a Stage failed to load, `--all` is refused too, because it would
+destroy the rest of the app and leave the Stage's stacks running; name the
+stacks to destroy explicitly.
 
 A nested-stack **child** cannot be destroyed directly: `cdkd destroy '<child>'`
 is refused, because the parent's `AWS::CloudFormation::Stack` row would then
