@@ -386,7 +386,7 @@ for needle in "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}
 done
 echo "    OK: the update log carries no secret-derived value"
 if grep -qF -- "${FILTER_NAME}" <<< "${UPDATE_LOG_BODY}"; then
-  echo "    NOTE: the update log names SecretFilter's pre-rotation FilterName in plaintext (the go-to-k/cdkd#4339 class, for the Cloud Control provider)"
+  echo "    NOTE: the update log names SecretFilter's pre-rotation FilterName in plaintext (tracked in go-to-k/cdkd#3869)"
 fi
 
 echo "==> Step 5 (LOAD-BEARING): the update landed IN PLACE"
