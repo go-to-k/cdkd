@@ -142,11 +142,12 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
   it('carries BOTH verdicts, each with its own floor, so neither arm is vacuous', () => {
     // A population that had drifted to all-one-kind would make the fence above
     // unfalsifiable in one direction. `some()` alone is far too weak for that:
-    // measured 2026-09-18 there are 18 opt-outs and 6 annotations, so 17 of the
-    // 18 could flip to the other verdict with `some()` still true on both. The
-    // sibling fence carries a floor per VERDICT for exactly this reason and
-    // says so in its own header; this arm was the one place the two disagreed.
-    expect(sites.filter((s) => s.optsOut).length, 'sites opting out').toBeGreaterThanOrEqual(15);
+    // all but one site could flip to the other verdict with `some()` still true
+    // on both. The sibling fence carries a floor per VERDICT for exactly this
+    // reason and says so in its own header. Each floor sits below the current
+    // population: deleting a client site (go-to-k/cdkd#2277 removed six opt-outs
+    // with `httpv2-service-integration.ts`) lowers it deliberately.
+    expect(sites.filter((s) => s.optsOut).length, 'sites opting out').toBeGreaterThanOrEqual(10);
     expect(
       sites.filter((s) => s.annotated && !s.optsOut).length,
       'sites carrying an annotation instead'

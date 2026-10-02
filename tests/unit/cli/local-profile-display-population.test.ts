@@ -1401,11 +1401,12 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
     // The EXEMPTED floor is the stronger of the two: an exemption is produced by
     // the same code path an offender is, one branch later, so a non-zero count
     // proves the offender path itself is live rather than merely that files were
-    // opened. Re-measured 2026-09-18 after go-to-k/cdkd#3397 admitted
-    // `src/utils/role-arn.ts` to this arm: 69 in-scope files scanned, 5 exempted
-    // (was 68 and 3). The two new exemptions are that file's
-    // `Expiration?.toISOString()` renders beside a sanitized ARN.
-    expect(scanned.length, 'files the mixed-render walk read').toBeGreaterThanOrEqual(69);
+    // opened. Two of the exemptions are `src/utils/role-arn.ts`'s
+    // `Expiration?.toISOString()` renders beside a sanitized ARN
+    // (go-to-k/cdkd#3397). The file floor sits below the in-scope population, so
+    // deleting a module (go-to-k/cdkd#2277 removed four under `src/local/`)
+    // lowers it deliberately rather than by recount.
+    expect(scanned.length, 'files the mixed-render walk read').toBeGreaterThanOrEqual(60);
     expect(
       exempted.length,
       'statements that WOULD offend but carry a `cdkd-raw-beside-safe:` reason -- ' +
