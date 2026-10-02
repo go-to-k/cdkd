@@ -42,7 +42,7 @@ CI is necessary but not sufficient — it does not exercise real-AWS destroy.
 
 The `integ-destroy` marker accepts ANY clean real-AWS destroy — a narrow feature
 integ flips it without exercising the broad deploy/destroy paths a cross-cutting
-change touches. When the diff touches any of `src/deployment/{deploy-engine,deploy-engine/*,deploy-value-equality,label-routing,intrinsic-function-resolver,intrinsic-resolver/*,retry,retryable-errors,rollback-executor}.ts`,
+change touches. When the diff touches any of `src/deployment/{deploy-engine,deploy-engine/*,deploy-value-equality,label-routing,intrinsic-function-resolver,intrinsic-resolver/*,retry,retryable-errors,rollback-executor,rollback-executor/*}.ts`,
 `src/cli/commands/{destroy-runner,destroy,deploy}.ts`,
 `src/analyzer/{dag-builder,template-parser}.ts` or
 `src/provisioning/{register-providers,provider-registry}.ts`,
@@ -63,7 +63,7 @@ below in step with `/run-integ`'s "Choosing the fixture" section and
 - `export`
 
 ```bash
-if git diff origin/main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|deploy-engine/[a-z-]+|deploy-value-equality|label-routing|intrinsic-function-resolver|intrinsic-resolver/[a-z-]+|retry|retryable-errors|rollback-executor)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/(provider-registry|register-providers)\.ts$'; then
+if git diff origin/main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|deploy-engine/[a-z-]+|deploy-value-equality|label-routing|intrinsic-function-resolver|intrinsic-resolver/[a-z-]+|retry|retryable-errors|rollback-executor|rollback-executor/[a-z-]+)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/(provider-registry|register-providers)\.ts$'; then
   echo "Cross-cutting code touched — broad integ required."
 fi
 ```

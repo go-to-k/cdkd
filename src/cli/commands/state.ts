@@ -304,7 +304,7 @@ interface ResourceDetail {
  * that it may be. The repo's answer for a value that has to survive a command
  * line is elsewhere and is SUPPRESSION, not quoting: `buildForceUnlockCommand`
  * declines to print a command at all unless sanitisation was the identity, and
- * `rollback-executor.ts`'s `PASTEABLE_LOGICAL_ID` records why identity alone is
+ * `rollback-executor/messages.ts`'s `PASTEABLE_LOGICAL_ID` records why identity alone is
  * still not enough (`~user` and `=x` expand). What this function provides is a
  * visible BOUNDARY for a value a human is reading, which is a different job.
  */

@@ -55,7 +55,7 @@ export interface SecretPrincipalRetryMemo {
  * membership was skipped on every delete, forever.
  *
  * Each expression is resolved the way a rollback replay re-resolves a
- * journaled one (`rollback-executor.ts`'s `resolveReplayProps`): the SAME
+ * journaled one (`rollback-executor/replay-props.ts`'s `resolveReplayProps`): the SAME
  * resolver seam (`IntrinsicFunctionResolver.resolveDynamicReferences`), after
  * the SAME region classification (`classifyReplaySecretRegion`) armed with the
  * SAME producer-region evidence (`producerRegionsFromState`, passed by the

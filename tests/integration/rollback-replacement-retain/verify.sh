@@ -402,7 +402,7 @@ if ! grep -qF "RetainParam (AWS::SSM::Parameter) has UpdateReplacePolicy: Retain
   echo "FAIL: phase 3: the retain warning's exact phrasing was not found for" >&2
   echo "      RetainParam, so the control-negative loop below cannot" >&2
   echo "      discriminate -- it would pass against ANY output. Re-sync the" >&2
-  echo "      substring with rollback-executor.ts's retainedSurvivorMessages()." >&2
+  echo "      substring with rollback-executor/messages.ts's retainedSurvivorMessages()." >&2
   tail -40 "${WORK_DIR}/deploy-v2.log" >&2
   exit 1
 fi

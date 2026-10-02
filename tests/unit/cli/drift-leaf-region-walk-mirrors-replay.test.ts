@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vite-plus/test';
 
 /**
  * `drift.ts`'s `resolveDriftLeafByRegion` is a DELIBERATE second implementation
- * of `rollback-executor.ts`'s `resolveLeafByRegion` (issue
+ * of `rollback-executor/replay-secrets.ts`'s `resolveLeafByRegion` (issue
  * [#2108](https://github.com/go-to-k/cdkd/issues/2108), mirroring issue #2057).
  * This is the repo's convention for that situation — a test that READS the
  * sibling source and asserts the mirrored semantics, the same shape
@@ -41,7 +41,7 @@ import { describe, expect, it } from 'vite-plus/test';
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 const DRIFT_SOURCE = 'src/cli/commands/drift.ts';
-const REPLAY_SOURCE = 'src/deployment/rollback-executor.ts';
+const REPLAY_SOURCE = 'src/deployment/rollback-executor/replay-secrets.ts';
 
 /**
  * The rollback spelling on the left, the drift spelling on the right.

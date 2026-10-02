@@ -637,7 +637,7 @@ class AttributeFetcher {
     // `ResolverContext.redactedAttributeReads`, which is filled while resolving
     // the DESIRED (template) bag, while this splice lands in the referring
     // resource's PERSISTED properties — the CURRENT side. No deploy-path guard
-    // tests a masked current bag; `rollback-executor.ts` says so outright at
+    // tests a masked current bag; `rollback-executor/replay-props.ts` says so outright at
     // `refuseMaskedReplayBaseline` ("a patch provider comparing `***` against
     // the desired value simply sees a change"). The readers that DO recognise
     // it are named instead.

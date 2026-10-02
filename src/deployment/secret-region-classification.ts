@@ -4,7 +4,7 @@
  * Extracted from `rollback-executor.ts` for issue
  * [#2134](https://github.com/go-to-k/cdkd/issues/2134), which needs the same
  * answer inside `IntrinsicFunctionResolver.resolveDynamicReferences` -- and
- * `rollback-executor.ts` IMPORTS that resolver, so importing the classifier
+ * `rollback-executor/*.ts` IMPORTS that resolver, so importing the classifier
  * back out of it would close a cycle. The module is deliberately a LEAF: its
  * only runtime dependency is `canonicalizeRegion`, which is itself
  * import-free, so anything may depend on it.
@@ -305,7 +305,7 @@ export function regionLessSecretName(expression: string): string | undefined {
  * the verdict, not through {@link ssmParameterName}, which merely produces a
  * name.
  *
- * Three LEAF PRE-PASSES consume it — `rollback-executor.ts`'s
+ * Three LEAF PRE-PASSES consume it — `rollback-executor/replay-secrets.ts`'s
  * `resolveLeafByRegion`, `cdkd drift`'s `resolveDriftLeafByRegion` and `cdkd
  * scrub`'s — and each refuses the WHOLE leaf as soon as ONE token classifies
  * `ambiguous`, before any token is fetched. There is a FOURTH consumer, and it
@@ -356,7 +356,7 @@ export function regionLessSecretName(expression: string): string | undefined {
  *     array, and leave a sibling MIXED leaf in plaintext — "a regression of
  *     shipped redaction, in the GHSA disclosure direction". That is reachable
  *     with a NON-EMPTY map on a `STATE_SOURCED_READBACK_RULES` caller, e.g.
- *     `rollback-executor.ts`'s `redactRollbackRecord` ->
+ *     `rollback-executor/replay-secrets.ts`'s `redactRollbackRecord` ->
  *     `scrubResourceRecord`. It is not what fires here: the case this
  *     paragraph is about records FEWER needles, not more, so nothing new can
  *     rewrite an anchor.

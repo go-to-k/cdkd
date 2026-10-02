@@ -267,7 +267,7 @@ const SSM_PARAM = '/app/db/password';
 /**
  * `resolveSSMReference` re-joins its colon-split tail, so an `ssm` reference CAN
  * name a full ARN and CAN therefore route to a pinned sibling resolver — the
- * argument `rollback-executor.ts` spells out where it explains why a pinned
+ * argument `rollback-executor/replay-secrets.ts` spells out where it explains why a pinned
  * sibling needs no guest flag. The `SSMClient` fake exists for this case.
  */
 const PRODUCER_SSM_ARN = `arn:aws:ssm:${PRODUCER_REGION}:111122223333:parameter${SSM_PARAM}`;

@@ -968,7 +968,7 @@ function writeFramedTokenWithinScanBound(
  *    the survivor, so at 4+ the arm can change WHICH wrong reference is
  *    taken, and below the floor on a marked bag it adds one where the scan
  *    wrote nothing. "Not a disclosure" is a claim about the STORED artifact
- *    only: `resolveReplayProps` (`rollback-executor.ts`) re-resolves every
+ *    only: `resolveReplayProps` (`rollback-executor/replay-props.ts`) re-resolves every
  *    `{{resolve:` token in a replayed bag without regard to which reference
  *    the leaf named, so a later failed deploy plus `cdkd rollback` resolves
  *    the sibling's expression and writes its CURRENT plaintext into the live

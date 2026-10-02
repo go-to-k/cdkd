@@ -5,6 +5,7 @@ paths:
   - 'src/deployment/deploy-engine.ts'
   - 'src/deployment/deploy-engine/**'
   - 'src/deployment/rollback-executor.ts'
+  - 'src/deployment/rollback-executor/**'
   - 'src/cli/commands/destroy-runner.ts'
   - 'src/provisioning/cloud-control-provider.ts'
 ---
@@ -14,7 +15,7 @@ paths:
 **Keep it a LEAF — no imports beyond the type**: the deploy engine and rollback
 executor both consume it.
 
-**Skip pair** ([#1762](https://github.com/go-to-k/cdkd/issues/1762)).
+**Skip pair** (#1762).
 `deleteSkipReason` returns the `'skipped'` arm's `reason`, or `undefined` for
 the `void` return, keeping that reading in ONE place. `deleteSkippedMessage` is
 the sentence every skip renders, in the log AND the `Error` failing sites throw.

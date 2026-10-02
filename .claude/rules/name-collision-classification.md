@@ -5,6 +5,7 @@ paths:
   - 'src/deployment/deploy-engine.ts'
   - 'src/deployment/deploy-engine/**'
   - 'src/deployment/rollback-executor.ts'
+  - 'src/deployment/rollback-executor/**'
 ---
 
 # Name-collision classification
@@ -16,7 +17,7 @@ A Cloud Control poll failure must NEVER get a pattern-table entry:
 OLD resource; the rollback executor's reverse-replacement arm removes the live
 NEW one. A false positive is a deleted resource. The classifier says a name is
 taken, never WHO holds it, so neither arm deletes on the verdict alone
-([#3979](https://github.com/go-to-k/cdkd/issues/3979)): the rollback arm needs
+(#3979): the rollback arm needs
 `reverseReplacementNewHoldsName` to prove the new resource holds it, the deploy
 `--replace` arm `replacementOldHoldsSentName` to prove the old one holds the
 name the create SENT.
