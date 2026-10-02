@@ -11,10 +11,10 @@
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import ts from 'typescript-v6';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 
 const DIR = join(import.meta.dirname, '../../../src/deployment/secret-redaction');
@@ -28,9 +28,6 @@ const LOAD_TIMEOUT_MS = 30_000;
 let out = '';
 
 beforeAll(() => {
-  const ts = createRequire(join(import.meta.dirname, '../../../package.json'))(
-    'typescript-v6'
-  ) as typeof import('typescript');
   out = mkdtempSync(join(tmpdir(), 'cdkd-secret-redaction-load-'));
   writeFileSync(join(out, 'package.json'), '{"type":"module"}');
   for (const file of MODULES) {
