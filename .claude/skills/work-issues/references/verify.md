@@ -62,9 +62,9 @@ tests passing is necessary but NOT sufficient:
   template grepped instead) — an existing fixture takes the new arm
   (go-to-k/cdkd#4369).
 - **A change to what cdkd PRINTS or DECIDES** (a message's text or line split,
-  a refuse / adopt outcome) → `grep -rlF '<old text>' tests/integration/*/verify.sh`
-  and run every fixture it names before merge, whatever the change's own tier:
-  no vitest run executes them, so a reshaped line leaves a fixture red on
+  a refuse / adopt outcome) → `grep -rlF '<old text>' tests/integration --include='*.sh'`
+  (`verify.sh` and `run.sh` both grep output) and run every fixture it names
+  before merge, whatever the change's own tier: no vitest run executes them, so a reshaped line leaves a fixture red on
   `main` until the next lane runs it (go-to-k/cdkd#4394).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
   tests, config) → exempt from the tiers above, never from `/verify-pr` step 9;
@@ -89,21 +89,21 @@ read which one fired**, then restore and rebuild. A failure HINT's needle is
 copied from that red run, never reasoned (go-to-k/cdkd#4336); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
 `s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert by
-COPY, from a COMMITTED, clean lane**, inside `bash -c` (zsh neither splits an
-unquoted `$FILES` nor reads `$B:src/…` as a path), base copy to scratch FIRST —
-a redirect onto the file truncates it even when `git show` fails:
+COPY, from a COMMITTED, clean lane**, inside `bash -c` (zsh neither word-splits an
+unquoted `$(…)` nor reads `$B:src/…` as a path), each copy written to scratch
+FIRST — a redirect onto the file truncates it even when `git show` fails:
 
 ```bash
-bash -c 'B=$(git merge-base origin/main HEAD); S=<scratch>; mkdir -p "$S/fix" "$S/base"
+bash -c 'B=$(git merge-base origin/main HEAD); R=$B; S=<scratch>; mkdir -p "$S"
 for f in $(git diff --name-only --no-renames --diff-filter=M "$B" HEAD -- src/); do
-  k=${f//\//_}; cp "$f" "$S/fix/$k" && git show "$B:$f" > "$S/base/$k" && cp "$S/base/$k" "$f"
+  k=${f//\//_}; git show "$R:$f" > "$S/$k" && cp "$S/$k" "$f"
 done'
 ```
 
-(`-- src/`, or §8-c's changed command's own paths.) Restore by the same loop
-running `cp "$S/fix/$k" "$f"` until `git status --porcelain` is EMPTY. A file
-NEW in the PR stays, unimported by pre-fix code; one the fix DELETED or moved
-is restored by hand.
+`R=$B` reverts; the same loop with `R=HEAD` restores — run it until
+`git status --porcelain` is EMPTY. For §8-c's hook / CI BEFORE tree, replace
+`src/` with the changed command's own paths. A file NEW in the PR stays,
+unimported by pre-fix code; one the fix DELETED or moved is restored by hand.
 The pre-fix run executes the BUG on real AWS and can mint resources the
 fixture's sweep cannot name, so scan the account by stack prefix and resource
 family too. Probe each HALF of a multi-part fix separately, and add a NEGATIVE
