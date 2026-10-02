@@ -37,6 +37,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import {
+  priorAttemptLookup,
+  withPriorAttempts,
+} from '../../../src/deployment/prior-attempt-scope.js';
 
 /**
  * Issue #1761: `AWS::EC2::SecurityGroupIngress` recorded `attributes: {}`, so
@@ -168,7 +172,13 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
     // The Authorize FAILED, so no response carries the id — but this arm still
     // reports the rule as provisioned and the engine writes state from it, so
     // without a lookup `cdkd export` refuses exactly the resources a re-run
-    // adopted.
+    // adopted. Every create here is a RE-RUN: the stack's rollback journal
+    // records the same bag, which is what lets the arm adopt at all
+    // (go-to-k/cdkd#4355).
+    const createAsRerun = (props: Record<string, unknown>) =>
+      withPriorAttempts(priorAttemptLookup('Ingress', () => Promise.resolve([props])), () =>
+        provider.create('Ingress', RESOURCE_TYPE, props)
+      );
     const alreadyExists = new Error('the specified rule ... already exists');
 
     const withExistingRules = (rules: unknown[]) => {
@@ -213,7 +223,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         },
       ]);
 
-      const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+      const result = await createAsRerun(PROPS);
 
       expect(result.physicalId).toBe(PHYSICAL_ID);
       expect(result.attributes).toEqual({ Id: 'sgr-existing' });
@@ -242,7 +252,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         },
       ]);
 
-      const result = await provider.create('Ingress', RESOURCE_TYPE, {
+      const result = await createAsRerun({
         GroupId: GROUP_ID,
         IpProtocol: 'tcp',
         FromPort: 443,
@@ -263,7 +273,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         return Promise.reject(alreadyExists);
       });
 
-      const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+      const result = await createAsRerun(PROPS);
 
       expect(result.physicalId).toBe(PHYSICAL_ID);
       expect(result.attributes).toEqual({});
@@ -289,7 +299,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         },
       ]);
 
-      const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+      const result = await createAsRerun(PROPS);
 
       expect(result.attributes).toEqual({});
     });
@@ -309,7 +319,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         },
       ]);
 
-      const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+      const result = await createAsRerun(PROPS);
 
       expect(result.attributes).toEqual({});
     });
@@ -331,19 +341,19 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
 
       it('rejects a rule differing ONLY by protocol', async () => {
         withExistingRules([decoy({ IpProtocol: 'udp' })]);
-        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+        const result = await createAsRerun(PROPS);
         expect(result.attributes).toEqual({});
       });
 
       it('rejects a rule differing ONLY by FromPort', async () => {
         withExistingRules([decoy({ FromPort: 80 })]);
-        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+        const result = await createAsRerun(PROPS);
         expect(result.attributes).toEqual({});
       });
 
       it('rejects a rule differing ONLY by ToPort', async () => {
         withExistingRules([decoy({ ToPort: 8443 })]);
-        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+        const result = await createAsRerun(PROPS);
         expect(result.attributes).toEqual({});
       });
 
@@ -351,7 +361,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         // The `?? -1` default on the AWS side: a rule AWS reports with no ports
         // is "all ports", which is NOT the tcp/443 rule the template asked for.
         withExistingRules([decoy({ FromPort: undefined, ToPort: undefined })]);
-        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+        const result = await createAsRerun(PROPS);
         expect(result.attributes).toEqual({});
       });
 
@@ -368,7 +378,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
           }),
         ]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+        const result = await createAsRerun({
           GroupId: GROUP_ID,
           IpProtocol: '-1',
           CidrIp: '10.0.0.0/16',
@@ -386,7 +396,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         // here, silently, for every numeric-protocol rule.
         withExistingRules([decoy({ SecurityGroupRuleId: 'sgr-numeric', IpProtocol: 'tcp' })]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+        const result = await createAsRerun({
           GroupId: GROUP_ID,
           IpProtocol: 6,
           FromPort: 443,
@@ -403,7 +413,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         // rollback replay — a different input from the number above.
         withExistingRules([decoy({ SecurityGroupRuleId: 'sgr-numeric-str', IpProtocol: 'tcp' })]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+        const result = await createAsRerun({
           GroupId: GROUP_ID,
           IpProtocol: '6',
           FromPort: 443,
@@ -418,7 +428,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         // The fold must not become a blanket "any protocol matches": 17 is udp.
         withExistingRules([decoy({ IpProtocol: 'tcp' })]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+        const result = await createAsRerun({
           GroupId: GROUP_ID,
           IpProtocol: 17,
           FromPort: 443,
@@ -435,7 +445,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         // deploys fine. An identity compare against a number never matched it.
         withExistingRules([decoy({ SecurityGroupRuleId: 'sgr-stringports' })]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+        const result = await createAsRerun({
           GroupId: GROUP_ID,
           IpProtocol: 'tcp',
           FromPort: '443',
@@ -455,7 +465,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
           decoy({ SecurityGroupRuleId: 'sgr-icmp0', IpProtocol: 'icmp', FromPort: 0, ToPort: 0 }),
         ]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+        const result = await createAsRerun({
           GroupId: GROUP_ID,
           IpProtocol: 'icmp',
           FromPort: '  ',
@@ -473,7 +483,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
           decoy({ SecurityGroupRuleId: 'sgr-allports', IpProtocol: '-1', FromPort: -1, ToPort: -1 }),
         ]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+        const result = await createAsRerun({
           GroupId: GROUP_ID,
           IpProtocol: '-1',
           FromPort: '',
@@ -501,7 +511,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
           decoy({ SecurityGroupRuleId: 'sgr-p0', FromPort: 0, ToPort: 0 }),
         ]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+        const result = await createAsRerun({
           GroupId: GROUP_ID,
           IpProtocol: 'tcp',
           FromPort: p,
@@ -521,7 +531,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
           }),
         ]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+        const result = await createAsRerun({
           GroupId: GROUP_ID,
           IpProtocol: 'tcp',
           FromPort: 443,
@@ -537,7 +547,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
           decoy({ CidrIpv4: undefined, CidrIpv6: '2001:db8:dead::/48' }),
         ]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+        const result = await createAsRerun({
           GroupId: GROUP_ID,
           IpProtocol: 'tcp',
           FromPort: 443,
@@ -557,7 +567,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
           }),
         ]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+        const result = await createAsRerun({
           GroupId: GROUP_ID,
           IpProtocol: 'tcp',
           FromPort: 443,
@@ -573,7 +583,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
           decoy({ CidrIpv4: undefined, PrefixListId: 'pl-9999' }),
         ]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+        const result = await createAsRerun({
           GroupId: GROUP_ID,
           IpProtocol: 'tcp',
           FromPort: 443,
@@ -622,7 +632,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
           { rules: [match('sgr-page2')] },
         ]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+        const result = await createAsRerun(PROPS);
 
         expect(result.attributes).toEqual({ Id: 'sgr-page2' });
         const describes = sentCommands().filter(
@@ -641,7 +651,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
           { rules: [match('sgr-page2')] },
         ]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+        const result = await createAsRerun(PROPS);
 
         expect(result.attributes).toEqual({});
       });
@@ -649,7 +659,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
       it('gives up (recording nothing) on a NextToken that never terminates', async () => {
         withExistingPages([{ rules: [match('sgr-looping')], next: 'forever' }]);
 
-        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+        const result = await createAsRerun(PROPS);
 
         expect(result.attributes).toEqual({});
         // Bounded: the walk must not spin forever on a pathological token.

@@ -6410,6 +6410,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
           ]
@@ -6434,6 +6435,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
           ]
@@ -6510,6 +6512,7 @@
             "deleteSecurityGroupIngress",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
           ]
@@ -6714,6 +6717,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
           ]
@@ -6917,6 +6921,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
           ]
@@ -7362,6 +7367,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
           ]
@@ -7386,6 +7392,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
           ]
@@ -7492,6 +7499,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
           ]

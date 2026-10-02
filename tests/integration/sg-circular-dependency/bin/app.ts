@@ -3,6 +3,7 @@ import * as cdk from 'aws-cdk-lib';
 import { SgCircularDependencyStack } from '../lib/sg-circular-dependency-stack.ts';
 import { SgIngressExportStack } from '../lib/sg-ingress-export-stack.ts';
 import { SgIngressAmbiguousStack } from '../lib/sg-ingress-ambiguous-stack.ts';
+import { SgIngressStrangerStack } from '../lib/sg-ingress-stranger-stack.ts';
 
 const app = new cdk.App();
 new SgCircularDependencyStack(app, 'CdkdSgCircularExample', {
@@ -34,3 +35,20 @@ new SgIngressAmbiguousStack(app, 'CdkdSgIngressAmbiguousExample', {
     region: process.env.CDK_DEFAULT_REGION,
   },
 });
+
+// go-to-k/cdkd#4355 ownership arm: only when verify.sh names the group to
+// import (`-c strangerGroupId=sg-...`), so every other deploy of this app
+// synthesizes the three stacks above unchanged.
+const strangerGroupId = app.node.tryGetContext('strangerGroupId') as string | undefined;
+if (strangerGroupId) {
+  new SgIngressStrangerStack(app, 'CdkdSgIngressStrangerExample', {
+    groupId: strangerGroupId,
+    cidr: (app.node.tryGetContext('strangerCidr') as string | undefined) ?? '10.63.0.0/16',
+    description:
+      'Ownership arm for issue #4355 - one AWS::EC2::SecurityGroupIngress identical to a rule added by hand to a group this stack does not own. The deploy must refuse naming the existing rule instead of adopting it, and the hand-made rule must survive this stack destroy.',
+    env: {
+      account: process.env.CDK_DEFAULT_ACCOUNT,
+      region: process.env.CDK_DEFAULT_REGION,
+    },
+  });
+}

@@ -643,6 +643,12 @@ adopted another region's bucket and applied the whole stack's configuration to
 it while reporting success (issue
 [#2227](https://github.com/go-to-k/cdkd/issues/2227)).
 
+A conflict that carries no name at all is never sound to swallow: an
+`AWS::EC2::SecurityGroupIngress` duplicate means only that an identical rule is
+on the group, whoever added it. Such a create adopts only on this stack's own
+evidence — its rollback journal (`getPriorAttempts`) or a rollback replay — and
+refuses otherwise.
+
 `S3BucketProvider.assertExistingBucketRegion` is the create-side twin of
 `assertRegionMatch`. It reads the bucket's region from the
 `x-amz-bucket-region` header on the 409 itself — no extra call, no extra IAM —

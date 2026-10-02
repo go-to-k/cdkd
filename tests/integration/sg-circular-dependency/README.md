@@ -51,6 +51,15 @@ create/destroy ordering.
    `AWS::EC2::SecurityGroup -> AWS::EC2::SecurityGroupIngress`
    implicit-delete-dep edge (`src/analyzer/implicit-delete-deps.ts`) must put
    both ingress deletes before both SG deletes.
+3. **OWNERSHIP (issue #4355)** — `verify.sh` adds a rule by hand to the
+   ambiguity-arm stack's group, then deploys `CdkdSgIngressStrangerExample`
+   (only synthesized with `-c strangerGroupId=...`), whose one ingress rule is
+   identical to it. The deploy must refuse naming the existing rule instead of
+   adopting it, a second deploy must refuse too, a replacement moving the stack's
+   own rule onto that range must refuse as well (keeping its own rule), and the
+   hand-made rule must survive each destroy. Finally the attempt is written into
+   the stack's rollback journal: the deploy must then adopt the rule, and the
+   destroy revoke it.
 
 ## Run
 

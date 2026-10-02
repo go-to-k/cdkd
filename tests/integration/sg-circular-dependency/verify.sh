@@ -66,6 +66,13 @@
 #          binary WITHOUT the fix also exits non-zero here (the state-only
 #          refusal), so the ids are what discriminate: only a live lookup can
 #          name them.
+#   5. OWNERSHIP (issue #4355), phase 1e: a rule added by hand to the
+#      ambiguity-arm SG, then `CdkdSgIngressStrangerExample` declaring the
+#      identical rule. Both deploys must refuse naming it (the first journaled
+#      without its attempted bag), an UPDATE onto it from another range must
+#      refuse too, and it must survive each such destroy. Then the ADOPT arm
+#      writes the attempt into the journal: the deploy adopts the rule and the
+#      destroy revokes it.
 #
 # Asserts post-deploy: both SGs exist, each carries the cross-referencing
 # ingress rule (UserIdGroupPairs points at the OTHER SG). Asserts post-destroy:
@@ -156,6 +163,11 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 EXPORT_STATE_KEY="cdkd/${EXPORT_STACK}/${REGION}/state.json"
 AMBIGUOUS_STATE_KEY="cdkd/${AMBIGUOUS_STACK}/${REGION}/state.json"
+# The issue #4355 ownership arm (phase 1e). Synthesized only when
+# `-c strangerGroupId=...` is passed, so every other phase sees the three stacks
+# above unchanged.
+STRANGER_STACK="CdkdSgIngressStrangerExample"
+STRANGER_PREFIX="cdkd/${STRANGER_STACK}/${REGION}"
 FIXTURE_TAG_KEY="cdkd:integ-fixture"
 FIXTURE_TAG_VALUE="sg-circular-dependency"
 
@@ -174,6 +186,11 @@ EXPORT_SG_B_ID=""
 EXPORT_VPC_ID=""
 AMBIG_SG_ID=""
 AMBIG_VPC_ID=""
+# Phase 1e's hand-made rule. The cleanup trap needs no copy of it: the rule
+# sits on the ambiguity-arm SG, whose every ingress rule the trap revokes. The
+# ADOPT arm ends with the stack's own destroy revoking it.
+STRANGER_GROUP_ID=""
+STRANGER_RULE_ID=""
 
 # Scratch pair for the issue #1791 state mutation (phase 1c). PID-suffixed so
 # two concurrent runs of this fixture cannot share them; seeded empty so the
@@ -267,6 +284,10 @@ cleanup() {
       --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
       --yes
+    node "${LOCAL_DIST}" state destroy "${STRANGER_STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" \
+      --yes
   fi
   # Belt-and-suspenders direct revoke-then-delete in case state destroy could
   # not complete (e.g. ordering bug left SGs cross-referencing each other).
@@ -278,6 +299,9 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${EXPORT_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/${AMBIGUOUS_STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${AMBIGUOUS_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    for KEY in state.json lock.json rollback-journal.json; do
+      aws s3 rm "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/${KEY}" >/dev/null 2>&1 || true
+    done
   fi
   # The issue #1791 healing arm rewrites the export-arm state file through a
   # scratch pair; drop them here too so an interrupted run leaves nothing in
@@ -804,6 +828,268 @@ for TOKEN in "${AMBIG_ROW}" "${AMBIG_RULE_ID_1}" "${AMBIG_RULE_ID_2}"; do
   fi
 done
 echo "    OK: export refused ${AMBIG_ROW} naming both candidate rule ids"
+
+# --- Phase 1e: issue #4355 OWNERSHIP arm -------------------------------------
+# A rule added by hand to a group this fixture's stranger stack does not own,
+# then the stranger stack declaring the IDENTICAL rule. AWS answers the
+# stack's AuthorizeSecurityGroupIngress with InvalidPermission.Duplicate; cdkd
+# used to treat that as success, record the hand-made rule as the stack's, and
+# revoke it on destroy. The deploy must refuse naming the rule, a second
+# deploy must refuse again (the first refusal is journaled, and must not read
+# as this stack's own earlier attempt), and the rule must survive the destroy.
+echo "==> Phase 1e: add the rule out of band to ${AMBIG_SG_ID}"
+STRANGER_GROUP_ID="${AMBIG_SG_ID}"
+if ! STRANGER_AUTH=$(aws ec2 authorize-security-group-ingress \
+  --group-id "${STRANGER_GROUP_ID}" \
+  --ip-permissions 'IpProtocol=tcp,FromPort=5432,ToPort=5432,IpRanges=[{CidrIp=10.63.0.0/16}]' \
+  --region "${REGION}" \
+  --output json); then
+  echo "FAIL: could not add the out-of-band rule to ${STRANGER_GROUP_ID}" >&2
+  exit 1
+fi
+STRANGER_RULE_ID=$(printf '%s' "${STRANGER_AUTH}" | jq -r '.SecurityGroupRules[0].SecurityGroupRuleId // ""')
+case "${STRANGER_RULE_ID}" in
+  sgr-*) echo "    added ${STRANGER_RULE_ID}" ;;
+  *)
+    echo "FAIL: the out-of-band authorize returned no sgr- id (got '${STRANGER_RULE_ID}'): ${STRANGER_AUTH}" >&2
+    exit 1
+    ;;
+esac
+
+# The rule's presence, by its own id, as AWS reports it. Tri-state like
+# gone_probe: an undetermined probe fails the run rather than reading as gone.
+stranger_rule_present() {
+  local out
+  if out="$(aws ec2 describe-security-group-rules \
+    --security-group-rule-ids "${STRANGER_RULE_ID}" \
+    --region "${REGION}" \
+    --output json 2>&1)"; then
+    [ "$(printf '%s' "${out}" | jq '.SecurityGroupRules | length')" -eq 1 ]
+    return
+  fi
+  if printf '%s' "${out}" | grep -qiE 'NotFound|does not exist'; then
+    return 1
+  fi
+  echo "FAIL: describe-security-group-rules on ${STRANGER_RULE_ID} undetermined: ${out}" >&2
+  exit 1
+}
+
+for ATTEMPT in first second; do
+  echo "==> Phase 1e: ${ATTEMPT} deploy of ${STRANGER_STACK} must REFUSE the identical rule"
+  if STRANGER_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
+    -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+    --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" \
+    --yes 2>&1); then
+    STRANGER_EXIT=0
+  else
+    STRANGER_EXIT=$?
+  fi
+  STRANGER_OUT=$(printf '%s' "${STRANGER_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
+  if [ "${STRANGER_EXIT}" -eq 0 ]; then
+    echo "FAIL: the ${ATTEMPT} deploy of ${STRANGER_STACK} SUCCEEDED over ${STRANGER_RULE_ID}, a rule this stack never created — cdkd adopted it, so 'cdkd destroy' would revoke it. Full output:" >&2
+    printf '%s\n' "${STRANGER_OUT}" >&2
+    exit 1
+  fi
+  for TOKEN in "${STRANGER_RULE_ID}" "already exists on security group ${STRANGER_GROUP_ID}" "nothing in this stack's records shows cdkd created it"; do
+    if ! printf '%s\n' "${STRANGER_OUT}" | grep -qF "${TOKEN}"; then
+      echo "FAIL: the ${ATTEMPT} deploy failed, but not with the ownership refusal (missing '${TOKEN}'). Full output:" >&2
+      printf '%s\n' "${STRANGER_OUT}" >&2
+      exit 1
+    fi
+  done
+  echo "    OK: the ${ATTEMPT} deploy refused, naming ${STRANGER_RULE_ID}"
+  if [ "${ATTEMPT}" = first ]; then
+    # The refusal is journaled as a failed CREATE WITHOUT its attempted bag —
+    # the bag is what the next deploy would read as "this stack attempted it".
+    if ! STRANGER_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
+      echo "FAIL: could not read the rollback journal at s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json after the refused deploy: ${STRANGER_JOURNAL}" >&2
+      exit 1
+    fi
+    REFUSED_OPS=$(printf '%s' "${STRANGER_JOURNAL}" | jq '[.segments[].failedOperations[]? | select(.logicalId == "StrangerIngress" and .changeType == "CREATE")]')
+    if [ "$(printf '%s' "${REFUSED_OPS}" | jq 'length')" -lt 1 ]; then
+      echo "FAIL: the journal holds no failed CREATE for StrangerIngress: ${STRANGER_JOURNAL}" >&2
+      exit 1
+    fi
+    if [ "$(printf '%s' "${REFUSED_OPS}" | jq '[.[] | select(has("attemptedProperties"))] | length')" -ne 0 ]; then
+      echo "FAIL: the refused CREATE was journaled WITH attemptedProperties — the next deploy would adopt ${STRANGER_RULE_ID}: ${REFUSED_OPS}" >&2
+      exit 1
+    fi
+    echo "    OK: the refusal is journaled without its attempted bag"
+  fi
+done
+
+echo "==> Phase 1e: destroy ${STRANGER_STACK}; the hand-made rule must survive"
+# The refused deploys may have left no state at all, so the destroy's exit code
+# says nothing here; what it must not do is revoke the rule.
+node "${LOCAL_DIST}" destroy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force || true
+if ! stranger_rule_present; then
+  echo "FAIL: ${STRANGER_RULE_ID} is GONE after the stranger stack's deploy + destroy — cdkd revoked a rule it never created" >&2
+  exit 1
+fi
+echo "    OK: ${STRANGER_RULE_ID} is still on ${STRANGER_GROUP_ID}"
+assert_gone "stranger-arm state file s3://${STATE_BUCKET}/${STRANGER_PREFIX}/state.json still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STRANGER_PREFIX}/state.json"
+
+# The UPDATE half: the stack's own rule on another range first, then moved onto
+# the hand-made rule's range. `CidrIp` is create-only, so cdkd replaces the
+# rule create-first: the new rule's Authorize meets the duplicate and must
+# refuse the same way, leaving the stack's own rule (still recorded) in place.
+
+# How many ingress rules on the group carry exactly this IPv4 range. `|| return
+# 1` on the capture: errexit is cleared inside the caller's `$( )`.
+ingress_rules_for_cidr() { # usage: ingress_rules_for_cidr <cidr>
+  local out
+  out="$(aws ec2 describe-security-group-rules \
+    --filters "Name=group-id,Values=${STRANGER_GROUP_ID}" \
+    --region "${REGION}" \
+    --output json)" || return 1
+  printf '%s' "${out}" | jq --arg c "$1" '[.SecurityGroupRules[] | select(.IsEgress == false and .CidrIpv4 == $c)] | length'
+}
+
+echo "==> Phase 1e: deploy ${STRANGER_STACK} on its own range (10.64.0.0/16) — must succeed"
+node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  -c "strangerCidr=10.64.0.0/16" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+echo "==> Phase 1e: update ${STRANGER_STACK} onto the hand-made rule's range — must REFUSE"
+if STRANGER_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1); then
+  STRANGER_EXIT=0
+else
+  STRANGER_EXIT=$?
+fi
+STRANGER_OUT=$(printf '%s' "${STRANGER_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
+if [ "${STRANGER_EXIT}" -eq 0 ]; then
+  echo "FAIL: the update of ${STRANGER_STACK} onto 10.63.0.0/16 SUCCEEDED over ${STRANGER_RULE_ID} — cdkd adopted a rule it never created. Full output:" >&2
+  printf '%s\n' "${STRANGER_OUT}" >&2
+  exit 1
+fi
+for TOKEN in "${STRANGER_RULE_ID}" "already exists on security group ${STRANGER_GROUP_ID}"; do
+  if ! printf '%s\n' "${STRANGER_OUT}" | grep -qF "${TOKEN}"; then
+    echo "FAIL: the update failed, but not with the ownership refusal (missing '${TOKEN}'). Full output:" >&2
+    printf '%s\n' "${STRANGER_OUT}" >&2
+    exit 1
+  fi
+done
+echo "    OK: the update refused, naming ${STRANGER_RULE_ID}"
+if ! OWN_COUNT=$(ingress_rules_for_cidr 10.64.0.0/16); then
+  echo "FAIL: describe-security-group-rules on ${STRANGER_GROUP_ID} failed — cannot check the stack's own rule" >&2
+  exit 1
+fi
+if [ "${OWN_COUNT}" -ne 1 ]; then
+  echo "FAIL: expected the stack's own 10.64.0.0/16 rule to survive the refused replacement (create-first), found ${OWN_COUNT}" >&2
+  exit 1
+fi
+echo "    OK: the stack's own 10.64.0.0/16 rule is still in place"
+
+echo "==> Phase 1e: destroy ${STRANGER_STACK} after the refused update; the hand-made rule must survive"
+if ! node "${LOCAL_DIST}" destroy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force; then
+  echo "FAIL: cdkd destroy returned non-zero for ${STRANGER_STACK} after the refused update" >&2
+  exit 1
+fi
+if ! stranger_rule_present; then
+  echo "FAIL: ${STRANGER_RULE_ID} is GONE after the stranger stack's refused update + destroy — cdkd revoked a rule it never created" >&2
+  exit 1
+fi
+echo "    OK: ${STRANGER_RULE_ID} survived the refused update and the destroy"
+if ! OWN_COUNT=$(ingress_rules_for_cidr 10.64.0.0/16); then
+  echo "FAIL: describe-security-group-rules on ${STRANGER_GROUP_ID} failed after the destroy" >&2
+  exit 1
+fi
+if [ "${OWN_COUNT}" -ne 0 ]; then
+  echo "FAIL: the stack's own 10.64.0.0/16 rule is still on ${STRANGER_GROUP_ID} after its destroy (orphan)" >&2
+  exit 1
+fi
+echo "    OK: the destroy revoked the stack's own rule and only that"
+assert_gone "stranger-arm state file s3://${STATE_BUCKET}/${STRANGER_PREFIX}/state.json still exists after the update-arm destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STRANGER_PREFIX}/state.json"
+
+# The ADOPT half: with journal evidence that THIS stack attempted the rule, the
+# duplicate is adopted. A refused deploy leaves the failed op without its bag;
+# the bag is written back by hand — what a deploy whose Authorize landed but
+# whose response was lost journals — and the next deploy must adopt the rule,
+# record its id, and (the rule now being the stack's) revoke it on destroy.
+echo "==> Phase 1e: ADOPT arm — refuse once, then give the journal the attempt"
+if ADOPT_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1); then
+  echo "FAIL: the ADOPT arm's first deploy SUCCEEDED over ${STRANGER_RULE_ID} with no journal evidence. Full output:" >&2
+  printf '%s\n' "${ADOPT_RAW}" >&2
+  exit 1
+fi
+ADOPT_OUT=$(printf '%s' "${ADOPT_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
+if ! printf '%s\n' "${ADOPT_OUT}" | grep -qF "nothing in this stack's records shows cdkd created it"; then
+  echo "FAIL: the ADOPT arm's first deploy failed, but not with the ownership refusal. Full output:" >&2
+  printf '%s\n' "${ADOPT_OUT}" >&2
+  exit 1
+fi
+if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
+  echo "FAIL: could not read the rollback journal after the ADOPT arm's refused deploy: ${ADOPT_JOURNAL}" >&2
+  exit 1
+fi
+ADOPT_JOURNAL=$(printf '%s' "${ADOPT_JOURNAL}" | jq --arg g "${STRANGER_GROUP_ID}" '
+  .segments |= map(.failedOperations |= ((. // []) | map(
+    if .logicalId == "StrangerIngress" and .changeType == "CREATE"
+    then .attemptedProperties = {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
+    else . end)))')
+if [ "$(printf '%s' "${ADOPT_JOURNAL}" | jq '[.segments[].failedOperations[]? | select(.logicalId == "StrangerIngress" and has("attemptedProperties"))] | length')" -lt 1 ]; then
+  echo "FAIL: the journal rewrite added no attempted bag (no StrangerIngress failed CREATE to rewrite): ${ADOPT_JOURNAL}" >&2
+  exit 1
+fi
+printf '%s' "${ADOPT_JOURNAL}" | aws s3 cp - "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" \
+  --content-type application/json >/dev/null
+
+echo "==> Phase 1e: ADOPT arm — the deploy must now adopt ${STRANGER_RULE_ID}"
+if ! node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes; then
+  echo "FAIL: the deploy refused although the stack's journal shows it attempted the identical rule" >&2
+  exit 1
+fi
+if ! ADOPT_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/state.json" - 2>&1); then
+  echo "FAIL: could not read state for ${STRANGER_STACK} after the adopting deploy: ${ADOPT_STATE}" >&2
+  exit 1
+fi
+ADOPTED_ID=$(printf '%s' "${ADOPT_STATE}" | jq -r '.resources.StrangerIngress.attributes.Id // ""')
+if [ "${ADOPTED_ID}" != "${STRANGER_RULE_ID}" ]; then
+  echo "FAIL: the adopting deploy recorded Id '${ADOPTED_ID}', expected ${STRANGER_RULE_ID}" >&2
+  exit 1
+fi
+echo "    OK: adopted and recorded ${STRANGER_RULE_ID}"
+
+echo "==> Phase 1e: ADOPT arm — destroy revokes the adopted rule (it is the stack's now)"
+if ! node "${LOCAL_DIST}" destroy "${STRANGER_STACK}" \
+  -c "strangerGroupId=${STRANGER_GROUP_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force; then
+  echo "FAIL: cdkd destroy returned non-zero for ${STRANGER_STACK} after adopting" >&2
+  exit 1
+fi
+if stranger_rule_present; then
+  echo "FAIL: ${STRANGER_RULE_ID} is still on ${STRANGER_GROUP_ID} after destroying the stack that adopted it" >&2
+  exit 1
+fi
+echo "    OK: the destroy revoked the adopted rule"
+assert_gone "stranger-arm state file s3://${STATE_BUCKET}/${STRANGER_PREFIX}/state.json still exists after the ADOPT-arm destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STRANGER_PREFIX}/state.json"
+aws s3 rm "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" >/dev/null 2>&1 || true
 
 echo "==> Phase 1d: destroy the ambiguity-arm stack"
 if ! node "${LOCAL_DIST}" destroy "${AMBIGUOUS_STACK}" \
