@@ -79,6 +79,7 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--access-key-id`
 - `--access-point-id`
 - `--account-id`
+- `--action-version`
 - `--active`
 - `--activity-arn`
 - `--add-host`
@@ -114,6 +115,7 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--build-arg`
 - `--cache-cluster-id`
 - `--capacity-provider-name`
+- `--category`
 - `--certificate-arn`
 - `--cfn-stack-name`
 - `--cli-binary-format`

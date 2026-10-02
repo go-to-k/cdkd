@@ -743,6 +743,90 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
     expect(patch).toHaveLength(2);
   });
 
+  it('still re-adds a kept container whose value CHANGED, as an add op (go-to-k/cdkd#4416)', async () => {
+    // No patch can change a Kinesis-source pipe's SourceParameters through
+    // Cloud Control (measured: any op on a write-only path must be `add`, and
+    // an add carrying StartingPosition is refused). The add keeps the refusal
+    // naming the create-only path, rather than a `replace` the API rejects
+    // for a different reason.
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: [
+          '/properties/SourceParameters/KinesisStreamParameters/StartingPosition',
+        ],
+        writeOnlyProperties: ['/properties/SourceParameters'],
+      }),
+    });
+
+    const desired = { KinesisStreamParameters: { StartingPosition: 'LATEST', BatchSize: 20 } };
+    await provider.update(
+      'Pipe',
+      'my-pipe',
+      'AWS::Pipes::Pipe',
+      { Name: 'my-pipe', SourceParameters: desired },
+      {
+        Name: 'my-pipe',
+        SourceParameters: { KinesisStreamParameters: { StartingPosition: 'LATEST', BatchSize: 10 } },
+      }
+    );
+
+    expect(sentPatch()).toEqual([{ op: 'add', path: '/SourceParameters', value: desired }]);
+  });
+
+  it('keeps out a create-only container holding a write-only leaf, per key (go-to-k/cdkd#4416)', async () => {
+    // AWS::CodePipeline::CustomActionType: the create-only `Settings` holds the
+    // write-only `ThirdPartyConfigurationUrl`, and the create-only
+    // `ConfigurationProperties` holds the write-only `*/Type`. Cloud Control
+    // refuses an unchanged `add` of either (measured); a Tags-only patch
+    // succeeds.
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: ['/properties/Settings', '/properties/ConfigurationProperties'],
+        writeOnlyProperties: [
+          '/properties/ConfigurationProperties/*/Type',
+          '/properties/Settings/ThirdPartyConfigurationUrl',
+        ],
+      }),
+    });
+
+    const base = {
+      Settings: { ThirdPartyConfigurationUrl: 'https://example.com/c' },
+      ConfigurationProperties: [{ Name: 'p', Key: true, Type: 'String' }],
+    };
+    await provider.update(
+      'Action',
+      'Test|P|1',
+      'AWS::CodePipeline::CustomActionType',
+      { ...base, Tags: [{ Key: 'k', Value: 'v2' }] },
+      { ...base, Tags: [{ Key: 'k', Value: 'v1' }] }
+    );
+
+    expect(sentPatch()).toEqual([{ op: 'replace', path: '/Tags', value: [{ Key: 'k', Value: 'v2' }] }]);
+  });
+
+  it('matches an escaped pointer segment on both sides', async () => {
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: ['/properties/Config/a~1b'],
+        writeOnlyProperties: ['/properties/Config/a~1b'],
+      }),
+    });
+
+    const config = { 'a/b': 'x' };
+    await provider.update(
+      'MyResource',
+      'res-1',
+      'AWS::Some::Type',
+      { Mode: 'b', Config: config },
+      { Mode: 'a', Config: config }
+    );
+
+    expect(sentPatch()).toEqual([{ op: 'replace', path: '/Mode', value: 'b' }]);
+  });
+
   it('still re-adds a write-only container whose value holds no create-only path', async () => {
     // An SQS-source pipe's `SourceParameters` carries no `StartingPosition`:
     // re-adding it is what keeps it across the read-modify-write (the

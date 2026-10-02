@@ -33,14 +33,14 @@ bootstrap-free-region	2026-09-01T14:50:59Z	PASS	240	verify.sh	PR#2398 arm 2/6: b
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
 budgets	2026-09-30T11:59:39Z	PASS	70	verify.sh	rc ok, orph clean (#4228)
 cache-streaming	2026-09-29T15:04:16Z	PASS	652	verify.sh	rc ok, orph clean (#4029 PR #4080: ElastiCache delete wait)
-cc-api-fallback	2026-10-02T08:17:24Z	PASS	50	verify.sh	rc ok, orph clean (#4416)
-cc-api-fallback-transitions	2026-10-02T08:17:24Z	PASS	105	verify.sh	rc ok, orph clean (#4416)
+cc-api-fallback	2026-10-02T09:06:41Z	PASS	40	verify.sh	rc ok, orph clean (#4416 r2)
+cc-api-fallback-transitions	2026-10-02T09:06:41Z	PASS	90	verify.sh	rc ok, orph clean (#4416 r2)
 cc-final-snapshot-handlers	2026-09-30T17:44:01Z	PASS	1223	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
-cc-getatt-readback	2026-10-02T08:17:24Z	PASS	120	verify.sh	rc ok, orph clean (#4416)
+cc-getatt-readback	2026-10-02T09:06:41Z	PASS	96	verify.sh	rc ok, orph clean (#4416 r2)
 cc-protection-flip	2026-10-01T20:42:06Z	PASS	531	verify.sh	rc ok, orph clean (#4374)
 cc-protection-flip-eks	2026-10-01T21:17:00Z	PASS	2625	verify.sh	rc ok, orph clean (#4374)
 cc-to-sdk-reroute	2026-10-02T05:05:32Z	PASS	230	verify.sh	rc ok, orph clean; #2651 phase 5c premise + recreate
-cc-write-only-create-only	2026-10-02T08:17:24Z	PASS	175	verify.sh	rc ok, orph clean (#4416)
+cc-write-only-create-only	2026-10-02T09:06:41Z	PASS	150	verify.sh	rc ok, orph clean (#4416 r2)
 ci-cd	2026-09-27T14:43:09Z	PASS	70	verify.sh	rc ok, orph clean (#3866)
 cloudfront-function-url	2026-10-01T10:13:53Z	PASS	261	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 7 deleted 0 errors, orph clean
 cloudtrail-trail	2026-09-28T07:22:06Z	PASS	196	verify.sh	#3885 log-group sweep; rc ok, orph clean, /aws/lambda/<stack>- groups 0 after run
@@ -124,7 +124,7 @@ eventbridge	2026-10-01T10:13:53Z	PASS	115	verify.sh	PR #4302 (#2177 Lambda-famil
 eventbridge-api-destination	2026-08-10T04:16:05Z	PASS	66	verify.sh	0810 staleness sweep b1; Connection/ApiDestination GetAtt, 5 del 0 err, 0 orph
 eventbridge-archive	2026-07-31T06:21:38Z	PASS	54	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 eventbridge-input-transformer	2026-08-10T04:16:05Z	PASS	53	verify.sh	0810 staleness sweep b1; post-#1396 ECS target sub-shape, 0 err, 0 orph
-eventbridge-pipes	2026-10-02T08:17:24Z	PASS	180	verify.sh	rc ok, orph clean (#4416)
+eventbridge-pipes	2026-10-02T09:06:41Z	PASS	170	verify.sh	rc ok, orph clean (#4416 r2)
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-01T10:13:53Z	PASS	100	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
@@ -266,6 +266,9 @@ recreate-mixed-direction	2026-09-25T09:51:57Z	PASS	105	verify.sh	rc ok, orph cle
 recreate-nested-logical-id-collision	2026-09-24T18:20:06Z	PASS	120	verify.sh	rc ok, orph clean; PR #3668 head
 recreate-via-cc-api	2026-10-02T09:33:03Z	PASS	106	verify.sh	rc ok, orph clean (#4414)
 recreate-via-sdk-provider	2026-10-02T09:33:03Z	PASS	100	verify.sh	rc ok, orph clean (#4414)
+recreate-via-cc-api	2026-10-02T08:17:24Z	PASS	120	verify.sh	rc ok, orph clean (#4416)
+recreate-via-cc-api	2026-10-02T09:06:41Z	PASS	105	verify.sh	rc ok, orph clean (#4416 r2)
+recreate-via-sdk-provider	2026-09-30T17:28:22Z	PASS	240	verify.sh	rc ok, orph clean
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
 remove-protection	2026-10-02T09:33:03Z	PASS	2108	verify.sh	rc ok, orph clean (#4414)
@@ -312,6 +315,10 @@ sdk-to-cc-autoroute	2026-09-25T15:16:49Z	PASS	155	verify.sh	rc ok, orph clean; #
 secret-derived-immutable-names	2026-10-02T08:17:24Z	PASS	165	verify.sh	rc ok, orph clean (#4416)
 secrets-array-nested	2026-10-02T07:27:24Z	PASS	687	verify.sh	rc ok, orph clean (#4417)
 secrets-dynamic-ref	2026-10-02T07:33:37Z	PASS	1062	verify.sh	rc ok, orph clean (#4417)
+secret-derived-immutable-names	2026-10-02T08:17:24Z	PASS	165	verify.sh	rc ok, orph clean (#4416)
+secret-derived-immutable-names	2026-10-02T09:06:41Z	PASS	110	verify.sh	rc ok, orph clean (#4416 r2)
+secrets-array-nested	2026-09-30T21:26:17Z	PASS	421	verify.sh	PR #4269 (#2177 ECS masker threading) @9e0e25c69; rc ok, destroy 0 errors, no state/IAM/VPC/ECS/log leftovers
+secrets-dynamic-ref	2026-10-01T07:41:07Z	PASS	576	verify.sh	rc ok, orph clean (#4243)
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
 serverless-api	2026-10-02T07:20:09Z	PASS	61	verify.sh	PR #4391 (#2080 EMR create latch, orphan-report rename) @a7306c55f; rc ok, orph clean

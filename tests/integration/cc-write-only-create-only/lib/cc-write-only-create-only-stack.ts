@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kinesis from 'aws-cdk-lib/aws-kinesis';
@@ -17,8 +18,10 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * - `AWS::Pipes::Pipe` `SourceParameters` is write-only and, for a Kinesis
  *   source, holds the create-only `KinesisStreamParameters.StartingPosition`;
  *   the UPDATE changes only `Description`.
+ * - `AWS::CodePipeline::CustomActionType` `Settings` / `ConfigurationProperties`
+ *   are create-only and hold write-only leaves; the UPDATE changes only `Tags`.
  *
- * Both types have no SDK provider, so both route through Cloud Control.
+ * None of the three has an SDK provider, so all route through Cloud Control.
  */
 export class CcWriteOnlyCreateOnlyStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -65,6 +68,24 @@ export class CcWriteOnlyCreateOnlyStack extends cdk.Stack {
       desiredState: 'STOPPED',
       description: update ? 'v2' : 'v1',
       sourceParameters: { kinesisStreamParameters: { startingPosition: 'LATEST', batchSize: 10 } },
+    });
+
+    // A deleted custom action version can never be created again, so each run
+    // takes its own (verify.sh exports it once, for both deploys).
+    new codepipeline.CfnCustomActionType(this, 'Action', {
+      category: 'Test',
+      provider: 'CdkdWoCo',
+      version: process.env.CDKD_ACTION_VERSION ?? 'synth',
+      inputArtifactDetails: { minimumCount: 0, maximumCount: 1 },
+      outputArtifactDetails: { minimumCount: 0, maximumCount: 1 },
+      settings: {
+        thirdPartyConfigurationUrl: 'https://example.com/config',
+        entityUrlTemplate: 'https://example.com/entity',
+      },
+      configurationProperties: [
+        { name: 'p', key: true, required: true, secret: false, type: 'String' },
+      ],
+      tags: [{ key: 'phase', value: update ? 'v2' : 'v1' }],
     });
   }
 }

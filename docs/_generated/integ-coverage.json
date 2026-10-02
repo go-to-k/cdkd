@@ -6974,6 +6974,7 @@
     "AWS::CloudFormation::CustomResource",
     "AWS::CloudWatch::CompositeAlarm",
     "AWS::CodeDeploy::DeploymentGroup",
+    "AWS::CodePipeline::CustomActionType",
     "AWS::CodePipeline::Pipeline",
     "AWS::Cognito::IdentityPool",
     "AWS::Cognito::ManagedLoginBranding",

@@ -3,7 +3,9 @@
 # create-only path (go-to-k/cdkd#4416).
 # Deploys a Cognito ManagedLoginBranding (write-only + create-only ClientId)
 # and a Kinesis-source Pipe (write-only SourceParameters holding the
-# create-only StartingPosition), then updates a MUTABLE property of each. Cloud
+# create-only StartingPosition) and a CodePipeline CustomActionType (create-only
+# Settings / ConfigurationProperties holding write-only leaves), then updates a
+# MUTABLE property of each. Cloud
 # Control refused both updates while cdkd re-added the write-only key
 # ("createOnlyProperties [...] cannot be updated"). Asserts both updates land
 # in place (same ids, new values readable from AWS), then destroys clean.
@@ -51,6 +53,10 @@ PIPE="${STACK}-pipe"
 STREAM="${STACK}-src"
 QUEUE="${STACK}-tgt"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+# A deleted custom action version is never reusable: one per run, both deploys.
+CDKD_ACTION_VERSION="r$(date +%s | tail -c 9)"
+export CDKD_ACTION_VERSION
+ACCOUNT=""
 
 # The pool id by its exact name, or empty. `|| return 1` keeps a failed
 # listing from reading as "no pool".
@@ -65,6 +71,7 @@ pool_id() {
 cleanup() {
   echo "==> Cleanup"
   set +eu
+  rm -f "${UPDATE_LOG:-}"
   [ -f "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   aws pipes delete-pipe --name "${PIPE}" --region "${REGION}" >/dev/null 2>&1
   P=$(pool_id 2>/dev/null)
@@ -72,6 +79,9 @@ cleanup() {
     D=$(aws cognito-idp describe-user-pool --user-pool-id "${P}" --region "${REGION}" --query 'UserPool.Domain' --output text 2>/dev/null)
     [ -n "${D}" ] && [ "${D}" != "None" ] && aws cognito-idp delete-user-pool-domain --user-pool-id "${P}" --domain "${D}" --region "${REGION}" >/dev/null 2>&1
     aws cognito-idp delete-user-pool --user-pool-id "${P}" --region "${REGION}" >/dev/null 2>&1
+  fi
+  if [ -n "${ACCOUNT}" ]; then
+    aws codepipeline delete-custom-action-type --category Test --provider CdkdWoCo --action-version "${CDKD_ACTION_VERSION}" --region "${REGION}" >/dev/null 2>&1
   fi
   aws kinesis delete-stream --stream-name "${STREAM}" --enforce-consumer-deletion --region "${REGION}" >/dev/null 2>&1
   Q=$(aws sqs get-queue-url --queue-name "${QUEUE}" --region "${REGION}" --query QueueUrl --output text 2>/dev/null)
@@ -90,6 +100,8 @@ trap '(exit 143); cleanup; exit 143' TERM
 [ ! -f "${LOCAL_DIST}" ] && { echo "FAIL: build dist first" >&2; exit 1; }
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+ACTION_ARN="arn:aws:codepipeline:${REGION}:${ACCOUNT}:actiontype:Custom/Test/CdkdWoCo/${CDKD_ACTION_VERSION}"
 
 # Prints "<branding id> <colorSchemeMode>" for the pool's one client.
 branding() {
@@ -102,6 +114,11 @@ branding() {
     --region "${REGION}" --query 'ManagedLoginBranding.[ManagedLoginBrandingId, Settings.categories.global.colorSchemeMode]' \
     --output text) || return 1
   printf '%s' "${out}"
+}
+# Prints the custom action's `phase` tag value.
+action_tag() {
+  aws codepipeline list-tags-for-resource --resource-arn "${ACTION_ARN}" --region "${REGION}" \
+    --query "tags[?key=='phase'].value | [0]" --output text
 }
 # Prints "<CreationTime> <Description> <StartingPosition>".
 pipe_desc() {
@@ -119,9 +136,11 @@ P1=$(pipe_desc) || exit 1
 read -r PCT1 PDESC1 PSTART1 <<<"${P1}"
 [ "${PDESC1}" = "v1" ] || { echo "FAIL: base pipe Description is '${PDESC1}', expected v1" >&2; exit 1; }
 [ "${PSTART1}" = "LATEST" ] || { echo "FAIL: base pipe StartingPosition is '${PSTART1}', expected LATEST" >&2; exit 1; }
-echo "    OK: base deployed (branding ${BID1} LIGHT; pipe v1 LATEST)"
+T1=$(action_tag) || exit 1
+[ "${T1}" = "v1" ] || { echo "FAIL: base custom action tag is '${T1}', expected v1" >&2; exit 1; }
+echo "    OK: base deployed (branding ${BID1} LIGHT; pipe v1 LATEST; custom action tag v1)"
 
-echo "==> UPDATE (Settings LIGHT -> DARK, Description v1 -> v2) — must land in place (#4416)"
+echo "==> UPDATE (Settings LIGHT -> DARK, Description v1 -> v2, Tags v1 -> v2) — must land in place (#4416)"
 UPDATE_LOG="$(mktemp)"
 set +e
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes > "${UPDATE_LOG}" 2>&1
@@ -143,7 +162,9 @@ read -r PCT2 PDESC2 PSTART2 <<<"${P2}"
 [ "${PCT2}" = "${PCT1}" ] || { echo "FAIL: pipe was replaced (CreationTime ${PCT1} -> ${PCT2}), expected in place" >&2; exit 1; }
 [ "${PDESC2}" = "v2" ] || { echo "FAIL: pipe Description after update is '${PDESC2}', expected v2" >&2; exit 1; }
 [ "${PSTART2}" = "LATEST" ] || { echo "FAIL: pipe StartingPosition after update is '${PSTART2}', expected LATEST" >&2; exit 1; }
-echo "    OK: both updated in place (branding ${BID2} DARK; pipe v2, StartingPosition kept)"
+T2=$(action_tag) || exit 1
+[ "${T2}" = "v2" ] || { echo "FAIL: custom action tag after update is '${T2}', expected v2" >&2; exit 1; }
+echo "    OK: all updated in place (branding ${BID2} DARK; pipe v2, StartingPosition kept; custom action tag v2)"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -163,8 +184,9 @@ for _ in $(seq 1 36); do
   sleep 5
 done
 [ -z "${SGONE}" ] && { echo "FAIL: stream ${STREAM} still exists after destroy" >&2; exit 1; }
+assert_gone "custom action ${CDKD_ACTION_VERSION} remains" aws codepipeline list-tags-for-resource --resource-arn "${ACTION_ARN}" --region "${REGION}"
 assert_gone "queue ${QUEUE} remains" aws sqs get-queue-url --queue-name "${QUEUE}" --region "${REGION}"
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-echo "    OK: pipe, user pool, stream, queue and state gone"
+echo "    OK: pipe, user pool, custom action, stream, queue and state gone"
 echo ""
 echo "==> cc-write-only-create-only test passed"

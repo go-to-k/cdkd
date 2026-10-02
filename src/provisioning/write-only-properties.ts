@@ -16,8 +16,8 @@
  * `/properties/Foo/Bar` strips to `Foo` — re-adding the whole containing
  * property is sufficient and matches terraform-provider-awscc's approach of
  * clearing write-only attribute paths in the prior state so the patch
- * generator always emits `add` ops for them). A key whose value holds a
- * create-only path a write-only path covers is the exception
+ * generator always emits `add` ops for them). An unchanged key whose value
+ * holds a create-only path overlapping a write-only one is the exception
  * ({@link getTopLevelKeysHoldingUnreadableCreateOnly}, go-to-k/cdkd#4416).
  *
  * Only SUCCESSFUL lookups are cached per resource type for the process
@@ -195,7 +195,11 @@ async function fetchTopLevelWriteOnlyProperties(
       }
     }
     for (const createOnly of parseCreateOnlyPropertyPointers(parsed.createOnlyProperties)) {
-      if (paths.some((writeOnly) => pathCovers(writeOnly, createOnly))) {
+      if (
+        paths.some(
+          (writeOnly) => pathCovers(writeOnly, createOnly) || pathCovers(createOnly, writeOnly)
+        )
+      ) {
         unreadableCreateOnlyPaths.push(createOnly);
       }
     }
@@ -211,16 +215,20 @@ async function fetchTopLevelWriteOnlyProperties(
 
 /**
  * The top-level keys of `properties` whose value holds a create-only path the
- * read handler cannot return, because a write-only path covers it
- * (go-to-k/cdkd#4416): `AWS::Cognito::ManagedLoginBranding` `ClientId`
- * (write-only AND create-only), or an `AWS::Pipes::Pipe` `SourceParameters`
- * (write-only) holding the create-only `KinesisStreamParameters/StartingPosition`.
+ * read handler cannot return whole, because it overlaps a write-only path
+ * (go-to-k/cdkd#4416). Either direction: the write-only path covers it
+ * (`AWS::Cognito::ManagedLoginBranding` `ClientId`; an `AWS::Pipes::Pipe`
+ * `SourceParameters` holding the create-only
+ * `KinesisStreamParameters/StartingPosition`), or it holds a write-only leaf
+ * (`AWS::CodePipeline::CustomActionType` `Settings` /
+ * `ThirdPartyConfigurationUrl`).
  *
  * Cloud Control refuses any patch that brings such a value into the model it
  * read, unchanged or not ("createOnlyProperties [...] cannot be updated";
- * measured on both types), so `CloudControlProvider.update` must not re-add
- * these keys. Judged on the VALUE, not the schema alone: an SQS-source pipe's
- * `SourceParameters` holds no such path, and re-adding it is what keeps it.
+ * measured on all three types), so `CloudControlProvider.update` must not
+ * re-add an unchanged one. Judged on the VALUE, not the schema alone: an
+ * SQS-source pipe's `SourceParameters` holds no such path, and re-adding it is
+ * what keeps it.
  *
  * Read from the schema {@link getTopLevelWriteOnlyProperties} fetched, so call
  * it after that lookup resolved; a failed lookup yields an empty set.

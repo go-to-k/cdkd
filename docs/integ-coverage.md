@@ -198,6 +198,7 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::CloudFormation::CustomResource`
 - `AWS::CloudWatch::CompositeAlarm`
 - `AWS::CodeDeploy::DeploymentGroup`
+- `AWS::CodePipeline::CustomActionType`
 - `AWS::CodePipeline::Pipeline`
 - `AWS::Cognito::IdentityPool`
 - `AWS::Cognito::ManagedLoginBranding`

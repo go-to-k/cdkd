@@ -1256,12 +1256,13 @@ export class CloudControlProvider implements ResourceProvider {
       // minimal patch (with a warning) when the API is unavailable.
       //
       // go-to-k/cdkd#4416: a write-only key whose value holds a create-only
-      // path the read handler cannot return (Cognito ManagedLoginBranding
-      // `ClientId`, a Kinesis-source Pipe's `SourceParameters`) is NOT
-      // re-added: Cloud Control refuses any patch bringing that path into the
-      // model it read, unchanged value or not. Kept on the previous side, an
-      // unchanged one produces no op; a changed create-only value was already
-      // routed to replacement.
+      // path overlapping a write-only one (Cognito ManagedLoginBranding
+      // `ClientId`, a Kinesis-source Pipe's `SourceParameters`, CodePipeline
+      // CustomActionType `Settings`) is NOT re-added while UNCHANGED: Cloud
+      // Control refuses any patch bringing such a value into the model it
+      // read, unchanged or not. A CHANGED one is still re-added -- Cloud
+      // Control refuses that too (no patch can express it), and the `add`
+      // gets its refusal naming the create-only path (go-to-k/cdkd#4423).
       const writeOnlyProperties = await getTopLevelWriteOnlyProperties(resourceType);
       if (writeOnlyProperties.size > 0) {
         const keptOnPreviousSide = getTopLevelKeysHoldingUnreadableCreateOnly(
@@ -1270,7 +1271,12 @@ export class CloudControlProvider implements ResourceProvider {
         );
         const previousWithoutWriteOnly = { ...cleanPreviousProperties };
         for (const propertyName of writeOnlyProperties) {
-          if (keptOnPreviousSide.has(propertyName)) continue;
+          if (
+            keptOnPreviousSide.has(propertyName) &&
+            isDeepStrictEqual(cleanPreviousProperties[propertyName], cleanProperties[propertyName])
+          ) {
+            continue;
+          }
           delete previousWithoutWriteOnly[propertyName];
         }
         patch = this.patchGenerator.generatePatch(previousWithoutWriteOnly, cleanProperties);
