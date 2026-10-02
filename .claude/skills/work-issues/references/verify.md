@@ -81,19 +81,17 @@ tests passing is necessary but NOT sufficient:
 
 Revert the fix, rebuild, run, confirm the arm goes RED **at YOUR assertion —
 read which one fired**, then restore and rebuild. A failure HINT's needle is
-copied from that red run, never reasoned (go-to-k/cdkd#4336's
-`EntityAlreadyExists` never printed); an AWS refusal missing from verify.sh's
-log tail is the failed resource's `error.message` / `awsErrorCode` in
-`s3://<state-bucket>/cdkd/<Stack>/<region>/deployments/*.jsonl`. **Revert by
-COPY, from a COMMITTED, clean lane**: with `B=$(git merge-base origin/main HEAD)`, `cp` each path of
-`git diff --name-only --no-renames --diff-filter=M $B HEAD -- src/` (§8-c: the
-changed command's own paths) to scratch, then write the base copy to scratch
-FIRST and `cp` it over: `git show "${B}:${f}" > <scratch>/base && cp
-<scratch>/base "$f"` — zsh parses `$B:src/…` as a modifier, and a redirect
-onto the file truncates it even when `git show` fails. Restore by `cp` back
-until `git status --porcelain` is EMPTY. A file NEW
-in the PR stays, unimported by pre-fix code; one the fix DELETED or moved is
-restored by hand.
+copied from that red run, never reasoned (go-to-k/cdkd#4336); a refusal the
+log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
+`s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert by
+COPY, from a COMMITTED, clean lane**: with `B=$(git merge-base origin/main
+HEAD)`, `cp` each path of `git diff --name-only --no-renames --diff-filter=M $B
+HEAD -- src/` (§8-c) to scratch, then write the base copy to scratch FIRST and
+`cp` it over: `git show "${B}:${f}" > <scratch>/base && cp <scratch>/base "$f"`
+— zsh parses `$B:src/…` as a modifier, and a redirect onto the file truncates
+it even when `git show` fails. Restore by `cp` back until `git status
+--porcelain` is EMPTY. A file NEW in the PR stays, unimported by pre-fix code;
+one the fix DELETED or moved is restored by hand.
 The pre-fix run executes the BUG on real AWS and can mint resources the
 fixture's sweep cannot name, so scan the account by stack prefix and resource
 family too. Probe each HALF of a multi-part fix separately, and add a NEGATIVE

@@ -32,16 +32,14 @@ turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
 **FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** The integ ledger
 `docs/_generated/integ-last-run.tsv` gains a row at the same place on every lane
 that ran one, so a commit-by-commit rebase re-conflicts once per commit; the
-repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch;
-§7's MERGE ARM, spelled here since a denial also blocks re-reading §7, is
-`git checkout -B <branch> origin/<branch> && git merge origin/main`, a ledger
-conflict kept both, normalized and committed, then a plain push. When the
-harness denies `git reset`, push any unpushed commits plainly and take that arm
-from that tip; on a denied `--force-with-lease`, take it directly; when it
-denies the REBASE after a flatten, `git reset --soft <pushed tip>`, commit and
-push plainly what `git diff --cached --stat` still shows, then that arm
-(go-to-k/cdkd#4327).
-Otherwise:
+repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch,
+so push every commit plainly FIRST: when the harness denies the `git reset`, the
+rebase or the `--force-with-lease` push, take §7's MERGE ARM, which starts from
+`origin/<branch>` (go-to-k/cdkd#4327). Spelled here, as a denial also blocks
+re-reading §7: `git -C <LANE_TREE> checkout -B <branch> origin/<branch>`,
+the same `-C` `merge origin/main`, `vp run integ-ledger-normalize`
+(`merge=union` hides the ledger conflict locally), commit what changed, push
+plainly. Otherwise:
 
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
