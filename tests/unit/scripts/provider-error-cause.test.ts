@@ -505,6 +505,18 @@ describe('provider error-cause critic — registered cause composers', () => {
     }
   });
 
+  it('does NOT treat a block-scoped `let` in a sibling block as shadowing (only `var` hoists)', () => {
+    expect(
+      verdicts(`import { redactedDockerCause } from '../utils/docker-cmd.js';
+        export function f(x: boolean): void {
+          if (x) { let redactedDockerCause = 1; void redactedDockerCause; }
+          try { go(); } catch (err) {
+            throw new AssetError('m', redactedDockerCause(err, ['tag']));
+          }
+        }`)
+    ).toEqual(['threaded']);
+  });
+
   it('refuses an UNREGISTERED call even when it is handed the caught value', () => {
     expect(
       verdicts(
