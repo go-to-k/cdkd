@@ -14,17 +14,21 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 
-const DIR = join(__dirname, '../../../src/deployment/secret-redaction');
+const DIR = join(import.meta.dirname, '../../../src/deployment/secret-redaction');
 const MODULES = readdirSync(DIR)
   .filter((f) => f.endsWith('.ts'))
   .sort();
 
+/** Vitest cannot interrupt a synchronous spawn, so the spawn carries the case's timeout too. */
+const LOAD_TIMEOUT_MS = 30_000;
+
 let out = '';
 
 beforeAll(() => {
-  const ts = createRequire(join(__dirname, '../../../package.json'))(
+  const ts = createRequire(join(import.meta.dirname, '../../../package.json'))(
     'typescript-v6'
   ) as typeof import('typescript');
   out = mkdtempSync(join(tmpdir(), 'cdkd-secret-redaction-load-'));
@@ -47,11 +51,11 @@ afterAll(() => {
 
 /** Load `file` alone in a fresh Node process; returns its export count. */
 function exportCountOf(file: string): number {
-  const url = new URL(`file://${join(out, file.replace(/\.ts$/, '.js'))}`).href;
+  const url = pathToFileURL(join(out, file.replace(/\.ts$/, '.js'))).href;
   const stdout = execFileSync(
     process.execPath,
     ['--input-type=module', '-e', `const m = await import(${JSON.stringify(url)}); console.log(Object.keys(m).length);`],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: LOAD_TIMEOUT_MS }
   );
   return Number(stdout.trim());
 }
@@ -68,6 +72,6 @@ describe('secret-redaction module load order', () => {
     (file) => {
       expect(exportCountOf(file)).toBeGreaterThan(0);
     },
-    30_000
+    LOAD_TIMEOUT_MS
   );
 });

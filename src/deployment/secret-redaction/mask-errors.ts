@@ -385,7 +385,8 @@ function maskErrorFieldValue(value: unknown, maskText: (text: string) => string)
  * substitution matches the RAW name: a bag pass that had already rewritten part
  * of it would leave nothing for the transform to find.
  *
- * It is a pure `(text) => text` so this family stays a no-import LEAF. With
+ * It is a pure `(text) => text` so this family stays a LEAF
+ * (importing nothing outside `secret-redaction/`). With
  * `extraMask` supplied the empty-bag short-circuit no longer applies — an empty
  * bag plus a positional transform still has work to do.
  *

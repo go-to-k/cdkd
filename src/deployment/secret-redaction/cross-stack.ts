@@ -149,9 +149,10 @@ function literalStringOrUndefined(value: unknown): string | undefined {
  * OUTPUT references that positioning exists for. A shared function cannot drift.
  *
  * IT LIVES HERE, in a family that is a LEAF by design (see the header of
- * `secret-redaction.ts` -- it imports nothing outside `secret-redaction/`, because both the resolver and the deploy engine consume
- * it), rather than in the resolver: the resolver ALREADY imports this module,
- * so the dependency runs in the only direction that does not create a cycle.
+ * `secret-redaction.ts` -- it imports nothing outside `secret-redaction/`,
+ * because both the resolver and the deploy engine consume it), rather than in
+ * the resolver: the resolver ALREADY imports this module, so the dependency
+ * runs in the only direction that does not create a cycle.
  *
  * The rule is CloudFormation's: split on the FIRST dot only, because an
  * ATTRIBUTE NAME may itself contain dots (`Outputs.<Key>` on an

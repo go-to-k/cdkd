@@ -20,13 +20,14 @@
  * silently satisfied by a raw `logger.warn`.
  *
  * **Why this module and not `secret-redaction.ts`.** That file is a documented
- * LEAF, importing nothing outside `secret-redaction/` (see its header) and this helper needs `RetryLogger`, which
- * lives in `retry.ts`. Homing it there would give the leaf an import edge; a
- * new module keeps both invariants and gives the eager callers —
- * `src/cli/commands/drift.ts` and the deploy engine's two `--replace` sites —
- * ONE definition instead of byte-identical copies. (`rollback-executor.ts`
- * used it too until issue #4037 moved its retry lines onto a per-op masker
- * that also covers secret-derived names.) The deploy engine additionally keeps a LAZY variant of its own
+ * LEAF, importing nothing outside `secret-redaction/` (see its header), and
+ * this helper needs `RetryLogger`, which lives in `retry.ts`. Homing it there
+ * would give the leaf an import edge; a new module keeps both invariants and
+ * gives the eager callers — `src/cli/commands/drift.ts` and the deploy engine's
+ * two `--replace` sites — ONE definition instead of byte-identical copies.
+ * (`rollback-executor.ts` used it too until issue #4037 moved its retry lines
+ * onto a per-op masker that also covers secret-derived names.) The deploy
+ * engine additionally keeps a LAZY variant of its own
  * (`DeployEngine.maskingRetryLogger`), which resolves the bag per line from
  * `perResourceSecrets` because its generic `withRetry` wrapper is reached from
  * call sites that have no bag in scope; that one is a different shape, not a
