@@ -529,7 +529,7 @@ export function isNotFoundMessage(message: string): boolean {
  *
  * Wording constraint: the hint is appended to an error message that
  * downstream matchers test against (isNotFoundMessage above, the
- * retryable-error message table in src/deployment/retryable-errors.ts), so it
+ * retryable-error message table in src/deployment/retryable-errors/patterns.ts), so it
  * must not introduce a "not found" / "does not exist" / "no such" match nor
  * any retryable-pattern substring. Pinned by a unit test.
  */
