@@ -74,7 +74,7 @@ vp install
 #### Intrinsics Torture Example (Stress-testing the intrinsic resolver)
 
 A real-AWS regression net for cdkd's hand-rolled intrinsic-function resolver
-(`src/deployment/intrinsic-function-resolver.ts`) that goes beyond the basic
+(`src/deployment/intrinsic-function-resolver.ts` and `intrinsic-resolver/*.ts`) that goes beyond the basic
 `intrinsic-functions` fixture (Ref / GetAtt / Join / Sub). Each harder
 intrinsic — `Fn::Cidr`, `Fn::FindInMap`, `Fn::GetAZs` + `Fn::Select`,
 `Fn::Base64`, nested `Fn::Split`/`Fn::Select`/`Fn::Join`, deeply-nested

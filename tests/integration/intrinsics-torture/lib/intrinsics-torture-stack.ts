@@ -8,7 +8,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * Intrinsics-torture stack.
  *
  * cdkd resolves EVERY CloudFormation intrinsic function itself in
- * `src/deployment/intrinsic-function-resolver.ts` (unlike the AWS CDK CLI,
+ * `src/deployment/intrinsic-function-resolver.ts` and `intrinsic-resolver/*.ts` (unlike the AWS CDK CLI,
  * which hands the unresolved template to CloudFormation and lets the CFn
  * engine resolve them server-side). The less-common intrinsics and deep
  * nesting are exactly where cdkd's hand-rolled resolver is most likely to

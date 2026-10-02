@@ -774,7 +774,7 @@ const NAMEABLE_INTRINSIC_KEYS: ReadonlySet<string> = new Set([
  * `mutually-exclusive-properties.ts`, `route53-provider.ts` and
  * `dynamodb-globaltable-provider.ts` under `src/provisioning/`, plus more in
  * `cli/commands/drift.ts`, `cli/commands/import.ts` and
- * `deployment/intrinsic-function-resolver.ts`. Deliberately NOT stated as a
+ * `deployment/intrinsic-resolver/{support,string-functions}.ts`. Deliberately NOT stated as a
  * count: three successive review rounds corrected one, each time finding
  * another. Re-derive it if you need it
  * (`grep -rn "startsWith('Fn::')" src/`) rather than trusting a number here.

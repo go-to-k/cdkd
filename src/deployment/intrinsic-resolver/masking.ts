@@ -100,15 +100,6 @@ declare module '../intrinsic-function-resolver.js' {
 }
 
 /**
- * Resolve CloudFormation Dynamic References in a string value
- *
- * Supports:
- * - {{resolve:secretsmanager:SECRET_ID:SecretString:JSON_KEY:VERSION_STAGE:VERSION_ID}}
- * - {{resolve:ssm:PARAMETER_NAME}}
- *
- * Results are cached to avoid repeated API calls.
- */
-/**
  * The SECRET answer alone: mask any resolved secret value out of `text`,
  * using the secrets recorded on the resolution pass (GHSA fix). No-op when
  * the pass recorded no secrets.

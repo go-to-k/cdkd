@@ -98,7 +98,7 @@ export type CanonicalizePropertiesFn = (
  * LatestVersionNumber]` (the canonical `autoscaling.AutoScalingGroup`
  * `LaunchTemplate.Version` shape) is left NO_CHANGE and stays pinned one deploy
  * behind. These attributes resolve LIVE from AWS at deploy time (see the
- * `DescribeLaunchTemplates` special case in intrinsic-function-resolver.ts), so
+ * `DescribeLaunchTemplates` special case in intrinsic-resolver/getatt.ts), so
  * a speculative promotion is safe: the deploy engine re-resolves the dependent
  * against the fresh live value and skips the provider call if it did not move.
  *

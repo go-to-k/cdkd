@@ -2511,7 +2511,7 @@ function storeAssociation(
  * The `AWS::CloudFormation::Stack` type string, named once because the recorder
  * below gates on it and the tests assert against the same population.
  *
- * DUPLICATED, deliberately: `intrinsic-function-resolver.ts` declares the same
+ * DUPLICATED, deliberately: `intrinsic-resolver/support.ts` declares the same
  * literal under the same name (for the `Outputs.<Name>` re-resolution of issue
  * #2055). This module is a LEAF by design -- see the file header, it imports
  * nothing, because both the resolver and the deploy engine consume it -- so
