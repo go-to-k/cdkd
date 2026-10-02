@@ -39,7 +39,7 @@ beforeAll(() => {
     });
     writeFileSync(join(out, file.replace(/\.ts$/, '.js')), outputText);
   }
-});
+}, 30_000);
 
 afterAll(() => {
   if (out) rmSync(out, { recursive: true, force: true });
@@ -62,7 +62,12 @@ describe('secret-redaction module load order', () => {
     expect(MODULES).toContain('rules.ts');
   });
 
-  it.each(MODULES)('%s loads as the first module of a fresh graph', (file) => {
-    expect(exportCountOf(file)).toBeGreaterThan(0);
-  });
+  // Each case spawns a Node process, so it declares its own timeout.
+  it.each(MODULES)(
+    '%s loads as the first module of a fresh graph',
+    (file) => {
+      expect(exportCountOf(file)).toBeGreaterThan(0);
+    },
+    30_000
+  );
 });
