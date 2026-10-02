@@ -63,8 +63,14 @@ is selected — by `--all` or by naming several — they are ordered so that a
 consumer stack is destroyed before the producers it reads from. When the app
 synthesizes but yields no stacks, for example because every stack sits under a
 Stage that failed to load, `--all` and any wildcard pattern (`'*'`, `'Cdkd*'`)
-are refused: neither falls back to every stack in the state bucket. An exact
-physical stack name still resolves from state. When some stacks synthesize but
+are refused: neither falls back to every stack in the state bucket. They are
+refused the same way when there is no synthesized app at all — synthesis failed,
+or no app is configured (`--app`, `CDKD_APP` or `cdk.json`) — because the state
+bucket can hold the stacks of every app sharing it; after a failed synthesis
+the synthesis error is printed beneath the refusal as its `Caused by:` line. In
+either case an exact physical stack name still resolves from state without a
+working app, and so does `cdkd state destroy '<stack>'`. When some stacks
+synthesize but
 a Stage failed to load, `--all` is refused too, because it would destroy the
 rest of the app and leave the Stage's stacks running; name the stacks to
 destroy explicitly.
