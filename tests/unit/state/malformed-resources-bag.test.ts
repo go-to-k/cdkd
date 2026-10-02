@@ -4364,7 +4364,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
         `Fn::GetStackOutput can again resolve one CHARACTER of a damaged record as its value.`
     ).toBe(true);
     expect(
-      src.includes('MalformedProducerRecordRefusalError'),
+      // The CONSTRUCTION, not the name: an import line alone carries the name.
+      src.includes('new MalformedProducerRecordRefusalError('),
       `${file} no longer raises the dedicated class, so 'cdkd scrub' can no longer tell this ` +
         `refusal from its user-fixable siblings and refuses the whole consumer stack.`
     ).toBe(true);
