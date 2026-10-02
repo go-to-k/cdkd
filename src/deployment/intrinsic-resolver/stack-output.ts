@@ -269,7 +269,7 @@ export async function resolveGetStackOutput(
   // quoting the sequence it warns about.
   //
   // `maskThenStripThenMask` rather than a bare `stripControlChars` is the
-  // rule this file already settled seven sites up: stripping DELETES, so a
+  // rule `cross-stack.ts` (`resolveImportValue`) already settled: stripping DELETES, so a
   // plaintext split by an invisible would be reconstituted contiguous by a
   // strip applied after a single mask. Masking on both sides of it closes
   // that, and it is a no-op on any ordinary name.
@@ -424,7 +424,7 @@ export async function resolveGetStackOutput(
   //
   // THIS ARM IS THE ONE READER OF THAT BAG THAT RE-APPLIES RATHER THAN
   // DISPLAYS, which is why it REFUSES where `importableOutputKeys` fails
-  // closed for the `Fn::ImportValue` sibling above. `Object.hasOwn('abcdef',
+  // closed for the `Fn::ImportValue` sibling (`cross-stack.ts`). `Object.hasOwn('abcdef',
   // '0')` is TRUE, so an `OutputName: '0'` against a six-character bag passed
   // the membership test below and resolved the single CHARACTER `'a'` — a
   // value this deploy then SENDS to AWS as a live resource's property. The
@@ -472,7 +472,7 @@ export async function resolveGetStackOutput(
 
   const value = outputs[outputName];
   // NAMES the reference, never the VALUE (issue #2133) — the SIBLING of the
-  // `Fn::ImportValue` arms above and wrong for the same reason: "a producer's
+  // `Fn::ImportValue` arms in `cross-stack.ts` and wrong for the same reason: "a producer's
   // state holds the `{{resolve:...}}` EXPRESSION" is a property of
   // POST-#1934 state, and `cdkd scrub`'s whole population is state written
   // before that, holding the plaintext.

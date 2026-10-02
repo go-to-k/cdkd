@@ -169,7 +169,7 @@ export async function reresolveCrossStackValue(
   // WHICH read this is (`Fn::ImportValue '<name>' (producer <stack> /
   // <region>)`), which is what a user needs to find the producer. It DOES
   // carry resolved values — every builder assembles it from an export /
-  // output / stack name or a region, all of which this file masks elsewhere —
+  // output / stack name or a region, all of which this family masks elsewhere (`stack-output.ts` for the `Fn::GetStackOutput` origins) —
   // so it is masked at the push below. An earlier revision of this sentence
   // claimed the opposite and was refuted by grep (issue #2827 review).
   if (carriesSecretMask(value)) {
