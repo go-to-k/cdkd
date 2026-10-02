@@ -2924,6 +2924,15 @@ Adopt with: cdkd import MyStack --resource 'ApiGatewayAccountCloudWatchRole=myst
 A selective `--resource` import merges into existing state and needs no
 `--force` while the resource is absent from it.
 
+The same message covers a resource the failing create made itself. When an
+attempt ends without a clear verdict (an HTTP 5xx, or a failure after the
+create call itself may have succeeded), cdkd retries it, and the retry can find
+the name taken by what that first attempt made. cdkd records a resource only
+once its create succeeds, so that one is in no state file and no rollback or
+`cdkd destroy` removes it. The message then opens with `... is most likely held
+by a resource THIS create made` instead, and offers the same remedy: confirm
+it is yours, then adopt it or delete it (no `Retain` is involved in that case).
+
 **Confirm the resource is yours before adopting it.** A name cdkd derives is
 predictable, so a collision is not proof the resource is this stack's: for a
 type whose names are globally unique it can belong to another account, and the

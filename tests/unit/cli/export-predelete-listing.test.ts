@@ -151,38 +151,39 @@ describe('preDeleteListingLines', () => {
   });
 
   it('adds nothing for a type whose pre-delete detaches nothing', () => {
+    // Any non-policy type: the principal lines are the IAM::Policy pre-delete's.
     expect(
       preDeleteListingLines({
-        logicalId: 'Stage',
-        resourceType: 'AWS::ApiGatewayV2::Stage',
-        physicalId: 'stage-1',
-        properties: { ApiId: 'a1', Roles: ['NotARealField'] },
+        logicalId: 'Thing',
+        resourceType: 'AWS::Some::Thing',
+        physicalId: 'thing-1',
+        properties: { ParentId: 'a1', Roles: ['NotARealField'] },
       })
-    ).toEqual(['Stage (AWS::ApiGatewayV2::Stage) — physicalId: stage-1']);
+    ).toEqual(['Thing (AWS::Some::Thing) — physicalId: thing-1']);
   });
 
   it('describes a physical id that is not inert on a command line (go-to-k/cdkd#4229)', () => {
     for (const physicalId of ['$default', 'x$(touch OWNED)', "x'y", 'a|b']) {
       const [head] = preDeleteListingLines({
-        logicalId: 'Stage',
-        resourceType: 'AWS::ApiGatewayV2::Stage',
+        logicalId: 'Thing',
+        resourceType: 'AWS::Some::Thing',
         physicalId,
-        properties: { ApiId: 'a1' },
+        properties: { ParentId: 'a1' },
       });
       expect(head, physicalId).toBe(
-        'Stage (AWS::ApiGatewayV2::Stage) — physicalId: (not shown: it is not a plain identifier)'
+        'Thing (AWS::Some::Thing) — physicalId: (not shown: it is not a plain identifier)'
       );
     }
     // And a forged LOGICAL id on the row is described (`rowIdent`), never
     // displayed in JSON or shell quotes (go-to-k/cdkd#4229).
     const [forgedRow] = preDeleteListingLines({
       logicalId: 'x$(touch OWNED)',
-      resourceType: 'AWS::ApiGatewayV2::Stage',
-      physicalId: 'stage-1',
-      properties: { ApiId: 'a1' },
+      resourceType: 'AWS::Some::Thing',
+      physicalId: 'thing-1',
+      properties: { ParentId: 'a1' },
     });
     expect(forgedRow).toBe(
-      '(not shown: it is not a plain identifier) (AWS::ApiGatewayV2::Stage) — physicalId: stage-1'
+      '(not shown: it is not a plain identifier) (AWS::Some::Thing) — physicalId: thing-1'
     );
   });
 });
@@ -858,9 +859,7 @@ describe('blockedMigrationTail scopes the generic remedy to the rows without the
   });
 });
 
-describe('preDeleteManualCommands names a by-hand delete per type present (go-to-k/cdkd#3910)', () => {
-  const STAGE =
-    "aws apigatewayv2 delete-stage --api-id '<ApiId>' --stage-name '<StageName>'";
+describe('preDeleteManualCommands names a by-hand delete per principal kind present (go-to-k/cdkd#3910)', () => {
   const ROLE =
     "aws iam delete-role-policy --role-name '<RoleName>' --policy-name '<PolicyName>'";
   const USER =
@@ -877,8 +876,8 @@ describe('preDeleteManualCommands names a by-hand delete per type present (go-to
     properties,
   });
 
-  it('gives only the Stage command for a Stage', () => {
-    expect(preDeleteManualCommands([{ resourceType: 'AWS::ApiGatewayV2::Stage' }])).toEqual([STAGE]);
+  it('gives nothing for an AWS::ApiGatewayV2::Stage: it is imported, never pre-deleted (issue #1772)', () => {
+    expect(preDeleteManualCommands([{ resourceType: 'AWS::ApiGatewayV2::Stage' }])).toEqual([]);
   });
 
   it('gives one pasteable iam line per recorded principal kind, then the note on its own line', () => {
@@ -894,13 +893,9 @@ describe('preDeleteManualCommands names a by-hand delete per type present (go-to
     expect(preDeleteManualCommands([policyEntry({ Roles: 'x' })])).toEqual([ROLE, USER, GROUP, NOTE]);
   });
 
-  it('gives one line per type and kind, once each', () => {
+  it('gives one line per kind, once each, however many policies record it', () => {
     expect(
-      preDeleteManualCommands([
-        policyEntry({ Roles: ['a'] }),
-        { resourceType: 'AWS::ApiGatewayV2::Stage' },
-        policyEntry({ Roles: ['b'] }),
-      ])
-    ).toEqual([STAGE, ROLE, NOTE]);
+      preDeleteManualCommands([policyEntry({ Roles: ['a'] }), policyEntry({ Roles: ['b'] })])
+    ).toEqual([ROLE, NOTE]);
   });
 });

@@ -5,6 +5,7 @@ import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as appsync from 'aws-cdk-lib/aws-appsync';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as logs from 'aws-cdk-lib/aws-logs';
 
 /**
  * Immutable NAMES taken from a Secrets Manager secret, updated in place
@@ -42,6 +43,13 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  *     (go-to-k/cdkd#2177): the provider's own update debug lines print the
  *     queue URL, which carries the name, with no per-site masker. Only the
  *     logger's sink mask keeps the name out of the `--verbose` log.
+ *   - `SecretFilter` (AWS::Logs::MetricFilter, no SDK provider, so it routes
+ *     to Cloud Control), `FilterName` from the secret. `FilterName` is
+ *     create-only, and Cloud Control's `update()` built its JSON Patch from
+ *     the recorded bag: the recorded reference against the resolved name put
+ *     an op on that create-only path in every update's patch. `verify.sh`
+ *     rotates the secret's `filter` field before the update, so that op
+ *     would carry a name the filter does not have.
  *
  * A Scheduler Schedule's secret-derived `GroupName` stays refused on purpose
  * (go-to-k/cdkd#4275: nothing non-secret in the record identifies the group),
@@ -50,7 +58,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * UPDATE (CDKD_TEST_UPDATE=true) changes only the Stages' `Description`, the
  * Service's `EnableECSManagedTags` (it has no description), the Policy's
  * `PolicyDocument`, the API's `XrayEnabled`, the DataSource's `Description`
- * and the Queue's `VisibilityTimeout`: ordinary in-place changes, so the update is not a no-op.
+ * the Queue's `VisibilityTimeout` and the Filter's `FilterPattern`: ordinary in-place changes, so the update is not a no-op.
  *
  * covers: AWS::ApiGatewayV2::Api
  * covers: AWS::ApiGatewayV2::Stage
@@ -61,6 +69,8 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * covers: AWS::AppSync::GraphQLApi
  * covers: AWS::AppSync::DataSource
  * covers: AWS::SQS::Queue
+ * covers: AWS::Logs::LogGroup
+ * covers: AWS::Logs::MetricFilter
  */
 export class SecretDerivedImmutableNamesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -135,6 +145,16 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
     new sqs.CfnQueue(this, 'SecretQueue', {
       queueName: fromSecret('queue'),
       visibilityTimeout: update ? 60 : 30,
+    });
+
+    const logGroup = new logs.CfnLogGroup(this, 'FilterLogGroup', { retentionInDays: 1 });
+    new logs.CfnMetricFilter(this, 'SecretFilter', {
+      filterName: fromSecret('filter'),
+      logGroupName: logGroup.ref,
+      filterPattern: update ? 'ERROR' : 'WARN',
+      metricTransformations: [
+        { metricName: 'SdinFilterHits', metricNamespace: 'CdkdIntegSdin', metricValue: '1' },
+      ],
     });
   }
 }

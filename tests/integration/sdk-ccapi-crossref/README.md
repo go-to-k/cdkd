@@ -64,12 +64,11 @@ physical names. `CDKD_INTEG_PHASE` = `base` (default) | `seed`.
 read-back recorded it. `FnArnParam` is ADDED in `seed` so its create resolves
 (F) against the record the Cloud Control create just wrote.
 
-`RuntimeManagementConfig` toggles on `seed` because a deploy the differ
-classifies NO_CHANGE never reaches the provider, so a recreate flag on an
-unchanged resource does nothing
-([#2651](https://github.com/go-to-k/cdkd/issues/2651)). Both layers handle the
-property; it is the property delta and an AWS-side witness, not a routing
-trigger.
+`RuntimeManagementConfig` toggles on `seed` as the AWS-side witness of the
+recreate. It was also the property delta a recreate flag needed before
+[#2651](https://github.com/go-to-k/cdkd/issues/2651) was fixed, when a flagged
+resource whose diff was NO_CHANGE was never provisioned. Both layers handle the
+property; it is not a routing trigger.
 
 ## Automated run (`verify.sh`)
 

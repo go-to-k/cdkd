@@ -158,7 +158,7 @@ fi
 echo "    OK: baseline FwdProbe provisionedBy == 'sdk'"
 
 if [ "${BACK_PROVISIONED_1}" != "cc-api" ]; then
-  echo "FAIL: baseline BackProbe has provisionedBy='${BACK_PROVISIONED_1}', expected 'cc-api'. The --recreate-via-cc-api seeding step did not seed, so the reverse half of the arm would be refused as already-sdk. Likely cause: the flag no-opped (the differ saw NO_CHANGE on BackProbe between phase 0 and phase 1 -- go-to-k/cdkd#2651 -- check that lib/recreate-stack.ts still gives BackProbe RuntimeManagementConfig on CDKD_INTEG_PHASE=1), or --recreate-via-cc-api itself regressed (run the recreate-via-cc-api fixture). This baseline does NOT depend on any property being unhandled by the SDK provider." >&2
+  echo "FAIL: baseline BackProbe has provisionedBy='${BACK_PROVISIONED_1}', expected 'cc-api'. The --recreate-via-cc-api seeding step did not seed, so the reverse half of the arm would be refused as already-sdk. Likely cause: --recreate-via-cc-api regressed, including a return of go-to-k/cdkd#2651 (run the recreate-via-cc-api and cc-to-sdk-reroute fixtures). This baseline does NOT depend on any property being unhandled by the SDK provider." >&2
   echo "${STATE_1}" | jq .
   exit 1
 fi

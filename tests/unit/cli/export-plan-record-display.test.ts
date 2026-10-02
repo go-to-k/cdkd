@@ -42,7 +42,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 //
 // With `phase1Succeeds` set, a REAL run gets through phase 1: the IMPORT
 // changeset creates and executes, and the stack reaches IMPORT_COMPLETE, so
-// the run reaches the pre-delete of the Stage row. Every later CFn call fails,
+// the run reaches the pre-delete of the PreDel row. Every later CFn call fails,
 // which ends the run there.
 const cfnState = vi.hoisted(() => ({
   phase1Succeeds: false,
@@ -81,7 +81,7 @@ const cfnSend = vi.hoisted(() =>
   })
 );
 
-// The IAM::Policy pre-delete builds its OWN client too.
+// The IAM::Policy pre-delete builds its OWN client, so the SDK package is mocked.
 const iamSend = vi.hoisted(() => vi.fn<(cmd: unknown) => Promise<unknown>>());
 vi.mock('@aws-sdk/client-iam', () => {
   class Cmd {
@@ -98,15 +98,6 @@ vi.mock('@aws-sdk/client-iam', () => {
   };
 });
 
-// The Stage pre-delete builds its OWN client, so the SDK package is mocked.
-const deleteStage = vi.hoisted(() => vi.fn<() => Promise<unknown>>());
-vi.mock('@aws-sdk/client-apigatewayv2', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@aws-sdk/client-apigatewayv2')>();
-  return {
-    ...actual,
-    ApiGatewayV2Client: vi.fn().mockImplementation(() => ({ send: deleteStage })),
-  };
-});
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({
     get s3() {
@@ -172,19 +163,22 @@ let tmp: string;
 let templatePath: string;
 
 /**
- * One importable S3 bucket (a phase-1 plan row) and one
- * `AWS::ApiGatewayV2::Stage` (a pre-delete + re-CREATE listing row).
+ * One importable S3 bucket (a phase-1 plan row) and one `AWS::IAM::Policy`
+ * (a pre-delete + re-CREATE listing row). The policy's template declares no
+ * `PolicyName`, so its recorded physical id — the value these cases forge —
+ * is marked unconfirmed rather than compared, and the run reaches the listing
+ * and the pre-delete with any id.
  */
 const TEMPLATE = {
   AWSTemplateFormatVersion: '2010-09-09',
   Resources: {
     MyBucket: { Type: 'AWS::S3::Bucket', Properties: {} },
-    MyStage: { Type: 'AWS::ApiGatewayV2::Stage', Properties: { ApiId: 'a1b2c3', StageName: 's' } },
+    PreDel: { Type: 'AWS::IAM::Policy', Properties: { Roles: ['BaseRole'] } },
   },
 };
 
 let bucketPhysicalId = 'my-bucket-phys';
-let stagePhysicalId = 'stage-phys';
+let preDelPhysicalId = 'predel-phys';
 /** Recorded detach targets of an optional `AWS::IAM::Policy` row (go-to-k/cdkd#3857). */
 let policyRoles: string[] | undefined;
 /** The policy row's logical id, shared by the state record and the template. */
@@ -204,10 +198,10 @@ function stateRecord(): { state: Record<string, unknown>; etag: string } {
           attributes: {},
           dependencies: [],
         },
-        MyStage: {
-          physicalId: stagePhysicalId,
-          resourceType: 'AWS::ApiGatewayV2::Stage',
-          properties: { ApiId: 'a1b2c3', StageName: 's' },
+        PreDel: {
+          physicalId: preDelPhysicalId,
+          resourceType: 'AWS::IAM::Policy',
+          properties: { Roles: ['BaseRole'] },
           attributes: {},
           dependencies: [],
         },
@@ -261,7 +255,7 @@ beforeEach(() => {
   originalIsTTY = process.stdin.isTTY;
   setStdinIsTty(true);
   bucketPhysicalId = 'my-bucket-phys';
-  stagePhysicalId = 'stage-phys';
+  preDelPhysicalId = 'predel-phys';
   region = REGION;
   policyRoles = undefined;
   policyLogicalId = 'MyPolicy';
@@ -269,7 +263,6 @@ beforeEach(() => {
   cfnState.describeStacksCalls = 0;
   cfnState.phase2ExecuteError = undefined;
   cfnState.executeCalls = 0;
-  deleteStage.mockReset();
   iamSend.mockReset();
   tmp = mkdtempSync(join(tmpdir(), 'cdkd-export-plan-display-'));
   templatePath = join(tmp, 'template.json');
@@ -329,16 +322,16 @@ describe('cdkd export --dry-run renders recorded ids in the plan with their own 
     expect(await runExport(dryRunArgs())).toBeUndefined();
     const lines = infoLines();
     expect(lines).toContain('  MyBucket (AWS::S3::Bucket) ← BucketName=my-bucket-phys');
-    expect(lines).toContain('  MyStage (AWS::ApiGatewayV2::Stage) — physicalId: stage-phys');
+    expect(lines).toContain('  PreDel (AWS::IAM::Policy) — physicalId: predel-phys');
   });
 
-  it('describes a `$`-prefixed Stage id: it is not inert on a command line (go-to-k/cdkd#4229)', async () => {
+  it('describes a `$`-prefixed pre-delete id: it is not inert on a command line (go-to-k/cdkd#4229)', async () => {
     // The maintainer's decision on go-to-k/cdkd#4229: a displayed value that is
     // not `isInertUnquoted` is described, and `$` expands when pasted bare.
-    stagePhysicalId = '$default';
+    preDelPhysicalId = '$default';
     expect(await runExport(dryRunArgs())).toBeUndefined();
     expect(infoLines()).toContain(
-      '  MyStage (AWS::ApiGatewayV2::Stage) — physicalId: (not shown: it is not a plain identifier)'
+      '  PreDel (AWS::IAM::Policy) — physicalId: (not shown: it is not a plain identifier)'
     );
   });
 
@@ -346,7 +339,7 @@ describe('cdkd export --dry-run renders recorded ids in the plan with their own 
     // A second row spelled exactly like a genuine one, and a quote to close
     // any hand-written one around the value.
     bucketPhysicalId = "my-bucket\n  Other (AWS::S3::Bucket) ← BucketName=x'";
-    stagePhysicalId = "stage\n  Forged (AWS::ApiGatewayV2::Stage) — physicalId: y'";
+    preDelPhysicalId = "predel\n  Forged (AWS::IAM::Policy) — physicalId: y'";
 
     expect(await runExport(dryRunArgs())).toBeUndefined();
     const lines = infoLines();
@@ -362,9 +355,9 @@ describe('cdkd export --dry-run renders recorded ids in the plan with their own 
     );
     // The pre-delete row DESCRIBES a value that is not inert (go-to-k/cdkd#4229):
     // its JSON quotes would still expand `$( )` when pasted.
-    const stageRow = lines.find((l) => l.startsWith('  MyStage (AWS::ApiGatewayV2::Stage) — '))!;
-    expect(stageRow).toBe(
-      '  MyStage (AWS::ApiGatewayV2::Stage) — physicalId: (not shown: it is not a plain identifier)'
+    const preDelRow = lines.find((l) => l.startsWith('  PreDel (AWS::IAM::Policy) — '))!;
+    expect(preDelRow).toBe(
+      '  PreDel (AWS::IAM::Policy) — physicalId: (not shown: it is not a plain identifier)'
     );
   });
 
@@ -394,8 +387,8 @@ describe('cdkd export --dry-run renders recorded ids in the plan with their own 
   });
 });
 
-describe('cdkd export renders the pre-deleted Stage id with its own boundary on a real run', () => {
-  /** A real, confirmed run: past phase 1, into the Stage pre-delete. */
+describe('cdkd export renders the pre-deleted policy id with its own boundary on a real run', () => {
+  /** A real, confirmed run: past phase 1, into the PreDel pre-delete. */
   function realRunArgs(): string[] {
     return dryRunArgs()
       .filter((a) => a !== '--dry-run')
@@ -404,20 +397,21 @@ describe('cdkd export renders the pre-deleted Stage id with its own boundary on 
 
   beforeEach(() => {
     cfnState.phase1Succeeds = true;
-    stagePhysicalId = "stage\n  ✓ deleted prod'";
+    preDelPhysicalId = "predel\n  ✓ deleted prod'";
   });
 
   it('prints the success line with the recorded id escaped, on one line', async () => {
-    deleteStage.mockResolvedValue({});
+    iamSend.mockResolvedValue({});
     // Phase 2 then fails against the stub; the line under test precedes it.
     await runExport(realRunArgs());
-    expect(deleteStage).toHaveBeenCalledTimes(1);
+    // One DeleteRolePolicy, for the one recorded role.
+    expect(iamSend).toHaveBeenCalledTimes(1);
     const lines = infoSpy.mock.calls.map((c) => String(c[0]));
-    expect(lines).toContain('  ' + String.raw`✓ deleted "stage\n  \u2713 deleted prod'"`);
+    expect(lines).toContain('  ' + String.raw`✓ deleted "predel\n  \u2713 deleted prod'"`);
   });
 
   it('bounds the AWS error and describes the recorded id when the pre-delete fails', async () => {
-    deleteStage.mockRejectedValue(new Error(`AccessDenied\nRe-run with: rm -rf ~ ${'e'.repeat(5000)}`));
+    iamSend.mockRejectedValue(new Error(`AccessDenied\nRe-run with: rm -rf ~ ${'e'.repeat(5000)}`));
     const message = await runExport(realRunArgs());
     expect(message).toBeDefined();
     expect(message).toContain(
@@ -430,8 +424,8 @@ describe('cdkd export renders the pre-deleted Stage id with its own boundary on 
   it('describes a forged physical id in the pre-delete failure, and no pasted span runs (S2)', async () => {
     const rendered: Array<{ value: string; message: string }> = [];
     for (const { value } of PASTE_PAYLOADS) {
-      stagePhysicalId = value;
-      deleteStage.mockRejectedValue(new Error('AccessDenied'));
+      preDelPhysicalId = value;
+      iamSend.mockRejectedValue(new Error('AccessDenied'));
       const message = await runExport(realRunArgs());
       expect(message, value).toBeDefined();
       rendered.push({ value, message: message! });
@@ -448,7 +442,7 @@ describe('cdkd export renders the pre-deleted Stage id with its own boundary on 
   }, 120_000);
 
   it('ends the pre-delete refusal on its orphan command, alone on a labelled line (go-to-k/cdkd#3436)', async () => {
-    deleteStage.mockRejectedValue(new Error('AccessDenied'));
+    iamSend.mockRejectedValue(new Error('AccessDenied'));
     const message = await runExport(realRunArgs());
     expect(message).toBeDefined();
     // The sentence first, then the command LAST on a line of its own: on the
@@ -463,8 +457,8 @@ describe('cdkd export renders the pre-deleted Stage id with its own boundary on 
   });
 
   it.each([
-    ['pre-delete', '4', () => deleteStage.mockRejectedValue(new Error('AccessDenied'))],
-    ['phase-2', '3', () => deleteStage.mockResolvedValue({})],
+    ['pre-delete', '4', () => iamSend.mockRejectedValue(new Error('AccessDenied'))],
+    ['phase-2', '3', () => iamSend.mockResolvedValue({})],
   ])(
     'puts the gate reason BEFORE the withheld orphan command in the %s refusal (go-to-k/cdkd#3436)',
     async (_, step, arrange) => {
@@ -487,7 +481,7 @@ describe('cdkd export renders the pre-deleted Stage id with its own boundary on 
   );
 
   it('ends the phase-2 refusal on its orphan command, alone on a labelled line (go-to-k/cdkd#3436)', async () => {
-    deleteStage.mockResolvedValue({});
+    iamSend.mockResolvedValue({});
     // Phase 2 fails against the stub once the pre-delete succeeded.
     const message = await runExport(realRunArgs());
     expect(message).toContain('phase 2 (UPDATE) failed');
@@ -559,10 +553,19 @@ describe('cdkd export refuses an IAM::Policy whose recorded principals the templ
 });
 
 describe('a failed IAM::Policy pre-delete names the IAM by-hand delete (go-to-k/cdkd#3910)', () => {
-  it('gives a recovery line per pre-delete type present', async () => {
+  /** PreDel's pre-delete succeeds; MyPolicy's, which runs after it, fails. */
+  function failOnlyMyPolicy(): void {
+    iamSend.mockImplementation(async (cmd) => {
+      if ((cmd as { input: { PolicyName?: string } }).input.PolicyName === 'MyPolicyName') {
+        throw new Error('AccessDenied');
+      }
+      return {};
+    });
+  }
+
+  it('gives a recovery line per principal kind present', async () => {
     cfnState.phase1Succeeds = true;
-    deleteStage.mockResolvedValue({});
-    iamSend.mockRejectedValue(new Error('AccessDenied'));
+    failOnlyMyPolicy();
     policyRoles = ['HandlerRole'];
     writeFileSync(
       templatePath,
@@ -584,17 +587,15 @@ describe('a failed IAM::Policy pre-delete names the IAM by-hand delete (go-to-k/
         .concat('--yes')
     );
     expect(message).toContain('pre-delete of MyPolicy');
-    expect(message).toContain(
-      "aws iam delete-role-policy --role-name '<RoleName>' --policy-name '<PolicyName>'"
-    );
-    expect(message).toContain(
-      "aws apigatewayv2 delete-stage --api-id '<ApiId>' --stage-name '<StageName>'"
-    );
+    // Once per principal KIND, however many policies record one.
+    expect(
+      message!.split("aws iam delete-role-policy --role-name '<RoleName>' --policy-name '<PolicyName>'")
+    ).toHaveLength(2);
+    expect(message).not.toContain('apigatewayv2');
   });
   it('describes a forging logical id in the failure head (go-to-k/cdkd#4245 review)', async () => {
     cfnState.phase1Succeeds = true;
-    deleteStage.mockResolvedValue({});
-    iamSend.mockRejectedValue(new Error('AccessDenied'));
+    failOnlyMyPolicy();
     policyRoles = ['HandlerRole'];
     policyLogicalId = "Handler Policy'x";
     writeFileSync(
@@ -630,7 +631,7 @@ describe('a failed single-stack phase 2 renders AWS text folded and bounded (go-
   it('through displayAwsMessage, since executeUpdateChangeSet rethrows ExecuteChangeSet bare', async () => {
     cfnState.phase1Succeeds = true;
     cfnState.phase2ExecuteError = `quoted\nRe-run with: rm -rf ~ ${'e'.repeat(6000)}`;
-    deleteStage.mockResolvedValue({});
+    iamSend.mockResolvedValue({});
     const message = await runExport(
       dryRunArgs()
         .filter((a) => a !== '--dry-run')

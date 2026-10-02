@@ -63,12 +63,11 @@
 #      thing under test here, and it runs to completion before the engine
 #      starts — a refusal throws out of it, and an allow reaches the target
 #      plan. (b) Without `--dry-run` phase 4 asserted the recreate had actually
-#      happened (`provisionedBy == cc-api`), which is unreachable on an
-#      UNCHANGED template: phase 4 runs `env -u CDKD_TEST_UPDATE`, so its
-#      template is byte-identical to phase 1's, the diff is `NO_CHANGE`, and
-#      the deploy engine reads `recreateTargets` only inside its
-#      `case 'UPDATE'`. Proving the recreate EXECUTES is the sibling fixture's
-#      job; proving the guard is conditional is this one's.
+#      happened (`provisionedBy == cc-api`), which an engine predating
+#      go-to-k/cdkd#2651's fix could not reach on this UNCHANGED template
+#      (phase 4 runs `env -u CDKD_TEST_UPDATE`, so the diff is `NO_CHANGE`).
+#      Proving the recreate EXECUTES is the sibling fixtures' job; proving the
+#      guard is conditional is this one's.
 #   5. MID-DEPLOY, the headline case: rename the DATA group on a plain
 #      `cdkd deploy` with no flags at all. Expect a refusal, and assert the
 #      original group AND its stream are still there.

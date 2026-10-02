@@ -7,7 +7,8 @@ import type { ChangeType } from '../../types/state.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import type { DeployEngine } from '../deploy-engine.js';
-import { isNameCollisionErrorFrom } from '../retryable-errors.js';
+import { isNameCollisionErrorFrom, isReplayedNameCollisionFrom } from '../retryable-errors.js';
+import { isAuxiliaryMarkOf, RETRY_AUXILIARY_OWNER } from '../../provisioning/auxiliary-failure.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -106,7 +107,14 @@ export function replacementNameOrigin(
  *   RENAME, which does not recover an orphan. (An earlier revision of this
  *   comment claimed the throws "never reach this catch at all". Three
  *   reviewers disproved it independently.);
- * - not a name collision;
+ * - not a name collision — read by EITHER classifier: the ordinary one, or
+ *   the replayed one (issue [#3984](https://github.com/go-to-k/cdkd/issues/3984))
+ *   for a collision `withRetry` stamped after an attempt that may already have
+ *   made the resource. The ordinary one withholds that verdict so no
+ *   delete-first site acts on it, which used to silence this advice too —
+ *   for the very case it fits best, since the collided resource is then most
+ *   likely this create's own, in no state file and so beyond any rollback or
+ *   destroy. That case gets its own diagnosis below, and stays a log line;
  * - no physical id on the error (a create that failed BEFORE the AWS call
  *   never names one). At RUNTIME this is subsumed by the next guard --
  *   `looksLikeCdkdGeneratedName` refuses a falsy id on its own first line,
@@ -116,7 +124,9 @@ export function replacementNameOrigin(
  *   inferred from another module;
  * - a name cdkd did not derive — a user-supplied name may collide with a
  *   resource of someone else's entirely, and telling that user to
- *   `cdkd import` it would be advice to adopt what this stack does not own;
+ *   `cdkd import` it would be advice to adopt what this stack does not own.
+ *   Kept for the replayed case too: an ambiguous first attempt does not prove
+ *   the name was free before it;
  * - a NESTED-STACK child. Its stack name is `<parent>~<logicalId>`, and CDK's
  *   own stack-name rule bars `~`, so no Cloud Assembly stack can ever carry
  *   it — `cdkd import` resolves its target from the assembly and walks
@@ -147,7 +157,13 @@ export function orphanedNameCollisionAdvice(
   if (!(error instanceof ProvisioningError)) return undefined;
   const physicalId = error.physicalId;
   if (!physicalId) return undefined;
-  if (!isNameCollisionErrorFrom(error, logicalId)) return undefined;
+  // Seeing through `withRetry`'s own auxiliary mark ONLY: it sits on the very
+  // link that says "already exists". A provider's auxiliary mark still
+  // refuses, since that collision is on another object, not this name.
+  const replayed = isReplayedNameCollisionFrom(error, logicalId, (link) =>
+    isAuxiliaryMarkOf(link, RETRY_AUXILIARY_OWNER)
+  );
+  if (!replayed && !isNameCollisionErrorFrom(error, logicalId)) return undefined;
   const stackName = getCurrentStackName();
   if (!looksLikeCdkdGeneratedName(physicalId, logicalId, stackName)) return undefined;
   // Implied by the guard above — it returns `false` for a falsy stack name —
@@ -176,8 +192,8 @@ export function orphanedNameCollisionAdvice(
     ? safeLogicalId
     : 'A resource whose logical id cannot be shown safely here';
 
-  // The CloudFormation comparison is stated as a DIFFERENCE, not a
-  // similarity, and that is the correction this wording carries. Both engines
+  // Non-replay arm: the CloudFormation comparison is stated as a DIFFERENCE,
+  // not a similarity, and that is the correction this wording carries. Both engines
   // leave a `Retain` resource behind on a rollback and drop it from the
   // stack — but CFn GENERATES names with a random suffix, so its next deploy
   // asks for a NEW name and succeeds (leaving the old one orphaned but not
@@ -190,17 +206,31 @@ export function orphanedNameCollisionAdvice(
   // the template did not name. (CFn DOES stick for an explicitly-named one,
   // which is why the sentence says "unnamed" rather than claiming CFn never
   // collides.)
-  const diagnosis =
-    `${shownLogicalId}: the name AWS reports as taken (${shownId}) is one cdkd DERIVED from ` +
-    `the logical id, and that derivation has no random component — so this is most likely a ` +
-    `resource an earlier cdkd run left behind. A rollback leaves a resource carrying ` +
-    `DeletionPolicy: Retain in AWS and drops it from state, as CloudFormation does; what ` +
-    `differs is the name. CloudFormation would generate a fresh one for an unnamed resource ` +
-    `and redeploy clean, whereas cdkd asks again for the name the orphan still holds — so ` +
-    `re-running does not clear this.`;
+  //
+  // Replay arm: the replayed case names a DIFFERENT cause, so it gets its own diagnosis
+  // rather than the orphan-of-an-earlier-run one, whose Retain story would
+  // misdescribe it: here the holder is most likely what this create's own
+  // earlier attempt made. cdkd records a resource only once its create
+  // returns, so that one is in no state file — no rollback and no
+  // `cdkd destroy` reaches it, and the next deploy collides with it again.
+  const diagnosis = replayed
+    ? `${shownLogicalId}: the name AWS reports as taken (${shownId}) is most likely held by a ` +
+      `resource THIS create made. An earlier attempt of it ended without a clear verdict (a ` +
+      `server error, or a failure after the create call itself may have succeeded), and the ` +
+      `retry then found the name taken. cdkd records a resource only once its create ` +
+      `succeeds, so this one is in no state file: no rollback or cdkd destroy will remove it, ` +
+      `and re-running collides with it again.`
+    : `${shownLogicalId}: the name AWS reports as taken (${shownId}) is one cdkd DERIVED from ` +
+      `the logical id, and that derivation has no random component — so this is most likely a ` +
+      `resource an earlier cdkd run left behind. A rollback leaves a resource carrying ` +
+      `DeletionPolicy: Retain in AWS and drops it from state, as CloudFormation does; what ` +
+      `differs is the name. CloudFormation would generate a fresh one for an unnamed resource ` +
+      `and redeploy clean, whereas cdkd asks again for the name the orphan still holds — so ` +
+      `re-running does not clear this.`;
   const deleteArm =
     `If it is not a resource you want to keep, delete ${idShown ? safeId : 'it'} in AWS — after ` +
-    `confirming it holds nothing you need, since Retain is what kept it — and re-deploy.`;
+    `confirming it holds nothing you need${replayed ? '' : ', since Retain is what kept it'} — ` +
+    `and re-deploy.`;
 
   // Only advise `cdkd import` for a type that can actually be imported.
   // `runImportForResource` SKIPS a provider with no `import` implementation

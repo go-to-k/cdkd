@@ -19,7 +19,7 @@ import {
   orphansCarriedFrom,
 } from '../../types/state.js';
 import { green, red, yellow } from '../../utils/colors.js';
-import { displayStackName } from '../../utils/display-safe.js';
+import { displayStackName, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
@@ -35,6 +35,7 @@ import {
 } from '../no-change-outputs-merge.js';
 import { refuseNoValueOutputs } from '../output-value-preflight.js';
 import { withProducerRegions } from '../producer-regions-scope.js';
+import { promoteRecreateTargets } from '../recreate-target-promotion.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { hasMaskableValues } from '../secret-redaction.js';
 import {
@@ -570,6 +571,30 @@ export async function doDeployWithPrefetch(
           renderNestedStackTypeChangeRefusal(nestedStackTypeChanges, stackName),
           'TYPE_CHANGE_NESTED_STACK'
         )
+      );
+    }
+
+    // Issue #2651: a `--recreate-via-*` target the diff calls NO_CHANGE is
+    // still a resource the user named and consented to recreate, and the
+    // template not changing is the usual reason to reach for the flag. Make
+    // it an UPDATE before anything counts changes, so the dispatch, the
+    // summary and `--dry-run` all see it. Before `hasChanges`, which is
+    // what turned a run with only such a target into "No changes detected".
+    const recreatePromotion = promoteRecreateTargets(
+      changes,
+      this.options.recreateTargets,
+      stackName
+    );
+    for (const id of recreatePromotion.promoted) {
+      this.logger.debug(
+        safeMsg`UPDATE (recreate target): ${id} has no template change; recreating it as requested`
+      );
+    }
+    for (const { logicalId, flag, changeType } of recreatePromotion.unreached) {
+      this.logger.warn(
+        changeType === undefined
+          ? safeMsg`${flag} ${logicalId}: not recreated, this deploy has no such resource.`
+          : safeMsg`${flag} ${logicalId}: not recreated, this deploy will ${changeType.toLowerCase()} it instead.`
       );
     }
 

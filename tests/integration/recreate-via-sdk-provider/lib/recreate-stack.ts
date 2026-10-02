@@ -35,11 +35,11 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  *     AWS-side `UpdateRuntimeOn` is back at the `Auto` default and
  *     `LastModified` changed.
  *
- * `RuntimeManagementConfig` toggles with the phase because routing is decided
- * while PROVISIONING: a deploy the differ classifies NO_CHANGE never reaches
- * the provider, so a recreate flag on an unchanged template does nothing
- * (go-to-k/cdkd#2651). Both layers handle the property today; it is here as
- * the property delta and the AWS-side witness, NOT as a routing trigger.
+ * `RuntimeManagementConfig` toggles with the phase as the AWS-side witness of
+ * each recreate. It was also the property delta a recreate flag needed before
+ * go-to-k/cdkd#2651 was fixed, when a flagged resource whose diff was
+ * NO_CHANGE was never provisioned. Both layers handle the property today; it
+ * is NOT a routing trigger.
  *
  * The function name is stable across recreates (the destroy + recreate cycle
  * reuses the user-supplied `functionName`, which is what forces the
