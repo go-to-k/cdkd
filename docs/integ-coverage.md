@@ -56,7 +56,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::AppSync::GraphQLApi` | [`appsync`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appsync/) (l1)<br>[`secret-derived-immutable-names`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/secret-derived-immutable-names/) (l1,literal) |
 | `AWS::AppSync::GraphQLSchema` | [`appsync`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appsync/) (l1) |
 | `AWS::AppSync::Resolver` | [`appsync`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appsync/) (l1) |
-| `AWS::AutoScaling::AutoScalingGroup` | [`drift-revert-vpc`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-revert-vpc/) (l1,literal)<br>[`launchtemplate-asg-inplace`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/launchtemplate-asg-inplace/) (l2)<br>[`remove-protection`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/remove-protection/) (l2,literal) |
+| `AWS::AutoScaling::AutoScalingGroup` | [`drift-revert-vpc`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/drift-revert-vpc/) (l1,literal)<br>[`launchtemplate-asg-inplace`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/launchtemplate-asg-inplace/) (l2)<br>[`remove-protection`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/remove-protection/) (l2,literal)<br>[`remove-protection-compensation`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/remove-protection-compensation/) (l1,literal) |
 | `AWS::BedrockAgentCore::Browser` | [`agentcore-tools`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/agentcore-tools/) (literal) |
 | `AWS::BedrockAgentCore::CodeInterpreter` | [`agentcore-tools`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/agentcore-tools/) (literal) |
 | `AWS::BedrockAgentCore::Evaluator` | [`agentcore-tools`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/agentcore-tools/) (literal)<br>[`import-attribute-readback-misc`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-attribute-readback-misc/) (literal) |
@@ -171,7 +171,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`iam-propagation-stress`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/iam-propagation-stress/) (l2)<br>[`import-attribute-readback-final`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-attribute-readback-final/) (l1)<br>[`replacement-immutable-name`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replacement-immutable-name/) (l2,literal)<br>[`stepfunctions`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions/) (l2)<br>[`stepfunctions-logging`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-logging/) (l2)<br>[`stepfunctions-s3-definition`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-s3-definition/) (l1) |
 | `AWS::WAFv2::WebACL` | [`import-attribute-readback-final`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-attribute-readback-final/) (l1)<br>[`wafv2`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (76)
+## Resource types referenced in integs without an SDK Provider (77)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
@@ -207,6 +207,7 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::Cognito::UserPoolUserToGroupAttachment`
 - `AWS::DSQL::Cluster`
 - `AWS::DocDB::GlobalCluster`
+- `AWS::EC2::LaunchTemplate`
 - `AWS::EC2::PrefixList`
 - `AWS::EC2::SecurityGroupEgress`
 - `AWS::EC2::TransitGateway`

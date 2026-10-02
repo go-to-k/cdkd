@@ -29,12 +29,17 @@ import {
   type DeletionProtection,
   type InstanceMaintenancePolicy,
 } from '@aws-sdk/client-auto-scaling';
-import { EC2Client } from '@aws-sdk/client-ec2';
+import { DescribeInstancesCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { disableInstanceApiTermination } from '../ec2-termination-protection.js';
+import {
+  disableInstanceApiTermination,
+  ec2InstanceProtectionSite,
+  observeThenDisableInstanceApiTermination,
+  reEnableInstanceApiTermination,
+} from '../ec2-termination-protection.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
@@ -58,10 +63,12 @@ import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import {
+  PROTECTION_FLIP_REUSE_WINDOW_MS,
   ProtectionFlipRegistry,
   deleteWithProtectionCompensation,
   observeThenDisableProtection,
   protectionFlipKey,
+  settleProtectionFlip,
   type ProtectionFlipRecord,
   type ProtectionGuardSite,
 } from './deletion-protection-compensation.js';
@@ -492,6 +499,61 @@ export function autoScalingGroupProtectionSite(
   };
 }
 
+/**
+ * The re-enable of a group-launched instance failed and a readback found the
+ * instance `shutting-down` or `terminated`. Raised by the ASG instance site's
+ * `reEnable` so the compensation takes its "gone" arm (a WARN with the check
+ * command) instead of the ERROR that claims the instance is LIVE.
+ */
+export class LaunchedInstanceGoneError extends Error {
+  override readonly name = 'LaunchedInstanceGone';
+  constructor(instanceId: string, state: string) {
+    super(`instance ${instanceId} is ${state}`);
+  }
+}
+
+/** EC2 instance states from which an instance never comes back. */
+const GONE_INSTANCE_STATES: ReadonlySet<string> = new Set(['shutting-down', 'terminated']);
+
+/**
+ * The {@link ProtectionGuardSite} for an EC2 instance an Auto Scaling group
+ * launched, whose `DisableApiTermination` the group's `--remove-protection`
+ * delete turned off (issue #796) before that delete failed terminally (issue
+ * #2204). The EC2 instance site's commands, led by a subject naming the group:
+ * the logical id on each line is the GROUP's, since the instance has none of
+ * its own in the template.
+ *
+ * Its "gone" arm is wider than the EC2 site's. The group's flip is what lets it
+ * terminate an instance (a scale-in, a health replacement) between the flip and
+ * the terminal attempt, and a write to a terminated-but-describable instance
+ * fails with an error other than `InvalidInstanceID.NotFound`. So the site's
+ * `reEnable` reads the instance's state back after a failed write and raises
+ * {@link LaunchedInstanceGoneError} for a dead one, keyed on the documented
+ * state name rather than on an error code.
+ */
+export function autoScalingGroupInstanceProtectionSite(
+  instanceId: string,
+  region: string | undefined
+): ProtectionGuardSite {
+  const ec2Site = ec2InstanceProtectionSite(instanceId, region);
+  return {
+    ...ec2Site,
+    subject: 'EC2 Instance launched by AutoScalingGroup',
+    isNotFound: (error) =>
+      ec2Site.isNotFound(error) ||
+      (typeof error === 'object' &&
+        error !== null &&
+        (error as { name?: unknown }).name === 'LaunchedInstanceGone'),
+    notFoundMeaning:
+      'EC2 answered that the instance was not found, or reports it shutting-down or terminated ' +
+      '(the group may have replaced it). That most commonly means the instance is gone, and a ' +
+      'not-found answer can also mean it is not in this region or account.',
+  };
+}
+
+/** The registry key type for a group-launched instance's flip record. */
+const EC2_INSTANCE_TYPE = 'AWS::EC2::Instance';
+
 export class ASGProvider implements ResourceProvider {
   private asgClient?: AutoScalingClient;
   private ec2Client?: EC2Client;
@@ -506,6 +568,24 @@ export class ASGProvider implements ResourceProvider {
    * released or aged-out record takes its level with it.
    */
   private readonly removedProtection = new WeakMap<ProtectionFlipRecord, string>();
+  /**
+   * `--remove-protection` flips of `DisableApiTermination` on the instances a
+   * group launched (issues #796 / #2204), one record per INSTANCE, so each
+   * latches across `delete()` re-entry like the group's own record, and a
+   * failed re-enable keeps its record for a later delete to retry.
+   */
+  private readonly instanceProtectionFlips = new ProtectionFlipRegistry();
+  /**
+   * The instances whose flip records each GROUP record's attempts acquired,
+   * keyed by that record for the reason {@link removedProtection} is: a
+   * terminal failure on a re-entered attempt must still restore an instance
+   * an EARLIER attempt flipped, even when the later describe no longer lists
+   * it.
+   */
+  private readonly groupInstanceFlips = new WeakMap<
+    ProtectionFlipRecord,
+    Map<string, ProtectionFlipRecord>
+  >();
 
   /**
    * Issue #1160: the reset `UpdateAutoScalingGroup` is sent for a property the
@@ -1433,6 +1513,11 @@ export class ASGProvider implements ResourceProvider {
    * `DeletionProtection` to `none` whose delete then fails terminally is undone
    * here — back to the value the pre-flip readback saw — so a destroy that did
    * not happen does not leave a live group with its guard stripped.
+   *
+   * The same holds for each launched instance's `DisableApiTermination`, which
+   * the flag also turns off (issue #796): each instance this run turned off is
+   * turned back on against the same group delete failure, from its own record
+   * (`settleInstanceFlips`).
    */
   async delete(
     logicalId: string,
@@ -1446,11 +1531,128 @@ export class ASGProvider implements ResourceProvider {
     let current: ProtectionFlipRecord | undefined;
     const removedValue = (): string | undefined =>
       current ? this.removedProtection.get(current) : undefined;
+    try {
+      await this.deleteGroupUnderCompensation(
+        logicalId,
+        physicalId,
+        resourceType,
+        context,
+        removedValue,
+        (flip) => {
+          current = flip;
+        }
+      );
+    } catch (error) {
+      if (current) {
+        await this.settleInstanceFlips(logicalId, current, error, context?.expectedRegion);
+      }
+      throw error;
+    }
+    if (current) this.releaseInstanceFlips(current, context?.expectedRegion);
+  }
+
+  /**
+   * Compensate every instance flip `groupFlip`'s attempts recorded, against
+   * the group delete's `error` (issue #2204). Each instance is settled on its
+   * own record: restored, released, or kept, by the same rules as the group's.
+   *
+   * Once AWS accepted `DeleteAutoScalingGroup(ForceDelete)` the instances are
+   * being terminated with the group, so nothing is put back: the instance
+   * record inherits the group's `deleteAccepted` latch.
+   *
+   * ONE residual, named because it is not reached here (the same shape as the
+   * one `ProtectionCompensationOutcome` states): an instance DETACHED from the
+   * group out of band between attempts. If the group is then gone, the delete
+   * ends on the not-found path, where {@link releaseInstanceFlips} drops every
+   * instance record WITHOUT restoring, so that live, detached instance keeps
+   * its guard stripped. Restoring on that path would need a readback of each
+   * instance (gone with the group, or detached and live?) on what is
+   * otherwise a successful delete.
+   */
+  private async settleInstanceFlips(
+    logicalId: string,
+    groupFlip: ProtectionFlipRecord,
+    error: unknown,
+    region: string | undefined
+  ): Promise<void> {
+    const instances = this.groupInstanceFlips.get(groupFlip);
+    if (!instances) return;
+    for (const [instanceId, flip] of instances) {
+      if (groupFlip.deleteAccepted) flip.deleteAccepted = true;
+      const released = await settleProtectionFlip({
+        registry: this.instanceProtectionFlips,
+        key: protectionFlipKey(EC2_INSTANCE_TYPE, instanceId, region),
+        flip,
+        error,
+        compensation: {
+          logicalId,
+          physicalId: instanceId,
+          logger: this.logger,
+          site: autoScalingGroupInstanceProtectionSite(instanceId, region),
+          reEnable: () => this.reEnableLaunchedInstance(instanceId),
+        },
+      });
+      // A released record is settled for good: forget it here too, or a later
+      // delete reusing the group record (kept when the GROUP's re-enable
+      // failed) would settle it again and re-write a guard already restored.
+      if (released) instances.delete(instanceId);
+    }
+  }
+
+  /**
+   * Turn a group-launched instance's `DisableApiTermination` back on. When the
+   * write fails, read the instance's state: one `shutting-down` or `terminated`
+   * raises {@link LaunchedInstanceGoneError} (the compensation's "gone" arm);
+   * anything else, the readback failing included, re-throws the write's own
+   * error, keeping the loud "LIVE with its deletion protection still off" line.
+   */
+  private async reEnableLaunchedInstance(instanceId: string): Promise<void> {
+    try {
+      await reEnableInstanceApiTermination(this.getEc2Client(), instanceId);
+    } catch (writeError) {
+      let state: string | undefined;
+      try {
+        const response = await this.getEc2Client().send(
+          new DescribeInstancesCommand({ InstanceIds: [instanceId] })
+        );
+        state = response.Reservations?.[0]?.Instances?.[0]?.State?.Name;
+      } catch {
+        // Unknown state: keep the write's own error.
+      }
+      if (state !== undefined && GONE_INSTANCE_STATES.has(state)) {
+        throw new LaunchedInstanceGoneError(instanceId, state);
+      }
+      throw writeError;
+    }
+  }
+
+  /**
+   * The group is gone (deleted, or already absent): drop its instances'
+   * records, restoring nothing. See {@link settleInstanceFlips} for the one
+   * residual this leaves: an instance detached out of band between attempts.
+   */
+  private releaseInstanceFlips(groupFlip: ProtectionFlipRecord, region: string | undefined): void {
+    for (const instanceId of this.groupInstanceFlips.get(groupFlip)?.keys() ?? []) {
+      this.instanceProtectionFlips.release(
+        protectionFlipKey(EC2_INSTANCE_TYPE, instanceId, region)
+      );
+    }
+    this.groupInstanceFlips.delete(groupFlip);
+  }
+
+  private async deleteGroupUnderCompensation(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    removedValue: () => string | undefined,
+    onFlip: (flip: ProtectionFlipRecord) => void
+  ): Promise<void> {
     await deleteWithProtectionCompensation({
       registry: this.protectionFlips,
       key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
       run: (flip) => {
-        current = flip;
+        onFlip(flip);
         return this.deleteOnce(logicalId, physicalId, resourceType, context, flip);
       },
       compensation: {
@@ -1544,8 +1746,14 @@ export class ASGProvider implements ResourceProvider {
       // ForceDelete below still cannot terminate those instances and they
       // ORPHAN after the group is gone (issue #796). Enumerate the group's
       // current instances and flip each one's DisableApiTermination off first,
-      // mirroring the EC2Provider `--remove-protection` path.
-      await this.removeInstanceTerminationProtection(physicalId, logicalId);
+      // mirroring the EC2Provider `--remove-protection` path. Each flip is
+      // recorded for the compensation in `delete()` (issue #2204).
+      await this.removeInstanceTerminationProtectionForDelete(
+        physicalId,
+        logicalId,
+        flip,
+        context.expectedRegion
+      );
     }
 
     try {
@@ -1911,34 +2119,24 @@ export class ASGProvider implements ResourceProvider {
    * the shared helper swallows propagation errors the same way the EC2 path
    * does — the orphan, if any, surfaces as a leftover instance the caller
    * can clean up rather than a hard delete failure).
+   *
+   * This is the create path's retire of a group cdkd itself just created, so
+   * nothing is recorded for compensation; the `--remove-protection` delete
+   * uses {@link removeInstanceTerminationProtectionForDelete}.
    */
   private async removeInstanceTerminationProtection(
     groupName: string,
     logicalId: string,
-    // The create path passes its masker: AWS's describe error can echo the
-    // group name, which may be a resolved secret there. `delete()` has none.
-    maskSecrets: SecretMasker = (text) => text,
+    // AWS's describe error can echo the group name, which may be a resolved
+    // secret on the create path.
+    maskSecrets: SecretMasker,
     // Instances already flipped by an earlier pass of the same retire.
-    alreadyFlipped: Set<string> = new Set()
+    alreadyFlipped: Set<string>
   ): Promise<void> {
-    let instanceIds: string[];
-    try {
-      const group = await this.describeGroup(groupName);
-      instanceIds = (group?.Instances ?? [])
-        .map((i) => i.InstanceId)
-        .filter(
-          (id): id is string => typeof id === 'string' && id.length > 0 && !alreadyFlipped.has(id)
-        );
-    } catch (describeError) {
-      this.logger.debug(
-        maskSecrets(
-          `Could not enumerate instances of AutoScalingGroup ${logicalId} for termination-protection removal: ${describeAwsFailure(describeError).detail}`
-        )
-      );
-      return;
-    }
-
-    if (instanceIds.length === 0) return;
+    const instanceIds = (
+      await this.listGroupInstanceIds(groupName, logicalId, maskSecrets)
+    )?.filter((id) => !alreadyFlipped.has(id));
+    if (!instanceIds || instanceIds.length === 0) return;
 
     this.logger.debug(
       `Disabling EC2 termination protection on ${instanceIds.length} instance(s) of AutoScalingGroup ${logicalId} before force delete`
@@ -1948,6 +2146,74 @@ export class ASGProvider implements ResourceProvider {
       if (await disableInstanceApiTermination(this.getEc2Client(), instanceId, this.logger)) {
         alreadyFlipped.add(instanceId);
       }
+    }
+  }
+
+  /**
+   * The `--remove-protection` delete's instance flip (issue #796), recorded
+   * for compensation (issue #2204): each instance's `DisableApiTermination` is
+   * read first and turned off, and its own flip record latches only when the
+   * read saw it ON and EC2 accepted the flip. The record is acquired from the
+   * per-instance registry, so a re-entered attempt that reads the guard OFF
+   * (because the earlier attempt turned it off) keeps what that attempt
+   * recorded, and is remembered on `groupFlip` for `delete()` to settle.
+   *
+   * Best-effort exactly like the unrecorded path: a describe failure or a
+   * refused flip is logged at debug and the delete proceeds.
+   */
+  private async removeInstanceTerminationProtectionForDelete(
+    groupName: string,
+    logicalId: string,
+    groupFlip: ProtectionFlipRecord,
+    region: string | undefined
+  ): Promise<void> {
+    const instanceIds = await this.listGroupInstanceIds(groupName, logicalId, (text) => text);
+    if (!instanceIds || instanceIds.length === 0) return;
+
+    let flips = this.groupInstanceFlips.get(groupFlip);
+    if (!flips) {
+      flips = new Map();
+      this.groupInstanceFlips.set(groupFlip, flips);
+    }
+    this.logger.debug(
+      `Disabling EC2 termination protection on ${instanceIds.length} instance(s) of AutoScalingGroup ${logicalId} before force delete`
+    );
+    for (const instanceId of instanceIds) {
+      const flip = this.instanceProtectionFlips.acquire(
+        protectionFlipKey(EC2_INSTANCE_TYPE, instanceId, region),
+        PROTECTION_FLIP_REUSE_WINDOW_MS
+      );
+      flips.set(instanceId, flip);
+      await observeThenDisableInstanceApiTermination(
+        this.getEc2Client(),
+        instanceId,
+        flip,
+        this.logger
+      );
+    }
+  }
+
+  /**
+   * The ids of the instances the group currently holds, or `undefined` when
+   * the describe failed (logged at debug: the caller proceeds without them).
+   */
+  private async listGroupInstanceIds(
+    groupName: string,
+    logicalId: string,
+    maskSecrets: SecretMasker
+  ): Promise<string[] | undefined> {
+    try {
+      const group = await this.describeGroup(groupName);
+      return (group?.Instances ?? [])
+        .map((i) => i.InstanceId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    } catch (describeError) {
+      this.logger.debug(
+        maskSecrets(
+          `Could not enumerate instances of AutoScalingGroup ${logicalId} for termination-protection removal: ${describeAwsFailure(describeError).detail}`
+        )
+      );
+      return undefined;
     }
   }
 

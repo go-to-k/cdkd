@@ -34,7 +34,9 @@
  * `SetTerminationProtection` / `TerminateJobFlows`, for an ELBv2 load balancer
  * `DescribeLoadBalancerAttributes` / `ModifyLoadBalancerAttributes` /
  * `DeleteLoadBalancer`, for an Auto Scaling group `DescribeAutoScalingGroups` /
- * `UpdateAutoScalingGroup` / `DeleteAutoScalingGroup`, for an EC2 instance
+ * `UpdateAutoScalingGroup` / `DeleteAutoScalingGroup` (plus, per instance the
+ * group launched, `DescribeInstanceAttribute` / `ModifyInstanceAttribute`
+ * against that same group delete), for an EC2 instance
  * (both delete routes) `DescribeInstanceAttribute` / `ModifyInstanceAttribute`
  * / the delete, and for a Cloud Control protection-registry type
  * `GetResource` / an `UpdateResource` patch / `DeleteResource`; the argument
@@ -752,16 +754,50 @@ export async function deleteWithProtectionCompensation(opts: {
   try {
     await opts.run(flip);
   } catch (error) {
-    let outcome: ProtectionCompensationOutcome = 'failed';
-    try {
-      outcome = await compensateProtectionFlip({ ...opts.compensation, flip, error });
-    } catch {
-      // `outcome` stays `failed`: see the JSDoc.
-    }
-    if (isTerminalDeleteFailure(error) && outcome !== 'failed') {
-      opts.registry.release(opts.key);
-    }
+    await settleProtectionFlip({
+      registry: opts.registry,
+      key: opts.key,
+      flip,
+      error,
+      compensation: opts.compensation,
+    });
     throw error;
   }
   opts.registry.release(opts.key);
+}
+
+/**
+ * The failure half of {@link deleteWithProtectionCompensation}, for a caller
+ * that owes compensation on more than one record per delete: compensate
+ * `flip` for `error`, then release `key` only when the failure is terminal AND
+ * the compensation did not fail. Never throws and never touches `error`; the
+ * caller re-throws it. Resolves whether `key` was released, so a caller that
+ * also remembers the record elsewhere can forget it in the same step.
+ *
+ * The Auto Scaling group is that caller: its `delete()` flips the group's own
+ * guard AND each launched instance's `DisableApiTermination` (issue #796), and
+ * each instance's record is settled here against the group's delete failure.
+ */
+export async function settleProtectionFlip(opts: {
+  readonly registry: ProtectionFlipRegistry;
+  readonly key: string;
+  readonly flip: ProtectionFlipRecord;
+  readonly error: unknown;
+  readonly compensation: Omit<ProtectionFlipCompensationOptions, 'flip' | 'error'>;
+}): Promise<boolean> {
+  let outcome: ProtectionCompensationOutcome = 'failed';
+  try {
+    outcome = await compensateProtectionFlip({
+      ...opts.compensation,
+      flip: opts.flip,
+      error: opts.error,
+    });
+  } catch {
+    // `outcome` stays `failed`: see deleteWithProtectionCompensation's JSDoc.
+  }
+  if (isTerminalDeleteFailure(opts.error) && outcome !== 'failed') {
+    opts.registry.release(opts.key);
+    return true;
+  }
+  return false;
 }
