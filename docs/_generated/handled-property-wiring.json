@@ -5887,6 +5887,7 @@
             "element-read"
           ],
           "seededBy": [
+            "canonicalizeDesiredProperties",
             "create",
             "update"
           ]
@@ -5996,8 +5997,10 @@
       "blindSpots": [
         "computed key in canonicalizeDriftProperties()",
         "computed key in collectDesiredKeyAttributeNames()",
+        "computed key in replicationImpliedStreamSpecification()",
         "computed key in update()",
         "extractLocalTags(...) in update()",
+        "object spread in canonicalizeDesiredProperties()",
         "object spread in canonicalizeDriftProperties()",
         "object spread in create()",
         "object spread in stripProvisionedCapacityKeys()"

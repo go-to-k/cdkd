@@ -230,16 +230,16 @@ provider enables `NEW_AND_OLD_IMAGES` on a template that declared no
 not "done" once every guard reports — the audit question is what it SENDS that
 differs from what was declared, not which guards can warn.
 
-**But finding such an arm is not the same as fixing it.** That auto-enable arm is
-deliberately left unanswered (tracked as issue
-[#1723](https://github.com/go-to-k/cdkd/issues/1723)) because the value it would
-record is a key the template does not have, and the twin rule above then binds:
+**But finding such an arm is not the same as fixing it.** The value that arm
+records is a key the template does not have, so the twin rule above binds:
 `DiffCalculator` walks the key UNION, so an unchanged template would classify an
 UPDATE on the next deploy, `update()` would return no effective bag, and the key
-would vanish again — a spurious no-op UPDATE buying no durable record. The twin
-that would fix it cannot be written here either: it is pure and synchronous and
-does not know the deploy region, while the auto-enable condition does. Settle
-the twin's feasibility BEFORE recording anything.
+would vanish again. Settle the twin's feasibility BEFORE recording anything. For
+this arm (issue [#1723](https://github.com/go-to-k/cdkd/issues/1723)) the twin
+is pure and synchronous and does not know the deploy region, so only the
+region-independent half (more than one replica, no `MultiRegionConsistency` declared) is recorded, through one
+predicate shared by `create()`, `update()` and `canonicalizeDesiredProperties`;
+a single replica outside the deploy region still records nothing.
 
 When more than one arm can fire in a single call, COMPOSE them
 (`...(effectiveProperties ?? properties)`) rather than assigning — otherwise the

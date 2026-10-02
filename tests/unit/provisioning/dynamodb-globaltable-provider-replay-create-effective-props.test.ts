@@ -443,7 +443,7 @@ describe('DynamoDBGlobalTableProvider replay-CREATE effectiveProperties (issues 
     // A well-formed replay builds `gsi1`, so its override is real and must go
     // out — an unconditional withdrawal would pass every case above.
     primeCrossRegionReplica();
-    const result = await replayCreate({
+    const desired = {
       ...CROSS_REGION_OVERRIDE_PROPS,
       AttributeDefinitions: [
         { AttributeName: 'pk', AttributeType: 'S' },
@@ -456,12 +456,18 @@ describe('DynamoDBGlobalTableProvider replay-CREATE effectiveProperties (issues 
           Projection: { ProjectionType: 'ALL' },
         },
       ],
-    });
+    };
+    const result = await replayCreate(desired);
 
     expect(replicaCreateAction()?.['GlobalSecondaryIndexes']).toEqual([
       { IndexName: 'gsi1', OnDemandThroughputOverride: { MaxReadRequestUnits: 13 } },
     ]);
-    expect(result.effectiveProperties).toBeUndefined();
+    // No GSI arm rewrote the bag: the ONLY difference is the stream two
+    // replicas with no declared one make `create()` enable (issue #1723).
+    expect(result.effectiveProperties).toEqual({
+      ...desired,
+      StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+    });
     const lines = childLogger.warn.mock.calls.map((c) => String(c[0]));
     expect(lines.some((l) => l.includes('omitting the GlobalSecondaryIndexes overrides'))).toBe(
       false

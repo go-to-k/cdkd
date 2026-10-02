@@ -650,8 +650,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // and a unit test fences it (issue #1683). The FIRST arm assigns directly
     // because there is nothing yet to compose onto.
     //
-    // The `needsStream` auto-enable further down is deliberately NOT one of
-    // them — see the comment there and issue #1723.
+    // The `needsStream` auto-enable further down is a third, and composes the
+    // same way (issue #1723).
     let effectiveProperties: Record<string, unknown> | undefined;
 
     if (billingModeSubstituted) {
@@ -813,26 +813,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     } else if (needsStream) {
       // cdkd deliberately sends MORE than the template asked for: cross-region
       // replication requires a stream, so one is enabled even where the
-      // template declares no `StreamSpecification` at all. That is the "arms
-      // that do NOT log a refusal" case `.claude/rules/providers.md` warns to
-      // look for, and it is the one arm of issue #1683 this provider does NOT
-      // answer with `effectiveProperties` — deliberately, tracked as issue
-      // #1723.
+      // template declares no `StreamSpecification` at all — the "arms that do
+      // NOT log a refusal" case.
       //
-      // Recording the added stream here in isolation is the shape the rules
-      // file forbids ("`effectiveProperties` alone BREAKS the next deploy —
-      // implement `canonicalizeDesiredProperties` with it"), and the breakage
-      // is real: `DiffCalculator.compareProperties` walks the key UNION, so an
-      // UNCHANGED template would classify an UPDATE on the next deploy, and
-      // `update()` — whose stream gate is `properties['StreamSpecification']
-      // !== undefined`, false for a template that declares none — would return
-      // no effective bag and re-record the desired one, dropping the key
-      // again. The twin cannot simply be added either: it is pure and
-      // synchronous and does not know the deploy region, while `needsStream`
-      // does. #1723 carries that design plus the prior question of whether the
-      // arm is needed at all (`drift-calculator` descends only into keys
-      // present in state, and the `observedProperties` baseline already
-      // carries the stream).
+      // Issue #1723: recorded, paired with the `canonicalizeDesiredProperties`
+      // twin through the one shared predicate, so an unchanged template still
+      // diffs NO_CHANGE. Not for phantom drift — there is none either way, the
+      // drift walk descending only into keys a record has — but because a
+      // record without the stream reads a template that LATER declares the
+      // same `{ StreamViewType: NEW_AND_OLD_IMAGES }` as a change, and
+      // `update()` then asks AWS to enable a stream the table already has.
+      // Only the region-independent half is recorded; see the helper.
+      const impliedStream = replicationImpliedStreamSpecification(properties);
+      if (impliedStream) {
+        effectiveProperties = {
+          ...(effectiveProperties ?? properties),
+          [STREAM_SPECIFICATION_KEY]: impliedStream,
+        };
+      }
       this.logger.info(
         log.mask(
           `Auto-enabling streams (NEW_AND_OLD_IMAGES) on ${logicalId} — required for cross-region replication`
@@ -1965,7 +1963,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // `StreamSpecification` skip, the `desiredGsiUnusable` skip, and the
     // `BillingMode` warn-and-keep-the-previous-mode. Every one of them is a
     // SKIP, so the `canonicalizeDesiredProperties` twin the rules require for a
-    // NARROWING does not apply — see each arm's own comment.
+    // NARROWING does not apply — see each arm's own comment. A fourth site,
+    // after the final `DescribeTable`, re-records the implied stream (issue
+    // #1723); that one IS paired with the twin.
     let effectiveProperties: Record<string, unknown> | undefined;
 
     try {
@@ -2507,12 +2507,33 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             },
           }
         );
+        // Issue #1723: the recorded previous side is not proof of what AWS
+        // holds. A record written before #1723 carries no stream for a table
+        // `create()` gave one, and a rollback replay of a two-to-one replica
+        // change hands back the OLD record's implied stream against a previous
+        // side that dropped it. Either way the desired block can already be
+        // LIVE, and re-sending it asks AWS to enable a stream the table has.
+        // Read off the DescribeTable this update already made, so the gate
+        // costs no call; the desired value is then exactly what AWS holds, so
+        // recording it is correct and no `effectiveProperties` is needed.
+        const liveStreamSpec = describeResp.Table?.StreamSpecification;
+        const alreadyLive =
+          liveStreamSpec?.StreamEnabled === true &&
+          liveStreamSpec.StreamViewType === streamViewType;
         if (!streamSpecUnusable) {
-          flatUpdate.StreamSpecification = {
-            StreamEnabled: true,
-            StreamViewType: streamViewType,
-          } as StreamSpecification;
-          flatChanged = true;
+          if (alreadyLive) {
+            this.logger.debug(
+              log.mask(
+                `${logicalId}: StreamSpecification already live as ${streamViewType}; not re-sent`
+              )
+            );
+          } else {
+            flatUpdate.StreamSpecification = {
+              StreamEnabled: true,
+              StreamViewType: streamViewType,
+            } as StreamSpecification;
+            flatChanged = true;
+          }
         } else {
           // issue #1653: the skip makes the deploy SUCCEED with the declared
           // block never reaching AWS, so recording the desired bag verbatim
@@ -3865,6 +3886,27 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const finalDescribe = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
       );
+
+      // Issue #1723, update side: without this, any update of a multi-replica
+      // table whose template declares no stream re-records the desired bag and
+      // the stream `create()` recorded vanishes again. Recorded only when the
+      // live table CONFIRMS it — this update never sends the stream, so the
+      // claim rests on what AWS holds, not on what cdkd sent. When it does not
+      // confirm, the key stays absent, which the shared twin folds identically
+      // on both diff sides, so either answer diffs NO_CHANGE next time.
+      const impliedStream = replicationImpliedStreamSpecification(properties);
+      const liveStream = finalDescribe.Table?.StreamSpecification;
+      if (
+        impliedStream &&
+        liveStream?.StreamEnabled === true &&
+        liveStream.StreamViewType === impliedStream.StreamViewType
+      ) {
+        effectiveProperties = {
+          ...(effectiveProperties ?? properties),
+          [STREAM_SPECIFICATION_KEY]: impliedStream,
+        };
+      }
+
       return {
         physicalId,
         wasReplaced: false,
@@ -6239,6 +6281,42 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * Diff-side twin of the `needsStream` record (issue #1723): a multi-replica
+   * template declaring no `StreamSpecification` compares as declaring the
+   * stream `create()` enables for it. Applied to BOTH sides, so a record
+   * written before #1723 (no stream key) and one written after (stream key)
+   * both diff NO_CHANGE against the unchanged template — and against a
+   * template that later declares that same stream.
+   *
+   * Shares {@link replicationImpliedStreamSpecification} with `create()` and
+   * `update()`. It only ADDS a key, so `DiffCalculator`'s "declared properties
+   * are ignored" warning (which fires on a DROPPED key) stays silent.
+   *
+   * Bound: `DiffCalculator` folds the CURRENT side only for an SDK-routed
+   * record, so on a Cloud Control record this fold would be one-sided.
+   * Cloud Control never CREATES that population (CloudFormation refuses a
+   * multi-replica table with no `StreamSpecification`, and a declared
+   * `MultiRegionConsistency` stops the helper), but an SDK-created record can
+   * MOVE there: a later template adding a property this provider does not
+   * handle re-routes the update to Cloud Control with this record as the
+   * previous side, and its patch then asks to remove the recorded stream.
+   * With the replicas unchanged AWS refuses that on a multi-replica table and
+   * the deploy fails; if the same template also drops to ONE replica, the
+   * removal is allowed and the patch may disable the stream. Accepted: the
+   * template that created the record (multi-replica, no `StreamSpecification`)
+   * is one CloudFormation rejects, so the AWS CDK CLI never reaches this state.
+   */
+  canonicalizeDesiredProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::DynamoDB::GlobalTable') return properties;
+    const impliedStream = replicationImpliedStreamSpecification(properties);
+    if (!impliedStream) return properties;
+    return { ...properties, [STREAM_SPECIFICATION_KEY]: impliedStream };
+  }
+
+  /**
    * Complete a LEGACY drift baseline's missing local replica (issue #3573).
    *
    * Before #3573, `readCurrentState` left the deploy-region entry out of
@@ -7234,6 +7312,57 @@ export function withdrawReplicaIndexBlocks(replicas: unknown): {
     return copy;
   });
   return { replicas: changed ? out : replicas, changed, withdrawnRegions };
+}
+
+/** Computed-key spelling of the stream block, for the issue #1723 folds. */
+const STREAM_SPECIFICATION_KEY = 'StreamSpecification';
+
+/**
+ * The stream `create()` enables on a table whose template declares NONE, in
+ * the CFn shape, when that is decidable from the bag alone (issue #1723) —
+ * `undefined` otherwise.
+ *
+ * ONE helper for the three sites that must agree: `create()` records it,
+ * `update()` records it (when the live table confirms it), and
+ * `canonicalizeDesiredProperties` folds it into BOTH diff sides. Were any two to
+ * key off different predicates, an unchanged template would redeploy forever.
+ *
+ * Fires only on the region-INDEPENDENT half of `create()`'s `needsStream`
+ * (`replicas.length > 1`). The other half — a single replica in a region other
+ * than the deploy region, or a single replica whose `Region` is still an
+ * unresolved intrinsic — needs the deploy region, which the pure, synchronous
+ * twin does not have; that half still auto-enables the stream and still records
+ * nothing. That is harmless for drift (the walk visits only the top-level keys a
+ * record HAS) and for the next diff: a later declaration of the same stream
+ * diffs as an UPDATE, but `update()`'s live-stream gate sends nothing for it,
+ * and the record then carries the declared stream. A table that DROPS to one
+ * replica likewise loses the recorded stream from its record (a one-time diff
+ * line beside its `Replicas` change) while AWS keeps the stream.
+ *
+ * Any `MultiRegionConsistency` at all disables it. The key is a silent-drop
+ * for this provider, so the three sites see different bags for one template:
+ * `create()` / `update()` read the RAW bag (key present), while the twin reads
+ * `DiffCalculator`'s bags, which on the SDK route (`--allow-unsupported-properties`)
+ * have the key STRIPPED from both sides — there the twin folds BOTH sides
+ * alike whatever `create()` recorded, so the diff stays NO_CHANGE. On the Cloud
+ * Control route (the key's default) nothing is stripped and only the desired
+ * side is folded, so the key must stop the fold there, for EVENTUAL as much as
+ * for STRONG: whether Cloud Control ever holds a stream-less multi-replica
+ * EVENTUAL table is not something the fold should rest on.
+ *
+ * Keyed on ABSENCE, not `== null`: an explicitly declared `StreamSpecification`
+ * (even a malformed `null` / `''`) is the template's own statement, and folding
+ * a declared value would silence the diff that reports it.
+ */
+export function replicationImpliedStreamSpecification(
+  properties: Record<string, unknown>
+): { StreamViewType: 'NEW_AND_OLD_IMAGES' } | undefined {
+  if (properties[STREAM_SPECIFICATION_KEY] !== undefined) return undefined;
+  // See the JSDoc: any declared consistency mode leaves the bag unfolded.
+  if (properties['MultiRegionConsistency'] !== undefined) return undefined;
+  const replicas = properties['Replicas'];
+  if (!Array.isArray(replicas) || replicas.length <= 1) return undefined;
+  return { StreamViewType: 'NEW_AND_OLD_IMAGES' };
 }
 
 /**

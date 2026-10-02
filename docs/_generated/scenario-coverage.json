@@ -882,6 +882,11 @@
       ]
     },
     {
+      "name": "dynamodb-globaltable-implied-stream",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "dynamodb-gsi-update",
       "annotated": false,
       "scenarios": []
@@ -3131,6 +3136,7 @@
     "cross-region-concurrent-stacks",
     "custom-resource-noecho-nested",
     "dynamodb-autoscaling",
+    "dynamodb-globaltable-implied-stream",
     "dynamodb-gsi-update",
     "dynamodb-ondemand",
     "dynamodb-sse",

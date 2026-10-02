@@ -984,6 +984,7 @@
       "resourceType": "AWS::DynamoDB::GlobalTable",
       "integs": [
         "dynamodb-globaltable",
+        "dynamodb-globaltable-implied-stream",
         "lambda",
         "rollback-replay-effective-props"
       ],
@@ -991,6 +992,10 @@
         "dynamodb-globaltable": [
           "l1",
           "l2",
+          "literal"
+        ],
+        "dynamodb-globaltable-implied-stream": [
+          "l1",
           "literal"
         ],
         "lambda": [

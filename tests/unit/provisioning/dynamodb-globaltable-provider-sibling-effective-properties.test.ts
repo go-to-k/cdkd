@@ -191,31 +191,11 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
     );
   });
 
-  // ─── The needsStream auto-enable is deliberately NOT answered ──────────
+  // ─── ARM 3: the needsStream auto-enable ─────────────────────────────────
   //
-  // It sends a stream the template never declared, which IS the same class —
-  // but recording it in isolation is the shape `.claude/rules/providers.md`
-  // forbids without a `canonicalizeDesiredProperties` twin, and that twin
-  // cannot be written here (it is pure and synchronous and does not know the
-  // deploy region, while `needsStream` does). Tracked as issue #1723. Pin the
-  // CURRENT answer so the arm cannot start recording by accident, and so the
-  // follow-up has a test to invert.
-
-  it('sends the auto-enabled stream but records NO effectiveProperties for it (issue #1723)', async () => {
-    const desired = {
-      ...baseProps,
-      Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }],
-    };
-
-    const result = await provider.create('MyTable', RESOURCE_TYPE, desired);
-
-    // The WIRE half still carries the stream — the arm's behavior is unchanged.
-    expect(createInput()['StreamSpecification']).toEqual({
-      StreamEnabled: true,
-      StreamViewType: 'NEW_AND_OLD_IMAGES',
-    });
-    expect(result.effectiveProperties).toBeUndefined();
-  });
+  // Recorded since issue #1723, together with its `canonicalizeDesiredProperties`
+  // twin; the full coverage lives in
+  // `dynamodb-globaltable-provider-implied-stream-1723.test.ts`.
 
   it('answers with NO effectiveProperties when the template DECLARES the stream', async () => {
     // The declared value is what is sent, so there is nothing to correct.
