@@ -3,12 +3,15 @@
 #
 # `cdkd destroy --remove-protection` turns a resource's guard off, then
 # deletes it. When the delete fails TERMINALLY, cdkd must turn the guard back
-# on before reporting the failure. This fixture covers the three routes that
+# on before reporting the failure. This fixture covers four routes that
 # compensation was added to in one stack:
 #   - SdkInstance    AWS::EC2::Instance, SDK route (DisableApiTermination)
 #   - CcInstance     AWS::EC2::Instance, Cloud Control route (DisableApiTermination)
 #   - ProtectConfig  AWS::SMSVOICE::ProtectConfiguration, the Cloud Control
 #                    protection registry (DeletionProtectionEnabled)
+#   - ProtectedAsg   AWS::AutoScaling::AutoScalingGroup: the DisableApiTermination
+#                    of the instance it launched, which the group delete turns
+#                    off before ForceDelete (issue #796)
 #
 # Each delete is refused DETERMINISTICALLY by a dependent cdkd does not
 # manage, attached out of band after the deploy (the shape of the Cognito arm
@@ -20,6 +23,21 @@
 #   - the protect configuration is associated with a configuration set this
 #     script creates, which refuses DeleteProtectConfiguration. A FIRST-attempt
 #     conflict is a refusal (`ccDeleteMayHaveActed`), so it is compensated.
+#   - the Auto Scaling group has no such dependent: `ForceDelete` deletes the
+#     instances and lifecycle actions that would otherwise hold it. So phase 2
+#     runs the destroy under a role this script creates. Its inline policy
+#     allows only the services this stack's destroy calls (S3 on the state
+#     bucket alone, EC2, Auto Scaling, Cloud Control, SMS Voice, SSM parameter reads, KMS
+#     data-key use, `sts:GetCallerIdentity`), and explicitly denies
+#     `autoscaling:UpdateAutoScalingGroup` on that one group. (An IAM deny on
+#     the delete itself would read "not authorized to perform", which is
+#     retryable.) An allow-list too narrow for some future destroy call fails
+#     phase 2 with that call's AccessDenied in the destroy output. cdkd's flip of the GROUP's
+#     DeletionProtection is then refused (non-fatal by design), its flip of the
+#     INSTANCE's DisableApiTermination lands, and the group's own
+#     `prevent-all-deletion` refuses DeleteAutoScalingGroup. The role is
+#     assumable only by the exact caller identity that runs this script
+#     (`aws:userid`), and is deleted before phase 3 and by the cleanup trap.
 #
 # Phases:
 #   1. Deploy (instances in the account's DEFAULT VPC). Assert each guard is ON
@@ -54,6 +72,14 @@
 # stand-down, so the CcInstance arm depends on the handler's message keeping
 # that wording.
 #
+# NOT YET OBSERVED (the ASG arm was added after the first passing run): that
+# Auto Scaling's AccessDenied for the deny role says "explicit deny" (phase 1c
+# counts only that; otherwise it fails its precondition naming the last
+# answer), and the exact wording of the `prevent-all-deletion` refusal and
+# that it matches no retryable pattern. A retryable one would end the destroy at the attempt cap,
+# where no compensation runs (issue #4318), and phase 2 would fail naming the
+# missing compensation line.
+#
 # Not covered live here: the VerifiedPermissions PolicyStore's OBJECT-valued
 # guard (`{"Mode":"ENABLED"}`). Its compensation is unit-tested, and its flip
 # is exercised live by tests/integration/cc-protection-flip.
@@ -61,6 +87,8 @@
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1. Needs a default VPC offering t3.nano.
+# The caller also needs iam:CreateRole / PutRolePolicy / DeleteRolePolicy /
+# DeleteRole / ListRoles and sts:AssumeRole on the role it creates.
 
 set -euo pipefail
 
@@ -106,6 +134,11 @@ DESTROY_LOG="compensation-destroy.log"
 # The configuration set is this run's own (unique name), and the sweep below
 # finds any run's by the literal prefix.
 CS_NAME="cdkd-rp-comp-$(date +%s)-$$"
+# The deny role is this run's own, and the sweep finds any run's by the literal
+# prefix. The launch template's name is the fixture's literal.
+DENY_ROLE="cdkd-rp-comp-asg-deny-$(date +%s)-$$"
+DENY_POLICY_NAME="cdkd-rp-comp-asg-deny"
+LT_NAME="cdkd-rp-comp-asg-lt"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -151,19 +184,66 @@ detach_dependents() {
   )
 }
 
+# Delete every deny role any run of this fixture created, found by the LITERAL
+# prefix. Idempotent and soft-failing.
+delete_deny_roles() {
+  (
+    # Best-effort, in a subshell: the caller's errexit is untouched.
+    set +eu
+    roles="$(aws iam list-roles \
+      --query "Roles[?starts_with(RoleName, 'cdkd-rp-comp-asg-deny-')].RoleName" --output text 2>/dev/null)"
+    for r in ${roles}; do
+      [ "${r}" = "None" ] && continue
+      aws iam delete-role-policy --role-name "${r}" --policy-name "${DENY_POLICY_NAME}" >/dev/null 2>&1
+      if aws iam delete-role --role-name "${r}" >/dev/null 2>&1; then
+        echo "    deleted deny role ${r}"
+      else
+        echo "    WARN: could not delete role ${r}; delete it by hand" >&2
+      fi
+    done
+  )
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  delete_deny_roles
   # Dependents FIRST: while attached they refuse the very deletes below.
   detach_dependents
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --remove-protection --yes >/dev/null 2>&1
   fi
-  # Instances: literal tag discovery.
+  # Auto Scaling groups BEFORE instances: a live group replaces an instance
+  # terminated under it. Literal tag discovery.
+  ( set +eu
+    names="$(aws autoscaling describe-auto-scaling-groups --region "${REGION}" \
+      --filters 'Name=tag:cdkd-integ,Values=rp-compensation-asg' \
+      --query 'AutoScalingGroups[].AutoScalingGroupName' --output text 2>/dev/null)"
+    for g in ${names}; do
+      [ "${g}" = "None" ] && continue
+      aws autoscaling update-auto-scaling-group --region "${REGION}" --auto-scaling-group-name "${g}" \
+        --deletion-protection none >/dev/null 2>&1
+      gids="$(aws autoscaling describe-auto-scaling-groups --region "${REGION}" \
+        --auto-scaling-group-names "${g}" --query 'AutoScalingGroups[0].Instances[].InstanceId' \
+        --output text 2>/dev/null)"
+      for iid in ${gids}; do
+        [ "${iid}" = "None" ] && continue
+        aws ec2 modify-instance-attribute --region "${REGION}" --instance-id "${iid}" \
+          --no-disable-api-termination >/dev/null 2>&1
+      done
+      if aws autoscaling delete-auto-scaling-group --region "${REGION}" \
+        --auto-scaling-group-name "${g}" --force-delete >/dev/null 2>&1; then
+        echo "    deleting leftover Auto Scaling group ${g}"
+      else
+        echo "    WARN: could not delete leftover Auto Scaling group ${g}; delete it by hand" >&2
+      fi
+    done
+  )
+  # Instances: literal tag discovery (the group's instance carries its own value).
   ( set +eu
     ids="$(aws ec2 describe-instances --region "${REGION}" \
-      --filters 'Name=tag:cdkd-integ,Values=rp-compensation' \
+      --filters 'Name=tag:cdkd-integ,Values=rp-compensation,rp-compensation-asg' \
         'Name=instance-state-name,Values=pending,running,stopping,stopped' \
       --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null)"
     for iid in ${ids}; do
@@ -208,11 +288,15 @@ cleanup() {
       fi
     done
   )
+  # The launch template: the fixture's literal name.
+  if aws ec2 delete-launch-template --region "${REGION}" --launch-template-name "${LT_NAME}" >/dev/null 2>&1; then
+    echo "    deleted leftover launch template ${LT_NAME}"
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
-  rm -f "${DESTROY_LOG}"
+  rm -f "${DESTROY_LOG}" "${DESTROY_LOG}.poll-err" "${DESTROY_LOG}.id-err"
   set -eu
 }
 
@@ -312,11 +396,12 @@ read_state
 SDK_ID="$(state_field SdkInstance physicalId)"
 CC_ID="$(state_field CcInstance physicalId)"
 PC_ID="$(state_field ProtectConfig physicalId)"
-if [ -z "${SDK_ID}" ] || [ -z "${CC_ID}" ] || [ -z "${PC_ID}" ]; then
-  echo "FAIL: missing physicalId in state (sdk='${SDK_ID}' cc='${CC_ID}' pc='${PC_ID}')" >&2
+ASG_NAME="$(state_field ProtectedAsg physicalId)"
+if [ -z "${SDK_ID}" ] || [ -z "${CC_ID}" ] || [ -z "${PC_ID}" ] || [ -z "${ASG_NAME}" ]; then
+  echo "FAIL: missing physicalId in state (sdk='${SDK_ID}' cc='${CC_ID}' pc='${PC_ID}' asg='${ASG_NAME}')" >&2
   exit 1
 fi
-echo "    sdkInstance=${SDK_ID} ccInstance=${CC_ID} protectConfig=${PC_ID}"
+echo "    sdkInstance=${SDK_ID} ccInstance=${CC_ID} protectConfig=${PC_ID} asg=${ASG_NAME}"
 
 # Each arm covers its ROUTE only if the resource took it.
 SDK_ROUTE="$(state_field SdkInstance provisionedBy)"
@@ -344,6 +429,39 @@ if [ "${g}" != "true" ]; then
   echo "FAIL: precondition — ${PC_ID} DeletionProtectionEnabled is '${g}', not true" >&2
   exit 1
 fi
+
+# The group launches its instance asynchronously after the deploy.
+# A failed describe (throttle, network) is polled through rather than ending
+# the run under errexit, and reported if no instance ever shows up.
+ASG_IID=""
+asg_poll_err=""
+for _ in $(seq 1 60); do
+  if ASG_IID="$(aws autoscaling describe-auto-scaling-groups --region "${REGION}" \
+    --auto-scaling-group-names "${ASG_NAME}" --query 'AutoScalingGroups[0].Instances[0].InstanceId' \
+    --output text 2>"${DESTROY_LOG}.poll-err")"; then
+    asg_poll_err=""
+    if [ -n "${ASG_IID}" ] && [ "${ASG_IID}" != "None" ]; then
+      break
+    fi
+  else
+    asg_poll_err="$(cat "${DESTROY_LOG}.poll-err")"
+  fi
+  ASG_IID=""
+  sleep 5
+done
+rm -f "${DESTROY_LOG}.poll-err"
+if [ -z "${ASG_IID}" ]; then
+  echo "FAIL: precondition — ${ASG_NAME} launched no instance within 5 minutes${asg_poll_err:+ (last describe failure: ${asg_poll_err})}" >&2
+  exit 1
+fi
+wait_instance_attr "${ASG_IID}" disableApiTermination True
+ASG_DP="$(aws autoscaling describe-auto-scaling-groups --region "${REGION}" \
+  --auto-scaling-group-names "${ASG_NAME}" --query 'AutoScalingGroups[0].DeletionProtection' --output text)"
+if [ "${ASG_DP}" != "prevent-all-deletion" ]; then
+  echo "FAIL: precondition — ${ASG_NAME} DeletionProtection is '${ASG_DP}', not prevent-all-deletion" >&2
+  exit 1
+fi
+echo "    asgInstance=${ASG_IID}"
 echo "    every guard is ON"
 
 echo "==> Phase 1b: attach the out-of-band dependents"
@@ -366,10 +484,111 @@ if [ "${ASSOCIATED_PC}" != "${PC_ID}" ]; then
 fi
 echo "    configuration set ${CS_NAME} associated with ${PC_ID}"
 
+echo "==> Phase 1c: a role that may not call UpdateAutoScalingGroup on ${ASG_NAME}"
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+CALLER_USERID="$(aws sts get-caller-identity --query UserId --output text)"
+ASG_ARN="$(aws autoscaling describe-auto-scaling-groups --region "${REGION}" \
+  --auto-scaling-group-names "${ASG_NAME}" --query 'AutoScalingGroups[0].AutoScalingGroupARN' --output text)"
+if [ -z "${ACCOUNT_ID}" ] || [ -z "${CALLER_USERID}" ] || [ -z "${ASG_ARN}" ] || [ "${ASG_ARN}" = "None" ]; then
+  echo "FAIL: precondition — account '${ACCOUNT_ID}', caller '${CALLER_USERID}' or group ARN '${ASG_ARN}' is empty" >&2
+  exit 1
+fi
+# Assumable by THIS caller identity only, not by the whole account.
+TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
+# Scoped to what this stack's destroy calls, never `*`: the role is assumable
+# by the caller for minutes, and an inline `Allow *` would hand it more than
+# the caller may have (IAM included).
+DENY_POLICY="$(node -e 'const [arn,bucket]=process.argv.slice(1);process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:*",Resource:[`arn:aws:s3:::${bucket}`,`arn:aws:s3:::${bucket}/*`]},{Effect:"Allow",Action:["ec2:*","autoscaling:*","cloudformation:*","sms-voice:*","ssm:GetParameter","ssm:GetParameters","kms:Decrypt","kms:GenerateDataKey","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:"autoscaling:UpdateAutoScalingGroup",Resource:arn}]}))' "${ASG_ARN}" "${STATE_BUCKET}")"
+aws iam create-role --role-name "${DENY_ROLE}" --assume-role-policy-document "${TRUST}" \
+  --tags Key=cdkd-integ,Value=rp-compensation-asg >/dev/null
+aws iam put-role-policy --role-name "${DENY_ROLE}" --policy-name "${DENY_POLICY_NAME}" \
+  --policy-document "${DENY_POLICY}"
+# A new role is assumable only once IAM has propagated it.
+DENY_CREDS=""
+for _ in $(seq 1 24); do
+  if DENY_CREDS="$(aws sts assume-role --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${DENY_ROLE}" \
+    --role-session-name cdkd-rp-comp-asg \
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text 2>/dev/null)"; then
+    break
+  fi
+  DENY_CREDS=""
+  sleep 5
+done
+if [ -z "${DENY_CREDS}" ]; then
+  echo "FAIL: precondition — could not assume ${DENY_ROLE} within 2 minutes" >&2
+  exit 1
+fi
+# Process substitution, not a here-string: bash 3.2 backs a here-string with a
+# temp file, and these are live credentials.
+read -r DENY_AK DENY_SK DENY_ST < <(printf '%s\n' "${DENY_CREDS}")
+unset DENY_CREDS
+# Run a command as the deny role. A profile in the environment would win over
+# the key variables in the SDK's credential chain, so it is dropped.
+as_deny_role() {
+  env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE \
+    AWS_ACCESS_KEY_ID="${DENY_AK}" AWS_SECRET_ACCESS_KEY="${DENY_SK}" AWS_SESSION_TOKEN="${DENY_ST}" "$@"
+}
+# Credentials from assuming a role created seconds ago can be refused for a
+# while (measured: `InvalidClientTokenId` on the first call), so poll until STS
+# accepts them; the last refusal is named if it never does.
+DENY_ARN=""
+deny_id_err=""
+for _ in $(seq 1 24); do
+  if DENY_ARN="$(as_deny_role aws sts get-caller-identity --query Arn --output text 2>"${DESTROY_LOG}.id-err")"; then
+    break
+  fi
+  DENY_ARN=""
+  deny_id_err="$(cat "${DESTROY_LOG}.id-err" 2>/dev/null || true)"
+  sleep 5
+done
+rm -f "${DESTROY_LOG}.id-err"
+if [ -z "${DENY_ARN}" ]; then
+  echo "FAIL: precondition — STS never accepted ${DENY_ROLE}'s credentials within 2 minutes (last answer: ${deny_id_err})" >&2
+  exit 1
+fi
+case "${DENY_ARN}" in
+  *":assumed-role/${DENY_ROLE}/"*) ;;
+  *)
+    echo "FAIL: precondition — the deny-role commands run as '${DENY_ARN}', not ${DENY_ROLE}" >&2
+    exit 1
+    ;;
+esac
+# The deny must be IN FORCE before the destroy, or cdkd's group flip lands and
+# the group is deleted. The probe writes the value the group already has, so
+# while the deny is not yet in force it changes nothing. Two EXPLICIT denials
+# in a row, since IAM propagation is eventually consistent: a role whose allow
+# has not propagated yet is denied implicitly, which must not count. The ALLOW
+# must be in force too (the state read is the destroy's first call), so the
+# loop is done only when both hold.
+denied=0
+ready=0
+probe_out=""
+for _ in $(seq 1 36); do
+  if probe_out="$(as_deny_role aws autoscaling update-auto-scaling-group --region "${REGION}" \
+    --auto-scaling-group-name "${ASG_NAME}" --deletion-protection prevent-all-deletion 2>&1)"; then
+    denied=0
+  elif grep -qi 'explicit deny' <<<"${probe_out}"; then
+    denied=$((denied + 1))
+    if [ "${denied}" -ge 2 ] && as_deny_role aws s3api head-object --bucket "${STATE_BUCKET}" \
+      --key "${STATE_KEY}" >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+  else
+    denied=0
+  fi
+  sleep 5
+done
+if [ "${ready}" -ne 1 ]; then
+  echo "FAIL: precondition — after 3 minutes ${DENY_ROLE} is not both explicitly denied UpdateAutoScalingGroup (${denied} consecutive) and able to read the state file (last update answer: ${probe_out})" >&2
+  exit 1
+fi
+echo "    ${DENY_ROLE} is denied UpdateAutoScalingGroup on ${ASG_NAME}"
+
 # --- Phase 2: the compensation arm (issue #2204) -----------------------------
-echo "==> Phase 2: destroy --remove-protection against out-of-band dependents (expect non-zero)"
+echo "==> Phase 2: destroy --remove-protection as ${DENY_ROLE}, against out-of-band dependents (expect non-zero)"
 set +e
-node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+as_deny_role node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --force --remove-protection > "${DESTROY_LOG}" 2>&1
 rc=$?
 set -e
@@ -383,21 +602,27 @@ if [ "${rc}" -eq 0 ]; then
 fi
 echo "    destroy exited ${rc} as expected"
 
-for iid in "${SDK_ID}" "${CC_ID}"; do
+for iid in "${SDK_ID}" "${CC_ID}" "${ASG_IID}"; do
   st="$(instance_state "${iid}")"
   case "${st}" in
     pending|running|stopping|stopped) ;;
     *)
-      echo "FAIL: ${iid} is '${st}': the terminate went through despite stop protection" >&2
+      echo "FAIL: ${iid} is '${st}': the terminate went through despite stop protection / the group's deletion protection" >&2
       exit 1
       ;;
   esac
 done
+ASG_LEFT="$(aws autoscaling describe-auto-scaling-groups --region "${REGION}" \
+  --auto-scaling-group-names "${ASG_NAME}" --query 'length(AutoScalingGroups)' --output text)"
+if [ "${ASG_LEFT}" != "1" ]; then
+  echo "FAIL: Auto Scaling group ${ASG_NAME} was deleted despite its deletion protection (the deny on its flip did not hold)" >&2
+  exit 1
+fi
 if gone_probe aws cloudcontrol get-resource --region "${REGION}" --type-name "${PC_TYPE}" --identifier "${PC_ID}"; then
   echo "FAIL: ProtectConfiguration ${PC_ID} was deleted despite its associated configuration set" >&2
   exit 1
 fi
-echo "    all three resources are still live"
+echo "    all four resources are still live"
 
 # cdkd's compensation line per resource. The SENTINEL is a second marker on
 # the same line (the line's lead): present without the full needle means the
@@ -444,13 +669,17 @@ assert_compensated \
   "${PC_TYPE} ProtectConfig: " \
   "${PC_TYPE} ProtectConfig: the delete failed after --remove-protection had turned DeletionProtectionEnabled off, so it was re-enabled on ${PC_ID}." \
   "DELETE failed for ProtectConfig"
+assert_compensated \
+  "EC2 Instance launched by AutoScalingGroup ProtectedAsg: " \
+  "EC2 Instance launched by AutoScalingGroup ProtectedAsg: the delete failed after --remove-protection had turned DisableApiTermination off, so it was re-enabled on ${ASG_IID}." \
+  "Failed to delete AutoScalingGroup ProtectedAsg"
 echo "    cdkd re-enabled every guard it had turned off"
 
 # A real discriminator: after cdkd's flip, only its compensation writes the
 # guard back ON.
 # Polled: the attribute read is eventually consistent. Without the
 # compensation it never turns True, so the poll times out and FAILs.
-for iid in "${SDK_ID}" "${CC_ID}"; do
+for iid in "${SDK_ID}" "${CC_ID}" "${ASG_IID}"; do
   wait_instance_attr "${iid}" disableApiTermination True
 done
 g="$(pc_guard "${PC_ID}")"
@@ -463,7 +692,8 @@ aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null
 echo "    cdkd state retained after the failed destroy"
 
 # --- Phase 3: detach, then destroy --remove-protection cleanly --------------
-echo "==> Phase 3: detach the dependents, then destroy --remove-protection (expect exit 0)"
+echo "==> Phase 3: delete the deny role, detach the dependents, then destroy --remove-protection (expect exit 0)"
+delete_deny_roles
 detach_dependents
 for iid in "${SDK_ID}" "${CC_ID}"; do
   wait_instance_attr "${iid}" disableApiStop False
@@ -471,7 +701,7 @@ done
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --force --remove-protection
 
-for iid in "${SDK_ID}" "${CC_ID}"; do
+for iid in "${SDK_ID}" "${CC_ID}" "${ASG_IID}"; do
   # A terminated instance stays describable for a while, and AWS later sweeps
   # it (InvalidInstanceID.NotFound): both mean gone.
   if gone_probe aws ec2 describe-instances --region "${REGION}" --instance-ids "${iid}"; then
@@ -487,14 +717,24 @@ for iid in "${SDK_ID}" "${CC_ID}"; do
       ;;
   esac
 done
+ASG_LEFT="$(aws autoscaling describe-auto-scaling-groups --region "${REGION}" \
+  --auto-scaling-group-names "${ASG_NAME}" --query 'length(AutoScalingGroups)' --output text)"
+if [ "${ASG_LEFT}" != "0" ]; then
+  echo "FAIL: Auto Scaling group ${ASG_NAME} still exists after destroy" >&2
+  exit 1
+fi
+assert_gone "deny role ${DENY_ROLE} still exists after phase 3's delete" \
+  aws iam get-role --role-name "${DENY_ROLE}"
+assert_gone "launch template ${LT_NAME} still exists after destroy" \
+  aws ec2 describe-launch-templates --region "${REGION}" --launch-template-names "${LT_NAME}"
 assert_gone "ProtectConfiguration ${PC_ID} still exists after destroy" \
   aws cloudcontrol get-resource --region "${REGION}" --type-name "${PC_TYPE}" --identifier "${PC_ID}"
 assert_gone "configuration set ${CS_NAME} still exists after detach" \
   aws pinpoint-sms-voice-v2 describe-configuration-sets --region "${REGION}" --configuration-set-names "${CS_NAME}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-echo "    every resource, the configuration set and the state file are gone"
+echo "    every resource, the configuration set, the deny role and the state file are gone"
 
 trap - EXIT INT TERM
 rm -f "${DESTROY_LOG}"
-echo "[verify] PASS — --remove-protection compensation (EC2 SDK route, EC2 Cloud Control route, Cloud Control registry type), all 3 phases passed"
+echo "[verify] PASS — --remove-protection compensation (EC2 SDK route, EC2 Cloud Control route, Cloud Control registry type, Auto Scaling group instance), all 3 phases passed"

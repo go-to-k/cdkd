@@ -59,7 +59,7 @@ Reviewer judgment required per flag — many of these are pure-logic flags adequ
 | `--remove-protection` | [`cc-final-snapshot-handlers`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-final-snapshot-handlers/)<br>[`cc-protection-flip`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-protection-flip/)<br>[`cc-protection-flip-eks`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-protection-flip-eks/)<br>[`docdb-neptune`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/docdb-neptune/)<br>[`dsql`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/dsql/)<br>[`dynamodb-globaltable`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/dynamodb-globaltable/)<br>[`ec2-instance`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ec2-instance/)<br>[`loggroup-class-guard`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/loggroup-class-guard/)<br>[`rds-aurora`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rds-aurora/)<br>[`rds-dbinstance-backfill`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rds-dbinstance-backfill/)<br>[`remove-protection`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/remove-protection/)<br>[`remove-protection-compensation`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/remove-protection-compensation/) |
 | `--replace` | [`elbv2-same-name-replacement`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/elbv2-same-name-replacement/)<br>[`eventbridge-pipes`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/eventbridge-pipes/)<br>[`glue-securityconfig-replace`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/glue-securityconfig-replace/)<br>[`glue-update-hardening`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/glue-update-hardening/)<br>[`lambda-durable-replacement`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-durable-replacement/)<br>[`lambda-layer-version-update`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-layer-version-update/)<br>[`loggroup-class-guard`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/loggroup-class-guard/)<br>[`nested-stack-replace-guard`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/nested-stack-replace-guard/)<br>[`replace-squatter-refusal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replace-squatter-refusal/) |
 | `--resource-timeout` | [`docdb-neptune`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/docdb-neptune/)<br>[`remove-protection`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/remove-protection/) |
-| `--role-arn` | [`local-invoke-from-state`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-from-state/) |
+| `--role-arn` | [`local-invoke-from-state`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-from-state/)<br>[`remove-protection-compensation`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/remove-protection-compensation/) |
 | `--skip-assets` | [`asset-auto-create`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/asset-auto-create/)<br>[`asset-migration`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/asset-migration/) |
 | `--skip-final-snapshot` | [`cc-final-snapshot-handlers`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-final-snapshot-handlers/)<br>[`deletion-policy-snapshot`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/deletion-policy-snapshot/)<br>[`deletion-policy-snapshot-heavy`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/deletion-policy-snapshot-heavy/)<br>[`rds-aurora`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rds-aurora/)<br>[`rds-dbinstance-backfill`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rds-dbinstance-backfill/)<br>[`rds-full-stack`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rds-full-stack/)<br>[`rollback-deletion-policy-snapshot`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rollback-deletion-policy-snapshot/) |
 | `--stack` | [`local-invoke-stage`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-stage/) |
@@ -191,6 +191,7 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--filter-name-prefix`
 - `--filter-pattern`
 - `--filters`
+- `--force-delete`
 - `--force-delete-without-recovery`
 - `--format`
 - `--from-cfn-stack`
@@ -239,6 +240,7 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--json`
 - `--key`
 - `--key-id`
+- `--launch-template-name`
 - `--launch-template-names`
 - `--layer-name`
 - `--lb-port`
@@ -273,7 +275,5 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--nat-gateway-id`
 - `--nat-gateway-ids`
 - `--network-interface-id`
-- `--network-load-balancer-arns`
-- `--next-token`
 
 _(181 more entries truncated — see `docs/_generated/cli-flag-coverage.json` for the full list.)_

@@ -551,7 +551,8 @@
       "integs": [
         "drift-revert-vpc",
         "launchtemplate-asg-inplace",
-        "remove-protection"
+        "remove-protection",
+        "remove-protection-compensation"
       ],
       "signals": {
         "drift-revert-vpc": [
@@ -563,6 +564,10 @@
         ],
         "remove-protection": [
           "l2",
+          "literal"
+        ],
+        "remove-protection-compensation": [
+          "l1",
           "literal"
         ]
       }
@@ -6956,6 +6961,7 @@
     "AWS::Cognito::UserPoolUserToGroupAttachment",
     "AWS::DSQL::Cluster",
     "AWS::DocDB::GlobalCluster",
+    "AWS::EC2::LaunchTemplate",
     "AWS::EC2::PrefixList",
     "AWS::EC2::SecurityGroupEgress",
     "AWS::EC2::TransitGateway",

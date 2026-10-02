@@ -1074,7 +1074,8 @@
     {
       "flag": "--role-arn",
       "integs": [
-        "local-invoke-from-state"
+        "local-invoke-from-state",
+        "remove-protection-compensation"
       ]
     },
     {
@@ -1834,6 +1835,7 @@
     "--filter-name-prefix",
     "--filter-pattern",
     "--filters",
+    "--force-delete",
     "--force-delete-without-recovery",
     "--format",
     "--from-cfn-stack",
@@ -1882,6 +1884,7 @@
     "--json",
     "--key",
     "--key-id",
+    "--launch-template-name",
     "--launch-template-names",
     "--layer-name",
     "--lb-port",
@@ -1960,6 +1963,7 @@
     "--platform",
     "--policy",
     "--policy-arn",
+    "--policy-document",
     "--policy-id",
     "--policy-name",
     "--policy-store-id",
