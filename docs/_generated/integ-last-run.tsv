@@ -118,9 +118,9 @@ efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 de
 efs-standalone	2026-10-01T03:22:05Z	PASS	160	verify.sh	rc ok, orph clean (#4257)
 elasticache-replicationgroup-getatt	2026-09-29T14:00:50Z	PASS	776	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 elbv2-same-name-replacement	2026-10-01T07:41:42Z	PASS	85	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 12 deleted 0 errors, orph clean
-emr-cluster	2026-10-02T07:20:09Z	PASS	686	verify.sh	PR #4391 (#2080 EMR create latch, orphan-report rename) @a7306c55f; rc ok, orph clean
+emr-cluster	2026-10-02T13:48:51Z	PASS	701	verify.sh	#1160 PR #4432: phase 2b StepConcurrencyLevel removal warned + kept 5; pre-fix probe red at phase 2b; rc ok, orph clean
 emr-instance-configs	2026-10-02T07:20:09Z	PASS	968	verify.sh	PR #4391 (#2080 EMR create latch, orphan-report rename) @a7306c55f; rc ok, orph clean; fixture GetAtt InstanceGroupId (aws-cdk-lib 2.272 dropped attrId)
-emr-instance-fleets	2026-10-02T07:20:09Z	PASS	997	verify.sh	PR #4391 (#2080 EMR create latch, orphan-report rename) @a7306c55f; rc ok, orph clean
+emr-instance-fleets	2026-10-02T13:48:51Z	PASS	1408	verify.sh	#1160 PR #4432: phase 2b ResizeSpecifications removal warned + kept 25; pre-fix probe red at phase 2b; rc ok, orph clean
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 eventbridge	2026-10-01T10:13:53Z	PASS	115	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 10 deleted 0 errors, orph clean
 eventbridge-api-destination	2026-08-10T04:16:05Z	PASS	66	verify.sh	0810 staleness sweep b1; Connection/ApiDestination GetAtt, 5 del 0 err, 0 orph
