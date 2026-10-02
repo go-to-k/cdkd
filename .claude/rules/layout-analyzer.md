@@ -25,12 +25,11 @@ preview half of the Outputs-only persist `cdkd deploy` does.
   `DeployEngine.resolveOutputs` writes to `StackState.outputs`: a condition-false
   output is SKIPPED, and an `Export.Name` is stored as a SECOND key holding the
   same value (what `Fn::ImportValue` resolves against).
-- Values resolve into the `outputsPass` bag, then each `Export.Name` into a bag
-  sharing its log-only set, in declaration order after every value: the
-  deploy's pass 2, whose needles decide the `NoEcho` alias refusal (#4043).
-  Never the resource pass's `diffSecrets`, which holds every `NoEcho` value up
-  front and would refuse an alias the deploy publishes; it reaches these
-  resolutions only as the print-only `printingSecrets`.
+- Values resolve into the `outputsPass` bag, each `Export.Name` into a bag
+  sharing its log-only set (deploy pass 2); each alias is then decided (pass
+  3) against those plus `noEchoParameterValueSeed` (#4043). `diffSecrets` is
+  print-only (`printingSecrets`): its resource-pass needles (an encoding, a
+  split piece) would refuse an alias the deploy publishes.
 - It reads the STORED bag for two decisions: the `skippedOutputs` record, and a
   LITERAL `Export.Name` in a stack resolving a secret. Deploy refuses a name
   CONTAINING a resolved plaintext; the preview never substitutes one, so it

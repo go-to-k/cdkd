@@ -52,6 +52,8 @@ import {
 import {
   WITHHELD_NAME_DISPLAY,
   displayTextOrWithheld,
+  isWholeDynamicReferenceValue,
+  noEchoParameterValueSeed,
   secretSafeKeyDisplay,
   type SecretSafeKeyDisplay,
 } from '../../deployment/outputs-export-alias.js';
@@ -847,16 +849,6 @@ function diffPrintingSecrets(
     }
   }
   return all;
-}
-
-/** A parameter value that is one whole `{{resolve:...}}` token, or a list of them. */
-function isWholeDynamicReferenceValue(value: unknown): boolean {
-  if (typeof value === 'string') return isSingleDynamicReferenceToken(value);
-  return (
-    Array.isArray(value) &&
-    value.length > 0 &&
-    value.every((element) => typeof element === 'string' && isSingleDynamicReferenceToken(element))
-  );
 }
 
 /**
@@ -1703,6 +1695,15 @@ export async function computeStackDiff(
       // while the verdict reads only what this pass's bags recorded.
       resolveInto: (bag) => resolveRecordingInto(bag, diffSecrets),
       secrets: outputsPassSecrets,
+      // The deploy's seed (go-to-k/cdkd#4043, Phase B): every `NoEcho` value,
+      // and on a nested child each parent one a parameter carries. A whole
+      // `{{resolve:...}}` token is no plaintext, as for the print corpus.
+      noEchoParameterValues: noEchoParameterValueSeed(
+        effectiveTemplate.Parameters,
+        mergedParameters,
+        inheritedForResolver,
+        parameters
+      ),
     }
   );
   const templateHasSecretReference =

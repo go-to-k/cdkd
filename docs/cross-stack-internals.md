@@ -151,9 +151,15 @@ drops an alias an earlier deploy published. A consumer's `Fn::ImportValue` on th
 name stops resolving. CloudFormation publishes such a name, so this is a
 deliberate divergence, the same one the secret refusal takes.
 
-- **Which values count.** A value counts when an output value of the stack
-  reads it, or the `Export.Name` of the same output or of one declared before
-  it.
+- **Which values count.** Every `NoEcho` parameter value of the stack counts,
+  whether or not an output reads it, both as bound and as the operator wrote
+  it (a `Number` given as `0x1F2A` binds as `7978`). For an
+  `AWS::SSM::Parameter::Value<...>` parameter only the looked-up value counts,
+  not the SSM parameter name it is given (nor a supplied name cdkd binds
+  without a lookup). In a nested child, so does a parent's
+  `NoEcho` value that one of the child's parameters carries. Every
+  `Export.Name` is resolved before any alias is decided, so declaration order
+  does not matter.
 - **When a name is refused.** The name is refused when it equals the value.
   It is also refused when it contains the value and the value is 4 or more
   characters long. The same holds for a piece of the value that an
@@ -163,15 +169,24 @@ deliberate divergence, the same one the secret refusal takes.
   from `Fn::Select` over that split is refused too. The Unicode folding above
   applies.
 - **What is still published:**
-  - a value only a resource reads, or only a later output's `Export.Name`;
-  - a value that reaches the name through an attribute, a nested stack
-    output or `Fn::ImportValue`;
+  - a value that is not this stack's own `NoEcho` value, such as another
+    stack's value read through `Fn::ImportValue`;
+  - a piece or an `Fn::Base64` encoding of the value that a resource or a
+    nested stack computes and an attribute or output then echoes into the
+    name;
+  - in a nested stack, a parent's `NoEcho` value that reached a child
+    parameter through an attribute rather than a `Ref` (`cdkd diff` refuses
+    this alias, so its preview differs from the deploy);
   - a 1-3 character value, `Fn::Split` piece or list element inside a longer
     name;
   - the alias of an output that fails to resolve on a deploy with no resource
     change, which is carried forward from the previous record.
 - **Preview.** `cdkd diff` previews the same verdict, so a refused alias is
   not shown as an addition.
+- **The warning** says when the name was refused only because it contains a
+  `NoEcho` value, since that can be a coincidence: an export named
+  `prod-VpcId` is refused when some `NoEcho` parameter is `prod`. Rename the
+  export or change the value.
 
 An alias published before this refusal keeps the value in earlier versions of
 `state.json` and of the exports index, because the bucket is versioned.

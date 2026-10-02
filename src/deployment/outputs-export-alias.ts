@@ -44,14 +44,15 @@
  * | LITERAL, spelled as a `{{resolve:...}}` token  | publish           | publish           |
  * | LITERAL, contains a recorded plaintext         | refuse            | decide from STATE |
  * | collides with a published output name          | refuse            | refuse            |
- * | holds a `NoEcho` value the outputs pass read   | refuse            | refuse            |
+ * | holds a `NoEcho` parameter value               | refuse            | refuse            |
  *
  * The `NoEcho` row (issue [#4043](https://github.com/go-to-k/cdkd/issues/4043))
- * reads the pass's LOG-ONLY needles on both sides: the diff resolves its
- * outputs into bags of their OWN (`resolveTemplateOutputs`' `outputsPass`),
- * never the resource pass's, which holds every `NoEcho` value up front, and
- * decides each alias against the values' needles plus those of the names
- * declared up to it, the deploy's order. Pinned
+ * reads two corpora on both sides: the {@link noEchoParameterValueSeed} of
+ * every `NoEcho` value the stack holds, and the outputs pass's LOG-ONLY
+ * needles (an `Fn::Base64` encoding, an `Fn::Split` piece). The diff resolves
+ * its outputs into bags of their OWN (`resolveTemplateOutputs`'
+ * `outputsPass`), never the resource pass's, and decides each alias only
+ * after every value and every name has resolved, the deploy's order. Pinned
  * by `export-name-noecho-refusal-4043.test.ts` and
  * `cli/diff-export-name-noecho-4043.test.ts`.
  *
@@ -71,9 +72,8 @@
  * a `secretsmanager` reference spelled only in a name; issue
  * [#4143](https://github.com/go-to-k/cdkd/issues/4143)), counting only a token
  * the template SPELLS in that output, since one arriving through a `Ref` to a
- * parameter is not recorded. The diff reads the whole pass where the deploy
- * checks a literal only against names resolved before it: an over-approximation
- * that suppresses the section rather than previewing a phantom.
+ * parameter is not recorded. Both sides read the whole pass: the deploy
+ * decides every alias after every name has resolved (go-to-k/cdkd#4043).
  *
  * Residual, a reporting defect rather than a disclosure (the preview never
  * substitutes a plaintext):
@@ -127,21 +127,25 @@
  *   later occurrence therefore RE-RESOLVES and records into its own bag rather
  *   than substituting a plaintext with nothing recorded, so the refusal fires.
  * - A `NoEcho` PARAMETER's value in an export name is refused
- *   (go-to-k/cdkd#4043) only when the outputs pass READ it BEFORE the name was
- *   decided: the resolver records it as a LOG-ONLY needle when a `Ref` or
- *   `Fn::Sub` variable serves it, every output value first and then each
- *   `Export.Name` in declaration order. So these are published: a name holding
- *   a value only a RESOURCE reads, or only a LATER output's `Export.Name`; a
- *   value that reaches the name without a `Ref` (an echoed `Fn::GetAtt`
- *   attribute, a nested child's output, an `Fn::ImportValue`); and, by
- *   containment alone, a 1-3 character value, or a 1-3 character
- *   `Fn::Split` piece of a value (go-to-k/cdkd#4049), embedded in a longer
- *   name, even one the resolver
- *   substituted into THIS name, since the name's log-only set is the pass's.
- *   A 4+ character piece is refused like the value. A failed output's
- *   alias the no-change merge carries forward is not re-decided either.
- *   `cdkd diff` previews exactly this verdict. Which phase closes each of
- *   these, or why one stays, is listed in section 5 of
+ *   (go-to-k/cdkd#4043) by containment, whatever route put it there: the
+ *   verdict is seeded with every `NoEcho` value the stack holds
+ *   ({@link noEchoParameterValueSeed}), and every name is resolved before any
+ *   alias is decided. These are still published: a value that is not this
+ *   stack's (another stack's `NoEcho` value through `Fn::ImportValue`, or a
+ *   hand-authored nested child's own); a DERIVED spelling (an `Fn::Split`
+ *   piece, an `Fn::Base64` encoding) a resource or nested child computes and
+ *   an attribute echoes into the name, since the seed holds raw spellings
+ *   only; on a nested child, a parent `NoEcho` value that reached a child
+ *   parameter without a `Ref` (an echoed `Fn::GetAtt`), which the deploy's
+ *   inherited bag never records while `cdkd diff`'s corpus holds every parent
+ *   value up front, so the preview refuses that alias (fail-closed) and the
+ *   deploy publishes it; by containment alone, a 1-3 character
+ *   value, or a 1-3 character `Fn::Split` piece of a value
+ *   (go-to-k/cdkd#4049), embedded in a longer name, even one the resolver
+ *   substituted into THIS name. A 4+ character piece is refused like the
+ *   value. A failed output's alias the no-change merge carries forward is not
+ *   re-decided either. `cdkd diff` previews exactly this verdict. Which phase
+ *   closes each of these, or why one stays, is listed in section 5 of
  *   `docs/design/4043-noecho-persistence-redaction.md`.
  * - In the DEPLOY ENGINE, `evaluateConditions` runs before any bag is built and
  *   records into a map that caller discards, while still WARMING the resolver's
@@ -173,7 +177,14 @@
 
 import type { TemplateOutput } from '../types/resource.js';
 import { displayIdent, displayStackName } from '../utils/display-safe.js';
-import { SECRET_MASK, printingCorpusOf, type RecordedSecretValues } from './secret-redaction.js';
+import {
+  SECRET_MASK,
+  carryLogOnlyValuesCarriedBy,
+  isSingleDynamicReferenceToken,
+  printingCorpusOf,
+  recordLogOnlyParameterValue,
+  type RecordedSecretValues,
+} from './secret-redaction.js';
 
 /**
  * Does CloudFormation suppress this output on this deploy?
@@ -733,10 +744,11 @@ function secretsPresentIn(
  *   which catches plaintext that arrived by any other route — a literal name, a
  *   cache hit, an `Fn::Sub` variable echoing the value.
  * - the same scan over `printingCorpusOf(substitutedIntoName)`, whose LOG-ONLY
- *   needles are the `NoEcho` parameter values the outputs pass read
- *   (go-to-k/cdkd#4043). Containment only, since the set is pass-wide: a
- *   short value (`prod`) embedded in an ordinary name refuses it, the bound
- *   #1919 accepted for a secret.
+ *   needles are what the outputs pass derived from a `NoEcho` value
+ *   (go-to-k/cdkd#4043), and over `printingCorpusOf(noEchoParameterValues)`,
+ *   every `NoEcho` value the stack holds. Containment only, since both are
+ *   stack-wide: a short value (`prod`) embedded in an ordinary name refuses
+ *   it, the bound #1919 accepted for a secret.
  *
  * An earlier revision had only the first, calling the scan unpromising because
  * an UNBOUNDED one is: a degenerate one-character recorded secret would make
@@ -745,14 +757,10 @@ function secretsPresentIn(
  * deploy wrote `prod-<secret>-endpoint` as a state key that `cdkd scrub` then
  * reported as unrepairable.
  *
- * The containment arm applies with no order caveat any more: the deploy engine
- * resolves EVERY output value
- * before deciding any alias, so this arm sees the complete map whatever the
- * declaration order. (An earlier revision of this paragraph said catching that
- * required "resolving the whole template before deciding anything" and called
- * it impractical — the value pass already does exactly that, at no extra cost.
- * The residual is now only a secret first substituted by ANOTHER output's
- * `Export.Name`, since those resolve in the second pass, in declaration order.)
+ * The containment arm applies with no order caveat: the deploy engine
+ * resolves EVERY output value, then EVERY export name, before deciding any
+ * alias (go-to-k/cdkd#4043), so this arm sees the complete map whatever the
+ * declaration order.
  *
  * No empty-string special case, in either map: the resolver never records an
  * empty secret (`secret-redaction.ts` states it — an empty needle would match
@@ -762,26 +770,133 @@ function secretsPresentIn(
 export function exportNameSecretExposure(
   exportName: string,
   substitutedIntoName: RecordedSecretValues,
-  recordedThisPass?: RecordedSecretValues
+  recordedThisPass?: RecordedSecretValues,
+  noEchoParameterValues?: RecordedSecretValues
 ): RecordedSecretValues | undefined {
   const exposure: RecordedSecretValues = new Map(substitutedIntoName);
   for (const [plaintext, expression] of secretsPresentIn(exportName, recordedThisPass) ?? []) {
     exposure.set(plaintext, expression);
   }
-  // A `NoEcho` PARAMETER's value (go-to-k/cdkd#4043, Phase A). The resolver
-  // records it as a LOG-ONLY needle, never a map entry, and the name's
-  // log-only set is SHARED with the whole outputs pass, so it is scanned by
-  // containment only: counted wholesale, one output reading a `NoEcho` value
-  // would refuse every export name. The same scan, and so the same detection
-  // haystacks and floor, as a secret: a name EQUAL to the value is refused at
-  // any length, one EMBEDDING it at MIN_SECRET_NEEDLE or more.
-  for (const [plaintext, expression] of secretsPresentIn(
-    exportName,
-    printingCorpusOf(substitutedIntoName)
-  ) ?? []) {
-    if (!exposure.has(plaintext)) exposure.set(plaintext, expression);
+  // A `NoEcho` PARAMETER's value (go-to-k/cdkd#4043). Two log-only corpora,
+  // scanned by containment only, since both are stack-wide: counted
+  // wholesale, one `NoEcho` value would refuse every export name. The same
+  // scan, and so the same detection haystacks and floor, as a secret: a name
+  // EQUAL to the value is refused at any length, one EMBEDDING it at
+  // MIN_SECRET_NEEDLE or more.
+  //
+  // - The name's log-only set, SHARED with the outputs pass: what the pass's
+  //   resolutions recorded (an `Fn::Base64` encoding, an `Fn::Split` piece).
+  // - `noEchoParameterValues` ({@link noEchoParameterValueSeed}): every
+  //   `NoEcho` value the stack holds, whether or not an output reads it, so a
+  //   LITERAL name spelling a value only a resource reads is refused too
+  //   (maintainer decision on #4043, Phase B).
+  for (const corpus of [substitutedIntoName, noEchoParameterValues]) {
+    if (corpus === undefined) continue;
+    for (const [plaintext, expression] of secretsPresentIn(exportName, printingCorpusOf(corpus)) ??
+      []) {
+      if (!exposure.has(plaintext)) exposure.set(plaintext, expression);
+    }
   }
   return exposure.size > 0 ? exposure : undefined;
+}
+
+/**
+ * Is every entry of `exposure` a `NoEcho` value (go-to-k/cdkd#4043) -- held by
+ * neither the name's own map nor the pass map, so it came from a log-only
+ * corpus or the {@link noEchoParameterValueSeed}? The refusal warning then
+ * names the `NoEcho` reason instead of a substituted secret.
+ */
+export function isNoEchoOnlyExposure(
+  exposure: RecordedSecretValues,
+  substitutedIntoName: RecordedSecretValues,
+  recordedThisPass?: RecordedSecretValues
+): boolean {
+  for (const plaintext of exposure.keys()) {
+    if (substitutedIntoName.has(plaintext) || recordedThisPass?.has(plaintext) === true) {
+      return false;
+    }
+  }
+  return exposure.size > 0;
+}
+
+/**
+ * Every `NoEcho` parameter value a stack holds, as LOG-ONLY needles of a new
+ * bag, for {@link exportNameSecretExposure}'s seed (go-to-k/cdkd#4043, Phase
+ * B). The deploy's outputs pass and `cdkd diff`'s preview build it from the
+ * same inputs, so the two verdicts agree.
+ *
+ * - Each parameter the template declares `NoEcho: true`, in every spelling
+ *   `recordLogOnlyParameterValue` records (no `Fn::Split` pieces: a piece is a
+ *   verdict needle only once a split in an output or name produces it).
+ * - On a nested child, each parent `NoEcho` value one of the child's
+ *   parameters CARRIES, read off `inherited`'s log-only needles
+ *   (`carryLogOnlyValuesCarriedBy`): a CDK child declares no `NoEcho`, so its
+ *   own declarations would seed nothing.
+ *
+ * - The value as the operator SPELLED it (`userParameters`, else the
+ *   template `Default`): a `Number` parameter is coerced before binding, so
+ *   `0x1F2A` or `1e10` is bound as `7978` / `10000000000` while a literal
+ *   name may spell the original. Not for a `AWS::SSM::Parameter::Value<...>`
+ *   parameter: its spelling is the SSM parameter NAME, not the secret, so
+ *   seeding it would refuse an ordinary name (`exp-DbPasswordArn`) with a
+ *   misleading reason. Its bound value is seeded as above, unless it still
+ *   EQUALS that spelling: an operator-supplied SSM-typed value is bound
+ *   without a lookup (`coerceParameterTypedValue`), so it is the name too.
+ *
+ * A value that is one whole `{{resolve:...}}` token (or a list of them) is
+ * left out on both sides: it is an expression, not a plaintext, and the
+ * parity table publishes a LITERAL name spelled as a token. The deploy binds
+ * such a parameter to the token text itself (`resolveParameters` resolves no
+ * dynamic reference), so this is the same skip on both sides.
+ */
+export function noEchoParameterValueSeed(
+  parameters:
+    | Record<string, { NoEcho?: unknown; Default?: unknown; Type?: unknown } | undefined>
+    | undefined,
+  values: Record<string, unknown> | undefined,
+  inherited?: RecordedSecretValues,
+  userParameters?: Record<string, unknown>
+): RecordedSecretValues {
+  const seed: RecordedSecretValues = new Map();
+  if (values === undefined) return seed;
+  for (const [name, value] of Object.entries(values)) {
+    if (isWholeDynamicReferenceValue(value)) continue;
+    if (parameters?.[name]?.NoEcho === true) {
+      const type = parameters[name]?.Type;
+      const ssmTyped = typeof type === 'string' && type.startsWith('AWS::SSM::Parameter::Value<');
+      const spelled = Object.prototype.hasOwnProperty.call(userParameters ?? {}, name)
+        ? userParameters?.[name]
+        : parameters[name]?.Default;
+      // An SSM-typed value an operator SUPPLIED is bound unresolved (no lookup
+      // runs for it), so the bound value is still the SSM parameter NAME: not
+      // seeded. One a lookup replaced is the secret, and is.
+      const boundIsSsmName =
+        ssmTyped &&
+        typeof value === 'string' &&
+        (typeof spelled === 'string' || typeof spelled === 'number') &&
+        value === String(spelled);
+      if (!boundIsSsmName) recordLogOnlyParameterValue(seed, value);
+      if (
+        !ssmTyped &&
+        (typeof spelled === 'string' || typeof spelled === 'number') &&
+        !isWholeDynamicReferenceValue(spelled)
+      ) {
+        recordLogOnlyParameterValue(seed, String(spelled));
+      }
+    }
+    if (inherited !== undefined) carryLogOnlyValuesCarriedBy(inherited, seed, value);
+  }
+  return seed;
+}
+
+/** A parameter value that is one whole `{{resolve:...}}` token, or a list of them. */
+export function isWholeDynamicReferenceValue(value: unknown): boolean {
+  if (typeof value === 'string') return isSingleDynamicReferenceToken(value);
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((element) => typeof element === 'string' && isSingleDynamicReferenceToken(element))
+  );
 }
 
 /**
@@ -831,12 +946,19 @@ function maskEveryOccurrence(text: string, exposure: RecordedSecretValues): stri
  * The name is shown MASKED, and omitted entirely if masking somehow left it
  * unchanged. stderr is a reader like any other, so the invariant is absolute: a
  * message must never claim a masking it did not perform.
+ *
+ * `noEchoOnly` (go-to-k/cdkd#4043, from {@link isNoEchoOnlyExposure}) words
+ * the reason for a name refused ONLY because it holds a `NoEcho` parameter's
+ * value: the containment floor makes a coincidental match (`prod-VpcId`
+ * beside a `NoEcho` value `prod`) a refusal too, and the operator has to be
+ * able to tell that apart from a substituted secret.
  */
 export function secretBearingExportNameWarning(
   outputKey: string,
   exportName: string,
   exposure: RecordedSecretValues,
-  secrets?: RecordedSecretValues
+  secrets?: RecordedSecretValues,
+  noEchoOnly = false
 ): string {
   // `exposure` is the caller's AUTHORITATIVE set -- what resolution put into
   // THIS EXPORT NAME -- and is the force-mask input for the export name ONLY.
@@ -887,6 +1009,18 @@ export function secretBearingExportNameWarning(
     }
   }
   const owner = displayTextOrWithheld(secretSafeKeyDisplay(outputKey, corpus, ownerForceMask));
+  if (noEchoOnly) {
+    return (
+      `Output ${owner} has an Export.Name that resolves to a value containing a secret ` +
+      `${shown}— skipping the export alias. ` +
+      `The name contains the value of a NoEcho template parameter, or a value derived from ` +
+      `one: the whole name at any length, or embedded at 4 or more characters, even where the ` +
+      `match is a coincidence. An export name becomes a key in state.json and in the exports ` +
+      `index, where the value would be stored in plaintext. An existing Fn::ImportValue of ` +
+      `this name stops resolving. Rename the export, or choose a NoEcho value the name does ` +
+      `not contain.`
+    );
+  }
   return (
     `Output ${owner} has an Export.Name that resolves to a value containing a secret ` +
     `${shown}— skipping the export alias. ` +
@@ -1182,8 +1316,8 @@ export function exportAliasCollisionWarning(
   // The PRINTING corpus (go-to-k/cdkd#4049): the map's entries plus the
   // pass's LOG-ONLY needles, so an `Export.Name` built from a `NoEcho`
   // parameter's value is masked here. The refusal upstream reads those needles
-  // too (go-to-k/cdkd#4043), but by containment and only the ones the outputs
-  // pass read, so a name it published can still hold one.
+  // too (go-to-k/cdkd#4043), but by containment at the 4-character floor, so
+  // a name it published can still embed a 1-3 character value.
   const corpus = printingCorpusOf(secrets);
   const shown = displayTextOrWithheld(secretSafeKeyDisplay(exportName, corpus));
   const from = displayTextOrWithheld(secretSafeKeyDisplay(outputKey, corpus));
