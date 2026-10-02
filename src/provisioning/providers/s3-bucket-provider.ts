@@ -5707,8 +5707,8 @@ export class S3BucketProvider implements ResourceProvider {
         )
       );
     };
-    // `create()` is NOT always template-borne: `rollback-executor.ts`'s
-    // reverse-replacement arm revives the OLD resource by calling
+    // `create()` is NOT always template-borne: the rollback replay's
+    // reverse-replacement arm (`rollback-executor/replay-reverse-replacement.ts`) revives the OLD resource by calling
     // `create(..., previousState.properties, REPLAYING_STATE_CREATE_CONTEXT)`.
     // A bucket whose STATE record carries a malformed destination (written by
     // a pre-fix binary) would otherwise be unrestorable, with only a hand-edit

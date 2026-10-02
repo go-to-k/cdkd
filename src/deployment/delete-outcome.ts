@@ -19,7 +19,7 @@ import { physicalIdShownBesideCommand, plainOrDescribed } from '../utils/pasteab
  * ALIVE**, and taught the destroy runner to report it. Every OTHER
  * `provider.delete(...)` call site — the deploy engine's template-DELETE
  * branch, its four replacement / recreate delete sites, and the five
- * `rollback-executor.ts` delete arms — discarded the value, so the same skip
+ * rollback-executor delete arms — discarded the value, so the same skip
  * printed as `deleted`, counted as `deleted`, and dropped the state record.
  *
  * **The module must stay a LEAF — no imports beyond the types and

@@ -748,7 +748,7 @@ export interface UpdateContext extends SecretMaskingContext {
    *
    * Threaded by every `update()` caller, each from the record whose
    * `physicalId` it passes: `deploy-engine/update-in-place.ts` (the in-place UPDATE),
-   * `rollback-executor.ts` (both revert arms) and `drift.ts` (`--revert`).
+   * `rollback-executor.ts` / `rollback-executor/replay-revert.ts` (both revert arms) and `drift.ts` (`--revert`).
    *
    * Read-only evidence. ABSENT, or a key missing from it, means "no recorded
    * identity" — a record from before the attribute existed — and a provider

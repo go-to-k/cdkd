@@ -3135,7 +3135,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
   it('names every src file that reads the container, so a new reader cannot join unfenced', () => {
     // Derived from the tree, never from the list above: a file that starts
     // reading the container and is not anchored fails here. Read from
-    // COMMENT-STRIPPED code — `orphan-adoption.ts` and `rollback-executor.ts`
+    // COMMENT-STRIPPED code — `orphan-adoption.ts` and `rollback-executor/types.ts`
     // name `StackState.orphans` in prose only, and `orphan-rewriter.ts` holds
     // an unrelated `this.orphans` field — so a prose mention cannot add a file
     // and, more importantly, cannot excuse one.

@@ -8,7 +8,7 @@
  * simply does not declare it compiles fine and the argument the deploy engine
  * passes is dropped on the floor — silently, with no type error and no lint.
  * Issue #2301 item 1 put `expectedRegion` on that context and threaded it from
- * `deploy-engine.ts`, both `rollback-executor.ts` replay arms and
+ * `deploy-engine.ts`, both rollback replay arms (`rollback-executor.ts`, `rollback-executor/replay-revert.ts`) and
  * `drift --revert`, so the UPDATE path could run the same `assertRegionMatch`
  * guard the DELETE path runs. The caller side landed; most of the receiver side
  * did not, and nothing reds when a NEW provider joins the omitting set.
