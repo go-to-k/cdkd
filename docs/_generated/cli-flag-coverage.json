@@ -728,6 +728,7 @@
     {
       "flag": "--prefix-user-supplied-names",
       "integs": [
+        "replacement-rename-onto-holder",
         "rollback-explicit-name-rewrite"
       ]
     },
@@ -2010,6 +2011,7 @@
     "--run",
     "--runtime",
     "--scalable-dimension",
+    "--scheme",
     "--scope",
     "--secret",
     "--secret-id",
@@ -2048,6 +2050,7 @@
     "--stream-name",
     "--subnet-id",
     "--subnet-ids",
+    "--subnets",
     "--subscription-arn",
     "--table-bucket-arn",
     "--table-input",
@@ -2062,6 +2065,7 @@
     "--target-group-arn",
     "--target-group-arns",
     "--target-group-name",
+    "--target-type",
     "--task-definition",
     "--template-file",
     "--timeout",

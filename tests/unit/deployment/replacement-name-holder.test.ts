@@ -19,10 +19,13 @@ import {
   reverseReplacementNameKeyKind,
   reverseReplacementNewHoldsName,
   reverseReplacementTrustsGeneratedName,
+  replacementSentNameMoves,
+  maskRewrittenSentName,
+  rewrittenNameSpellings,
 } from '../../../src/deployment/replacement-name-holder.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withSkipPrefix, withStackName } from '../../../src/provisioning/resource-name.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
@@ -760,6 +763,8 @@ describe('replacementNameProbe (go-to-k/cdkd#3937)', () => {
     expect(nameAdoptingSdkCreateTypes()).toEqual([
       'AWS::CloudWatch::Alarm',
       'AWS::ECS::Cluster',
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      'AWS::ElasticLoadBalancingV2::TargetGroup',
       'AWS::Events::Rule',
       'AWS::Logs::LogGroup',
       'AWS::S3::Bucket',
@@ -1018,5 +1023,133 @@ describe('probeErrorMeansNameHeld / renderReplacementNameChange', () => {
         region: 'us-east-1',
       })
     ).toBeNull();
+  });
+});
+
+describe('replacementSentNameMoves (go-to-k/cdkd#3937 review)', () => {
+  const LB = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
+  const arn = (name: string): string =>
+    `arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/${name}/0123456789abcdef`;
+  const ask = (physicalId: string, name: string, extra: Partial<Record<string, unknown>> = {}) =>
+    replacementSentNameMoves({
+      oldResourceType: LB,
+      newResourceType: LB,
+      createdVia: 'sdk',
+      desiredProperties: { Name: name },
+      physicalId,
+      logicalId: 'Lb',
+      ...extra,
+    });
+
+  it('answers the sent name when the prefix flag moved it off the one the old ARN carries', () => {
+    // Created under --prefix-user-supplied-names, replaced under the default.
+    const change = withStackName('MyStack', () =>
+      withSkipPrefix(true, () => ask(arn('MyStack-lb'), 'lb'))
+    );
+    expect(change).toEqual({
+      property: 'Name',
+      desiredName: 'lb',
+      heldName: 'MyStack-lb',
+      heldProperty: 'Name',
+      physicalId: arn('MyStack-lb'),
+    });
+    // ...and the reverse direction.
+    expect(
+      withStackName('MyStack', () => withSkipPrefix(false, () => ask(arn('lb'), 'lb')))?.desiredName
+    ).toBe('MyStack-lb');
+  });
+
+  it('reads the name off an ALB, a gateway load balancer and a target group ARN too', () => {
+    const tg = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+    for (const [type, held] of [
+      [LB, 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/MyStack-lb/0123456789abcdef'],
+      [LB, 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/gwy/MyStack-lb/0123456789abcdef'],
+      [tg, 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/MyStack-lb/0123456789abcdef'],
+    ] as const) {
+      const change = withStackName('MyStack', () =>
+        withSkipPrefix(true, () =>
+          ask(held, 'lb', { oldResourceType: type, newResourceType: type })
+        )
+      );
+      expect(change?.heldName, held).toBe('MyStack-lb');
+    }
+  });
+
+  it('answers nothing for a Name that is still an unresolved dynamic reference', () => {
+    expect(
+      withStackName('MyStack', () =>
+        withSkipPrefix(true, () => ask(arn('MyStack-lb'), '{{resolve:ssm:x}}'))
+      )
+    ).toBeUndefined();
+  });
+
+  it('answers nothing when the sent name is the one the old ARN carries', () => {
+    expect(
+      withStackName('MyStack', () => withSkipPrefix(true, () => ask(arn('lb'), 'lb')))
+    ).toBeUndefined();
+    expect(
+      withStackName('MyStack', () => withSkipPrefix(false, () => ask(arn('MyStack-lb'), 'lb')))
+    ).toBeUndefined();
+  });
+
+  it('answers nothing off an unreadable ARN, another type, a Type change, or Cloud Control', () => {
+    const inScope = <T>(fn: () => T): T =>
+      withStackName('MyStack', () => withSkipPrefix(true, fn));
+    expect(inScope(() => ask('not-an-arn', 'lb'))).toBeUndefined();
+    expect(inScope(() => ask(arn('MyStack-lb'), 'lb', { createdVia: 'cc-api' }))).toBeUndefined();
+    expect(
+      inScope(() => ask(arn('MyStack-lb'), 'lb', { oldResourceType: 'AWS::IAM::Role' }))
+    ).toBeUndefined();
+    expect(
+      inScope(() =>
+        ask(arn('MyStack-lb'), 'lb', {
+          oldResourceType: 'AWS::IAM::Role',
+          newResourceType: 'AWS::IAM::Role',
+          desiredProperties: { RoleName: 'lb' },
+        })
+      )
+    ).toBeUndefined();
+  });
+});
+
+describe('maskRewrittenSentName (go-to-k/cdkd#3937 review)', () => {
+  const TG = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+
+  it.each([
+    ['a short name', 'team_SECRETVALUE.x'],
+    ['a name truncated past the cap', 'team_SECRETVALUE.x-and-a-long-tail-past-the-cap'],
+  ])("masks both prefix flags' spellings of a secret-derived %s", (_label, declared) => {
+    // The base masker matches only the plaintext the template resolved.
+    const base = (text: string): string => text.split(declared).join('***');
+    withStackName('MyStack', () => {
+      const spellings = rewrittenNameSpellings(TG, declared, 'Tg');
+      expect(new Set(spellings).size).toBe(2);
+      // Pinned literally for the short name, so a drift in the shared helper
+      // cannot carry the expected spellings along with it.
+      if (declared === 'team_SECRETVALUE.x') {
+        expect([...spellings].sort()).toEqual(['MyStack-team-SECRETVALUE-x', 'team-SECRETVALUE-x']);
+      }
+      for (const skip of [true, false]) {
+        const mask = withSkipPrefix(skip, () =>
+          maskRewrittenSentName(TG, { Name: declared }, 'Tg', base)
+        );
+        for (const spelling of spellings) {
+          expect(spelling, spelling).toContain('SECRETV');
+          const shown = mask(`holds Name "${spelling}"`);
+          expect(shown, `skip=${String(skip)}: ${spelling}`).not.toContain('SECRETV');
+        }
+      }
+    });
+  });
+
+  it('leaves a name that is not secret-derived alone', () => {
+    const mask = withStackName('MyStack', () =>
+      withSkipPrefix(true, () =>
+        maskRewrittenSentName(TG, { Name: 'plain_name' }, 'Tg', (t) => t)
+      )
+    );
+    expect(mask('holds Name "MyStack-plain-name" and "plain-name"')).toBe(
+      'holds Name "MyStack-plain-name" and "plain-name"'
+    );
   });
 });

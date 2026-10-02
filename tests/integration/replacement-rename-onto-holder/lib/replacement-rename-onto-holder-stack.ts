@@ -1,7 +1,9 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 
@@ -10,9 +12,11 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * onto a name another resource already holds — and for #4180, a plain CREATE
  * onto one.
  *
- * covers: AWS::SQS::Queue, AWS::SNS::Topic, AWS::ECS::Cluster, AWS::ECR::Repository
+ * covers: AWS::SQS::Queue, AWS::SNS::Topic, AWS::ECS::Cluster, AWS::ECR::Repository,
+ * AWS::ElasticLoadBalancingV2::TargetGroup, AWS::ElasticLoadBalancingV2::LoadBalancer,
+ * AWS::EC2::VPC, AWS::EC2::Subnet
  *
- * Both names are env-parameterized so verify.sh drives every phase from ONE
+ * Every name is env-parameterized so verify.sh drives every phase from ONE
  * app, and each name is create-only, so changing it is a REPLACEMENT:
  *
  *   - `QUEUE_NAME` (`Queue`, #3937): SQS `CreateQueue` hands back an existing
@@ -25,10 +29,24 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  *     different lookup (a `ListTopics` walk).
  *   - `CLUSTER_NAME` (`Cluster`, #3937): ECS `CreateCluster` returns an existing
  *     ACTIVE cluster of the name. An empty cluster costs nothing.
+ *   - `TG_NAME` (`TargetGroup`, #3937): ELBv2 `CreateTargetGroup` returns an
+ *     existing target group of the name when the settings match. A `lambda`
+ *     target group needs no VPC and declares nothing else, so an out-of-band
+ *     one created with only its name and target type is exactly that match.
+ *   - `LB_NAME` (`LoadBalancer`, #3937): ELBv2 `CreateLoadBalancer` does the
+ *     same. An internal network load balancer in one subnet of a VPC with no
+ *     internet gateway, so an out-of-band one in the same subnet matches it.
  *   - `REPO_NAME` (`Repo`, #3931): renamed under `--recreate-via-cc-api Repo`,
  *     the recreate that used to delete the old repository FIRST. ECR's
  *     `CreateRepository` refuses a taken name, so the holder turns the rename
  *     into a collision, and an empty repository costs nothing.
+ *   - `FLAG_TG_NAME` + `FLAG_TG_PORT` (`FlagTargetGroup`, #3937 review):
+ *     optional. A TCP target group in the fixture VPC whose `Port` change is
+ *     a replacement that keeps the template `Name`, so a deploy under the
+ *     other `--prefix-user-supplied-names` setting than the one that created
+ *     it SENDS another name.
+ *   - `NEW_TG_NAME` (`NewTargetGroup`, #4180 on ELBv2): optional. A second
+ *     `lambda` target group, CREATED under that name.
  *   - `NEW_QUEUE_NAME` (`NewQueue`, #4180): optional. When set, the stack
  *     gains a second queue, so the deploy CREATES it under that name — the
  *     plain-CREATE sibling of the `QUEUE_NAME` rename.
@@ -41,9 +59,18 @@ export class ReplacementRenameOntoHolderStack extends cdk.Stack {
     const topicName = process.env.TOPIC_NAME;
     const clusterName = process.env.CLUSTER_NAME;
     const repoName = process.env.REPO_NAME;
-    if (!queueName || !topicName || !clusterName || !repoName) {
+    const targetGroupName = process.env.TG_NAME;
+    const loadBalancerName = process.env.LB_NAME;
+    if (
+      !queueName ||
+      !topicName ||
+      !clusterName ||
+      !repoName ||
+      !targetGroupName ||
+      !loadBalancerName
+    ) {
       throw new Error(
-        'QUEUE_NAME, TOPIC_NAME, CLUSTER_NAME and REPO_NAME must all be set (verify.sh sets them per phase)'
+        'QUEUE_NAME, TOPIC_NAME, CLUSTER_NAME, REPO_NAME, TG_NAME and LB_NAME must all be set (verify.sh sets them per phase)'
       );
     }
 
@@ -55,6 +82,48 @@ export class ReplacementRenameOntoHolderStack extends cdk.Stack {
 
     const cluster = new ecs.CfnCluster(this, 'Cluster', { clusterName });
     cluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    const targetGroup = new elbv2.CfnTargetGroup(this, 'TargetGroup', {
+      name: targetGroupName,
+      targetType: 'lambda',
+    });
+    targetGroup.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    const vpc = new ec2.CfnVPC(this, 'Vpc', { cidrBlock: '10.88.0.0/24' });
+    const subnet = new ec2.CfnSubnet(this, 'Subnet', {
+      vpcId: vpc.ref,
+      cidrBlock: '10.88.0.0/26',
+      availabilityZone: cdk.Fn.select(0, cdk.Fn.getAzs()),
+    });
+    const loadBalancer = new elbv2.CfnLoadBalancer(this, 'LoadBalancer', {
+      name: loadBalancerName,
+      type: 'network',
+      scheme: 'internal',
+      subnets: [subnet.ref],
+    });
+    loadBalancer.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    const flagTargetGroupName = process.env.FLAG_TG_NAME;
+    const flagTargetGroupPort = process.env.FLAG_TG_PORT;
+    if (flagTargetGroupName && flagTargetGroupPort) {
+      const flagTargetGroup = new elbv2.CfnTargetGroup(this, 'FlagTargetGroup', {
+        name: flagTargetGroupName,
+        targetType: 'ip',
+        protocol: 'TCP',
+        port: Number(flagTargetGroupPort),
+        vpcId: vpc.ref,
+      });
+      flagTargetGroup.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    }
+
+    const newTargetGroupName = process.env.NEW_TG_NAME;
+    if (newTargetGroupName) {
+      const newTargetGroup = new elbv2.CfnTargetGroup(this, 'NewTargetGroup', {
+        name: newTargetGroupName,
+        targetType: 'lambda',
+      });
+      newTargetGroup.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    }
 
     const newQueueName = process.env.NEW_QUEUE_NAME;
     if (newQueueName) {

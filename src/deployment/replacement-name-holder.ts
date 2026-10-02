@@ -50,6 +50,7 @@ import {
   withSkipPrefix,
 } from '../provisioning/resource-name.js';
 import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
+import { withDerivedNameMasks } from '../provisioning/masked-retry-logger.js';
 import { SECRET_MASK } from './secret-redaction.js';
 
 export interface ReplacementNameChange {
@@ -135,7 +136,9 @@ export function replacementRequestsDifferentName(input: {
  * Types whose SDK create does not refuse a name another resource already
  * holds: it RETURNS that resource (SQS `CreateQueue` with matching attributes,
  * SNS `CreateTopic`, Step Functions `CreateStateMachine` with an identical
- * definition, ECS `CreateCluster` for an ACTIVE cluster — measured) or
+ * definition, ECS `CreateCluster` for an ACTIVE cluster — measured — and ELBv2
+ * `CreateLoadBalancer` / `CreateTargetGroup` on identical settings, per the
+ * API reference) or
  * OVERWRITES it (EventBridge `PutRule`, CloudWatch `PutMetricAlarm`), or the
  * provider reads the refusal as success and configures the existing resource
  * (S3's `BucketAlreadyOwnedByYou` and the `us-east-1` legacy 200; CloudWatch
@@ -145,12 +148,9 @@ export function replacementRequestsDifferentName(input: {
  * does the same (go-to-k/cdkd#4180). The create cannot tell a fresh
  * resource from an existing one, so the caller asks BEFORE it
  * ({@link replacementNameProbe}, {@link createNameQuestion}). Cloud Control is exempt: its handlers
- * refuse an existing identifier with `AlreadyExists`.
- *
- * Not here yet, though their creates adopt too (go-to-k/cdkd#3937 tracks
- * them): ELBv2 load balancers and target groups (idempotent on identical
- * settings, per the API reference) have no name lookup in their provider's
- * `import()` and a provider-rewritten name.
+ * refuse an existing identifier with `AlreadyExists`. ELBv2's providers
+ * rewrite the template's name before sending it, so their `import()` looks up
+ * the name the create would send, derived in the same async scope.
  *
  * The lookup and the create are two calls, so a resource created under the
  * name between them is not seen: the probe narrows the window, it cannot
@@ -159,6 +159,8 @@ export function replacementRequestsDifferentName(input: {
 const NAME_ADOPTING_SDK_CREATE_TYPES: ReadonlySet<string> = new Set([
   'AWS::CloudWatch::Alarm',
   'AWS::ECS::Cluster',
+  'AWS::ElasticLoadBalancingV2::LoadBalancer',
+  'AWS::ElasticLoadBalancingV2::TargetGroup',
   'AWS::Events::Rule',
   'AWS::Logs::LogGroup',
   'AWS::S3::Bucket',
@@ -734,6 +736,98 @@ export function rewrittenNameSpellings(
       generateResourceNameWithFallback(declared, logicalId, { maxLength: rewrite.maxLength })
     )
   );
+}
+
+/**
+ * The name a `SENT_NAME_REWRITTEN` provider sends for `properties`' explicit
+ * name, derived in the CALLER's async scope (stack name, prefix flag), or
+ * `undefined` for another type or without an explicit string name.
+ */
+function sentRewrittenName(
+  resourceType: string,
+  properties: Record<string, unknown> | undefined,
+  logicalId: string
+): { property: string; declared: string; sent: string } | undefined {
+  const rewrite = ownEntry(SENT_NAME_REWRITTEN, resourceType);
+  if (rewrite === undefined) return undefined;
+  const declared = properties?.[rewrite.property];
+  if (typeof declared !== 'string' || declared === '') return undefined;
+  const sent = generateResourceNameWithFallback(declared, logicalId, {
+    maxLength: rewrite.maxLength,
+  });
+  return { property: rewrite.property, declared, sent };
+}
+
+/** The name segment of an ELBv2 load balancer or target group ARN. */
+const ELBV2_ARN_NAME =
+  /^arn:[^:]+:elasticloadbalancing:[^:]*:[^:]*:(?:loadbalancer\/(?:app|net|gwy)\/|targetgroup\/)([^/]+)\/[^/]+$/;
+
+/**
+ * Does a name-adopting, name-REWRITING create send a name the old resource
+ * does not hold although the template's name did not change
+ * (go-to-k/cdkd#3937 review)? ELBv2 sends the template `Name` with the
+ * stack-name prefix under `--prefix-user-supplied-names` only, so a
+ * replacement under the other flag than the one that created the old
+ * resource SENDS another name, and {@link replacementRequestsDifferentName}
+ * — which compares template names — never asks the probe. The sent name is
+ * compared, exactly, with the name the old physical id carries; anything
+ * unreadable answers `undefined`, the pre-existing behaviour.
+ */
+export function replacementSentNameMoves(input: {
+  oldResourceType: string;
+  newResourceType: string;
+  createdVia: ProvisionedBy | undefined;
+  desiredProperties: Record<string, unknown> | undefined;
+  physicalId: string;
+  logicalId: string;
+}): ReplacementNameChange | undefined {
+  if (input.oldResourceType !== input.newResourceType) return undefined;
+  if (!replacementCreateAdoptsName(input.newResourceType, input.createdVia)) return undefined;
+  const sent = sentRewrittenName(input.newResourceType, input.desiredProperties, input.logicalId);
+  if (sent === undefined || sent.declared.includes('{{resolve:')) return undefined;
+  const held = ELBV2_ARN_NAME.exec(input.physicalId)?.[1];
+  if (held === undefined || held === sent.sent) return undefined;
+  return {
+    property: sent.property,
+    desiredName: sent.sent,
+    heldName: held,
+    heldProperty: sent.property,
+    physicalId: input.physicalId,
+  };
+}
+
+/**
+ * `base`, extended to mask the spelling a `SENT_NAME_REWRITTEN` provider
+ * sends for a SECRET-derived explicit name (go-to-k/cdkd#3937 review): the
+ * rewrite (`_` / `.` to `-`, a prefix, a hash past the cap) is not the
+ * plaintext the base masker matches, and a name probe's refusal prints the
+ * holder's ARN, which carries that spelling, under either prefix flag. Any
+ * other type, or a name that
+ * is not secret-derived, returns `base` unchanged.
+ */
+export function maskRewrittenSentName(
+  resourceType: string,
+  properties: Record<string, unknown> | undefined,
+  logicalId: string,
+  base: (text: string) => string
+): (text: string) => string {
+  const sent = sentRewrittenName(resourceType, properties, logicalId);
+  if (sent === undefined) return base;
+  // Both prefix flags' spellings: a probe of a sent name the flag moved
+  // ({@link replacementSentNameMoves}) prints the OLD resource's name, the
+  // other flag's spelling of the same value.
+  const spellings = [sent.sent, ...rewrittenNameSpellings(resourceType, sent.declared, logicalId)];
+  const quiet = { debug: (): void => undefined, warn: (): void => undefined };
+  return withDerivedNameMasks(
+    quiet,
+    {
+      mask: base,
+      value: (value: unknown) => base(String(value)),
+      debug: quiet.debug,
+      warn: quiet.warn,
+    },
+    spellings.map((spelling) => [sent.declared, spelling] as const)
+  ).mask;
 }
 
 /** The rewriting types and their generator options, for the fence. */

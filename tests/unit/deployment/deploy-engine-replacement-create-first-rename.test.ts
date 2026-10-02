@@ -22,6 +22,7 @@ import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.j
 import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { withSkipPrefix, withStackName } from '../../../src/provisioning/resource-name.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -43,7 +44,18 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
-    resolve: vi.fn().mockImplementation((value: unknown) => Promise.resolve(value)),
+    // A Name carrying SECRETVALUE stands for one resolved from a secret.
+    resolve: vi
+      .fn()
+      .mockImplementation(
+        (value: unknown, ctx?: { recordedSecretValues?: Map<string, string> }) => {
+          const name = (value as { Name?: unknown } | null)?.Name;
+          if (typeof name === 'string' && name.includes('SECRETVALUE')) {
+            ctx?.recordedSecretValues?.set(name, '{{resolve:secretsmanager:name:SecretString}}');
+          }
+          return Promise.resolve(value);
+        }
+      ),
     resolveParameters: vi.fn().mockReturnValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
   })),
@@ -1009,6 +1021,230 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
     expect(err).toBeNull();
     expect(h.callOrder).toEqual(['import', 'create', 'delete']);
   });
+
+  it('refuses an ELBv2 load balancer or target group rename onto an existing one', async () => {
+    for (const [type, kind] of [
+      ['AWS::ElasticLoadBalancingV2::LoadBalancer', 'loadbalancer/net'],
+      ['AWS::ElasticLoadBalancingV2::TargetGroup', 'targetgroup'],
+    ] as const) {
+      h = makeHarness(type);
+      const arn = (name: string): string =>
+        `arn:aws:elasticloadbalancing:us-east-1:123456789012:${kind}/${name}/0123456789abcdef`;
+      h.importResult = { physicalId: arn('theirs') };
+
+      const err = await provision(makeEngine(h), {
+        type,
+        nameProperty: 'Name',
+        recorded: 'mine',
+        desired: 'theirs',
+        physicalId: arn('mine'),
+      });
+
+      expect(err!.code, type).toBe('NAMED_REPLACEMENT_COLLISION');
+      expect(err!.message, type).toContain(`another existing resource (${arn('theirs')})`);
+      expect(err!.message, type).toContain('Nothing was created or deleted');
+      expect(h.callOrder, type).toEqual(['import']);
+      expect(h.provider.import, type).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resourceType: type,
+          properties: expect.objectContaining({ Name: 'theirs' }),
+        })
+      );
+    }
+  });
+
+  it('proceeds with an ELBv2 rename the lookup finds free (negative control)', async () => {
+    const type = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+    const arn = (name: string): string =>
+      `arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/${name}/0123456789abcdef`;
+    h = makeHarness(type);
+    h.importResult = null;
+    h.createIds = [arn('free')];
+
+    const err = await provision(makeEngine(h), {
+      type,
+      nameProperty: 'Name',
+      recorded: 'mine',
+      desired: 'free',
+      physicalId: arn('mine'),
+    });
+
+    expect(err).toBeNull();
+    expect(h.callOrder).toEqual(['import', 'create', 'delete']);
+  });
+
+  // The deploy's own scope (stack name, prefix flag) decides the sent name,
+  // so each case runs inside one, as `cdkd deploy` does.
+  const inDeployScope = <T>(skipPrefix: boolean, fn: () => Promise<T>): Promise<T> =>
+    withSkipPrefix(skipPrefix, () => withStackName('MyStack', fn));
+  const lbArn = (name: string): string =>
+    `arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/${name}/0123456789abcdef`;
+
+  it.each([
+    // Created under --prefix-user-supplied-names, replaced under the default:
+    // the create sends `lb`, which a stranger holds.
+    { skipPrefix: true, held: 'MyStack-lb', sent: 'lb' },
+    // The reverse: created unprefixed, replaced under the legacy flag.
+    { skipPrefix: false, held: 'lb', sent: 'MyStack-lb' },
+  ])(
+    'probes an ELBv2 replacement whose Name is unchanged but whose SENT name ($sent) is not the held $held',
+    async ({ skipPrefix, held, sent }) => {
+      const type = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
+      h = makeHarness(type);
+      h.importResult = { physicalId: lbArn(sent) };
+
+      const err = await inDeployScope(skipPrefix, () =>
+        provision(makeEngine(h), {
+          type,
+          nameProperty: 'Name',
+          recorded: 'lb',
+          desired: 'lb',
+          physicalId: lbArn(held),
+        })
+      );
+
+      expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+      expect(err!.message).toContain(`another existing resource (${lbArn(sent)})`);
+      expect(h.callOrder).toEqual(['import']);
+    }
+  );
+
+  it.each([
+    { skipPrefix: true, held: 'lb' },
+    { skipPrefix: false, held: 'MyStack-lb' },
+  ])(
+    'does not probe an ELBv2 replacement whose sent name is the held $held',
+    async ({ skipPrefix, held }) => {
+      const type = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
+      h = makeHarness(type);
+      h.importResult = { physicalId: lbArn('other') };
+      h.createIds = [lbArn(held)];
+
+      const err = await inDeployScope(skipPrefix, () =>
+        provision(makeEngine(h), {
+          type,
+          nameProperty: 'Name',
+          recorded: 'lb',
+          desired: 'lb',
+          physicalId: lbArn(held),
+        })
+      );
+
+      expect(h.callOrder).not.toContain('import');
+      expect(err?.code).not.toBe('NAMED_REPLACEMENT_COLLISION');
+    }
+  );
+
+  it('masks the spelling ELBv2 sends for a secret-derived Name in the replacement refusal', async () => {
+    // `team_SECRETVALUE.x` is sent, and held, as `team-SECRETVALUE-x`.
+    const type = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+    const arn = (name: string): string =>
+      `arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/${name}/0123456789abcdef`;
+    h = makeHarness(type);
+    h.importResult = { physicalId: arn('team-SECRETVALUE-x') };
+
+    const err = await provision(makeEngine(h), {
+      type,
+      nameProperty: 'Name',
+      recorded: 'mine',
+      desired: 'team_SECRETVALUE.x',
+      physicalId: arn('mine'),
+    });
+
+    expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(err!.message).toContain('targetgroup/***/0123456789abcdef');
+    expect(err!.message).not.toContain('SECRETVALUE');
+  });
+
+  it('masks the sent spelling of a secret-derived ELBv2 Name when the probe itself fails', async () => {
+    // The lookup's error text names `team-SECRETVALUE-x`, the spelling the
+    // provider sends for `team_SECRETVALUE.x`, which the literal mask misses.
+    const type = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+    h = makeHarness(type);
+    h.importResult = new Error('AccessDenied: not authorized to describe team-SECRETVALUE-x');
+
+    const err = await provision(makeEngine(h), {
+      type,
+      nameProperty: 'Name',
+      recorded: 'mine',
+      desired: 'team_SECRETVALUE.x',
+      physicalId:
+        'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/mine/0123456789abcdef',
+    });
+
+    expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(err!.message).toContain('could not check whether another resource already holds it');
+    expect(err!.message).toContain('not authorized to describe ***');
+    expect(err!.message).not.toContain('SECRETVALUE');
+    expect(h.callOrder).toEqual(['import']);
+  });
+
+  it('masks the other prefix spelling of a secret-derived ELBv2 name in the idempotent-create refusal', async () => {
+    // The old group was created under --prefix-user-supplied-names, so its
+    // ARN spells the secret as `MyStack-team-SECRETVALUE-x`; the default flag
+    // sends `team-SECRETVALUE-x`. The create (the UPDATE-not-supported
+    // fallback's create-first) hands the OLD group back, and the refusal
+    // prints its physical id.
+    const type = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+    const oldArn =
+      'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/MyStack-team-SECRETVALUE-x/0123456789abcdef';
+    h = makeHarness(type);
+    h.importResult = null;
+    h.createIds = [oldArn];
+
+    const err = await inDeployScope(true, () =>
+      provision(makeEngine(h), {
+        type,
+        nameProperty: 'Name',
+        recorded: 'team_SECRETVALUE.x',
+        desired: 'team_SECRETVALUE.x',
+        physicalId: oldArn,
+        replacement: false,
+      })
+    );
+
+    expect(err!.code).toBe('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
+    expect(err!.message).toContain('targetgroup/***/0123456789abcdef');
+    expect(err!.message).not.toContain('SECRETVALUE');
+    expect(h.provider.delete).not.toHaveBeenCalled();
+  });
+
+  // The create-first order's own collision refusal (createFirstThenDeleteOld),
+  // reached when the probe found the name free and the create still collided
+  // (another resource took it between the two calls): AWS echoes the name in
+  // the spelling the provider SENT, which the literal mask does not match.
+  it.each([
+    ['the UPDATE-not-supported fallback', { replacement: false }, {}],
+    ['the --recreate-via-sdk-provider recreate', {}, { recreateViaSdkProvider: true }],
+  ] as const)(
+    'masks the sent spelling of a secret-derived ELBv2 name in %s collision refusal',
+    async (_label, provisionOpts, engineOpts) => {
+      const type = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+      const sent = 'team-SECRETVALUE-x';
+      h = makeHarness(type);
+      h.importResult = null;
+      h.createFailures = [
+        new Error(`Failed to create TargetGroup Fn: target group ${sent} already exists`, {
+          cause: awsSdkError(`A target group named ${sent} already exists`),
+        }),
+      ];
+
+      const err = await provision(makeEngine(h, engineOpts), {
+        type,
+        nameProperty: 'Name',
+        recorded: 'mine',
+        desired: 'team_SECRETVALUE.x',
+        physicalId:
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/mine/0123456789abcdef',
+        ...provisionOpts,
+      });
+
+      expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+      expect(err!.message).toContain('created the new resource first because its name differs');
+      expect(err!.message).not.toContain('SECRETVALUE');
+      expect(h.provider.delete).not.toHaveBeenCalled();
+    }
+  );
 
   it('refuses an S3 bucket rename onto a bucket that already exists', async () => {
     h = makeHarness('AWS::S3::Bucket');
