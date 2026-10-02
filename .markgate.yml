@@ -143,6 +143,7 @@ gates:
       # retried or surfaced, which is real-AWS delete behavior (issue #2042).
       - "src/deployment/retry.ts"
       - "src/deployment/retryable-errors.ts"
+      - "src/deployment/retryable-errors/**"
       # Automatic rollback DELETES and re-CREATES real resources — the
       # reverse-replacement path calls `provider.delete()` on the new physical
       # resource and re-creates the old one — so this is delete logic by any

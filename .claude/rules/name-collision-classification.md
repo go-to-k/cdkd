@@ -2,6 +2,7 @@
 description: the two name-collision predicates and the rule for admitting a name
 paths:
   - 'src/deployment/retryable-errors.ts'
+  - 'src/deployment/retryable-errors/**'
   - 'src/deployment/deploy-engine.ts'
   - 'src/deployment/deploy-engine/**'
   - 'src/deployment/rollback-executor.ts'
@@ -35,7 +36,7 @@ holder was just deleted.
 
 ## `isNameCollisionErrorFrom(error, logicalId)`
 
-Issue [#3208](https://github.com/go-to-k/cdkd/issues/3208). What the sites
+Issue #3208. What the sites
 holding the error call; the string form stays for text-only callers. It walks
 the bounded `cause` chain for the error name and the Cloud Control
 `ccErrorCode === 'AlreadyExists'`:
