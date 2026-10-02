@@ -117,6 +117,31 @@ export interface IntrinsicFunctionResolverOptions {
   cfnFallback?: boolean;
 }
 
+/**
+ * CloudFormation Intrinsic Function Resolver
+ *
+ * Resolves CloudFormation intrinsic functions in template values before
+ * sending them to Cloud Control API or SDK providers.
+ *
+ * Supported functions:
+ * - Ref (resources and parameters)
+ * - Fn::GetAtt
+ * - Fn::Join
+ * - Fn::Sub
+ * - Fn::Select
+ * - Fn::Split
+ * - Fn::If (Conditions)
+ * - Fn::Equals
+ * - Fn::And (logical AND)
+ * - Fn::Or (logical OR)
+ * - Fn::Not (logical NOT)
+ * - Fn::ImportValue (cross-stack references)
+ * - Fn::GetStackOutput (cross-stack/cross-region output reference)
+ * - Fn::FindInMap (mapping lookups)
+ * - Fn::Base64 (base64 encoding)
+ * - Fn::GetAZs (availability zone listing)
+ * - Fn::Cidr (CIDR address block calculation)
+ */
 export class IntrinsicFunctionResolver {
   /** @internal */
   logger = getLogger().child('IntrinsicFunctionResolver');

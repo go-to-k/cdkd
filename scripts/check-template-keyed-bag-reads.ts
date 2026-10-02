@@ -82,6 +82,9 @@ import { readFileSync } from 'node:fs';
 export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-function-resolver.ts',
   'src/deployment/intrinsic-resolver/support.ts',
+  'src/deployment/intrinsic-resolver/ref-values.ts',
+  'src/deployment/intrinsic-resolver/context.ts',
+  'src/deployment/intrinsic-resolver/account-drain.ts',
   'src/deployment/intrinsic-resolver/getatt.ts',
   'src/deployment/intrinsic-resolver/cross-stack.ts',
   'src/deployment/intrinsic-resolver/dynamic-refs.ts',
