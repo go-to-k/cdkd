@@ -1,7 +1,7 @@
 /**
  * The canonical secret-scan class must be a SUPERSET of both sanitisers'.
  *
- * `src/deployment/outputs-export-alias.ts` deletes one class before testing a
+ * `src/deployment/outputs-export-alias/secret-scan.ts` deletes one class before testing a
  * name for secret content and before printing it. Every character either
  * sanitiser touches has to be in that class, or the two strings diverge again
  * and issue [#2874](https://github.com/go-to-k/cdkd/issues/2874) is reopened:

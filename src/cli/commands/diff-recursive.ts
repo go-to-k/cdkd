@@ -2906,7 +2906,7 @@ function outputNameJson(change: OutputChange): { name: string; nameRedacted?: tr
  * verdict's own text, never a separately sanitised copy of the key.
  *
  * A MASKED name carrying anything outside printable ASCII is withheld rather
- * than printed, the rule `outputs-export-alias.ts`'s `maskedLabel` applies. No
+ * than printed, the rule `outputs-export-alias/warnings.ts`'s `maskedLabel` applies. No
  * sink on this path reshapes such a character today (`terminalSafe` does not);
  * it is the defensive fallback issue #4015 asked for beside the corpus, so a
  * future sink that blanks one cannot make the printed text differ from the

@@ -34,7 +34,7 @@ const SECRET = 'super-secret-plaintext-value';
 const EXPR = '{{resolve:secretsmanager:my-secret:SecretString:password::}}';
 
 const MN_G = /\p{Mn}/gu;
-/** The printed-space class, copied from `outputs-export-alias.ts`. */
+/** The printed-space class, copied from `outputs-export-alias/secret-scan.ts`. */
 const PRINTED_CLASS = /[\p{Cc}\p{Cf}\p{Me}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 const PRINTED_ONE = /[\p{Cc}\p{Cf}\p{Me}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
 

@@ -35,20 +35,20 @@ const LISTING_FILES = [
   'src/cli/config-loader.ts',
   'src/provisioning/providers/s3-bucket-provider.ts',
   'src/provisioning/providers/s3-directory-bucket-provider.ts',
-  'src/deployment/recreate-targets.ts',
+  'src/deployment/recreate-targets/probe.ts',
   'src/cli/commands/state.ts',
 ];
 
 /**
  * The two that deliberately do NOT ask for encoding, each because it reads no
- * KEY at all — `config-loader.ts` reads `KeyCount`, `recreate-targets.ts` is an
+ * KEY at all — `config-loader.ts` reads `KeyCount`, `recreate-targets/probe.ts` is an
  * emptiness probe. Asking there would be inert, and asking WITHOUT decoding is
  * the shape that corrupts a real `%`.
  *
  * `state.ts` is the one site this change does NOT fix: go-to-k/cdkd#3226 holds
  * it. Listed here so the exemption is explicit and fails when that lands.
  */
-const NO_KEY_READ = ['src/cli/config-loader.ts', 'src/deployment/recreate-targets.ts'];
+const NO_KEY_READ = ['src/cli/config-loader.ts', 'src/deployment/recreate-targets/probe.ts'];
 const HELD_BY_ANOTHER_PR: string[] = [];
 
 const read = (rel: string): string => readFileSync(join(REPO_ROOT, rel), 'utf-8');

@@ -989,7 +989,7 @@ export function maskValueLeaves(
  * THE BOUND, since this file's job is to state them: this covers a needle
  * split by a character `stripControlChars` removes. A needle split by
  * anything else, or one whose canonical form differs for another reason, is
- * `outputs-export-alias.ts`'s `canonicalForSecretScan` problem and is not
+ * `outputs-export-alias/secret-scan.ts`'s `canonicalForSecretScan` problem and is not
  * solved here.
  */
 export function maskThenStripThenMask(

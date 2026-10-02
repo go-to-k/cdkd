@@ -162,7 +162,7 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // guard), so the repo already classifies this type as data-bearing on the
   // DESTROY side — it was the only such type absent from this list. `always`,
   // not conditional like `AWS::S3::Bucket`, because of the probe cdkd HAS:
-  // `recreate-targets.ts` issues `ListObjectVersions`, a general-purpose-bucket
+  // `recreate-targets/probe.ts` issues `ListObjectVersions`, a general-purpose-bucket
   // API, so no CURRENT probe can report a directory bucket empty. Note the
   // narrow claim — a probe is not impossible in principle, since
   // `S3DirectoryBucketProvider.emptyBucket` enumerates these same buckets with
@@ -779,7 +779,7 @@ export function renderStatefulReason(reason: StatefulReason): string {
       // it hit a not-found in an unverified region, it THREW, and the
       // mid-deploy arm ABOVE where no probe runs at all. The NOT-FOUND-IN-AN-
       // UNVERIFIED-REGION and THREW arms are
-      // the divergence `recreate-targets.ts` documents: a probe failure fails
+      // the divergence `recreate-targets/probe.ts` documents: a probe failure fails
       // CLOSED here and OPEN for the bucket. The mid-deploy arm is NOT part of
       // it — the bucket's arm beside it answers `'has-objects'` on the same
       // no-probe path, so that one is parity and must not be "simplified"

@@ -548,7 +548,7 @@ fi
 assert_stateful_refusal "phase 3" "${P3_OUT}"
 # The refusal has TWO arms and only one of them is this phase's subject. A
 # missing `logs:DescribeLogStreams` permission, or a throttle, promotes to
-# `has-log-events` too (`recreate-targets.ts`) -- so without this check the
+# `has-log-events` too (`recreate-targets/probe.ts`) -- so without this check the
 # phase passes for the wrong reason on a role that cannot probe at all, and
 # the run reports a guard it never exercised.
 if grep -qF -- "live CloudWatch Logs probe failed for" <<<"${P3_OUT}" \

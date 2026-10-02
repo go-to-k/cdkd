@@ -19,15 +19,22 @@
  * connected them, which is the exact shape a typo hides in.
  */
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
-const RECREATE_TARGETS = readFileSync(
-  join(REPO_ROOT, 'src/deployment/recreate-targets.ts'),
-  'utf8'
-);
+// The barrel plus every `recreate-targets/*.ts` module (#4466): the strings
+// below live in different modules.
+const RECREATE_TARGETS = [
+  'src/deployment/recreate-targets.ts',
+  ...readdirSync(join(REPO_ROOT, 'src/deployment/recreate-targets'))
+    .filter((f) => f.endsWith('.ts'))
+    .sort()
+    .map((f) => `src/deployment/recreate-targets/${f}`),
+]
+  .map((rel) => readFileSync(join(REPO_ROOT, rel), 'utf8'))
+  .join('\n');
 const VERIFY_SH = readFileSync(
   join(REPO_ROOT, 'tests/integration/recreate-nested-logical-id-collision/verify.sh'),
   'utf8'

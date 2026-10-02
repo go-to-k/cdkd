@@ -30,7 +30,7 @@
  *
  * ONE CALLER DELIBERATELY GOES WIDER, and it is recorded here so an editor of
  * the residual note above knows a second module now disagrees with it.
- * `src/deployment/outputs-export-alias.ts` deletes a class derived from
+ * `src/deployment/outputs-export-alias/secret-scan.ts` deletes a class derived from
  * `\p{Cc}` / `\p{Cf}` / `\p{Zl}` / `\p{Zp}` /
  * `\p{Default_Ignorable_Code_Point}`, because on THAT path the subject is a possibly
  * secret-bearing name in an operator's log: a plaintext split by a zero-width

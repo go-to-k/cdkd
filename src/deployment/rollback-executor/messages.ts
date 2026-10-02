@@ -289,7 +289,7 @@ function rollbackFailureText(error: unknown): string {
  * character (`\p{Cf}`, for the ones that are NOT default-ignorable, such as
  * the interlinear annotation anchors U+FFF9-U+FFFB), and U+2800, the braille
  * blank, which is in neither category. The class overlaps the one
- * `outputs-export-alias.ts` scans with, but is not the same. Collapsing
+ * `outputs-export-alias/secret-scan.ts` scans with, but is not the same. Collapsing
  * removes the padding; the cap is `displayAwsMessage`'s.
  */
 function collisionText(msg: string): string {

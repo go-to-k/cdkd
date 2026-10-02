@@ -1263,7 +1263,7 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
     const rules = readFileSync(
       path.join(
         path.dirname(fileURLToPath(import.meta.url)),
-        '../../../src/deployment/outputs-export-alias.ts'
+        '../../../src/deployment/outputs-export-alias/names.ts'
       ),
       'utf8'
     );

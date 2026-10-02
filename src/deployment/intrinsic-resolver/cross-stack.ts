@@ -1721,7 +1721,7 @@ export function recordOutputRead(
  * character with a space and then trims, so a secret carrying one is a
  * DIFFERENT string by the time it is quoted back and matching the raw form
  * alone would miss it while reporting success — the one-string-space rule
- * `outputs-export-alias.ts` states for its own scan: the text that was tested
+ * `outputs-export-alias/secret-scan.ts` states for its own scan: the text that was tested
  * and the text that is printed must be the same text. The CloudFormation
  * fallback does NOT sanitize (it rethrows the SDK's message as it is), so the
  * second spelling is inert at that call site and costs one comparison.

@@ -151,9 +151,9 @@ export function equalIdNamesSameResource(input: {
  * The CFn type of a nested stack's row in its PARENT's template.
  *
  * Spelled locally rather than imported, matching
- * `src/deployment/recreate-targets.ts`: the only exported copy lives in
- * `src/cli/commands/retire-cfn-stack.ts`, and importing a CLI command module
- * from the deployment layer would invert the dependency direction.
+ * `src/deployment/recreate-targets/validate.ts`: importing a CLI command module
+ * (`src/cli/commands/retire-cfn-stack.ts` exports one) from the deployment
+ * layer would invert the dependency direction.
  */
 const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
 
