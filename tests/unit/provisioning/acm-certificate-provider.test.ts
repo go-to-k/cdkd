@@ -51,6 +51,8 @@ import {
 } from '../utils/paste-harness.js';
 import { resetIdempotencyTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
+import { loadSchemaFixture } from './_property-coverage-utils.js';
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
@@ -1211,6 +1213,224 @@ describe('ACMCertificateProvider', () => {
 
       expect(callsOfType(UpdateCertificateOptionsCommand)).toHaveLength(0);
       expect(callsOfType(AddTagsToCertificateCommand)).toHaveLength(1);
+    });
+  });
+
+  // Issue #1160: a property removed from the template must reach AWS the way
+  // CloudFormation applies it, not be dropped by UpdateCertificateOptions'
+  // merge semantics.
+  describe('update: removed properties (#1160)', () => {
+    const TYPE = 'AWS::CertificateManager::Certificate';
+
+    it('resets a removed CertificateTransparencyLoggingPreference to ENABLED', async () => {
+      mockSend.mockResolvedValue({});
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        TYPE,
+        { DomainName: 'example.com' },
+        { DomainName: 'example.com', CertificateTransparencyLoggingPreference: 'DISABLED' }
+      );
+
+      expect(result.wasReplaced).toBe(false);
+      const updates = callsOfType(UpdateCertificateOptionsCommand);
+      expect(updates).toHaveLength(1);
+      expect(updates[0].input).toEqual({
+        CertificateArn: ARN,
+        Options: { CertificateTransparencyLoggingPreference: 'ENABLED' },
+      });
+    });
+
+    it('sends the reset the update CALLER injected, and injects nothing itself', async () => {
+      mockSend.mockResolvedValue({});
+      const previous = {
+        DomainName: 'example.com',
+        CertificateTransparencyLoggingPreference: 'DISABLED',
+      };
+      const prepared = prepareRemovalForUpdate(
+        provider,
+        TYPE,
+        { DomainName: 'example.com' },
+        previous
+      );
+      expect(prepared.injected).toEqual(['CertificateTransparencyLoggingPreference']);
+      expect(prepared.unhandled).toEqual([]);
+
+      await provider.update('MyCert', ARN, TYPE, prepared.properties, previous, prepared.context);
+
+      const updates = callsOfType(UpdateCertificateOptionsCommand);
+      expect(updates).toHaveLength(1);
+      expect(updates[0].input.Options).toEqual({
+        CertificateTransparencyLoggingPreference: 'ENABLED',
+      });
+    });
+
+    it('issues no call when the removed preference was already ENABLED', async () => {
+      mockSend.mockResolvedValue({});
+
+      await provider.update(
+        'MyCert',
+        ARN,
+        TYPE,
+        { DomainName: 'example.com' },
+        { DomainName: 'example.com', CertificateTransparencyLoggingPreference: 'ENABLED' }
+      );
+
+      expect(callsOfType(UpdateCertificateOptionsCommand)).toHaveLength(0);
+    });
+
+    it('issues no call when the preference was never declared', async () => {
+      mockSend.mockResolvedValue({});
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        TYPE,
+        { DomainName: 'example.com', Tags: [{ Key: 'a', Value: '1' }] },
+        { DomainName: 'example.com' }
+      );
+
+      expect(result.wasReplaced).toBe(false);
+      expect(callsOfType(UpdateCertificateOptionsCommand)).toHaveLength(0);
+    });
+
+    // An absent CertificateExport is DISABLED (the CloudFormation default), and
+    // a readback can omit `Options.Export`: `drift --revert` hands update()
+    // exactly that pair, which must not replace the certificate.
+    it.each([
+      ['previous absent, desired DISABLED', { CertificateExport: 'DISABLED' }, {}],
+      ['previous DISABLED, desired absent', {}, { CertificateExport: 'DISABLED' }],
+    ])('does not replace on an absent vs DISABLED CertificateExport (%s)', async (_, desired, previous) => {
+      mockSend.mockResolvedValue({});
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        TYPE,
+        { DomainName: 'example.com', ...desired },
+        { DomainName: 'example.com', ...previous }
+      );
+
+      expect(result.wasReplaced).toBe(false);
+      expect(result.physicalId).toBe(ARN);
+      expect(callsOfType(RequestCertificateCommand)).toHaveLength(0);
+      expect(callsOfType(DeleteCertificateCommand)).toHaveLength(0);
+    });
+
+    it.each([
+      ['ENABLED vs absent', { CertificateExport: 'ENABLED' }, {}],
+      ['ENABLED vs DISABLED', { CertificateExport: 'ENABLED' }, { CertificateExport: 'DISABLED' }],
+      ['absent vs ENABLED', {}, { CertificateExport: 'ENABLED' }],
+    ])('still replaces on a real CertificateExport change (%s)', async (_, desired, previous) => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn }); // RequestCertificate
+      mockSend.mockResolvedValueOnce({}); // DeleteCertificate
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        TYPE,
+        { DomainName: 'example.com', ...desired },
+        { DomainName: 'example.com', ...previous }
+      );
+
+      expect(result.wasReplaced).toBe(true);
+      expect(result.physicalId).toBe(newArn);
+      expect(callsOfType(DeleteCertificateCommand)[0].input.CertificateArn).toBe(ARN);
+    });
+
+    it('replaces the certificate when CertificateExport is removed, never dropping it', async () => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn }); // RequestCertificate
+      mockSend.mockResolvedValueOnce({}); // DeleteCertificate
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        TYPE,
+        { DomainName: 'example.com' },
+        { DomainName: 'example.com', CertificateExport: 'ENABLED' }
+      );
+
+      expect(result.wasReplaced).toBe(true);
+      expect(result.physicalId).toBe(newArn);
+      expect(callsOfType(UpdateCertificateOptionsCommand)).toHaveLength(0);
+      const request = callsOfType(RequestCertificateCommand)[0].input;
+      expect(request.Options?.Export).toBeUndefined();
+      expect(callsOfType(DeleteCertificateCommand)[0].input.CertificateArn).toBe(ARN);
+    });
+
+    it('replaces the certificate when CertificateExport changes (it cannot be updated)', async () => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn }); // RequestCertificate
+      mockSend.mockResolvedValueOnce({}); // DeleteCertificate
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        TYPE,
+        { DomainName: 'example.com', CertificateExport: 'ENABLED' },
+        { DomainName: 'example.com', CertificateExport: 'DISABLED' }
+      );
+
+      expect(result.wasReplaced).toBe(true);
+      expect(callsOfType(UpdateCertificateOptionsCommand)).toHaveLength(0);
+      expect(callsOfType(RequestCertificateCommand)[0].input.Options).toEqual({ Export: 'ENABLED' });
+    });
+
+    it('sends only the transparency preference when Export is declared but unchanged', async () => {
+      mockSend.mockResolvedValue({});
+
+      await provider.update(
+        'MyCert',
+        ARN,
+        TYPE,
+        {
+          DomainName: 'example.com',
+          CertificateExport: 'ENABLED',
+          CertificateTransparencyLoggingPreference: 'ENABLED',
+        },
+        {
+          DomainName: 'example.com',
+          CertificateExport: 'ENABLED',
+          CertificateTransparencyLoggingPreference: 'DISABLED',
+        }
+      );
+
+      const updates = callsOfType(UpdateCertificateOptionsCommand);
+      expect(updates).toHaveLength(1);
+      expect(updates[0].input.Options).toEqual({
+        CertificateTransparencyLoggingPreference: 'ENABLED',
+      });
+    });
+
+    it('declares every schema property as reset or handled, so only an unknown one warns', () => {
+      const previous: Record<string, unknown> = {
+        DomainName: 'example.com',
+        ValidationMethod: 'DNS',
+        SubjectAlternativeNames: ['www.example.com'],
+        DomainValidationOptions: [{ DomainName: 'example.com', ValidationDomain: 'example.com' }],
+        CertificateAuthorityArn: 'arn:aws:acm-pca:us-east-1:123456789012:certificate-authority/x',
+        CertificateExport: 'ENABLED',
+        CertificateTransparencyLoggingPreference: 'DISABLED',
+        KeyAlgorithm: 'RSA_2048',
+        Tags: [{ Key: 'a', Value: '1' }],
+        NotInTheSchema: 'x',
+      };
+      // The bag is the type's whole writable CFn schema, read from the
+      // committed fixture, and exactly what handledProperties names.
+      const schema = loadSchemaFixture(TYPE)!;
+      const writable = schema.properties.filter((p) => !schema.readOnlyProperties.includes(p));
+      const declared = Object.keys(previous).filter((k) => k !== 'NotInTheSchema');
+      expect(writable.length).toBeGreaterThan(0);
+      expect(declared.sort()).toEqual([...writable].sort());
+      expect([...provider.handledProperties.get(TYPE)!].sort()).toEqual([...writable].sort());
+
+      const prepared = prepareRemovalForUpdate(provider, TYPE, {}, previous);
+
+      expect(prepared.injected).toEqual(['CertificateTransparencyLoggingPreference']);
+      expect(prepared.unhandled).toEqual(['NotInTheSchema']);
     });
   });
 
