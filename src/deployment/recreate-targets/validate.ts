@@ -204,8 +204,9 @@ const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
  * is a whole child-stack deploy. Either half alone is outside what a recreate
  * is built for. The note keys on the TEMPLATE alone, because it is telling the
  * user what their current template contains. Other modules spell it
- * for themselves rather than sharing one export: the only EXPORTED copy lives
- * in `src/cli/commands/retire-cfn-stack.ts`, and importing a CLI command module
+ * for themselves rather than sharing one export: this one is exported only to
+ * its sibling `render.ts` (the barrel does not re-export it), and the only copy
+ * exported to other modules lives in `src/cli/commands/retire-cfn-stack.ts`, and importing a CLI command module
  * from the deployment layer would invert the dependency direction. (No count of
  * the other spellings is given here on purpose — an unfenced number in a
  * comment is a number that goes stale.)
@@ -217,7 +218,7 @@ export const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
  *
  * Pure with respect to AWS — does NOT probe S3 bucket emptiness, nor
  * log-group emptiness. Wrap the result with
- * {@link probeAndRevalidateStateful} to promote deferred targets'
+ * `probeAndRevalidateStateful` (`probe.ts`) to promote deferred targets'
  * `statefulReason` via a live round-trip before rendering errors. The
  * deploy command does this; the validator itself stays sync so unit tests
  * don't need AWS mocks.

@@ -24,7 +24,7 @@
  *      `logs:DescribeLogStreams` to `'has-log-events'` when a log group
  *      is not provably empty (issue [#2558]).
  *   4. Multi-region refusal: every named target whose resource type
- *      is in {@link MULTI_REGION_RECREATE_BLOCKED_TYPES} (e.g.
+ *      is in `MULTI_REGION_RECREATE_BLOCKED_TYPES` (`validate.ts`) (e.g.
  *      `AWS::DynamoDB::GlobalTable`) is refused outright. Out of
  *      scope for v1; no `--force-stateful-recreation` bypass since
  *      this is a structural limitation, not a data-loss footgun.

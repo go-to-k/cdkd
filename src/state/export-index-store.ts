@@ -749,7 +749,7 @@ export class ExportIndexStore {
     //
     // The export NAME is WITHHELD when it carries anything outside printable
     // ASCII (#2889 review), the rule `maskedLabel` in
-    // `src/deployment/outputs-export-alias.ts` applies: `displayIdent` blanks
+    // `src/deployment/outputs-export-alias/warnings.ts` applies: `displayIdent` blanks
     // such a character to a space, so a name spelling `correct` + NBSP (or a
     // nonspacing mark, or U+2028) + `horse` printed a recorded passphrase
     // `correct horse` verbatim. This store holds no secret corpus to test the

@@ -20,7 +20,7 @@ import {
  * unchanged. stderr is a reader like any other, so the invariant is absolute: a
  * message must never claim a masking it did not perform.
  *
- * `noEchoOnly` (go-to-k/cdkd#4043, from {@link isNoEchoOnlyExposure}) words
+ * `noEchoOnly` (go-to-k/cdkd#4043, from `isNoEchoOnlyExposure` (`secret-scan.ts`)) words
  * the reason for a name refused ONLY because it holds a `NoEcho` parameter's
  * value: the containment floor makes a coincidental match (`prod-VpcId`
  * beside a `NoEcho` value `prod`) a refusal too, and the operator has to be
@@ -151,7 +151,7 @@ function mergedExposure(
  * strings in play -- the raw key the verdict came from, the sanitised key that
  * was printed, and the masked one between them -- and `stripControlChars`
  * DELETES, so a plaintext split by one of its characters is absent from the
- * first and contiguous in the second. See {@link SECRET_SCAN_INVISIBLES} for
+ * first and contiguous in the second. See `SECRET_SCAN_INVISIBLES` (`secret-scan.ts`) for
  * the class that replaced it and why it is derived rather than enumerated.
  */
 export function secretSafeKeyDisplay(
@@ -295,7 +295,7 @@ export function displayTextOrWithheld(display: SecretSafeKeyDisplay): string {
  * verdict's own re-test, so the printed text would no longer be the tested
  * text -- `correct<NBSP>horse` beside a recorded `correct horse` would print
  * the secret byte for byte. Withholding keeps one string tested and printed,
- * the rule #2874 set for this module.
+ * the rule #2874 set for this family (its regex is in `secret-scan.ts`).
  */
 function maskedLabel(maskedText: string): string {
   return /[^ -~]/.test(maskedText)
@@ -411,7 +411,7 @@ export function exportAliasCollisionWarning(
  * and lets the value scan decide from the plaintext actually stored, which is
  * why this message promises something weaker than the deploy-time one. It can
  * also fire on a template the deploy handled cleanly, per
- * {@link collectDeclaredOutputNames}.
+ * `collectDeclaredOutputNames` (`names.ts`).
  */
 export function exportAliasCollisionScrubWarning(
   outputKey: string,
@@ -421,7 +421,7 @@ export function exportAliasCollisionScrubWarning(
   // A BELT, stated as one rather than as a hazard this mask is known to close
   // (issue #1958 item 9). What actually bounds the exposure is the COLLISION
   // TEST upstream, not this call: {@link scrubStack} warns only for a name that
-  // matched a DECLARED output name, and {@link collectDeclaredOutputNames} is
+  // matched a DECLARED output name, and `collectDeclaredOutputNames` (`names.ts`) is
   // `Object.keys(template.Outputs)` — so the string printed here is always one
   // the template itself spells, however the `Export.Name` intrinsic resolved.
   //

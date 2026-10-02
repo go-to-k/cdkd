@@ -793,8 +793,8 @@ export function maskedRecordRemedyFor(
    */
   causeScoped = false
 ): string {
-  // Spelled locally rather than imported: the only exported copy lives in
-  // `src/cli/commands/retire-cfn-stack.ts`, and a CLI -> deployment import
+  // Spelled locally rather than imported: the only copy exported to other
+  // modules lives in `src/cli/commands/retire-cfn-stack.ts`, and a CLI -> deployment import
   // edge for one string literal is the wrong trade.
   // Several modules keep their own copy for that same reason; no count is
   // given, following `recreate-targets/validate.ts`'s own note that an unfenced number

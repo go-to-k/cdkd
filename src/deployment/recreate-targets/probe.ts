@@ -111,7 +111,7 @@ export interface StatefulProbeClients {
  *
  * For every target whose sync {@link StatefulReason} is `null` — which for
  * these two types means DEFER, not "not stateful" (see
- * {@link isStatefulRecreateTargetSync}) — issues one single-page listing and
+ * `isStatefulRecreateTargetSync` (`validate.ts`)) — issues one single-page listing and
  * promotes the reason when the resource is not provably empty:
  *
  *   - `AWS::S3::Bucket` → `ListObjectVersions(MaxKeys=1)` against the

@@ -47,7 +47,7 @@
  * | holds a `NoEcho` parameter value               | refuse            | refuse            |
  *
  * The `NoEcho` row (issue [#4043](https://github.com/go-to-k/cdkd/issues/4043))
- * reads two corpora on both sides: the {@link noEchoParameterValueSeed} of
+ * reads two corpora on both sides: the `noEchoParameterValueSeed` (`secret-scan.ts`) of
  * every `NoEcho` value the stack holds, and the outputs pass's LOG-ONLY
  * needles (an `Fn::Base64` encoding, an `Fn::Split` piece). The diff resolves
  * its outputs into bags of their OWN (`resolveTemplateOutputs`'
@@ -129,7 +129,7 @@
  * - A `NoEcho` PARAMETER's value in an export name is refused
  *   (go-to-k/cdkd#4043) by containment, whatever route put it there: the
  *   verdict is seeded with every `NoEcho` value the stack holds
- *   ({@link noEchoParameterValueSeed}), and every name is resolved before any
+ *   (`noEchoParameterValueSeed` (`secret-scan.ts`)), and every name is resolved before any
  *   alias is decided. These are still published: a value that is not this
  *   stack's (another stack's `NoEcho` value through `Fn::ImportValue`, or a
  *   hand-authored nested child's own); a DERIVED spelling (an `Fn::Split`

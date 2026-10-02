@@ -112,7 +112,7 @@ const SECRET_SCAN_INVISIBLES = /[\p{Cc}\p{Cf}\p{Me}\p{Zl}\p{Zp}\p{Default_Ignora
  * SUPERSET of the printed-space verdict by construction: a name judged safe
  * was tested in the printed space AND in a wider one. A name whose ONLY hit is
  * in the detection space is masked in neither (its canonical needle is not in
- * the printed string), so {@link secretSafeKeyDisplay} withholds it rather
+ * the printed string), so `secretSafeKeyDisplay` (`warnings.ts`) withholds it rather
  * than printing it, and its post-mask re-test runs the detection arm too.
  *
  * Its COST is over-refusal, stated rather than hidden, in both directions: a
@@ -240,9 +240,9 @@ export function canonicalForSecretScan(text: string): string {
  * issue [#2874](https://github.com/go-to-k/cdkd/issues/2874) found. That bug
  * was three strings that could each hold a secret the others did not. These
  * two are one string and a trim of it: the trimmed one is a SUBSTRING of the
- * untrimmed one, and {@link secretSafeKeyDisplay} masks the UNTRIMMED string
+ * untrimmed one, and `secretSafeKeyDisplay` (`warnings.ts`) masks the UNTRIMMED string
  * and prints the trim of the result. Every verdict arm EXCEPT the detection arm
- * ({@link SECRET_DETECTION_ONLY}, whose hits {@link secretSafeKeyDisplay}
+ * ({@link SECRET_DETECTION_ONLY}, whose hits `secretSafeKeyDisplay` (`warnings.ts`)
  * withholds) implies the canonical needle occurs in that untrimmed string --
  * the raw arm too, since deleting
  * characters from a text containing the plaintext leaves the plaintext's own
