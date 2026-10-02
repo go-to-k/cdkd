@@ -242,7 +242,7 @@ export function replayPrefixScope(
  * `secrets` with the plaintext its resolved bag carries. `mask` reads the
  * latest needles and the bag by reference.
  */
-interface OpMasker {
+export interface OpMasker {
   readonly mask: MaskerFn;
   readonly addNamed: (record: {
     resourceType: unknown;

@@ -271,7 +271,7 @@ describe('DynamoDBGlobalTableProvider nested guards on a state replay (issue #15
  *
  * #1544 wired the downgrade at the `create()` call site only and recorded the
  * update sites as "left strict, deliberately" — but `update()` is replayed
- * too (`rollback-executor.ts`'s revert arm and `cdkd drift --revert` both call
+ * too (`rollback-executor/replay-revert.ts`'s revert arm and `cdkd drift --revert` both call
  * `update(..., previousState.properties, ...)`), so a state record carrying
  * either malformed shape strands the replay there as well.
  *

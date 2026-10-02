@@ -245,7 +245,7 @@ describe('DynamoDBGlobalTableProvider malformed BillingMode (issue #1513)', () =
   it('WARNS instead of throwing when the create is a state replay', async () => {
     activeTable();
 
-    // `rollback-executor.ts`'s reverse-replacement arm revives the OLD
+    // `rollback-executor/replay-reverse-replacement.ts`'s reverse-replacement arm revives the OLD
     // resource from `previousState.properties`. A record written by an older
     // binary can carry the malformed value this guard refuses, and the user
     // has no template-side remedy for a state record — so the refusal must

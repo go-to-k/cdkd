@@ -139,7 +139,7 @@ export const IAM_PROPAGATION_MAX_RETRIES = 26;
  * call sites wrap a DEFAULT-schedule `withRetry` inside their own outer loop
  * (`deploy-engine/replacement.ts`'s `--replace` fallback,
  * `deploy-engine/update-replace.ts`'s named replacement, and
- * `rollback-executor.ts`'s reverse-replacement). The inner loop is the one
+ * `rollback-executor/replay-reverse-replacement.ts`'s reverse-replacement). The inner loop is the one
  * this grid changes, and the outer one re-enters it per attempt, so the
  * product grows with it: total sleep on a cooldown at those sites measures
  * **487s -> 640s (8.1 -> 10.7 min)**. That is accepted, not overlooked -- it

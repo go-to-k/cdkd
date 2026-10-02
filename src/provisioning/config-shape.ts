@@ -321,7 +321,7 @@ export function requireConfigString(
  * The CREATE-path counterpart of {@link ConfigStringOptions.onUnusable}.
  *
  * `create()` is NOT always template-borne, which is the correction that made
- * this helper necessary: `rollback-executor.ts`'s reverse-replacement arm
+ * this helper necessary: `rollback-executor/replay-reverse-replacement.ts`'s reverse-replacement arm
  * revives the OLD resource by calling `provider.create(..., previousState.properties,
  * REPLAYING_STATE_CREATE_CONTEXT)`. A resource written by an older binary with a
  * value this guard now refuses would otherwise become un-rollbackable, with only

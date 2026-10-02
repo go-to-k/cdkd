@@ -366,7 +366,7 @@ describe('the stateful-replace refusal and its documented example stay in sync',
       'src/deployment/deploy-engine/update-replace.ts',
       'src/deployment/recreate-target-readers.ts',
       'src/deployment/recreate-targets.ts',
-      'src/deployment/rollback-executor.ts',
+      'src/deployment/rollback-executor/replay-reverse-replacement.ts',
     ]);
 
     // Scoped to the table that FOLLOWS the sentence, not the whole page: a row

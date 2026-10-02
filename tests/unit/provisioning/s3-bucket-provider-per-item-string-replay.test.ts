@@ -400,7 +400,7 @@ describe('the SKIP UNIT matches the API, which is the per-site decision', () => 
 });
 
 describe('update path: the wiring nothing else covers', () => {
-  // `rollback-executor.ts`'s revert arm and `cdkd drift --revert` both call
+  // `rollback-executor/replay-revert.ts`'s revert arm and `cdkd drift --revert` both call
   // `update(..., previousState.properties, ...)`, so the DESIRED bag on this
   // path is a state record too. Without these, dropping the third argument at
   // an update call site leaves the suite green while the malformed record

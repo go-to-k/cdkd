@@ -6,13 +6,13 @@ paths:
 
 # Provider replay context, pre-flight refusals, `effectiveProperties`
 
-See also [provider-property-fidelity.md](provider-property-fidelity.md).
+Also: [provider-property-fidelity.md](provider-property-fidelity.md).
 
 ## `replayingState`
 
-`CreateContext.replayingState` = the properties came from a cdkd STATE record, not the template; set ONLY by `rollback-executor.ts`'s reverse-replacement arm, and `UpdateContext.replayingState` by its two revert arms. `drift --revert` sets `desiredFromAwsReadback` instead. Absent / `false` = a template-path create.
+`CreateContext.replayingState` = the properties came from a cdkd STATE record, not the template; set ONLY by the replay's reverse-replacement arm (`deployment/rollback-executor/replay-reverse-replacement.ts`), and `UpdateContext.replayingState` by its two revert arms. `drift --revert` sets `desiredFromAwsReadback` instead. Absent / `false` = a template-path create.
 
-A pre-flight refusal ([docs/provider-rules.md](../../docs/provider-rules.md)) MUST downgrade to a warning when it is set: the user cannot edit a state record from the template. It licenses nothing else — not a dry-run signal, and no relaxing of data-safety guards or input validation. Two exceptions, stated AT the refusal: AWS rejects the combination 100% of the time (issue [#1975](https://github.com/go-to-k/cdkd/issues/1975)), so the replay could not have succeeded; or every downgrade would report SUCCESS over an unreadable resource.
+A pre-flight refusal ([docs/provider-rules.md](../../docs/provider-rules.md)) MUST downgrade to a warning when it is set: the user cannot edit a state record via the template. It licenses nothing else — not a dry-run signal, and no relaxing of data-safety guards or input validation. Two exceptions, stated AT the refusal: AWS rejects the combination 100% of the time (issue #1975), so the replay could not have succeeded; or every downgrade would report SUCCESS over an unreadable resource.
 
 Prefer the shared `replayWarn(logger, context)` (`config-shape.ts`) over a hand-written refusal, and `configStringRefusal(...)` for a per-ITEM read, which SKIPs instead of defaulting onto a LIVE resource. A malformed OBJECT block reads as EMPTY, which is not always inert (S3 replication `Filter: {}` means "replicate EVERY object"). A provider declaring no `context` parameter silently ignores the argument: no type error, just a refusal still firing on a replay.
 
