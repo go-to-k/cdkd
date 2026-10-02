@@ -759,31 +759,6 @@ export interface ResolverContext {
 }
 
 /**
- * CloudFormation Intrinsic Function Resolver
- *
- * Resolves CloudFormation intrinsic functions in template values before
- * sending them to Cloud Control API or SDK providers.
- *
- * Supported functions:
- * - Ref (resources and parameters)
- * - Fn::GetAtt
- * - Fn::Join
- * - Fn::Sub
- * - Fn::Select
- * - Fn::Split
- * - Fn::If (Conditions)
- * - Fn::Equals
- * - Fn::And (logical AND)
- * - Fn::Or (logical OR)
- * - Fn::Not (logical NOT)
- * - Fn::ImportValue (cross-stack references)
- * - Fn::GetStackOutput (cross-stack/cross-region output reference)
- * - Fn::FindInMap (mapping lookups)
- * - Fn::Base64 (base64 encoding)
- * - Fn::GetAZs (availability zone listing)
- * - Fn::Cidr (CIDR address block calculation)
- */
-/**
  * AWS Account information cache
  */
 export interface AwsAccountInfo {
@@ -833,7 +808,7 @@ export interface CachedAccountIdentity {
  * entry. A LIBRARY caller can install `AwsClients` for account A, deploy, then
  * install account B's in the same process (or run both in per-stack scopes);
  * keyed by nothing, B's `AWS::AccountId` and every ARN built from it resolved
- * as A's. The fabricated window and the in-flight slot below share the key.
+ * as A's. The fabricated window and the in-flight slot in `account-drain.ts` share the key.
  */
 export const cachedAccountIdentities = new Map<string, CachedAccountIdentity>();
 
