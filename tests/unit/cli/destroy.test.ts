@@ -1069,6 +1069,49 @@ describe('cdkd destroy: empty selection names a Stage that failed to load (go-to
     expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('MyStage-MyStack');
   });
 
+  it('refuses --all when SOME stacks synthesized beside a Stage that failed to load', async () => {
+    // Destroying the survivors and exiting 0 left the Stage's stacks running
+    // with the Stage warning as the only signal (go-to-k/cdkd#3507).
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other')],
+      failedStages,
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Other', region: 'us-east-1' },
+      { stackName: 'MyStage-MyStack', region: 'us-east-1' },
+    ]);
+
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow('process.exit-mock');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    // Refused before the bucket is even listed, let alone destroyed.
+    expect(mockListStacks).not.toHaveBeenCalled();
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(messages).toContain(
+      `--all would destroy only part of this app; refusing. Synthesized: Other. ${note}`
+    );
+    expect(messages).toContain('or name the stacks to destroy explicitly.');
+  });
+
+  it('still destroys every app stack with --all when every Stage loaded', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other')],
+      failedStages: [],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+
+    await runDestroy(['--all', '--yes']);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    expect(mockRunDestroyForStack.mock.calls[0]?.[0]).toBe('Other');
+  });
+
   it('names the Stage on the no-pattern arm when the only deployed stack sat under it', async () => {
     mockSynthesize.mockResolvedValue({
       manifest: {},

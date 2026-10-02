@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { DeployCancelledError } from '../../../src/utils/error-handler.js';
+import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 
 /**
  * Issue [#1960](https://github.com/go-to-k/cdkd/issues/1960) — `cdkd deploy`
@@ -658,5 +659,30 @@ describe('deploy names a Stage that failed to load (issue #3482)', () => {
     expect(code).toBe(1);
     expect(reported()).toContain('No stacks matching MyStage/Api found in assembly');
     expect(reported()).not.toContain('failed to load');
+  });
+
+  // Issue go-to-k/cdkd#3507: `--all` with a surviving stack next to a failed
+  // Stage deployed the survivor and exited 0, the Stage's warning the only
+  // signal. Refused before any stack reaches the engine.
+  it('refuses --all when a Stage failed to load, naming it and the survivors', async () => {
+    synthFailedStages.value = [
+      { stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' },
+    ];
+
+    const code = await runDeploy(['--all', '--yes']);
+
+    expect(code).toBe(1);
+    expect(reported()).toContain('--all would deploy only part of this app; refusing.');
+    expect(reported()).toContain('Synthesized: TopStack');
+    expect(reported()).toContain('Stage MyStage failed to load');
+    expect(vi.mocked(DeployEngine)).not.toHaveBeenCalled();
+  });
+
+  it('still deploys every stack with --all when every Stage loaded', async () => {
+    const code = await runDeploy(['--all', '--yes']);
+
+    expect(code).toBeUndefined();
+    expect(reported()).not.toContain('refusing');
+    expect(vi.mocked(DeployEngine)).toHaveBeenCalled();
   });
 });

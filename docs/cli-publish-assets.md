@@ -12,9 +12,9 @@ is the "CI builds and uploads the assets, a separate runner deploys" split that
 pipelines often want.
 
 ```bash
-cdkd publish-assets                          # every stack in the app (or the single one)
+cdkd publish-assets                          # the single stack, when the app defines only one
 cdkd publish-assets MyStack MyOtherStack     # specific stacks
-cdkd publish-assets --all                    # every stack in the app, explicitly
+cdkd publish-assets --all                    # every stack in the app
 cdkd publish-assets 'My*'                    # wildcard
 cdkd publish-assets -a cdk.out               # skip synth — read a pre-synthesized assembly
 ```
@@ -48,8 +48,11 @@ The concurrency defaults are the same as `cdkd deploy`'s; see
 - Stack-name matching is the same as `deploy`, `diff` and `destroy`: a positional
   argument containing `/` is matched against the CDK display path, one without it
   against the physical CloudFormation name. `*` wildcards work in both forms.
-- With no argument, `publish-assets` covers every stack in the app, or the single
-  stack when the app defines only one.
+- With no argument, `publish-assets` covers the single stack when the app
+  defines only one; with more than one it lists them and exits `1`.
+- `--all` covers every stack in the app. When a CDK Stage failed to load,
+  `--all` is refused rather than publishing only the stacks that did synthesize
+  ([the failed-Stage note](cli-deploy-safety.md#a-pre-synthesized-assembly-is-trusted-input)).
 - Each selected stack's asset manifest is fed into the same work graph `deploy`
   uses, with stack concurrency set to zero so no stack-deploy work runs.
 

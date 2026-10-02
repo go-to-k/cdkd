@@ -24,10 +24,11 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 const mockSynthesize = vi.hoisted(() => vi.fn());
+const mockExpandMacros = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
   Synthesizer: vi.fn().mockImplementation(() => ({
     synthesize: mockSynthesize,
-    expandMacrosForStacks: vi.fn(async () => undefined),
+    expandMacrosForStacks: mockExpandMacros,
   })),
   synthesisStatusMessage: (_app: unknown, msg: string) => msg,
 }));
@@ -142,5 +143,47 @@ describe('cdkd diff names a Stage that failed to load (issue #3482)', () => {
     expect(reported).not.toContain('Multiple stacks found');
     expect(reported).toContain('No stacks found in assembly');
     expect(reported).toContain('Stage MyStage failed to load');
+  });
+});
+
+describe('cdkd diff --all refuses a partial app when a Stage failed to load (issue #3507)', () => {
+  beforeEach(() => {
+    mockSynthesize.mockReset();
+    mockLoggerError.mockReset();
+    mockExpandMacros.mockClear();
+  });
+
+  it('refuses --all with surviving stacks, naming the Stage and the survivors', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack('TopStack')],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
+    });
+
+    const reported = await runDiff(['--all']);
+
+    expect(reported).toContain('--all would diff only part of this app; refusing.');
+    expect(reported).toContain('Synthesized: TopStack');
+    expect(reported).toContain('Stage MyStage failed to load');
+    // Refused, not merely logged: nothing was selected for diffing.
+    expect(mockExpandMacros).not.toHaveBeenCalled();
+  });
+
+  it('still selects every stack with --all when every Stage loaded', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack('TopStack')],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      failedStages: [],
+    });
+
+    const reported = await runDiff(['--all']);
+
+    expect(reported).not.toContain('refusing');
+    expect(mockExpandMacros).toHaveBeenCalledWith(
+      [expect.objectContaining({ stackName: 'TopStack' })],
+      expect.anything()
+    );
   });
 });
