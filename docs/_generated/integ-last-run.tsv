@@ -273,7 +273,7 @@ recreate-via-sdk-provider	2026-10-02T09:33:03Z	PASS	100	verify.sh	rc ok, orph cl
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
 remove-protection	2026-10-02T11:41:36Z	PASS	2099	verify.sh	rc ok, orph clean (#4427)
-remove-protection-compensation	2026-10-02T08:36:10Z	PASS	255	verify.sh	rc ok, orph clean (PR #4397 ASG instance arm; pre-fix arm RED at the instance compensation line)
+remove-protection-compensation	2026-10-02T13:25:18Z	PASS	250	verify.sh	rc ok, orph clean (PR #4435 Cloud Control ASG delegate reuse regression)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-10-01T11:06:17Z	PASS	70	verify.sh	rc ok, orph clean; #4265 reworded diagnosis C_MARKER
 replacement-fanout	2026-09-30T08:34:00Z	PASS	85	verify.sh	PR #4208 (#4157 CodeCommit update/delete verify the recorded RepositoryId; DeleteContext.recordedAttributes from every delete caller) @27e8e19/5f13870; rc ok, destroy 0 errors, no state/lock/CFn leftovers
