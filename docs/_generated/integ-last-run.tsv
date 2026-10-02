@@ -126,7 +126,7 @@ eventbridge-pipes	2026-09-29T02:38:06Z	PASS	180	verify.sh	PR #4028 round 2 (#397
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-01T10:13:53Z	PASS	100	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
-export	2026-10-02T01:07:30Z	PASS	225	verify.sh	PR #4381 resolver cross-stack and dynamic-ref split; rc ok, orph clean
+export	2026-10-02T05:29:15Z	PASS	235	verify.sh	PR #4392 ApiGatewayV2::Stage imported (CreatedDate unchanged); dry-run variant PASS 85s; rc ok, orph clean
 export-nested-stack	2026-10-01T18:54:38Z	PASS	190	verify.sh	rc ok, orph clean; #3507 export arm
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
 fsx-lustre	2026-09-29T11:59:09Z	PASS	872	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
