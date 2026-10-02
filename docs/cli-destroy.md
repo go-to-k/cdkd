@@ -556,8 +556,8 @@ delete: `ec2:DescribeInstanceAttribute` for an EC2 instance,
 `autoscaling:DescribeAutoScalingGroups` for an Auto Scaling group plus
 `ec2:DescribeInstanceAttribute` for each instance it launched (one read per
 instance; a failed re-enable reads the instance back with
-`ec2:DescribeInstances`, and without it an instance that is already gone is
-reported at ERROR rather than warn), and
+`ec2:DescribeInstances`, and without it an instance that is shutting down or
+terminated is reported at ERROR rather than warn), and
 `cloudformation:GetResource` (the IAM action behind Cloud Control's
 `GetResource`), plus whatever the type's read handler calls, for a Cloud
 Control type. A read that is refused leaves the delete running and
