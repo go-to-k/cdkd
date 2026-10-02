@@ -5,7 +5,7 @@
 # GENERATED SHAPE - do not hand-edit. After recording a run, run:
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
-acm-certificate	2026-10-01T19:54:22Z	PASS	141	verify.sh	rc ok, orph clean; #4275 secret-derived immutable arm
+acm-certificate	2026-10-02T05:50:45Z	PASS	135	verify.sh	rc ok, orph clean; #1160 removal reset + CertificateExport absent=DISABLED
 agentcore-tools	2026-09-14T14:50:12Z	PASS	113	verify.sh	#3103 gating: 3 phases ok, 5 deleted 0 err 0 orph
 alb	2026-09-29T04:11:48Z	FAIL	220	verify.sh	PR #4032 merge-gate run; pre-existing listener routing.http.response.server.enabled removal assertion (#2085, tooling backlog); Targets update phases pass; destroy clean, 0 orphans
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
