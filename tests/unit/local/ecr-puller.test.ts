@@ -1170,7 +1170,9 @@ describe('pullEcrImage', () => {
         'docker pull 111111111111.dkr.ecr.us-east-1.amazonaws.com/Team/App:V1 failed: ' +
           'docker exited with code 1'
       );
-      // go-to-k/cdkd#2075: the redacted composer's cause, not the raw spawn error.
+      // go-to-k/cdkd#2075: a cause is threaded. The foreground spawn captures
+      // no streams, so raw and redacted read alike here; the login case below
+      // is the one that pins the redacted composer.
       expect(((err as Error).cause as Error | undefined)?.message).toBe('docker exited with code 1');
     } finally {
       vi.unstubAllEnvs();

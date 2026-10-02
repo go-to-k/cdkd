@@ -155,6 +155,14 @@ describe('provider error-cause critic — the real tree', () => {
       expect(composerFiles).toContain(file);
     }
     expect(CAUSE_COMPOSERS.size).toBe(3);
+    // `viaComposer` must DISCRIMINATE: the reference site threads the caught
+    // value directly, and most threaded sites do not go through a composer.
+    expect(report.composerThreaded).toBeLessThan(report.threaded / 4);
+    const reference = report.sites.filter(
+      (s) => s.file.endsWith('sqs-queue-policy-provider.ts') && s.verdict === 'threaded'
+    );
+    expect(reference.length).toBeGreaterThan(0);
+    expect(reference.some((s) => s.viaComposer)).toBe(false);
   });
 
   it('classifies the reference site (sqs-queue-policy-provider) as threaded', () => {
@@ -424,6 +432,14 @@ describe('provider error-cause critic — registered cause composers', () => {
     expect(
       verdicts(
         site(
+          "import { type redactedDockerCause } from '../utils/docker-cmd.js';",
+          "redactedDockerCause(err, ['tag'])"
+        )
+      )
+    ).toEqual(['dropped']);
+    expect(
+      verdicts(
+        site(
           "import type { redactedDockerCause } from '../utils/docker-cmd.js';",
           "redactedDockerCause(err, ['tag'])"
         )
@@ -458,6 +474,31 @@ describe('provider error-cause critic — registered cause composers', () => {
           }
         }`)
     ).toEqual(['dropped']);
+  });
+
+  it('refuses a composer shadowed by a function, a parameter, a destructuring or a catch binding', () => {
+    const imp = "import { redactedDockerCause } from '../utils/docker-cmd.js';";
+    const call = "throw new AssetError('m', redactedDockerCause(err, ['tag']));";
+    for (const body of [
+      `export function f(): void {
+        function redactedDockerCause(e: unknown, a: string[]) { return new Error(String(e)); }
+        try { go(); } catch (err) { ${call} }
+      }`,
+      `export function f(redactedDockerCause: (e: unknown, a: string[]) => Error): void {
+        try { go(); } catch (err) { ${call} }
+      }`,
+      `export function f(fake: any): void {
+        const { redactedDockerCause } = fake;
+        try { go(); } catch (err) { ${call} }
+      }`,
+      `export function f(): void {
+        try { go(); } catch (redactedDockerCause) {
+          try { go(); } catch (err) { ${call} }
+        }
+      }`,
+    ]) {
+      expect(verdicts(`${imp}\n${body}`), body).toEqual(['dropped']);
+    }
   });
 
   it('refuses an UNREGISTERED call even when it is handed the caught value', () => {
@@ -508,6 +549,14 @@ describe('provider error-cause critic — exemptions must match EXACTLY', () => 
     );
     expect(report.sites.map((s) => s.verdict)).toEqual(['threaded']);
     expect(report.exemptionMismatches).toEqual([{ exemption, matched: 0 }]);
+  });
+
+  it('does not exempt the same class and function in a DIFFERENT file', () => {
+    const dir = tree(dropping(1));
+    writeFileSync(join(dir, 'y.ts'), dropping(1));
+    const report = buildReport(dir, undefined, [exemption]);
+    const byFile = Object.fromEntries(report.sites.map((s) => [s.file.split('/').pop(), s.verdict]));
+    expect(byFile).toEqual({ 'x.ts': 'exempt', 'y.ts': 'dropped' });
   });
 
   it('does not exempt the same class in a DIFFERENT function', () => {
@@ -610,7 +659,7 @@ describe('provider error-cause critic — probes against the REAL src/ tree', ()
   it('passes on an unmutated copy (negative control)', () => {
     const { status, stdout } = runCheck(copySrcTree());
     expect(status, stdout).toBe(0);
-    expect(stdout).toContain('provider error-cause check OK');
+    expect(stdout).toContain('error-cause check OK');
   }, SPAWN_TIMEOUT_MS);
 
   it('FAILS when a real provider stops threading its cause', () => {
@@ -812,6 +861,30 @@ describe('provider error-cause critic — probes against the REAL src/ tree', ()
     expect(stderr).toContain('cannot read directory');
   }, SPAWN_TIMEOUT_MS);
 
+  it('FAILS the composer floor when the population drifts off composers', () => {
+    const dir = copySrcTree();
+    // Threading the raw value instead keeps every site `threaded` (no drop to
+    // report), so only the per-shape floor can see the arm go unexercised.
+    for (const [from, to] of [
+      ['redactedDockerCause(err, retagArgs)', 'err as Error'],
+      ['redactedDockerCause(err, loginArgs)', 'err as Error'],
+      ['redactedDockerCause(err, tagArgs)', 'err as Error'],
+      ['redactedDockerCause(err, pushArgs)', 'err as Error'],
+    ] as const) {
+      mutate(dir, 'assets/docker-asset-publisher.ts', from, to);
+    }
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('constructions threaded through a registered composer');
+    expect(stderr).not.toContain('NOT threaded as `cause`');
+  }, SPAWN_TIMEOUT_MS);
+
+  it('refuses an EMPTY --root= rather than walking the cwd', () => {
+    const proc = run(['--root=']);
+    expect(proc.status).toBe(2);
+    expect(proc.stderr).toContain('--root= requires a value');
+  }, SPAWN_TIMEOUT_MS);
+
   it('rejects an unrecognized argument instead of silently doing nothing', () => {
     const proc = run(['--providers-dir=/tmp']);
     expect(proc.status).toBe(2);
@@ -828,7 +901,7 @@ describe('provider error-cause critic — entrypoint mechanics', () => {
     symlinkSync(SCRIPT, link);
     const proc = run([], link);
     expect(proc.status).toBe(0);
-    expect(proc.stdout).toContain('provider error-cause check OK');
+    expect(proc.stdout).toContain('error-cause check OK');
   }, SPAWN_TIMEOUT_MS);
 
   it('emits COMPLETE json on a pipe', () => {

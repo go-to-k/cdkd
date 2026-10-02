@@ -29,6 +29,8 @@ interface Composer {
   /** Shapes the input so the composer takes its DERIVING arm, not identity. */
   readonly prepare: (inner: Error) => Error;
   readonly derive: (inner: Error) => Error | undefined;
+  /** Signals this composer's deriving arm can be handed; default all. */
+  readonly signals?: readonly Signal[];
 }
 
 /** One entry per registered composer — the registry is compared against this. */
@@ -46,6 +48,9 @@ const COMPOSERS: Record<string, Composer> = {
       return inner;
     },
     derive: (inner) => normalizeAwsError(inner, { bucket: 'state-bucket', operation: 'PutObject' }),
+    // Its deriving arm needs `name: 'Unknown'`, which is never a throttle
+    // NAME, so the name-only signal cannot reach that arm at all.
+    signals: ['throttling', 'transient', 'non-retryable'],
   },
   maskSecretsInError: {
     // A bag with nothing to mask is returned by identity, so the message
@@ -67,11 +72,17 @@ const INERT: Composer = {
   derive: (inner) => new Error(inner.message),
 };
 
-type Signal = 'throttling' | 'transient' | 'non-retryable';
+type Signal = 'throttling' | 'throttling-by-name' | 'transient' | 'non-retryable';
 
 function failure(signal: Signal): Error {
   const inner = new Error('upstream failure') as Error & Record<string, unknown>;
   if (signal === 'throttling') inner.$metadata = { httpStatusCode: 429 };
+  // The realistic AWS throttle: a throttle NAME on an HTTP 400, which only
+  // `isThrottlingError`'s name arm can see.
+  if (signal === 'throttling-by-name') {
+    inner.name = 'ThrottlingException';
+    inner.$metadata = { httpStatusCode: 400 };
+  }
   if (signal === 'transient') inner.$metadata = { httpStatusCode: 503 };
   if (signal === 'non-retryable') {
     inner.$metadata = { httpStatusCode: 400 };
@@ -82,11 +93,17 @@ function failure(signal: Signal): Error {
 
 const CLASSIFIER: Record<Signal, (error: unknown) => boolean> = {
   throttling: isThrottlingError,
+  'throttling-by-name': isThrottlingError,
   transient: isTransientServerError,
   'non-retryable': isMarkedNonRetryable,
 };
 
-const SIGNALS: readonly Signal[] = ['throttling', 'transient', 'non-retryable'];
+const SIGNALS: readonly Signal[] = [
+  'throttling',
+  'throttling-by-name',
+  'transient',
+  'non-retryable',
+];
 
 /** The classifier verdict through a wrapper whose cause the composer derived. */
 function verdict(composer: Composer, signal: Signal): { derived: boolean; classified: boolean } {
@@ -104,7 +121,7 @@ describe('registered cause composers keep the classifier verdict (issue #2075)',
   });
 
   for (const [name, composer] of Object.entries(COMPOSERS)) {
-    for (const signal of SIGNALS) {
+    for (const signal of composer.signals ?? SIGNALS) {
       it(`${name}: a ${signal} failure still classifies through the derived cause`, () => {
         const { derived, classified } = verdict(composer, signal);
         // The DERIVING arm ran: an identity return would pass for any composer.

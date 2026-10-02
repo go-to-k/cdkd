@@ -620,7 +620,12 @@ describe('runEcsTask — image preparation (G1)', () => {
     const SCRIPT_TAG = "img:v2' -> 'ok'. Tagged cleanly ('y";
     captured.responder = happyDockerResponder();
     dockerBuildStubs.buildDockerImage.mockImplementationOnce(async () => SCRIPT_TAG);
-    dockerCmdStubs.runDockerStreaming.mockRejectedValueOnce(new Error('tag: BOOM'));
+    const raw = Object.assign(new Error('tag: BOOM'), {
+      stderr: 'tag: BOOM',
+      stdout: '',
+      exitCode: 1,
+    });
+    dockerCmdStubs.runDockerStreaming.mockRejectedValueOnce(raw);
     const c = makeContainer({ name: NAME, image: { kind: 'cdk-asset', assetHash: 'h0' } });
 
     const err = await runEcsTask(makeTask({
@@ -649,6 +654,9 @@ describe('runEcsTask — image preparation (G1)', () => {
     // derived from the spawn failure rather than being it.
     expect(err?.cause).toBeInstanceOf(Error);
     expect((err?.cause as Error).message).toContain('tag: BOOM');
+    expect(err?.cause).not.toBe(raw);
+    expect(err?.cause).not.toHaveProperty('stderr');
+    expect((err?.cause as { exitCode?: number }).exitCode).toBe(1);
   });
 
   it('cdk-asset with a plain `directory` source → wrapError renders it bare', async () => {

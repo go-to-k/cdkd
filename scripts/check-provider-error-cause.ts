@@ -1,5 +1,5 @@
 /**
- * Provider error-cause threading critic (issue #2040).
+ * Error-cause threading critic (issue #2040; all of `src/` since #2075).
  *
  * WHAT THIS CHECKS
  * ----------------
@@ -10,7 +10,7 @@
  *   - `isThrottlingError`       (throttle error NAMES + retryable statuses)
  *   - `isMarkedNonRetryable`    (the `Symbol.for('cdkd.nonRetryable')` marker)
  *
- * Each walks `error.cause` up to a bounded depth. A provider `catch` site that
+ * Each walks `error.cause` up to a bounded depth. A `catch` site that
  * builds a `ProvisioningError` (or any other `CdkdError` subclass) WITHOUT
  * threading the caught value as `cause` makes all three INERT for that call:
  * the classifiers see a cdkd-authored wrapper with no `$metadata` and no
@@ -95,6 +95,12 @@
  * directions: a new dropped site in an exempted function is not absorbed, and
  * an exemption the code no longer needs is not left behind.
  *
+ * THE BOUND: the key is the enclosing function, not the line, so a SWAP inside
+ * one exempted function — the exempted site threaded AND a new same-class drop
+ * added in the same edit — keeps the count and stays green. Lines drift with
+ * every unrelated edit, which is why they are not the key; review of an edit
+ * to an exempted function is what covers the swap.
+ *
  * HOW THE RULE WAS CALIBRATED
  * ---------------------------
  * Against the pre-fix tree, not against the issue's prose — the issue records
@@ -109,12 +115,13 @@
  *
  *  1. COLLAPSE TOWARD ZERO — the parse silently yields nothing (a renamed
  *     directory, a compiler-API change, a file that stops parsing). The FLOORS
- *     below catch this: minimum files, constructions, catch-sited, helper-sited
- *     and already-threaded counts, plus a hard failure on any file with parse
- *     diagnostics (a file that fails to parse contributes zero sites, and the
- *     floors have enough slack that up to three whole provider files could
- *     disappear unnoticed — so the diagnostics check, not the numbers, is what
- *     actually closes it).
+ *     below catch this: minimum files (overall and under the providers
+ *     subtree), constructions, catch-sited, helper-sited, already-threaded and
+ *     composer-threaded counts, plus a hard failure on any file with parse
+ *     diagnostics. A file that fails to parse contributes zero sites, and over
+ *     `src/` the floors leave 82 files and 196 constructions of slack
+ *     (measured 2026-10-02) — so the diagnostics check, not the numbers, is
+ *     what actually closes it.
  *
  *  2. COLLAPSE TOWARD GREEN — the classifier itself degrades so that everything
  *     reads as threaded. No floor can see this: the counts are unchanged and
@@ -486,8 +493,8 @@ function isThreaded(
 
   if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
     const composer = context.composers.get(node.expression.text);
-    // A `const` of the same name in an enclosing block shadows the import.
-    if (!composer || nearestDeclaration(node, node.expression.text)) return false;
+    // ANY enclosing declaration of the same name shadows the import.
+    if (!composer || isShadowed(node, node.expression.text)) return false;
     const argument = node.arguments[composer.argument];
     return argument !== undefined && isThreaded(argument, targets, context, depth + 1);
   }
@@ -517,6 +524,54 @@ function isThreaded(
   // Everything else — a property access, an unregistered call, a `new`, a
   // literal, an object or template expression — is a DERIVED value, not the
   // caught one.
+  return false;
+}
+
+/** Every identifier a binding name (a plain name or a destructuring pattern) binds. */
+function bindingNames(name: ts.BindingName): string[] {
+  if (ts.isIdentifier(name)) return [name.text];
+  const out: string[] = [];
+  for (const element of name.elements) {
+    if (ts.isBindingElement(element)) out.push(...bindingNames(element.name));
+  }
+  return out;
+}
+
+/**
+ * Is `name` declared in a scope enclosing `use` by anything OTHER than an
+ * import — a `const` / `let` / `var` (destructured included), a function or
+ * class declaration, a parameter, or a `catch` binding? Any of them shadows
+ * the registered import, so the call is not the composer.
+ */
+function isShadowed(use: ts.Node, name: string): boolean {
+  let current: ts.Node | undefined = use.parent;
+  while (current) {
+    if (ts.isCatchClause(current) && current.variableDeclaration) {
+      if (bindingNames(current.variableDeclaration.name).includes(name)) return true;
+    }
+    if (ts.isFunctionLike(current)) {
+      for (const parameter of current.parameters) {
+        if (bindingNames(parameter.name).includes(name)) return true;
+      }
+    }
+    const statements = (current as unknown as { statements?: ts.NodeArray<ts.Statement> })
+      .statements;
+    if (statements) {
+      for (const statement of statements) {
+        if (ts.isVariableStatement(statement)) {
+          for (const declaration of statement.declarationList.declarations) {
+            if (bindingNames(declaration.name).includes(name)) return true;
+          }
+        } else if (
+          (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) &&
+          statement.name?.text === name
+        ) {
+          return true;
+        }
+      }
+    }
+    current = current.parent;
+  }
   return false;
 }
 
@@ -919,6 +974,17 @@ const SELF_PROBES: readonly SelfProbe[] = [
     expected: ['dropped'],
   },
   {
+    name: 'a same-named function SHADOWING the composer import is dropped',
+    source: `import { redactedDockerCause } from '../utils/docker-cmd.js';
+    function f() {
+      function redactedDockerCause(e: unknown, a: string[]) { return new Error(String(e)); }
+      try { go(); } catch (err) {
+        throw new AssetError('m', redactedDockerCause(err, ['tag']));
+      }
+    }`,
+    expected: ['dropped'],
+  },
+  {
     name: 'a registered composer handed something OTHER than the caught value is dropped',
     source: `import { redactedDockerCause } from '../utils/docker-cmd.js';
     try { go(); } catch (err) {
@@ -1071,7 +1137,14 @@ function main(argv: readonly string[]): number {
     if (arg === '--json') {
       json = true;
     } else if (arg.startsWith('--root=')) {
-      root = resolve(arg.slice('--root='.length));
+      const value = arg.slice('--root='.length);
+      // An empty value would resolve to the cwd and walk the whole repo,
+      // node_modules included, before failing on a floor for an unclear reason.
+      if (value === '') {
+        process.stderr.write('--root= requires a value\n');
+        return 2;
+      }
+      root = resolve(value);
     } else {
       process.stderr.write(`Unrecognized argument: ${arg}\n`);
       return 2;
@@ -1085,7 +1158,7 @@ function main(argv: readonly string[]): number {
     table = buildErrorClassTable();
   } catch (error) {
     process.stderr.write(
-      `provider error-cause check FAILED: could not derive the error-class table: ` +
+      `error-cause check FAILED: could not derive the error-class table: ` +
         `${error instanceof Error ? error.message : String(error)}\n`
     );
     return 1;
@@ -1169,14 +1242,14 @@ function main(argv: readonly string[]): number {
   }
 
   if (failures.length > 0) {
-    process.stderr.write(`provider error-cause check FAILED (${failures.length} problems)\n\n`);
+    process.stderr.write(`error-cause check FAILED (${failures.length} problems)\n\n`);
     for (const failure of failures) process.stderr.write(`  - ${failure}\n`);
     process.stderr.write('\n');
     return 1;
   }
 
   process.stdout.write(
-    `provider error-cause check OK — ${report?.filesScanned} files, ` +
+    `error-cause check OK — ${report?.filesScanned} files, ` +
       `${report?.constructions} error constructions across ${report?.errorClasses} error classes ` +
       `(${report?.threaded} cause-threaded, ${report?.composerThreaded} of them through a ` +
       `registered composer; ${report?.catchSited} in a catch + ${report?.helperSited} via a ` +

@@ -510,7 +510,7 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-handled-property-wiring.ts --check',
         cache: false,
       },
-      // Issue #2040 — every provider `catch` site that wraps an AWS error must
+      // Issues #2040 / #2075 — every `catch` site under src/ that wraps an AWS error must
       // thread it as `cause`, or `isTransientServerError` / `isThrottlingError`
       // / `isMarkedNonRetryable` (all of which walk `.cause`) are INERT for that
       // call and the same AWS failure is retryable in one provider and terminal
