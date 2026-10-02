@@ -170,8 +170,9 @@ run AGENTS.md's leftover check, which the `deployments/` store survives.
 never substitute for it** (go-to-k/cdkd#2383) — they are its children and
 inherit its premise. The parent runs its round once the lane reports
 merge-ready, ONCE, on the final sha — brief each reviewer to read by explicit
-sha after `git fetch origin refs/pull/<N>/head:refs/review/pr-<N>`: `FETCH_HEAD`
-is shared across worktrees, and the short `pull/<N>/head` source under
-`fetch.prune` DELETES the named ref on a re-fetch. A later fix
+sha after `git fetch origin +refs/pull/<N>/head:refs/review/pr-<N>`:
+`FETCH_HEAD` is shared across worktrees (a peer's fetch swaps it mid-read), the
+short `pull/<N>/head` source under `fetch.prune` DELETES the named ref on a
+re-fetch, and without `+` a force-pushed fix round is rejected. A later fix
 round goes to the same reviewer with the delta. **The reviewer set is
 `/review-pr`'s**, which sizes `src/**` only: count the FIXTURE into it too.
