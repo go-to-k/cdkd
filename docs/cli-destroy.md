@@ -414,7 +414,7 @@ effectively a no-op there.
 | `AWS::EC2::Instance` | `DisableApiTermination` | `DescribeInstanceAttribute` read, then `ModifyInstanceAttribute(DisableApiTermination={Value:false})` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` | `ModifyLoadBalancerAttributes([{Key: 'deletion_protection.enabled', Value: 'false'}])` |
 | `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) | `UpdateUserPool(DeletionProtection='INACTIVE')` with the pool's own settings from `DescribeUserPool` sent back alongside. See [the Cognito notes](#cognito-user-pools) below. |
-| `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) | `UpdateAutoScalingGroup(DeletionProtection='none')` followed by `DeleteAutoScalingGroup(ForceDelete=true)`, so AWS terminates running instances as part of the delete |
+| `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`), and `DisableApiTermination` on each instance the group launched | `DescribeAutoScalingGroups` read, then `UpdateAutoScalingGroup(DeletionProtection='none')`; then a second `DescribeAutoScalingGroups` to list the instances the group holds, and for each one a `DescribeInstanceAttribute` read and `ModifyInstanceAttribute(DisableApiTermination={Value:false})`; then `DeleteAutoScalingGroup(ForceDelete=true)`, so AWS terminates running instances as part of the delete |
 | `AWS::EMR::Cluster` | `Instances.TerminationProtected` | `SetTerminationProtection(TerminationProtected=false)`, then `TerminateJobFlows` |
 | `AWS::DSQL::Cluster` | `DeletionProtectionEnabled` | Cloud Control `GetResource` read, then an `UpdateResource` patch (`[{op: add, path: /DeletionProtectionEnabled, value: false}]`), waited to completion, then `DeleteResource` |
 | `AWS::NeptuneGraph::Graph` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` |
@@ -490,12 +490,30 @@ stripped.
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` |
 | `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection`, restored to the level the flip removed (`prevent-force-deletion` or `prevent-all-deletion`) |
 | `AWS::EC2::Instance` (SDK and Cloud Control routes) | `DisableApiTermination` |
+| The instances an `AWS::AutoScaling::AutoScalingGroup` launched | `DisableApiTermination`, per instance |
 | `AWS::DSQL::Cluster`, `AWS::SMSVOICE::ProtectConfiguration` (Cloud Control) | `DeletionProtectionEnabled` |
 | `AWS::NeptuneGraph::Graph`, `AWS::EKS::Cluster`, `AWS::RDS::GlobalCluster`, `AWS::DocDB::GlobalCluster` (Cloud Control) | `DeletionProtection` |
 | `AWS::VerifiedPermissions::PolicyStore` (Cloud Control) | `DeletionProtection`, value `{"Mode":"ENABLED"}` |
 
-The `DisableApiTermination` flip on the instances an Auto Scaling group
-launched is not restored.
+The instances of an Auto Scaling group are restored when the group's own
+delete fails terminally, each one from its own pre-flip
+`DescribeInstanceAttribute` read: only an instance whose guard that read saw
+on is turned back on. Nothing is put back once AWS has accepted
+`DeleteAutoScalingGroup(ForceDelete=true)`, because the instances are then
+being terminated with the group. When a re-enable fails and cdkd reads the
+instance back (`DescribeInstances`) as `shutting-down` or `terminated` (the
+group may have replaced it after the flip), it reports the instance as gone at
+**warn**, as for a not-found error below. Two cases restore nothing:
+
+- An instance detached from the group out of band after the flip, when the
+  group is then deleted or already gone: the delete counts as done and the
+  detached, live instance keeps its guard off.
+- A group whose state records `provisionedBy: cc-api` (for example, its
+  template set a property the SDK provider would drop) is deleted by a fresh
+  SDK provider on each attempt, which keeps no record of an earlier attempt's
+  flip. So once an attempt has turned the guards off and failed with a
+  retryable error, a later attempt that fails terminally restores neither the
+  group's `DeletionProtection` nor its instances' guards.
 
 On the DynamoDB pair a Ctrl-C landing in a wait after the flip is compensated
 too. Four limits are deliberate:
@@ -535,7 +553,11 @@ too. Four limits are deliberate:
 The pre-flip read needs its own read permission beside the flip and the
 delete: `ec2:DescribeInstanceAttribute` for an EC2 instance,
 `elasticloadbalancing:DescribeLoadBalancerAttributes` for a load balancer,
-`autoscaling:DescribeAutoScalingGroups` for an Auto Scaling group, and
+`autoscaling:DescribeAutoScalingGroups` for an Auto Scaling group plus
+`ec2:DescribeInstanceAttribute` for each instance it launched (one read per
+instance; a failed re-enable reads the instance back with
+`ec2:DescribeInstances`, and without it an instance that is shutting down or
+terminated is reported at ERROR rather than warn), and
 `cloudformation:GetResource` (the IAM action behind Cloud Control's
 `GetResource`), plus whatever the type's read handler calls, for a Cloud
 Control type. A read that is refused leaves the delete running and
