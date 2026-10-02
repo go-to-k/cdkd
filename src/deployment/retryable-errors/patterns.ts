@@ -235,12 +235,11 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // these are ledgered in `custom-resource-provider-thrown-retry.test.ts`);
   // `destroy-runner.ts`'s DELETE loop, where a match costs up to 3 retries on
   // its own 5s/10s/20s grid, ~35s per resource; and `isTerminalDeleteFailure`
-  // in `dynamodb-delete-budget.ts`, which reads the verdict INVERTED -- a match
-  // makes a delete failure non-terminal and skips
-  // `compensateRemovedDeletionProtection`. That inverted reader is genuinely
-  // inert here -- it classifies only the two DynamoDB providers' throws, and
-  // `DeleteTable` has no EC2 or security-group surface -- but it is the reader
-  // a future entry is likeliest to get wrong. The `destroy-runner.ts` loop is
+  // in `deletion-protection-compensation.ts`, which reads the verdict INVERTED
+  // -- a match makes a delete failure non-terminal and defers the
+  // `--remove-protection` compensation to the loop's last attempt. That
+  // inverted reader is the one a future entry is likeliest to get wrong. The
+  // `destroy-runner.ts` loop is
   // type-generic, so the claim there is narrower: no delete OBSERVED here
   // carries these wordings. A Cloud Control DELETE of a capacity provider that
   // re-validates its operator role could carry one, and would then spend up to

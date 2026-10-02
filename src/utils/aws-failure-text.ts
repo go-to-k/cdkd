@@ -102,7 +102,8 @@
  *    Known at the time of writing: `retry.ts`'s `withRetry`,
  *    `destroy-runner.ts`'s own delete-retry loop (which calls `provider.delete`
  *    DIRECTLY and so is not covered by the first),
- *    `dynamodb-delete-budget.ts`'s `isTerminalDeleteFailure`,
+ *    `deletion-protection-compensation.ts`'s `isTerminalDeleteFailure` (on the
+ *    chain since go-to-k/cdkd#4318),
  *    `apigateway-provider.ts`'s `isIamPropagationError` (top-level message,
  *    matches `not authorized` -- exactly the substring this helper withholds),
  *    `ec2-provider.ts`'s `isDependencyViolationError`, and

@@ -4860,14 +4860,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // THE THREE ROUTES OUT OF THIS `catch`, since the predicate answers
         // them differently and only one of them is obvious:
         //
-        //  - **Retryable** (a throttle, and the attempt-cap exhaustion that ends
-        //    a long sequence of them). The predicate is FALSE, so nothing is
-        //    released and the retained-on-throw contract stands exactly as it
-        //    did. Known narrowing 1 of `isTerminalDeleteFailure` still applies:
-        //    a sequence that dies on the outer loop's attempt cap ends with the
-        //    guard off and the record held, because the provider cannot see
-        //    which attempt is the last one. Unchanged here, and pinned by a test
-        //    so it stays a decision rather than an accident.
+        //  - **Retryable** (a throttle on any attempt but the outer loop's
+        //    last). The predicate is FALSE, so nothing is released and the
+        //    retained-on-throw contract stands exactly as it did. On the LAST
+        //    attempt the destroy loop's `runDeleteAttempt` scope makes the
+        //    same throttle TERMINAL (issue #4318), so the compensation runs and
+        //    this release follows it, as on the ordinary route.
         //  - **Interrupt** (Ctrl-C). `isInterruptedWaitError` makes it TERMINAL,
         //    so the release fires -- and it is the route that most needs it. The
         //    run is being torn down, no re-entry is coming, and the compensation

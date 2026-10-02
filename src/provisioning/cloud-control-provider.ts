@@ -794,8 +794,8 @@ interface ProtectedEc2Instance {
  *
  * Standing down on a TERMINAL failure is never silent:
  * `CloudControlProvider.delete` warns, naming the check and restore commands.
- * A retryable failure that exhausts the destroy loop's attempt cap gets no
- * such line; that limit is documented in docs/cli-destroy.md.
+ * A retryable failure on the destroy loop's last attempt is terminal too
+ * (`runDeleteAttempt`, issue #4318), so it gets the same line.
  */
 function ccDeleteMayHaveActed(
   error: unknown,

@@ -29,9 +29,10 @@ import { DescribeTableCommand, DeleteTableCommand, UpdateTableCommand } from '@a
  *
  *  - a TERMINAL failure whose compensation did not FAIL releases -- on the
  *    ordinary route, on the Ctrl-C route, and under a region-qualified key;
- *  - a RETRYABLE one still does NOT, however many attempts the outer loop makes
- *    before its cap gives up -- known narrowing 1 of `isTerminalDeleteFailure`,
- *    intended behaviour that nothing pinned until now (issue #2244 item 2); and
+ *  - a RETRYABLE one still does NOT, however many attempts arrive outside the
+ *    destroy loop's attempt scope -- known narrowing 1 of
+ *    `isTerminalDeleteFailure` (the loop's LAST attempt is terminal through
+ *    `runDeleteAttempt`, issue #4318; issue #2244 item 2); and
  *  - a terminal failure whose compensating `UpdateTable` FAILED does not release
  *    either. There the guard really is off and cdkd is the one that turned it
  *    off, so the record is the only in-process memory that a re-enable is still
@@ -345,10 +346,10 @@ describe.each(PROVIDERS)(
     }, 120_000);
 
     it('keeps ONE record across an attempt-cap-exhausting retry sequence, and it is not inherited past the reuse window', async () => {
-      // Issue #2244 item 2, first half. Attempt-cap exhaustion is known
-      // narrowing 1 of `isTerminalDeleteFailure`: the provider cannot see which
-      // attempt is the outer loop's last, so a sequence that dies on the cap
-      // ends with the guard off and the record HELD. That is intended, and the
+      // Issue #2244 item 2, first half. Called with no attempt scope, as here,
+      // the provider cannot see which attempt is the outer loop's last (known
+      // narrowing 1 of `isTerminalDeleteFailure`; the destroy loop supplies it
+      // through `runDeleteAttempt`, issue #4318), so the record is HELD. That is intended, and the
       // fix above must not quietly change it -- a `release()` on every throw
       // would be the re-entered-delete regression #1978 round 2 fixed.
       //

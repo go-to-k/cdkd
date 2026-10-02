@@ -43,6 +43,7 @@
  * is the same.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ElapsedBudget, monotonicNowMs } from '../../utils/elapsed-budget.js';
@@ -50,6 +51,7 @@ import { isInterruptedWaitError } from '../interrupt-watch.js';
 import {
   isMarkedNonRetryable,
   isRetryableTransientError,
+  retryClassificationText,
 } from '../../deployment/retryable-errors.js';
 import type { Logger } from '../../types/config.js';
 import { injectiveKey } from '../../state/record-keys.js';
@@ -257,6 +259,33 @@ export function protectionFlipKey(
 export const PROTECTION_FLIP_REUSE_WINDOW_MS = 30 * 60_000;
 
 /**
+ * Whether the `delete()` running in this async chain is the outer retry loop's
+ * LAST attempt; `undefined` outside {@link runDeleteAttempt}.
+ */
+const finalDeleteAttempt = new AsyncLocalStorage<boolean>();
+
+/**
+ * Run one attempt of an outer delete-retry loop, telling
+ * {@link isTerminalDeleteFailure} whether the loop will re-enter `delete()`
+ * after it (issue #4318).
+ *
+ * The loop owns that answer, not the provider: on its LAST attempt a failure
+ * the classifier calls retryable is still the end of the delete, and without
+ * this scope the compensation would read it as "a re-entry is coming" and
+ * leave the guard off with no message. An `AsyncLocalStorage` scope rather than
+ * a `DeleteContext` field, so every adopter -- and every delegation between
+ * providers -- sees it without threading.
+ *
+ * The caller passes `isFinal` on EVERY attempt, `false` included: a nested
+ * stack's child destroy runs inside its parent's attempt, and an explicit
+ * scope per attempt is what keeps the child's early attempts from inheriting
+ * the parent's "final".
+ */
+export function runDeleteAttempt<T>(isFinal: boolean, attempt: () => Promise<T>): Promise<T> {
+  return finalDeleteAttempt.run(isFinal, attempt);
+}
+
+/**
  * Whether `error` ends the delete for good, i.e. whether `destroy-runner.ts`'s
  * outer loop will NOT re-enter `delete()` for it.
  *
@@ -267,10 +296,11 @@ export const PROTECTION_FLIP_REUSE_WINDOW_MS = 30 * 60_000;
  *
  * The predicate MIRRORS `destroy-runner.ts`'s re-entry condition
  * (`!isMarkedNonRetryable && (isRetryableTransientError || 'Too Many
- * Requests')`) rather than inventing a second classification, and it is applied
- * to the error the provider is about to THROW — the same wrapped
- * `ProvisioningError` message the outer loop will classify — so the two cannot
- * disagree about who gets re-entered.
+ * Requests')`, both arms on `retryClassificationText`) rather than inventing a
+ * second classification, and it is applied to the error the provider is about
+ * to THROW, so the two cannot disagree about who gets re-entered. The loop's
+ * other exit, its attempt cap, reaches here through {@link runDeleteAttempt}:
+ * any failure of the last attempt is terminal (issue #4318).
  *
  * A user abort is terminal here even though nothing classifies it: the run is
  * being torn down, so no re-entry is coming and the guard would otherwise stay
@@ -279,12 +309,10 @@ export const PROTECTION_FLIP_REUSE_WINDOW_MS = 30 * 60_000;
  * KNOWN NARROWINGS, all deliberate. Each leaves the guard off in a case this
  * mechanism does not reach; none of them is silent about it here.
  *
- *  1. **Attempt-cap exhaustion.** A genuinely retryable failure that exhausts
- *     the outer loop's attempt cap ends the run with the guard still off,
- *     because the provider cannot see which attempt is the last one.
- *     Compensating on every attempt instead would trade that residue for a
- *     re-enable / disable pair per retry against a service AWS is already
- *     throttling.
+ *  1. **A caller with no attempt scope.** Outside {@link runDeleteAttempt} the
+ *     predicate cannot see an attempt cap, so a retryable failure reads as "a
+ *     re-entry is coming". Only `cdkd destroy` sets `removeProtection`, and its
+ *     loop scopes every attempt.
  *  2. **The per-resource DEADLINE route.** `src/deployment/resource-deadline.ts`
  *     rejects the OUTER promise on its timer and does NOT cancel what it
  *     wraps — the provider's own `await` never settles as a rejection, so no
@@ -310,32 +338,15 @@ export const PROTECTION_FLIP_REUSE_WINDOW_MS = 30 * 60_000;
  */
 export function isTerminalDeleteFailure(error: unknown): boolean {
   if (isInterruptedWaitError(error)) return true;
+  if (finalDeleteAttempt.getStore() === true) return true;
   if (isMarkedNonRetryable(error)) return true;
-  // Deliberately reads the TOP-LEVEL message, unlike `destroy-runner.ts`'s and
-  // `retry.ts`'s twins of this same two-arm shape, which issue #2302 moved onto
-  // `retryClassificationText`. The difference is the population, not the
-  // pattern: those two classify errors from ANY provider, and several providers
-  // stamp a redacted message with `markRedactedCause`, which empties what they
-  // match on. This one classifies only the delete throws of its adopters, and
-  // all but one carry their cause's text verbatim, unstamped, so the chain read
-  // would be a no-op for them. (The ELBv2, Logs log group and DynamoDB
-  // GlobalTable providers do call `wrapMaskedAwsError`, but on their create and
-  // update paths only; their delete throws are verbatim.)
-  //
-  // The one stampable delete throw is the Cloud Control abandoned-wait error
-  // (`CloudControlProvider.abandonWait`, DELETE included), stamped when
-  // `describePollFailure` reduced a real cause such as an
-  // `AccessDeniedException`. For it this answer can be "terminal" while the
-  // loop's is "retryable". An abandoned delete wait sets `flip.deleteAccepted`,
-  // so nothing is re-enabled and the stand-down warning is written; the record
-  // is released, and a retry the loop still makes gets a fresh record whose
-  // pre-flip read sees the guard already OFF, so a refusal on that retry is NOT
-  // compensated. A known, documented limit (docs/cli-destroy.md, issue #4318).
-  // Reading the chain here instead is not the fix: a persistent redacted deny
-  // would then never be terminal, so the loop would run to its attempt cap with
-  // no stand-down warning at all, where this read at least writes it once.
-  const message = error instanceof Error ? error.message : String(error);
-  return !(isRetryableTransientError(error, message) || message.includes('Too Many Requests'));
+  // The CHAIN text, as the loop reads it (issue #2302). The one adopter delete
+  // throw stamped with `markRedactedCause` is the Cloud Control abandoned wait;
+  // on the top-level message its redacted text read terminal while the loop
+  // retried it, so the record was released and the retry's refusal went
+  // uncompensated (issue #4318).
+  const classify = retryClassificationText(error);
+  return !(isRetryableTransientError(error, classify) || classify.includes('Too Many Requests'));
 }
 
 /**

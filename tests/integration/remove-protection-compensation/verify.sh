@@ -75,13 +75,12 @@
 # OBSERVED in the ASG arm's first PASSING live run (2026-10-02,
 # go-to-k/cdkd#4397): Auto Scaling's AccessDenied for the deny role says
 # "explicit deny" (phase 1c counts only that; otherwise it fails its
-# precondition naming the last answer), and the `prevent-all-deletion` refusal
-# is terminal, since phase 2 reached the instance compensation, which runs only
-# on a terminal failure. The refusal's exact wording was not captured. If it
-# ever turned retryable, the destroy would end at the attempt cap, where no
-# compensation runs (issue #4318), and phase 2 would fail naming the missing
-# compensation line. A separate run the same day, with the fix copy-reverted,
-# failed exactly there ("no compensation line for 'EC2 Instance launched by
+# precondition naming the last answer), and phase 2 reached the instance
+# compensation. The refusal's exact wording was not captured; were it
+# retryable, the compensation would run on the destroy loop's last attempt
+# instead (issue #4318), after the retry backoff. A separate run the same day,
+# with the #4397 fix copy-reverted, failed at phase 2's compensation check
+# ("no compensation line for 'EC2 Instance launched by
 # AutoScalingGroup ProtectedAsg: '"). The arm's very first attempt stopped
 # earlier, at phase 1c's identity check (InvalidClientTokenId), which is why
 # that check polls.

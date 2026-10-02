@@ -54,6 +54,7 @@ import {
 } from '../../../src/provisioning/cc-protection-properties.js';
 import { WITHHELD_AWS_COMMAND } from '../../../src/provisioning/replacement-protection-advice.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
+import { runDeleteAttempt } from '../../../src/provisioning/providers/deletion-protection-compensation.js';
 
 type Cmd = { constructor: { name: string }; input: Record<string, unknown> };
 
@@ -531,6 +532,67 @@ describe('Cloud Control registry types: --remove-protection compensation (issue 
     script(DSQL, { observe: false, del: { failed: TERMINAL_MSG } });
     await expect(del(provider, DSQL)).rejects.toThrow(TERMINAL_MSG);
     expect(updates(DSQL, 'on')).toHaveLength(1);
+    expect(flipRecords(provider)).toBe(0);
+  });
+
+  /**
+   * Issue #4318. The delete's status poll is DENIED with AWS's
+   * `not authorized to perform` wording, which the abandoned-wait error
+   * withholds from its message and stamps `markRedactedCause`. The destroy
+   * loop reads the chain and RETRIES it, so the compensation must too.
+   */
+  function scriptRedactedAbandon(): void {
+    script(DSQL, { observe: true });
+    const scripted = ccSend.getMockImplementation()!;
+    ccSend.mockImplementation(async (cmd: Cmd) => {
+      if (
+        cmd.constructor.name === 'GetResourceRequestStatusCommand' &&
+        cmd.input['RequestToken'] === 'tok-del'
+      ) {
+        throw Object.assign(
+          new Error(
+            'User: arn:aws:iam::123456789012:user/ci is not authorized to perform: cloudformation:GetResourceRequestStatus'
+          ),
+          { name: 'AccessDeniedException', $metadata: { httpStatusCode: 400 } }
+        );
+      }
+      return scripted(cmd);
+    });
+  }
+
+  it('a REDACTED abandoned delete wait is retryable: the record is held, so a refused retry is restored (issue #4318)', async () => {
+    const provider = newProvider();
+    scriptRedactedAbandon();
+    const thrown = await del(provider, DSQL)
+      .then(() => undefined)
+      .catch((e: unknown) => e);
+    // The precondition: the message withholds AWS's wording.
+    expect((thrown as Error).message).not.toContain('not authorized to perform');
+    expect(updates(DSQL, 'on')).toHaveLength(0);
+    // Not terminal, so no stand-down line yet and the record is HELD.
+    noStandDown();
+    expect(flipRecords(provider)).toBe(1);
+
+    ccSend.mockReset();
+    script(DSQL, { observe: false, del: { failed: TERMINAL_MSG } });
+    await expect(del(provider, DSQL)).rejects.toThrow(TERMINAL_MSG);
+    expect(updates(DSQL, 'on')).toHaveLength(1);
+    expect(flipRecords(provider)).toBe(0);
+  });
+
+  it("a REDACTED abandoned delete wait on the destroy loop's LAST attempt writes the stand-down line once (issue #4318)", async () => {
+    const provider = newProvider();
+    scriptRedactedAbandon();
+    for (let i = 0; i < 3; i += 1) {
+      await expect(runDeleteAttempt(false, () => del(provider, DSQL))).rejects.toThrow();
+    }
+    noStandDown();
+    await expect(runDeleteAttempt(true, () => del(provider, DSQL))).rejects.toThrow();
+    // The delete may be running, so nothing is written back -- but it SAYS so.
+    expect(updates(DSQL, 'on')).toHaveLength(0);
+    expect(
+      childLogger.warn.mock.calls.filter((c) => String(c[0]).includes(STAND_DOWN))
+    ).toHaveLength(1);
     expect(flipRecords(provider)).toBe(0);
   });
 
