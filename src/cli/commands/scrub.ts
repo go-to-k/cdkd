@@ -4992,7 +4992,7 @@ function foldAbandonedUnitVerdict(
 }
 
 // Kept as a COMMENT, not JSDoc: the function it documented moved to
-// `intrinsic-function-resolver.ts` (issue go-to-k/cdkd#3181), so a `/** */`
+// `intrinsic-resolver/support.ts` (issue go-to-k/cdkd#3181), so a `/** */`
 // block here attaches to whatever declaration follows. The residuals below
 // still describe this predicate's BAG-scoped use, which is the throw path.
 //
@@ -5040,7 +5040,7 @@ function foldAbandonedUnitVerdict(
 //
 // go-to-k/cdkd#3181 is the fix that removes the need for any of these proxies.
 //
-// The function moved to `intrinsic-function-resolver.ts` and is imported above
+// The function moved to `intrinsic-resolver/support.ts` and is imported above
 // (issue go-to-k/cdkd#3181). It is unchanged; what changed is that the resolver
 // now needs the same predicate, to record `carriedFetchableReference` per
 // abandoned UNIT, and issue #1936 forbids a second spelling of the token
@@ -5054,7 +5054,7 @@ function foldAbandonedUnitVerdict(
  * `{{resolve:...}}` reference.
  *
  * Matched on cdkd-authored prose, which is sound here for the reason the
- * inverse is not: every string below is built by `intrinsic-function-resolver.ts`
+ * inverse is not: every string below is built by the resolver (`intrinsic-resolver/*.ts`)
  * itself, so it changes only when this repo changes it, and the fence in
  * `tests/unit/cli/scrub-abandoned-scan-origin.test.ts` reds when a throw site
  * there stops matching. An AWS-authored message could never carry that

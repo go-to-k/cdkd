@@ -136,7 +136,7 @@ describe('a List<AWS::...> parameter resolves to a LIST end to end', () => {
   it('Fn::Equals over the parameter now compares a LIST, so a condition can change answer', async () => {
     // Issue #2347's sharpest downstream consequence, pinned deliberately rather
     // than suppressed. `resolveEquals`
-    // (`src/deployment/intrinsic-function-resolver.ts:4798`) compares
+    // (`src/deployment/intrinsic-resolver/functions.ts`) compares
     // `JSON.stringify` of both sides. With `Envs: List<String>` defaulting to `prod`, the pre-change
     // Ref resolved to the STRING 'prod' and `Fn::Equals: [{Ref: Envs}, 'prod']`
     // was TRUE; it now resolves to `['prod']`, whose JSON is `["prod"]` against

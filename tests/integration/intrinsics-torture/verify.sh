@@ -2,7 +2,7 @@
 #
 # End-to-end real-AWS validation for cdkd's CloudFormation intrinsic-function
 # resolver. cdkd resolves EVERY intrinsic itself in
-# `src/deployment/intrinsic-function-resolver.ts` (unlike the AWS CDK CLI,
+# `src/deployment/intrinsic-function-resolver.ts` and `intrinsic-resolver/*.ts` (unlike the AWS CDK CLI,
 # which defers them to CloudFormation), so the less-common intrinsics + deep
 # nesting are where cdkd is most likely to diverge.
 #

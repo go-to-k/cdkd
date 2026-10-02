@@ -196,9 +196,30 @@ function referencesByEnclosingMethod(name: string): { line: number; method: stri
   const walk = (node: ts.Node): void => {
     if (ts.isIdentifier(node) && node.text === name) {
       const isDeclarationName =
-        (ts.isMethodDeclaration(node.parent) || ts.isPropertyDeclaration(node.parent)) &&
+        (ts.isMethodDeclaration(node.parent) ||
+          ts.isPropertyDeclaration(node.parent) ||
+          // A mixin function split out of the class (#4337), and its
+          // augmentation member.
+          ts.isFunctionDeclaration(node.parent) ||
+          ts.isPropertySignature(node.parent) ||
+          ts.isMethodSignature(node.parent)) &&
         node.parent.name === node;
-      if (!isDeclarationName) {
+      // Not a call either: the augmentation's `typeof name`, and the
+      // `Host.prototype.name = mixin.name` wiring line.
+      // Only the SAME name on both sides: `Host.prototype.x = mixin.x`. An
+      // alias (`prototype.y = mixin.maskSecretsRaw`) is a reach and stays in.
+      const wiring = ts.isPropertyAccessExpression(node.parent) ? node.parent.parent : undefined;
+      const isWiring =
+        ts.isTypeQueryNode(node.parent) ||
+        (wiring !== undefined &&
+          ts.isBinaryExpression(wiring) &&
+          wiring.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isPropertyAccessExpression(wiring.left) &&
+          ts.isPropertyAccessExpression(wiring.right) &&
+          /\.prototype$/.test(wiring.left.expression.getText()) &&
+          wiring.left.name.text === name &&
+          wiring.right.name.text === name);
+      if (!isDeclarationName && !isWiring) {
         let p: ts.Node | undefined = node.parent;
         let method = '<module scope>';
         while (p) {
@@ -232,11 +253,16 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     expect(code.length, 'the subject read back too small to be the real file').toBeGreaterThan(
       150_000
     );
-    expect(code, 'the display builder is gone or renamed').toContain(
-      'displayMasked(value: string, context?: ResolverContext): string'
+    // A method or a split-out mixin function (#4337), whose first parameter
+    // is `this`.
+    const SELF = '\\s*(?:this: IntrinsicFunctionResolver,\\s*)?';
+    const ARGS = (first: string): string =>
+      `${SELF}${first}: string,\\s*context\\?: ResolverContext,?\\s*\\): string`;
+    expect(code, 'the display builder is gone or renamed').toMatch(
+      new RegExp(`displayMasked\\(${ARGS('value')}`)
     );
-    expect(code, 'the bare masker this rule is about is gone or renamed').toContain(
-      'maskSecretsRaw(text: string, context?: ResolverContext): string'
+    expect(code, 'the bare masker this rule is about is gone or renamed').toMatch(
+      new RegExp(`maskSecretsRaw\\(${ARGS('text')}`)
     );
     // The name the class was closed by DELETING. Its own comment records why
     // ("for log" read as "log-ready"), and a merge restoring it would restore a

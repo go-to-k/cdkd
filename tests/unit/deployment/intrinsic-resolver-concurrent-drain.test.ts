@@ -1481,6 +1481,15 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
             owner = n.name.text;
             break;
           }
+          // A mixin method split out of the class (#4337).
+          if (
+            ts.isFunctionDeclaration(n) &&
+            n.name !== undefined &&
+            n.parameters[0]?.name.getText() === 'this'
+          ) {
+            owner = n.name.text;
+            break;
+          }
           if (ts.isPropertyDeclaration(n) && ts.isIdentifier(n.name) && n.initializer !== undefined) {
             owner = n.name.text;
             break;

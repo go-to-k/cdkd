@@ -243,7 +243,7 @@ export const CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT: Readonly<Threshold
  * (`isPlainRecord`), `lambda-vpc-deps.ts` (`isObject`), and this one — plus
  * further INLINE copies (`route53-provider.ts` x2,
  * `custom-resource-provider.ts`, `diff-recursive.ts`,
- * `intrinsic-function-resolver.ts`). Consolidating them touches files across
+ * `intrinsic-resolver/string-functions.ts`). Consolidating them touches files across
  * several lanes and is a separate lane's job, not this PR's.
  */
 function isPlainCfnObject(value: unknown): value is Record<string, unknown> {

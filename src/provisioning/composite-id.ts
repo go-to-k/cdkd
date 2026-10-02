@@ -84,7 +84,7 @@ import { maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
  * join in the tree". One deliberate exclusion, recorded so the scope is not
  * read as wider than it is:
  *
- * - **`intrinsic-function-resolver.ts`'s `|` joins** (the WAFv2 and
+ * - **`intrinsic-resolver/support.ts`'s `|` joins** (the WAFv2 and
  *   `AWS::Events::Rule` arms) are out of scope by KIND, not by ownership: they
  *   build a `Ref` VALUE for the template resolver, never a physicalId cdkd
  *   records and later splits. Nothing decodes them, so an ambiguous join has
