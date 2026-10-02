@@ -67,8 +67,11 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
 import { createDiffCommand } from '../../../src/cli/commands/diff.js';
 
 /** Drive the real command and return what the user was told. */
+let lastExitCode: number | undefined;
 async function runDiff(argv: string[]): Promise<string> {
-  const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => {
+  lastExitCode = undefined;
+  const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+    lastExitCode = code;
     throw new Error('__process_exit__');
   }) as never);
   try {
@@ -179,6 +182,60 @@ describe('cdkd diff --all refuses a partial app when a Stage failed to load (iss
     });
 
     const reported = await runDiff(['--all']);
+
+    expect(reported).not.toContain('refusing');
+    expect(mockExpandMacros).toHaveBeenCalledWith(
+      [expect.objectContaining({ stackName: 'TopStack' })],
+      expect.anything()
+    );
+  });
+
+  // A bare `cdkd diff` auto-selected the one survivor as if the app held only
+  // that stack.
+  it('refuses the single-stack auto-pick when a Stage failed to load', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack('TopStack')],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
+    });
+
+    const reported = await runDiff([]);
+
+    expect(lastExitCode).toBe(1);
+    expect(reported).toContain(
+      'With no stack named, cdkd would diff only part of this app; refusing. ' +
+        'Synthesized: TopStack. Stage MyStage failed to load'
+    );
+    expect(mockExpandMacros).not.toHaveBeenCalled();
+  });
+
+  it('still diffs a NAMED survivor beside a failed Stage', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack('TopStack')],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
+    });
+
+    const reported = await runDiff(['TopStack']);
+
+    expect(reported).not.toContain('refusing');
+    expect(mockExpandMacros).toHaveBeenCalledWith(
+      [expect.objectContaining({ stackName: 'TopStack' })],
+      expect.anything()
+    );
+  });
+
+  it('still auto-picks the single stack when every Stage loaded', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack('TopStack')],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      failedStages: [],
+    });
+
+    const reported = await runDiff([]);
 
     expect(reported).not.toContain('refusing');
     expect(mockExpandMacros).toHaveBeenCalledWith(

@@ -35,6 +35,7 @@ import {
   type UnresolvableReference,
 } from '../../analyzer/orphan-rewriter.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
+import { failedStageNote, type FailedStage } from '../../synthesis/failed-stages.js';
 import {
   refuseMalformedOrphansForOrphan,
   refuseMalformedOutputs,
@@ -301,7 +302,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
 
     // Resolve each path to (stack, logicalId). Every path must reference the
     // same stack — orphan operates on one state file at a time.
-    const resolved = resolveConstructPaths(pathArgs, result.stacks);
+    const resolved = resolveConstructPaths(pathArgs, result.stacks, result.failedStages);
     const stackInfo = resolved.stack;
     const orphanLogicalIds = resolved.logicalIds;
 
@@ -558,7 +559,8 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
  */
 function resolveConstructPaths(
   paths: string[],
-  stacks: StackInfo[]
+  stacks: StackInfo[],
+  failedStages: readonly FailedStage[]
 ): { stack: StackInfo; logicalIds: string[] } {
   let stack: StackInfo | undefined;
   const logicalIds: string[] = [];
@@ -588,9 +590,14 @@ function resolveConstructPaths(
         stacks.map((s) => s.displayName ?? s.stackName),
         ', '
       );
+      // A path under a Stage that failed to load names a stack the app has
+      // but did not synthesize, so the Stage is named (#3507) -- unhedged
+      // when the path starts with that Stage's path, as a pattern would be.
       throw new Error(
         `Construct path '${p}' does not start with the path of any stack in the ` +
-          `synthesized app. Available: ${available}`
+          `synthesized app. ` +
+          (stacks.length > 0 ? `Available: ${available}` : 'The assembly has no stacks') +
+          failedStageNote([p], failedStages)
       );
     }
     if (stack === undefined) {

@@ -6253,6 +6253,43 @@ describe('cdkd import: selection names a Stage that failed to load (go-to-k/cdkd
     );
   });
 
+  // A bare `cdkd import` auto-selected the one survivor as if the app held
+  // only that stack (go-to-k/cdkd#3507).
+  it('refuses the single-stack auto-pick when a Stage failed to load', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([other()], failedStages));
+
+    await expect(runImport(['import'])).rejects.toThrow('process.exit-mock');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorText()).toContain(
+      'With no stack named, cdkd would import resources into only part of this app; refusing. ' +
+        `Synthesized: Other. ${note}`
+    );
+    const infoText = infoSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(infoText).not.toContain('Target stack:');
+    expectNoStateTouched();
+  });
+
+  it('control: a NAMED survivor beside a failed Stage is still selected', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([other()], failedStages));
+
+    await runImport(['import', 'Other']).catch(() => undefined);
+
+    expect(errorText()).not.toContain('refusing');
+    const infoText = infoSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(infoText).toContain('Target stack: Other');
+  });
+
+  it('control: the single-stack auto-pick selects the stack when every Stage loaded', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([other()], []));
+
+    await runImport(['import']).catch(() => undefined);
+
+    expect(errorText()).not.toContain('refusing');
+    const infoText = infoSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(infoText).toContain('Target stack: Other');
+  });
+
   it('names the argument and the available stacks when no Stage failed', async () => {
     mockSynthesize.mockResolvedValue(synthesized([other()], []));
 

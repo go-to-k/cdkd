@@ -685,4 +685,41 @@ describe('deploy names a Stage that failed to load (issue #3482)', () => {
     expect(reported()).not.toContain('refusing');
     expect(vi.mocked(DeployEngine)).toHaveBeenCalled();
   });
+
+  // Issue go-to-k/cdkd#3507: a bare `cdkd deploy` auto-selected the one stack
+  // that synthesized beside a failed Stage, as if the app held only that stack.
+  it('refuses the single-stack auto-pick when a Stage failed to load', async () => {
+    synthFailedStages.value = [
+      { stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' },
+    ];
+
+    const code = await runDeploy(['--yes']);
+
+    expect(code).toBe(1);
+    expect(reported()).toContain(
+      'With no stack named, cdkd would deploy only part of this app; refusing. ' +
+        'Synthesized: TopStack. Stage MyStage failed to load'
+    );
+    expect(vi.mocked(DeployEngine)).not.toHaveBeenCalled();
+  });
+
+  it('still deploys a NAMED survivor beside a failed Stage', async () => {
+    synthFailedStages.value = [
+      { stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' },
+    ];
+
+    const code = await runDeploy(['TopStack', '--yes']);
+
+    expect(code).toBeUndefined();
+    expect(reported()).not.toContain('refusing');
+    expect(vi.mocked(DeployEngine)).toHaveBeenCalled();
+  });
+
+  it('still auto-picks the single stack when every Stage loaded', async () => {
+    const code = await runDeploy(['--yes']);
+
+    expect(code).toBeUndefined();
+    expect(reported()).not.toContain('refusing');
+    expect(vi.mocked(DeployEngine)).toHaveBeenCalled();
+  });
 });

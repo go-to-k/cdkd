@@ -88,6 +88,7 @@ import {
   matchStacks,
   describeStack,
   renderAllWithFailedStages,
+  renderAutoPickWithFailedStages,
   renderNoStackMatch,
 } from '../stack-matcher.js';
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
@@ -424,7 +425,11 @@ async function deployCommand(
     } else if (stackPatterns.length > 0) {
       targetStacks = matchStacks(allStacks, stackPatterns);
     } else if (allStacks.length === 1) {
-      // Single stack: auto-select
+      // Single stack: auto-select -- unless a Stage that failed to load may
+      // hold the rest of the app, so auto-selecting would act on part of it
+      // (#3507).
+      const partial = renderAutoPickWithFailedStages('deploy', allStacks, result);
+      if (partial !== undefined) throw new Error(partial);
       targetStacks = allStacks;
     } else {
       throw new Error(

@@ -41,8 +41,9 @@
 #   3f. (Phase 2f) the same as 3d for `export --dry-run` (go-to-k/cdkd#3507).
 #   3g. (Phase 2g) add a second, never-synthesized Stage to the top-level
 #      manifest and assert `--all` refuses in deploy / diff / publish-assets /
-#      scrub / destroy, with this stack as the survivor, leaving state
-#      untouched (go-to-k/cdkd#3507).
+#      scrub / destroy, and so does the bare single-stack auto-pick (plus
+#      import / export), with this stack as the survivor, and that orphan
+#      names the ghost Stage, leaving state untouched (go-to-k/cdkd#3507).
 #   4. destroy -> assert clean (0 errors): both Lambdas gone, OUR pushed image
 #      gone from ECR by tag, state file gone.
 #
@@ -488,16 +489,16 @@ if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
 fi
 echo "    OK: Stage named, state untouched"
 
-# --- Phase 2g: --all refuses when a Stage failed beside a surviving stack ---
+# --- Phase 2g: --all and a bare run refuse beside a failed Stage -----------
 # Phases 2b-2f hide the app's ONLY Stage, so no stack survives and `--all` takes
 # the zero-stack refusal. Here a second Stage whose directory was never
 # synthesized is added to the top-level manifest, so this fixture's Stage still
 # loads and its stack is the survivor. `--all` targets every stack, the ghost
 # Stage's included, so each command must refuse rather than act on the survivor
 # and exit 0 -- destroy, run last, would otherwise tear down the Phase 1 stack
-# (go-to-k/cdkd#3507). The diff control over the intact assembly runs first, so
-# the refusals are attributable to the ghost Stage.
-echo "==> Phase 2g: --all with a Stage that failed to load beside a surviving stack"
+# (go-to-k/cdkd#3507). The diff controls over the intact assembly (`--all` and
+# bare) run first, so the refusals are attributable to the ghost Stage.
+echo "==> Phase 2g: --all and a bare run with a Stage that failed to load beside a surviving stack"
 set +e
 CONTROL_OUT=$(node "${LOCAL_DIST}" diff --all --app cdk.out \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
@@ -506,6 +507,17 @@ set -e
 printf '%s\n' "${CONTROL_OUT}"
 if [ "${CONTROL_RC}" -ne 0 ] || printf '%s' "${CONTROL_OUT}" | grep -qF "refusing"; then
   echo "FAIL: control diff --all over the intact assembly exited ${CONTROL_RC} or refused" >&2
+  exit 1
+fi
+# The same control for the bare auto-pick arm.
+set +e
+CONTROL_OUT=$(node "${LOCAL_DIST}" diff --app cdk.out \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+CONTROL_RC=$?
+set -e
+printf '%s\n' "${CONTROL_OUT}"
+if [ "${CONTROL_RC}" -ne 0 ] || printf '%s' "${CONTROL_OUT}" | grep -qF "refusing"; then
+  echo "FAIL: control bare diff over the intact assembly exited ${CONTROL_RC} or refused" >&2
   exit 1
 fi
 ETAG_BEFORE=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
@@ -517,57 +529,88 @@ fi
 cp cdk.out/manifest.json cdk.out/manifest.json.orig
 jq '.artifacts["assembly-CdkdGhostStage"] = {"type": "cdk:cloud-assembly", "properties": {"directoryName": "assembly-CdkdGhostStage", "displayName": "CdkdGhostStage"}}' \
   cdk.out/manifest.json.orig > cdk.out/manifest.json
-for verb in deploy diff publish-assets scrub destroy; do
-  case "${verb}" in
-    deploy) phrase="deploy"; extra="--yes" ;;
-    diff) phrase="diff"; extra="" ;;
-    publish-assets) phrase="publish assets for"; extra="" ;;
-    # --dry-run, as in Phase 2c: a scrub that did not refuse would report the
-    # survivor clean and exit 0, which the rc check below reads either way.
-    scrub) phrase="scrub"; extra="--dry-run" ;;
-    destroy) phrase="destroy"; extra="--force" ;;
-  esac
-  set +e
-  # ${extra} unquoted on purpose: empty for diff / publish-assets.
-  # shellcheck disable=SC2086
-  ALL_OUT=$(AWS_REGION="${REGION}" node "${LOCAL_DIST}" "${verb}" --all --app cdk.out \
-    --state-bucket "${STATE_BUCKET}" ${extra} 2>&1)
-  ALL_RC=$?
-  set -e
-  printf '%s\n' "${ALL_OUT}"
-  if [ "${ALL_RC}" -eq 0 ]; then
-    mv cdk.out/manifest.json.orig cdk.out/manifest.json
-    echo "FAIL: ${verb} --all with a ghost Stage exited 0, expected a refusal" >&2
-    exit 1
+# Two selections, each targeting the whole app: `--all`, and NO stack named,
+# where a one-stack app is auto-picked -- with the ghost Stage the survivor is
+# not known to be the only stack, so the auto-pick refuses too. import and
+# export have only the bare arm (they take no --all).
+for selector in all bare; do
+  if [ "${selector}" = all ]; then
+    verbs="deploy diff publish-assets scrub destroy"
+    lead="--all"
+  else
+    verbs="deploy diff publish-assets scrub import export destroy"
+    lead="With no stack named, cdkd"
   fi
-  # scrub's refusal is exit 2 ("declined to look"); 1 is --fail's "plaintext
-  # found", so a CI gate must be able to tell the two apart.
-  if [ "${verb}" = "scrub" ] && [ "${ALL_RC}" -ne 2 ]; then
-    mv cdk.out/manifest.json.orig cdk.out/manifest.json
-    echo "FAIL: scrub --all with a ghost Stage exited ${ALL_RC}, expected 2" >&2
-    exit 1
-  fi
-  # One needle: the verb, the survivor in its pattern form, and the ghost Stage
-  # named unhedged, since --all carries no pattern.
-  if ! printf '%s' "${ALL_OUT}" | grep -qF -- "--all would ${phrase} only part of this app; refusing. Synthesized: ${STACK} (${STACK_PATH}). Stage CdkdGhostStage failed to load"; then
-    mv cdk.out/manifest.json.orig cdk.out/manifest.json
-    echo "FAIL: ${verb} --all did not refuse naming the survivor and the ghost Stage" >&2
-    exit 1
-  fi
-  echo "    OK: ${verb} --all refused"
+  for verb in ${verbs}; do
+    case "${verb}" in
+      deploy) phrase="deploy"; extra="--yes" ;;
+      diff) phrase="diff"; extra="" ;;
+      publish-assets) phrase="publish assets for"; extra="" ;;
+      # --dry-run, as in Phase 2c: a scrub that did not refuse would report the
+      # survivor clean and exit 0, which the rc check below reads either way.
+      scrub) phrase="scrub"; extra="--dry-run" ;;
+      # --dry-run so an import that did not refuse writes no state.
+      import) phrase="import resources into"; extra="--dry-run --yes" ;;
+      export) phrase="export"; extra="--dry-run --yes" ;;
+      destroy) phrase="destroy"; extra="--force" ;;
+    esac
+    if [ "${selector}" = all ]; then extra="--all ${extra}"; fi
+    set +e
+    # ${extra} unquoted on purpose: it carries zero, one or two flags.
+    # shellcheck disable=SC2086
+    ALL_OUT=$(AWS_REGION="${REGION}" node "${LOCAL_DIST}" "${verb}" --app cdk.out \
+      --state-bucket "${STATE_BUCKET}" ${extra} 2>&1)
+    ALL_RC=$?
+    set -e
+    printf '%s\n' "${ALL_OUT}"
+    if [ "${ALL_RC}" -eq 0 ]; then
+      mv cdk.out/manifest.json.orig cdk.out/manifest.json
+      echo "FAIL: ${verb} (${selector}) with a ghost Stage exited 0, expected a refusal" >&2
+      exit 1
+    fi
+    # scrub's refusal is exit 2 ("declined to look"); 1 is --fail's "plaintext
+    # found", so a CI gate must be able to tell the two apart.
+    if [ "${verb}" = "scrub" ] && [ "${ALL_RC}" -ne 2 ]; then
+      mv cdk.out/manifest.json.orig cdk.out/manifest.json
+      echo "FAIL: scrub (${selector}) with a ghost Stage exited ${ALL_RC}, expected 2" >&2
+      exit 1
+    fi
+    # One needle: the selection, the verb, the survivor in its pattern form, and
+    # the ghost Stage named unhedged, since neither selection carries a pattern.
+    if ! printf '%s' "${ALL_OUT}" | grep -qF -- "${lead} would ${phrase} only part of this app; refusing. Synthesized: ${STACK} (${STACK_PATH}). Stage CdkdGhostStage failed to load"; then
+      mv cdk.out/manifest.json.orig cdk.out/manifest.json
+      echo "FAIL: ${verb} (${selector}) did not refuse naming the survivor and the ghost Stage" >&2
+      exit 1
+    fi
+    echo "    OK: ${verb} (${selector}) refused"
+  done
 done
+# orphan has no auto-pick: a construct path always names its stack. A path
+# under the ghost Stage must name that Stage rather than read as a typo.
+set +e
+ORPHAN_OUT=$(node "${LOCAL_DIST}" orphan "CdkdGhostStage/Api/Bucket" --app cdk.out --dry-run \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+ORPHAN_RC=$?
+set -e
+printf '%s\n' "${ORPHAN_OUT}"
+if [ "${ORPHAN_RC}" -eq 0 ] || ! printf '%s' "${ORPHAN_OUT}" | grep -qF -- "Construct path 'CdkdGhostStage/Api/Bucket' does not start with the path of any stack in the synthesized app. Available: ${STACK_PATH}. Stage CdkdGhostStage failed to load"; then
+  mv cdk.out/manifest.json.orig cdk.out/manifest.json
+  echo "FAIL: orphan under the ghost Stage exited ${ORPHAN_RC} or did not name the Stage" >&2
+  exit 1
+fi
+echo "    OK: orphan under the ghost Stage named it"
 mv cdk.out/manifest.json.orig cdk.out/manifest.json
 ETAG_AFTER=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
   --query ETag --output text)
 if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
-  echo "FAIL: state object changed across the refused --all runs (${ETAG_BEFORE} -> ${ETAG_AFTER})" >&2
+  echo "FAIL: state object changed across the refused runs (${ETAG_BEFORE} -> ${ETAG_AFTER})" >&2
   exit 1
 fi
 if gone_probe aws lambda get-function --function-name "${ZIP_FN}" --region "${REGION}"; then
-  echo "FAIL: zip Lambda ${ZIP_FN} is gone after a refused destroy --all" >&2
+  echo "FAIL: zip Lambda ${ZIP_FN} is gone after a refused destroy" >&2
   exit 1
 fi
-echo "    OK: every --all refused, state and stack untouched"
+echo "    OK: every --all and bare run refused, state and stack untouched"
 
 # --- Phase 3: destroy + leak assertions -------------------------------------
 echo "==> Phase 3: destroy"

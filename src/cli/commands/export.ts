@@ -100,7 +100,11 @@ import {
 } from '../../deployment/intrinsic-function-resolver.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
-import { describeStack, renderNoStackMatch } from '../stack-matcher.js';
+import {
+  describeStack,
+  renderAutoPickWithFailedStages,
+  renderNoStackMatch,
+} from '../stack-matcher.js';
 import {
   CFN_TEMPLATE_BODY_LIMIT,
   CFN_TEMPLATE_URL_LIMIT,
@@ -2831,6 +2835,10 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           throw new Error(renderNoStackMatch(stackPatterns, result.stacks, result) + exactOnly);
         }
       } else if (result.stacks.length === 1) {
+        // No stack named and one survived: a Stage that failed to load may
+        // hold the rest of the app, so auto-selecting would guess (#3507).
+        const partial = renderAutoPickWithFailedStages('export', result.stacks, result);
+        if (partial !== undefined) throw new Error(partial);
         stackInfo = result.stacks[0]!;
       } else {
         throw new Error(

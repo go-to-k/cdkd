@@ -297,6 +297,62 @@ describe('cdkd publish-assets', () => {
       expect(published).toEqual([]);
     });
 
+    // Issue go-to-k/cdkd#3507: a bare `cdkd publish-assets` auto-selected the
+    // one survivor as if the app held only that stack.
+    it('refuses the single-stack auto-pick when a Stage failed to load', async () => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [makeStack({ stackName: 'TopStack' })],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
+      });
+
+      const { exitCode } = await runCmd([]);
+
+      expect(exitCode).toBe(1);
+      const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(reported).toContain(
+        'With no stack named, cdkd would publish assets for only part of this app; refusing. ' +
+          'Synthesized: TopStack. Stage MyStage failed to load'
+      );
+      const published = mockLoggerInfo.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes('Publishing assets for stack:'));
+      expect(published).toEqual([]);
+    });
+
+    it('still publishes a NAMED survivor beside a failed Stage', async () => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [makeStack({ stackName: 'TopStack' })],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
+      });
+
+      await runCmd(['TopStack']);
+
+      const published = mockLoggerInfo.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes('Publishing assets for stack:'));
+      expect(published.length).toBe(1);
+    });
+
+    it('still auto-picks the single stack when every Stage loaded', async () => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [makeStack({ stackName: 'TopStack' })],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        failedStages: [],
+      });
+
+      await runCmd([]);
+
+      const published = mockLoggerInfo.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes('Publishing assets for stack:'));
+      expect(published.length).toBe(1);
+    });
+
     it('leaves the no-matching-stacks refusal untouched when every Stage loaded', async () => {
       mockSynthesize.mockResolvedValue({
         stacks: [makeStack({ stackName: 'TopStack' })],

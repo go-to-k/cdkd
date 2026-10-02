@@ -38,6 +38,7 @@ import {
   matchStacks,
   describeStack,
   renderAllWithFailedStages,
+  renderAutoPickWithFailedStages,
   renderNoStackMatch,
 } from '../stack-matcher.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
@@ -241,6 +242,10 @@ async function diffCommand(
     } else if (stackPatterns.length > 0) {
       targetStacks = matchStacks(allStacks, stackPatterns);
     } else if (allStacks.length === 1) {
+      // No stack named and one survived: a Stage that failed to load may hold
+      // the rest of the app, so auto-selecting would act on part of it (#3507).
+      const partial = renderAutoPickWithFailedStages('diff', allStacks, result);
+      if (partial !== undefined) throw new Error(partial);
       targetStacks = allStacks;
     } else {
       throw new Error(

@@ -54,6 +54,7 @@ import {
   matchStacks,
   describeStack,
   renderAllWithFailedStages,
+  renderAutoPickWithFailedStages,
   renderNoStackMatch,
 } from '../stack-matcher.js';
 import {
@@ -1048,11 +1049,15 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     // exactly what an app whose only stacks live in a Stage that failed to
     // load produces (issue go-to-k/cdkd#3507).
     const message = renderNoStackMatch(stackPatterns, allStacks, result);
-    // `--all` beside a failed Stage is the partial-app refusal below with no
-    // survivors: exit 2 like it, never 1, which `--fail` reserves for
-    // "plaintext found".
-    if (options.all && result.failedStages.length > 0) {
-      throw new ScrubRefusalError(message, 'SCRUB_ALL_PARTIAL_APP');
+    // `--all` or NO stack named beside a failed Stage is the partial-app
+    // refusal below with no survivors: exit 2 like it, never 1, which `--fail`
+    // reserves for "plaintext found". A pattern that matched nothing stays a
+    // plain selection error.
+    if (result.failedStages.length > 0) {
+      if (options.all) throw new ScrubRefusalError(message, 'SCRUB_ALL_PARTIAL_APP');
+      if (stackPatterns.length === 0) {
+        throw new ScrubRefusalError(message, 'SCRUB_AUTO_PICK_PARTIAL_APP');
+      }
     }
     throw new Error(message);
   }
@@ -1068,6 +1073,13 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   } else if (stackPatterns.length > 0) {
     targetStacks = matchStacks(allStacks, stackPatterns);
   } else if (allStacks.length === 1) {
+    // No stack named and one survived: a Stage that failed to load may hold
+    // the rest of the app, so auto-selecting would report part of it clean
+    // (#3507). Exit 2 like the `--all` refusal above.
+    const partial = renderAutoPickWithFailedStages('scrub', allStacks, result);
+    if (partial !== undefined) {
+      throw new ScrubRefusalError(partial, 'SCRUB_AUTO_PICK_PARTIAL_APP');
+    }
     targetStacks = allStacks;
   } else {
     throw new Error(
