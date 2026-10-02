@@ -37,7 +37,7 @@ import { Construct } from 'constructs';
  * receives PLAINTEXT and the child's own template spells the consumption as
  * `{Ref: <ParamName>}` — an intrinsic OBJECT, never a `{{resolve:` string.
  *
- * THE TEN RESOURCES, and what each one discriminates:
+ * THE ELEVEN RESOURCES, and what each one discriminates:
  *
  *  - `StageParam` (child) — consumes the secretsmanager-backed parameter. Its
  *    persisted `Value` must be the EXPRESSION while the live SSM parameter
@@ -69,6 +69,14 @@ import { Construct } from 'constructs';
  *    per parameter and left this side on the survivor, so the two halves
  *    disagreed forever: a perpetual UPDATE, caught here by the
  *    `cdkd diff --recursive --fail` exit code as well as by its persisted value.
+ *  - `HandoffMixed` (child) — THE #2320 ARM. ONE resource mixing an EMBEDDED
+ *    leaf (`Description`, an `Fn::Sub` over `MixedSecretA`) with a WHOLE-VALUE
+ *    leaf (`Value`, `{Ref: MixedSecretB}`), the two parameters resolving to ONE
+ *    plaintext. The resource's bag holds one slot -- whichever `Ref` resolved
+ *    LAST, and `Value` resolves after `Description` -- so the value scan wrote
+ *    `B`'s expression into the embedded leaf while the diff side rendered
+ *    `A`'s: a perpetual UPDATE. Its own JSON key (`mixed`), so no other arm's
+ *    leaf shares its plaintext.
  *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of
  *    `HandoffPair`: ONE `AWS::Events::Rule` whose two matchers are ARRAYS by
  *    the time redaction runs, beside a PUBLIC list-typed negative control.
@@ -140,6 +148,7 @@ class SecretBearingChild extends cdk.NestedStack {
       unrelatedParamName: string;
       handoffParamName: string;
       handoffSubParamName: string;
+      handoffMixedParamName: string;
       pinParamName: string;
       pinParamDescription: string;
       pinTwinParamName: string;
@@ -180,6 +189,12 @@ class SecretBearingChild extends cdk.NestedStack {
     handoffA.overrideLogicalId('HandoffSecretA');
     const handoffB = new cdk.CfnParameter(this, 'HandoffSecretB', { type: 'String' });
     handoffB.overrideLogicalId('HandoffSecretB');
+    // THE #2320 ARM's two inputs: the same two-spellings-one-plaintext shape on
+    // its OWN JSON key, so `HandoffPair` / `HandoffSub` keep theirs.
+    const mixedA = new cdk.CfnParameter(this, 'MixedSecretA', { type: 'String' });
+    mixedA.overrideLogicalId('MixedSecretA');
+    const mixedB = new cdk.CfnParameter(this, 'MixedSecretB', { type: 'String' });
+    mixedB.overrideLogicalId('MixedSecretB');
 
     // THE #2327 ARM's two inputs. The SAME two-references-one-plaintext shape as
     // the pair above, declared `CommaDelimitedList` -- which
@@ -341,16 +356,9 @@ class SecretBearingChild extends cdk.NestedStack {
     // make its expected value depend on property iteration order. One parameter
     // in, one pair recorded, one deterministic answer.
     //
-    // SO NOTHING LIVE COVERS THE MIXED SHAPE, and that is worth stating rather
-    // than leaving as an inference from the paragraph above. A resource holding
-    // ONE embedded leaf and ONE whole-value leaf over the two colliding
-    // parameters is a case where the persist and diff halves genuinely DISAGREE
-    // on this branch (measured; `main` agreed, on the wrong expression), so it
-    // is a REGRESSION rather than an unfixed gap -- deferred with its
-    // measurement to issue
-    // [#2320](https://github.com/go-to-k/cdkd/issues/2320), which also carries
-    // the fixture arm it needs. Adding that arm HERE would have made this one
-    // order-dependent, which is the trade this split makes deliberately.
+    // The MIXED shape -- one embedded and one whole-value leaf over the two
+    // colliding parameters in ONE resource -- is `HandoffMixed` below (issue
+    // #2320), on its own pair of parameters so this arm stays one-parameter.
     //
     // OVER `HandoffSecretA` -- the LOSER, whose expression is not the survivor.
     // Pointing it at `HandoffSecretB` would pass with the collapse fully intact.
@@ -361,6 +369,30 @@ class SecretBearingChild extends cdk.NestedStack {
         'cdkd nested-stack-secret integ - #2291 round 2: an EMBEDDING leaf over the losing parameter',
     });
     ((handoffSub.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('HandoffSub');
+
+    // THE #2320 ARM: ONE resource, an EMBEDDED leaf over `MixedSecretA` and a
+    // WHOLE-VALUE leaf over `MixedSecretB`, the two resolving to ONE plaintext.
+    //
+    // THE EMBEDDED LEAF MUST RESOLVE FIRST, which is why it is the
+    // `Description` and the whole-value leaf the `Value`: CDK renders SSM
+    // properties alphabetically and the child resolves them in that order, so
+    // `{Ref: MixedSecretB}` is the LAST `Ref` and owns the bag's one slot.
+    // Swapped, the slot would hold `A`'s expression and the value scan would
+    // already write the right answer -- a vacuous arm. verify.sh asserts the
+    // synthesized order as a premise.
+    const handoffMixed = new ssm.StringParameter(this, 'HandoffMixed', {
+      parameterName: names.handoffMixedParamName,
+      stringValue: mixedB.valueAsString,
+      description: cdk.Fn.sub('x-${MixedSecretA}'),
+      // VARIES BY `CDKD_TEST_UPDATE`, for the reason `HandoffPair`'s does: in
+      // the child-property phase this resource must be a real UPDATE, so the
+      // child re-resolves both leaves and re-runs the positioning on the
+      // UPDATE path rather than carrying the CREATE record over.
+      ...(names.handoffAllowedPattern !== undefined && {
+        allowedPattern: names.handoffAllowedPattern,
+      }),
+    });
+    ((handoffMixed.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('HandoffMixed');
 
     // THE #2327 ARM. ONE resource, TWO LIST-typed leaves, for the reason
     // `HandoffPair` states and one this arm makes sharper still.
@@ -601,6 +633,11 @@ export class NestedStackSecretStack extends cdk.Stack {
     // handed to the child as PARAMETERS.
     const handoffReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:handoff::}}`;
     const handoffReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:handoff:AWSCURRENT:}}`;
+    // THE #2320 PAIR, on its OWN JSON key (`mixed`): sharing `handoff` would put
+    // `HandoffSub`'s leaf in the same collapse and make its answer depend on
+    // which arm resolved last. Kept in sync with verify.sh's secret JSON.
+    const mixedReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:mixed::}}`;
+    const mixedReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:mixed:AWSCURRENT:}}`;
     // THE #2327 PAIR. Same two-spellings-one-value trick, on a FOURTH JSON key
     // so its plaintext is its own -- sharing any of `stage` / `shared` /
     // `handoff` would drag that arm's only-leaf premise into this collapse.
@@ -653,6 +690,7 @@ export class NestedStackSecretStack extends cdk.Stack {
         unrelatedParamName: `cdkd-nested-child-unrelated-${account}`,
         handoffParamName: `cdkd-nested-child-handoff-${account}`,
         handoffSubParamName: `cdkd-nested-child-handoffsub-${account}`,
+        handoffMixedParamName: `cdkd-nested-child-handoffmixed-${account}`,
         pinParamName: `cdkd-nested-child-pin-${account}`,
         pinParamDescription,
         pinTwinParamName: `cdkd-nested-child-pintwin-${account}`,
@@ -680,6 +718,9 @@ export class NestedStackSecretStack extends cdk.Stack {
           // The #2291 pair. TWO parameters, ONE resolved plaintext.
           HandoffSecretA: handoffReferenceA,
           HandoffSecretB: handoffReferenceB,
+          // The #2320 pair. TWO parameters, ONE resolved plaintext, ONE resource.
+          MixedSecretA: mixedReferenceA,
+          MixedSecretB: mixedReferenceB,
           // The #2327 pair. TWO LIST-typed parameters, ONE resolved plaintext.
           ListSecretA: listReferenceA,
           ListSecretB: listReferenceB,

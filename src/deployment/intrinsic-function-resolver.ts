@@ -1556,10 +1556,10 @@ export class IntrinsicFunctionResolver {
    * ONE value collapse to a single entry there and this method used to copy
    * whichever expression SURVIVED. That is invisible for a leaf spelled exactly
    * `{Ref: P}` — the persist path positions such a leaf through the parent's
-   * per-parameter association and never consults this bag's value — but every
+   * per-parameter association and never consults this bag's value — but an
    * EMBEDDING shape (`Fn::Sub`, `Fn::Join`, and `{'Fn::Sub': '${P}'}`, which
    * `crossStackSourceKey` refuses because its `Fn::Sub` arm requires a dotted
-   * attribute) falls to the plaintext-keyed VALUE SCAN, which reads exactly this
+   * attribute) fell to the plaintext-keyed VALUE SCAN, which reads exactly this
    * bag. Meanwhile `DeployEngine.redactParametersForDiff` answers PER PARAMETER.
    * So `Fn::Sub "postgres://u:${LoserParam}@host"` — the dominant CDK
    * connection-string shape — persisted the SURVIVOR's expression while the
@@ -1572,44 +1572,22 @@ export class IntrinsicFunctionResolver {
    * Recording THIS parameter's own expression makes the value scan agree with
    * the diff side, so both halves move together.
    *
-   * THE RESIDUAL, and the earlier version of this note UNDERSTATED IT. It said
-   * the leftover case was "no worse than the behaviour before this fix". That
-   * is true only of the shape it was measured on. MEASURED 2026-08-27 against
-   * `main` (f56c2cf9) and against this branch, one child resource, parameters
-   * `A` and `B` resolving to one plaintext:
-   *
-   * | shape                                    | main    | here    |
-   * | ---------------------------------------- | ------- | ------- |
-   * | `{Ref: A}` and `{Ref: B}`                | agree   | agree   |
-   * | `Fn::Sub '${A}'` only                    | agree   | agree   |
-   * | `Fn::Sub 'x${A}'` **and** `{Ref: B}`     | agree   | DISAGREE|
-   *
-   * The third row is a NEW disagreement this PR introduces, not a pre-existing
-   * one it fails to fix: `main` had both halves take the collapsed survivor, so
-   * they matched (on the WRONG expression, which is issue #2291, but they
-   * matched). Here the DIFF side is per-parameter while an EMBEDDED leaf can
-   * only be redacted by the plaintext-keyed value scan, and this bag holds ONE
-   * entry — whichever `Ref` resolved LAST. So the embedded leaf takes `B`'s
-   * expression while the desired side computes `A`'s, and the resource reports
-   * an UPDATE on every deploy (a REPLACEMENT, on a create-only property).
-   *
-   * It is ORDER-DEPENDENT, which is why it is narrow: reversing the two
-   * properties makes the embedded parameter the last one resolved and the two
-   * halves agree again (measured). It also needs BOTH leaves in ONE resource —
-   * `perResourceSecrets` is keyed by logical id, so two resources get two bags
-   * and each is right. A resource that consumes and embeds BOTH parameters is
-   * unfixable here for the same reason and is genuinely inherent.
-   *
-   * CLOSING IT NEEDS A PLACEHOLDER-SPAN POSITION ARM — aligning an `Fn::Sub` /
-   * `Fn::Join` source against the resolved string to locate each placeholder's
-   * span and rewrite it from the association. That is a new positioning
-   * CONCEPT rather than an arm beside the existing ones: the persist path would
-   * have to reproduce the resolver's substitution semantics from a module that
-   * holds neither a resolver nor a parameter bag, and any divergence between
-   * the two reproductions is this same perpetual-UPDATE bug. Deferred to issue
-   * [#2320](https://github.com/go-to-k/cdkd/issues/2320) with the measurement.
-   * It shares only the word "span" with issue #2102, which registers live
-   * values for `{{resolve:...}}` TOKEN spans on the drift paths.
+   * ONE SLOT PER PLAINTEXT is still all this bag can hold, so when ONE
+   * resource consumes two such parameters the slot holds whichever `Ref`
+   * resolved LAST, and a value-scanned embedding leaf would take that one
+   * whatever it embeds. The persist path therefore no longer leaves an
+   * `Fn::Sub` / `Fn::Join` over the child's parameters to this slot: since
+   * issue [#2320](https://github.com/go-to-k/cdkd/issues/2320)
+   * `positionByParameterPlaceholders` answers each placeholder from its OWN
+   * parameter association, which is what `redactParametersForDiff` renders on
+   * the desired side. What still reaches the slot is an embedding leaf that
+   * arm refuses (issue [#4446](https://github.com/go-to-k/cdkd/issues/4446)):
+   * two or more parts whose text the template cannot state; a rendering that
+   * does not reassemble the resolved leaf; an unknown span the value scan
+   * would rewrite; a recorded plaintext in the template's literal text, or one
+   * the final re-scan still finds; and a recorded plaintext crossing a
+   * placeholder's edge. There the order-dependent disagreement with the diff
+   * side remains.
    *
    * Substituting is deliberately NOT done here — the resolved value is what
    * reaches AWS, and an `Fn::Equals` over a parameter must compare the real

@@ -338,12 +338,11 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * consumer's cross-stack read). (a) CLOSED by the association above (was:
  * the loser's child leaf took the survivor's frame, or stayed plaintext
  * under a different frame -- the second half closed by (iii)'s second arm).
- * What remains of it: one child RESOURCE consuming BOTH parameters holds
- * ONE plaintext-keyed slot for the value, and a leaf of it the association
- * cannot reach by name -- an `Fn::Sub` EMBEDDING the `{Ref}`, positioned by
- * the value scan -- reads that slot's frame, whichever `{Ref}` resolved
- * last; a bare `{Ref}` leaf of the same resource is positioned by name and
- * is unaffected (pinned). (b) The framed
+ * An `Fn::Sub` / `Fn::Join` leaf EMBEDDING the `{Ref}` in a resource that
+ * consumes BOTH parameters is positioned by name too since issue #2320
+ * (`positionByParameterPlaceholders`, pinned). What remains: a leaf that arm
+ * refuses (#4446) takes the value scan, which reads the resource's ONE
+ * plaintext-keyed slot -- whichever `{Ref}` resolved last. (b) The framed
  * value is a SUBSTRING needle (7 characters here) in every child resource
  * that consumed the parameter, so an unrelated literal there containing it
  * is spliced -- the #2087 class, bounded to resources whose own resolution

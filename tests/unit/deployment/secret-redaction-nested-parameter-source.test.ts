@@ -1382,7 +1382,7 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     expect(persisted['Value']).toBe(EXPR_C);
   });
 
-  it("pins what remains of residual (a): ONE resource consuming both twins through an Fn::Sub embedding reads the slot's frame, its bare {Ref} its own (#3079)", () => {
+  it('closes residual (a): ONE resource consuming both twins positions its Fn::Sub embedding by the placeholder\'s OWN frame, beside its bare {Ref} (#3079, #2320)', () => {
     const parent = parentResolved([PIN_TOKEN_A, PIN], [PIN_TOKEN_B, PIN]);
     const resolved = { Parameters: { Pin1: frame(PIN), Pin2: frame(PIN) } };
     const source = { Parameters: { Pin1: frame(PIN_TOKEN_B), Pin2: frame(PIN_TOKEN_A) } };
@@ -1398,9 +1398,13 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     ) as Record<string, unknown>;
     // The bare `{Ref: Pin1}` leaf: positioned by NAME, its own frame (B's).
     expect(persisted['Value']).toBe(frame(PIN_TOKEN_B));
-    // The embedding leaf: the value scan, the slot's frame (A's) -- the stated
-    // answer, the #2320 class, not closed here.
-    expect(persisted['Dsn']).toBe(`x-${frame(PIN_TOKEN_A)}-y`);
+    // The embedding leaf: `${Pin1}` is answered from Pin1's OWN association
+    // (B's frame), not from the bag's one slot (A's) -- the answer
+    // `redactParametersForDiff` renders on the desired side (#2320).
+    expect(persisted['Dsn']).toBe(`x-${frame(PIN_TOKEN_B)}-y`);
+    // ...which IS the desired side: the diff renders the placeholder from the
+    // parameter bag `redactParametersForDiff` builds, i.e. this same answer.
+    expect(persisted['Dsn']).toBe(`x-${inheritedParameterExpression(parent, 'Pin1', frame(PIN))}-y`);
   });
 
   // These pin each SHAPE's outcome, not one condition: every shape below is
