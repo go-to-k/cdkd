@@ -54,6 +54,31 @@ export function auxiliaryLogicalId(ownerLogicalId: string): string {
 }
 
 /**
+ * The owner `withRetry` marks with (go-to-k/cdkd#4222): a fixed word, never the
+ * label. A label can carry a physical name — `<table name> (<dimension>)`, a
+ * policy name, and an all-alphanumeric physical name reads no differently from
+ * a logical id — and the mark is the one `logicalId` `maskSecretsInError`
+ * copies verbatim. Exported so a reader can tell that mark from a provider's
+ * ({@link isAuxiliaryMarkOf}).
+ */
+export const RETRY_AUXILIARY_OWNER = 'withRetry';
+
+/**
+ * Whether `link`'s OWN `logicalId` is the mark `markAuxiliaryFailure(_, owner)`
+ * defines — that link alone, no walk. Never throws: an unreadable link is not
+ * the mark.
+ */
+export function isAuxiliaryMarkOf(link: unknown, ownerLogicalId: string): boolean {
+  try {
+    if ((typeof link !== 'object' && typeof link !== 'function') || link === null) return false;
+    const own = Object.getOwnPropertyDescriptor(link, 'logicalId');
+    return isAuxiliaryMark(own) && own?.value === auxiliaryLogicalId(ownerLogicalId);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether an own `logicalId` descriptor is the mark {@link markAuxiliaryFailure}
  * defines. The suffix alone does not identify it: a physical id can end in a
  * `/auxiliary` path segment (an SSM parameter name, a log group, an IAM path),

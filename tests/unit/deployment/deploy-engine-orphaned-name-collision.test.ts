@@ -186,6 +186,8 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
 
   const adviceIn = (lines: string[]): string | undefined =>
     lines.find((l) => l.includes('is one cdkd DERIVED from'));
+  const replayAdviceIn = (lines: string[]): string | undefined =>
+    lines.find((l) => l.includes('resource THIS create made'));
 
   it('names the collision as cdkd’s own orphan and gives an import command', async () => {
     const advice = adviceIn(await attempt());
@@ -247,13 +249,14 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     expect(adviceIn(await attempt())).toBeUndefined();
   });
 
-  it('says nothing when the collision is a replay after an auxiliary failure (#3972)', async () => {
-    // A DECIDED loss, not an oversight: `withRetry` carries an auxiliary
-    // attempt's mark onto the replay's "already exists", and this advice reads
-    // the same anchored classifier. Its text (an orphan of an EARLIER run, a
-    // `Retain`) would misdescribe what is this run's own first attempt. The
-    // first attempt fails on a throttled auxiliary call (1s of real backoff),
-    // the replay collides.
+  it('gives the REPLAY diagnosis after an auxiliary failure (#3972, #3984)', async () => {
+    // `withRetry` carries an auxiliary attempt's mark onto the replay's
+    // "already exists": that attempt's main create may have SUCCEEDED, so the
+    // holder is most likely this create's own. The orphan-of-an-earlier-run
+    // text (a `Retain`) would misdescribe it, which is why this case printed
+    // nothing before #3984; it now gets the replay line. The first attempt
+    // fails on a throttled auxiliary call (1s of real backoff), the replay
+    // collides.
     const collision = createError;
     let calls = 0;
     provider.create = vi.fn().mockImplementation(async () => {
@@ -273,6 +276,8 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
 
     expect(calls).toBe(2);
     expect(adviceIn(lines)).toBeUndefined();
+    expect(replayAdviceIn(lines)).toBeDefined();
+    expect(provider.delete).not.toHaveBeenCalled();
   });
 
   it('says nothing, and prints no `undefined`, when the error carries no id', async () => {
@@ -535,5 +540,122 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     // class; `runImportForResource` would SKIP such a type with
     // `skipped-no-impl` and leave the user exactly where they started.
     expect(advice).not.toContain('--resource');
+  });
+
+  describe('a create replayed after an ambiguous attempt (#3984)', () => {
+    /**
+     * A server fault as the SDK builds one (`$fault: 'server'`, the HTTP status
+     * on `$metadata`), wrapped the way a provider threads it. `withRetry`
+     * retries it and arms the replay latch, since the create may have
+     * succeeded server-side.
+     */
+    const serverFault = (): ProvisioningError => {
+      const sdk = new Error('UnknownError');
+      sdk.name = 'InternalFailure';
+      Object.assign(sdk, {
+        $fault: 'server',
+        $metadata: { httpStatusCode: 500, requestId: 'req-5xx', attempts: 3 },
+      });
+      return new ProvisioningError(
+        `Failed to create ${LOGICAL}: UnknownError`,
+        TYPE,
+        LOGICAL,
+        `${STACK}-${LOGICAL}`,
+        sdk
+      );
+    };
+
+    /** First call: `first`; every later call: `then`. Returns the call count. */
+    const failFirstWith = (first: Error, then: () => Error): (() => number) => {
+      let calls = 0;
+      provider.create = vi.fn().mockImplementation(async () => {
+        throw calls++ === 0 ? first : then();
+      });
+      return () => calls;
+    };
+
+    it('says this create most likely made the resource, and issues no delete', async () => {
+      const calls = failFirstWith(serverFault(), () => createError);
+      const lines = await attempt();
+
+      expect(calls()).toBe(2);
+      const advice = replayAdviceIn(lines);
+      expect(advice).toBeDefined();
+      // WHICH name, WHY it is taken, WHAT to run -- and the confirm-first
+      // warning the import arm always carries.
+      expect(advice).toContain(`${STACK}-${LOGICAL}`);
+      expect(advice).toContain('ended without a clear verdict');
+      expect(advice).toContain('no rollback or cdkd destroy will remove it');
+      expect(advice).toContain('CONFIRM IT IS YOURS FIRST');
+      expect(advice!.split('\n').at(-1)).toBe(
+        `Adopt with: cdkd import ${STACK} --resource '${LOGICAL}=${STACK}-${LOGICAL}'`
+      );
+      // Not the earlier-run orphan story: no Retain was involved here.
+      expect(advice).not.toContain('Retain');
+      expect(adviceIn(lines)).toBeUndefined();
+      // Advice only: nothing reads the replayed verdict as a delete-first.
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it('takes the delete-only arm for a type whose provider cannot import', async () => {
+      providerHasImport = false;
+      failFirstWith(serverFault(), () => createError);
+      const advice = replayAdviceIn(await attempt());
+
+      expect(advice).toBeDefined();
+      expect(advice).toContain('implements no import');
+      expect(advice).not.toContain('--resource');
+    });
+
+    it('says nothing when the replay fails on something other than a collision', async () => {
+      failFirstWith(
+        serverFault(),
+        () =>
+          new ProvisioningError(
+            `Failed to create ${LOGICAL}: Member must satisfy constraint: [Source is required]`,
+            TYPE,
+            LOGICAL,
+            `${STACK}-${LOGICAL}`,
+            awsSdkError('Member must satisfy constraint: [Source is required]', 'ValidationException')
+          )
+      );
+      const lines = await attempt();
+
+      expect(replayAdviceIn(lines)).toBeUndefined();
+      expect(adviceIn(lines)).toBeUndefined();
+    });
+
+    it('says nothing for a replayed name the TEMPLATE supplied', async () => {
+      // An ambiguous first attempt does not prove the name was free before it,
+      // so a template-supplied name may still be someone else's.
+      createError = collisionError('a-name-the-user-chose');
+      failFirstWith(serverFault(), () => createError);
+      const lines = await attempt();
+
+      expect(replayAdviceIn(lines)).toBeUndefined();
+      expect(adviceIn(lines)).toBeUndefined();
+    });
+
+    it('says nothing when the replay collides on a PROVIDER-marked auxiliary object', async () => {
+      // Only `withRetry`'s own mark is seen through. A provider's mark names an
+      // auxiliary object (a tag, a policy), so that "already exists" is not
+      // about this resource's name at all.
+      failFirstWith(serverFault(), () =>
+        markAuxiliaryFailure(
+          new ProvisioningError(
+            `Failed to create ${LOGICAL}: Policy already exists.`,
+            TYPE,
+            LOGICAL,
+            `${STACK}-${LOGICAL}`,
+            awsSdkError('Policy already exists.', 'EntityAlreadyExistsException')
+          ),
+          LOGICAL
+        )
+      );
+      const lines = await attempt();
+
+      expect(replayAdviceIn(lines)).toBeUndefined();
+      expect(adviceIn(lines)).toBeUndefined();
+    });
   });
 });

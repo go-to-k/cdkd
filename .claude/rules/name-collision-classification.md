@@ -69,9 +69,10 @@ the bounded `cause` chain for the error name and the Cloud Control
    Cloud Control `CloudControlOperationFailedError` (owner id, no `cause`) and
    a `markNameCollision`-stamped owner wrapper; `withRetry` stamps this symbol
    beside it. `isUpdateUnsupportedError` does not read it. The #2902 orphan
-   advice reads the same verdict, so it goes silent after either mark — wrong
-   after an ambiguous attempt, where the resource is likely this run's own
-   orphan (#3984).
+   advice alone reads the stamp the other way, through
+   `isReplayedNameCollisionFrom`, which sees through `withRetry`'s own
+   auxiliary mark (never a provider's) — advice only; no delete-first site may
+   call it (#3984).
 
 It reaches the SDK error only if providers thread the caught value as `cause` —
 enforced by `scripts/check-provider-error-cause.ts`.

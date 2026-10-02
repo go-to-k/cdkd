@@ -1786,9 +1786,10 @@ const REPLAY_MAY_COLLIDE_MARKER = Symbol.for('cdkd.replayMayCollide');
  * no `cause`, so its `ccErrorCode: 'AlreadyExists'` stayed credited. Same for
  * a provider wrapper stamped with {@link markNameCollision}.
  *
- * Read by {@link isNameCollisionErrorFrom} ONLY, ahead of its anchor, at every
+ * Read by {@link isNameCollisionErrorFrom}, ahead of its anchor, at every
  * link -- `deploy-engine.ts` re-wraps a provider failure, so the stamped error
- * can sit below the top. Deliberately NOT read by
+ * can sit below the top -- and, the other way round, by the advice-only
+ * {@link isReplayedNameCollisionFrom} (#3984). Deliberately NOT read by
  * {@link isUpdateUnsupportedError}: withholding a collision's delete-first is
  * the point, and widening the update-path cost `withRetry` accepts is not.
  *
@@ -1892,6 +1893,49 @@ export function isNameCollisionErrorFrom(error: unknown, logicalId: string): boo
   // ahead of the anchor so no positive arm below -- the Cloud Control code or a
   // provider's `markNameCollision` on an owner-anchored link -- can credit it.
   if (hasReplayMayCollide(error)) return false;
+  return relaysNameCollision(error, logicalId, () => false);
+}
+
+/**
+ * The replayed half {@link isNameCollisionErrorFrom} withholds (issue
+ * [#3984](https://github.com/go-to-k/cdkd/issues/3984)): `error` carries
+ * {@link markReplayMayCollide}'s stamp AND its chain still relays a name
+ * collision for `logicalId`, read by the same arms and anchor.
+ *
+ * `isRetryAnchor` names the one link the anchor sees through: `withRetry`'s
+ * auxiliary mark, which `withRetry` writes beside the stamp onto the first
+ * link without its own logical id -- usually the very SDK error that says
+ * "already exists". The caller supplies it (`auxiliary-failure.ts` owns the
+ * mark's shape) so this module keeps its one import. Every other foreign
+ * anchor still refuses, a provider's own auxiliary mark included: that one
+ * names an auxiliary object, not the resource's name.
+ *
+ * ADVICE ONLY. A `true` here is the case where the collided resource is most
+ * likely the one this create's own earlier attempt made, which is exactly why
+ * no delete-first site may read it.
+ *
+ * RESIDUAL, advice text only: the retry mark cannot tell WHICH call it wraps.
+ * A provider that runs an auxiliary call under its own `withRetry` inside
+ * `create()` would leave this mark (not its own) on that call's "already
+ * exists", and a resource whose logical id is literally `withRetry` would
+ * spell a provider mark identically. Either costs a misworded log line, never
+ * a delete.
+ */
+export function isReplayedNameCollisionFrom(
+  error: unknown,
+  logicalId: string,
+  isRetryAnchor: (link: unknown) => boolean
+): boolean {
+  if (!hasReplayMayCollide(error)) return false;
+  return relaysNameCollision(error, logicalId, isRetryAnchor);
+}
+
+/** The shared walk of {@link isNameCollisionErrorFrom} and {@link isReplayedNameCollisionFrom}. */
+function relaysNameCollision(
+  error: unknown,
+  logicalId: string,
+  isRetryAnchor: (link: unknown) => boolean
+): boolean {
   const topRelaysIt =
     error instanceof Error &&
     typeof error.message === 'string' &&
@@ -1922,7 +1966,13 @@ export function isNameCollisionErrorFrom(error: unknown, logicalId: string): boo
     // replacement; here it costs the `--replace` delete-first destroying the
     // live child stack. Not a trust boundary — one operator authors both
     // templates — but do not read the anchor as total.
-    if (typeof link.logicalId === 'string' && link.logicalId !== logicalId) return false;
+    if (
+      typeof link.logicalId === 'string' &&
+      link.logicalId !== logicalId &&
+      !isRetryAnchor(current)
+    ) {
+      return false;
+    }
 
     if (typeof link.name === 'string' && NAME_COLLISION_ERROR_NAMES.has(link.name)) return true;
 
