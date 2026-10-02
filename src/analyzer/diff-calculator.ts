@@ -1,3 +1,4 @@
+import { namesRecreatedParent } from '../deployment/child-of-recreated-parent.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import type {
   StackState,
@@ -972,11 +973,22 @@ export class DiffCalculator {
             // conditional rules see no phantom delta and don't over-promote.
             // A type the registry does not classify falls back to the CFn
             // schema's createOnly paths (go-to-k/cdkd#3803).
-            requiresReplacement: this.syntheticRequiresReplacement(
-              change.resourceType,
-              propKey,
-              syntheticCreateOnlyPaths
-            ),
+            //
+            // A resource AWS stores inside the replaced one (a permission on
+            // a function, go-to-k/cdkd#4411) goes with it, so it is replaced
+            // too whatever the schema answers, and its own readers (a
+            // permission on an alias of the function) are promoted in turn.
+            requiresReplacement:
+              this.syntheticRequiresReplacement(
+                change.resourceType,
+                propKey,
+                syntheticCreateOnlyPaths
+              ) ||
+              namesRecreatedParent(
+                change.resourceType,
+                propKey,
+                changes.get(replacedId)?.resourceType
+              ),
           });
         }
         if (syntheticChanges.length === 0) continue;

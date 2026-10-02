@@ -282,7 +282,10 @@ export async function refuseStatefulReplacedReaders(input: {
  * condition missing from the bag keeps the whole `Fn::If`, so both arms still
  * count.
  */
-function takenFnIfArms(value: unknown, conditions: Readonly<Record<string, boolean>>): unknown {
+export function takenFnIfArms(
+  value: unknown,
+  conditions: Readonly<Record<string, boolean>>
+): unknown {
   if (Array.isArray(value)) return value.map((item) => takenFnIfArms(item, conditions));
   if (value === null || typeof value !== 'object') return value;
   const obj = value as Record<string, unknown>;

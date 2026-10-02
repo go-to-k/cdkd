@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-recreate-parent-child-permission",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd re-creates a Lambda permission lost with its fixed-name function's recreate (#4411)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

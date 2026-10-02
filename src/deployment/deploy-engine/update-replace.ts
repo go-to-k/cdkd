@@ -65,6 +65,7 @@ export async function updateByReplacement(
     typeChanged,
     updateReplacePolicy,
     updateSecrets,
+    lostWithParent,
   }: {
     change: ResourceChange;
     counts: ProvisionCounts | undefined;
@@ -87,6 +88,12 @@ export async function updateByReplacement(
     typeChanged: boolean;
     updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | undefined;
     updateSecrets: RecordedSecretValues;
+    /**
+     * go-to-k/cdkd#4411: the parent this resource was stored inside, which
+     * this deploy destroyed and re-created under the same physical id. The
+     * old resource went with it, so it is created anew and never deleted.
+     */
+    lostWithParent?: string | undefined;
   }
 ): Promise<ResourceOutcomeSignal | void> {
   // Stateful guard for PROPERTY-DRIVEN replacement (an immutable /
@@ -524,7 +531,16 @@ export async function updateByReplacement(
     // safe-replacement order — keeps the old alive if CREATE
     // fails so the deploy can roll back to it cleanly).
     this.logger.info(`  Creating new ${logicalId}...`);
-    let deletedOldFirst = false;
+    // go-to-k/cdkd#4411: a resource stored inside a parent that was just
+    // destroyed and re-created is already gone, exactly as after the
+    // delete-first fallback: nothing to delete, and an equal physical id
+    // names the fresh resource, not a name-idempotent hand-back of the old.
+    let deletedOldFirst = lostWithParent !== undefined;
+    if (lostWithParent !== undefined) {
+      this.logger.info(
+        safeMsg`  ${logicalId} went with ${lostWithParent}, which was destroyed and re-created under the same id: re-creating it`
+      );
+    }
     try {
       createResult = await this.withRetry(
         () =>
@@ -883,6 +899,15 @@ export async function updateByReplacement(
   // the create arm's registration is in a different `case` and does not
   // run here.
   this.registerNoEchoAttributes(logicalId, createResult, updateSecrets, resolvedProps);
+
+  // go-to-k/cdkd#4411: the new resource holds the old one's physical id, so
+  // the old one was destroyed first (every arm above refuses an equal id
+  // whose old resource survived: the name-idempotent and Retain guards), and
+  // whatever AWS stored inside it went with it. Read by the UPDATE arm of
+  // each resource that may be such a child.
+  if (equalIdIsSameResource && createResult.physicalId === currentResource.physicalId) {
+    this.recreatedUnderSameId.add(logicalId);
+  }
 
   stateResources[logicalId] = {
     physicalId: createResult.physicalId,

@@ -401,4 +401,66 @@ describe('DiffCalculator - readers of a --recreate-via-* target (go-to-k/cdkd#43
     );
     expect(pathsOf(stage).sort()).toEqual(['DeploymentId', 'RestApiId']);
   });
+
+  it('replaces a resource stored inside the target whatever the schema says, so its own readers are promoted (go-to-k/cdkd#4411)', async () => {
+    // `AWS::Lambda::Alias` is not classified by the registry and its schema
+    // lookup is denied here, so `FunctionName` alone would read as in place
+    // and the permission on the alias would never be promoted. The alias is
+    // deleted with the function, so it is a replacement regardless.
+    const state: StackState = {
+      version: 1,
+      stackName: 'TestStack',
+      resources: {
+        Fn: {
+          physicalId: 'my-fn',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { FunctionName: 'my-fn' },
+          attributes: {},
+        },
+        Alias: {
+          physicalId: 'arn:alias',
+          resourceType: 'AWS::Lambda::Alias',
+          properties: { FunctionName: 'my-fn', Name: 'live', FunctionVersion: '$LATEST' },
+          attributes: {},
+        },
+        AliasPerm: {
+          physicalId: 'perm',
+          resourceType: 'AWS::Lambda::Permission',
+          properties: { FunctionName: 'arn:alias', Action: 'lambda:InvokeFunction' },
+          attributes: {},
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: { Type: 'AWS::Lambda::Function', Properties: { FunctionName: 'my-fn' } },
+        Alias: {
+          Type: 'AWS::Lambda::Alias',
+          Properties: { FunctionName: { Ref: 'Fn' }, Name: 'live', FunctionVersion: '$LATEST' },
+        },
+        AliasPerm: {
+          Type: 'AWS::Lambda::Permission',
+          Properties: { FunctionName: { Ref: 'Alias' }, Action: 'lambda:InvokeFunction' },
+        },
+      },
+    };
+
+    const changes = await new DiffCalculator().calculateDiff(
+      state,
+      template,
+      makeResolver(state),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      new Set(['Fn'])
+    );
+    expect(
+      changes.get('Alias')?.propertyChanges?.find((pc) => pc.path === 'FunctionName')
+        ?.requiresReplacement
+    ).toBe(true);
+    expect(changes.get('AliasPerm')?.changeType).toBe('UPDATE');
+  });
 });
