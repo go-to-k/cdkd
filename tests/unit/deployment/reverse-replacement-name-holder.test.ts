@@ -726,12 +726,15 @@ describe('the rewriting-types table matches every caller of generateResourceName
     'iam-user-group-provider.ts': ['AWS::IAM::User', 'AWS::IAM::Group'],
   };
   /**
-   * Call sites per file, a LITERAL measured 2026-09-29: two types sharing one
-   * property and maxLength (ELBv2's `Name` / 32) cannot be told apart by the
-   * table check, so a dropped call is caught here.
+   * Call sites per file, a LITERAL: two types sharing one property and
+   * maxLength (ELBv2's `Name` / 32) cannot be told apart by the table check,
+   * so a dropped call is caught here. ELBv2's one call is `sentElbv2Name`,
+   * which both creates and the name lookup share (go-to-k/cdkd#3937); that
+   * each create sends its name is pinned in
+   * `tests/unit/provisioning/elbv2-name-probe-lookup-3937.test.ts`.
    */
   const FILE_CALLS: Record<string, number> = {
-    'elbv2-provider.ts': 2,
+    'elbv2-provider.ts': 1,
     'iam-instance-profile-provider.ts': 1,
     'iam-managed-policy-provider.ts': 2,
     'iam-role-provider.ts': 2,
@@ -801,9 +804,9 @@ describe('the rewriting-types table matches every caller of generateResourceName
         }
       }
     }
-    // Floors are LITERALS, measured 2026-09-29: 10 call sites in 5 files, one
-    // of them the shared-spec shape.
-    expect(calls).toBeGreaterThanOrEqual(10);
+    // Floors are LITERALS: 9 call sites in 5 files, one of them the
+    // shared-spec shape.
+    expect(calls).toBeGreaterThanOrEqual(9);
     expect(specCalls).toBeGreaterThanOrEqual(1);
     expect(callers.sort()).toEqual(Object.keys(FILE_TYPES).sort());
     // No caller outside the providers directory, except the generator's own

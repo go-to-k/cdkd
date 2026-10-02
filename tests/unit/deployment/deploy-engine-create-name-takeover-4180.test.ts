@@ -42,7 +42,8 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
       .fn()
       .mockImplementation(
         (value: unknown, ctx?: { recordedSecretValues?: Map<string, string> }) => {
-          const name = (value as { QueueName?: unknown } | null)?.QueueName;
+          const bag = value as { QueueName?: unknown; Name?: unknown } | null;
+          const name = bag?.QueueName ?? bag?.Name;
           if (typeof name === 'string' && name.includes('SECRETVALUE')) {
             ctx?.recordedSecretValues?.set(name, '{{resolve:secretsmanager:name:SecretString}}');
           }
@@ -195,6 +196,26 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(
       (h.provider.import as ReturnType<typeof vi.fn>).mock.calls[0]![0].knownPhysicalId
     ).toBeUndefined();
+  });
+
+  it('refuses an ELBv2 load balancer or target group whose explicit Name another one holds', async () => {
+    for (const [type, kind] of [
+      ['AWS::ElasticLoadBalancingV2::LoadBalancer', 'loadbalancer/net'],
+      ['AWS::ElasticLoadBalancingV2::TargetGroup', 'targetgroup'],
+    ] as const) {
+      h = makeHarness();
+      const arn = `arn:aws:elasticloadbalancing:us-east-1:123456789012:${kind}/theirs/1`;
+      h.importResult = { physicalId: arn };
+
+      const err = await create(makeEngine(h), type, { Name: 'theirs' });
+
+      expect(err!.code, type).toBe('NAMED_CREATE_COLLISION');
+      expect(err!.message, type).toContain(`an existing resource (${arn}) already holds that name`);
+      expect(h.callOrder, type).toEqual(['import']);
+      expect(h.provider.import, type).toHaveBeenCalledWith(
+        expect.objectContaining({ resourceType: type, properties: { Name: 'theirs' } })
+      );
+    }
   });
 
   it('creates when no resource holds the name (negative control)', async () => {
@@ -486,6 +507,29 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(failed!.message).toContain('AccessDenied for ***');
   });
 
+  it('masks the spelling ELBv2 sends for a secret-derived Name, which the holder ARN carries', async () => {
+    // The provider sends `team_SECRETVALUE.x` as `team-SECRETVALUE-x`: not the
+    // recorded plaintext, so only the derived-name mask hides it.
+    const holder =
+      'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/team-SECRETVALUE-x/0123456789abcdef';
+    h.importResult = { physicalId: holder };
+    const held = await create(makeEngine(h), 'AWS::ElasticLoadBalancingV2::TargetGroup', {
+      Name: 'team_SECRETVALUE.x',
+    });
+
+    h = makeHarness();
+    h.importResult = new Error('AccessDenied for team-SECRETVALUE-x');
+    const failed = await create(makeEngine(h), 'AWS::ElasticLoadBalancingV2::TargetGroup', {
+      Name: 'team_SECRETVALUE.x',
+    });
+
+    for (const err of [held!, failed!]) {
+      expect(err.code).toBe('NAMED_CREATE_COLLISION');
+      expect(err.message).not.toContain('SECRETVALUE');
+    }
+    expect(held!.message).toContain('targetgroup/***/0123456789abcdef');
+  });
+
   it('masks a secret-derived name BEFORE display sanitizing rewrites it', async () => {
     // A trailing control character is what `displaySafe` strips: sanitized
     // first, the value no longer matches its needle and would print.
@@ -512,6 +556,8 @@ describe('createNameQuestion (#4180)', () => {
     const cases: Array<[string, string]> = [
       ['AWS::CloudWatch::Alarm', 'AlarmName'],
       ['AWS::ECS::Cluster', 'ClusterName'],
+      ['AWS::ElasticLoadBalancingV2::LoadBalancer', 'Name'],
+      ['AWS::ElasticLoadBalancingV2::TargetGroup', 'Name'],
       ['AWS::Events::Rule', 'Name'],
       ['AWS::Logs::LogGroup', 'LogGroupName'],
       ['AWS::S3::Bucket', 'BucketName'],

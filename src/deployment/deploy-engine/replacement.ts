@@ -32,6 +32,8 @@ import {
   replacementOrderIsCaseSensitive,
   renderReplacementNameChange,
   replacementRequestsDifferentName,
+  maskRewrittenSentName,
+  replacementSentNameMoves,
 } from '../replacement-name-holder.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { withRetry } from '../retry.js';
@@ -415,6 +417,14 @@ export async function checkedReplacementNameChange(
       ? replacementRequestsDifferentName({ ...question, caseSensitive: true })
       : undefined) ??
     replacementMovesEventBus(question) ??
+    replacementSentNameMoves({
+      oldResourceType: input.oldResourceType,
+      newResourceType: resourceType,
+      createdVia: input.createdVia,
+      desiredProperties: input.desiredProperties,
+      physicalId: currentResource.physicalId,
+      logicalId,
+    }) ??
     (adopts && typeChanged ? this.typeChangeNameQuestion(resourceType, input) : undefined);
   if (change === undefined) return undefined;
   const probe = replacementNameProbe({
@@ -424,6 +434,12 @@ export async function checkedReplacementNameChange(
     region: this.stackRegion,
   });
   if (probe === undefined) return change;
+  // A secret-derived name a provider rewrites before sending (ELBv2) is
+  // printed by AWS, and in the holder's ARN, in a spelling the recorded
+  // secrets do not match: mask that spelling too.
+  const maskName = maskRewrittenSentName(resourceType, input.createProps, logicalId, (text) =>
+    maskSecretsInText(text, secrets)
+  );
   const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
   const adoptsText =
     `its create API hands back or overwrites an existing resource of that name instead of ` +
@@ -431,10 +447,9 @@ export async function checkedReplacementNameChange(
   if (probe === null) {
     throw markNonRetryable(
       new CdkdError(
-        maskSecretsInText(
+        maskName(
           `${subject} requires replacement under a new name, and ${adoptsText}, but cdkd cannot ` +
-            `check whether another resource already holds it. Nothing was created or deleted.`,
-          secrets
+            `check whether another resource already holds it. Nothing was created or deleted.`
         ),
         'NAMED_REPLACEMENT_COLLISION'
       )
@@ -467,14 +482,13 @@ export async function checkedReplacementNameChange(
     if (probeErrorMeansNameHeld(resourceType, probeError)) {
       throw markNonRetryable(
         new CdkdError(
-          maskSecretsInText(
+          maskName(
             `${subject} requires replacement, and S3 answered 403 Forbidden for bucket ` +
               `${displaySafe(change.desiredName)}: another account owns that name, or a bucket ` +
               `of this account denies this identity \`s3:ListBucket\`, or the request's ` +
               `credentials were rejected. Nothing was created or deleted. Choose another name, ` +
               `or if the bucket is yours grant \`s3:ListBucket\` on it (or delete it) and ` +
-              `re-run.`,
-            secrets
+              `re-run.`
           ),
           'NAMED_REPLACEMENT_COLLISION',
           probeError instanceof Error ? probeError : undefined
@@ -483,12 +497,11 @@ export async function checkedReplacementNameChange(
     }
     throw markNonRetryable(
       new CdkdError(
-        maskSecretsInText(
+        maskName(
           `${subject} requires replacement under a new name, and ${adoptsText}, but cdkd could ` +
             `not check whether another resource already holds it: ` +
-            `${displayAwsMessage(maskSecretsInText(probeError instanceof Error ? probeError.message : String(probeError), secrets))}. ` +
-            `Nothing was created or deleted. Re-run the deploy once the check can succeed.`,
-          secrets
+            `${displayAwsMessage(maskName(probeError instanceof Error ? probeError.message : String(probeError)))}. ` +
+            `Nothing was created or deleted. Re-run the deploy once the check can succeed.`
         ),
         'NAMED_REPLACEMENT_COLLISION',
         probeError instanceof Error ? probeError : undefined
@@ -504,14 +517,13 @@ export async function checkedReplacementNameChange(
   }
   throw markNonRetryable(
     new CdkdError(
-      maskSecretsInText(
+      maskName(
         `${subject} requires replacement, and another existing resource ` +
           `(${displaySafe(found.physicalId)}) already holds the name it asks for. ` +
           `${renderReplacementNameChange(change, input.createProps)}. Since ${adoptsText}, creating the replacement ` +
           `would take that resource over and record it as this stack's. Nothing was ` +
           `created or deleted. Choose a name no other resource holds, or delete the ` +
-          `resource holding it if it is yours.`,
-        secrets
+          `resource holding it if it is yours.`
       ),
       'NAMED_REPLACEMENT_COLLISION'
     )
@@ -574,6 +586,12 @@ export async function createFirstThenDeleteOld(
       ? safeMsg`  ${logicalId}'s new name differs from the one the old resource holds — creating the new resource (the old one is retained)...`
       : safeMsg`  ${logicalId}'s new name differs from the one the old resource holds — creating the new resource before deleting the old one...`
   );
+  // The rewritten spelling of a secret-derived name (ELBv2), under either
+  // prefix flag, is in AWS's text, the physical ids and the rendered name
+  // change, where the literal mask misses it.
+  const maskName = maskRewrittenSentName(resourceType, input.createProps, logicalId, (text) =>
+    maskSecretsInText(text, secrets)
+  );
   let createResult: ResourceCreateResult;
   try {
     createResult = await this.withRetry(
@@ -592,24 +610,20 @@ export async function createFirstThenDeleteOld(
     // The old resource is untouched: a raw failure is the whole story.
     if (!isNameCollisionErrorFrom(createError, logicalId)) throw createError;
     const createMsg = displayAwsMessage(
-      maskSecretsInText(
-        createError instanceof Error ? createError.message : String(createError),
-        secrets
-      )
+      maskName(createError instanceof Error ? createError.message : String(createError))
     );
     // Marked: the message quotes the collision text, which the recreate
     // retry classifier would otherwise retry for minutes.
     throw markNonRetryable(
       new CdkdError(
-        maskSecretsInText(
+        maskName(
           `${displaySafe(logicalId)} (${displaySafe(resourceType)}) requires replacement ` +
             `(${input.trigger}), and cdkd created the new resource first because its name ` +
             `differs, but the create collided: ${createMsg}. If the collision is on the ` +
             `requested name: ${renderReplacementNameChange(input.change, input.createProps)}. Nothing was deleted` +
             (retainOld ? ` (UpdateReplacePolicy: Retain keeps the old resource in place)` : '') +
             `. Choose a name no other resource holds, or delete the resource holding it if it ` +
-            `is yours.`,
-          secrets
+            `is yours.`
         ),
         'NAMED_REPLACEMENT_COLLISION',
         createError instanceof Error ? createError : undefined
@@ -621,13 +635,12 @@ export async function createFirstThenDeleteOld(
     // requested name after all and deleting it would delete the "new" one.
     throw markNonRetryable(
       new CdkdError(
-        maskSecretsInText(
+        maskName(
           `${displaySafe(logicalId)} (${displaySafe(resourceType)}) requires replacement ` +
             `(${input.trigger}) under a new name, but the create returned the resource being ` +
             `replaced (${displaySafe(currentResource.physicalId)}) instead of a new one, so ` +
             `cdkd cannot tell which name it holds. Nothing was deleted. Delete that resource ` +
-            `by hand if it is yours, then re-run the deploy.`,
-          secrets
+            `by hand if it is yours, then re-run the deploy.`
         ),
         'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
       )

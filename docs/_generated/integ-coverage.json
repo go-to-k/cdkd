@@ -2275,6 +2275,7 @@
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
+        "replacement-rename-onto-holder",
         "rollback-failure-injection",
         "sg-circular-dependency",
         "vpc-lambda",
@@ -2424,6 +2425,10 @@
         ],
         "remove-protection": [
           "l2"
+        ],
+        "replacement-rename-onto-holder": [
+          "l1",
+          "literal"
         ],
         "rollback-failure-injection": [
           "l2"
@@ -2704,6 +2709,7 @@
         "rds-full-stack",
         "redshift-cluster-getatt",
         "remove-protection",
+        "replacement-rename-onto-holder",
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "servicediscovery",
@@ -2866,6 +2872,10 @@
         ],
         "remove-protection": [
           "l2"
+        ],
+        "replacement-rename-onto-holder": [
+          "l1",
+          "literal"
         ],
         "rollback-failure-injection": [
           "l2"
@@ -3547,7 +3557,8 @@
         "local-start-alb",
         "local-start-alb-from-state",
         "nlb-source-nat",
-        "remove-protection"
+        "remove-protection",
+        "replacement-rename-onto-holder"
       ],
       "signals": {
         "alb": [
@@ -3586,6 +3597,10 @@
         "remove-protection": [
           "l2",
           "literal"
+        ],
+        "replacement-rename-onto-holder": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -3598,7 +3613,8 @@
         "elbv2-same-name-replacement",
         "import-attribute-readback-network",
         "local-start-alb",
-        "local-start-alb-from-state"
+        "local-start-alb-from-state",
+        "replacement-rename-onto-holder"
       ],
       "signals": {
         "alb": [
@@ -3622,6 +3638,10 @@
           "literal"
         ],
         "local-start-alb-from-state": [
+          "literal"
+        ],
+        "replacement-rename-onto-holder": [
+          "l1",
           "literal"
         ]
       }

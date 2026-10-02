@@ -3,6 +3,7 @@ import {
   CreateLoadBalancerCommand,
   DeleteLoadBalancerCommand,
   DescribeLoadBalancersCommand,
+  type DescribeLoadBalancersCommandOutput,
   waitUntilLoadBalancerAvailable,
   DescribeLoadBalancerAttributesCommand,
   ModifyLoadBalancerAttributesCommand,
@@ -13,6 +14,7 @@ import {
   DeleteTargetGroupCommand,
   ModifyTargetGroupCommand,
   DescribeTargetGroupsCommand,
+  type DescribeTargetGroupsCommandOutput,
   ModifyTargetGroupAttributesCommand,
   DescribeTargetGroupAttributesCommand,
   DescribeTargetHealthCommand,
@@ -113,6 +115,64 @@ function loadBalancerNameFromArn(arn: string): string | undefined {
  */
 function targetGroupNameFromArn(arn: string): string | undefined {
   return nameFromElbv2Arn(arn, ':targetgroup/', 2);
+}
+
+/**
+ * The name `CreateLoadBalancer` / `CreateTargetGroup` sends for this bag: the
+ * template's `Name` under the stack-name prefix rule and the 32-character cap,
+ * or one derived from the logical id, in the CALLER's async scope (stack name,
+ * prefix flag). The creates and the name lookup in `import()` both take it
+ * from here, so the go-to-k/cdkd#3937 probe asks for exactly the name the
+ * create would send.
+ */
+function sentElbv2Name(properties: Record<string, unknown>, logicalIdForFallback: string): string {
+  return generateResourceNameWithFallback(
+    // A number is sent as its decimal spelling, as AWS reads it.
+    typeof properties['Name'] === 'number'
+      ? String(properties['Name'])
+      : (properties['Name'] as string | undefined),
+    logicalIdForFallback,
+    { maxLength: 32 }
+  );
+}
+
+/**
+ * The name an `import()` without a known physical id looks up: the one the
+ * create would send for the template's `Name` ({@link sentElbv2Name}), or
+ * `undefined` without a usable `Name` (a string, or a number, which the create
+ * sends as its decimal spelling). A name derived from the logical id is
+ * never looked up: the orphan-adoption pre-pass, which presumes such a
+ * holder is the stack's own, passes a known physical id instead.
+ */
+function explicitElbv2Name(input: ResourceImportInput): string | undefined {
+  const declared = input.properties['Name'];
+  const usable =
+    (typeof declared === 'string' && declared !== '') ||
+    (typeof declared === 'number' && Number.isFinite(declared));
+  return usable ? sentElbv2Name(input.properties, input.logicalId) : undefined;
+}
+
+/**
+ * The one resource a by-name `Describe*` answered. ELBv2 names are unique per
+ * account and region, so more than one, or one without an ARN, is an answer
+ * cdkd cannot read, and an empty list without the not-found error is no
+ * answer: each throws rather than pick one or read the name as free.
+ */
+function onlyNamedMatch<T>(
+  items: T[] | undefined,
+  arnOf: (item: T) => string | undefined,
+  what: string
+): { item: T; arn: string } {
+  const found = items ?? [];
+  const arn = found.length === 1 ? arnOf(found[0]!) : undefined;
+  if (arn === undefined || arn === '') {
+    throw new Error(
+      `ELBv2 answered ${found.length} ${what}(s) for one name` +
+        (found.length === 1 ? ' with no ARN' : '') +
+        `, so cdkd cannot tell which resource holds it`
+    );
+  }
+  return { item: found[0]!, arn };
 }
 
 /**
@@ -817,11 +877,7 @@ export class ELBv2Provider implements ResourceProvider {
     const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     try {
-      const lbName = generateResourceNameWithFallback(
-        properties['Name'] as string | undefined,
-        logicalId,
-        { maxLength: 32 }
-      );
+      const lbName = sentElbv2Name(properties, logicalId);
 
       const ipv4IpamPoolId = properties['Ipv4IpamPoolId'] as string | undefined;
       const response = await this.getClient().send(
@@ -1588,11 +1644,7 @@ export class ELBv2Provider implements ResourceProvider {
     try {
       const matcher = properties['Matcher'] as { HttpCode?: string; GrpcCode?: string } | undefined;
 
-      const tgName = generateResourceNameWithFallback(
-        properties['Name'] as string | undefined,
-        logicalId,
-        { maxLength: 32 }
-      );
+      const tgName = sentElbv2Name(properties, logicalId);
 
       const response = await this.getClient().send(
         new CreateTargetGroupCommand({
@@ -3172,8 +3224,16 @@ export class ELBv2Provider implements ResourceProvider {
    * Adopt an existing ELBv2 LoadBalancer or TargetGroup into cdkd state.
    *
    * Lookup: `--resource <id>=<arn>` override → verify with
-   * `DescribeLoadBalancers` or `DescribeTargetGroups`. Without an override
-   * the resource is reported as not-found.
+   * `DescribeLoadBalancers` or `DescribeTargetGroups`. Without one, a
+   * template `Name` is looked up by the name the create would send
+   * ({@link sentElbv2Name}); with neither, the resource is reported as
+   * not-found.
+   *
+   * The by-name lookup is also the go-to-k/cdkd#3937 name probe: both creates
+   * answer success with the existing resource when one of that name has the
+   * same settings, so the deploy asks here first. Only the service's own
+   * not-found error reads as free: anything else, more than one match, or an
+   * answer naming none throws, which the probe refuses on.
    *
    * Listener is likewise not auto-importable (no template-supplied stable
    * identifier); use `--resource <listenerId>=<arn>` for those.
@@ -3220,10 +3280,20 @@ export class ELBv2Provider implements ResourceProvider {
 
     // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
     // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // `DescribeStackResources` or the template's physical-name property; a
-    // load balancer reaching here needs an explicit `--resource` override.
-    return null;
+    // (issue #1134). Without a template `Name` there is nothing to look up.
+    const name = explicitElbv2Name(input);
+    if (name === undefined) return null;
+    let resp: DescribeLoadBalancersCommandOutput;
+    try {
+      resp = await this.getClient().send(new DescribeLoadBalancersCommand({ Names: [name] }));
+    } catch (err) {
+      // By ERROR NAME only: `isNotFoundError` also matches message text, and
+      // a lookup that did not answer must never read as "the name is free".
+      if ((err as { name?: unknown }).name === 'LoadBalancerNotFoundException') return null;
+      throw err;
+    }
+    const lb = onlyNamedMatch(resp.LoadBalancers, (l) => l.LoadBalancerArn, 'load balancer');
+    return { physicalId: lb.arn, attributes: loadBalancerAttributes(lb.item, lb.arn) };
   }
 
   private async importTargetGroup(
@@ -3248,12 +3318,20 @@ export class ELBv2Provider implements ResourceProvider {
       }
     }
 
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
-    // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // `DescribeStackResources` or the template's physical-name property; a
-    // target group reaching here needs an explicit `--resource` override.
-    return null;
+    // No `aws:cdk:path` tag walk (issue #1134); without a template `Name`
+    // there is nothing to look up.
+    const name = explicitElbv2Name(input);
+    if (name === undefined) return null;
+    let resp: DescribeTargetGroupsCommandOutput;
+    try {
+      resp = await this.getClient().send(new DescribeTargetGroupsCommand({ Names: [name] }));
+    } catch (err) {
+      // By ERROR NAME only, as for the load balancer lookup.
+      if ((err as { name?: unknown }).name === 'TargetGroupNotFoundException') return null;
+      throw err;
+    }
+    const tg = onlyNamedMatch(resp.TargetGroups, (t) => t.TargetGroupArn, 'target group');
+    return { physicalId: tg.arn, attributes: targetGroupAttributes(tg.item, tg.arn) };
   }
 
   /**

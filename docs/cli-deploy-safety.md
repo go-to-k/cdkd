@@ -783,11 +783,15 @@ nothing deleted, and the old resource is deleted only once the new one exists.
 
 Some create APIs do not collide at all: SQS `CreateQueue`, SNS `CreateTopic`,
 Step Functions `CreateStateMachine` and ECS `CreateCluster` return the resource
-already holding the name, EventBridge `PutRule` and CloudWatch `PutMetricAlarm` overwrite it, and
+already holding the name, as do ELBv2 `CreateLoadBalancer` and
+`CreateTargetGroup` when the settings match, EventBridge `PutRule` and
+CloudWatch `PutMetricAlarm` overwrite it, and
 cdkd's S3 and CloudWatch Logs providers read `BucketAlreadyOwnedByYou` and
 `ResourceAlreadyExistsException` as success. For those types
 on cdkd's SDK providers, a replacement that changes the name — or moves an
-EventBridge rule to another bus, or changes `Type` onto one of these types —
+EventBridge rule to another bus, or changes `Type` onto one of these types, or,
+for an ELBv2 load balancer or target group, sends another name only because
+`--prefix-user-supplied-names` differs from the deploy that created it —
 first looks the new name up. When another resource holds it, the deploy fails
 with `NAMED_REPLACEMENT_COLLISION` and nothing is created or deleted — the
 create would otherwise take that resource over and record it as the stack's,
@@ -806,6 +810,8 @@ another name, or deploy that id's removal first. A log group declared
 explicitly that something else already created — for example a Lambda
 function's `/aws/lambda/<name>` group, created on its first invocation — is
 refused the same way. A create under a name cdkd generates is not looked up.
+An ELBv2 load balancer or target group is looked up under the name the create
+sends, which carries the stack-name prefix under `--prefix-user-supplied-names`.
 
 #### When cdkd cannot show the old resource holds the name
 

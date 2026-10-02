@@ -217,7 +217,22 @@ vi.mock('node:readline/promises', () => ({
   })),
 }));
 
+// The real ELBv2 provider's by-name lookup (go-to-k/cdkd#3937), with its own
+// SDK client mocked: the import command reaches it with no stack scope.
+const elbv2Send = vi.hoisted(() => vi.fn());
+vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
+  const actual = await vi.importActual('@aws-sdk/client-elastic-load-balancing-v2');
+  return {
+    ...actual,
+    ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({
+      send: elbv2Send,
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
+
 import { createImportCommand } from '../../../src/cli/commands/import.js';
+import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
 import {
@@ -1035,6 +1050,66 @@ describe('cdkd import', () => {
     // Summary line should reflect the 1/1/1 split.
     const summaryCall = infoSpy.mock.calls.find((c) => String(c[0]).startsWith('Summary:'));
     expect(String(summaryCall?.[0])).toMatch(/1 imported, 1 not found, 1 unsupported/);
+  });
+
+  it('adopts an ELBv2 load balancer by its UNPREFIXED template Name, and reports a failed lookup as failed (go-to-k/cdkd#3937)', async () => {
+    // `cdkd import` runs outside any stack scope, so the lookup asks for the
+    // bare (sanitized) name a CloudFormation-deployed stack carries, never
+    // `S-my-lb`. A lookup that did not answer is a `failed` row, not "not
+    // found": before #3937 every ELBv2 resource without --resource read as
+    // not found without any call.
+    const lbArn = 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/my-lb/0123456789abcdef';
+    const tmpl = template({
+      Lb: {
+        Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+        Properties: { Name: 'my_lb' },
+        Metadata: { 'aws:cdk:path': 'S/Lb' },
+      },
+      Tg: {
+        Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+        Properties: { Name: 'my-tg' },
+        Metadata: { 'aws:cdk:path': 'S/Tg' },
+      },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockHasProvider.mockReturnValue(true);
+    const provider = new ELBv2Provider();
+    mockGetProvider.mockReturnValue(provider);
+    elbv2Send.mockReset();
+    elbv2Send.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'DescribeLoadBalancersCommand') {
+        return { LoadBalancers: [{ LoadBalancerArn: lbArn, LoadBalancerName: 'my-lb' }] };
+      }
+      if (command.constructor.name === 'DescribeTargetGroupsCommand') {
+        throw Object.assign(new Error('User is not authorized to perform DescribeTargetGroups'), {
+          name: 'AccessDenied',
+        });
+      }
+      return {};
+    });
+
+    await runImport(['import', '--app', 'x', '--yes']);
+
+    const lookups = elbv2Send.mock.calls
+      .map(([c]) => c as { constructor: { name: string }; input: Record<string, unknown> })
+      .filter((c) => c.input['Names'] !== undefined);
+    expect(lookups.map((c) => [c.constructor.name, c.input['Names']])).toEqual(
+      expect.arrayContaining([
+        ['DescribeLoadBalancersCommand', ['my-lb']],
+        ['DescribeTargetGroupsCommand', ['my-tg']],
+      ])
+    );
+    const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+      string,
+      string,
+      { resources: Record<string, { physicalId: string }> },
+    ];
+    expect(state.resources['Lb']?.physicalId).toBe(lbArn);
+    expect(state.resources).not.toHaveProperty('Tg');
+    const summaryCall = infoSpy.mock.calls.find((c) => String(c[0]).startsWith('Summary:'));
+    expect(String(summaryCall?.[0])).toMatch(/1 imported, 0 not found, .* 1 failed/);
+    const failed = errorSpy.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('Failed to import Tg'));
+    expect(failed).toContain('not authorized');
   });
 
   it('populates observedProperties for each imported resource by calling provider.readCurrentState', async () => {

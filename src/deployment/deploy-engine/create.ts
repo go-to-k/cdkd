@@ -10,6 +10,7 @@ import { formatResourceLine } from '../../utils/resource-line.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import {
   createNameQuestion,
+  maskRewrittenSentName,
   probeErrorMeansNameHeld,
   createLookupArn,
   probeFoundSameId,
@@ -273,7 +274,13 @@ async function refuseTakenCreateName(
 
   // Mask BEFORE sanitizing: `displaySafe` rewrites control characters, after
   // which a secret-derived value no longer matches its needle.
-  const shown = (value: string): string => displaySafe(maskSecretsInText(value, secrets));
+  // A secret-derived name a provider rewrites before sending (ELBv2) is
+  // printed by AWS, and in the holder's ARN, in a spelling the recorded
+  // secrets do not match: mask that spelling too.
+  const maskName = maskRewrittenSentName(resourceType, input.createProps, logicalId, (text) =>
+    maskSecretsInText(text, secrets)
+  );
+  const shown = (value: string): string => displaySafe(maskName(value));
   const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
   const named = `${question.property} ${shown(question.desiredName)}`;
   const adoptsText =
@@ -282,7 +289,7 @@ async function refuseTakenCreateName(
   const refuse = (message: string, cause?: unknown): never => {
     throw markNonRetryable(
       new CdkdError(
-        maskSecretsInText(message, secrets),
+        maskName(message),
         'NAMED_CREATE_COLLISION',
         cause instanceof Error ? cause : undefined
       )
@@ -351,7 +358,7 @@ async function refuseTakenCreateName(
     return refuse(
       `${subject} is created with ${named}, and ${adoptsText}, but cdkd could not check ` +
         `whether another resource already holds it: ` +
-        `${displayAwsMessage(maskSecretsInText(probeError instanceof Error ? probeError.message : String(probeError), secrets))}. ` +
+        `${displayAwsMessage(maskName(probeError instanceof Error ? probeError.message : String(probeError)))}. ` +
         `Nothing was created. Re-run the deploy once the check can succeed.`,
       probeError
     );
