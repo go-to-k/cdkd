@@ -159,9 +159,9 @@ interface NextStateMaterial {
   specs: Map<string, ContainerSpec>;
   corsConfigByApiId: Map<string, CorsConfig>;
   /**
-   * Discovered WebSocket APIs (#462). On `--watch`, a route-set or Lambda
-   * change forces a WebSocket server restart: the protocol has no equivalent
-   * of `setServerState`'s atomic swap.
+   * Discovered WebSocket APIs (#462). `reloadAllServers` does not reload a
+   * WebSocket server: a route-set or Lambda change needs a manual restart,
+   * since the protocol has no equivalent of `setServerState`'s atomic swap.
    */
   webSocketApis?: readonly DiscoveredWebSocketApi[];
   /**

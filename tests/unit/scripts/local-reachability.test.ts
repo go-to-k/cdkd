@@ -360,6 +360,32 @@ describe('local reachability critic — RED probes against real code', () => {
     expect(stale[0]?.tag).toBe(TEST_ONLY_TAG);
   }, ANALYZE_TIMEOUT_MS);
 
+  it('counts and reports a `@no-live-caller` annotation under ITS tag', () => {
+    // The real tree carries no `@no-live-caller` any more, so the seam is
+    // re-tagged here. Without this case a classifier that swapped the two tags
+    // would stay green: the self-probe compares finding KINDS, not tags.
+    const SEAM_TAG =
+      ' * @test-only-export exists so unit tests can drop the module-level STS caches between';
+    const retagged = withMutation(
+      'src/local/ecr-puller.ts',
+      SEAM_TAG,
+      ' * @no-live-caller exists so unit tests can drop the module-level STS caches between'
+    );
+    const report = analyze(retagged);
+    expect(report.findings).toEqual([]);
+    expect(report.annotatedNoLiveCaller).toBe(1);
+    expect(report.annotatedTestOnly).toBe(0);
+    // ...and the same annotation going stale is reported under that tag.
+    const PULL = 'export async function pullEcrImage(imageUri: string, options: EcrPullOptions): Promise<string> {';
+    const staleCopy = new Map(retagged);
+    const path = join(REPO_ROOT, 'src/local/ecr-puller.ts');
+    staleCopy.set(path, retagged.get(path)!.replace(PULL, `${PULL}\n  void __resetStsCachesForTesting;`));
+    const stale = analyze(staleCopy).findings.filter((f) => f.kind === 'stale-annotation');
+    expect(stale.map((f) => [f.symbol, f.tag])).toEqual([
+      ['__resetStsCachesForTesting', NO_LIVE_CALLER_TAG],
+    ]);
+  }, ANALYZE_TIMEOUT_MS);
+
   it('fires when an annotation is a bare token with no reason', () => {
     // `ecr-puller.ts` carries exactly one annotation, so the anchor is unique
     // without having to pick an occurrence out of a repeated block.
