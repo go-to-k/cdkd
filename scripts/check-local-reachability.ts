@@ -66,9 +66,13 @@
  *
  * Annotating is the FLOOR, not the destination: the orphans the critic first
  * found were DELETED (issue #2277), so a new orphan is deleted rather than
- * annotated unless something still needs it. With no `@no-live-caller` left in
- * the tree, the stale direction defends only the `@test-only-export` seams, and
- * {@link runSelfProbe} is what holds the reachability walk.
+ * annotated unless something still needs it. This script still ACCEPTS a
+ * module whose every export is annotated; what refuses it is the unit test's
+ * "carries no fork" case (`tests/unit/scripts/local-reachability.test.ts`),
+ * which fails on any LOADED-ONLY or UNREFERENCED module in the real tree. With
+ * no `@no-live-caller` left in the tree, the stale direction defends only the
+ * `@test-only-export` seams, and {@link runSelfProbe} is what holds the
+ * reachability walk.
  *
  * WHAT DEFENDS THIS CRITIC FROM ITSELF
  * ------------------------------------
@@ -96,9 +100,10 @@
  *     direction does it for free: if everything is reachable then every
  *     existing annotation is stale and the run fails. That defence shrinks
  *     with the annotation count (one `@test-only-export` seam remains), so it
- *     is not the primary one. The primary one is {@link runSelfProbe} — a fixed corpus with known
- *     verdicts, including a known LOADED-ONLY module and a known live shim,
- *     analyzed on every run before the real tree is touched.
+ *     is not the primary one. The primary one is {@link runSelfProbe} — a
+ *     fixed corpus with known verdicts, including a known LOADED-ONLY module
+ *     and a known live shim, analyzed on every run before the real tree is
+ *     touched.
  *
  * WHAT IS EXEMPT, AND WHY IT IS STRUCTURAL RATHER THAN AN ALLOWLIST
  * ----------------------------------------------------------------

@@ -7,8 +7,8 @@
  * which `http-server.ts` re-exports verbatim. What cdkd still owns here is the
  * warning `local-start-api.ts` prints once per route at server boot.
  *
- * `Integration.Uri` is passed to `fetch()` verbatim; nothing blocks private,
- * loopback or link-local destinations. {@link warnSsrfRiskyUri} surfaces a warn
+ * cdk-local's dispatch passes `Integration.Uri` to `fetch()` verbatim; nothing
+ * blocks private, loopback or link-local destinations. {@link warnSsrfRiskyUri} surfaces a warn
  * when a Uri's hostname is a well-known internal address literal (IMDS,
  * loopback, link-local, RFC1918) so users see the risk in their logs. Blocking
  * is deliberately not done — this is a developer-loop tool, not a security
