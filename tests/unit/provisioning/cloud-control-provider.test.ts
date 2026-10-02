@@ -592,6 +592,7 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
   beforeEach(() => {
     vi.clearAllMocks();
     clearWriteOnlyPropertiesCache();
+    clearCreateOnlyPropertiesCache();
     provider = new CloudControlProvider();
   });
 
@@ -669,6 +670,249 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
     expect(patch).toContainEqual({ op: 'add', path: '/Configuration', value: configuration });
     expect(patch).toHaveLength(2);
   });
+
+  it('does not re-add a write-only key that is also create-only (go-to-k/cdkd#4416)', async () => {
+    // AWS::Cognito::ManagedLoginBranding: Cloud Control answers an unchanged
+    // `add /ClientId` with "createOnlyProperties [/properties/ClientId] cannot
+    // be updated" (measured), while the same patch without it succeeds.
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: ['/properties/UserPoolId', '/properties/ClientId'],
+        writeOnlyProperties: ['/properties/ClientId', '/properties/ReturnMergedResources'],
+      }),
+    });
+
+    const base = { UserPoolId: 'us-east-1_abc', ClientId: 'client-1', ReturnMergedResources: true };
+    await provider.update(
+      'WebClientBranding',
+      'us-east-1_abc|mlb-1',
+      'AWS::Cognito::ManagedLoginBranding',
+      { ...base, Settings: '{"a":2}' },
+      { ...base, Settings: '{"a":1}' }
+    );
+
+    const patch = sentPatch();
+    expect(patch).toContainEqual({ op: 'replace', path: '/Settings', value: '{"a":2}' });
+    // The other write-only key is still re-added (#809).
+    expect(patch).toContainEqual({ op: 'add', path: '/ReturnMergedResources', value: true });
+    expect(patch).toHaveLength(2);
+  });
+
+  it('does not re-add a write-only container holding a create-only path (go-to-k/cdkd#4416)', async () => {
+    // AWS::Pipes::Pipe: `SourceParameters` is write-only, so its create-only
+    // `KinesisStreamParameters/StartingPosition` is unreadable, and an
+    // unchanged `add /SourceParameters` is refused (measured): before the fix
+    // even a Description-only update failed.
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: [
+          '/properties/Name',
+          '/properties/SourceParameters/KinesisStreamParameters/StartingPosition',
+        ],
+        writeOnlyProperties: ['/properties/TargetParameters', '/properties/SourceParameters'],
+      }),
+    });
+
+    const sourceParameters = {
+      KinesisStreamParameters: { StartingPosition: 'LATEST', BatchSize: 10 },
+    };
+    const targetParameters = { SqsQueueParameters: { MessageGroupId: 'g' } };
+    await provider.update(
+      'Pipe',
+      'my-pipe',
+      'AWS::Pipes::Pipe',
+      {
+        Name: 'my-pipe',
+        Description: 'new',
+        SourceParameters: sourceParameters,
+        TargetParameters: targetParameters,
+      },
+      {
+        Name: 'my-pipe',
+        Description: 'old',
+        SourceParameters: sourceParameters,
+        TargetParameters: targetParameters,
+      }
+    );
+
+    const patch = sentPatch();
+    expect(patch).toContainEqual({ op: 'replace', path: '/Description', value: 'new' });
+    expect(patch).toContainEqual({ op: 'add', path: '/TargetParameters', value: targetParameters });
+    expect(patch).toHaveLength(2);
+  });
+
+  it('still re-adds a kept container whose value CHANGED, as an add op (go-to-k/cdkd#4416)', async () => {
+    // No patch can change a Kinesis-source pipe's SourceParameters through
+    // Cloud Control (measured: any op on a write-only path must be `add`, and
+    // an add carrying StartingPosition is refused). The add keeps the refusal
+    // naming the create-only path, rather than a `replace` the API rejects
+    // for a different reason.
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: [
+          '/properties/SourceParameters/KinesisStreamParameters/StartingPosition',
+        ],
+        writeOnlyProperties: ['/properties/SourceParameters'],
+      }),
+    });
+
+    const desired = { KinesisStreamParameters: { StartingPosition: 'LATEST', BatchSize: 20 } };
+    await provider.update(
+      'Pipe',
+      'my-pipe',
+      'AWS::Pipes::Pipe',
+      { Name: 'my-pipe', SourceParameters: desired },
+      {
+        Name: 'my-pipe',
+        SourceParameters: { KinesisStreamParameters: { StartingPosition: 'LATEST', BatchSize: 10 } },
+      }
+    );
+
+    expect(sentPatch()).toEqual([{ op: 'add', path: '/SourceParameters', value: desired }]);
+  });
+
+  it('keeps out a create-only container holding a write-only leaf, per key (go-to-k/cdkd#4416)', async () => {
+    // AWS::CodePipeline::CustomActionType: the create-only `Settings` holds the
+    // write-only `ThirdPartyConfigurationUrl`, and the create-only
+    // `ConfigurationProperties` holds the write-only `*/Type`. Cloud Control
+    // refuses an unchanged `add` of either (measured); a Tags-only patch
+    // succeeds.
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: ['/properties/Settings', '/properties/ConfigurationProperties'],
+        writeOnlyProperties: [
+          '/properties/ConfigurationProperties/*/Type',
+          '/properties/Settings/ThirdPartyConfigurationUrl',
+        ],
+      }),
+    });
+
+    const base = {
+      Settings: { ThirdPartyConfigurationUrl: 'https://example.com/c' },
+      ConfigurationProperties: [{ Name: 'p', Key: true, Type: 'String' }],
+    };
+    await provider.update(
+      'Action',
+      'Test|P|1',
+      'AWS::CodePipeline::CustomActionType',
+      { ...base, Tags: [{ Key: 'k', Value: 'v2' }] },
+      { ...base, Tags: [{ Key: 'k', Value: 'v1' }] }
+    );
+
+    expect(sentPatch()).toEqual([{ op: 'replace', path: '/Tags', value: [{ Key: 'k', Value: 'v2' }] }]);
+  });
+
+  it('matches an escaped pointer segment on both sides', async () => {
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: ['/properties/Config/a~1b'],
+        writeOnlyProperties: ['/properties/Config/a~1b'],
+      }),
+    });
+
+    const config = { 'a/b': 'x' };
+    await provider.update(
+      'MyResource',
+      'res-1',
+      'AWS::Some::Type',
+      { Mode: 'b', Config: config },
+      { Mode: 'a', Config: config }
+    );
+
+    expect(sentPatch()).toEqual([{ op: 'replace', path: '/Mode', value: 'b' }]);
+  });
+
+  it('still re-adds a write-only container whose value holds no create-only path', async () => {
+    // An SQS-source pipe's `SourceParameters` carries no `StartingPosition`:
+    // re-adding it is what keeps it across the read-modify-write (the
+    // eventbridge-pipes integ updates its BatchSize this way).
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: [
+          '/properties/Name',
+          '/properties/SourceParameters/KinesisStreamParameters/StartingPosition',
+        ],
+        writeOnlyProperties: ['/properties/SourceParameters'],
+      }),
+    });
+
+    await provider.update(
+      'Pipe',
+      'my-pipe',
+      'AWS::Pipes::Pipe',
+      { Name: 'my-pipe', SourceParameters: { SqsQueueParameters: { BatchSize: 2 } } },
+      { Name: 'my-pipe', SourceParameters: { SqsQueueParameters: { BatchSize: 1 } } }
+    );
+
+    expect(sentPatch()).toEqual([
+      { op: 'add', path: '/SourceParameters', value: { SqsQueueParameters: { BatchSize: 2 } } },
+    ]);
+  });
+
+  it('still re-adds a write-only container whose create-only path is readable', async () => {
+    // Only an UNREADABLE create-only path keeps its container out: here the
+    // read handler returns `Configuration/Name`, so re-adding `Configuration`
+    // (for its write-only `Secret`) brings no new create-only value in.
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: ['/properties/Configuration/Name'],
+        writeOnlyProperties: ['/properties/Configuration/Secret'],
+      }),
+    });
+
+    const configuration = { Name: 'n', Secret: 's3cret' };
+    await provider.update(
+      'MyResource',
+      'res-1',
+      'AWS::Some::Type',
+      { Mode: 'b', Configuration: configuration },
+      { Mode: 'a', Configuration: configuration }
+    );
+
+    const patch = sentPatch();
+    expect(patch).toContainEqual({ op: 'add', path: '/Configuration', value: configuration });
+    expect(patch).toHaveLength(2);
+  });
+
+  it.each([
+    ['holds it', [{ Port: 80 }], [{ op: 'replace', path: '/Mode', value: 'b' }]],
+    [
+      'lacks it',
+      [{ Name: 'l' }],
+      [
+        { op: 'replace', path: '/Mode', value: 'b' },
+        { op: 'add', path: '/Listeners', value: [{ Name: 'l' }] },
+      ],
+    ],
+  ])(
+    'reads an array-element create-only path per element (an element %s)',
+    async (_label, listeners, expected) => {
+      wireUpdateSuccess();
+      mockCloudFormationSend.mockResolvedValue({
+        Schema: JSON.stringify({
+          createOnlyProperties: ['/properties/Listeners/*/Port'],
+          writeOnlyProperties: ['/properties/Listeners'],
+        }),
+      });
+
+      await provider.update(
+        'MyResource',
+        'res-1',
+        'AWS::Some::Type',
+        { Mode: 'b', Listeners: listeners },
+        { Mode: 'a', Listeners: listeners }
+      );
+
+      expect(sentPatch()).toEqual(expected);
+    }
+  );
 
   it('keeps the minimal patch for types without write-only properties', async () => {
     wireUpdateSuccess();
@@ -2053,10 +2297,10 @@ describe('CloudControlProvider update: a recorded secret reference on a create-o
     expect(previous.FilterName).toBe(REF);
   });
 
-  it('still re-adds a key that is both create-only and write-only (issue #809)', async () => {
-    // Pre-existing #809 behavior, not changed by #4275: the read handler cannot
-    // return a write-only key, so it is sent even when only its secret
-    // reference differs.
+  it('keeps a key that is both create-only and write-only out of the patch (go-to-k/cdkd#4416)', async () => {
+    // Cloud Control refuses any op bringing a create-only key its read handler
+    // cannot return into the model, so the #809 re-add skips it; with the
+    // #4275 substitution the unchanged reference produces no op either.
     mockCloudFormationSend.mockResolvedValue({
       Schema: JSON.stringify({
         createOnlyProperties: ['/properties/FilterName', '/properties/LogGroupName'],
@@ -2068,10 +2312,7 @@ describe('CloudControlProvider update: a recorded secret reference on a create-o
       maskSecrets: masker,
     });
 
-    const patch = updateCalls()[0];
-    expect(patch).toContainEqual({ op: 'replace', path: '/FilterPattern', value: 'b' });
-    expect(patch).toContainEqual({ op: 'add', path: '/FilterName', value: NAME });
-    expect(patch).toHaveLength(2);
+    expect(updateCalls()).toEqual([[{ op: 'replace', path: '/FilterPattern', value: 'b' }]]);
   });
 
   it('sends nothing when the secret-derived create-only name is the only difference', async () => {

@@ -72,7 +72,10 @@ import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { unchangedBehindSecretReference } from './secret-reference-immutable.js';
-import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
+import {
+  getTopLevelKeysHoldingUnreadableCreateOnly,
+  getTopLevelWriteOnlyProperties,
+} from './write-only-properties.js';
 import { getTopLevelReadOnlyProperties } from './read-only-properties.js';
 import { getPrimaryIdentifierFields, toCloudControlIdentifier } from './cc-import-identifier.js';
 import { SECRET_MASK } from '../deployment/secret-redaction.js';
@@ -1252,15 +1255,28 @@ export class CloudControlProvider implements ResourceProvider {
       // form. The DescribeType lookup is cached per type and degrades to the
       // minimal patch (with a warning) when the API is unavailable.
       //
-      // A key both create-only and write-only is re-added here even when the
-      // #4275 loop above matched it: the read handler cannot return it, so it
-      // must be sent. The trade-off (pre-existing #809 behavior, not changed by
-      // #4275): after a secret rotation under an unchanged reference, that op
-      // carries a value the resource does not have.
+      // go-to-k/cdkd#4416: a write-only key whose value holds a create-only
+      // path overlapping a write-only one (Cognito ManagedLoginBranding
+      // `ClientId`, a Kinesis-source Pipe's `SourceParameters`, CodePipeline
+      // CustomActionType `Settings`) is NOT re-added while UNCHANGED: Cloud
+      // Control refuses any patch bringing such a value into the model it
+      // read, unchanged or not. A CHANGED one is still re-added -- Cloud
+      // Control refuses that too (no patch can express it), and the `add`
+      // gets its refusal naming the create-only path (go-to-k/cdkd#4423).
       const writeOnlyProperties = await getTopLevelWriteOnlyProperties(resourceType);
       if (writeOnlyProperties.size > 0) {
+        const keptOnPreviousSide = getTopLevelKeysHoldingUnreadableCreateOnly(
+          resourceType,
+          cleanProperties
+        );
         const previousWithoutWriteOnly = { ...cleanPreviousProperties };
         for (const propertyName of writeOnlyProperties) {
+          if (
+            keptOnPreviousSide.has(propertyName) &&
+            isDeepStrictEqual(cleanPreviousProperties[propertyName], cleanProperties[propertyName])
+          ) {
+            continue;
+          }
           delete previousWithoutWriteOnly[propertyName];
         }
         patch = this.patchGenerator.generatePatch(previousWithoutWriteOnly, cleanProperties);

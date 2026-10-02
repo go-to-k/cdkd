@@ -882,6 +882,7 @@
       "integs": [
         "api-cognito",
         "appsync",
+        "cc-write-only-create-only",
         "cognito",
         "cognito-custom-attribute-add",
         "cognito-identity-pool",
@@ -899,6 +900,9 @@
         ],
         "appsync": [
           "l1"
+        ],
+        "cc-write-only-create-only": [
+          "l2"
         ],
         "cognito": [
           "l1",
@@ -4009,6 +4013,7 @@
         "cc-api-fallback",
         "cc-getatt-readback",
         "cc-protection-flip-eks",
+        "cc-write-only-create-only",
         "ci-cd",
         "cloudtrail-trail",
         "composite-stack",
@@ -4107,6 +4112,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-write-only-create-only": [
           "l2"
         ],
         "ci-cd": [
@@ -4488,6 +4496,7 @@
       "resourceType": "AWS::Kinesis::Stream",
       "integs": [
         "cache-streaming",
+        "cc-write-only-create-only",
         "dynamodb-ondemand",
         "kinesis-esm-filter",
         "kinesis-stream-mode-switch",
@@ -4498,6 +4507,9 @@
       ],
       "signals": {
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-write-only-create-only": [
           "l2"
         ],
         "dynamodb-ondemand": [
@@ -6066,6 +6078,7 @@
         "bench-cdk-sample",
         "bench-sdk",
         "cc-getatt-readback",
+        "cc-write-only-create-only",
         "cloudwatch-anomaly-detector",
         "composite-stack",
         "conditions-update-2",
@@ -6132,6 +6145,9 @@
           "l2"
         ],
         "cc-getatt-readback": [
+          "l2"
+        ],
+        "cc-write-only-create-only": [
           "l2"
         ],
         "cloudwatch-anomaly-detector": [
@@ -6958,8 +6974,10 @@
     "AWS::CloudFormation::CustomResource",
     "AWS::CloudWatch::CompositeAlarm",
     "AWS::CodeDeploy::DeploymentGroup",
+    "AWS::CodePipeline::CustomActionType",
     "AWS::CodePipeline::Pipeline",
     "AWS::Cognito::IdentityPool",
+    "AWS::Cognito::ManagedLoginBranding",
     "AWS::Cognito::UserPoolClient",
     "AWS::Cognito::UserPoolDomain",
     "AWS::Cognito::UserPoolGroup",
