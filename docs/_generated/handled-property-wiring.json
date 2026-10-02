@@ -7,7 +7,7 @@
     "wired": 83,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 35
+    "classesWithBlindSpots": 36
   },
   "classes": [
     {
@@ -40,7 +40,8 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
@@ -159,7 +160,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "withRemovalDefaults(...) in update()"
+      ]
     },
     {
       "file": "agentcore-browser-provider.ts",

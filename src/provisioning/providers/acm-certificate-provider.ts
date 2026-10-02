@@ -33,6 +33,7 @@ import type {
 } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import { withRemovalDefaults } from '../update-removal.js';
 
 /**
  * True for ACM's refusal to delete a certificate a consumer still references
@@ -137,6 +138,40 @@ export class ACMCertificateProvider implements ResourceProvider {
         'DomainValidationOptions',
         'CertificateAuthorityArn',
         'CertificateTransparencyLoggingPreference',
+        'CertificateExport',
+        'KeyAlgorithm',
+        'Tags',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160: CloudFormation documents removing
+   * `CertificateTransparencyLoggingPreference` as the same as declaring
+   * `ENABLED`, applied through `UpdateCertificateOptions`, while that call
+   * keeps an absent option's live value.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::CertificateManager::Certificate',
+      new Map<string, unknown>([['CertificateTransparencyLoggingPreference', 'ENABLED']]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160: every other property, each removal handled — the immutable
+   * ones replace the certificate in `update()` (`CertificateExport` cannot be
+   * updated after creation), and Tags are diffed.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::CertificateManager::Certificate',
+      new Set([
+        'DomainName',
+        'ValidationMethod',
+        'SubjectAlternativeNames',
+        'DomainValidationOptions',
+        'CertificateAuthorityArn',
         'CertificateExport',
         'KeyAlgorithm',
         'Tags',
@@ -464,18 +499,28 @@ export class ACMCertificateProvider implements ResourceProvider {
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating ACM certificate ${logicalId}: ${physicalId}`);
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     // ACM certs are largely immutable. The fields that ARE mutable are
     // Tags and Options.CertificateTransparencyLoggingPreference. Anything
-    // else → replace.
+    // else → replace. `CertificateExport` cannot be updated after creation
+    // (ACM `CertificateOptions.Export`; CloudFormation: Replacement), so a
+    // change or removal of it replaces rather than being dropped.
     const immutableFields = [
       'DomainName',
       'ValidationMethod',
       'SubjectAlternativeNames',
       'DomainValidationOptions',
       'CertificateAuthorityArn',
+      'CertificateExport',
       'KeyAlgorithm',
     ] as const;
     // A secret-derived value is recorded as its `{{resolve:...}}` reference
@@ -488,6 +533,15 @@ export class ACMCertificateProvider implements ResourceProvider {
     let changedImmutable: (typeof immutableFields)[number] | undefined;
     for (const k of immutableFields) {
       if (JSON.stringify(properties[k]) === JSON.stringify(previousProperties[k])) continue;
+      // An absent CertificateExport IS `DISABLED` (CloudFormation's default),
+      // and a readback can omit `Options.Export`: the pair is no change, so it
+      // must not replace the certificate (a `drift --revert` reaches here).
+      if (
+        k === 'CertificateExport' &&
+        (properties[k] ?? 'DISABLED') === (previousProperties[k] ?? 'DISABLED')
+      ) {
+        continue;
+      }
       if (
         await unchangedBehindSecretReference({
           resourceType,
@@ -572,27 +626,22 @@ export class ACMCertificateProvider implements ResourceProvider {
     }
 
     try {
-      // CertificateTransparencyLoggingPreference + CertificateExport: both
-      // map to nested SDK `Options.*` and route through UpdateCertificateOptions.
+      // CertificateTransparencyLoggingPreference maps to the nested SDK
+      // `Options.*` and routes through UpdateCertificateOptions. A removal
+      // arrives here as the declared `ENABLED` reset (removalDefaults).
       const newCt = properties['CertificateTransparencyLoggingPreference'] as string | undefined;
       const oldCt = previousProperties['CertificateTransparencyLoggingPreference'] as
         | string
         | undefined;
-      const newExport = properties['CertificateExport'] as string | undefined;
-      const oldExport = previousProperties['CertificateExport'] as string | undefined;
-      if (newCt !== oldCt || newExport !== oldExport) {
-        const options: Record<string, unknown> = {};
-        if (newCt) options['CertificateTransparencyLoggingPreference'] = newCt;
-        if (newExport) options['Export'] = newExport;
-        if (Object.keys(options).length > 0) {
-          await this.acmClient.send(
-            new UpdateCertificateOptionsCommand({
-              CertificateArn: physicalId,
-              Options: options as CertificateOptions,
-            })
-          );
-          this.logger.debug(`Updated certificate Options on ${physicalId}`);
-        }
+      if (newCt && newCt !== oldCt) {
+        const options: CertificateOptions = {
+          CertificateTransparencyLoggingPreference:
+            newCt as CertificateOptions['CertificateTransparencyLoggingPreference'],
+        };
+        await this.acmClient.send(
+          new UpdateCertificateOptionsCommand({ CertificateArn: physicalId, Options: options })
+        );
+        this.logger.debug(`Updated certificate Options on ${physicalId}`);
       }
 
       // Tags: diff and Add/Remove.
