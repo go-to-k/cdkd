@@ -1123,10 +1123,22 @@ function bucketNames(bucket: string | undefined): {
  * naming rules (letters, digits, `.`, `-`, `_` for a legacy name, starting
  * with a letter or digit) fit `isPasteableIdent`, so a real name reads as
  * before.
+ *
+ * Every REWRITTEN arm chains the original SDK error as the new error's
+ * `cause` (go-to-k/cdkd#2075). The rewrite replaces only the MESSAGE; the
+ * classifiers (`isTransientServerError` / `isThrottlingError` /
+ * `isMarkedNonRetryable`) and `extractDeploymentEventError` read the
+ * `$metadata` / marker / request id off the original, by walking `.cause`.
+ * Without the chain an `Unknown` HTTP 503 read as non-retryable and lost its
+ * request id. `scripts/check-provider-error-cause.ts` accepts this function as
+ * a CAUSE COMPOSER on that basis, and
+ * `tests/unit/scripts/cause-composers-classify.test.ts` is what proves it.
  */
 export function normalizeAwsError(err: unknown, context: NormalizeAwsErrorContext = {}): Error {
   if (!(err instanceof Error)) {
-    return new Error(String(err));
+    // Chained too: the error-cause critic counts `normalizeAwsError(err)` as
+    // threading `err`, so no arm may drop it (go-to-k/cdkd#2075).
+    return new Error(String(err), { cause: err });
   }
 
   // Detect the AWS SDK v3 "Unknown" synthetic exception. Other errors pass
@@ -1151,18 +1163,22 @@ export function normalizeAwsError(err: unknown, context: NormalizeAwsErrorContex
       const where = region ? ` (in ${region})` : '';
       return new Error(
         `${bucket.subject}${where} is in a different region than the client. ` +
-          `cdkd resolves this automatically; if you see this message, please report it.`
+          `cdkd resolves this automatically; if you see this message, please report it.`,
+        { cause: err }
       );
     }
     case 403:
-      return new Error(`Access denied to ${bucket.object}. Verify credentials and bucket policy.`);
+      return new Error(`Access denied to ${bucket.object}. Verify credentials and bucket policy.`, {
+        cause: err,
+      });
     case 404:
-      return new Error(`${bucket.subject} does not exist.`);
+      return new Error(`${bucket.subject} does not exist.`, { cause: err });
     default: {
       const statusStr = status !== undefined ? `HTTP ${status}` : 'unknown HTTP status';
       return new Error(
         `S3 error during ${operation} on ${bucket.quoted} (${statusStr}). ` +
-          `See CloudTrail for details.`
+          `See CloudTrail for details.`,
+        { cause: err }
       );
     }
   }

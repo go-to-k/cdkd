@@ -9,6 +9,7 @@ import {
   partitionSensitiveEnv,
   describeDockerFailure,
   redactDockerArgvValues,
+  redactedDockerCause,
   runDockerStreaming,
   finchSecretArgvRefusal,
   isDockerClientEnvKey,
@@ -896,7 +897,8 @@ async function prepareOneImage(
             // it is the least trusted value on this line; `container.name` is
             // a template key. Both sanitized beside the composed docker text.
             `docker tag failed re-tagging ${displayIdent(actualTag)} → ${displayIdent(tag)} ` +
-              `for ECS container ${displayIdent(container.name)}: ${displaySafe(describeDockerFailure(err, tagArgs))}`
+              `for ECS container ${displayIdent(container.name)}: ${displaySafe(describeDockerFailure(err, tagArgs))}`,
+            redactedDockerCause(err, tagArgs)
           );
         }
       }

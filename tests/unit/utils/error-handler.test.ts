@@ -49,6 +49,8 @@ describe('normalizeAwsError', () => {
 
     expect(result).toBeInstanceOf(Error);
     expect(result.message).toBe('boom');
+    // go-to-k/cdkd#2075: the thrown value rides along as the cause.
+    expect(result.cause).toBe('boom');
   });
 
   it('detects via err.name === "Unknown"', () => {
@@ -137,6 +139,21 @@ describe('normalizeAwsError', () => {
 
     expect(result.message).toMatch(/'<unknown bucket>'/);
   });
+
+  // go-to-k/cdkd#2075: the rewrite replaces the MESSAGE only. The classifiers
+  // and the deployment-event extractor read `$metadata` off the original by
+  // walking `.cause`, so every rewritten arm must chain it.
+  it.each([301, 403, 404, 500, 503, undefined])(
+    'HTTP %s → the rewritten error chains the original SDK error as its cause',
+    (status) => {
+      const err = makeUnknownError(status);
+
+      const result = normalizeAwsError(err, { bucket: 'b', operation: 'PutObject' });
+
+      expect(result).not.toBe(err);
+      expect(result.cause).toBe(err);
+    }
+  );
 
   /**
    * go-to-k/cdkd#3950: every arm printed the bucket RAW inside cdkd's own

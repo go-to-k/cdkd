@@ -535,15 +535,19 @@ describe('pullEcrImage', () => {
   });
 
   it('--ecr-role-arn AssumeRole failure surfaces actionable LocalInvokeBuildError', async () => {
+    const stsFailure = new Error('AccessDenied: not authorized to AssumeRole');
     stsSendMock
       .mockResolvedValueOnce({ Account: '111111111111' })
-      .mockRejectedValueOnce(new Error('AccessDenied: not authorized to AssumeRole'));
-    await expect(
-      pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
-        skipPull: false,
-        ecrRoleArn: 'arn:aws:iam::999999999999:role/Bad',
-      })
-    ).rejects.toThrow(/Failed to assume role .* for ECR pull.*AccessDenied/);
+      .mockRejectedValueOnce(stsFailure);
+    const err = await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+      ecrRoleArn: 'arn:aws:iam::999999999999:role/Bad',
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LocalInvokeBuildError);
+    expect((err as Error).message).toMatch(/Failed to assume role .* for ECR pull.*AccessDenied/);
+    // go-to-k/cdkd#2075: the STS error itself is the cause, so a throttled
+    // AssumeRole stays visible to the classifiers that walk `.cause`.
+    expect((err as Error).cause).toBe(stsFailure);
   });
 
   it.each([
@@ -1166,6 +1170,42 @@ describe('pullEcrImage', () => {
         'docker pull 111111111111.dkr.ecr.us-east-1.amazonaws.com/Team/App:V1 failed: ' +
           'docker exited with code 1'
       );
+      // go-to-k/cdkd#2075: a cause is threaded. The foreground spawn captures
+      // no streams, so raw and redacted read alike here; the login case below
+      // is the one that pins the redacted composer.
+      expect(((err as Error).cause as Error | undefined)?.message).toBe('docker exited with code 1');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('docker login failure threads a redacted cause carrying the exit status (go-to-k/cdkd#2075)', async () => {
+    vi.stubEnv('CDK_DOCKER', '');
+    try {
+      stsSendMock.mockResolvedValue({ Account: '111111111111' });
+      ecrSendMock.mockResolvedValue({
+        authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
+      });
+      process.env['AWS_REGION'] = 'us-east-1';
+      const raw = Object.assign(new Error('login failed'), {
+        stderr: 'Error response from daemon: unauthorized',
+        stdout: '',
+        exitCode: 1,
+      });
+      runDockerMock.mockRejectedValueOnce(raw);
+
+      const err = await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+        skipPull: false,
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(LocalInvokeBuildError);
+      expect((err as Error).message).toMatch(/^ECR login failed: /);
+      const cause = (err as Error).cause as (Error & { exitCode?: number }) | undefined;
+      expect(cause?.exitCode).toBe(1);
+      // The REDACTED composer's cause, never the raw spawn error: the raw one
+      // carries the unredacted streams (go-to-k/cdkd#2440).
+      expect(cause).not.toBe(raw);
+      expect(cause).not.toHaveProperty('stderr');
     } finally {
       vi.unstubAllEnvs();
     }
