@@ -274,21 +274,8 @@ describe('cdkd export renders template- and CLI-derived identifiers (go-to-k/cdk
     }
   });
 
-  it('the pre-delete handler refusals describe a forged logical id (R5)', async () => {
-    const forged = "Stage'x";
-    // A Stage row with no ApiId: refused before any AWS call.
-    const stage = await invokePreDeleteHandler('AWS::ApiGatewayV2::Stage', {
-      logicalId: forged,
-      resourceType: 'AWS::ApiGatewayV2::Stage',
-      physicalId: 'stage-1',
-      properties: {},
-    }).then(
-      () => 'resolved',
-      (e: unknown) => (e as Error).message
-    );
-    expect(stage).toBe(
-      `cdkd state's properties for ${NOT_SHOWN} (AWS::ApiGatewayV2::Stage) is missing 'ApiId'`
-    );
+  it('the pre-delete handler refusal describes a forged logical id (R5)', async () => {
+    const forged = "Policy'x";
     // A Policy row whose detach targets refuse (no readable principal list).
     const policy = await invokePreDeleteHandler('AWS::IAM::Policy', {
       logicalId: forged,
@@ -300,7 +287,7 @@ describe('cdkd export renders template- and CLI-derived identifiers (go-to-k/cdk
       (e: unknown) => (e as Error).message
     );
     expect(policy).toContain(`cdkd state for ${NOT_SHOWN} (AWS::IAM::Policy) cannot be pre-deleted:`);
-    for (const message of [stage, policy]) expect(message).not.toContain(forged);
+    expect(policy).not.toContain(forged);
   });
 
   it('an empty region is described, never printed as an empty quote pair (R6)', async () => {
@@ -322,9 +309,9 @@ describe('cdkd export renders template- and CLI-derived identifiers (go-to-k/cdk
         value,
         message: preDeleteListingLines({
           logicalId: value,
-          resourceType: 'AWS::ApiGatewayV2::Stage',
+          resourceType: 'AWS::IAM::Policy',
           physicalId: 'p',
-          properties: { ApiId: 'a1' },
+          properties: { PolicyName: 'p', Roles: ['r1'] },
         }).join('\n'),
       });
       messages.push({
@@ -336,7 +323,7 @@ describe('cdkd export renders template- and CLI-derived identifiers (go-to-k/cdk
       // Non-vacuity: the `"` flip DOES run a JSON-quoted payload, which is the
       // render these sites used to print.
       expect(
-        doubleQuoteFlipSpans(`"x; touch OWNED; #" (AWS::ApiGatewayV2::Stage)`).some(
+        doubleQuoteFlipSpans(`"x; touch OWNED; #" (AWS::IAM::Policy)`).some(
           (span) => filesTouchedBy(span, dir).length > 0
         )
       ).toBe(true);

@@ -426,7 +426,7 @@ describe('applyImportOverlayForPhase2', () => {
 
   it('does NOT touch resources outside phase1Imports (phase-2 CREATE / recreate stay raw)', () => {
     // Custom Resources go through phase-2 CREATE from raw synth; recreate-
-    // before-phase-2 entries (Stage / IAM::Policy) are deleted from AWS
+    // before-phase-2 entries (IAM::Policy) are deleted from AWS
     // and CFn re-CREATEs from raw synth. Neither should have overlay
     // applied — they have no "phase-1 import'd state" to keep consistent.
     const synth = {
@@ -439,9 +439,9 @@ describe('applyImportOverlayForPhase2', () => {
           Type: 'Custom::S3AutoDeleteObjects',
           Properties: { ServiceToken: 'arn:...' },
         },
-        Stage: {
-          Type: 'AWS::ApiGatewayV2::Stage',
-          Properties: { StageName: '$default', ApiId: { Ref: 'Api' } },
+        Policy: {
+          Type: 'AWS::IAM::Policy',
+          Properties: { PolicyName: 'p', Roles: [{ Ref: 'Role' }] },
         },
       },
     };
@@ -452,16 +452,16 @@ describe('applyImportOverlayForPhase2', () => {
         physicalId: 'MyStack-foo',
         resourceIdentifier: { RoleName: 'MyStack-foo' },
       },
-      // CR and Stage are NOT in phase1Imports
+      // CR and Policy are NOT in phase1Imports
     ]);
     const resources = result['Resources'] as Record<string, Record<string, unknown>>;
     expect((resources['Role']!['Properties'] as Record<string, unknown>)['RoleName']).toBe(
       'MyStack-foo'
     );
     expect(resources['CR']!['Properties']).toEqual({ ServiceToken: 'arn:...' });
-    expect(resources['Stage']!['Properties']).toEqual({
-      StageName: '$default',
-      ApiId: { Ref: 'Api' },
+    expect(resources['Policy']!['Properties']).toEqual({
+      PolicyName: 'p',
+      Roles: [{ Ref: 'Role' }],
     });
   });
 
@@ -594,10 +594,8 @@ describe('hasCompositeIdSplitter', () => {
     expect(hasCompositeIdSplitter('AWS::Lambda::Permission')).toBe(true);
     // Issue #3414: composite `[ApiId, ApiKeyId]` since AWS's 2026-09 re-publish.
     expect(hasCompositeIdSplitter('AWS::AppSync::ApiKey')).toBe(true);
-    // AWS::ApiGatewayV2::Stage: AWS reports single-key (`Id`), so no splitter
-    // is needed AND AWS doesn't support Stage in IMPORT anyway (see export.ts
-    // COMPOSITE_ID_SPLITTERS comment block for the follow-up tracking).
-    expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Stage')).toBe(false);
+    // Issue #1772: `[ApiId, StageName]`, imported now that CFn accepts it.
+    expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Stage')).toBe(true);
   });
 
   it('returns false for single-key types', () => {
@@ -866,6 +864,50 @@ describe('splitCompositePhysicalId', () => {
     ).toEqual({
       resourceIdentifier: { ApiId: 'api-xyz', RouteId: 'route-def456' },
       propertiesOverlay: { ApiId: 'api-xyz' },
+    });
+  });
+
+  describe('AWS::ApiGatewayV2::Stage (issue #1772)', () => {
+    it('reads ApiId from properties for the bare StageName the SDK provider stores', () => {
+      // No `propertiesOverlay`: neither field is `readOnlyProperties`, so the
+      // overlay site writes the whole identifier map.
+      expect(
+        splitCompositePhysicalId('AWS::ApiGatewayV2::Stage', '$default', { ApiId: 'api-xyz' })
+      ).toEqual({ resourceIdentifier: { ApiId: 'api-xyz', StageName: '$default' } });
+    });
+
+    it("splits Cloud Control's `<apiId>|<stageName>` without reading properties", () => {
+      // The properties' ApiId differs on purpose: the composite id is the source.
+      expect(
+        splitCompositePhysicalId('AWS::ApiGatewayV2::Stage', 'api-cc|prod', { ApiId: 'other' })
+      ).toEqual({ resourceIdentifier: { ApiId: 'api-cc', StageName: 'prod' } });
+    });
+
+    it('refuses a bare StageName whose recorded ApiId is missing or not a string', () => {
+      expect(() => splitCompositePhysicalId('AWS::ApiGatewayV2::Stage', '$default', {})).toThrow(
+        /missing 'ApiId'/
+      );
+      expect(() =>
+        splitCompositePhysicalId('AWS::ApiGatewayV2::Stage', '$default', {
+          ApiId: { Ref: 'Api' },
+        })
+      ).toThrow(/missing 'ApiId'/);
+    });
+
+    it('refuses a blank id, an empty segment, and a third segment', () => {
+      const props = { ApiId: 'api-xyz' };
+      expect(() => splitCompositePhysicalId('AWS::ApiGatewayV2::Stage', '  ', props)).toThrow(
+        /empty physical id/
+      );
+      expect(() => splitCompositePhysicalId('AWS::ApiGatewayV2::Stage', '|prod', props)).toThrow(
+        /empty part/
+      );
+      expect(() => splitCompositePhysicalId('AWS::ApiGatewayV2::Stage', 'api|', props)).toThrow(
+        /empty part/
+      );
+      expect(() => splitCompositePhysicalId('AWS::ApiGatewayV2::Stage', 'a|b|c', props)).toThrow(
+        /got 3 parts/
+      );
     });
   });
 
@@ -1593,12 +1635,11 @@ describe('isPhase2CreatableType', () => {
 describe('isImportUnsupportedRecreatableType', () => {
   // Types in IMPORT_UNSUPPORTED_RECREATABLE_TYPES: cdkd skips them from
   // phase-1 IMPORT, deletes the AWS-side resource between phases, and
-  // lets CFn re-CREATE in phase 2 (closes cdkd issue #307). Currently
-  // only AWS::ApiGatewayV2::Stage qualifies (handlers: [] in the CFn
-  // schema). Verified via `aws cloudformation describe-type --type
-  // RESOURCE --type-name <T> | jq .handlers`.
-  it('matches AWS::ApiGatewayV2::Stage (no IMPORT handler in CFn schema)', () => {
-    expect(isImportUnsupportedRecreatableType('AWS::ApiGatewayV2::Stage')).toBe(true);
+  // lets CFn re-CREATE in phase 2 (closes cdkd issue #307). Verified via
+  // `aws cloudformation describe-type --type RESOURCE --type-name <T> |
+  // jq .handlers`.
+  it('does NOT match AWS::ApiGatewayV2::Stage: CFn imports it (issue #1772)', () => {
+    expect(isImportUnsupportedRecreatableType('AWS::ApiGatewayV2::Stage')).toBe(false);
   });
 
   it('matches AWS::IAM::Policy (no read/list handler; inline policy has no AWS-side id)', () => {
@@ -1633,113 +1674,11 @@ describe('isImportUnsupportedRecreatableType', () => {
 });
 
 describe('invokePreDeleteHandler', () => {
-  // Each test re-mocks @aws-sdk/client-apigatewayv2 because the handler
-  // does a dynamic `import()` inside its body (lazy-init pattern shared
-  // with ApiGatewayV2Provider.getClient). vi.doMock + vi.resetModules
-  // applied per-test isolates each scenario from the others.
+  // Each handler does a dynamic `import()` of its SDK client inside its body,
+  // so each test re-mocks the package; vi.doMock + vi.resetModules applied
+  // per-test isolates each scenario from the others.
   beforeEach(() => {
     vi.resetModules();
-  });
-  afterEach(() => {
-    vi.doUnmock('@aws-sdk/client-apigatewayv2');
-  });
-
-  it('AWS::ApiGatewayV2::Stage handler calls DeleteStage with ApiId + StageName', async () => {
-    const sendCalls: unknown[] = [];
-    vi.doMock('@aws-sdk/client-apigatewayv2', () => ({
-      ApiGatewayV2Client: class {
-        async send(cmd: unknown) {
-          sendCalls.push(cmd);
-        }
-      },
-      DeleteStageCommand: class {
-        input: unknown;
-        constructor(input: unknown) {
-          this.input = input;
-        }
-      },
-      NotFoundException: class extends Error {
-        readonly name = 'NotFoundException';
-      },
-    }));
-    // Re-import the module so it picks up the mock.
-    const { invokePreDeleteHandler: handler } = await import(
-      '../../../src/cli/commands/export.js'
-    );
-
-    await handler('AWS::ApiGatewayV2::Stage', {
-      logicalId: 'HttpApiDefaultStage',
-      resourceType: 'AWS::ApiGatewayV2::Stage',
-      physicalId: '$default',
-      properties: { ApiId: 'doptkc8n2i', StageName: '$default' },
-    });
-
-    expect(sendCalls).toHaveLength(1);
-    const cmd = sendCalls[0] as { input: { ApiId: string; StageName: string } };
-    expect(cmd.input.ApiId).toBe('doptkc8n2i');
-    expect(cmd.input.StageName).toBe('$default');
-  });
-
-  it('throws when ApiId is missing from properties (state corruption)', async () => {
-    vi.doMock('@aws-sdk/client-apigatewayv2', () => ({
-      ApiGatewayV2Client: class {
-        async send() {
-          throw new Error('should not reach AWS');
-        }
-      },
-      DeleteStageCommand: class {
-        input: unknown;
-        constructor(input: unknown) {
-          this.input = input;
-        }
-      },
-      NotFoundException: class extends Error {
-        readonly name = 'NotFoundException';
-      },
-    }));
-    const { invokePreDeleteHandler: handler } = await import(
-      '../../../src/cli/commands/export.js'
-    );
-
-    await expect(
-      handler('AWS::ApiGatewayV2::Stage', {
-        logicalId: 'HttpApiDefaultStage',
-        resourceType: 'AWS::ApiGatewayV2::Stage',
-        physicalId: '$default',
-        properties: {}, // no ApiId
-      })
-    ).rejects.toThrow(/missing 'ApiId'/);
-  });
-
-  it('throws when ApiId is non-string (state corruption)', async () => {
-    vi.doMock('@aws-sdk/client-apigatewayv2', () => ({
-      ApiGatewayV2Client: class {
-        async send() {
-          throw new Error('should not reach AWS');
-        }
-      },
-      DeleteStageCommand: class {
-        input: unknown;
-        constructor(input: unknown) {
-          this.input = input;
-        }
-      },
-      NotFoundException: class extends Error {
-        readonly name = 'NotFoundException';
-      },
-    }));
-    const { invokePreDeleteHandler: handler } = await import(
-      '../../../src/cli/commands/export.js'
-    );
-
-    await expect(
-      handler('AWS::ApiGatewayV2::Stage', {
-        logicalId: 'X',
-        resourceType: 'AWS::ApiGatewayV2::Stage',
-        physicalId: '$default',
-        properties: { ApiId: { Ref: 'SomeApi' } }, // unresolved intrinsic
-      })
-    ).rejects.toThrow(/missing 'ApiId'/);
   });
 
   it('throws when no handler is registered for the type', async () => {
@@ -1753,81 +1692,15 @@ describe('invokePreDeleteHandler', () => {
     ).rejects.toThrow(/no pre-delete handler registered/);
   });
 
-  it('Stage handler treats NotFoundException as idempotent success (re-run safety)', async () => {
-    // If a previous pre-delete attempt partially succeeded and the user
-    // re-runs after fixing the underlying failure, the Stage handler MUST
-    // tolerate the AWS-side resource being already gone — otherwise the
-    // partial-retry path is a permanent foot-gun. AWS returns
-    // NotFoundException for both "ApiId not found" and "Stage not found".
-    class FakeNotFoundException extends Error {
-      readonly $fault = 'client';
-      readonly $metadata = {};
-      readonly name = 'NotFoundException';
-    }
-    vi.doMock('@aws-sdk/client-apigatewayv2', () => ({
-      ApiGatewayV2Client: class {
-        async send() {
-          throw new FakeNotFoundException('Stage with name $default does not exist');
-        }
-      },
-      DeleteStageCommand: class {
-        input: unknown;
-        constructor(input: unknown) {
-          this.input = input;
-        }
-      },
-      NotFoundException: FakeNotFoundException,
-    }));
-    const { invokePreDeleteHandler: handler } = await import(
-      '../../../src/cli/commands/export.js'
-    );
-
-    // Must NOT throw — the goal state (Stage absent) is already achieved.
+  it('has no AWS::ApiGatewayV2::Stage handler: the stage is imported, never deleted (issue #1772)', async () => {
     await expect(
-      handler('AWS::ApiGatewayV2::Stage', {
+      invokePreDeleteHandler('AWS::ApiGatewayV2::Stage', {
         logicalId: 'HttpApiDefaultStage',
         resourceType: 'AWS::ApiGatewayV2::Stage',
         physicalId: '$default',
         properties: { ApiId: 'doptkc8n2i' },
       })
-    ).resolves.toBeUndefined();
-  });
-
-  it('Stage handler propagates non-NotFoundException errors', async () => {
-    class FakeAccessDenied extends Error {
-      readonly $fault = 'client';
-      readonly $metadata = {};
-      readonly name = 'AccessDeniedException';
-    }
-    class FakeNotFoundException extends Error {
-      readonly name = 'NotFoundException';
-    }
-    vi.doMock('@aws-sdk/client-apigatewayv2', () => ({
-      ApiGatewayV2Client: class {
-        async send() {
-          throw new FakeAccessDenied('AccessDenied: not authorized to call DeleteStage');
-        }
-      },
-      DeleteStageCommand: class {
-        input: unknown;
-        constructor(input: unknown) {
-          this.input = input;
-        }
-      },
-      NotFoundException: FakeNotFoundException,
-    }));
-    const { invokePreDeleteHandler: handler } = await import(
-      '../../../src/cli/commands/export.js'
-    );
-
-    await expect(
-      handler('AWS::ApiGatewayV2::Stage', {
-        logicalId: 'HttpApiDefaultStage',
-        resourceType: 'AWS::ApiGatewayV2::Stage',
-        physicalId: '$default',
-        properties: { ApiId: 'doptkc8n2i' },
-      })
-    ).rejects.toThrow(/AccessDenied/);
+    ).rejects.toThrow(/no pre-delete handler registered/);
   });
 
   // ─── AWS::IAM::Policy handler tests ──────────────────────────────

@@ -109,6 +109,31 @@ assert_composite_id_plan() {
   # the pre-#1761 refusal.
   assert_plan_identifier "${log}" 'AWS::EC2::SecurityGroupIngress' \
     '\(AWS::EC2::SecurityGroupIngress\).*Id=sgr-[0-9a-f]+'
+  # Issue #1772: the HttpApi's `$default` stage is a phase-1 IMPORT row (its
+  # `[ApiId, StageName]` splitter), not a pre-delete + re-CREATE row.
+  assert_plan_identifier "${log}" 'AWS::ApiGatewayV2::Stage' \
+    '\(AWS::ApiGatewayV2::Stage\) ← ApiId=[a-z0-9]+, StageName="\$default"'
+  # The pre-delete listing's row shape is `<id> (<Type>) — physicalId: <id>`.
+  # Sentinel: the fixture's IAM::Policy IS such a row, so a reworded row
+  # cannot turn the absence check below into a silent pass.
+  if ! grep -qF '(AWS::IAM::Policy) — physicalId:' "${log}"; then
+    echo "[verify] FAIL: no pre-delete row for the AWS::IAM::Policy (row wording changed?)"
+    exit 1
+  fi
+  if grep -qF '(AWS::ApiGatewayV2::Stage) — physicalId:' "${log}"; then
+    echo "[verify] FAIL: the plan still lists AWS::ApiGatewayV2::Stage for pre-delete + re-CREATE"
+    exit 1
+  fi
+}
+
+# stage_created_date <apiId>
+# The HttpApi `$default` stage's CreatedDate. A pre-delete + re-CREATE mints a
+# new stage, so an unchanged value across the export proves it was imported in
+# place (issue #1772). Returns non-zero when the read fails; callers also
+# require an ISO timestamp, since a null field prints `None` under text output.
+stage_created_date() {
+  aws apigatewayv2 get-stage --api-id "$1" --stage-name '$default' --region "${REGION}" \
+    --query CreatedDate --output text
 }
 
 # assert_cfn_physical_id <logicalId> <anchored-ERE>
@@ -247,9 +272,9 @@ case "${VARIANT}" in
     fi
     # Regression guard for the splitter-coverage class of bugs. The fixture
     # now contains composite-id resources (HttpApi: Integration / Route /
-    # Lambda::Permission) and an IMPORT-unsupported resource (Stage), so the
-    # dry-run plan output should NOT contain any "blocks migration" or
-    # "composite primary identifier" message.
+    # Lambda::Permission / Stage) and an IMPORT-unsupported resource
+    # (IAM::Policy), so the dry-run plan output should NOT contain any
+    # "blocks migration" or "composite primary identifier" message.
     if grep -qE 'block migration|composite primary identifier' /tmp/verify-dry-run.log; then
       echo "[verify] FAIL: dry-run reports unresolved composite-id resources"
       echo "[verify] (composite-id splitters in src/cli/commands/export.ts are missing entries)"
@@ -262,20 +287,16 @@ case "${VARIANT}" in
     assert_composite_id_plan /tmp/verify-dry-run.log
     echo "[verify] step 3a ok"
 
-    # Assert the dry-run plan announces the Stage pre-delete + re-CREATE
+    # Assert the dry-run plan announces the IAM::Policy pre-delete + re-CREATE
     # path. Without this output, the plan-printer integration for
     # recreateBeforePhase2 silently regressed.
     if ! grep -q 'IMPORT-unsupported resource' /tmp/verify-dry-run.log; then
       echo "[verify] FAIL: dry-run plan does not mention IMPORT-unsupported resources"
-      echo "[verify] (Stage pre-delete + re-CREATE announcement missed)"
+      echo "[verify] (IAM::Policy pre-delete + re-CREATE announcement missed)"
       exit 1
     fi
-    if ! grep -q 'AWS::ApiGatewayV2::Stage' /tmp/verify-dry-run.log; then
-      echo "[verify] FAIL: dry-run plan does not list AWS::ApiGatewayV2::Stage as recreate target"
-      exit 1
-    fi
-    # AWS::IAM::Policy must also surface in recreate (same shape as Stage —
-    # CFn schema reports no read/list handler, so it's IMPORT-unsupported).
+    # AWS::IAM::Policy must surface in recreate (CFn schema reports no
+    # read/list handler, so it's IMPORT-unsupported).
     # Fixture has an inline iam.Policy attached to the CR role. Catches the
     # bug from real-AWS dogfooding on 2026-05-12 where IAM::Policy was
     # erroneously sent to phase-1 IMPORT and would have been rejected.
@@ -397,6 +418,34 @@ case "${VARIANT}" in
     ;;
 
   default|"")
+    # Issue #1772: read the `$default` stage's CreatedDate BEFORE the export,
+    # so step 4d can tell an in-place IMPORT from a delete + re-CREATE.
+    echo "[verify] step 2b: record the HttpApi \$default stage's CreatedDate"
+    # The API id comes from THIS run's cdkd state record, so a leftover API
+    # from an earlier run cannot be picked up or make the lookup ambiguous.
+    if ! STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/state.json" - --region "${REGION}")"; then
+      echo "[verify] FAIL: could not read the cdkd state record (probe failed, result undetermined)"
+      exit 1
+    fi
+    if ! API_ID="$(printf '%s' "${STATE_JSON}" | python3 -c '
+import json, sys
+rs = json.load(sys.stdin).get("resources", {})
+print(" ".join(r["physicalId"] for r in rs.values() if r.get("resourceType") == "AWS::ApiGatewayV2::Api"))
+')"; then
+      echo "[verify] FAIL: could not parse the cdkd state record"
+      exit 1
+    fi
+    if ! [[ "${API_ID}" =~ ^[a-z0-9]+$ ]]; then
+      echo "[verify] FAIL: expected exactly one AWS::ApiGatewayV2::Api in cdkd state, got '${API_ID}'"
+      exit 1
+    fi
+    if ! STAGE_CREATED_BEFORE="$(stage_created_date "${API_ID}")" \
+      || ! [[ "${STAGE_CREATED_BEFORE}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
+      echo "[verify] FAIL: could not read a CreatedDate for the \$default stage of ${API_ID} before the export (got '${STAGE_CREATED_BEFORE:-}')"
+      exit 1
+    fi
+    echo "[verify] step 2b ok: ${API_ID} \$default created ${STAGE_CREATED_BEFORE}"
+
     echo "[verify] step 3: cdkd export --include-non-importable -y (expect exit 0)"
     # tee'd so step 3a can assert the printed import plan. `printPlan` runs on
     # the shared path (before the dry-run branch), so the default variant sees
@@ -449,16 +498,16 @@ case "${VARIANT}" in
         exit 1
       fi
     done
-    # IMPORT-unsupported re-CREATE (phase 2): AWS::ApiGatewayV2::Stage AND
-    # AWS::IAM::Policy are pre-deleted between phases, then CFn UPDATE
-    # re-CREATEs them fresh. Closes cdkd issue #307 + the IAM::Policy
-    # case (added 2026-05-12 from real-AWS dogfooding).
+    # IMPORT-unsupported re-CREATE (phase 2): AWS::IAM::Policy is
+    # pre-deleted between phases, then CFn UPDATE re-CREATEs it fresh.
+    # Closes cdkd issue #307 + the IAM::Policy case.
     if ! echo "${RESOURCES}" | grep -q 'AWS::IAM::Policy'; then
       echo "[verify] FAIL: AWS::IAM::Policy not found in CFn stack (pre-delete + phase-2 CREATE missed)"
       exit 1
     fi
+    # Issue #1772: the stage is a phase-1 IMPORT now; step 4d proves in place.
     if ! echo "${RESOURCES}" | grep -q 'AWS::ApiGatewayV2::Stage'; then
-      echo "[verify] FAIL: AWS::ApiGatewayV2::Stage not found in CFn stack (pre-delete + phase-2 CREATE missed)"
+      echo "[verify] FAIL: AWS::ApiGatewayV2::Stage not found in CFn stack (phase-1 IMPORT missed)"
       exit 1
     fi
     # Phase-2 Custom Resources arrive in the second changeset. CDK emits two
@@ -540,7 +589,7 @@ case "${VARIANT}" in
 import json, sys
 events = json.load(sys.stdin).get('StackEvents', [])
 # Resources that legitimately get phase-2 DELETE: only the
-# recreate-before-phase-2 targets (Stage, IAM::Policy). They're
+# recreate-before-phase-2 targets (IAM::Policy). They're
 # pre-deleted by cdkd BEFORE the UPDATE changeset runs, so they
 # do NOT appear as DELETE_COMPLETE in stack events (cdkd deleted
 # them via SDK, not via CFn changeset).
@@ -562,6 +611,32 @@ for lid in sorted(deleted):
       exit 1
     fi
     echo "[verify] step 4c ok: no silent REPLACE happened"
+
+    # Issue #1772: the `$default` stage CloudFormation now manages is the SAME
+    # stage cdkd deployed. A pre-delete + phase-2 re-CREATE (the pre-#1772
+    # path) mints a new one with a later CreatedDate — the ~10s window in
+    # which the HttpApi served no stage at all.
+    echo "[verify] step 4d: the \$default stage was imported in place, not re-created"
+    if ! STAGE_CREATED_AFTER="$(stage_created_date "${API_ID}")" \
+      || ! [[ "${STAGE_CREATED_AFTER}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
+      echo "[verify] FAIL: could not read a CreatedDate for the \$default stage of ${API_ID} after the export (got '${STAGE_CREATED_AFTER:-}')"
+      exit 1
+    fi
+    if [ "${STAGE_CREATED_AFTER}" != "${STAGE_CREATED_BEFORE}" ]; then
+      echo "[verify] FAIL: \$default stage CreatedDate changed across the export" \
+        "(${STAGE_CREATED_BEFORE} -> ${STAGE_CREATED_AFTER}): it was deleted and re-created"
+      exit 1
+    fi
+    # Sentinel: the IAM::Policy pre-delete prints the same line shape.
+    if ! grep -qE 'Pre-deleting AWS resource for .*\(AWS::IAM::Policy\)' /tmp/verify-export.log; then
+      echo "[verify] FAIL: no pre-delete line for the AWS::IAM::Policy (log wording changed?)"
+      exit 1
+    fi
+    if grep -qE 'Pre-deleting AWS resource for .*\(AWS::ApiGatewayV2::Stage\)' /tmp/verify-export.log; then
+      echo "[verify] FAIL: the export log shows a pre-delete of the AWS::ApiGatewayV2::Stage"
+      exit 1
+    fi
+    echo "[verify] step 4d ok: CreatedDate unchanged (${STAGE_CREATED_AFTER})"
 
     echo "[verify] step 5: verify cdkd state is GONE"
     STATE_KEY="cdkd/${STACK}/${REGION}/state.json"

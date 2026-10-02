@@ -137,12 +137,10 @@ describe('docs lists derived from source', () => {
     const start = source.indexOf('const COMPOSITE_ID_SPLITTERS');
     expect(start, 'COMPOSITE_ID_SPLITTERS moved or was renamed').toBeGreaterThanOrEqual(0);
     const table = source.slice(start, source.indexOf('\n};', start));
-    // KEYS only. A whole-slice type scan reads the block's comments too, which
-    // is how it found 18 types for 16 keys — including `AWS::ApiGatewayV2::Stage`,
-    // which the block's own note says is deliberately NOT a splitter. Both
-    // extras happened to be named elsewhere on the page, so two assertions were
-    // passing for the wrong reason and would have failed with a message
-    // asserting something false.
+    // KEYS only. A whole-slice type scan reads the block's comments too, so a
+    // type named only in a comment is counted as a splitter; when that type is
+    // also named elsewhere on the page, an assertion passes for the wrong reason
+    // and would fail with a message asserting something false.
     const splitters = new Set(
       [...table.matchAll(/^\s*'(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+)':/gm)].map((m) => m[1]!)
     );
@@ -167,7 +165,7 @@ describe('docs lists derived from source', () => {
     expect(
       types.size,
       'parsed no types out of IMPORT_UNSUPPORTED_RECREATABLE_TYPES'
-    ).toBeGreaterThanOrEqual(2);
+    ).toBeGreaterThanOrEqual(1);
 
     const optionStart = source.indexOf("'--no-recreate-import-unsupported'");
     expect(optionStart).toBeGreaterThanOrEqual(0);
