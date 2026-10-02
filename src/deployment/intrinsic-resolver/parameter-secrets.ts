@@ -100,14 +100,16 @@ declare module '../intrinsic-function-resolver.js' {
  * issue [#2320](https://github.com/go-to-k/cdkd/issues/2320)
  * `positionByParameterPlaceholders` answers each placeholder from its OWN
  * parameter association, which is what `redactParametersForDiff` renders on
- * the desired side. What still reaches the slot is an embedding leaf that
- * arm refuses (issue [#4446](https://github.com/go-to-k/cdkd/issues/4446)):
- * two or more parts whose text the template cannot state; a rendering that
- * does not reassemble the resolved leaf; an unknown span the value scan
- * would rewrite; a recorded plaintext in the template's literal text, or one
- * the final re-scan still finds; and a recorded plaintext crossing a
- * placeholder's edge. There the order-dependent disagreement with the diff
- * side remains.
+ * the desired side. Since issue
+ * [#4446](https://github.com/go-to-k/cdkd/issues/4446) that arm reads the
+ * spans the RESOLVER recorded for each parameter `Ref` it substituted
+ * (`IntrinsicLeafResolution.parameterSpans`), so a leaf with several parts
+ * the template cannot state, and an `Fn::If` selecting one, are positioned
+ * too. What still reaches the slot is a leaf both of its readings refuse: a
+ * stretch of other text the value scan would rewrite, a recorded plaintext
+ * the final re-scan still finds or one crossing a placeholder's edge, and a
+ * leaf with no usable record that the template parse cannot align. There
+ * the order-dependent disagreement with the diff side remains.
  *
  * Substituting is deliberately NOT done here — the resolved value is what
  * reaches AWS, and an `Fn::Equals` over a parameter must compare the real

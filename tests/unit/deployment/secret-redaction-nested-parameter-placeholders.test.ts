@@ -250,14 +250,20 @@ describe('nested-stack child: an EMBEDDED parameter leaf beside a WHOLE-VALUE si
     expect(persisted['P1']).toBe(`x-${EXPR_A}`);
   });
 
-  it('REFUSES two unknown parts, here where the fixed suffix also fails to match (the stated residual)', async () => {
+  it('positions two unknown parts from the RESOLVER\'s spans, which the template parse refuses (#4446)', async () => {
     const source = {
       P1: { 'Fn::Sub': '${User}-${A}-${AWS::StackName}' },
       P2: { Ref: 'B' },
     };
-    const { persisted } = await bothHalves(source);
-    // The value scan's answer: the resource's one slot, B's expression.
-    expect(persisted['P1']).toBe(`app-${EXPR_B}-ChildStack`);
+    const { persisted, desired } = await bothHalves(source);
+    expect(persisted['P1']).toBe(`app-${EXPR_A}-ChildStack`);
+    expect(persisted).toEqual(desired);
+    // Without the resolver's record (a hand-built bag) the template parse
+    // still refuses it: the value scan's answer, the resource's one slot.
+    const hand = redactSecretsForState({ P1: `app-${SHARED}-ChildStack` }, childBagWithSlot(), {
+      P1: source.P1,
+    }) as Record<string, unknown>;
+    expect(hand['P1']).toBe(`app-${EXPR_B}-ChildStack`);
   });
 
   it('REFUSES two unknown parts where the suffix still matches, here also caught by the unknown-span re-scan', async () => {

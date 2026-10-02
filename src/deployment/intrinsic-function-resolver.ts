@@ -496,7 +496,28 @@ export class IntrinsicFunctionResolver {
 
     // Check for intrinsic functions
     if ('Ref' in obj) {
-      return await this.resolveRef(obj['Ref'] as string, context);
+      // A `Ref` the PARAMETER arm answers records where its value lies on the
+      // string it resolved to (issue #4446): the whole of it. An `Fn::Join` /
+      // `Fn::Sub` holding this object reads that span to position the
+      // parameter on its own output, and an `Fn::If` selecting it lends it.
+      // Only a STRING value has spans; any other is `String()`-rendered by the
+      // embedding intrinsic and positioned by nothing.
+      const logicalId = obj['Ref'] as string;
+      let fromParameter = false;
+      const value = await this.resolveRef(logicalId, context, () => {
+        fromParameter = true;
+      });
+      if (fromParameter && typeof value === 'string') {
+        this.recordLeafResolution(context, obj, {
+          input: value,
+          output: value,
+          substitutions: [],
+          complete: true,
+          parameterSpans:
+            value === '' ? [] : [{ start: 0, length: value.length, parameter: logicalId }],
+        });
+      }
+      return value;
     }
 
     if ('Fn::GetAtt' in obj) {

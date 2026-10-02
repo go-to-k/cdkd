@@ -140,12 +140,17 @@ export function lookupResourceRecord(
  *
  * A parameter or pseudo-parameter name never reaches arm 1, whatever state
  * holds under that name (issue #3916, `nameIsNeverAResource`).
+ *
+ * `onParameter` is called when arm 2 answers, so a caller placing the value
+ * on a string can record it as a PARAMETER span (issue #4446) without
+ * re-deciding which arm a name takes.
  */
 /** @internal */
 export async function resolveRef(
   this: IntrinsicFunctionResolver,
   logicalId: string,
-  context: ResolverContext
+  context: ResolverContext,
+  onParameter?: () => void
 ): Promise<unknown> {
   // `Object.hasOwn`, not a bare property read (issue #2767). `logicalId` is
   // template-controlled, and a plain-object read walks the PROTOTYPE chain:
@@ -229,6 +234,7 @@ export async function resolveRef(
         { structured: isStructured(value), redacted: paramDef?.NoEcho === true }
       )}`
     );
+    onParameter?.();
     return value;
   }
 

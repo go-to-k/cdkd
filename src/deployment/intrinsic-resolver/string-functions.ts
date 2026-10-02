@@ -13,11 +13,51 @@ import {
   type DynamicReferenceSubstitution,
   type IntrinsicLeafResolution,
   type RecordedSecretValues,
+  intrinsicLeafResolutionOf,
   SECRET_MASK,
   carryLogOnlyValues,
   hasLogOnlyValues,
   recordLogOnlySplitFragments,
 } from '../secret-redaction.js';
+
+type ParameterSpans = NonNullable<IntrinsicLeafResolution['parameterSpans']>;
+
+/**
+ * The parameter spans `part`'s own record places on `resolved`, the string it
+ * contributed to an enclosing `Fn::Join` / `Fn::Sub` (issue #4446): the
+ * record a `{Ref}` answered by a parameter, or a nested `Fn::Join` / `Fn::Sub`
+ * / `Fn::If`, wrote for that object in this pass. `[]` whenever it places
+ * none it can vouch for -- no record (a poisoned one reads as none), a record
+ * without spans (a string-selected `Fn::If`, a part its own dynamic-reference
+ * pass rewrote), or one of another output -- so the part's text is a GAP the
+ * persist side keeps only where the value scan leaves it alone on its own
+ * (issue #4469).
+ */
+function partParameterSpans(
+  context: ResolverContext,
+  part: unknown,
+  resolved: string
+): ParameterSpans {
+  if (context.recordedSecretValues === undefined) return [];
+  if (typeof part !== 'object' || part === null) return [];
+  const own = intrinsicLeafResolutionOf(context.recordedSecretValues, part);
+  // `output !== resolved`: no test discriminates it, since a part is
+  // re-recorded by its own resolution and a differing one poisons it. It
+  // keeps a record of ANOTHER output from ever lending offsets.
+  if (own === undefined || own.output !== resolved) return [];
+  return own.parameterSpans ?? [];
+}
+
+/** `spans` moved `by` characters to the right, appended to `out`. */
+function appendShiftedSpans(
+  out: ParameterSpans[number][],
+  spans: ParameterSpans,
+  by: number
+): void {
+  for (const span of spans) {
+    out.push({ start: span.start + by, length: span.length, parameter: span.parameter });
+  }
+}
 
 declare module '../intrinsic-function-resolver.js' {
   interface IntrinsicFunctionResolver {
@@ -109,6 +149,7 @@ export async function resolveJoin(
             readonly input: string;
             readonly substitutions: readonly DynamicReferenceSubstitution[];
             readonly complete: boolean;
+            readonly parameterSpans: ParameterSpans;
           }
         > => {
           if (typeof v === 'string') {
@@ -134,6 +175,7 @@ export async function resolveJoin(
               input: v,
               substitutions: part.substitutions,
               complete: part.complete,
+              parameterSpans: [],
             };
           }
           const raw = await this.resolveValue(v, context);
@@ -143,6 +185,10 @@ export async function resolveJoin(
             twin: resolved,
             product: true,
             raw: { value: raw },
+            // Only a part the TEMPLATE spells: an element of a list an
+            // intrinsic returned is a value, not a source object (issue #4446).
+            // No test discriminates it, since no such value carries a record.
+            parameterSpans: literalList ? partParameterSpans(context, v, resolved) : [],
             // A nested `Fn::Join` / `Fn::Sub` / `Fn::If` part lends its own
             // record (issue #3306).
             ...this.nestedPartResolution(context, v, resolved),
@@ -165,12 +211,29 @@ export async function resolveJoin(
   let twin = parts.map((part) => part.twin).join(delimiter);
   const substitutions = resolvedParts.flatMap((part) => part.substitutions);
   let complete = resolvedParts.every((part) => part.complete);
+  // Where each part's parameter values landed on the joined string (issue
+  // #4446): each part's own spans, shifted by the text joined before it. A
+  // part that cannot vouch for offsets INSIDE it (a string-selected `Fn::If`,
+  // a nested part its own dynamic-reference pass rewrote) contributes no span
+  // and is SKIPPED, its length still advancing the offset: its text is then a
+  // GAP, which the persist side keeps only where the value scan leaves it
+  // alone on its own (issue #4469).
+  const parameterSpans: ParameterSpans[number][] = [];
+  let offset = 0;
+  for (const [index, part] of resolvedParts.entries()) {
+    if (index > 0) offset += delimiter.length;
+    appendShiftedSpans(parameterSpans, part.parameterSpans, offset);
+    offset += part.result.length;
+  }
+  let spansValid = true;
   // Resolve any dynamic references in the joined result (secret refs are
   // left unresolved per-reference when skipDynamicReferences is set). The
   // CDK `secretValueFromJson` shape completes its token only HERE, so this
   // substitution is the write the twin most needs to see.
   if (result.includes('{{resolve:')) {
     const joined = await this.resolveDynamicReferencesWithLogTwin(result, twin, context);
+    // The spans index the joined text; a pass that rewrote it moved them.
+    if (joined.result !== result) spansValid = false;
     ({ result, twin } = joined);
     substitutions.push(...joined.substitutions);
     complete &&= joined.complete;
@@ -180,6 +243,7 @@ export async function resolveJoin(
     output: result,
     substitutions,
     complete,
+    ...(spansValid ? { parameterSpans } : {}),
   });
   this.rememberLogTwin(context, result, twin);
   this.logger.debug(
@@ -544,11 +608,15 @@ export async function resolveSub(
   // placeholder) carries its replacement as its own twin.
   // `record` is set only for a variable: what it contributes to the
   // object's record (issues #3156, #3306).
+  // `parameterSpans` is where parameter values lie on `replacement` (issue
+  // #4446): `[]` for an entry that places none it can vouch for, whose
+  // replacement is then a gap.
   const replacements: Array<{
     match: string;
     replacement: string;
     twin: string;
     record?: Pick<IntrinsicLeafResolution, 'input' | 'substitutions' | 'complete'>;
+    parameterSpans: ParameterSpans;
   }> = [];
   // Match BOTH the literal-escape form `${!X}` and the variable form `${X}`.
   // The CloudFormation rule: a `${` immediately followed by `!` is an escape —
@@ -564,14 +632,24 @@ export async function resolveSub(
     // Literal-escape form `${!X}` -> emit `${X}` verbatim, no resolution.
     if (isEscaped) {
       const escapedLiteral = `\${${varNameStr ?? ''}}`;
-      replacements.push({ match: match[0], replacement: escapedLiteral, twin: escapedLiteral });
+      replacements.push({
+        match: match[0],
+        replacement: escapedLiteral,
+        twin: escapedLiteral,
+        parameterSpans: [],
+      });
       continue;
     }
 
     if (!varNameStr) {
       // An empty `${}` has nothing to resolve — leave it verbatim. Push an
       // entry so the positional single-pass replace below stays aligned.
-      replacements.push({ match: match[0], replacement: match[0], twin: match[0] });
+      replacements.push({
+        match: match[0],
+        replacement: match[0],
+        twin: match[0],
+        parameterSpans: [],
+      });
       continue;
     }
 
@@ -579,6 +657,7 @@ export async function resolveSub(
     // Set only by the arms that RESOLVED something (issue #3100).
     let twinReplacement: string | undefined;
     let record: Pick<IntrinsicLeafResolution, 'input' | 'substitutions' | 'complete'> | undefined;
+    let parameterSpans: ParameterSpans = [];
 
     // Check explicit variables first. `Object.hasOwn` rather than `in`
     // (issue #2776), on all three maps. UNFALSIFIABLE while they carry no
@@ -596,6 +675,9 @@ export async function resolveSub(
       if (Object.hasOwn(variableRecords, varNameStr)) record = variableRecords[varNameStr];
       else if (Object.hasOwn(variableSources, varNameStr)) {
         record = this.nestedPartResolution(context, variableSources[varNameStr], replacement);
+        // A bound intrinsic (`{V: {Ref: A}}`, a nested Sub / Join / If) places
+        // its own record's spans (issue #4446).
+        parameterSpans = partParameterSpans(context, variableSources[varNameStr], replacement);
       }
     } else {
       // Check if it's a pseudo parameter. `AWS::NotificationARNs` is a LIST
@@ -614,11 +696,19 @@ export async function resolveSub(
       } else {
         // Try to resolve as Ref
         try {
-          const value = await this.resolveRef(varNameStr, context);
+          let fromParameter = false;
+          const value = await this.resolveRef(varNameStr, context, () => {
+            fromParameter = true;
+          });
           const refusal = this.subListRefusal(`the variable \${${varNameStr}}`, value, context);
           listRefusal ??= refusal;
           replacement = refusal ? match[0] : String(value);
           if (!refusal) twinReplacement = this.productLogTwin(value, context);
+          // The parameter arm answered: the whole replacement is that
+          // parameter's value (issue #4446).
+          if (!refusal && fromParameter && typeof value === 'string' && value !== '') {
+            parameterSpans = [{ start: 0, length: value.length, parameter: varNameStr }];
+          }
         } catch (refError) {
           // A DELIBERATE refusal (`lookupResourceRecord`'s malformed-record
           // one, #3576) is the final answer on both arms below (issue #1740),
@@ -692,6 +782,7 @@ export async function resolveSub(
       replacement,
       twin: twinReplacement ?? replacement,
       ...(record ? { record } : {}),
+      parameterSpans,
     });
   }
 
@@ -701,14 +792,29 @@ export async function resolveSub(
   // loop — e.g. an escaped `${!X}` produces the literal `${X}`, which a later
   // `${X}` variable replacement's `.replace` would otherwise clobber — and
   // never re-scans an escaped token's literal output.
+  // The same pass places each entry's parameter spans on `result` (issue
+  // #4446): its offset in the template, moved by every replacement before it.
+  // An entry placing no span is a gap, as an `Fn::Join` part is; only a
+  // misaligned entry, which places nothing reliably, drops them all.
   let cursor = 0;
-  let result = template.replace(/\$\{(!)?([^}]*)\}/g, (whole) => {
-    const entry = replacements[cursor++];
-    // Every regex match pushes exactly one entry during collection (including
-    // the verbatim-kept empty `${}`), so this stays positionally aligned;
-    // fall back to the matched text if a gap ever appears.
-    return entry ? entry.replacement : whole;
-  });
+  let shift = 0;
+  let parameterSpans: ParameterSpans[number][] | undefined = [];
+  let result = template.replace(
+    /\$\{(!)?([^}]*)\}/g,
+    (whole: string, _bang: unknown, _name: unknown, at: number) => {
+      const entry = replacements[cursor++];
+      // Every regex match pushes exactly one entry during collection (including
+      // the verbatim-kept empty `${}`), so this stays positionally aligned;
+      // fall back to the matched text if a gap ever appears.
+      const replacement = entry ? entry.replacement : whole;
+      if (entry === undefined) parameterSpans = undefined;
+      else if (parameterSpans !== undefined) {
+        appendShiftedSpans(parameterSpans, entry.parameterSpans, at + shift);
+      }
+      shift += replacement.length - whole.length;
+      return replacement;
+    }
+  );
   // The LOG TWIN (issue #3100): the same positional pass over the same
   // template, consuming each entry's twin instead.
   let twinCursor = 0;
@@ -736,13 +842,21 @@ export async function resolveSub(
   // left unresolved per-reference when skipDynamicReferences is set).
   if (result.includes('{{resolve:')) {
     const substituted = await this.resolveDynamicReferencesWithLogTwin(result, twin, context);
+    // The spans index the substituted template; a pass that rewrote it moved them.
+    if (substituted.result !== result) parameterSpans = undefined;
     ({ result, twin } = substituted);
     substitutions.push(...substituted.substitutions);
     complete &&= substituted.complete;
   }
   // After the final pass, so every reference in the template has recorded.
   if (listRefusal) throw listRefusal;
-  this.recordLeafResolution(context, source, { input, output: result, substitutions, complete });
+  this.recordLeafResolution(context, source, {
+    input,
+    output: result,
+    substitutions,
+    complete,
+    ...(parameterSpans === undefined ? {} : { parameterSpans }),
+  });
   this.rememberLogTwin(context, result, twin);
   this.logger.debug(
     `Resolved Fn::Sub: ${this.logRender(this.logTwinText(result, twin, context), context)}`

@@ -169,12 +169,34 @@ export interface DynamicReferenceSubstitution {
  * [#3306](https://github.com/go-to-k/cdkd/issues/3306)): a string branch
  * records its own pass, an object branch lends the record it has, and any
  * other branch poisons the `Fn::If`.
+ *
+ * `parameterSpans` (issue [#4446](https://github.com/go-to-k/cdkd/issues/4446))
+ * lists, in order, where on `output` the resolver placed a TEMPLATE PARAMETER's
+ * value: each span is the text a `Ref` answered through the parameter arm of
+ * `resolveRef` (a `{Ref}` object, an `Fn::Sub` placeholder or a bound `{Ref}`
+ * variable), or one a nested part's own record lent, shifted to where that part
+ * landed. Spans are non-empty, non-overlapping and ascending. It is absent
+ * whenever the resolver cannot vouch for the offsets -- the object's own
+ * final dynamic-reference pass changed the text, an `Fn::Sub` entry was
+ * misaligned, or the record is a string-selected `Fn::If`'s own (written
+ * without spans) -- and the positioning arm reading it refuses then. A part
+ * inside a Join / Sub that places no span (a list element an intrinsic
+ * returned, such an `Fn::If`) is a GAP of the enclosing record, which keeps
+ * its spans.
  */
 export interface IntrinsicLeafResolution {
   readonly input: string;
   readonly output: string;
   readonly substitutions: readonly DynamicReferenceSubstitution[];
   readonly complete: boolean;
+  readonly parameterSpans?: readonly ParameterSpan[];
+}
+
+/** One parameter value's place on a resolved string (issue #4446). */
+export interface ParameterSpan {
+  readonly start: number;
+  readonly length: number;
+  readonly parameter: string;
 }
 
 /** Poison for an intrinsic object one pass resolved two different ways. */
@@ -221,6 +243,15 @@ export function recordIntrinsicLeafResolution(
       secret,
     })),
     complete: resolution.complete,
+    ...(resolution.parameterSpans === undefined
+      ? {}
+      : {
+          parameterSpans: resolution.parameterSpans.map(({ start, length, parameter }) => ({
+            start,
+            length,
+            parameter,
+          })),
+        }),
   };
   const previous = leaves.get(source);
   if (previous === undefined) leaves.set(source, copy);
@@ -282,6 +313,21 @@ function sameLeafResolution(a: IntrinsicLeafResolution, b: IntrinsicLeafResoluti
         s.token === b.substitutions[i]!.token &&
         s.value === b.substitutions[i]!.value &&
         s.secret === b.substitutions[i]!.secret
+    ) &&
+    sameParameterSpans(a.parameterSpans, b.parameterSpans)
+  );
+}
+
+function sameParameterSpans(
+  a: readonly ParameterSpan[] | undefined,
+  b: readonly ParameterSpan[] | undefined
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.length === b.length &&
+    a.every(
+      (s, i) =>
+        s.start === b[i]!.start && s.length === b[i]!.length && s.parameter === b[i]!.parameter
     )
   );
 }
