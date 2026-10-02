@@ -10,6 +10,10 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   via Cloud Control; verify.sh asserts that route and that destroying it left no
   manual snapshot (issue #3993)
 - **Secrets Manager Secret** - Auto-generated database credentials (created by CDK)
+- **RDS Proxy** (`AuroraProxy`) - sets `DebugLogging` in phase 1 and DROPS it in
+  the `CDKD_TEST_UPDATE=true` phase; verify.sh asserts the live value stays
+  true (ModifyDBProxy and CloudFormation's handler both keep an omitted
+  setting) and that the deploy warned about it (issue #1160)
 
 - **SecurityCluster** (L1 `CfnDBCluster`, aurora-postgresql, no instance) - the
   issue #609 DBCluster security-property silent-drop assertions

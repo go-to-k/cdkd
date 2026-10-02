@@ -35,6 +35,8 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { RDSDBProxyProvider } from '../../../src/provisioning/providers/rds-dbproxy-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { getLogger } from '../../../src/utils/logger.js';
+import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 
 const RESOURCE_TYPE = 'AWS::RDS::DBProxy';
 const PROXY_NAME = 'AuroraProxy';
@@ -270,6 +272,122 @@ describe('RDSDBProxyProvider', () => {
         { Tags: undefined }
       );
       expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
+  // Issue #1160: ModifyDBProxy keeps an omitted setting, and so does
+  // CloudFormation's DBProxy handler, so a removal sends nothing and WARNS.
+  describe('update: a removed property is kept and warned about (#1160)', () => {
+    const warn = vi.mocked(getLogger().child('RDSDBProxyProvider').warn);
+    const base = {
+      EngineFamily: 'MYSQL',
+      RoleArn: ROLE_ARN,
+      VpcSubnetIds: ['subnet-aaa'],
+    };
+    const optional = {
+      Auth: [{ AuthScheme: 'SECRETS', SecretArn: 'arn:aws:secretsmanager:us-east-1:123:secret:db' }],
+      RequireTLS: true,
+      IdleClientTimeout: 600,
+      DebugLogging: true,
+      VpcSecurityGroupIds: ['sg-aaa'],
+    };
+
+    beforeEach(() => {
+      warn.mockReset();
+    });
+
+    it('sends no ModifyDBProxy for removals alone and names every removed property once', async () => {
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, base, { ...base, ...optional });
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toBe(
+        'Proxy (AWS::RDS::DBProxy): properties Auth, RequireTLS, IdleClientTimeout, DebugLogging, VpcSecurityGroupIds were removed from the template; ModifyDBProxy keeps a setting it is not sent, so the proxy keeps its current value. Declare the property with the value you want to change it.'
+      );
+    });
+
+    it('passes a kept change through and omits the removed field from the call', async () => {
+      mockSend.mockResolvedValueOnce({ DBProxy: {} });
+      const newRole = 'arn:aws:iam::123456789012:role/NewRole';
+      await provider.update(
+        'Proxy',
+        PROXY_NAME,
+        RESOURCE_TYPE,
+        { ...base, RoleArn: newRole, RequireTLS: false },
+        { ...base, RequireTLS: true, IdleClientTimeout: 600 }
+      );
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const input = mockSend.mock.calls[0]![0].input;
+      expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyCommand');
+      expect(input).toEqual({ DBProxyName: PROXY_NAME, RoleArn: newRole, RequireTLS: false });
+      expect(Object.hasOwn(input, 'IdleClientTimeout')).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain(' property IdleClientTimeout was removed ');
+    });
+
+    it('warns only once the update succeeded, so a retried or failed update prints nothing', async () => {
+      mockSend.mockRejectedValueOnce(new Error('ThrottlingException'));
+      await expect(
+        provider.update(
+          'Proxy',
+          PROXY_NAME,
+          RESOURCE_TYPE,
+          { ...base, RoleArn: 'arn:aws:iam::123456789012:role/NewRole' },
+          { ...base, DebugLogging: true }
+        )
+      ).rejects.toThrow();
+      expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyCommand');
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('warns about nothing for a property neither side declared', async () => {
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, base, base);
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("reads the caller's removed set, which is empty on drift --revert", async () => {
+      // A readback previous side carries every setting the template never did.
+      await provider.update(
+        'Proxy',
+        PROXY_NAME,
+        RESOURCE_TYPE,
+        base,
+        { ...base, ...optional },
+        { removedProperties: new Set(), desiredFromAwsReadback: true }
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, base, { ...base, ...optional }, {
+        removedProperties: new Set(['DebugLogging', 'Tags']),
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain(' property DebugLogging was removed ');
+    });
+
+    it('words a rollback revert as the state being restored', async () => {
+      await provider.update(
+        'Proxy',
+        PROXY_NAME,
+        RESOURCE_TYPE,
+        base,
+        { ...base, DebugLogging: true },
+        { removedProperties: new Set(['DebugLogging']), replayingState: true }
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toBe(
+        'Proxy (AWS::RDS::DBProxy): property DebugLogging is absent from the state being restored; ModifyDBProxy keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.'
+      );
+    });
+
+    it('leaves the shared caller with nothing to warn about, so the line is never printed twice', () => {
+      // The provider declares neither removalDefaults nor removalHandledInUpdate
+      // (whose shared line would claim CloudFormation resets the value), so the
+      // caller's own removal warning stays silent and this provider's is the only one.
+      expect(
+        prepareRemovalForUpdate(provider, RESOURCE_TYPE, base, { ...base, DebugLogging: true })
+          .unhandled
+      ).toEqual([]);
     });
   });
 

@@ -100,13 +100,16 @@ export class RdsAuroraStack extends cdk.Stack {
     // with a recorded AND a desired DBClusterIdentifiers list — both must read
     // as well-formed, the pool change must land, and the cluster target must
     // stay registered.
+    // Issue #1160 (DBProxy removal): phase 1 sets DebugLogging, phase 2 DROPS
+    // it. ModifyDBProxy keeps an omitted setting, so the live value must stay
+    // true and the deploy must WARN that it was left in place.
     const proxy = new rds.DatabaseProxy(this, 'AuroraProxy', {
       proxyTarget: rds.ProxyTarget.fromCluster(cluster),
       secrets: [cluster.secret!],
       vpc,
       securityGroups: [securityGroup],
       requireTLS: false,
-      ...(isUpdate ? { maxConnectionsPercent: 90 } : {}),
+      ...(isUpdate ? { maxConnectionsPercent: 90 } : { debugLogging: true }),
     });
 
     // Issue #4087: Tags on the proxy's DBProxyTargetGroup, keyed by
