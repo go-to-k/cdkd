@@ -62,10 +62,12 @@ tests passing is necessary but NOT sufficient:
   template grepped instead) — an existing fixture takes the new arm
   (go-to-k/cdkd#4369).
 - **A change to what cdkd PRINTS or DECIDES** (a message's text or line split,
-  a refuse / adopt outcome) → `grep -rlF '<old text>' tests/integration --include='*.sh'`
-  (`verify.sh` and `run.sh` both grep output) and run every fixture it names
-  before merge, whatever the change's own tier: no vitest run executes them, so a reshaped line leaves a fixture red on
-  `main` until the next lane runs it (go-to-k/cdkd#4394).
+  a refuse / adopt outcome) → `grep -rlF --include='*.sh'
+  --exclude-dir=node_modules '<old text>' tests/integration` (`verify.sh` and
+  `run.sh` both grep output; a hit in a top-level helper means every fixture
+  sourcing it) and run each fixture it names before merge, whatever the
+  change's own tier: no vitest run executes them, so a reshaped line leaves a
+  fixture red on `main` until the next lane runs it (go-to-k/cdkd#4394).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
   tests, config) → exempt from the tiers above, never from `/verify-pr` step 9;
   never conclude a CI job cannot fail on your diff from its NAME. Both arms
