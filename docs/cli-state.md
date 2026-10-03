@@ -476,7 +476,14 @@ Otherwise, to move such a resource back, change its construct id
 (and so its logical id) in the child. The next deploy then creates the new
 logical id through the default routing, which ignores the old stamp, and
 deletes the old one through the layer that created it. This is a destroy and
-recreate: a stateful resource comes back empty, and a resource with a fixed
+recreate, and the deploy does not ask first: the stateful guard and
+`--force-stateful-recreation` cover replacements, not the delete of a logical
+id that left the template. A stateful resource comes back empty. Under a
+delete policy, empty a non-empty S3 bucket that lacks `autoDeleteObjects` and
+turn off deletion protection beforehand: creates run before deletes, so the
+old resource's refused delete fails the deploy after the new one exists, and
+the automatic rollback removes the new one again (`--no-rollback` leaves
+both). A resource with a fixed
 physical name needs a new name, or its removal deployed first and its re-add
 in a second deploy. Under `DeletionPolicy: Retain` (the CDK default for many
 stateful constructs) the old resource is only dropped from state and stays in
