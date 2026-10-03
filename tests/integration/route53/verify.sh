@@ -1114,8 +1114,9 @@ if [ "${DESTROY_RC}" -ne 0 ]; then
   rm -f "${DESTROY_LOG}"
   exit 1
 fi
-# The non-verbose part of the run, for the record (DEBUG lines dropped).
-grep -v ' DEBUG ' "${DESTROY_LOG}" || true
+# The non-verbose part of the run, for the record (DEBUG lines dropped). The
+# logger always colours its level tag, so strip ANSI codes before filtering.
+sed $'s/\x1b\\[[0-9;]*m//g' "${DESTROY_LOG}" | grep -v ' DEBUG ' || true
 if grep -F 'sep|pipe' "${DESTROY_LOG}" | grep -qiE 'does not exist, skipping deletion'; then
   echo "FAIL: destroy skipped PipeRecord's DELETE as already gone (issue #3890):" >&2
   grep -F 'sep|pipe' "${DESTROY_LOG}" >&2
