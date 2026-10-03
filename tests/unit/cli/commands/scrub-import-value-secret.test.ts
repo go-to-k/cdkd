@@ -834,7 +834,7 @@ describe('the pre-pass walks what the RESOLVER walks (issue #2133 review)', () =
     // `&&` guard, a wrapped condition) that is ALSO missing from
     // `RESOLVER_INTRINSIC_PRECEDENCE` would be invisible to BOTH sides, and the
     // equality below would pass over exactly the drift it exists to catch.
-    const resolverOrder = [...dispatch.matchAll(/'([A-Za-z:]+)' in obj/g)]
+    const resolverOrder = [...dispatch.matchAll(/'([A-Za-z0-9:]+)' in obj/g)]
       .map((m) => m[1] as string)
       // `Condition` is gated on `context.conditionResolver`, which no context
       // the pre-pass runs under supplies. Now a REAL exclusion.
@@ -842,7 +842,7 @@ describe('the pre-pass walks what the RESOLVER walks (issue #2133 review)', () =
 
     const listStart = scrubSrc.indexOf('const RESOLVER_INTRINSIC_PRECEDENCE = [');
     const listBody = scrubSrc.slice(listStart, scrubSrc.indexOf('] as const;', listStart));
-    const scrubOrder = [...listBody.matchAll(/'([A-Za-z:]+)'/g)].map((m) => m[1] as string);
+    const scrubOrder = [...listBody.matchAll(/'([A-Za-z0-9:]+)'/g)].map((m) => m[1] as string);
 
     expect(resolverOrder.length).toBeGreaterThan(10);
     expect(scrubOrder).toEqual(resolverOrder);
