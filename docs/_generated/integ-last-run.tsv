@@ -37,8 +37,8 @@ cc-api-fallback	2026-10-02T09:06:41Z	PASS	40	verify.sh	rc ok, orph clean (#4416 
 cc-api-fallback-transitions	2026-10-02T09:06:41Z	PASS	90	verify.sh	rc ok, orph clean (#4416 r2)
 cc-final-snapshot-handlers	2026-09-30T17:44:01Z	PASS	1223	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
 cc-getatt-readback	2026-10-02T09:06:41Z	PASS	96	verify.sh	rc ok, orph clean (#4416 r2)
-cc-protection-flip	2026-10-01T20:42:06Z	PASS	531	verify.sh	rc ok, orph clean (#4374)
-cc-protection-flip-eks	2026-10-01T21:17:00Z	PASS	2625	verify.sh	rc ok, orph clean (#4374)
+cc-protection-flip	2026-10-03T00:39:18Z	PASS	556	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
+cc-protection-flip-eks	2026-10-03T01:13:56Z	PASS	2635	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 cc-to-sdk-reroute	2026-10-02T17:09:39Z	PASS	315	verify.sh	rc ok, orph clean; #4411 regression
 cc-write-only-create-only	2026-10-02T09:06:41Z	PASS	150	verify.sh	rc ok, orph clean (#4416 r2)
 ci-cd	2026-09-27T14:43:09Z	PASS	70	verify.sh	rc ok, orph clean (#3866)
@@ -267,8 +267,8 @@ recreate-via-cc-api	2026-10-02T20:40:26Z	PASS	106	verify.sh	rc ok, orph clean (#
 recreate-via-sdk-provider	2026-10-02T20:42:07Z	PASS	100	verify.sh	rc ok, orph clean (#4468)
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-10-02T18:00:27Z	PASS	2149	verify.sh	rc ok, orph clean (#4455)
-remove-protection-compensation	2026-10-02T13:25:18Z	PASS	250	verify.sh	rc ok, orph clean (PR #4435 Cloud Control ASG delegate reuse regression)
+remove-protection	2026-10-03T00:30:01Z	PASS	2174	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
+remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-10-02T19:43:34Z	PASS	100	verify.sh	rc ok, orph clean (#4464)
 replacement-fanout	2026-10-02T19:56:58Z	PASS	85	verify.sh	rc ok, orph clean (#4464)

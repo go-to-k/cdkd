@@ -56,6 +56,7 @@ import { LogsLogGroupProvider } from '../../../../src/provisioning/providers/log
 import { CognitoUserPoolProvider } from '../../../../src/provisioning/providers/cognito-provider.js';
 import {
   logGroupProtectionSite,
+  runDeleteAttempt,
   userPoolProtectionSite,
 } from '../../../../src/provisioning/providers/deletion-protection-compensation.js';
 import { WITHHELD_AWS_COMMAND } from '../../../../src/provisioning/replacement-protection-advice.js';
@@ -163,6 +164,15 @@ function throttle(): Error {
   const e = new Error('Rate exceeded');
   e.name = 'ThrottlingException';
   return e;
+}
+
+function iamDeny(): Error {
+  return Object.assign(
+    new Error(
+      'User: arn:aws:iam::123456789012:user/ci is not authorized to perform: the delete with an explicit deny'
+    ),
+    { name: 'AccessDeniedException', $metadata: { httpStatusCode: 400 } }
+  );
 }
 
 function notFound(): Error {
@@ -331,6 +341,29 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
     script(site, { observe: false, del: terminalRefusal() });
     await expect(del(provider)).rejects.toThrow('domain configured');
     expect(reEnableCalls(site)).toHaveLength(1);
+  });
+
+  it("a refusal that stays RETRYABLE is restored on the destroy loop's LAST attempt (issue #4318)", async () => {
+    // An IAM deny reads `not authorized to perform`, which the classifier calls
+    // retryable (IAM propagation), so every attempt is retryable and only the
+    // loop's attempt cap ends the sequence.
+    const provider = site.make();
+    script(site, { observe: true, del: iamDeny() });
+    for (let i = 0; i < 3; i += 1) {
+      await expect(runDeleteAttempt(false, () => del(provider))).rejects.toThrow(
+        'not authorized to perform'
+      );
+      expect(reEnableCalls(site)).toHaveLength(0);
+    }
+    await expect(runDeleteAttempt(true, () => del(provider))).rejects.toThrow(
+      'not authorized to perform'
+    );
+    const reEnables = reEnableCalls(site);
+    expect(reEnables).toHaveLength(1);
+    expect(reEnables[0]).toMatchObject({ input: site.reEnableInput });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining(`re-enabled on ${site.physicalId}`)
+    );
   });
 
   it('a RESTORED guard releases the record, so a later delete of the same key does not inherit it', async () => {

@@ -516,27 +516,21 @@ too. Four limits are deliberate:
 - It only restores a guard **cdkd itself turned off in this run**. A resource
   whose protection was already disabled beforehand, or whose pre-flip read
   failed, is left alone.
-- It keys on how the delete ENDS, not on individual retries, and it does not
-  run once AWS has ACCEPTED the delete call — a failure after that point is a
-  wait giving up on a resource that is already being deleted. On a Cloud
-  Control-routed delete this is decided per delete attempt, and "accepted"
-  means the handler may already be deleting: an abandoned wait, or a failure
-  whose handler code leaves that open (`NotStabilized`, `ServiceTimeout`,
-  `InternalFailure`, `GeneralServiceException` and the like), or a conflict
-  after an earlier attempt that may have been deleting. cdkd then does not
-  write the guard back, and warns that it cannot tell, naming the check and
-  restore commands. Any other handler failure is a refusal and is
-  compensated, as is an EC2 instance's termination-protection refusal under
-  any code.
-- It does not run when a retryable failure exhausts the destroy loop's attempt
-  cap, nor when a per-resource `--resource-timeout` fires. Both leave the guard
-  off. A related case on a Cloud Control type: when cdkd stops waiting for a
-  delete whose status it could not read and AWS's reason is withheld from the
-  message (an access denial, say), cdkd counts that delete as possibly running
-  and drops what it recorded about the flip, while the destroy loop may still
-  retry the delete. It warns at that point, with the check and restore
-  commands, but if AWS then refuses the retry the guard is not turned back
-  on.
+- It keys on how the delete ENDS, not on individual retries: a retryable
+  failure is compensated only on the destroy loop's last attempt, when no retry
+  follows. It does not run once AWS has ACCEPTED the delete call — a failure
+  after that point is a wait giving up on a resource that is already being
+  deleted. On a Cloud Control-routed delete this is decided per delete attempt,
+  and "accepted" means the handler may already be deleting: an abandoned
+  wait, or a failure whose handler code leaves that open (`NotStabilized`,
+  `ServiceTimeout`, `InternalFailure`, `GeneralServiceException` and the
+  like), or a conflict after an earlier attempt that may have been deleting.
+  cdkd then does not write the guard back, and warns that it cannot tell,
+  naming the check and restore commands. Any other handler failure is a
+  refusal and is compensated, as is an EC2 instance's termination-protection
+  refusal under any code.
+- It does not run when a per-resource `--resource-timeout` fires, which leaves
+  the guard off.
 - It is best-effort. The delete failure stays the reported outcome, and a
   re-enable that itself fails is reported as a separate ERROR line naming the
   resource and its restore command. A re-enable that fails with the service's

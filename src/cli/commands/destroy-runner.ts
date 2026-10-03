@@ -69,6 +69,7 @@ import {
   isRetryableTransientError,
   retryClassificationText,
 } from '../../deployment/retryable-errors.js';
+import { runDeleteAttempt } from '../../provisioning/providers/deletion-protection-compensation.js';
 import {
   DEFAULT_RESOURCE_WARN_AFTER_MS,
   DEFAULT_RESOURCE_TIMEOUT_MS,
@@ -1554,26 +1555,31 @@ export async function runDestroyForStack(
               let lastDeleteError: unknown;
               for (let attempt = 0; attempt <= maxAttempts; attempt++) {
                 try {
-                  const outcome = await provider.delete(
-                    logicalId,
-                    resource.physicalId,
-                    resource.resourceType,
-                    resource.properties,
-                    {
-                      ...(state.region !== undefined && { expectedRegion: state.region }),
-                      ...(ctx.removeProtection === true && { removeProtection: true }),
-                      ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-                      // Issue #4029: the EFFECTIVE policy, absent read as
-                      // CloudFormation's `Delete` (RDS's `Snapshot` default is
-                      // already in `policy`).
-                      deletionPolicy: policy ?? 'Delete',
-                      ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
-                      ...(secretPrincipalOptIn !== undefined && {
-                        resolveSecretDerivedPrincipals: secretPrincipalOptIn,
-                      }),
-                      // Issue #4157: the identity evidence of the record deleted.
-                      recordedAttributes: resource.attributes,
-                    }
+                  // Issue #4318: the attempt scope tells a `--remove-protection`
+                  // compensation whether this is the LAST attempt, where a
+                  // retryable failure still ends the delete.
+                  const outcome = await runDeleteAttempt(attempt >= maxAttempts, () =>
+                    provider.delete(
+                      logicalId,
+                      resource.physicalId,
+                      resource.resourceType,
+                      resource.properties,
+                      {
+                        ...(state.region !== undefined && { expectedRegion: state.region }),
+                        ...(ctx.removeProtection === true && { removeProtection: true }),
+                        ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+                        // Issue #4029: the EFFECTIVE policy, absent read as
+                        // CloudFormation's `Delete` (RDS's `Snapshot` default is
+                        // already in `policy`).
+                        deletionPolicy: policy ?? 'Delete',
+                        ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+                        ...(secretPrincipalOptIn !== undefined && {
+                          resolveSecretDerivedPrincipals: secretPrincipalOptIn,
+                        }),
+                        // Issue #4157: the identity evidence of the record deleted.
+                        recordedAttributes: resource.attributes,
+                      }
+                    )
                   );
                   // Assign INSIDE the loop, not after it: the loop can
                   // reach this line on a LATER attempt after an earlier one
