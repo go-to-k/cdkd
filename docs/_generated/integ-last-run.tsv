@@ -128,6 +128,10 @@ eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 76
 eventsourcemapping-race	2026-10-03T04:26:17Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
 export	2026-10-03T06:47:20Z	PASS	249	verify.sh	rc ok, orph clean (#4283 PR #4449)
 export-nested-stack	2026-10-03T06:56:28Z	PASS	201	verify.sh	rc ok, orph clean (#4283 PR #4449)
+eventsourcemapping-race	2026-10-01T10:13:53Z	PASS	100	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
+export	2026-10-03T05:52:38Z	PASS	295	verify.sh	rc ok, orph clean (#4497)
+export-nested-stack	2026-10-01T18:54:38Z	PASS	190	verify.sh	rc ok, orph clean; #3507 export arm
+fallback-recreate-children	2026-10-03T08:41:19Z	PASS	110	verify.sh	rc ok, orph clean; #4444 first run; pre-fix origin/main build FAILS with 0 log streams
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
 fsx-lustre	2026-10-03T04:15:14Z	PASS	874	verify.sh	rc ok, orph clean (#4283 PR #4449)
 fsx-ontap	2026-10-02T10:50:28Z	PASS	1613	verify.sh	#1160 PR #4398; rc ok, orph clean, no final backup
