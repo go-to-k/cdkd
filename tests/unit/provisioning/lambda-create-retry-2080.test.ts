@@ -624,7 +624,8 @@ describe('Lambda tokenless create retry safety (issue #2080, detection only)', (
         FunctionName: 'other-fn',
         LastModified: new Date(Date.now()),
       });
-      vi.setSystemTime(Date.now() + 30_000);
+      // No clock advance: the recorded mapping is inside the window, so only
+      // the recorded-id check keeps it out.
       aws.loseNextCreateResponse = transient500();
 
       await createWithRetry(ESM, KAFKA_PROPS);
