@@ -126,6 +126,14 @@ export function parseLedger(content: string): ParsedLedger {
     if (test.trim() === '') {
       throw new Error(`integ-last-run.tsv line ${lineNo}: empty test name`);
     }
+    if (/\s/.test(test)) {
+      // A shell loop that word-split a row joined the name and the duration
+      // with a space, so the row named no fixture and survived every dedupe.
+      throw new Error(
+        `integ-last-run.tsv line ${lineNo}: test name ${JSON.stringify(test)} contains ` +
+          `whitespace (a fixture directory name never does; is the duration in column 1?)`,
+      );
+    }
     if (!ISO_UTC.test(lastRunIso)) {
       throw new Error(
         `integ-last-run.tsv line ${lineNo}: malformed last_run_iso ${JSON.stringify(lastRunIso)} ` +

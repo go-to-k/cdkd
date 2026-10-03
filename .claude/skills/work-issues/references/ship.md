@@ -67,7 +67,8 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
 ```
 
 - **A GENERATED file is REGENERATED, never hand-merged**: re-run the generator,
-  commit ITS output. Take upstream whole when it derives the file from the tree.
+  commit ITS output. Upstream whole only clears the conflict: it lacks this
+  lane's inputs, so regenerate before the push (go-to-k/cdkd#4460).
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so a
   `main` ledger row turns the PR CONFLICTING: rebase locally, normalize (Merge).
@@ -100,8 +101,9 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   ```
 
   **PUSH FIRST, then run the post-rebase suite while CI drains** — so its ledger
-  test runs only after the push: re-run `vp run integ-ledger-normalize` after
-  EVERY rebase; push once `git status --porcelain -- docs/_generated/` is empty.
+  test runs only after the push: re-run `vp run gen:all-matrices && vp run format`
+  (it ends in the ledger normalize) after EVERY rebase; push once
+  `git status --porcelain` is empty (`docs/cli-flag-coverage.md` is outside `_generated/`).
 - **A body edit RE-RUNS four required checks** (`on: edited`), green or
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
   "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,
