@@ -1325,6 +1325,58 @@ describe('AWS::Route53::RecordSet composite id', () => {
     }
   );
 
+  it('import still packs a separator-free record whose template Name is an unresolved intrinsic', async () => {
+    // The verbatim branch is for a name carrying `|` only: a plain record
+    // with an intrinsic Name packs and verifies as before issue #3890.
+    mockRoute53Send.mockResolvedValueOnce({
+      ResourceRecordSets: [
+        { Name: 'www.example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '1.2.3.4' }] },
+      ],
+    });
+    const provider = new Route53Provider();
+    const result = await provider.import({
+      logicalId: 'MyRecord',
+      resourceType: RECORD_TYPE,
+      stackName: 'TestStack',
+      region: 'us-east-1',
+      knownPhysicalId: 'www.example.com.',
+      properties: { HostedZoneId: 'Z1D633PJN98FT9', Name: { Ref: 'P' }, Type: 'A' },
+    });
+    expect(result).toEqual({ physicalId: 'Z1D633PJN98FT9|www.example.com.|A', attributes: {} });
+    expect(mockLoggerWarn).not.toHaveBeenCalledWith(
+      expect.stringContaining('not a plain string to anchor it on')
+    );
+    expect(sentCommand(0).constructor.name).toBe('ListResourceRecordSetsCommand');
+    expect(sentCommand(0).input.StartRecordName).toBe('www.example.com.');
+  });
+
+  it('import keeps the verbatim id when the template Name is empty and the record name contains the separator', async () => {
+    // Unreachable through `resolveRecordSetIdentity` today (an empty Name
+    // resolves no identity), so the identity is stubbed: the guard itself must
+    // not count an empty Name as one the anchor can match.
+    const provider = new Route53Provider();
+    const spy = vi
+      .spyOn(
+        provider as unknown as { resolveRecordSetIdentity: (...a: unknown[]) => unknown },
+        'resolveRecordSetIdentity'
+      )
+      .mockResolvedValue({ hostedZoneId: 'Z1D633PJN98FT9', name: 'a|b.example.com.', type: 'A' });
+    const result = await provider.import({
+      logicalId: 'MyRecord',
+      resourceType: RECORD_TYPE,
+      stackName: 'TestStack',
+      region: 'us-east-1',
+      knownPhysicalId: 'a|b.example.com.',
+      properties: { HostedZoneId: 'Z1D633PJN98FT9', Name: '', Type: 'A' },
+    });
+    expect(spy).toHaveBeenCalled();
+    expect(result).toEqual({ physicalId: 'a|b.example.com.', attributes: {} });
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('not a plain string to anchor it on')
+    );
+    expect(mockRoute53Send).not.toHaveBeenCalled();
+  });
+
   it('a weighted record whose Name and SetIdentifier both contain the separator is read and deleted', async () => {
     // SetIdentifier is not part of the id, and Route 53 stores it as given,
     // so it goes out raw in both the read's start key and the DELETE.

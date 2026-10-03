@@ -1081,19 +1081,25 @@ echo "    OK: state tracks the renamed records (${A_RECORD_ID}, ${SWAP_RECORD_ID
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 # Issue #3890: PipeRecord's DELETE carries the name with a literal `|`, which
-# Route 53 must match against the record it stores as `\174`. If it did not,
-# the provider's "already deleted" arm would report success over a live record
-# and the zone delete would then fail as not empty. Capture the run so that
-# failure, or any skip/warning about PipeRecord, names the record.
+# Route 53 must match against the record it stores as `\174`. A DELETE that
+# did not match would land in the provider's InvalidChangeBatch /
+# NoSuchHostedZone "skipping deletion" arms, which log at DEBUG and name the
+# PHYSICAL id (`<zone>|sep|pipe...|A`), not the logical id. So the destroy runs
+# with --verbose, and two checks catch that mode:
+#   1. a DEBUG skip line naming PipeRecord's physical id (`sep|pipe`);
+#   2. the zone delete then failing as not empty: destroy exits non-zero with
+#      the `\174` record still listed, which names PipeRecord.
+# The logicalId grep below additionally catches a WARN-level skip.
 DESTROY_LOG=$(mktemp)
 set +e
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --force 2>&1 | tee "${DESTROY_LOG}"
-DESTROY_RC=${PIPESTATUS[0]}
+  --force --verbose >"${DESTROY_LOG}" 2>&1
+DESTROY_RC=$?
 set -e
 if [ "${DESTROY_RC}" -ne 0 ]; then
+  cat "${DESTROY_LOG}" >&2
   if PIPE_LEFT_JSON=$(aws route53 list-resource-record-sets --hosted-zone-id "${ZONE_ID}" \
     --region "${REGION}" --output json 2>&1); then
     PIPE_LEFT=$(printf '%s' "${PIPE_LEFT_JSON}" | jq --arg n "${PIPE_AWS_NAME}" \
@@ -1108,9 +1114,17 @@ if [ "${DESTROY_RC}" -ne 0 ]; then
   rm -f "${DESTROY_LOG}"
   exit 1
 fi
-if grep -iE 'PipeRecord' "${DESTROY_LOG}" | grep -qiE 'skip|warn|already deleted|not found'; then
+# The non-verbose part of the run, for the record (DEBUG lines dropped).
+grep -v ' DEBUG ' "${DESTROY_LOG}" || true
+if grep -F 'sep|pipe' "${DESTROY_LOG}" | grep -qiE 'does not exist, skipping deletion'; then
+  echo "FAIL: destroy skipped PipeRecord's DELETE as already gone (issue #3890):" >&2
+  grep -F 'sep|pipe' "${DESTROY_LOG}" >&2
+  rm -f "${DESTROY_LOG}"
+  exit 1
+fi
+if grep -F 'PipeRecord' "${DESTROY_LOG}" | grep -qiE 'skip|warn|already deleted|not found'; then
   echo "FAIL: destroy reported PipeRecord as skipped or already gone instead of deleting it (issue #3890):" >&2
-  grep -i 'PipeRecord' "${DESTROY_LOG}" >&2
+  grep -F 'PipeRecord' "${DESTROY_LOG}" >&2
   rm -f "${DESTROY_LOG}"
   exit 1
 fi
