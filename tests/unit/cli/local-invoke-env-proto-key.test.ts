@@ -30,7 +30,8 @@ const mocks = vi.hoisted(() => ({
   pullImage: vi.fn(),
   pickFreePort: vi.fn(),
   runDetached: vi.fn(),
-  streamLogs: vi.fn(),
+  followContainerLogs: vi.fn(),
+  killAndDrainContainerLogs: vi.fn(),
   removeContainer: vi.fn(),
   resolveHostGatewayExtraHosts: vi.fn(),
   waitForRieReady: vi.fn(),
@@ -63,7 +64,8 @@ vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => {
     pullImage: mocks.pullImage,
     pickFreePort: mocks.pickFreePort,
     runDetached: mocks.runDetached,
-    streamLogs: mocks.streamLogs,
+    followContainerLogs: mocks.followContainerLogs,
+    killAndDrainContainerLogs: mocks.killAndDrainContainerLogs,
     removeContainer: mocks.removeContainer,
   };
 });
@@ -156,7 +158,11 @@ describe('local invoke delivers an --env-vars key named __proto__ (#3515)', () =
     mocks.pullImage.mockResolvedValue(undefined);
     mocks.pickFreePort.mockResolvedValue(19515);
     mocks.runDetached.mockResolvedValue('cdkd-local-3515');
-    mocks.streamLogs.mockReturnValue(() => undefined);
+    mocks.followContainerLogs.mockReturnValue({
+      stop: () => undefined,
+      drain: async () => true,
+    });
+    mocks.killAndDrainContainerLogs.mockResolvedValue(undefined);
     mocks.removeContainer.mockResolvedValue(undefined);
     mocks.resolveHostGatewayExtraHosts.mockResolvedValue([]);
     mocks.waitForRieReady.mockResolvedValue(undefined);

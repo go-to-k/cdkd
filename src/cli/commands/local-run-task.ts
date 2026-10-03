@@ -26,7 +26,7 @@ import {
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
-import { ensureDockerAvailable } from '../../local/docker-runner.js';
+import { ensureDockerAvailable, flushStdio } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import {
@@ -394,7 +394,11 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
         process.exit(130);
       }
       logger.info('Stopping task...');
-      void cleanup().then(() => process.exit(130));
+      // `process.exit` drops writes still queued on a pipe (async on macOS),
+      // which is where the drained container logs just went (issue #4480).
+      void cleanup()
+        .then(() => flushStdio())
+        .then(() => process.exit(130));
     };
     process.on('SIGINT', sigintHandler);
 

@@ -13,7 +13,7 @@ import {
   runDockerStreaming,
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
-import { displayIdent } from '../utils/display-safe.js';
+import { displayIdent, safeMsg } from '../utils/display-safe.js';
 import { getLogger, isStdoutReservedForPayload } from '../utils/logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -390,23 +390,165 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
  * long-running servers (`local start-api` / `run-task` / `start-service`,
  * via `container-pool.ts`) reserve nothing, so their stdout stays the human
  * log surface, byte-identical to before.
+ *
+ * Stopping is immediate: whatever the daemon has not relayed yet is lost. A
+ * caller that must show every line the container printed uses
+ * {@link followContainerLogs} and drains it instead.
  */
 export function streamLogs(containerId: string): () => void {
+  const stream = followContainerLogs(containerId);
+  return () => stream.stop();
+}
+
+/** A running `docker logs -f` follower; see {@link followContainerLogs}. */
+export interface ContainerLogStream {
+  /** SIGTERM the follower now, dropping anything the daemon has not relayed. */
+  stop(): void;
+  /**
+   * Resolve once the follower has exited AND its stdout / stderr are fully
+   * read (the child's `close` event), so every line it relayed has been
+   * written to ours. `docker logs -f` ends on its own once the container
+   * stops, so the caller stops the container FIRST ({@link killContainer})
+   * and removes it only after this resolves. Bounded: after `timeoutMs` the
+   * follower is SIGTERMed and the promise resolves anyway. Resolves `true`
+   * when the follower closed on its own, `false` on the timeout.
+   */
+  drain(timeoutMs: number): Promise<boolean>;
+}
+
+/** Where a {@link followContainerLogs} follower writes the container's two streams. */
+export interface ContainerLogSinks {
+  stdout(chunk: Buffer): void;
+  stderr(chunk: Buffer): void;
+}
+
+/** {@link streamLogs}'s routing: stdout follows the payload reservation. */
+const RESERVATION_ROUTED_SINKS: ContainerLogSinks = {
+  stdout: (chunk) => {
+    if (isStdoutReservedForPayload()) process.stderr.write(chunk);
+    else process.stdout.write(chunk);
+  },
+  stderr: (chunk) => {
+    process.stderr.write(chunk);
+  },
+};
+
+/**
+ * {@link streamLogs} with a drain (issue #4480). The daemon relays a
+ * container's output to `docker logs -f` with a lag that grows under host
+ * load, so a follower SIGTERMed right after the request returns drops the
+ * handler's last lines — under load, all of them.
+ */
+export function followContainerLogs(
+  containerId: string,
+  sinks: ContainerLogSinks = RESERVATION_ROUTED_SINKS
+): ContainerLogStream {
   const proc = spawn(getDockerCmd(), ['logs', '-f', containerId], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  proc.stdout?.on('data', (chunk: Buffer) => {
-    if (isStdoutReservedForPayload()) process.stderr.write(chunk);
-    else process.stdout.write(chunk);
+  proc.stdout?.on('data', (chunk: Buffer) => sinks.stdout(chunk));
+  proc.stderr?.on('data', (chunk: Buffer) => sinks.stderr(chunk));
+  let markClosed: () => void = () => undefined;
+  const closed = new Promise<void>((resolveClosed) => {
+    markClosed = resolveClosed;
   });
-  proc.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk));
-  // Swallow the exit code; this child is just plumbing.
+  proc.on('close', () => markClosed());
+  // Swallow the exit code; this child is just plumbing. A spawn failure
+  // relays nothing, so there is nothing to drain either.
   proc.on('error', () => {
     /* the parent flow surfaces docker errors via runDetached / removeContainer */
+    markClosed();
   });
-  return () => {
+  const stop = (): void => {
     if (!proc.killed) proc.kill('SIGTERM');
   };
+  return {
+    stop,
+    drain: async (timeoutMs: number): Promise<boolean> => {
+      let timer: NodeJS.Timeout | undefined;
+      const timedOut = new Promise<boolean>((resolveTimeout) => {
+        timer = setTimeout(() => resolveTimeout(false), timeoutMs);
+      });
+      try {
+        const drained = await Promise.race([closed.then(() => true), timedOut]);
+        if (!drained) {
+          getLogger()
+            .child('docker')
+            .debug(
+              safeMsg`docker logs -f ${containerId} did not end within ${timeoutMs}ms; stopping it (later log lines may be missing)`
+            );
+          stop();
+        }
+        return drained;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+/**
+ * Best-effort `docker kill <id>`: stops the container so a
+ * {@link followContainerLogs} follower ends once it has relayed the
+ * container's last line. SIGKILL is the signal `docker rm -f` delivers, so a
+ * teardown that kills before it removes changes nothing for the container —
+ * and, unlike `docker stop`, never waits out a grace period on a server that
+ * ignores SIGTERM. Errors are swallowed (logged at debug), like
+ * {@link removeContainer}: the container may already have exited.
+ */
+export async function killContainer(containerId: string): Promise<void> {
+  if (!containerId) return;
+  const args = ['kill', containerId];
+  try {
+    await execFileAsync(getDockerCmd(), args);
+  } catch (error) {
+    getLogger()
+      .child('docker')
+      .debug(safeMsg`docker kill ${containerId} failed: ${describeDockerFailure(error, args)}`);
+  }
+}
+
+/** How long a teardown waits for `docker logs -f` to relay the container's last lines. */
+export const CONTAINER_LOG_DRAIN_TIMEOUT_MS = 5000;
+
+/**
+ * Teardown order for a container whose logs are followed: kill it, wait for
+ * the follower to relay everything (bounded), and only then let the caller
+ * `docker rm -f` it (issue #4480). A missing stream or id is a no-op step.
+ */
+export async function killAndDrainContainerLogs(
+  containerId: string | undefined,
+  stream: ContainerLogStream | undefined,
+  timeoutMs: number = CONTAINER_LOG_DRAIN_TIMEOUT_MS
+): Promise<void> {
+  if (!stream) return;
+  if (containerId) await killContainer(containerId);
+  await stream.drain(timeoutMs);
+}
+
+/**
+ * Resolve once every write already queued on `process.stdout` and
+ * `process.stderr` has been handed to the OS, or after `timeoutMs`. A
+ * `process.exit` right after relaying container logs would otherwise truncate
+ * them: writes to a pipe are asynchronous on macOS (issue #4480).
+ */
+export async function flushStdio(timeoutMs: number = 2000): Promise<void> {
+  const flushed = (stream: NodeJS.WriteStream): Promise<void> =>
+    new Promise<void>((resolveFlush) => {
+      try {
+        stream.write('', () => resolveFlush());
+      } catch {
+        resolveFlush();
+      }
+    });
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([
+    Promise.all([flushed(process.stdout), flushed(process.stderr)]),
+    new Promise<void>((resolveTimeout) => {
+      timer = setTimeout(resolveTimeout, timeoutMs);
+    }),
+  ]);
+  clearTimeout(timer);
 }
 
 /**

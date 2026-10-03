@@ -1,14 +1,24 @@
 /**
- * A stand-in `docker` binary for driving the REAL `streamLogs`
- * (`src/local/docker-runner.ts`) through a real OS pipe — issue
- * [#2419](https://github.com/go-to-k/cdkd/issues/2419).
+ * A stand-in `docker` binary for driving the REAL `streamLogs` /
+ * `followContainerLogs` (`src/local/docker-runner.ts`) through a real OS pipe —
+ * issues [#2419](https://github.com/go-to-k/cdkd/issues/2419) and
+ * [#4480](https://github.com/go-to-k/cdkd/issues/4480).
  *
  * `streamLogs` spawns `getDockerCmd() logs -f <id>`, and `getDockerCmd()`
  * honours `CDK_DOCKER`, so pointing that variable at this script is the whole
- * seam: nothing in production is mocked. The script writes one token to each
- * of its fds — the container-stdout token carries the argv it was given, so a
- * case can see the container id arrived — and then `exec sleep`s, the way
- * `docker logs -f` stays attached until the caller's stop function kills it.
+ * seam: nothing in production is mocked. `logs` writes one token to each of
+ * its fds — the container-stdout token carries the argv it was given, so a
+ * case can see the container id arrived — and then stays attached, the way
+ * `docker logs -f` does, until either the caller kills it or the container
+ * stops.
+ *
+ * The container stopping is modelled by `kill`, which `killContainer` runs:
+ * it leaves a marker the attached `logs` polls for, and `logs` then relays ONE
+ * more token, {@link CONTAINER_LATE_TOKEN}, before exiting. That is the shape
+ * of a loaded daemon (#4480): the container's last line reaches the follower
+ * only after the request returned, so a teardown that kills the follower
+ * without draining it never prints that token. Every other subcommand (`rm`)
+ * exits 0.
  *
  * A mocked `spawn` would let a test assert the routing of bytes no pipe ever
  * carried, which is the reason `tests/unit/utils/docker-cmd-stdout-reservation.test.ts`
@@ -22,23 +32,51 @@ import { join } from 'node:path';
 export const CONTAINER_STDOUT_TOKEN = 'lane2419-container-stdout:';
 /** What the fake container prints on its STDERR. */
 export const CONTAINER_STDERR_TOKEN = 'lane2419-container-stderr';
+/** What `logs` relays on its STDOUT only after `kill` stopped the container. */
+export const CONTAINER_LATE_TOKEN = 'lane4480-container-late-line';
 
 export interface FakeDockerLogs {
   /** Restore `CDK_DOCKER` and remove the script's directory. */
   restore(): void;
 }
 
+export interface FakeDockerLogsOptions {
+  /**
+   * `logs` never ends, even after `kill` — a follower the daemon never closes,
+   * for the drain's timeout arm.
+   */
+  neverEnds?: boolean;
+}
+
 /** Install the fake as `CDK_DOCKER` until {@link FakeDockerLogs.restore}. */
-export function installFakeDockerLogs(): FakeDockerLogs {
+export function installFakeDockerLogs(opts: FakeDockerLogsOptions = {}): FakeDockerLogs {
   const dir = mkdtempSync(join(tmpdir(), 'cdkd-lane2419-docker-'));
   const script = join(dir, 'docker');
+  const killed = join(dir, 'killed');
   writeFileSync(
     script,
     [
       '#!/bin/sh',
-      `printf '%s%s' '${CONTAINER_STDOUT_TOKEN}' "$*"`,
-      `printf '%s' '${CONTAINER_STDERR_TOKEN}' 1>&2`,
-      'exec sleep 30',
+      'case "$1" in',
+      '  logs)',
+      `    printf '%s%s' '${CONTAINER_STDOUT_TOKEN}' "$*"`,
+      `    printf '%s' '${CONTAINER_STDERR_TOKEN}' 1>&2`,
+      opts.neverEnds === true
+        ? '    exec sleep 30'
+        : [
+            '    i=0',
+            `    while [ ! -f '${killed}' ]; do`,
+            '      sleep 0.02',
+            '      i=$((i + 1))',
+            '      [ "$i" -ge 1500 ] && exit 0',
+            '    done',
+            `    printf '%s' '${CONTAINER_LATE_TOKEN}'`,
+            '    exit 0',
+          ].join('\n'),
+      '    ;;',
+      `  kill) : > '${killed}' ;;`,
+      'esac',
+      'exit 0',
       '',
     ].join('\n')
   );
