@@ -469,7 +469,7 @@ const EXEMPT_SHAPES: readonly Exemption[] = [
 /**
  * A fixture consuming a secret's VALUE into a template property -- the shape
  * that DOES put plaintext on the wire, via `{{resolve:secretsmanager:...}}`
- * and `intrinsic-resolver/dynamic-refs.ts`'s GetSecretValue.
+ * and `intrinsic-resolver/dynamic-ref-lookups.ts`'s GetSecretValue.
  *
  * Not a violation TODAY: the GHSA-p5qg-v9gv-hc7w fix redacts the resolved value
  * back to its `{{resolve:...}}` expression before state is persisted, and
@@ -1139,7 +1139,7 @@ describe('a fixture that resolves a secret DYNAMIC REFERENCE must sweep too', ()
    *
    * `{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` against a
    * SecureString is the shape that genuinely puts plaintext on the deploy path:
-   * `intrinsic-resolver/dynamic-refs.ts` issues the real `GetSecretValue`. The
+   * `intrinsic-resolver/dynamic-ref-lookups.ts` issues the real `GetSecretValue`. The
    * GHSA-p5qg-v9gv-hc7w fix rewrites each resolved value back to its
    * `{{resolve:...}}` expression before persisting, and `deploy-engine.ts`
    * applies the same `redactSecretsForState` to the rollback journal's

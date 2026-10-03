@@ -100,9 +100,12 @@ export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-resolver/refs.ts',
   'src/deployment/intrinsic-resolver/clients.ts',
   'src/deployment/intrinsic-resolver/dynamic-refs.ts',
+  'src/deployment/intrinsic-resolver/dynamic-ref-lookups.ts',
   'src/deployment/intrinsic-resolver/string-functions.ts',
+  'src/deployment/intrinsic-resolver/sub.ts',
   'src/deployment/intrinsic-resolver/functions.ts',
   'src/deployment/intrinsic-resolver/masking.ts',
+  'src/deployment/intrinsic-resolver/masking-display.ts',
   'src/analyzer/template-parser.ts',
 ];
 

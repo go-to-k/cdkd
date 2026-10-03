@@ -97,7 +97,7 @@ describe('isTransientServerError (issue #2026)', () => {
     // Seven `isRetryable` call sites across four files pass `isThrottlingError`
     // as a deliberately narrow classifier: `describe-type.ts:67`,
     // `dynamodb-globaltable-provider.ts` (x4), `export.ts:1744` and
-    // `intrinsic-resolver/dynamic-refs.ts` (`sendWithThrottleRetry`). Three FURTHER sites call it as a
+    // `intrinsic-resolver/dynamic-ref-lookups.ts` (`sendWithThrottleRetry`). Three FURTHER sites call it as a
     // bare classification -- `drift.ts:518`, `export.ts:1755`,
     // `dynamodb-index-busy-delete.ts:381` -- and they make the case stronger:
     // `drift.ts` would start reporting "cannot compare" for a resource whose

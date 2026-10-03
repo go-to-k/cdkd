@@ -25,9 +25,12 @@ import * as cfnFallbackMixin from './intrinsic-resolver/cfn-fallback.js';
 import * as stackOutputMixin from './intrinsic-resolver/stack-output.js';
 import * as stackStateMixin from './intrinsic-resolver/stack-state.js';
 import * as dynamicRefsMixin from './intrinsic-resolver/dynamic-refs.js';
+import * as dynamicRefLookupsMixin from './intrinsic-resolver/dynamic-ref-lookups.js';
 import * as stringFnMixin from './intrinsic-resolver/string-functions.js';
+import * as subMixin from './intrinsic-resolver/sub.js';
 import * as fnMixin from './intrinsic-resolver/functions.js';
 import * as maskingMixin from './intrinsic-resolver/masking.js';
+import * as maskingDisplayMixin from './intrinsic-resolver/masking-display.js';
 import * as paramsConditionsMixin from './intrinsic-resolver/params-conditions.js';
 import * as parameterSecretsMixin from './intrinsic-resolver/parameter-secrets.js';
 import * as refsMixin from './intrinsic-resolver/refs.js';
@@ -783,13 +786,14 @@ IntrinsicFunctionResolver.prototype.logTwinOfProduct = maskingMixin.logTwinOfPro
 IntrinsicFunctionResolver.prototype.recordLeafResolution = maskingMixin.recordLeafResolution;
 IntrinsicFunctionResolver.prototype.nestedPartResolution = maskingMixin.nestedPartResolution;
 IntrinsicFunctionResolver.prototype.rememberLogTwin = maskingMixin.rememberLogTwin;
-IntrinsicFunctionResolver.prototype.maskValueLeaves = maskingMixin.maskValueLeaves;
-IntrinsicFunctionResolver.prototype.maskThenStripThenMask = maskingMixin.maskThenStripThenMask;
-IntrinsicFunctionResolver.prototype.displayMasked = maskingMixin.displayMasked;
-IntrinsicFunctionResolver.prototype.logRender = maskingMixin.logRender;
-IntrinsicFunctionResolver.prototype.splitDelimiterRender = maskingMixin.splitDelimiterRender;
-IntrinsicFunctionResolver.prototype.displayMaskedIdent = maskingMixin.displayMaskedIdent;
-IntrinsicFunctionResolver.prototype.displayLeaf = maskingMixin.displayLeaf;
+IntrinsicFunctionResolver.prototype.maskValueLeaves = maskingDisplayMixin.maskValueLeaves;
+IntrinsicFunctionResolver.prototype.maskThenStripThenMask =
+  maskingDisplayMixin.maskThenStripThenMask;
+IntrinsicFunctionResolver.prototype.displayMasked = maskingDisplayMixin.displayMasked;
+IntrinsicFunctionResolver.prototype.logRender = maskingDisplayMixin.logRender;
+IntrinsicFunctionResolver.prototype.splitDelimiterRender = maskingDisplayMixin.splitDelimiterRender;
+IntrinsicFunctionResolver.prototype.displayMaskedIdent = maskingDisplayMixin.displayMaskedIdent;
+IntrinsicFunctionResolver.prototype.displayLeaf = maskingDisplayMixin.displayLeaf;
 
 IntrinsicFunctionResolver.prototype.resolveIf = fnMixin.resolveIf;
 IntrinsicFunctionResolver.prototype.resolveEquals = fnMixin.resolveEquals;
@@ -807,13 +811,13 @@ IntrinsicFunctionResolver.prototype.ipv6ToBigInt = fnMixin.ipv6ToBigInt;
 IntrinsicFunctionResolver.prototype.bigIntToIPv6 = fnMixin.bigIntToIPv6;
 
 IntrinsicFunctionResolver.prototype.resolveJoin = stringFnMixin.resolveJoin;
-IntrinsicFunctionResolver.prototype.subPlaceholderWarning = stringFnMixin.subPlaceholderWarning;
+IntrinsicFunctionResolver.prototype.subPlaceholderWarning = subMixin.subPlaceholderWarning;
 IntrinsicFunctionResolver.prototype.subPlaceholderNamesADeclaredTemplateEntity =
-  stringFnMixin.subPlaceholderNamesADeclaredTemplateEntity;
+  subMixin.subPlaceholderNamesADeclaredTemplateEntity;
 IntrinsicFunctionResolver.prototype.rethrowStructuralSubFailure =
-  stringFnMixin.rethrowStructuralSubFailure;
-IntrinsicFunctionResolver.prototype.subListRefusal = stringFnMixin.subListRefusal;
-IntrinsicFunctionResolver.prototype.resolveSub = stringFnMixin.resolveSub;
+  subMixin.rethrowStructuralSubFailure;
+IntrinsicFunctionResolver.prototype.subListRefusal = subMixin.subListRefusal;
+IntrinsicFunctionResolver.prototype.resolveSub = subMixin.resolveSub;
 IntrinsicFunctionResolver.prototype.resolveSelect = stringFnMixin.resolveSelect;
 IntrinsicFunctionResolver.prototype.renderGetAttArg = stringFnMixin.renderGetAttArg;
 IntrinsicFunctionResolver.prototype.describeOperandShape = stringFnMixin.describeOperandShape;
@@ -828,9 +832,11 @@ IntrinsicFunctionResolver.prototype.resolveTemplateLeafReferences =
 IntrinsicFunctionResolver.prototype.resolveDynamicReferencesWithLogTwin =
   dynamicRefsMixin.resolveDynamicReferencesWithLogTwin;
 IntrinsicFunctionResolver.prototype.resolveSecretsManagerReference =
-  dynamicRefsMixin.resolveSecretsManagerReference;
-IntrinsicFunctionResolver.prototype.sendWithThrottleRetry = dynamicRefsMixin.sendWithThrottleRetry;
-IntrinsicFunctionResolver.prototype.resolveSSMReference = dynamicRefsMixin.resolveSSMReference;
+  dynamicRefLookupsMixin.resolveSecretsManagerReference;
+IntrinsicFunctionResolver.prototype.sendWithThrottleRetry =
+  dynamicRefLookupsMixin.sendWithThrottleRetry;
+IntrinsicFunctionResolver.prototype.resolveSSMReference =
+  dynamicRefLookupsMixin.resolveSSMReference;
 
 IntrinsicFunctionResolver.prototype.reresolveCrossStackValue =
   crossStackMixin.reresolveCrossStackValue;
