@@ -485,7 +485,7 @@ refused fails the deploy after the new one exists. Empty a non-empty S3 bucket
 that lacks `autoDeleteObjects` first; otherwise the automatic rollback deletes
 the new bucket again (`--no-rollback` leaves both). Deletion protection needs
 its own deploy BEFORE the rename, setting the property to false: a deploy
-never lifts protection (only `cdkd destroy --remove-protection` does), and the
+never lifts protection (only a destroy with `--remove-protection` does), and the
 renamed resource is created from the same properties, so it is born protected
 and the rollback cannot delete it either, leaving both live. A resource with a fixed
 physical name needs a new name, or its removal deployed first and its re-add
