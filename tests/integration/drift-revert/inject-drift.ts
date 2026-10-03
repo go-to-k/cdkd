@@ -79,6 +79,9 @@ const INJECTED_INLINE_POLICY_BODY = JSON.stringify({
   ],
 });
 const DRIFTED_GLUE_DESCRIPTION = 'integ-DRIFTED';
+// Issue #2102: what AWS holds at the stack's look-alike token's span after
+// this injection. verify.sh step 5b asserts it on the same string.
+const DRIFTED_GLUE_CONN = 'jdbc:mysql://db.internal:3306/app?password=live-value-2102';
 const DRIFTED_API_DESCRIPTION = 'integ-Api-DRIFTED';
 const DRIFTED_STAGE_DESCRIPTION = 'integ-Stage-DRIFTED';
 
@@ -324,11 +327,14 @@ async function injectGlueDrift(glueDatabaseName: string): Promise<void> {
       DatabaseInput: {
         Name: glueDatabaseName,
         Description: DRIFTED_GLUE_DESCRIPTION,
+        // UpdateDatabase REPLACES DatabaseInput, so the parameter is set here
+        // or erased: an erased one would leave the revert nothing to keep.
+        Parameters: { conn: DRIFTED_GLUE_CONN },
       },
     })
   );
   console.log(
-    `[inject] glue: set Description=${DRIFTED_GLUE_DESCRIPTION} on database ${glueDatabaseName}`
+    `[inject] glue: set Description=${DRIFTED_GLUE_DESCRIPTION} and Parameters.conn on database ${glueDatabaseName}`
   );
 }
 
