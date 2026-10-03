@@ -790,7 +790,7 @@ export function unwrittenCreateOnlyRefusal(input: {
     `resource was not changed. To replace it and apply ${list}, re-run with ${replaceFlags}; a ` +
     `stateful resource also needs --force-stateful-recreation.` +
     (protectionEvidence !== undefined
-      ? ` ${recordedProtectionNote(protectionEvidence, nested ? '--replace' : '--recreate-via-cc-api or --replace')}`
+      ? ` ${recordedProtectionNote(protectionEvidence, nested ? '--replace' : `--recreate-via-cc-api ${logicalId} or --replace`)}`
       : '') +
     ` To keep dropping ${one ? 'it' : 'them'}, re-run with --prefer-sdk-route ${keep}.`
   );

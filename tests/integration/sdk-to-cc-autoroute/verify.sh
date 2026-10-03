@@ -665,8 +665,10 @@ if REFUSE_OUT=$(env CDKD_TEST_PHASE=subnettag CDKD_TEST_AZ_ID="${AZ_ID}" \
 fi
 printf '%s\n' "${REFUSE_OUT}" >&2
 REFUSE_PLAIN=$(printf '%s' "${REFUSE_OUT}" | sed $'s/\033\[[0-9;]*m//g')
-grep -qF "${SUBNET_LOGICAL_ID} (AWS::EC2::Subnet): AvailabilityZoneId is create-only and was never written to AWS" <<<"${REFUSE_PLAIN}" || {
+grep -qF "${SUBNET_LOGICAL_ID} (AWS::EC2::Subnet): AvailabilityZoneId is create-only, and the state record holds it" <<<"${REFUSE_PLAIN}" || {
   echo "FAIL: the deploy failed, but not with the #2790 refusal; read the output above" >&2; exit 1; }
+grep -qF -- "--prefer-sdk-route does not cover AvailabilityZoneId" <<<"${REFUSE_PLAIN}" || {
+  echo "FAIL: the refusal does not name AvailabilityZoneId as the key routing the subnet to Cloud Control" >&2; exit 1; }
 grep -qF -- "--recreate-via-cc-api ${SUBNET_LOGICAL_ID}" <<<"${REFUSE_PLAIN}" || {
   echo "FAIL: the refusal does not name --recreate-via-cc-api ${SUBNET_LOGICAL_ID}, the opt-in phase 10 takes" >&2; exit 1; }
 SUBNET_P2=$(record_of "${SUBNET_LOGICAL_ID}" '.physicalId')
