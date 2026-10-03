@@ -573,6 +573,42 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(info.some((m) => m.includes("pre-failure record was kept"))).toBe(false);
     });
 
+    it('control: a refused UPDATE is still journaled, even over a record with no physical id', async () => {
+      // Only a CREATE has nothing of this stack's behind it. An UPDATE's
+      // previous record is this stack's, whatever its id says.
+      const change = {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        desiredProperties: { p: 'new' },
+        currentProperties: { p: 'old' },
+        propertyChanges: [{ path: 'p', requiresReplacement: false }],
+      } as unknown as ResourceChange;
+      const prevB = {
+        resourceType: 'AWS::S3::Bucket',
+        properties: { p: 'old' },
+        attributes: {},
+        dependencies: [],
+      } as unknown as ResourceState;
+      const engine = buildEngine({
+        changes: new Map([['B', change]]),
+        deps: { B: [] },
+        noRollback: true,
+        currentEtag: 'e0',
+        currentResources: { B: prevB },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { update: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.update.mockRejectedValue(markRefusedBeforeApplying(new Error('B is not ours')));
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      expect(seg.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
+      expect(seg.failedOperations[0].physicalId).toBeUndefined();
+    });
+
     it('control: an UNMARKED failed CREATE is still journaled', async () => {
       const engine = refusedCreateEngine(true, new Error('B failed mid-create'));
       await expect(engine.deploy(stackName, template)).rejects.toThrow();
