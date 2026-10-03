@@ -1391,9 +1391,22 @@ operation until the flag is turned off, and a replacement is a delete plus a
 create.
 
 `cdkd destroy --remove-protection` exists for that on the destroy side.
-**`cdkd deploy` has no `--remove-protection`**, so a deploy-side replacement of a protected
-resource fails at the delete, whatever combination of replace flags was passed.
-Turn protection off first, then re-run the deploy:
+**`cdkd deploy` has no `--remove-protection`**, so no combination of replace
+flags gets a deploy to delete a protected resource. What happens instead depends
+on the order the replacement runs in:
+
+| Order | When a deploy uses it | Outcome while protection is on |
+| --- | --- | --- |
+| Delete first | `--recreate-via-*`, the update-failure fallback (`--replace` or the Cloud Control auto-fallback), and `--replace`'s retry after a name collision or a name-idempotent create | The deploy fails at the delete |
+| Create first | A property-driven replacement, and `--recreate-via-*` or the update-failure fallback when the template also renames the resource | The deploy completes, warning that the old resource could not be deleted |
+
+A create-first replacement does not stop: the old resource, and its data, stay
+in AWS, no longer tracked by cdkd, and you delete it yourself once protection is
+off. Under `UpdateReplacePolicy: Retain` neither row applies, because the old
+resource is never deleted — see the `Retain` case below.
+
+So turn protection off before the deploy that replaces the resource — or, after
+a delete-first failure, turn it off and re-run:
 
 ```bash
 # CloudWatch Logs — the log group whose LogGroupClass you are changing
@@ -1409,20 +1422,35 @@ refuses the change before it applies any property — the `AWS::Logs::LogGroup`
 that turns protection off with the immutable-property change reverted, then one
 that re-applies it with the replace flags.
 
-Six types name this dead end explicitly in their own refusals, each reading its
-own protection property and naming the command that turns it off, or pointing
-at the console when the resource's id cannot be printed safely on a command
-line (it would be changed by sanitizing, it holds whitespace or a character a
-shell acts on, such as a quote or a backtick, or it holds something the AWS CLI
-itself acts on, such as a leading `file://` or `-`):
-`AWS::Logs::LogGroup`, `AWS::ElasticLoadBalancingV2::LoadBalancer`,
-`AWS::EMR::Cluster`, `AWS::Cognito::UserPool`, `AWS::DynamoDB::GlobalTable` and
-`AWS::AutoScaling::AutoScalingGroup`. Every one of them knows only what cdkd
-RECORDED: protection you enabled out of band is in no state record, so such a
-resource gets the shorter message and still fails at the delete. The same wall
-stands in front of every type in
-[`--remove-protection`'s table](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy)
-whenever a deploy has to replace one, whether or not its refusal says so.
+Two kinds of refusal name this dead end explicitly:
+
+- **The stateful-resource guard's refusals** on `--recreate-via-*`, `--replace`,
+  the Cloud Control auto-fallback and a property-driven replacement add a note
+  for any stateful type in
+  [`--remove-protection`'s table](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy)
+  whose protection flag is on. The note names the flag, both outcomes above,
+  and this section, and leaves turning the flag off to the console or the
+  service's own API. A target under `UpdateReplacePolicy: Retain` gets no note.
+- **Some types' own refusals** read their own protection property and name the
+  command that turns it off: `AWS::Logs::LogGroup`,
+  `AWS::ElasticLoadBalancingV2::LoadBalancer`, `AWS::EMR::Cluster`,
+  `AWS::Cognito::UserPool`, `AWS::DynamoDB::GlobalTable` and
+  `AWS::AutoScaling::AutoScalingGroup`. They point at the console instead when
+  the resource's id cannot be printed safely on a command line: it would be
+  changed by sanitizing, it holds whitespace or a character a shell acts on
+  (a quote, a backtick), or something the AWS CLI itself acts on (a leading
+  `file://` or `-`).
+
+The guard's note does not ask AWS: it reads the properties cdkd recorded and
+the AWS read-back it stored after its last write. Protection you enabled out of
+band after that read is in neither, so such a resource gets the guard's shorter
+message. The six types' own refusals do not read the stored read-back at all:
+they read the properties cdkd recorded (`AWS::Cognito::UserPool` reads the
+template's value first), so protection that only the read-back shows gets their
+shorter message. AWS refuses the delete either way, for every type in
+`--remove-protection`'s table whenever a deploy has to replace one, whether or
+not its refusal says so — a failed deploy or an untracked old resource, per the
+table above.
 
 `AWS::AutoScaling::AutoScalingGroup` is the one whose refusal is narrower than
 the type's protection setting, and deliberately: the group's three levels are
@@ -1430,7 +1458,7 @@ the type's protection setting, and deliberately: the group's three levels are
 blocks a replacement, because the deploy path's delete does not pass
 `ForceDelete`. At `prevent-force-deletion` there is nothing to disable.
 
-`AWS::Cognito::UserPool` is the one exception to the two-deploys rule below.
+`AWS::Cognito::UserPool` is the one exception to the two-deploys rule above.
 Its refusal fires AFTER `UpdateUserPool` has already applied the template's
 `DeletionProtection`, so clearing it in the template DOES take effect in that
 same (failed) deploy — the next run with the replace flags then succeeds. Its
