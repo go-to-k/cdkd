@@ -469,7 +469,9 @@ cdkd's SDK provider stores differ for many types (an ARN versus a name, or a
 composite id), so relabelling the record alone would hand the SDK provider an
 id it may not address. First check whether the type already returns on its
 own (see
-[Going back to the SDK provider](cli-deploy-safety.md#going-back-to-the-sdk-provider)).
+[Going back to the SDK provider](cli-deploy-safety.md#going-back-to-the-sdk-provider)
+and the exemption table under
+[`version: 7` adds `provisionedBy`](state-management.md#version-7-adds-provisionedby-v7-writers)).
 Otherwise, to move such a resource back, change its construct id
 (and so its logical id) in the child. The next deploy then creates the new
 logical id through the default routing, which ignores the old stamp, and
