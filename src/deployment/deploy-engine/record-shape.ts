@@ -134,11 +134,14 @@ export function propertiesToRecord(
   // will hold is marked same-generation — the one fact the persist choke
   // point needs to write an embedded 1-3 character secret as its token
   // rather than leaving it in plaintext below the value scan's needle
-  // floor. An `effectiveProperties` replacement is NOT marked: a provider
-  // may carry previous-state values into it (the DynamoDB global-table
-  // provider restores the previous GSIs and billing mode), so an
+  // floor. An `effectiveProperties` replacement is NOT marked HERE: a
+  // provider may carry previous-state values into it (the DynamoDB
+  // global-table provider restores the previous GSIs and billing mode), so an
   // object-level mark on it would vouch for leaves this pass never
-  // resolved. Such a bag keeps the residual, stated on
+  // resolved. A provider that built its bag from this pass's resolution alone
+  // may mark it itself (`NestedStackProvider`, issue #4453); the narrowing
+  // below keeps that mark only when it removes nothing, so such a provider
+  // narrows first. Such a bag keeps the residual, stated on
   // `positionByEmbeddedSpan`.
   //
   // The mark goes on AFTER the route's silent-drop narrowing (issue #2750),

@@ -18,7 +18,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 - Declared properties: **1143** (**1141** with read evidence)
 - Fully wired classes: **83**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **36**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **37**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -69,6 +69,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `LambdaMicrovmImageProvider` (lambda-microvm-image-provider.ts) | `computed key in update()` |
 | `LambdaUrlProvider` (lambda-url-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `NeptuneProvider` (neptune-provider.ts) | `withRemovalDefaults(...) in update()` |
+| `NestedStackProvider` (nested-stack-provider.ts) | `withoutSilentDropProperties(...) in recordWithPendingChildDeletes()` |
 | `RDSDBProxyTargetGroupProvider` (rds-dbproxy-targetgroup-provider.ts) | `rest-destructure in withoutKey()` |
 | `RDSProvider` (rds-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `S3BucketProvider` (s3-bucket-provider.ts) | `computed key in applyAllSubConfigsForCreate()`, `computed key in applySubConfigDiffs()`, `computed key in canonicalizeItemList()`, `computed key in versioningOrLoggingRefusal()`, `hasCdkAutoDeleteTag(...) in delete()`, `hasObjectLock(...) in applySubConfigDiffs()`, `object spread in applyEffectiveOverrides()`, `object spread in canonicalizeItemList()`, `S3BucketProvider.applyEffectiveOverrides(...) in create()`, `S3BucketProvider.applyEffectiveOverrides(...) in update()`, `S3BucketProvider.versioningOrLoggingRefusal(...) in update()`, `this.maskedView(createMaskedLogSinks(this.logger, context?.maskSecrets)).create(...) in create()`, `this.maskedView(sinks).update(...) in update()`, `this.noWriteProbe().applySubConfigDiffs(...) in update()` |

@@ -938,26 +938,17 @@ export async function updateInPlace(
         // is the one datum a cleanup pass needs.
         //
         // TWO consequences, stated because neither is cosmetic:
-        //   - a TOP-LEVEL stack's deploy EXITS 2
-        //     (`--allow-unaddressed` opts out), the same code
-        //     `cdkd destroy` returns for a skipped delete. Correct
-        //     here and arguably more so: a skipped delete self-heals
-        //     on the next run, while this survivor is untracked, so
-        //     nothing will ever retry it.
-        //     SCOPED to top-level deliberately — inside a NESTED
-        //     stack it is false today, and this arm is what turns
-        //     that from an internal detail into a stated contract.
-        //     `NestedStackProvider.runChildDeploy` is `Promise<void>`
-        //     and DISCARDS the child engine's `DeployResult`, and its
-        //     `update()` returns no `outcome`, so a child's
-        //     `updatePartial` never reaches the parent's counter:
-        //     the child logs the warn and the `partial (...)` row from
-        //     its own logger while the run still exits 0 over a live
-        //     untracked resource. Pre-existing and filed as issue
-        //     [#1989](https://github.com/go-to-k/cdkd/issues/1989),
-        //     which this arm is folded into as a row; rolling the
-        //     child counts up is a behaviour change to a path this
-        //     change does not touch.
+        //   - the deploy EXITS 2 (`--allow-unaddressed` opts out), the
+        //     same code `cdkd destroy` returns for a skipped delete --
+        //     inside a NESTED stack too: the child's `updatePartial`
+        //     reaches every ancestor's counter through the nested-stack
+        //     context (issue
+        //     [#1989](https://github.com/go-to-k/cdkd/issues/1989)).
+        //     Correct here and arguably more so: a skipped delete
+        //     self-heals on the next run (a nested child's too, issue
+        //     [#4453](https://github.com/go-to-k/cdkd/issues/4453)),
+        //     while this survivor is untracked, so nothing will ever
+        //     retry it.
         //   - it makes this arm LOUDER than the property-driven twin,
         //     which retains with only an info line. Deliberate, on the
         //     trigger asymmetry above, and recorded rather than

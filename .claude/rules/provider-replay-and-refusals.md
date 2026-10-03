@@ -10,7 +10,7 @@ Also: [provider-property-fidelity.md](provider-property-fidelity.md).
 
 ## `replayingState`
 
-`CreateContext.replayingState` = the properties came from a cdkd STATE record, not the template; set ONLY by the replay's reverse-replacement arm (`deployment/rollback-executor/replay-reverse-replacement.ts`), and `UpdateContext.replayingState` by its two revert arms. `drift --revert` sets `desiredFromAwsReadback` instead. Absent / `false` = a template-path create.
+`CreateContext.replayingState` = the properties came from a cdkd STATE record, not the template; set ONLY by the replay's reverse-replacement arm, and `UpdateContext.replayingState` by its two revert arms. `drift --revert` sets `desiredFromAwsReadback` instead. Absent / `false` = a template-path create.
 
 A pre-flight refusal ([docs/provider-rules.md](../../docs/provider-rules.md)) MUST downgrade to a warning when it is set: the user cannot edit a state record via the template. It licenses nothing else — not a dry-run signal, and no relaxing of data-safety guards or input validation. Two exceptions, stated AT the refusal: AWS rejects the combination 100% of the time (issue #1975), so the replay could not have succeeded; or every downgrade would report SUCCESS over an unreadable resource.
 
@@ -34,11 +34,11 @@ Fail OPEN on any unresolvable shape. The absent-field RESET derives from the PRE
 
 ## `attributes` and `effectiveProperties`
 
-`attributes` REPLACES the record (`result.attributes ?? (wasReplaced ? undefined : current)`), so a partial map ERASES every key it omits: gate a HEAL of a cdkd-COMPUTED value on EVERY member being in hand. A member a live read-back reports UNASSIGNED is replaced on purpose.
+`attributes` REPLACES the record, so a partial map ERASES every key it omits: gate a HEAL of a cdkd-COMPUTED value on EVERY member being in hand. A member a live read-back reports UNASSIGNED is replaced on purpose.
 
-`effectiveProperties` (`ResourceCreateResult` / `ResourceUpdateResult`) records what the provider actually SENT, and only where the narrowing is DELIBERATE and already announced by a warn arm. AWS defaults and computed values belong in `observedProperties`; in `properties` they drift the DESIRED baseline and disable absent-field removal. It REPLACES the desired bag wholesale, so it must be COMPLETE — absent means "record the desired properties", `{}` is legitimate.
+`effectiveProperties` (`ResourceCreateResult` / `ResourceUpdateResult`) records what the provider actually SENT, and only where the narrowing is DELIBERATE and already announced by a warn arm. AWS defaults and computed values belong in `observedProperties`; in `properties` they drift the DESIRED baseline and disable absent-field removal. It REPLACES the desired bag wholesale, so it must be COMPLETE — absent means "record the desired properties", `{}` is legitimate. Exception: `NestedStackProvider` adds the record-only `cdkd:PendingChildDeletes` while a child DELETE is skipped, so the next diff re-runs the child (#4453).
 
-Every `update()` caller honours it (deploy, `drift --revert`, both rollback revert arms), as does the reverse-replacement `create()`, where returning none keeps `previousState.properties`.
+Every `update()` caller honours it, as does the reverse-replacement `create()` (none returned keeps `previousState.properties`).
 
 ## `canonicalizeDesiredProperties`
 

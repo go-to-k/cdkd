@@ -7,7 +7,7 @@
     "wired": 83,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 36
+    "classesWithBlindSpots": 37
   },
   "classes": [
     {
@@ -15479,7 +15479,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "withoutSilentDropProperties(...) in recordWithPendingChildDeletes()"
+      ]
     },
     {
       "file": "rds-dbproxy-endpoint-provider.ts",

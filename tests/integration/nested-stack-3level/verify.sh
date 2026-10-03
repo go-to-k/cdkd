@@ -69,6 +69,8 @@
 #   #1989 - a DELETE the great-grandchild skips (an injected state record)
 #           reaches the ROOT's `Skipped (not deleted)` row, verdict line and
 #           exit 2 through three nested-stack hops (Step 4c).
+#   #4453 - an UNCHANGED redeploy re-attempts that kept DELETE and exits 2
+#           again; once it is gone the markers clear and a redeploy is quiet.
 #
 # Run via: /run-integ nested-stack-3level
 #         or: bash tests/integration/nested-stack-3level/verify.sh
@@ -751,6 +753,72 @@ assert_eq "the skipped DELETE kept its record in the great-grandchild's state" \
   "$(jq_of "$(fetch_state "${GREATGRANDCHILD}")" ".resources | has(\"${INJECTED_1989}\")")" 'true'
 echo "  OK: the depth-3 skip reached the root's summary row, verdict line and exit 2"
 
+# #4453: the SAME tree redeployed, nothing changed in any template. Each
+# level's nested-stack row records `cdkd:PendingChildDeletes` while a
+# descendant holds a skipped DELETE, so the next diff re-runs the chain down to
+# the great-grandchild, which re-attempts its kept DELETE and skips again. Before
+# #4453 every row diffed NO_CHANGE, no child ran, and this deploy exited 0 over
+# the record it still holds.
+pending_marker_of() { # pending_marker_of <stack> <nested row id> -> the recorded count, or null
+  local json
+  json=$(fetch_state "$1") || return 1
+  [[ -n "${json}" ]] || return 1
+  jq -r --arg id "$2" '.resources[$id].properties["cdkd:PendingChildDeletes"]' <<<"${json}"
+}
+assert_eq "#4453: the root's Child row records one pending child DELETE" \
+  "$(pending_marker_of "${STACK}" Child)" '1'
+assert_eq "#4453: the child's Grandchild row records one pending child DELETE" \
+  "$(pending_marker_of "${CHILD}" Grandchild)" '1'
+assert_eq "#4453: the grandchild's GreatGrandchild row records one pending child DELETE" \
+  "$(pending_marker_of "${GRANDCHILD}" GreatGrandchild)" '1'
+# The rows carrying the marker were written through the provider's own
+# record bag rather than the engine's; the #3094 secret those same rows hand
+# down must still be recorded as its expression, and no level may hold any
+# plaintext (Step 3b's scan, re-run on the state this deploy wrote).
+MARKED_ROOT_JSON=$(fetch_state "${STACK}") || { echo "FAIL: could not fetch ${STACK} state for the #4453 secret check" >&2; exit 1; }
+MARKED_CHILD_JSON=$(fetch_state "${CHILD}") || { echo "FAIL: could not fetch ${CHILD} state for the #4453 secret check" >&2; exit 1; }
+assert_eq "#4453: the marked root row keeps HandoffSecretA as its expression" \
+  "$(jq_of "${MARKED_ROOT_JSON}" '.resources.Child.properties.Parameters.HandoffSecretA')" "${HANDOFF_EXPR_A}"
+assert_eq "#4453: the marked root row keeps HandoffSecretB as its expression" \
+  "$(jq_of "${MARKED_ROOT_JSON}" '.resources.Child.properties.Parameters.HandoffSecretB')" "${HANDOFF_EXPR_B}"
+assert_eq "#4453: the marked child row keeps HandoffSecretA as its expression" \
+  "$(jq_of "${MARKED_CHILD_JSON}" '.resources.Grandchild.properties.Parameters.HandoffSecretA')" "${HANDOFF_EXPR_A}"
+assert_eq "#4453: the marked child row keeps HandoffSecretB as its expression" \
+  "$(jq_of "${MARKED_CHILD_JSON}" '.resources.Grandchild.properties.Parameters.HandoffSecretB')" "${HANDOFF_EXPR_B}"
+for lvl in "${LEVELS[@]}"; do
+  lvl_json=$(fetch_state "${lvl}") || { echo "FAIL: could not fetch the state file of '${lvl}' for the #4453 plaintext scan" >&2; exit 1; }
+  for plaintext in "${HANDOFF_PW_VALUE}" "${FRAMED_PLAINTEXTS[@]}"; do
+    if grep -qF "${plaintext}" <<<"${lvl_json}"; then
+      echo "FAIL: #4453: state.json of '${lvl}' carries a secret plaintext while a pending marker is recorded" >&2
+      exit 1
+    fi
+  done
+done
+echo "  OK: #4453: the marked rows keep their secret expressions and no level holds plaintext"
+set +e
+RETRY_OUT=$(CDKD_INTEG_GGC_VALUE="${CHANGED_VALUE}" ${CDKD} deploy ${STACK} \
+  --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes 2>&1)
+RETRY_RC=$?
+set -e
+scan_output "cdkd deploy (#4453 re-attempt)" "${RETRY_OUT}"
+echo "${RETRY_OUT}"
+RETRY_TXT=$(printf '%s\n' "${RETRY_OUT}" | sed $'s/\033\[[0-9;]*m//g')
+# Premise sentinel, independent of the exit code under test: the
+# great-grandchild's skip warning is printed only when its DELETE ran again.
+if ! grep -F "${INJECTED_1989}" <<<"${RETRY_TXT}" | grep -qF "Skipping the delete"; then
+  echo "FAIL: #4453: the unchanged redeploy never re-attempted the great-grandchild's kept DELETE (exit ${RETRY_RC})" >&2
+  exit 1
+fi
+if [[ ${RETRY_RC} -ne 2 ]]; then
+  echo "FAIL: #4453: the unchanged redeploy exited ${RETRY_RC}; the still-skipped DELETE must exit 2 again" >&2
+  exit 1
+fi
+if ! grep -qE 'Skipped \(not deleted\): 1$' <<<"${RETRY_TXT}"; then
+  echo "FAIL: #4453: the unchanged redeploy's summary has no 'Skipped (not deleted): 1' row" >&2
+  exit 1
+fi
+echo "  OK: #4453: an unchanged redeploy re-attempted the depth-3 DELETE and exited 2 again"
+
 # Negative control: the record removed, the same tree redeployed (the value
 # changed back, so every level runs again) exits 0 with a clean summary -- the
 # exit 2 above came from the injected skip, not from the changed value.
@@ -776,6 +844,33 @@ if grep -qF "Skipped (not deleted)" <<<"${CLEAN_DEPLOY_TXT}"; then
   exit 1
 fi
 echo "  OK: #1989 control: the same tree without the skip exits 0"
+for row in "${STACK}:Child" "${CHILD}:Grandchild" "${GRANDCHILD}:GreatGrandchild"; do
+  assert_eq "#4453 control: ${row#*:} no longer records a pending child DELETE" \
+    "$(pending_marker_of "${row%%:*}" "${row#*:}")" 'null'
+done
+# And with nothing pending, an unchanged redeploy is quiet again: the marker is
+# cleared, not left to re-run the chain on every deploy. The needle below is
+# live: the control deploy above re-ran every level and printed it.
+if ! grep -qF "Updating nested stack" <<<"${CLEAN_DEPLOY_OUT}"; then
+  echo "FAIL: premise: the control deploy printed no 'Updating nested stack' line, so its absence below would prove nothing" >&2
+  exit 1
+fi
+set +e
+QUIET_OUT=$(${CDKD} deploy ${STACK} \
+  --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes 2>&1)
+QUIET_RC=$?
+set -e
+scan_output "cdkd deploy (#4453 quiet)" "${QUIET_OUT}"
+echo "${QUIET_OUT}"
+if [[ ${QUIET_RC} -ne 0 ]]; then
+  echo "FAIL: #4453 control: an unchanged redeploy with nothing pending exited ${QUIET_RC}" >&2
+  exit 1
+fi
+if grep -qF "Updating nested stack" <<<"${QUIET_OUT}"; then
+  echo "FAIL: #4453 control: an unchanged redeploy with nothing pending still re-ran a nested stack" >&2
+  exit 1
+fi
+echo "  OK: #4453 control: the markers cleared and an unchanged redeploy re-runs nothing"
 
 # --------------------------------------------------------------------
 # Step 5: 'cdkd state list --tree' renders the 4-level hierarchy.

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import {
   NestedStackProvider,
+  PENDING_CHILD_DELETES_KEY,
   isAbsoluteCrossPlatform,
 } from '../../../src/provisioning/providers/nested-stack-provider.js';
 import {
@@ -13,6 +14,7 @@ import {
   type NestedStackProviderContext,
 } from '../../../src/provisioning/nested-stack-context.js';
 import type { StackState } from '../../../src/types/state.js';
+import { withoutSilentDropProperties } from '../../../src/provisioning/property-coverage.js';
 import {
   isMarkedNonRetryable,
   isRetryableTransientError,
@@ -21,6 +23,7 @@ import {
 import {
   SECRET_MASK,
   clearRecoverableMaskedOutputs,
+  isSameGenerationBag,
   recordRecoverableMaskedOutput,
 } from '../../../src/deployment/secret-redaction.js';
 import {
@@ -1689,6 +1692,101 @@ describe('NestedStackProvider', () => {
       await expect(
         withNestedStackContext(ctx, () => provider.create('Child', 'AWS::CloudFormation::Stack', {}))
       ).resolves.toBeDefined();
+    });
+  });
+
+  describe('a child that still holds a skipped DELETE marks its row for a re-run (issue #4453)', () => {
+    function childTemplate(): string {
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-pending-'));
+      const childTemplatePath = join(dir, 'child.nested.template.json');
+      writeFileSync(
+        childTemplatePath,
+        JSON.stringify({
+          AWSTemplateFormatVersion: '2010-09-09',
+          Resources: { Foo: { Type: 'AWS::S3::Bucket' } },
+        })
+      );
+      return childTemplatePath;
+    }
+    const ARN = 'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child';
+    const PROPS = { TemplateURL: 'https://example.com/child.json', Parameters: { Env: 'prod' } };
+
+    it('create() and update() record the desired bag plus the pending count, marked same-generation', async () => {
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ nestedTemplates: { Child: childTemplate() } });
+
+      childDeployCounts.queue = [{ deleteSkipped: 2 }];
+      const created = await withNestedStackContext(ctx, () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', { ...PROPS })
+      );
+      expect(created.effectiveProperties).toEqual({ ...PROPS, [PENDING_CHILD_DELETES_KEY]: 2 });
+      expect(isSameGenerationBag(created.effectiveProperties)).toBe(true);
+
+      childDeployCounts.queue = [{ deleteSkipped: 1, updatePartial: 3 }];
+      const updated = await withNestedStackContext(ctx, () =>
+        provider.update('Child', ARN, 'AWS::CloudFormation::Stack', { ...PROPS }, {})
+      );
+      // Only skipped DELETEs: an orphaned predecessor is untracked, and no
+      // re-run can retire it.
+      expect(updated.effectiveProperties).toEqual({ ...PROPS, [PENDING_CHILD_DELETES_KEY]: 1 });
+    });
+
+    it("drops the SDK route's silent drops BEFORE marking, so the engine's own narrowing keeps the mark", async () => {
+      // `Tags` is a silent drop on this type. The engine narrows every
+      // `effectiveProperties` bag again; a narrowing that drops a key returns
+      // a NEW, unmarked object, which would persist a short secret in the
+      // row's `Parameters` as plaintext.
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ nestedTemplates: { Child: childTemplate() } });
+      childDeployCounts.queue = [{ deleteSkipped: 1 }];
+
+      const created = await withNestedStackContext(ctx, () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', {
+          ...PROPS,
+          Tags: [{ Key: 'team', Value: 'a' }],
+        })
+      );
+
+      const recorded = created.effectiveProperties!;
+      expect(recorded).toEqual({ ...PROPS, [PENDING_CHILD_DELETES_KEY]: 1 });
+      expect(withoutSilentDropProperties('AWS::CloudFormation::Stack', recorded)).toBe(recorded);
+      expect(isSameGenerationBag(recorded)).toBe(true);
+    });
+
+    it('records nothing extra when the child left no skipped DELETE (partials alone included)', async () => {
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ nestedTemplates: { Child: childTemplate() } });
+
+      childDeployCounts.queue = [{ deleteSkipped: 0, updatePartial: 2 }];
+      const created = await withNestedStackContext(ctx, () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', { ...PROPS })
+      );
+      expect(created.effectiveProperties).toBeUndefined();
+
+      // A row recorded WITH the marker updates back to the plain desired bag.
+      const updated = await withNestedStackContext(ctx, () =>
+        provider.update('Child', ARN, 'AWS::CloudFormation::Stack', { ...PROPS }, {
+          ...PROPS,
+          [PENDING_CHILD_DELETES_KEY]: 1,
+        })
+      );
+      expect(updated.effectiveProperties).toBeUndefined();
+    });
+
+    it('a rollback re-create (replayingState) never marks the replayed state record', async () => {
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ nestedTemplates: { Child: childTemplate() } });
+
+      childDeployCounts.queue = [{ deleteSkipped: 1 }];
+      const created = await withNestedStackContext(ctx, () =>
+        provider.create('Child', 'AWS::CloudFormation::Stack', { ...PROPS }, { replayingState: true })
+      );
+      expect(deployCalls).toHaveLength(1);
+      expect(created.effectiveProperties).toBeUndefined();
+    });
+
+    it('the key cannot be a CloudFormation property name', () => {
+      expect(PENDING_CHILD_DELETES_KEY).toContain(':');
     });
   });
 

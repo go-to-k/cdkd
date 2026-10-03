@@ -11,6 +11,7 @@ import type {
   ResourceCreateResult,
   ResourceDeleteResult,
   ResourceUpdateResult,
+  CreateContext,
   DeleteContext,
   UpdateContext,
 } from '../../types/resource.js';
@@ -36,6 +37,7 @@ import {
   type AssetRedirectMap,
 } from '../../assets/asset-redirect.js';
 import { getLogger } from '../../utils/logger.js';
+import { withoutSilentDropProperties } from '../property-coverage.js';
 // Leaf module by design — see the note in nested-stack-messages.ts: importing
 // this builder from anywhere on the provider/destroy-runner ring re-creates the
 // cycle it was extracted to break.
@@ -53,6 +55,7 @@ import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import {
   carriesSecretMask,
   hasMaskableValues,
+  markSameGenerationBag,
   recoverMaskedOutput,
 } from '../../deployment/secret-redaction.js';
 import {
@@ -86,6 +89,56 @@ export function isAbsoluteCrossPlatform(p: string): boolean {
   // One spelling, shared with the pre-deploy tree validation, so the per-level
   // backstop below and the up-front walk cannot disagree about "absolute".
   return isAbsoluteAssetPath(p);
+}
+
+/**
+ * The record-only key a nested row carries while its child still holds a
+ * skipped DELETE (issue [#4453](https://github.com/go-to-k/cdkd/issues/4453)).
+ *
+ * A skipped DELETE keeps its record so the next deploy re-attempts it, but
+ * inside a nested child that re-attempt needs the child deploy to RUN, and the
+ * parent's diff sees only this row's `TemplateURL` / `Parameters`: with an
+ * unchanged child template the row is `NO_CHANGE` and the child's pending
+ * DELETE is never retried, so the next deploy exits 0 over it. Recording this
+ * key (via `effectiveProperties`) makes the next diff see a REMOVAL on the row,
+ * so it updates, the child deploys and retries, and — counted again through
+ * the #1989 channel — the run exits 2 until the DELETE lands. It also makes
+ * `cdkd diff` preview that re-run. It holds the child's `deleteSkipped`, which
+ * includes every descendant's, so each level's row re-runs the level below;
+ * a clean re-run records the desired bag again and the key is gone.
+ *
+ * No CloudFormation property name contains `:`, so the key cannot shadow a
+ * real one, and no template can declare it.
+ */
+export const PENDING_CHILD_DELETES_KEY = 'cdkd:PendingChildDeletes';
+
+const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
+
+/**
+ * The bag to record for a nested row whose child left `pendingChildDeletes`
+ * skipped DELETEs, or `undefined` (record the desired bag) when there are none.
+ *
+ * Shaped exactly like the bag the engine records itself, plus the key: the
+ * SDK route's silent drops (`Tags`, `TimeoutInMinutes`, ...) are removed
+ * FIRST, and the result is then marked same-generation. `properties` is this
+ * pass's own resolution of the template, which is the one fact the persist
+ * choke point needs to tokenize a short secret in the row's `Parameters` (the
+ * engine marks the desired bag it records itself, but never an
+ * `effectiveProperties` replacement). The order matters: the engine narrows
+ * an `effectiveProperties` bag again, and a narrowing that drops a key returns
+ * a NEW, unmarked object; narrowed here, its pass removes nothing and keeps
+ * this object. Callers must not pass a STATE record here (a rollback replay):
+ * it would vouch for leaves this pass never resolved.
+ */
+function recordWithPendingChildDeletes(
+  properties: Record<string, unknown>,
+  pendingChildDeletes: number
+): Record<string, unknown> | undefined {
+  if (pendingChildDeletes <= 0) return undefined;
+  return markSameGenerationBag({
+    ...withoutSilentDropProperties(NESTED_STACK_TYPE, properties),
+    [PENDING_CHILD_DELETES_KEY]: pendingChildDeletes,
+  });
 }
 
 /**
@@ -219,7 +272,8 @@ export class NestedStackProvider implements ResourceProvider {
   async create(
     logicalId: string,
     _resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     const ctx = this.requireContext();
     this.requireDeployContext(ctx, 'create');
@@ -247,7 +301,7 @@ export class NestedStackProvider implements ResourceProvider {
       `Deploying nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}, ${resourceCount} resource(s))`
     );
 
-    await this.runChildDeploy(
+    const pendingChildDeletes = await this.runChildDeploy(
       ctx,
       logicalId,
       childStackName,
@@ -258,6 +312,10 @@ export class NestedStackProvider implements ResourceProvider {
     );
 
     const childOutputs = await this.readChildOutputsAsAttributes(ctx, childStackName, childRegion);
+    const pendingRecord =
+      context?.replayingState === true
+        ? undefined
+        : recordWithPendingChildDeletes(properties, pendingChildDeletes);
 
     return {
       physicalId: this.synthesizeArn(
@@ -277,6 +335,7 @@ export class NestedStackProvider implements ResourceProvider {
       ...(childOutputs.noEchoAttributeNames.length > 0 && {
         noEchoAttributeNames: childOutputs.noEchoAttributeNames,
       }),
+      ...(pendingRecord && { effectiveProperties: pendingRecord }),
     };
   }
 
@@ -331,7 +390,7 @@ export class NestedStackProvider implements ResourceProvider {
     // `deploy()` here naturally covers add / remove / mutate inside the
     // child. The parent's physicalId (synthesized ARN) is stable as long
     // as the parent stack name + nested logical id don't change.
-    await this.runChildDeploy(
+    const pendingChildDeletes = await this.runChildDeploy(
       ctx,
       logicalId,
       childStackName,
@@ -340,6 +399,7 @@ export class NestedStackProvider implements ResourceProvider {
       childParameters,
       grandchildTemplates
     );
+    const pendingRecord = recordWithPendingChildDeletes(properties, pendingChildDeletes);
 
     const updatedOutputs = await this.readChildOutputsAsAttributes(
       ctx,
@@ -355,6 +415,7 @@ export class NestedStackProvider implements ResourceProvider {
       ...(updatedOutputs.noEchoAttributeNames.length > 0 && {
         noEchoAttributeNames: updatedOutputs.noEchoAttributeNames,
       }),
+      ...(pendingRecord && { effectiveProperties: pendingRecord }),
     };
   }
 
@@ -692,7 +753,7 @@ export class NestedStackProvider implements ResourceProvider {
     childTemplate: CloudFormationTemplate,
     childParameters: Record<string, string>,
     grandchildTemplates: Record<string, string>
-  ): Promise<void> {
+  ): Promise<number> {
     // Issue #1903. The parent resolved this row's `Parameters` block before
     // calling us, so `childParameters` above holds PLAINTEXT for any parameter
     // fed by a `{{resolve:secretsmanager:...}}` / SecureString `{{resolve:ssm:...}}`
@@ -841,6 +902,9 @@ export class NestedStackProvider implements ResourceProvider {
         updatePartial: (slot.last?.updatePartial ?? 0) + childResult.updatePartial,
       };
     }
+    // Issue #4453: the skipped DELETEs (this child's and every descendant's)
+    // that the next deploy must re-attempt. See `PENDING_CHILD_DELETES_KEY`.
+    return childResult.deleteSkipped;
   }
 
   /**
