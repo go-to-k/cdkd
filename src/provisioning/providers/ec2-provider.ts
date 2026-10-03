@@ -4167,10 +4167,10 @@ export class EC2Provider implements ResourceProvider {
           : idLookedUp
             ? undefined
             : await this.lookupIngressRuleId(
-              logicalId,
-              properties['GroupId'] as string,
-              restored.effectiveProperties ?? properties
-            );
+                logicalId,
+                properties['GroupId'] as string,
+                restored.effectiveProperties ?? properties
+              );
       return {
         physicalId: restored.physicalId,
         wasReplaced: true,
