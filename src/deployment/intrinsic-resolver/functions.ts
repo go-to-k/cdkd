@@ -13,6 +13,7 @@ import {
   isClientSafeRegion,
   quotedRender,
 } from './support.js';
+import { keepsSecretReferenceToken } from './context.js';
 import {
   SECRET_MASK,
   embedsFreshNoEchoValue,
@@ -22,6 +23,7 @@ import {
   recordIntrinsicLeafResolutionAs,
   recordLogOnlyValue,
 } from '../secret-redaction.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 
 declare module '../intrinsic-function-resolver.js' {
@@ -435,6 +437,49 @@ export async function resolveBase64(
     // interpolate a value (`Fn::GetAtt`'s attribute-name refusal,
     // `Fn::Cidr`'s `ipBlock`) gained `maskValueLeaves`.
     throw new Error(`Fn::Base64: value must resolve to a string, got ${typeof resolvedValue}`);
+  }
+
+  // THE COMPARISON PATH ANSWERS WHAT THE DEPLOY PERSISTS (issue
+  // [#2909](https://github.com/go-to-k/cdkd/issues/2909)). Under
+  // `skipDynamicReferences` (the deploy's diff pass, `cdkd diff`) a SECRET
+  // reference is left as its `{{resolve:...}}` token, so encoding here
+  // yielded base64 of the TOKEN, while the deploy encodes the plaintext and
+  // persists `***` for it (the derived needle below). The two never agreed,
+  // so such a resource diffed UPDATE on every run and `cdkd diff --fail`
+  // was permanently red. Answering the mask compares like-for-like.
+  //
+  // The cost, accepted: `***` cannot say which expression it came from, so
+  // an edit to the text around, or the target of, a secret reference inside
+  // the same `Fn::Base64` no longer diffs (nor does a rotated value). The deploy's
+  // own no-change skip already compared `***` with `***` for it
+  // (go-to-k/cdkd#4451), so for an input carrying no fresh `NoEcho` value
+  // (below) this moves no deploy verdict; it stops the preview promising an
+  // UPDATE the deploy then skips.
+  //
+  // Only a token of a service the deploy RESOLVES counts: one of any other
+  // service is left as written on BOTH paths, so its encoding already
+  // agrees. Only a secret keeps its token through this pass (`secretsmanager`
+  // and `ssm-secure` by spelling, a plain `ssm` one whose parameter is a
+  // `SecureString`), which `keepsSecretReferenceToken` reads.
+  //
+  // NOT when the input also embeds a `NoEcho` value supplied in THIS deploy
+  // (go-to-k/cdkd#3662): `***` against the recorded `***` would diff
+  // NO_CHANGE and a re-minted value (a cross-stack read recovered from a
+  // producer in the same `deploy --all`) would never be sent. The encoding
+  // path below marks the encoding fresh, so the diff reports UPDATE and the
+  // engine's skip refuses it.
+  if (
+    context.skipDynamicReferences === true &&
+    keepsSecretReferenceToken(resolvedValue) &&
+    !(
+      context.recordedSecretValues !== undefined &&
+      embedsFreshNoEchoValue(resolvedValue, context.recordedSecretValues)
+    )
+  ) {
+    this.logger.debug(
+      safeMsg`Resolved Fn::Base64: ${this.logRender(this.logTextOfLeaf(resolvedValue, context), context)} resolved to ${SECRET_MASK} (an unresolved secret reference, compared as the mask the deploy persists)`
+    );
+    return SECRET_MASK;
   }
 
   const result = Buffer.from(resolvedValue).toString('base64');

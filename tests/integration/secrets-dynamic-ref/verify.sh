@@ -119,6 +119,10 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 SECRET_NAME="cdkd-test-dynref-secret-${ACCOUNT_ID}"
 PARAM_NAME="cdkd-test-dynref-param-${ACCOUNT_ID}"
+# Issue #2909: the gated `Base64UserDataParam` (Phase 1b2 creates it, Phase 1b3
+# deletes it). Its value is the base64 of a script carrying the password, so
+# cleanup sweeps it on every path. Must match the stack's own spelling.
+B64_UD_PARAM_NAME="cdkd-test-dynref-b64-ud-${ACCOUNT_ID}"
 # SecureString counterpart (issue #1901). Created by THIS script, not by the
 # stack: CloudFormation cannot create a SecureString parameter, so the fixture
 # only references it.
@@ -519,6 +523,7 @@ cleanup() {
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
     --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${B64_UD_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   # The SecureString parameter is created by this script, so cdkd never deletes
   # it — the ONLY thing that keeps it from being an orphan is this sweep.
   aws ssm delete-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -1022,11 +1027,100 @@ if [[ "${DEPLOY_OUT_B64}" != *"Resolved Fn::Base64: port:*** resolved to ***"* ]
   exit 1
 fi
 echo "    OK: the framed pin's Fn::Base64 line is masked on both halves (#3119)"
-# DROP both keys from state before anything else runs. `Base64Secret` and
-# `Base64Pin` are declared only for this probe deploy, and the diff pass
-# resolves outputs with
-# `skipDynamicReferences` -- so each would show as a REMOVE row and red the
-# unchanged-stack `diff --fail` guard later in this fixture. Same direct-S3
+# Issue #2909: the DIFF of this unchanged stack, both outputs still declared.
+# The diff resolves with `skipDynamicReferences`, which leaves each secret
+# reference a token, and encoded the TOKEN -- never equal to the `***` the
+# deploy persisted, so both outputs diffed on every run and `diff --fail` was
+# permanently red. It now compares the mask, so this must exit 0.
+# `Base64UserDataParam` carries the same shape as a RESOURCE property (the EC2
+# `UserData` spelling: a script joined around the reference), which the diff
+# compares through `DiffCalculator` rather than the Outputs diff.
+echo "==> Phase 1b2b: diff --fail of the unchanged stack with the Fn::Base64 outputs and resource declared (issue #2909)"
+EXPECTED_UD_B64=$(printf '#!/bin/bash\nPW=%s\n' "${EXPECTED_PASSWORD}" | base64 | tr -d '\n')
+if [ -z "${EXPECTED_UD_B64}" ] \
+  || [ "$(printf '%s' "${EXPECTED_UD_B64}" | base64 --decode)" != "$(printf '#!/bin/bash\nPW=%s\n' "${EXPECTED_PASSWORD}")" ]; then
+  echo "FAIL: premise: could not derive/round-trip the base64 of the UserData-shaped script -- the #2909 resource arm's leak checks would be vacuous" >&2
+  exit 1
+fi
+UD_SHAPE=$(jq -r --arg secret "${SECRET_NAME}" '.Resources.Base64UserDataParam.Properties.Value
+  | if . == null then "absent"
+    elif type != "object" then "not-an-intrinsic"
+    elif .["Fn::Base64"] == ("#!/bin/bash\nPW={{resolve:secretsmanager:" + $secret + ":SecretString:password}}\n") then "Fn::Base64"
+    else "other" end' "${SYNTH_TEMPLATE}")
+if [ "${UD_SHAPE}" != "Fn::Base64" ]; then
+  echo "FAIL: premise: Base64UserDataParam.Value synthesized as '${UD_SHAPE}', not an Fn::Base64 over the UserData-shaped script -- the #2909 resource arm is not what this deploy exercised" >&2
+  exit 1
+fi
+if grep -qF "${EXPECTED_UD_B64}" "${B64_STATE}"; then
+  echo "FAIL: state.json carries the base64 of the UserData-shaped script -- one command decodes the password (issue #2759 / #2909)" >&2
+  exit 1
+fi
+UD_PERSISTED=$(jq -r '.resources.Base64UserDataParam.properties.Value // "<absent>"' "${B64_STATE}")
+if [ "${UD_PERSISTED}" != "***" ]; then
+  echo "FAIL: premise: state.resources.Base64UserDataParam.properties.Value is not the mask '***' -- the #2909 resource arm compares against something else" >&2
+  diag_output "${UD_PERSISTED}"
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_B64}" == *"${EXPECTED_UD_B64}"* ]]; then
+  echo "FAIL: the probe deploy's --verbose log carries the base64 of the UserData-shaped script (issue #2759 / #2909)" >&2
+  exit 1
+fi
+echo "    OK: premise: Base64UserDataParam is an Fn::Base64 over the UserData-shaped script, persisted as '***'"
+set +e
+B64_DIFF_OUT=$(CDKD_TEST_BASE64_LEAK=true node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+B64_DIFF_RC=$?
+set -e
+if [[ "${B64_DIFF_OUT}" == *"${EXPECTED_PASSWORD}"* ]] \
+  || [[ "${B64_DIFF_OUT}" == *"${EXPECTED_PASSWORD_B64}"* ]] \
+  || [[ "${B64_DIFF_OUT}" == *"${EXPECTED_PIN_B64}"* ]] \
+  || [[ "${B64_DIFF_OUT}" == *"${EXPECTED_UD_B64}"* ]]; then
+  echo "FAIL: the Fn::Base64 diff output carries the password or an encoding of a secret (issue #2909)" >&2
+  exit 1
+fi
+# Both keys COMPARED, not dropped: a value this diff failed to resolve takes
+# the Outputs suppression branch, which also exits 0, and warns naming the key.
+if [[ "${B64_DIFF_OUT}" == *"Base64Secret"* ]] || [[ "${B64_DIFF_OUT}" == *"Base64Pin"* ]] \
+  || [[ "${B64_DIFF_OUT}" == *"Base64UserDataParam"* ]]; then
+  echo "FAIL: the clean Fn::Base64 diff names Base64Secret, Base64Pin or Base64UserDataParam -- a row or a resolution warning, so they were not compared equal (issue #2909)" >&2
+  diag_output "${B64_DIFF_OUT}"
+  exit 1
+fi
+if [ "${B64_DIFF_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd diff --fail' reported changes on the unchanged stack declaring Fn::Base64-over-a-secret outputs (rc=${B64_DIFF_RC}, issue #2909)" >&2
+  diag_output "${B64_DIFF_OUT}"
+  exit 1
+fi
+echo "    OK: the unchanged Fn::Base64-over-a-secret outputs and resource property diff clean (#2909)"
+# NEGATIVE CONTROL: the same diff with the outputs NOT declared must see both
+# as removed. Without it the clean exit above also passes for a diff that never
+# compared these outputs at all.
+set +e
+B64_DIFF_GONE_OUT=$(node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+B64_DIFF_GONE_RC=$?
+set -e
+if [[ "${B64_DIFF_GONE_OUT}" == *"${EXPECTED_PASSWORD}"* ]] \
+  || [[ "${B64_DIFF_GONE_OUT}" == *"${EXPECTED_PASSWORD_B64}"* ]] \
+  || [[ "${B64_DIFF_GONE_OUT}" == *"${EXPECTED_PIN_B64}"* ]] \
+  || [[ "${B64_DIFF_GONE_OUT}" == *"${EXPECTED_UD_B64}"* ]]; then
+  echo "FAIL: the undeclared-outputs diff prints the password or an encoding of a secret in its REMOVE rows (issue #2909)" >&2
+  exit 1
+fi
+if [ "${B64_DIFF_GONE_RC}" -eq 0 ] \
+  || [[ "${B64_DIFF_GONE_OUT}" != *"Base64Secret"* ]] \
+  || [[ "${B64_DIFF_GONE_OUT}" != *"Base64Pin"* ]] \
+  || [[ "${B64_DIFF_GONE_OUT}" != *"Base64UserDataParam"* ]]; then
+  echo "FAIL: premise: the diff without the Fn::Base64 outputs and resource declared did not report all three as changed (rc=${B64_DIFF_GONE_RC}) -- the clean diff above proves nothing (issue #2909)" >&2
+  diag_output "${B64_DIFF_GONE_OUT}"
+  exit 1
+fi
+echo "    OK: premise: the diff does compare these (all three reported once undeclared)"
+# DROP both output keys from state before anything else runs (the resource
+# needs no drop: the next deploy, without the token, deletes it). `Base64Secret`
+# and `Base64Pin` are declared only for this probe deploy, so each would show as a
+# REMOVE row (the negative control just above) and red the unchanged-stack
+# `diff --fail` guard later in this fixture. Same direct-S3
 # write idiom Phase 1f / 1f2 use, and safe for the same reason: nothing holds
 # the lock between phases and the next `saveState` reads its own etag.
 jq 'del(.outputs.Base64Secret, .outputs.Base64Pin)' "${B64_STATE}" > "${B64_TRIMMED}"
@@ -1147,6 +1241,16 @@ fi
 SPAN_STATE=$(mktemp)
 SCRATCH_FILES+=("${SPAN_STATE}")
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${SPAN_STATE}" --quiet
+# Issue #2909: this deploy, without `CDKD_TEST_BASE64_LEAK`, must have DELETED
+# Phase 1b2's `Base64UserDataParam` -- from state AND from AWS, where it held
+# the base64 of a script carrying the password.
+if ! jq -e '.resources | has("Base64UserDataParam") | not' "${SPAN_STATE}" >/dev/null; then
+  echo "FAIL: state still records Base64UserDataParam after the deploy that undeclared it (issue #2909)" >&2
+  exit 1
+fi
+assert_gone "SSM parameter '${B64_UD_PARAM_NAME}' (base64 of a script carrying the password) still exists after the deploy that undeclared it (issue #2909)" \
+  aws ssm get-parameter --name "${B64_UD_PARAM_NAME}" --region "${REGION}"
+echo "    OK: Base64UserDataParam is gone from state and from AWS (#2909)"
 assert_password_paths "state.json after the service-span OUTPUT probe deploy" by-design "${SPAN_STATE}"
 SPAN_PERSISTED=$(jq -r '.outputs | has("ServiceSpanLeak")' "${SPAN_STATE}")
 if [ "${SPAN_PERSISTED}" != "false" ]; then

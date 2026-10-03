@@ -9,9 +9,10 @@ import type { ResourceChange, StackState } from '../../../src/types/state.js';
  * `{{resolve:...}}` input sends nothing (go-to-k/cdkd#3662 review round).
  *
  * `Fn::Base64` registers the encoding of a secret as a MASK-ONLY needle
- * (issue #2759), so the record persists `***`, and the diff, which does not
- * resolve dynamic references, reports the resource as UPDATE on every deploy.
- * The engine's no-change skip absorbs that. #3662 stopped the skip trusting a
+ * (issue #2759), so the record persists `***`. The diff, which does not
+ * resolve dynamic references, compares a WHOLE-leaf encoding as that mask
+ * (issue #2909), so it reports NO_CHANGE; a leaf EMBEDDING the encoding still
+ * diffs UPDATE, and the engine's no-change skip absorbs that. #3662 stopped the skip trusting a
  * mask for a `NoEcho` value supplied in the same deploy; this is the other
  * mask-only population, a DERIVED needle, which must keep taking the skip, or
  * every deploy re-sends it (a new LaunchTemplate version, an Instance
@@ -53,12 +54,12 @@ const EMBEDDED_PROPS = {
 const encoded = Buffer.from('pw=pw-secret-value').toString('base64');
 
 describe('DeployEngine - a Base64-encoded secret is not re-sent on an unchanged redeploy', () => {
-  it('persists the mask on CREATE, then skips the provider on the redeploy the diff calls UPDATE', async () => {
-    await createThenRedeploy(PROPS);
+  it('persists the mask on CREATE, and the redeploy diffs NO_CHANGE (go-to-k/cdkd#2909)', async () => {
+    await createThenRedeploy(PROPS, 'NO_CHANGE');
   });
 
   it('masks WHOLE a leaf EMBEDDING the encoding, and still skips the unchanged redeploy (go-to-k/cdkd#2453)', async () => {
-    const { created, provider } = await createThenRedeploy(EMBEDDED_PROPS);
+    const { created, provider } = await createThenRedeploy(EMBEDDED_PROPS, 'UPDATE');
     // The value AWS received really did embed the encoding...
     expect(provider.create.mock.calls[0]![2]).toMatchObject({
       Value: `#!/bin/bash\nUD=${encoded}\n`,
@@ -69,7 +70,8 @@ describe('DeployEngine - a Base64-encoded secret is not re-sent on an unchanged 
 });
 
 async function createThenRedeploy(
-  props: Record<string, unknown>
+  props: Record<string, unknown>,
+  redeployChange: 'NO_CHANGE' | 'UPDATE'
 ): Promise<{ created: StackState; provider: { create: ReturnType<typeof vi.fn> } }> {
   const template: CloudFormationTemplate = {
     Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: props } },
@@ -149,13 +151,13 @@ async function createThenRedeploy(
   diff.hasChanges.mockImplementation((c: unknown) => real.hasChanges(c as never));
   await makeEngine().deploy('s', template);
 
-  // Vacuity guard: the diff DID hand the engine an UPDATE, so the skip is
-  // what kept the provider from being called.
+  // Which gate kept the provider from being called: the diff itself
+  // (NO_CHANGE), or the engine's no-change skip over an UPDATE.
   const changes = (await diff.calculateDiff.mock.results.at(-1)!.value) as Map<
     string,
     ResourceChange
   >;
-  expect(changes.get('R')?.changeType).toBe('UPDATE');
+  expect(changes.get('R')?.changeType).toBe(redeployChange);
   expect(provider.update).not.toHaveBeenCalled();
   return { created, provider };
 }

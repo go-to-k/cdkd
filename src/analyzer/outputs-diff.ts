@@ -22,6 +22,7 @@ import { stripControlChars } from '../utils/regexp.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { isReadableBag } from '../state/malformed-resources-bag.js';
 import { isSecretBearingReferenceString as isSecretDynamicReference } from '../deployment/no-change-outputs-merge.js';
+import { keepsSecretReferenceToken } from '../deployment/intrinsic-resolver/context.js';
 
 /**
  * Kind of change for one key of the persisted Outputs bag.
@@ -375,42 +376,6 @@ export function templateUsesSub(templateValue: unknown): boolean {
  * `cdkd scrub` exists to repair), and printing it is this module's problem
  * because it is the first code path that DISPLAYS a stored output value.
  */
-
-/**
- * The dynamic-reference services the resolver RESOLVES on the deploy path. A
- * token of any other service is left as written on BOTH paths (the resolver
- * warns and substitutes nothing), so it is never a sign of a secret.
- */
-const DEPLOY_RESOLVED_REFERENCE_SERVICES: ReadonlySet<string> = new Set([
-  'secretsmanager',
-  'ssm',
-  'ssm-secure',
-]);
-
-/**
- * True when a name RESOLVED by this module's `skipDynamicReferences` pass
- * still carries a token of a service the deploy resolves (issue
- * [#4056](https://github.com/go-to-k/cdkd/issues/4056)).
- *
- * Only a SECRET keeps its token through that pass: `secretsmanager` and
- * `ssm-secure` by spelling, and a plain `ssm` one whose parameter the lookup
- * finds to be a `SecureString`; a `String` / `StringList` parameter resolves
- * to its value and leaves no token. So on RESOLVED text the token scan, not
- * {@link isSecretDynamicReference}'s spelling test, is what says "the deploy
- * substitutes a secret here". The spelling test stays right for its other
- * readers, which read RAW template or STORED text, where a plain `ssm` token
- * says nothing about the parameter's type.
- */
-function keepsSecretReferenceToken(resolvedName: string): boolean {
-  // `inner.split(':')[0]`, the resolver's own reading of the service, with the
-  // closing braces sliced off so a colon-less `{{resolve:ssm-secure}}` reads
-  // `ssm-secure` there and here alike.
-  return dynamicReferenceTokens(resolvedName).some((token) =>
-    DEPLOY_RESOLVED_REFERENCE_SERVICES.has(
-      token.slice('{{resolve:'.length, -'}}'.length).split(':')[0] ?? ''
-    )
-  );
-}
 
 /**
  * True when `value` carries a plain `{{resolve:ssm:<name>...}}` token (issue

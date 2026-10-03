@@ -437,15 +437,15 @@ export class SecretsDynamicRefStack extends cdk.Stack {
     // rather than "no base64 in state" — the negative alone passed while the
     // arm was inert.
     //
-    // Still GATED rather than permanent: the diff pass resolves outputs with
-    // `skipDynamicReferences`, under which the body is
-    // `base64('{{resolve:...}}')` rather than `base64(<plaintext>)`. Those two
-    // never agree, so a permanently declared `Fn::Base64`-over-a-secret output
-    // shows a change on every run, with or without this fix — measured on this
-    // branch and tracked, with both encodings, as issue
-    // [#2909](https://github.com/go-to-k/cdkd/issues/2909). verify.sh drops the
-    // key from state right after asserting on it, so the unchanged-stack
-    // `diff --fail` guard later is unperturbed.
+    // The diff pass resolves outputs with `skipDynamicReferences`, under which
+    // the reference stays a token; since issue
+    // [#2909](https://github.com/go-to-k/cdkd/issues/2909) `Fn::Base64` over
+    // such a token compares as the `***` the deploy persists, and verify.sh
+    // asserts a `diff --fail` of this unchanged stack, both outputs declared,
+    // exits 0. Still GATED: verify.sh drops both output keys from state right
+    // after (the next deploy deletes the resource below), so the later phases
+    // and their unchanged-stack `diff --fail` guard, which run without this
+    // token, see none.
     //
     // `literalSecretName` (the account CONCRETE) for the same reason
     // `OutputFailureLeak` uses it: a CDK token would make the leaf an
@@ -466,6 +466,20 @@ export class SecretsDynamicRefStack extends cdk.Stack {
       new cdk.CfnOutput(this, 'Base64Pin', {
         value: cdk.Fn.base64(
           `port:{{resolve:secretsmanager:${literalSecretName}:SecretString:pin}}`
+        ),
+      });
+      // Issue #2909: the same shape as a RESOURCE PROPERTY, which the diff
+      // compares through `DiffCalculator` rather than the Outputs diff -- the
+      // EC2 `UserData` shape (a script joined around the reference, under one
+      // `Fn::Base64`) on the cheapest resource that takes an arbitrary string.
+      // Same gate: the next deploy without the token deletes it.
+      // A FIXED name, so verify.sh's cleanup can sweep it and Phase 1b3 can
+      // prove it gone: it holds the base64 of a script carrying the password.
+      new ssm.CfnParameter(this, 'Base64UserDataParam', {
+        name: `cdkd-test-dynref-b64-ud-${account}`,
+        type: 'String',
+        value: cdk.Fn.base64(
+          `#!/bin/bash\nPW={{resolve:secretsmanager:${literalSecretName}:SecretString:password}}\n`
         ),
       });
     }
