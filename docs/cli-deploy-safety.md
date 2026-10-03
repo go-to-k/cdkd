@@ -996,8 +996,9 @@ The details that matter here:
   predecessor", `cdkd events` records the survivor's physical id, and the
   deploy exits 2 unless you pass `--allow-unaddressed`. Nothing will retry it —
   state points at the replacement — so deleting the survivor is yours to do.
-  Inside a nested stack the same holds, and the exit code covers it: see
-  [Nested stacks](#nested-stacks-and-the-exit-code).
+  Inside a nested stack the summary counts it on its own row, "Left an orphaned
+  predecessor in a nested stack", instead, and the exit code still covers it:
+  see [Nested stacks](#nested-stacks-and-the-exit-code).
 
   This path previously deleted the old resource whatever the policy said, and
   its refusal appended a note stating so. Both are gone: a resource explicitly

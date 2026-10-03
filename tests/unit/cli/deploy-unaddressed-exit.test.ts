@@ -24,11 +24,12 @@ const errorSpy = vi.hoisted(() => vi.fn());
 const runOutcomeSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
+const debugSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
-    debug: vi.fn(),
+    debug: debugSpy,
     info: infoSpy,
     warn: warnSpy,
     error: errorSpy,
@@ -589,8 +590,17 @@ describe('splitUpdatePartial (issue #1989)', () => {
     });
   });
 
-  it('clamps an out-of-range descendant figure into [0, updatePartial]', async () => {
+  it('splits an in-range figure without a debug line', async () => {
     const { splitUpdatePartial } = await import('../../../src/cli/commands/deploy.js');
+    debugSpy.mockClear();
+    splitUpdatePartial({ updatePartial: 3, nestedUpdatePartial: 3 });
+    splitUpdatePartial({ updatePartial: 0 });
+    expect(debugSpy).not.toHaveBeenCalled();
+  });
+
+  it('clamps an out-of-range descendant figure into [0, updatePartial], and says so', async () => {
+    const { splitUpdatePartial } = await import('../../../src/cli/commands/deploy.js');
+    debugSpy.mockClear();
     expect(splitUpdatePartial({ updatePartial: 1, nestedUpdatePartial: 5 })).toEqual({
       ownUpdatePartial: 0,
       nestedUpdatePartial: 1,
@@ -599,6 +609,10 @@ describe('splitUpdatePartial (issue #1989)', () => {
       ownUpdatePartial: 1,
       nestedUpdatePartial: 0,
     });
+    const debugged = debugSpy.mock.calls.map((c) => String(c[0]));
+    expect(debugged).toHaveLength(2);
+    expect(debugged[0]).toContain('nestedUpdatePartial 5 is outside [0, updatePartial 1]');
+    expect(debugged[1]).toContain('clamped to 0');
   });
 });
 

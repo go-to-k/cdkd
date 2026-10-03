@@ -1509,9 +1509,14 @@ export function forceQuitReleaseCommand(): string {
 export function splitUpdatePartial(
   result: Pick<DeployResult, 'updatePartial' | 'nestedUpdatePartial'>
 ): { ownUpdatePartial: number; nestedUpdatePartial: number } {
-  const nestedUpdatePartial = Math.min(
-    Math.max(result.nestedUpdatePartial ?? 0, 0),
-    result.updatePartial
-  );
+  const reported = result.nestedUpdatePartial ?? 0;
+  const nestedUpdatePartial = Math.min(Math.max(reported, 0), result.updatePartial);
+  // The engine adds a descendant's partials to both counters, so a clamp that
+  // fires means that invariant broke; say so rather than correct it silently.
+  if (nestedUpdatePartial !== reported) {
+    getLogger().debug(
+      safeMsg`nestedUpdatePartial ${reported} is outside [0, updatePartial ${result.updatePartial}]; clamped to ${nestedUpdatePartial}`
+    );
+  }
   return { ownUpdatePartial: result.updatePartial - nestedUpdatePartial, nestedUpdatePartial };
 }
