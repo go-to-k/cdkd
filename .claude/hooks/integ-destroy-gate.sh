@@ -145,7 +145,9 @@ cd "$target_dir" 2>/dev/null || exit 0
 #   `rollback-executor.ts` is here because its every path is a DELETE or
 #   a re-CREATE of a real resource, so the hunk filter buys nothing.
 #   `inline-policy-claims.ts` decides whether an IAM::Policy update or
-#   delete SKIPS a removal (go-to-k/cdkd#4156), in words the filter misses.
+#   delete SKIPS a removal (go-to-k/cdkd#4156), in words the filter misses;
+#   in a rollback it also decides that for an IAM::Policy revert or delete
+#   and a role / group / user revert (go-to-k/cdkd#4225).
 #   `provider-registry.ts` joined for the same reason (issue #2720): its
 #   `getProviderFor` picks the provider that DELETES a resource --
 #   `deploy-engine/delete.ts`'s plain delete, the `deploy-engine/update-*.ts` old-deletes,
