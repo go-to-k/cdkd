@@ -136,7 +136,7 @@ to the rebuilt or soft-reloaded container.
 Reloads are chain-serialized — no two run in parallel — and a reload-callback
 failure exits the watch loop cleanly rather than blocking on a stale port, since
 the previous container may already be torn down. `^C` tears the container down
-and exits.
+and exits, including a container a rebuild is still starting.
 
 For `MCP` and `A2A` runtimes `--watch` is a no-op warning and the single shot
 proceeds: those protocols run once and exit, with no reconnect surface for a

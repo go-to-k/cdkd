@@ -139,6 +139,7 @@ vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
 });
 
 import {
+  containerStartWait,
   createLocalInvokeAgentCoreCommand,
   emitResult,
   emitMcpResult,
@@ -805,8 +806,185 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
     }
 
     expect(String(rebuildError)).toContain('Interrupted during the --watch rebuild');
+    // The teardown stops the rebuild itself: it neither re-synthesizes nor
+    // reaches the later guard before `docker run`.
+    expect(mocks.synthesize).toHaveBeenCalledTimes(1);
     // Only the first boot ran `docker run`.
     expect(mocks.runDetached).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Issue #4488: the teardown above is not the last window. A ^C landing
+   * AFTER it — while the rebuild re-synthesizes, or while its `docker run` is
+   * in flight — reaches a cleanup that knows no container id, which exits.
+   * Each case drives the rebuild through the command's own callback and fires
+   * the command's own SIGINT handler from a later macrotask, as a signal
+   * arrives.
+   */
+  describe('a ^C after a --watch rebuild tore the old container down (issue #4488)', () => {
+    const FIRST_ID = 'cdkd-agentcore-lane2410';
+    let events: string[];
+    let rebuildError: unknown;
+    let onSpy: ReturnType<typeof vi.spyOn>;
+    let exitSpy: ReturnType<typeof vi.spyOn>;
+    let exitCalled: Promise<void>;
+    let exited: () => void;
+    let inRebuild: boolean;
+    /** Whether `cleanup()` had reached its closing stdio flush when it exited. */
+    let flushedBeforeExit: boolean | undefined;
+
+    // Runs from a timer, where a failed `expect` would surface only as a
+    // timeout: a missing handler is recorded and asserted afterwards instead.
+    const fireSigint = (): void => {
+      const call = onSpy.mock.calls.find((args: unknown[]) => args[0] === 'SIGINT');
+      if (!call) {
+        events.push('no-sigint-handler');
+        exited();
+        return;
+      }
+      (call[1] as () => void)();
+    };
+
+    beforeEach(() => {
+      events = [];
+      rebuildError = undefined;
+      inRebuild = false;
+      flushedBeforeExit = undefined;
+      onSpy = vi.spyOn(process, 'on');
+      exitCalled = new Promise<void>((r) => {
+        exited = r;
+      });
+      exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        flushedBeforeExit = live?.seq.includes('flush');
+        events.push(`exit:${String(code)}`);
+        exited();
+        return undefined as never;
+      }) as typeof process.exit);
+      mocks.removeContainer.mockImplementation(async (id: string) => {
+        events.push(`rm:${id}`);
+      });
+      mocks.runAgentCoreWatchLoop.mockImplementation(
+        async (loop: { rebuild: () => Promise<unknown> }) => {
+          inRebuild = true;
+          try {
+            await loop.rebuild();
+          } catch (err) {
+            rebuildError = err;
+          }
+          await exitCalled;
+        }
+      );
+    });
+
+    afterEach(() => {
+      onSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+
+    it('during the re-synth: the rebuild starts no container', async () => {
+      mocks.synthesize.mockImplementation(async () => {
+        if (inRebuild) {
+          setTimeout(fireSigint, 0);
+          // The synth outlasts the ^C: cleanup has run by the time it returns.
+          await exitCalled;
+        }
+        return { stacks: [makeAgentStack()], assemblyDir: 'cdk.out' };
+      });
+
+      await runAgentCore(['AgentStack:EchoAgent', '--no-pull', '--watch']);
+
+      expect(events).not.toContain('no-sigint-handler');
+      expect(mocks.synthesize).toHaveBeenCalledTimes(2);
+      expect(String(rebuildError)).toContain('Interrupted during the --watch rebuild; not starting a new container');
+      // Only the first boot ran `docker run`.
+      expect(mocks.runDetached).toHaveBeenCalledTimes(1);
+    });
+
+    it('during the docker run: the started container is removed before the exit', async () => {
+      mocks.runDetached.mockImplementation(async () => {
+        if (!inRebuild) return FIRST_ID;
+        setTimeout(fireSigint, 0);
+        // The `docker run` returns only after the ^C's cleanup has begun.
+        await new Promise((r) => setTimeout(r, 20));
+        return REBUILT_ID;
+      });
+
+      const { stderr } = await runAgentCore(['AgentStack:EchoAgent', '--no-pull', '--watch']);
+
+      expect(events).not.toContain('no-sigint-handler');
+      expect(mocks.runDetached).toHaveBeenCalledTimes(2);
+      expect(String(rebuildError)).toContain('Interrupted during the --watch rebuild; removed the container it had just started');
+      // The teardown removed the first container; the ^C's removed the
+      // rebuilt one, and did so BEFORE `process.exit` ended the process.
+      expect(events).toContain(`rm:${FIRST_ID}`);
+      const removed = events.indexOf(`rm:${REBUILT_ID}`);
+      expect(removed).toBeGreaterThanOrEqual(0);
+      expect(removed).toBeLessThan(events.indexOf('exit:130'));
+      // The interrupted start rejects; the cleanup still ran to its end (it
+      // disposes the credentials file and flushes stdio) before exiting.
+      expect(flushedBeforeExit).toBe(true);
+      expect(stderr).toContain('Waiting for the in-flight docker run');
+    });
+
+    it('during a docker run that never returns: the wait is bounded and removes the container by name', async () => {
+      const waitBefore = containerStartWait.ms;
+      containerStartWait.ms = 50;
+      let rebuildName: string | undefined;
+      mocks.runDetached.mockImplementation(async (opts: { name: string }) => {
+        if (!inRebuild) return FIRST_ID;
+        rebuildName = opts.name;
+        setTimeout(fireSigint, 0);
+        // A hung daemon: `docker run` never returns.
+        return new Promise<string>(() => undefined);
+      });
+      // The loop cannot wait for a rebuild that never settles.
+      mocks.runAgentCoreWatchLoop.mockImplementation(
+        async (loop: { rebuild: () => Promise<unknown> }) => {
+          inRebuild = true;
+          void loop.rebuild();
+          await exitCalled;
+        }
+      );
+
+      let stderr: string;
+      try {
+        ({ stderr } = await runAgentCore(['AgentStack:EchoAgent', '--no-pull', '--watch']));
+      } finally {
+        containerStartWait.ms = waitBefore;
+      }
+
+      expect(events).not.toContain('no-sigint-handler');
+      expect(rebuildName).toMatch(new RegExp(`-agentcore-${process.pid}-`));
+      // The ^C still exits, after removing the hung start's container by name.
+      const removed = events.indexOf(`rm:${rebuildName}`);
+      expect(removed).toBeGreaterThanOrEqual(0);
+      expect(removed).toBeLessThan(events.indexOf('exit:130'));
+      expect(flushedBeforeExit).toBe(true);
+      expect(stderr).toContain('did not finish within');
+      // Names the container, and does not claim it is gone: a late docker run can still start it.
+      expect(stderr).toContain(`run 'docker rm -f ${rebuildName}' if it appears`);
+    });
+
+    it('with no ^C, the rebuilt container is the one the command removes at exit', async () => {
+      mocks.runDetached.mockImplementation(async () => (inRebuild ? REBUILT_ID : FIRST_ID));
+      mocks.runAgentCoreWatchLoop.mockImplementation(
+        async (loop: { rebuild: () => Promise<unknown> }) => {
+          inRebuild = true;
+          await loop.rebuild();
+        }
+      );
+
+      const { error, stderr } = await runAgentCore([
+        'AgentStack:EchoAgent',
+        '--no-pull',
+        '--watch',
+      ]);
+
+      expect(error).toBeUndefined();
+      expect(events).toEqual([`rm:${FIRST_ID}`, `rm:${REBUILT_ID}`]);
+      // The settled start no longer counts as in flight.
+      expect(stderr).not.toContain('Waiting for the in-flight docker run');
+    });
   });
 
   /**
