@@ -116,7 +116,7 @@ export function identityKeyFor(
 
 /**
  * Position the ELEMENTS of an array leaf whose SOURCE is an intrinsic OBJECT,
- * by the same leaf-identity lookup {@link positionByCrossStackSource} performs
+ * by the same leaf-identity lookup `positionByCrossStackSource` (`certified-positions.ts`) performs
  * for a string leaf (issue
  * [#2327](https://github.com/go-to-k/cdkd/issues/2327)).
  *
@@ -133,12 +133,12 @@ export function identityKeyFor(
  * {@link certifiedListForLeaf}, which the DIFF side calls too. TWO further
  * refusals belong to THIS site rather than to the shared rule:
  *
- * 1. REFUSAL — a source leaf {@link crossStackSourceKey} cannot key, or one
+ * 1. REFUSAL — a source leaf `crossStackSourceKey` (`cross-stack.ts`) cannot key, or one
  *    this pass recorded no association for. Both fall to the value scan, i.e.
  *    to today's behaviour.
- * 2. REFUSAL — {@link positionByIntrinsicSkeleton} is deliberately NOT tried
+ * 2. REFUSAL — `positionByIntrinsicSkeleton` (`positions.ts`) is deliberately NOT tried
  *    element-wise, and the asymmetry with the string arm is structural rather
- *    than caution. {@link intrinsicSkeletonPattern} accepts exactly `Fn::Join`
+ *    than caution. `intrinsicSkeletonPattern` (`positions.ts`) accepts exactly `Fn::Join`
  *    and `Fn::Sub`, both of which produce a STRING; an array bag beside one of
  *    them is a SHAPE DIVERGENCE, not a position. Matching a per-element pattern
  *    built from text that describes the whole joined string would be a guess of

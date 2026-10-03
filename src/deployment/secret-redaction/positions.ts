@@ -488,7 +488,7 @@ export function singleSpanFrame(
  *
  * BELOW THE NEEDLE FLOOR the scan makes no claim at all (issue
  * [#2516](https://github.com/go-to-k/cdkd/issues/2516)): {@link buildNeedleRegex}
- * drops every plaintext shorter than {@link MIN_NEEDLE_LENGTH} from its
+ * drops every plaintext shorter than `MIN_NEEDLE_LENGTH` (`rules.ts`) from its
  * alternation, so an embedded 1-3 character secret is left in plaintext by
  * the scan, with or without a same-plaintext sibling. Accepting the scan's
  * silence (`scanned === bag`) as equivalence would therefore be a NEW claim
@@ -561,7 +561,7 @@ export function singleSpanFrame(
  * already-redacted record, per the same refusal {@link learnMixedLeafNeedle}
  * makes), and a middle this pass cannot vouch for. An `Fn::Sub` / `Fn::Join`
  * source (an object, not this arm at all) is
- * {@link positionByParameterPlaceholders}'s over a nested child's parameters
+ * `positionByParameterPlaceholders` (`placeholder-positions.ts`)'s over a nested child's parameters
  * (issue #2320) and {@link positionByIntrinsicFrame}'s since #2745, and
  * reaches the value scan only where both refuse.
  *

@@ -175,7 +175,7 @@ function parameterPlaceholderParts(
  * child's own PARAMETERS, placeholder by placeholder (issue
  * [#2320](https://github.com/go-to-k/cdkd/issues/2320)).
  *
- * The EMBEDDING twin of {@link positionByCrossStackSource}'s `{Ref: <Param>}`
+ * The EMBEDDING twin of `positionByCrossStackSource` (`certified-positions.ts`)'s `{Ref: <Param>}`
  * arm. Before it, a leaf such as `Fn::Sub 'x${A}'` could only be redacted by the
  * plaintext-keyed value scan, which reads ONE expression per plaintext —
  * whichever parameter the resource resolved LAST. The DIFF side

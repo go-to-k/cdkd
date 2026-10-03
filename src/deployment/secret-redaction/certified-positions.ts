@@ -40,9 +40,9 @@ import { redactSecretsForState } from './redact-state.js';
  * iterating it never yields one plaintext twice and a second sighting of an
  * expression is always a DIFFERENT plaintext.
  *
- * SHARED by {@link positionByIntrinsicSkeleton},
+ * SHARED by `positionByIntrinsicSkeleton` (`positions.ts`),
  * {@link positionByCrossStackSource} (issue #2059) and
- * {@link positionByIntrinsicFrame} (issue #2745) rather than copied: the
+ * `positionByIntrinsicFrame` (`positions.ts`) (issue #2745) rather than copied: the
  * poisoning rule is the subtle half of condition 3, and every copy is another
  * place for it to be relaxed independently.
  */
@@ -130,7 +130,7 @@ export function certifiedExpressionForLeaf(
  * argued around.
  *
  * SHARED BY BOTH HALVES, and that sharing is load-bearing rather than tidy: the
- * persist side reaches it through {@link positionListByCrossStackSource} and
+ * persist side reaches it through `positionListByCrossStackSource` (`identity-keys.ts`) and
  * the diff side through {@link inheritedParameterExpression}, with the same
  * association content on either side ({@link inheritNestedStackParameterAssociations}
  * copies the parent's rows onto the child bag). Two spellings that agreed on
@@ -185,14 +185,14 @@ export function associationForSource(
  * association the RESOLVER recorded while it read the producer (issue
  * [#2059](https://github.com/go-to-k/cdkd/issues/2059)).
  *
- * This is the residual {@link positionByIntrinsicSkeleton} leaves behind, and
+ * This is the residual `positionByIntrinsicSkeleton` (`positions.ts`) leaves behind, and
  * it needs a different mechanism rather than one more skeleton arm.
- * {@link intrinsicSkeletonPattern} is a TEXT matcher over the source leaf's
+ * `intrinsicSkeletonPattern` (`positions.ts`) is a TEXT matcher over the source leaf's
  * literals, and these two intrinsics carry no text about their expression at
  * all: `Fn::ImportValue`'s only literal is the export NAME, and
  * `Fn::GetStackOutput`'s are `StackName` / `OutputName` / `Region`, none of
  * which bears any relation to the producer's `{{resolve:...}}` string. A
- * pure-wildcard skeleton is not a fallback either — {@link SKELETON_WILDCARD}
+ * pure-wildcard skeleton is not a fallback either — `SKELETON_WILDCARD` (`positions.ts`)
  * is `[^}]*`, which cannot cross a token's own `}}` — so it would match zero
  * candidates and always refuse, i.e. degrade to the collapse. The association
  * has to come from the one place that holds both halves at once, which is
@@ -221,8 +221,8 @@ export function associationForSource(
  * leaf identity; the arm fires only for the spellings
  * {@link crossStackSourceKey} can key; and
  * condition 1 still demands that the bag leaf be a plaintext this pass
- * resolved. Every rejection degrades to {@link positionByIntrinsicSkeleton},
- * {@link positionByIntrinsicFrame} and then to the value scan, i.e. to today's
+ * resolved. Every rejection degrades to `positionByIntrinsicSkeleton` (`positions.ts`),
+ * `positionByIntrinsicFrame` (`positions.ts`) and then to the value scan, i.e. to today's
  * behavior.
  */
 export function positionByCrossStackSource(
