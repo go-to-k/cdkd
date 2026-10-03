@@ -1085,7 +1085,8 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
       properties
     );
 
-    expect(result).toEqual({ physicalId: 'svc-1', wasReplaced: false });
+    // go-to-k/cdkd#4443: an empty patch says so.
+    expect(result).toEqual({ physicalId: 'svc-1', wasReplaced: false, sentNothing: true });
     expect(mockCloudControlSend).not.toHaveBeenCalled();
     expect(mockCloudFormationSend).not.toHaveBeenCalled();
   });
@@ -1104,7 +1105,8 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
       { TaskDefinition: 'arn:task:1', VolumeConfigurations: VOLUME_CONFIGURATIONS }
     );
 
-    expect(result).toEqual({ physicalId: 'svc-1', wasReplaced: false });
+    // go-to-k/cdkd#4443: an empty patch says so.
+    expect(result).toEqual({ physicalId: 'svc-1', wasReplaced: false, sentNothing: true });
     expect(updateResourceCallCount()).toBe(0);
   });
 });
@@ -2326,17 +2328,24 @@ describe('CloudControlProvider update: a recorded secret reference on a create-o
     );
 
     expect(updateCalls()).toEqual([]);
-    expect(result).toEqual({ physicalId: 'mf', wasReplaced: false });
+    expect(result).toEqual({ physicalId: 'mf', wasReplaced: false, sentNothing: true });
   });
 
   it('keeps the op when the masker does not recognise the desired value', async () => {
     // A literal now stands where the record holds a reference: a template
     // change, not a resolved reference, so the patch carries it and Cloud
     // Control decides.
-    await provider.update('Filter', 'mf', TYPE, recorded('literal-name', 'b'), recorded(REF, 'a'), {
-      maskSecrets: masker,
-    });
+    const result = await provider.update(
+      'Filter',
+      'mf',
+      TYPE,
+      recorded('literal-name', 'b'),
+      recorded(REF, 'a'),
+      { maskSecrets: masker }
+    );
 
+    // A patch that is sent never claims it sent nothing (go-to-k/cdkd#4443).
+    expect(result.sentNothing).toBeUndefined();
     expect(updateCalls()[0]).toContainEqual({
       op: 'replace',
       path: '/FilterName',

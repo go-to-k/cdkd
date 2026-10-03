@@ -248,13 +248,6 @@ export async function provisionUpdate(
       keyOrderFreeJson(currentProps[lostCandidate.property])
       ? lostCandidate
       : undefined;
-  if (lostChild?.mode === 'reput' && currentResource.provisionedBy === 'cc-api') {
-    // Cloud Control patches record against template, which agree here, so
-    // nothing reaches the recreated parent: say so rather than report it done.
-    this.logger.warn(
-      safeMsg`  ⚠ ${logicalId} went with ${lostChild.parent}, which was re-created, but it is recorded on Cloud Control, whose update sends no change for it; its policy may be missing from ${lostChild.parent}. Re-run with --recreate-via-sdk-provider ${logicalId} to write it again.`
-    );
-  }
   const lostWithParent = lostChild?.mode === 'recreate' ? lostChild.parent : undefined;
   const suppliesFreshMaskOnlyValue = carriesFreshNoEchoValue(resolvedProps, updateSecrets);
   const desiredForSkipCheck = redactSecretsForState(
@@ -580,51 +573,72 @@ export async function provisionUpdate(
   // call site.
   const updateReplacePolicy = template?.Resources?.[logicalId]?.UpdateReplacePolicy;
 
+  // go-to-k/cdkd#4443: a lost child counts as restored once its own write
+  // returned; one this deploy never reaches (it failed first) is forgotten
+  // from state by the failure path, so the next deploy creates it.
+  const markRestored = <T>(outcome: T): T => {
+    if (lostChild === undefined) return outcome;
+    if (this.updatesThatSentNothing.has(logicalId)) {
+      // The provider sent nothing (Cloud Control's patch from record to
+      // template is empty), so nothing reached the recreated parent: say so
+      // rather than report it restored. A failed deploy reads the same set.
+      this.logger.warn(
+        safeMsg`  ⚠ ${logicalId} went with ${lostChild.parent}, which was re-created, but its update sent no change (it is recorded on Cloud Control, which patches record against template); its policy may be missing from ${lostChild.parent}. Re-run with --recreate-via-sdk-provider ${logicalId} to write it again.`
+      );
+      return outcome;
+    }
+    this.restoredLostChildren.add(logicalId);
+    return outcome;
+  };
   if (needsReplacement) {
-    return this.updateByReplacement({
-      change,
+    return markRestored(
+      await this.updateByReplacement({
+        change,
+        counts,
+        currentProps,
+        currentResource,
+        dependencies,
+        logicalId,
+        oldResourceType,
+        progress,
+        propertyDrivenReplacement,
+        recreateFlagged,
+        recreateViaCcApi,
+        recreateViaSdkProvider,
+        renderer,
+        resolvedProps,
+        resourceType,
+        stackName,
+        stateResources,
+        template,
+        typeChanged,
+        updateReplacePolicy,
+        updateSecrets,
+        lostWithParent,
+      })
+    );
+  }
+  return markRestored(
+    await this.updateInPlace({
+      conditions,
       counts,
       currentProps,
+      currentPropsAsWritten,
       currentResource,
       dependencies,
+      desiredForSkipCheckAsWritten,
       logicalId,
-      oldResourceType,
+      noEchoHeldPaths,
+      parameterValues,
       progress,
-      propertyDrivenReplacement,
-      recreateFlagged,
-      recreateViaCcApi,
-      recreateViaSdkProvider,
       renderer,
       resolvedProps,
       resourceType,
       stackName,
       stateResources,
       template,
-      typeChanged,
       updateReplacePolicy,
       updateSecrets,
-      lostWithParent,
-    });
-  }
-  return this.updateInPlace({
-    conditions,
-    counts,
-    currentProps,
-    currentPropsAsWritten,
-    currentResource,
-    dependencies,
-    desiredForSkipCheckAsWritten,
-    logicalId,
-    noEchoHeldPaths,
-    parameterValues,
-    progress,
-    renderer,
-    resolvedProps,
-    resourceType,
-    stackName,
-    stateResources,
-    template,
-    updateReplacePolicy,
-    updateSecrets,
-  });
+    })
+  );
 }

@@ -345,6 +345,10 @@ describe('DeployEngine - a child stored inside a parent recreated under the same
     };
     stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
     cc.create.mockResolvedValue({ physicalId: topicArn, attributes: {} });
+    // The provider's own word that its patch was empty (go-to-k/cdkd#4443).
+    cc.update.mockImplementation((_logicalId: string, physicalId: string) =>
+      Promise.resolve({ physicalId, wasReplaced: false, sentNothing: true })
+    );
     const t: CloudFormationTemplate = {
       Resources: {
         Topic: { Type: 'AWS::SNS::Topic', Properties: { TopicName: 'my-topic' } },

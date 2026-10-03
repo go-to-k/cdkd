@@ -644,6 +644,25 @@ export class DeployEngine {
   recreatedUnderSameId = new Set<string>();
 
   /**
+   * go-to-k/cdkd#4443: the children of a `recreatedUnderSameId` parent whose
+   * re-create / re-put completed in this deploy. A failed deploy forgets the
+   * state record of every OTHER such child (it is gone from AWS), so the next
+   * deploy creates it. Cleared per `deploy()`.
+   */
+  /** @internal */
+  restoredLostChildren = new Set<string>();
+
+  /**
+   * go-to-k/cdkd#4443: logical ids whose provider update reported it sent
+   * NOTHING (`sentNothing`, Cloud Control's empty patch). A lost `reput` child
+   * among them restored nothing, so a failed deploy treats it as unwritten
+   * even though its operation completed, or threw afterwards. Cleared per
+   * `deploy()`.
+   */
+  /** @internal */
+  updatesThatSentNothing = new Set<string>();
+
+  /**
    * The pre-deploy state records, as loaded — the #1852 heal's eligibility
    * baseline. A record is healed only while it is still the one this deploy
    * LOADED (same physical id, same `attributes` object): once a provider has
@@ -792,6 +811,8 @@ export class DeployEngine {
     // deleted. Reset in the same block as the other per-run bags.
     this.retainedOldOnReplacement = new Set();
     this.recreatedUnderSameId = new Set();
+    this.restoredLostChildren = new Set();
+    this.updatesThatSentNothing = new Set();
     // Issue #1852: per-deploy, like every bag above — a reused engine must not
     // serve last deploy's read, nor persist it against today's records.
     this.healBaseline = {};

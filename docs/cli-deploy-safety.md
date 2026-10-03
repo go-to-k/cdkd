@@ -353,6 +353,16 @@ several parents (a topic or queue policy, an IAM policy on several roles) is
 written again in place instead. A Lambda function URL, an IAM managed policy
 attachment and an instance profile's role are not handled this way, nor is a
 resource re-created by the update-failure fallback rather than a replacement.
+If the deploy fails after re-creating the parent and before restoring such a
+child, cdkd drops the child's state record, since AWS no longer has it, and the
+next deploy creates it again; until then the parent runs without it. A policy
+that also names parents the deploy did not re-create keeps its record, minus
+the re-created ones, so the next deploy writes it to them again. A child whose
+own restore was attempted and then failed may be in AWS after all: it keeps its
+record when a `--recreate-via-*` flag can write it again, and the warning names
+that flag; otherwise its record is dropped as above, and the warning says the
+write may still be on the parent, to be removed by hand if the child leaves the
+template before the next deploy.
 
 ### When to use it
 

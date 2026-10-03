@@ -1688,6 +1688,11 @@
       "scenarios": []
     },
     {
+      "name": "lost-child-after-failed-deploy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "macro-expansion",
       "annotated": true,
       "scenarios": [
@@ -3216,6 +3221,7 @@
     "loggroup-class-guard",
     "loggroup-kms-associate",
     "loggroup-never-expire-guard",
+    "lost-child-after-failed-deploy",
     "nested-required-preflight",
     "nested-stack",
     "nested-stack-deep",
