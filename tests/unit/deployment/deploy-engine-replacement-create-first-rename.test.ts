@@ -24,6 +24,21 @@ import { awsSdkError } from '../_aws-sdk-error.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { withSkipPrefix, withStackName } from '../../../src/provisioning/resource-name.js';
 
+// go-to-k/cdkd#4438: a Retain that leaves the old resource alive rotates the
+// stack's create-token nonce; the type filter lives in the ledger module.
+const noteRetained = vi.hoisted(() =>
+  vi.fn(async (_resourceType: string, _logicalId: string) => undefined)
+);
+vi.mock('../../../src/provisioning/providers/create-token-ledger.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../../src/provisioning/providers/create-token-ledger.js')
+  >('../../../src/provisioning/providers/create-token-ledger.js');
+  return { ...actual, noteRetainedResource: noteRetained };
+});
+beforeEach(() => {
+  noteRetained.mockClear();
+});
+
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
     setLevel: vi.fn(),
@@ -615,6 +630,8 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
           'Fn'
         )
       ).toBe(true);
+      // go-to-k/cdkd#4438: the kept resource holds the stack's create token.
+      expect(noteRetained).toHaveBeenCalledTimes(1);
       expect(
         warnLines().some(
           (l) =>

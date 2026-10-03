@@ -43,6 +43,10 @@ import {
   findNestedStackTypeChanges,
   renderNestedStackTypeChangeRefusal,
 } from '../type-change-guard.js';
+import {
+  forgetRecordedCreateTokens,
+  noteDeployStateRecord,
+} from '../../provisioning/providers/create-token-ledger.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -111,6 +115,9 @@ export async function doDeployWithPrefetch(
 
     // 1. Load current state
     const currentStateData = await this.stateBackend.getState(stackName, this.stackRegion);
+    // The create-token ledger replaces one that outlived its state record
+    // (go-to-k/cdkd#4438).
+    noteDeployStateRecord(currentStateData?.state !== undefined);
     const currentState: StackState = currentStateData?.state ?? {
       version: STATE_SCHEMA_VERSION_CURRENT,
       region: this.stackRegion,
@@ -1052,6 +1059,9 @@ export async function doDeployWithPrefetch(
       this.withParentInfo(newState)
     );
     this.logger.debug(`State saved (ETag: ${newEtag})`);
+    // go-to-k/cdkd#4438: the record now names every resource this deploy
+    // created, so their create-token `sent` entries have done their job.
+    await forgetRecordedCreateTokens(Object.keys(newState.resources));
 
     // 7c. Two independent post-save S3 writes, run CONCURRENTLY:
     //

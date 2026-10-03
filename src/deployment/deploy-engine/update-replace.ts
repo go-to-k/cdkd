@@ -32,6 +32,7 @@ import { createSecretMasker, maskSecretsInText } from '../secret-redaction.js';
 import { equalIdNamesSameResource } from '../type-change-guard.js';
 import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
+import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -345,6 +346,9 @@ export async function updateByReplacement(
     if (retainOld) {
       // Issue #2603, as on the destroy-then-create arm.
       this.retainedOldOnReplacement.add(logicalId);
+      // go-to-k/cdkd#4438: the kept resource still holds this stack's create
+      // token, so the create below must not send it again.
+      await noteRetainedResource(oldResourceType, logicalId);
       this.logger.warn(
         safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — ${recreateFlagName} leaves the old physical resource (${currentResource.physicalId}) in place, no longer tracked by cdkd.`
       );
@@ -381,6 +385,8 @@ export async function updateByReplacement(
       // reads this rather than re-deriving the verdict from the
       // previous state record's policy.
       this.retainedOldOnReplacement.add(logicalId);
+      // go-to-k/cdkd#4438: as on the create-first arm above.
+      await noteRetainedResource(oldResourceType, logicalId);
       this.logger.warn(
         `  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — ${recreateFlagName} will ` +
           `leak the old physical resource (${currentResource.physicalId}). The new ` +
@@ -839,6 +845,8 @@ export async function updateByReplacement(
       // the cleanup delete is skipped, so the rollback must re-adopt
       // rather than re-create.
       this.retainedOldOnReplacement.add(logicalId);
+      // go-to-k/cdkd#4438: as on the `--recreate-via-*` arms above.
+      await noteRetainedResource(oldResourceType, logicalId);
       this.logger.info(
         `  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
       );

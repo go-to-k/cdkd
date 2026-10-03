@@ -1,6 +1,7 @@
 import { prepareCreateRollbackFinalSnapshot } from './names.js';
 import { safe, effectiveProvisionedBy, throwIfDeleteSkipped } from './messages.js';
 import type { ReplayOpScope } from './replay-scope.js';
+import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 
 /** `replaySingle`'s 'orphan-flag' arm (#4426). */
 export async function replayOrphanFlag(s: ReplayOpScope): Promise<void> {
@@ -38,6 +39,9 @@ export async function replayOrphanFlag(s: ReplayOpScope): Promise<void> {
     // contradict the instruction. The two Retain arms are the only
     // minters.
     delete stateResources[op.logicalId];
+    // go-to-k/cdkd#4438: the orphaned resource still holds this stack's
+    // create token, so the stack's next create of it must not send it again.
+    await noteRetainedResource(op.resourceType, op.logicalId);
     logger.info(`  Rollback: Orphaning created resource ${safe(op.logicalId)} (--orphan)`);
     await afterOp?.(op.logicalId);
     // Emit the same rollback event as the DeletionPolicy-orphan path
@@ -119,6 +123,9 @@ export async function replayOrphanRetain(s: ReplayOpScope): Promise<void> {
     onOrphan?.(orphaned);
   }
   delete stateResources[op.logicalId];
+  // go-to-k/cdkd#4438: the kept resource still holds this stack's create
+  // token, so the stack's next create of it must not send it again.
+  await noteRetainedResource(op.resourceType, op.logicalId);
   logger.info(
     `  Rollback: Leaving ${safe(op.logicalId)} (${safe(op.resourceType)}) in AWS ` +
       `(DeletionPolicy: Retain) — removed from state`

@@ -12,7 +12,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { readConfigString } from '../config-shape.js';
-import { stackScopedCreateToken } from './idempotency-token.js';
+import { reserveStackCreateToken } from './create-token-ledger.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.js';
 import type {
   ResourceProvider,
@@ -69,6 +69,15 @@ export class CloudFrontOAIProvider implements ResourceProvider {
         'AWS::CloudFront::CloudFrontOriginAccessIdentity CloudFrontOriginAccessIdentityConfig'
       );
 
+      // `reserveStackCreateToken` adds the stack's create-token ledger
+      // (go-to-k/cdkd#4438): its nonce is replaced whenever cdkd lets go of
+      // resources it made, so an identity a destroy or `cdkd orphan` left
+      // behind is not handed back to the stack's next create.
+      const reservation = await reserveStackCreateToken({
+        logicalId,
+        immutableInputs: [],
+        maxLength: 64,
+      });
       const response = await this.cloudFrontClient.send(
         new CreateCloudFrontOriginAccessIdentityCommand({
           CloudFrontOriginAccessIdentityConfig: {
@@ -80,11 +89,7 @@ export class CloudFrontOAIProvider implements ResourceProvider {
             // reference is scoped to the stack and region (go-to-k/cdkd#4428).
             // Still deterministic, so a retry after a lost response is
             // answered with the identity the first attempt made.
-            CallerReference: stackScopedCreateToken({
-              logicalId,
-              immutableInputs: [],
-              maxLength: 64,
-            }),
+            CallerReference: reservation.value,
             Comment: comment,
           },
         })

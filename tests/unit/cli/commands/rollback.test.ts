@@ -106,6 +106,8 @@ interface FakeBackend {
   deleteState: ReturnType<typeof vi.fn>;
   deleteRollbackJournal: ReturnType<typeof vi.fn>;
   setCustomResourceResponseBucket?: ReturnType<typeof vi.fn>;
+  loadCreateTokenLedger?: ReturnType<typeof vi.fn>;
+  saveCreateTokenLedger?: ReturnType<typeof vi.fn>;
 }
 
 /**
@@ -331,6 +333,60 @@ describe('rollbackCommand', () => {
    * with its shipped `(y/N): ` suffix — so neither a deleted guard nor a
    * guard that refuses unconditionally survives both.
    */
+  it("replays under the stack's create-token ledger: a Retain it honours rotates it (go-to-k/cdkd#4438)", async () => {
+    const op = {
+      logicalId: 'Fs',
+      changeType: 'CREATE',
+      resourceType: 'AWS::EFS::FileSystem',
+      physicalId: 'fs-1',
+    };
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: {
+            Fs: {
+              physicalId: 'fs-1',
+              resourceType: 'AWS::EFS::FileSystem',
+              properties: {},
+              attributes: {},
+              dependencies: [],
+              deletionPolicy: 'Retain',
+            },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          { timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [op] },
+        ],
+      }),
+      loadCreateTokenLedger: vi.fn().mockResolvedValue({
+        ledgerVersion: 1,
+        nonce: 'n-0',
+        sent: { Fs: { base: 'b', token: 't', firstSentAt: 1 } },
+      }),
+      saveCreateTokenLedger: vi.fn().mockResolvedValue(undefined),
+    });
+
+    await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+
+    expect(backend.loadCreateTokenLedger).toHaveBeenCalledWith('S', 'us-east-1');
+    const [stack, region, doc] = backend.saveCreateTokenLedger!.mock.calls[0]!;
+    expect([stack, region]).toEqual(['S', 'us-east-1']);
+    expect(doc.nonce).not.toBe('n-0');
+    expect(doc.sent.Fs).toBeUndefined();
+  });
+
   it('REFUSES a non-interactive run when neither --force nor --yes is passed', async () => {
     setStdinIsTty(undefined);
     const backend = installOneCreateSegment();

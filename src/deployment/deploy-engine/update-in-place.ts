@@ -46,6 +46,7 @@ import { equalIdNamesDifferentResources } from '../type-change-guard.js';
 import { updatePartialMessage, updatePartialReason } from '../update-outcome.js';
 import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
+import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -601,6 +602,11 @@ export async function updateInPlace(
             ? safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing (CREATE → DELETE — the new name differs from the old resource's)`
             : `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
       );
+      if (retainOldOnReplace) {
+        // go-to-k/cdkd#4438: the kept resource holds this stack's create
+        // token, so the create below must not send it again.
+        await noteRetainedResource(resourceType, logicalId);
+      }
       if (!retainOldOnReplace && !createFirst) {
         // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
         // old resource before the fallback replacement's delete. The

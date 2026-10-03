@@ -290,6 +290,8 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     mockStateBackend = {
       getState: vi.fn().mockResolvedValue({ state: null, etag: undefined }),
       saveState: vi.fn().mockResolvedValue('etag-new'),
+      // go-to-k/cdkd#4438: a successful deploy reads the create-token ledger.
+      loadCreateTokenLedger: vi.fn().mockResolvedValue(null),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       popRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),

@@ -14,6 +14,7 @@ import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
 import { isMarkedNonRetryable } from '../retryable-errors.js';
+import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -58,6 +59,9 @@ export async function provisionDelete(
       `Retaining ${logicalId} (${resourceType}) - DeletionPolicy: ${deletionPolicy}`
     );
     delete stateResources[logicalId];
+    // go-to-k/cdkd#4438: the kept resource still holds this stack's create
+    // token, so a later create of the logical id must not send it again.
+    await noteRetainedResource(resourceType, logicalId);
     return;
   }
 

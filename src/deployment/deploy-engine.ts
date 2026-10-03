@@ -1,5 +1,9 @@
 import { getLogger } from '../utils/logger.js';
 import { withStackName } from '../provisioning/resource-name.js';
+import {
+  ledgerForStack,
+  withCreateTokenLedger,
+} from '../provisioning/providers/create-token-ledger.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import { type StaleAttributeHealOutcome } from './stale-attribute-heal.js';
@@ -828,7 +832,15 @@ export class DeployEngine {
     // deploys (--stack-concurrency > 1) don't see each other's value.
     // See `src/provisioning/resource-name.ts` for the AsyncLocalStorage
     // background.
-    return withStackName(stackName, () => this.doDeploy(stackName, template));
+    // go-to-k/cdkd#4438: the stack's create-token ledger, which the EFS, FSx
+    // and CloudFront OAI providers fold into their lifetime-bound create
+    // tokens (`src/provisioning/providers/create-token-ledger.ts`).
+    const ledger = ledgerForStack(this.stateBackend, stackName, this.stackRegion);
+    return withStackName(stackName, () =>
+      this.options.dryRun
+        ? this.doDeploy(stackName, template)
+        : withCreateTokenLedger(ledger, () => this.doDeploy(stackName, template))
+    );
   }
 
   /** @internal Body in `deploy-engine/masking.ts` (#4200). */

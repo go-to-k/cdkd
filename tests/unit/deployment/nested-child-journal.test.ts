@@ -104,6 +104,7 @@ import {
   getCurrentStackName,
   withSkipPrefix,
 } from '../../../src/provisioning/resource-name.js';
+import { reserveStackCreateToken } from '../../../src/provisioning/providers/create-token-ledger.js';
 
 replay.readNested = getCurrentNestedStackContext;
 replay.readRun = getNestedRevertRun;
@@ -159,6 +160,8 @@ function harness(opts: {
       .fn()
       .mockResolvedValue(opts.segments === null ? null : { segments: opts.segments ?? [] }),
     saveState: vi.fn().mockResolvedValue('e2'),
+    loadCreateTokenLedger: vi.fn().mockResolvedValue(null),
+    saveCreateTokenLedger: vi.fn().mockResolvedValue(undefined),
   };
   const lockManager = {
     acquireLockWithRetry: vi.fn().mockResolvedValue(true),
@@ -233,6 +236,24 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     expect(handed).toHaveLength(2);
     expect(handed[0]).toBeInstanceOf(RollbackInlinePolicyWriters);
     expect(handed[1]).toBe(handed[0]);
+  });
+
+  it("replays under the CHILD's own create-token ledger (go-to-k/cdkd#4438)", async () => {
+    const h = harness({ segments: [seg('run-1', ['Q'])] });
+    let reserved: Promise<unknown> | undefined;
+    replay.duringReplay = () => {
+      reserved = reserveStackCreateToken({ logicalId: 'Q', immutableInputs: [], maxLength: 63 });
+    };
+
+    await h.run('run-1');
+    await reserved;
+
+    expect(h.stateBackend.loadCreateTokenLedger).toHaveBeenCalledWith(CHILD, REGION);
+    expect(h.stateBackend.saveCreateTokenLedger).toHaveBeenCalledWith(
+      CHILD,
+      REGION,
+      expect.objectContaining({ sent: expect.objectContaining({ Q: expect.any(Object) }) })
+    );
   });
 
   it('runs each replay as the child: its name, no templates, the same run', async () => {

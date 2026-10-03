@@ -76,6 +76,10 @@ import {
   STATE_REGION_DIVERGED,
 } from '../../state/malformed-resources-bag.js';
 import { producerRecordKey } from '../../state/record-keys.js';
+import {
+  ledgerForStack,
+  withCreateTokenLedger,
+} from '../../provisioning/providers/create-token-ledger.js';
 
 /**
  * The `Re-run with: cdkd rollback` line that a warning and two refusals here
@@ -863,13 +867,16 @@ export async function rollbackCommand(
             'CDKD_PREFIX_USER_SUPPLIED_NAMES=true instead.'
         );
       }
+      // go-to-k/cdkd#4438: the stack's create-token ledger, so the replay's
+      // re-creates send the stack's tokens and a Retain it honours rotates them.
+      const createTokenLedger = ledgerForStack(setup.stateBackend, stackName, region);
       /** The async scope a segment replays in: its stack name and its prefix flag. */
       const inSegmentScope = <T>(
         segment: { skipPrefix?: boolean },
         fn: () => Promise<T>
       ): Promise<T> =>
         withSkipPrefix(segment.skipPrefix ?? legacySkipPrefix(), () =>
-          withStackName(stackName, fn)
+          withStackName(stackName, () => withCreateTokenLedger(createTokenLedger, fn))
         );
 
       // 5. Plan — newest-first, one block per segment.

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   S3Client,
   GetObjectCommand,
@@ -22,6 +23,11 @@ import {
   type RollbackJournal,
   type RollbackJournalSegment,
 } from '../types/rollback-journal.js';
+import {
+  notifyStateSaved,
+  parseCreateTokenLedger,
+  type CreateTokenLedgerDoc,
+} from './create-token-ledger.js';
 import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
@@ -250,6 +256,14 @@ export class S3StateBackend {
    */
   private getRollbackJournalKey(stackName: string, region: string): string {
     return `${this.config.prefix}/${stackName}/${region}/rollback-journal.json`;
+  }
+
+  /**
+   * Get the create-token ledger S3 key -- a sibling of `state.json`
+   * (go-to-k/cdkd#4438, `src/state/create-token-ledger.ts`).
+   */
+  private getCreateTokenLedgerKey(stackName: string, region: string): string {
+    return `${this.config.prefix}/${stackName}/${region}/create-tokens.json`;
   }
 
   /**
@@ -599,6 +613,9 @@ export class S3StateBackend {
         }
       }
 
+      // The create-token ledger records that this lineage has a state record
+      // (go-to-k/cdkd#4438). Never throws.
+      await notifyStateSaved(stackName, region);
       return response.ETag;
     } catch (error) {
       if ((error as { name: string }).name === 'PreconditionFailed') {
@@ -628,6 +645,13 @@ export class S3StateBackend {
    */
   async deleteState(stackName: string, region: string): Promise<void> {
     await this.ensureClientForBucket();
+    // go-to-k/cdkd#4438: the resources this record names are let go of
+    // (destroyed, or kept by RETAIN, or orphaned with the record), so the
+    // stack's next create must not send the tokens they hold. FIRST, and
+    // fail-closed: a ledger that outlived its record would hand a kept file
+    // system back to the next deploy, while a record that outlives its ledger
+    // only makes an interrupted create's re-run refuse.
+    await this.deleteCreateTokenLedger(stackName, region);
     try {
       this.logger.debug(`Deleting state: ${this.stackRef(stackName, region)}`);
 
@@ -1099,6 +1123,103 @@ export class S3StateBackend {
           `survive and remain readable via GetObject with a VersionId${describing}. Grant ` +
           `s3:ListBucketVersions and s3:DeleteObjectVersion on the state bucket, or purge the ` +
           `key(s) by hand. Underlying error: ${errorDetail(error)}`
+      );
+    }
+  }
+
+  /**
+   * Read the stack's create-token ledger (go-to-k/cdkd#4438). `null` when
+   * there is none. A failed read, or a body this binary does not understand,
+   * throws.
+   */
+  async loadCreateTokenLedger(
+    stackName: string,
+    region: string
+  ): Promise<CreateTokenLedgerDoc | null> {
+    const body = await this.getRawObject(this.getCreateTokenLedgerKey(stackName, region));
+    if (body === null) return null;
+    const ledger = parseCreateTokenLedger(body);
+    if (ledger === null) {
+      // Not "no ledger": a body this binary cannot read -- a newer version's,
+      // or a damaged one -- must not be overwritten with a fresh nonce.
+      throw new Error(
+        `the create-token ledger of stack ${this.stackRef(stackName, region)} (create-tokens.json beside its state.json) is in a format this cdkd version cannot read; upgrade cdkd, or delete that object if it is damaged`
+      );
+    }
+    return ledger;
+  }
+
+  /** Write the stack's create-token ledger. Every writer holds the stack lock. */
+  async saveCreateTokenLedger(
+    stackName: string,
+    region: string,
+    ledger: CreateTokenLedgerDoc
+  ): Promise<void> {
+    await this.putRawObject(
+      this.getCreateTokenLedgerKey(stackName, region),
+      JSON.stringify(ledger, null, 2)
+    );
+  }
+
+  /**
+   * Replace the ledger's nonce and drop the `sent` entries of `logicalIds`
+   * (go-to-k/cdkd#4438): `cdkd orphan` let those resources go while they still
+   * hold this stack's tokens, so the stack's next create of them must send a
+   * new one. OTHER logical ids keep the token they sent, which a re-run still
+   * reuses. No ledger, no-op: the stack's next create
+   * mints a fresh nonce anyway. Throws a `StateError` naming the stack when
+   * the ledger cannot be read or written, so `cdkd orphan` stops before
+   * dropping the record.
+   */
+  async rotateCreateTokenNonce(
+    stackName: string,
+    region: string,
+    logicalIds: readonly string[]
+  ): Promise<void> {
+    try {
+      const ledger = await this.loadCreateTokenLedger(stackName, region);
+      if (ledger === null) return;
+      ledger.nonce = randomUUID();
+      for (const logicalId of logicalIds) delete ledger.sent[logicalId];
+      await this.saveCreateTokenLedger(stackName, region, ledger);
+    } catch (error) {
+      // The SDK's own text (an AccessDenied names the object's ARN) carries
+      // the raw stack name: name the stack through `stackRef` instead.
+      const normalized = normalizeAwsError(error, { bucket: this.config.bucket });
+      throw new StateError(
+        `Failed to renew the create-token ledger of stack ${this.stackRef(stackName, region)}: ${errorDetail(normalized)}. ` +
+          'The state record was left in place; re-run once the ledger can be written.',
+        normalized
+      );
+    }
+  }
+
+  /**
+   * Delete the stack's create-token ledger, so the stack's next create mints a
+   * fresh nonce. An absent ledger is fine; any other failure throws a
+   * `StateError`, so the caller stops before letting resources go with the
+   * ledger still naming their tokens.
+   */
+  async deleteCreateTokenLedger(stackName: string, region: string): Promise<void> {
+    await this.ensureClientForBucket();
+    try {
+      await this.s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: this.getCreateTokenLedgerKey(stackName, region),
+        })
+      );
+    } catch (error) {
+      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return;
+      const normalized = normalizeAwsError(error, {
+        bucket: this.config.bucket,
+        operation: 'DeleteObject',
+      });
+      throw new StateError(
+        `Failed to delete the create-token ledger for stack ${this.stackRef(stackName, region)}: ${errorDetail(normalized)}. ` +
+          'The state record was left in place; re-run once the ledger can be deleted.',
+        normalized
       );
     }
   }
