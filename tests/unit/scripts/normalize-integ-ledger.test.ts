@@ -108,6 +108,15 @@ describe('parseLedger', () => {
     expect(() => parseLedger(file(row('', '2026-01-01T00:00:00Z')))).toThrow(/empty test name/);
   });
 
+  it('hard-fails on a test name carrying whitespace (name and duration joined)', () => {
+    expect(() => parseLedger(file(row('lambda 105', '2026-01-01T00:00:00Z')))).toThrow(
+      /test name "lambda 105" contains whitespace/,
+    );
+    expect(() => parseLedger(file(row('lambda\u00a0105', '2026-01-01T00:00:00Z')))).toThrow(
+      /contains whitespace/,
+    );
+  });
+
   it('hard-fails on a comment line interleaved after data rows', () => {
     const bad = file(row('a', '2026-01-01T00:00:00Z'), '# stray');
     expect(() => parseLedger(bad)).toThrow(/comment line appears after data rows/);
