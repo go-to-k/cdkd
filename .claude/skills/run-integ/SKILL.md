@@ -391,11 +391,12 @@ Which fixture to run is a coverage judgement, not a marker lookup.
 - **A fixture that discards the CLI's stderr cannot report its own failure.**
   `RESULT=$(${CDKD} ... 2>/dev/null | tail -1)` under `set -euo pipefail` prints
   the arm header and exits 1 with NO error text. The shape is banned
-  ([../../rules/abort-capture.md](../../rules/abort-capture.md)); a fenced
-  invoke prints `[verify] command exited N` plus the stderr tail, so a log
+  ([../../rules/abort-capture.md](../../rules/abort-capture.md)); a failing
+  fenced invoke prints `[verify] command exited N` plus the stderr tail, so a log
   ending at a bare arm header is an unfenced fixture — re-run that command with
   stderr attached BEFORE concluding anything.
 
-- **A FAIL that passes on re-run is not a flake verdict** — trace the failing
-  path first: re-run on `main`'s engine; an AWS call whose CloudTrail
-  `userAgent` is `cloudformation.amazonaws.com` is Cloud Control's (#4480).
+- **A FAIL that passes on re-run is not a flake verdict (#4480)** — trace the
+  failing path first: re-run on `main`'s engine; an AWS call whose CloudTrail
+  `userAgent` / `sourceIPAddress` is `cloudformation.amazonaws.com` was made by
+  Cloud Control's handler, not cdkd's SDK client.
