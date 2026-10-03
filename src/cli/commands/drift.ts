@@ -114,6 +114,7 @@ import {
   carriesSecretMask,
   createSecretMasker,
   dynamicReferenceTokens,
+  hasMaskableValues,
   identityKeyFor,
   isSingleDynamicReferenceToken as isWholeDynamicReference,
   isUncertifiedBaselineMaskPosition,
@@ -2698,7 +2699,9 @@ function redactDriftChanges(
   // is over the change list this call is already walking, and the identity
   // return is kept for the (dominant) case where nothing is masked.
   if (
-    secrets.size === 0 &&
+    // `hasMaskableValues`, not `size`: after a failed resolution the map is
+    // empty while its LOG-ONLY needles still mask a path (issue #2102).
+    !hasMaskableValues(secrets) &&
     secretPaths.size === 0 &&
     maskPaths.size === 0 &&
     !changes.some((change) => carriesSecretMask(change.stateValue))
@@ -2715,11 +2718,13 @@ function redactDriftChanges(
   for (const change of changes) {
     // NOTE the asymmetry with `printRevertPlan`, which loudly WITHHOLDS its
     // key lists when a resource's references could not be resolved: here the
-    // path is simply left as it is, because on that path `secrets` is empty and
-    // `maskSecretsInText` has nothing to match. Both are the same limit — a
-    // value cdkd never resolved cannot be recognised inside a KEY — but only
-    // the plan can withhold, since a drift entry without its path says nothing
-    // at all.
+    // path is masked only by what `maskSecretsInText` can match. On that path
+    // the MAP is empty, but the needles that resolved before the failure are
+    // kept as LOG-ONLY ones of this bag (issue #2102), and this PRINTING masker
+    // reads them — deliberately: a key carrying one is then masked, its values
+    // with it, and `--accept` refuses it. A value cdkd never resolved still
+    // cannot be recognised inside a KEY, and only the plan can withhold, since
+    // a drift entry without its path says nothing at all.
     const maskedPath = maskSecretsInText(change.path, secrets);
     // Two independent reasons a change is secret-bearing, and they are kept
     // apart because only one of them licenses the DROP below: the POSITION is
@@ -3429,12 +3434,13 @@ async function runDriftForStack(
           );
           // Every needle the clear discards stays a LOG-ONLY one of this bag
           // (issue #2102): the side set is keyed by the map INSTANCE, so it
-          // survives `clear()`, and only the PRINTING maskers read it — the
-          // report's value redaction and `--accept`'s write still see an empty
-          // map, which is the evenness the clear exists for. Without it the
-          // `readFailed` warning and its debug stack below, which mask through
-          // this same bag, would print a plaintext the pass had already
-          // resolved.
+          // survives `clear()`, and only the PRINTING maskers read it. The
+          // report's VALUE redaction and `--accept`'s write still see an empty
+          // map, which is the evenness the clear exists for; `redactDriftChanges`'
+          // PATH mask is a printing masker, so a key carrying one is masked and
+          // refused (see the note there). Without it the `readFailed` warning
+          // and its debug stack below, which mask through this same bag, would
+          // print a plaintext the pass had already resolved.
           for (const plaintext of secrets.keys()) recordLogOnlyValue(secrets, plaintext);
           secrets.clear();
         }

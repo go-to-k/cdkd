@@ -63,6 +63,32 @@ describe('liveMatchesUnresolvedTokenFrame (#2102)', () => {
     expect(liveMatchesUnresolvedTokenFrame(`p-${leading}`, 'p-Qtail', BOTH, leadingSecrets)).toBe(
       false
     );
+  });
+
+  it('refuses when a plaintext supplies only a span EDGE (PR #4513 security review)', () => {
+    // The spans are scanned over the RESOLVED string, so a secret ending in
+    // `{` before a literal `{resolve:...}}` (case A), or starting with `}`
+    // after a literal `{{resolve:...}` (case B), completes a survivor's
+    // spelling while CONTAINING no `{{resolve:` of its own.
+    const T = '{{resolve:foo:x}}';
+    const tokens = new Set([T]);
+    const caseA = new Map([['pw{', '{{resolve:secretsmanager:a:SecretString:k::}}']]);
+    expect(liveMatchesUnresolvedTokenFrame(`pw${T}`, 'pwOLDSECRET-anything', tokens, caseA)).toBe(
+      false
+    );
+    const caseB = new Map([['}tail', '{{resolve:secretsmanager:b:SecretString:k::}}']]);
+    expect(liveMatchesUnresolvedTokenFrame(`${T}tail`, 'ZZZtail', tokens, caseB)).toBe(false);
+  });
+
+  it('finds an OVERLAPPING later occurrence of a plaintext', () => {
+    // `{a{` occurs at 0 and, overlapping it, at 2; only the second reaches the
+    // span (which opens at 4). A scan stepping by the plaintext's length from
+    // the first occurrence would skip it.
+    const T = '{{resolve:foo:x}}';
+    const secrets = new Map([['{a{', '{{resolve:secretsmanager:c:SecretString:k::}}']]);
+    expect(liveMatchesUnresolvedTokenFrame(`{a{a${T}`, '{a{aZZ', new Set([T]), secrets)).toBe(
+      false
+    );
     // A plaintext elsewhere in the string does not affect a disjoint span.
     const other = new Map([[`r${B}`, '{{resolve:secretsmanager:y:SecretString:k::}}']]);
     expect(liveMatchesUnresolvedTokenFrame(`${A}|r${B}`, `v|r${B}`, new Set([A]), other)).toBe(

@@ -689,7 +689,8 @@ does to those positions depends on where the token sits:
   secret cdkd resolved into it — is exactly what AWS holds. Otherwise (AWS
   holds nothing there, a non-string, different surrounding text, or a
   different value where cdkd resolved a secret, such as one rotated since the
-  last deploy) the string is written **with the token literal**, exactly as
+  last deploy; or the string is an element of a list with no identity field
+  and AWS changed it) the string is written **with the token literal**, exactly as
   `cdkd deploy` does, so a value AWS holds there **is overwritten**.
 
 Both the drift warning and the revert warning state which of the two applies,

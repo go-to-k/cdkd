@@ -2493,6 +2493,55 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(output).not.toContain(SECRET_PLAINTEXT);
   });
 
+  it('masks a drifted KEY carrying a needle the failed-resolution clear discarded (issue #2102)', async () => {
+    // The map is empty after the clear, but the path mask is a PRINTING masker
+    // and reads the discarded needles kept as log-only ones: the key is masked,
+    // its values with it, and nothing prints the plaintext.
+    mockSecretsManagerSend.mockImplementation(async (command: { input?: { SecretId?: string } }) => {
+      if (command?.input?.SecretId === 'cdkd-missing-secret') {
+        throw new Error('ResourceNotFoundException: Secrets Manager cannot find the secret');
+      }
+      return { SecretString: JSON.stringify({ password: SECRET_PLAINTEXT }) };
+    });
+    const env = {
+      A: SECRET_EXPR,
+      B: '{{resolve:secretsmanager:cdkd-missing-secret:SecretString:password::}}',
+      [SECRET_PLAINTEXT]: 'v1',
+    };
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: { Env: env },
+          observedProperties: { Env: env },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Env: { A: SECRET_PLAINTEXT, B: 'x', [SECRET_PLAINTEXT]: 'v2' },
+      }),
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    // The resolution really failed after one leaf resolved...
+    expect(mockSecretsManagerSend).toHaveBeenCalledTimes(2);
+    const payload = JSON.parse(output) as Array<{
+      drifted: Array<{ changes: Array<{ path: string }> }>;
+    }>;
+    // ...and the key's drift really was reported, masked.
+    expect(payload[0]!.drifted).toHaveLength(1);
+    expect(payload[0]!.drifted[0]!.changes.map((c) => c.path)).toEqual([`Env.${SECRET_MASK}`]);
+    expect(output).not.toContain(SECRET_PLAINTEXT);
+    const said = [warnSpy, errorSpy, infoSpy, debugSpy]
+      .flatMap((spy) => spy.mock.calls.map((c) => String(c[0])))
+      .join('\n');
+    expect(said).not.toContain(SECRET_PLAINTEXT);
+  });
+
   it('--revert still sends the literal where AWS has nothing at that position', async () => {
     // The residual, and it is what keeps a cdkd-DEPLOYED record behaving as it
     // did: with no live value to preserve, the token is what `cdkd deploy`

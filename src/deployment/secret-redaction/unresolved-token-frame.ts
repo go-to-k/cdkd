@@ -25,9 +25,14 @@ import { dynamicReferenceSpans } from './redact-path.js';
  *
  * Only spans whose text is in `unresolvedTokens` are wildcards. A
  * `{{resolve:...}}`-shaped substring that came out of a resolved PLAINTEXT is
- * literal frame; and a span that would OVERLAP such a plaintext's occurrence
- * (the same token text appearing both as a survivor and inside a secret)
- * refuses the whole leaf rather than guess which occurrence is which.
+ * literal frame; and a wildcard span that INTERSECTS any occurrence of a
+ * recorded plaintext refuses the whole leaf rather than guess which bytes are
+ * whose. Intersecting, not containing: the spans are scanned over the RESOLVED
+ * string, so a plaintext can supply just a span's opening `{` or closing `}`
+ * (a secret ending in `{` written before a literal `{resolve:x}}`), and the
+ * wildcard would then swallow part of the secret. A false refusal (a short
+ * plaintext that happens to occur inside a token's text) only ships the token,
+ * the pre-#2102 behaviour.
  *
  * Wildcard-only matching is decided exactly by a greedy leftmost scan: anchor
  * the first and last literal, then find each middle literal at its leftmost
@@ -70,8 +75,8 @@ export function liveMatchesUnresolvedTokenFrame(
 
 /**
  * Does any wildcard span intersect an occurrence of a recorded plaintext in
- * `send`? Only a plaintext that itself contains `{{resolve:` can produce a
- * token-shaped substring, so only those are searched.
+ * `send`? Every occurrence counts, overlapping ones included (the scan steps by
+ * one character).
  */
 function wildcardOverlapsResolvedPlaintext(
   send: string,
@@ -79,7 +84,7 @@ function wildcardOverlapsResolvedPlaintext(
   secrets: RecordedSecretValues
 ): boolean {
   for (const plaintext of secrets.keys()) {
-    if (!plaintext.includes('{{resolve:')) continue;
+    if (plaintext === '') continue;
     for (let from = send.indexOf(plaintext); from >= 0; from = send.indexOf(plaintext, from + 1)) {
       const to = from + plaintext.length;
       if (wildcards.some((span) => span.start < to && from < span.end)) return true;
