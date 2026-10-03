@@ -295,6 +295,7 @@ export {
 
 import { withProducerRegions } from './producer-regions-scope.js';
 import { noteRetainedResource } from '../provisioning/providers/create-token-ledger.js';
+import { replayStackRecordsView, withStackRecords } from './stack-records-scope.js';
 
 async function replaySingle(
   op: CompletedOperation,
@@ -1014,7 +1015,12 @@ export async function replayRollback(
 ): ReturnType<typeof replayRollbackUnbound> {
   return await withProducerRegions(
     () => replayProducerRegionEvidence(args[3]),
-    () => replayRollbackUnbound(...args)
+    // go-to-k/cdkd#4492: the replay's records, so deleting one holder of a
+    // resource another record still holds leaves it in place.
+    () =>
+      withStackRecords(replayStackRecordsView(args[1], args[4]?.orphanLogicalIds), () =>
+        replayRollbackUnbound(...args)
+      )
   );
 }
 
@@ -1027,6 +1033,11 @@ export async function replayFailedOperations(
 ): ReturnType<typeof replayFailedOperationsUnbound> {
   return await withProducerRegions(
     () => replayProducerRegionEvidence(args[3]),
-    () => replayFailedOperationsUnbound(...args)
+    // go-to-k/cdkd#4492: the replay's records, so deleting one holder of a
+    // resource another record still holds leaves it in place.
+    () =>
+      withStackRecords(replayStackRecordsView(args[1]), () =>
+        replayFailedOperationsUnbound(...args)
+      )
   );
 }
