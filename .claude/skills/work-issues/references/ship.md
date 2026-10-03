@@ -36,11 +36,12 @@ repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch,
 so FIRST push plainly until `git rev-list origin/<branch>..HEAD` is empty (a
 denied plain push is re-authorized, never routed round through the arm). Then,
 when the harness denies the `git reset`, the rebase or the `--force-with-lease`
-push, take §7's MERGE ARM from `origin/<branch>` (go-to-k/cdkd#4327), spelled
-here as a denial also blocks re-reading §7 — all in `<LANE_TREE>` by literal
-path: `checkout -B <branch> origin/<branch>`, `merge origin/main`, re-run the
-generators and `vp run integ-ledger-normalize` (`merge=union` hides the ledger
-conflict locally), commit what changed, push plainly. Otherwise:
+push, take §7's MERGE ARM from `origin/<branch>` (go-to-k/cdkd#4327), all in
+`<LANE_TREE>` by literal path: `checkout -B <branch> origin/<branch>`,
+`merge origin/main`, re-run the generators and `vp run integ-ledger-normalize`
+(`merge=union` hides the ledger conflict locally), commit what changed, push
+plainly. When the arm is denied TOO, ask the maintainer (`AskUserQuestion`)
+to authorize the flatten, and on a yes run it below. With no denial:
 
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
@@ -202,8 +203,7 @@ git fetch origin \
 Never `git pull` into `<LAUNCH_BRANCH>`, never `git merge --ff-only origin/main`
 onto it, never `git rebase <LAUNCH_BRANCH>`, and never
 `git branch -D <LAUNCH_BRANCH>`. **AS-IS is the whole rule: RESTORE, never
-ADJUST.** **This step runs LAST, not per-lane**: §10 branches in this same tree,
-so restoring here and branching again in §10-d would undo itself.
+ADJUST.** **This step runs LAST, not per-lane**: §10-d branches in this tree.
 
 ### Release the claims
 
