@@ -23,7 +23,7 @@ verify, clean up.
 
 1. **Rebase, then build**: `git fetch origin` and rebase onto current
    `origin/main` (merge it when a force push is denied) BEFORE the run — a
-   stale base verifies code that will not merge, and nothing warns you.
+   stale base verifies code other than what will merge, and nothing warns.
    Then `vp run build` so `dist/` is current. **Never build beside a live
    fixture in this tree**: any build (`/check`, `/verify-pr`, `vp run verify`,
    `vp run runtime:smoke`, a building `verify.sh`, …) rewrites `dist/`, and the

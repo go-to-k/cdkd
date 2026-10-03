@@ -2,12 +2,12 @@
 
 ## 4. CLAIM the chosen issues BEFORE editing
 
-With SUBAGENT lanes (the default for stages 5-8) the PARENT posts every claim;
+With SUBAGENT lanes (stages 5-8's default) the PARENT posts every claim;
 its `<ref>` names the branch or worktree the lane agent will create.
 
 **IN-PLACE runs name the tree they are STANDING IN**: the `<ref>` is the branch
 §5 will create plus the opening report's `LANE_TREE`, never
-`git rev-parse --show-toplevel`, whose cwd may have reset to the main checkout;
+`git rev-parse --show-toplevel` (its cwd may have reset to the main checkout);
 a concurrent lane's claim names its sibling tree instead (launch-mode.md row 1).
 
 **Do NOT claim `LAUNCH_BRANCH` — it is the OUTER TOOL's branch**, to PUT BACK.
@@ -17,7 +17,7 @@ claim the top one or the whole set, every lane after the first QUEUED.
 
 ```bash
 gh issue comment <n> --body "QUEUED behind #<the lane running first> in \
-<LANE_TREE> — this session will start it only after that lane merges. Not \
+<LANE_TREE> — this session starts it only after that lane merges. Not \
 started: no branch exists yet and no file is held. If you want this issue, take \
 it and say so here; I will stand down."
 ```
@@ -45,8 +45,8 @@ gh issue comment <n> --body-file "$SCRATCH/standdown-<n>.md"
 For EACH issue you start — PROMOTING a QUEUED one included — first re-check
 `gh issue view <n> --json state`, §2's open-PR `files` query, and §3's premise
 check on CURRENT `origin/main` — in a call BEFORE the claim, never chained with
-it. Triage's findings date from TRIAGE time: a peer can close a queued issue,
-or open a PR holding its files, before its turn (#3979). Then:
+it: after TRIAGE a peer can close a queued issue, or open a PR holding its
+files, before its turn (#3979). Then:
 
 ```bash
 gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <files>. \
@@ -61,9 +61,10 @@ provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
 every comment, doc or rule the fix makes FALSE — stating the old invariant or
 calling the issue open (`grep -rnw '<issue digits>\|<key symbol>' src docs
 .claude/rules`, minus `docs/_generated`, each through §2's open-PR `files`
-query); a NEW SDK provider adds every file the provider-addition fences reach
-(`providers.md`'s list; `gh pr view 4457 --json files` minus its fixture)
-— a narrower list stops the lane mid-run to ask (go-to-k/cdkd#1160).
+query); a NEW SDK provider adds `.claude/rules/providers.md`'s "Adding a New
+SDK Provider" files plus the tables its fences read (`name-keys.ts` + tests,
+nested-key coverage, `docs/cli-drift.md`) — a narrower list stops the lane
+mid-run to ask (go-to-k/cdkd#1160).
 
 **Correct the classification lines in the same turn as the claim**: rewrite a
 legacy packed body to the four-line shape (§3), fill a missing `Severity`, fix
@@ -73,7 +74,7 @@ what the evidence contradicts (`Notes` never enters a body).
 `effort:<v>`, plus `--remove-label` for the one superseded — else §3's query
 picks between TWO), BEFORE the lane's PR exists, so the PR inherits them.
 
-**Claim at SHORTLIST time, not after the analysis.**
+**Claim at SHORTLIST time, before the analysis.**
 
 **Then VERIFY the claim stuck** — posting is not winning:
 
