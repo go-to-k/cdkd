@@ -2635,6 +2635,33 @@ holds at most one of each. The cluster lookup needs
 and the deploy proceeds. A reset connection or a timeout after the request was
 sent is not covered, as for the creates above.
 
+### A warning that a Lambda layer version or event source mapping may be an orphan
+
+`PublishLayerVersion` and `CreateEventSourceMapping` carry no idempotency token
+either. cdkd turns off the AWS SDK's own retry of a 5xx for them, and after one
+fails with HTTP 500 / 502 / 503 / 504, cdkd's retry first lists what the failed
+attempt may have made and warns about each match:
+
+- a version of the same layer published during the failed attempt. The warning
+  gives `aws lambda get-layer-version`, then `aws lambda delete-layer-version`
+  to run only after confirming the version is this deploy's orphan;
+- a mapping between the same function and event source (the same function
+  only, for a self-managed Kafka source) that this deploy did not record and
+  that was not last modified before the failed attempt. Lambda reports no
+  creation time for a mapping, so a match may also be this stack's own mapping
+  from an earlier deploy or another stack's; the warning gives
+  `aws lambda get-event-source-mapping` and no delete command.
+
+cdkd neither adopts nor deletes a candidate, and then creates the resource
+again. Where Lambda refuses a second mapping between the same function and
+source (it does for an SQS queue), that create fails with
+`ResourceConflictException` naming the orphan's UUID: delete that mapping
+(`aws lambda delete-event-source-mapping --uuid <uuid>`) once you have
+confirmed it is this deploy's, and re-run the deploy. The lookup needs
+`lambda:ListLayerVersions` or `lambda:ListEventSourceMappings`; without it cdkd
+warns that it could not look, and the deploy proceeds. A reset connection or a
+timeout after the request was sent is not covered, as for the creates above.
+
 ### `DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for
 
 cdkd retries a `CreateDistribution` that answered HTTP 500 / 502 / 503 / 504,

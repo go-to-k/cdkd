@@ -4,6 +4,7 @@ import {
   DeleteEventSourceMappingCommand,
   UpdateEventSourceMappingCommand,
   GetEventSourceMappingCommand,
+  ListEventSourceMappingsCommand,
   ListTagsCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -36,6 +37,37 @@ import {
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
+} from './ambiguous-create.js';
+import {
+  collectOrphanIds,
+  orphanCommandRegionArg,
+  reportPossibleOrphans,
+} from './orphan-report.js';
+
+/**
+ * Retry-safety state for `CreateEventSourceMapping`, which mints the mapping's
+ * UUID and carries no idempotency token (issue
+ * [#2080](https://github.com/go-to-k/cdkd/issues/2080)); see
+ * `orphan-report.ts`. Module-scoped: a provider instance is per registry, and
+ * one process can build several.
+ */
+const createEventSourceMappingLatch = new AmbiguousCreateLatch('lambda:CreateEventSourceMapping');
+/** Mappings this process created and recorded, never reported as orphan candidates. */
+const mappingsCreatedByThisProcess = new RecentIdSet();
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetEventSourceMappingCreateRetryStateForTests(): void {
+  createEventSourceMappingLatch.resetForTests();
+  mappingsCreatedByThisProcess.resetForTests();
+}
 
 /**
  * Classify an event source mapping by its `EventSourceArn` so that
@@ -357,6 +389,9 @@ const KINDS_WITH_STREAM_NUMERICS: ReadonlySet<EventSourceKind> = new Set(['kines
  */
 export class LambdaEventSourceMappingProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
+  private createClient: LambdaClient | undefined;
+  /** The shared client's region, for the create client built beside it. */
+  private readonly providerRegion: string | undefined;
   private logger = getLogger().child('LambdaEventSourceMappingProvider');
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -404,6 +439,25 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.lambdaClient = awsClients.lambda;
+    this.providerRegion = awsClients.configuredRegion ?? ambientRegion();
+  }
+
+  /**
+   * The client `CreateEventSourceMapping` goes through: SDK retries on, except
+   * a 5xx (`withoutServerErrorRetries`, issue #2080). Separate so every other
+   * call -- and every other provider sharing `getAwsClients().lambda` -- keeps
+   * the full SDK retry.
+   */
+  private getCreateClient(): LambdaClient {
+    if (!this.createClient) {
+      this.createClient = withoutServerErrorRetries(
+        new LambdaClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
+    }
+    return this.createClient;
   }
 
   /**
@@ -592,12 +646,27 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
               : new Date(raw as string);
       }
 
-      const response = await this.lambdaClient.send(new CreateEventSourceMappingCommand(params));
+      // Issue #2080: after an earlier ambiguous attempt, name the mapping it
+      // may have created before a second CreateEventSourceMapping is sent.
+      // Detection only -- see `orphan-report.ts`.
+      const orphanWindow = createEventSourceMappingLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await this.reportPossibleMappingOrphans(logicalId, orphanWindow, log, params);
+      }
+      const attemptStartMs = Date.now();
+      let response: import('@aws-sdk/client-lambda').CreateEventSourceMappingCommandOutput;
+      try {
+        response = await this.getCreateClient().send(new CreateEventSourceMappingCommand(params));
+      } catch (error) {
+        createEventSourceMappingLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
 
       const uuid = response.UUID;
       if (!uuid) {
         throw new Error('CreateEventSourceMapping did not return UUID');
       }
+      mappingsCreatedByThisProcess.add(uuid);
 
       log.debug(`Successfully created event source mapping ${logicalId}: ${uuid}`);
 
@@ -628,6 +697,60 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
           )
       );
     }
+  }
+
+  /**
+   * Issue #2080: list the mappings an earlier ambiguous
+   * `CreateEventSourceMapping` attempt may have created, and warn. Detection
+   * only, and undated: Lambda reports when a mapping was last MODIFIED, not
+   * when it was created, and a fresh mapping's state change (`Creating` to
+   * `Enabled`) moves that time past the attempt -- so it bounds a candidate
+   * from below only (a mapping untouched since before the attempt is not its
+   * orphan), the report prints no delete command, and nothing is adopted: a
+   * mapping between the same function and source can be another deploy's.
+   *
+   * Where Lambda refuses a second mapping between the same function and
+   * source (it does for an SQS queue: `ResourceConflictException`), the
+   * create that follows this report fails on the orphan instead of
+   * duplicating it; the report names the UUID that create collides with.
+   */
+  private async reportPossibleMappingOrphans(
+    logicalId: string,
+    window: AmbiguousCreateWindow,
+    log: MaskedLogSinks,
+    params: import('@aws-sdk/client-lambda').CreateEventSourceMappingCommandInput
+  ): Promise<void> {
+    const aws = pasteableAwsCommand(log.mask);
+    const regionArg = await orphanCommandRegionArg(this.lambdaClient, aws);
+    const functionName = params.FunctionName!;
+    const sourceArn = params.EventSourceArn;
+    await reportPossibleOrphans(logicalId, window, log, {
+      action: 'CreateEventSourceMapping',
+      service: 'Lambda',
+      listAction: 'ListEventSourceMappings',
+      subject: `an event source mapping from ${sourceArn !== undefined ? log.value(sourceArn) : 'a self-managed event source'} to function ${log.value(functionName)}`,
+      noun: 'event source mapping(s)',
+      list: () =>
+        collectOrphanIds(
+          async (marker) => {
+            const page = await this.lambdaClient.send(
+              new ListEventSourceMappingsCommand({
+                FunctionName: functionName,
+                ...(sourceArn !== undefined && { EventSourceArn: sourceArn }),
+                ...(marker && { Marker: marker }),
+              })
+            );
+            return { items: page.EventSourceMappings ?? [], next: page.NextMarker };
+          },
+          (item) =>
+            item.UUID &&
+            !mappingsCreatedByThisProcess.has(item.UUID) &&
+            (item.LastModified === undefined || item.LastModified.getTime() >= window.floorMs)
+              ? item.UUID
+              : undefined
+        ),
+      inspect: (id) => aws`aws lambda get-event-source-mapping --uuid ${id}${regionArg}`.render(),
+    });
   }
 
   /**
