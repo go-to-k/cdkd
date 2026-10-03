@@ -310,7 +310,6 @@ sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sh
 sdk-to-cc-autoroute	2026-09-25T15:16:49Z	PASS	155	verify.sh	rc ok, orph clean; #3515 json-patch-generator CC patch path, tree c067e96b0
 secret-derived-immutable-names	2026-10-02T09:06:41Z	PASS	110	verify.sh	rc ok, orph clean (#4416 r2)
 secrets-array-nested	2026-10-02T07:27:24Z	PASS	687	verify.sh	rc ok, orph clean (#4417)
-secrets-dynamic-ref	2026-10-03T01:37:06Z	PASS	651	verify.sh	rc ok, orph clean; #2909 Phase 1b2b on head rebased over #4473; red on reverted src at the clean-diff assertion
 secrets-dynamic-ref	2026-10-03T03:19:07Z	PASS	631	verify.sh	rc ok, orph clean (#4485)
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
