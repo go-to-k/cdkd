@@ -1444,7 +1444,10 @@ Two kinds of refusal name this dead end explicitly:
 The guard's note does not ask AWS: it reads the properties cdkd recorded and
 the AWS read-back it stored after its last write. Protection you enabled out of
 band after that read is in neither, so such a resource gets the guard's shorter
-message. AWS refuses the delete either way, for every type in
+message. The six types' own refusals do not read the stored read-back at all:
+they read the properties cdkd recorded (`AWS::Cognito::UserPool` reads the
+template's value first), so protection that only the read-back shows gets their
+shorter message. AWS refuses the delete either way, for every type in
 `--remove-protection`'s table whenever a deploy has to replace one, whether or
 not its refusal says so — a failed deploy or an untracked old resource, per the
 table above.
