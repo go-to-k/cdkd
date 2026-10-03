@@ -21,12 +21,14 @@ import { takenFnIfArms } from './recreate-target-readers.js';
  * recorded on the Cloud Control route sends nothing still, as its patch from
  * record to template is empty; all three route through their SDK providers.
  *
- * Only the replacement arm records a parent. The update-failure fallback
- * (`ResourceUpdateNotSupportedError` -> delete, create) also re-creates under
- * the same id, but the diff never promoted that parent's readers, so they are
- * not reached here (go-to-k/cdkd#4444). A child the deploy fails before
- * reaching has its state record forgotten instead, so the next deploy creates
- * it ({@link lostChildActions}).
+ * The replacement arm records a parent, and so does the update-failure
+ * fallback (`ResourceUpdateNotSupportedError` / Cloud Control
+ * `UnsupportedAction` -> delete, create), go-to-k/cdkd#4444. The diff never
+ * promoted the fallback parent's readers (it was an in-place row), so the
+ * executor dispatches its `NO_CHANGE` children as soon as it completes
+ * ({@link noChangeChildrenOfRecreatedParents}). A child the deploy fails
+ * before reaching has its state record forgotten instead, so the next deploy
+ * creates it ({@link lostChildActions}).
  *
  * A child is lost only when its parent-naming value is UNCHANGED (the caller
  * compares the resolved value with the record): one the same deploy re-points
@@ -357,4 +359,40 @@ function namesPhysicalId(value: unknown, physicalId: string): boolean {
   }
   if (Array.isArray(value)) return value.some((item) => namesPhysicalId(item, physicalId));
   return false;
+}
+
+/**
+ * go-to-k/cdkd#4444: the `NO_CHANGE` rows that are children of a parent this
+ * deploy re-created under the same physical id. The diff promotes the readers
+ * of a replacement it knows of, so these arise from a re-create the diff did
+ * NOT foresee -- the update-failure fallback. A `NO_CHANGE` row's template
+ * value is its record, so it names the re-created parent exactly as before.
+ */
+export function noChangeChildrenOfRecreatedParents(input: {
+  changes: ReadonlyMap<string, { changeType: string }>;
+  skip: ReadonlySet<string>;
+  templateResources: Readonly<
+    Record<string, { Type: string; Properties?: Record<string, unknown> }>
+  >;
+  recreatedUnderSameId: ReadonlySet<string>;
+  recordedTypeOf: (logicalId: string) => string | undefined;
+  conditions?: Readonly<Record<string, boolean>> | undefined;
+}): string[] {
+  if (input.recreatedUnderSameId.size === 0) return [];
+  const found: string[] = [];
+  for (const [logicalId, change] of input.changes) {
+    if (change.changeType !== 'NO_CHANGE' || input.skip.has(logicalId)) continue;
+    if (!Object.hasOwn(input.templateResources, logicalId)) continue;
+    const resource = input.templateResources[logicalId]!;
+    if (input.recordedTypeOf(logicalId) !== resource.Type) continue;
+    const lost = childLostWithRecreatedParent({
+      resourceType: resource.Type,
+      templateProperties: resource.Properties,
+      recreatedUnderSameId: input.recreatedUnderSameId,
+      recordedTypeOf: input.recordedTypeOf,
+      conditions: input.conditions,
+    });
+    if (lost !== undefined) found.push(logicalId);
+  }
+  return found;
 }

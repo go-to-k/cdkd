@@ -1,6 +1,9 @@
 import { hasNoCloudControlHandlers } from '../../provisioning/unsupported-types.js';
 import { ccBrokenReason } from '../../provisioning/provider-registry.js';
-import { lostChildActions } from '../child-of-recreated-parent.js';
+import {
+  lostChildActions,
+  noChangeChildrenOfRecreatedParents,
+} from '../child-of-recreated-parent.js';
 import { shownType } from '../recreate-target-readers.js';
 import {
   type DeployEngine,
@@ -175,102 +178,151 @@ export async function executeDeployment(
         });
       }
 
+      // go-to-k/cdkd#4444: a resource re-created under the same id by the
+      // update-failure fallback (`ResourceUpdateNotSupportedError` -> delete,
+      // create) took what AWS stored inside it along, but the diff never
+      // promoted its readers -- the parent was an in-place UPDATE row -- so
+      // such a child is a `NO_CHANGE` row no executor holds. Each is turned
+      // into an UPDATE the engine re-creates (or re-puts) through the same
+      // lost-child arm, and added to the RUNNING executor as soon as its
+      // parent completes, so it is restored in DAG order right after the
+      // parent, as the replacement arm's children are, rather than after
+      // every other node (a later sibling's failure would then have left it
+      // missing). A pending node that reads it now waits for it; one already
+      // dispatched resolved its old id (harmless while the re-created child
+      // keeps its id: the name-addressed children the fallback reaches today,
+      // a log group's streams and filters).
+      const enqueueLostChildren = (executor: DagExecutor<ResourceChange>): void => {
+        const lostIds = noChangeChildrenOfRecreatedParents({
+          changes,
+          skip: deleteChanges,
+          templateResources: template.Resources ?? {},
+          recreatedUnderSameId: this.recreatedUnderSameId,
+          recordedTypeOf: (id) =>
+            Object.hasOwn(newResources, id) ? newResources[id]?.resourceType : undefined,
+          conditions,
+        });
+        for (const id of lostIds) {
+          const change = changes.get(id)!;
+          change.changeType = 'UPDATE';
+          change.propertyChanges = [];
+          this.logger.info(
+            safeMsg`  ${id} went with a resource the update-failure fallback re-created under the same id: re-creating it`
+          );
+        }
+        if (progress) progress.total += lostIds.length;
+        for (const id of lostIds) {
+          executor.add({
+            id,
+            dependencies: new Set(
+              this.dagBuilder.getDirectDependencies(dag, id).filter((d) => executor.has(d))
+            ),
+            state: 'pending',
+            data: changes.get(id)!,
+          });
+        }
+        for (const node of executor.values()) {
+          if (node.state !== 'pending') continue;
+          for (const dep of this.dagBuilder.getDirectDependencies(dag, node.id)) {
+            if (lostIds.includes(dep)) node.dependencies.add(dep);
+          }
+        }
+      };
+
+      const provisionNode = async (node: { id: string; data: ResourceChange }): Promise<void> => {
+        const logicalId = node.id;
+        const change = node.data;
+
+        const previousState = currentState.resources[logicalId]
+          ? { ...currentState.resources[logicalId] }
+          : undefined;
+
+        try {
+          await this.provisionResource(
+            logicalId,
+            change,
+            newResources,
+            stackName,
+            template,
+            parameterValues,
+            conditions,
+            actualCounts,
+            progress
+          );
+        } catch (provisionError) {
+          // Signal interruption so that long-running operations (e.g., CloudFront
+          // waitForDeployed) in sibling tasks abort promptly instead of blocking
+          // until their own polling timeouts fire.
+          this.interrupted = true;
+          this.interruptCause ??= 'sibling-failure';
+          // #1198: journal the failed op's pre-op state + attempted
+          // properties so `cdkd rollback --revert-failed` can act on it.
+          failedOperations.push({
+            logicalId,
+            changeType: change.changeType as 'CREATE' | 'UPDATE',
+            resourceType: change.resourceType,
+            provisionedBy: newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy,
+            ...(previousState && { previousState }),
+            physicalId: newResources[logicalId]?.physicalId ?? previousState?.physicalId,
+            // go-to-k/cdkd#4355: a failed op whose attempted bag is
+            // provably not this stack's resource (a refusal, or a write AWS
+            // definitely rejected) journals no attempted bag. The bag is what a later deploy
+            // reads as "this stack attempted that resource"
+            // (`priorAttemptsInJournal`), and `--revert-failed` reverts an
+            // UPDATE FROM it — both would then act on a resource the
+            // refusal found belonging to someone else.
+            ...(!isRefusedBeforeApplying(provisionError, logicalId) && {
+              attemptedProperties: this.attemptedResolvedProps.get(logicalId),
+            }),
+          });
+          throw provisionError;
+        }
+
+        completedOperations.push({
+          logicalId,
+          changeType: change.changeType as 'CREATE' | 'UPDATE',
+          resourceType: change.resourceType,
+          // Snapshot the routing layer just landed on the resource
+          // (CREATE = the auto-route decision; UPDATE = the state's
+          // sticky / re-evaluated layer). Threads into rollback so a
+          // CC-routed CREATE rolls back via the CC delete path —
+          // closing the silent-data-corruption hazard the v7 schema
+          // bump was designed to prevent.
+          provisionedBy: newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy,
+          previousState,
+          physicalId: newResources[logicalId]?.physicalId,
+          properties: newResources[logicalId]?.properties,
+          // Issue #2603: the retain verdict this deploy ACTED ON, so the
+          // rollback classifier stops re-deriving it from
+          // `previousState.updateReplacePolicy` — a different source
+          // that disagrees on exactly the deploy which adds or drops the
+          // attribute. Stamped on every UPDATE, including a `false` for
+          // a replacement that deleted the old resource: an ABSENT field
+          // is what a pre-#2603 journal looks like, and the classifier
+          // falls back to the old (wrong) read for those, so recording
+          // only the `true` case would leave the DROP direction live.
+          ...(change.changeType === 'UPDATE' && {
+            oldResourceRetained: this.retainedOldOnReplacement.has(logicalId),
+          }),
+          // Issue #2668: `resourceType` above is the TEMPLATE's type, so
+          // on a Type change the journal would otherwise name only the
+          // NEW one and the rollback would re-create the OLD resource
+          // through the new type's provider. Stamped on every UPDATE that
+          // has a previous record, for the reason `oldResourceRetained`
+          // is: ABSENT then means "written by a binary that predates this
+          // field" and nothing else.
+          ...(change.changeType === 'UPDATE' &&
+            previousState !== undefined && {
+              previousResourceType: previousState.resourceType,
+            }),
+        });
+
+        saveStateAfterResource(logicalId);
+        if (this.recreatedUnderSameId.has(logicalId)) enqueueLostChildren(createUpdateExecutor);
+      };
+
       try {
-        await createUpdateExecutor.execute(
-          concurrency,
-          async (node) => {
-            const logicalId = node.id;
-            const change = node.data;
-
-            const previousState = currentState.resources[logicalId]
-              ? { ...currentState.resources[logicalId] }
-              : undefined;
-
-            try {
-              await this.provisionResource(
-                logicalId,
-                change,
-                newResources,
-                stackName,
-                template,
-                parameterValues,
-                conditions,
-                actualCounts,
-                progress
-              );
-            } catch (provisionError) {
-              // Signal interruption so that long-running operations (e.g., CloudFront
-              // waitForDeployed) in sibling tasks abort promptly instead of blocking
-              // until their own polling timeouts fire.
-              this.interrupted = true;
-              this.interruptCause ??= 'sibling-failure';
-              // #1198: journal the failed op's pre-op state + attempted
-              // properties so `cdkd rollback --revert-failed` can act on it.
-              failedOperations.push({
-                logicalId,
-                changeType: change.changeType as 'CREATE' | 'UPDATE',
-                resourceType: change.resourceType,
-                provisionedBy:
-                  newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy,
-                ...(previousState && { previousState }),
-                physicalId: newResources[logicalId]?.physicalId ?? previousState?.physicalId,
-                // go-to-k/cdkd#4355: a failed op whose attempted bag is
-                // provably not this stack's resource (a refusal, or a write AWS
-                // definitely rejected) journals no attempted bag. The bag is what a later deploy
-                // reads as "this stack attempted that resource"
-                // (`priorAttemptsInJournal`), and `--revert-failed` reverts an
-                // UPDATE FROM it — both would then act on a resource the
-                // refusal found belonging to someone else.
-                ...(!isRefusedBeforeApplying(provisionError, logicalId) && {
-                  attemptedProperties: this.attemptedResolvedProps.get(logicalId),
-                }),
-              });
-              throw provisionError;
-            }
-
-            completedOperations.push({
-              logicalId,
-              changeType: change.changeType as 'CREATE' | 'UPDATE',
-              resourceType: change.resourceType,
-              // Snapshot the routing layer just landed on the resource
-              // (CREATE = the auto-route decision; UPDATE = the state's
-              // sticky / re-evaluated layer). Threads into rollback so a
-              // CC-routed CREATE rolls back via the CC delete path —
-              // closing the silent-data-corruption hazard the v7 schema
-              // bump was designed to prevent.
-              provisionedBy: newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy,
-              previousState,
-              physicalId: newResources[logicalId]?.physicalId,
-              properties: newResources[logicalId]?.properties,
-              // Issue #2603: the retain verdict this deploy ACTED ON, so the
-              // rollback classifier stops re-deriving it from
-              // `previousState.updateReplacePolicy` — a different source
-              // that disagrees on exactly the deploy which adds or drops the
-              // attribute. Stamped on every UPDATE, including a `false` for
-              // a replacement that deleted the old resource: an ABSENT field
-              // is what a pre-#2603 journal looks like, and the classifier
-              // falls back to the old (wrong) read for those, so recording
-              // only the `true` case would leave the DROP direction live.
-              ...(change.changeType === 'UPDATE' && {
-                oldResourceRetained: this.retainedOldOnReplacement.has(logicalId),
-              }),
-              // Issue #2668: `resourceType` above is the TEMPLATE's type, so
-              // on a Type change the journal would otherwise name only the
-              // NEW one and the rollback would re-create the OLD resource
-              // through the new type's provider. Stamped on every UPDATE that
-              // has a previous record, for the reason `oldResourceRetained`
-              // is: ABSENT then means "written by a binary that predates this
-              // field" and nothing else.
-              ...(change.changeType === 'UPDATE' &&
-                previousState !== undefined && {
-                  previousResourceType: previousState.resourceType,
-                }),
-            });
-
-            saveStateAfterResource(logicalId);
-          },
-          () => this.interrupted
-        );
+        await createUpdateExecutor.execute(concurrency, provisionNode, () => this.interrupted);
       } finally {
         // Wait for any pending per-resource state saves before the next phase or
         // before propagating an error — prevents partial-save races.
