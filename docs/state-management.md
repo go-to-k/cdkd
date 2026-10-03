@@ -1353,7 +1353,11 @@ has no wiring for is likewise absent whenever
 [`--prefer-sdk-route`](cli-deploy-safety.md#the-override) kept the
 resource on the SDK route (that flag is the opt-in to the property not being
 written at all) — unless the property is create-only, which cdkd keeps in the
-record because removing it would classify the next deploy as a replacement. `observedProperties` records what AWS actually has — captured
+record because removing it would classify the next deploy as a replacement.
+One key is never sent: a nested stack's `AWS::CloudFormation::Stack` row
+carries `cdkd:PendingChildDeletes` while its child stack (or one below it)
+still holds a DELETE cdkd skipped, so the next `cdkd deploy` re-runs that
+child and re-attempts the delete; it disappears once the delete lands. `observedProperties` records what AWS actually has — captured
 by `provider.readCurrentState` immediately after each create/update so it
 includes AWS-side defaults the user did not template. The `cdkd drift`
 comparator prefers `observedProperties` as its baseline for richer detection;

@@ -18,7 +18,10 @@ import { join } from 'node:path';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
-import { NestedStackProvider } from '../../../src/provisioning/providers/nested-stack-provider.js';
+import {
+  NestedStackProvider,
+  PENDING_CHILD_DELETES_KEY,
+} from '../../../src/provisioning/providers/nested-stack-provider.js';
 import {
   type NestedStackProviderContext,
   withNestedStackContext,
@@ -156,6 +159,7 @@ describe('a nested child skipped DELETE through the real engine and provider (#1
   });
 
   function run(): Promise<Awaited<ReturnType<DeployEngine['deploy']>>> {
+    vi.clearAllMocks();
     const nested = new NestedStackProvider();
     const pick = (type: string) =>
       type === 'AWS::CloudFormation::Stack' ? (nested as unknown as ResourceProvider) : leaf;
@@ -244,5 +248,228 @@ describe('a nested child skipped DELETE through the real engine and provider (#1
     expect(result.updated).toBe(1);
     expect(result.deleteSkipped).toBe(1);
     expect(result.updatePartial).toBe(0);
+  });
+
+  it('a plain re-deploy with NO template change re-attempts the child\'s kept DELETE (#4453)', async () => {
+    await run();
+    // The row records the pending count, a key no template can declare.
+    expect(states.get(PARENT)!.resources['Child']!.properties[PENDING_CHILD_DELETES_KEY]).toBe(1);
+
+    // Same template again. Without the marker the row diffs NO_CHANGE, the
+    // child never deploys, and the run reports nothing left unaddressed.
+    const second = await run();
+    expect(vi.mocked(leaf.delete)).toHaveBeenCalledTimes(1);
+    // The marker alone drove this run: `Keep` is unchanged, and the row is
+    // updated in place, never replaced.
+    expect(vi.mocked(leaf.update)).not.toHaveBeenCalled();
+    expect(second.updated).toBe(1);
+    expect(second.created).toBe(0);
+    expect(second.deleteSkipped).toBe(1);
+    expect(states.get(CHILD)!.resources['Gone']).toBeDefined();
+    expect(states.get(PARENT)!.resources['Child']!.properties[PENDING_CHILD_DELETES_KEY]).toBe(1);
+  });
+
+  it('once the re-attempted DELETE lands the marker clears, and the deploy after that changes nothing', async () => {
+    await run();
+    vi.mocked(leaf.delete).mockResolvedValue(undefined);
+
+    const landed = await run();
+    expect(vi.mocked(leaf.delete)).toHaveBeenCalledTimes(1);
+    expect(landed.deleteSkipped).toBe(0);
+    expect(states.get(CHILD)!.resources['Gone']).toBeUndefined();
+    const record = states.get(PARENT)!.resources['Child']!.properties;
+    expect(Object.hasOwn(record, PENDING_CHILD_DELETES_KEY)).toBe(false);
+    expect(record).toEqual({ TemplateURL: 'https://s3.amazonaws.com/a/child-v2.json' });
+
+    // Negative control: no marker, no template change, no child run.
+    const quiet = await run();
+    expect(vi.mocked(leaf.delete)).not.toHaveBeenCalled();
+    expect(vi.mocked(leaf.update)).not.toHaveBeenCalled();
+    expect(quiet.updated).toBe(0);
+    expect(quiet.deleteSkipped).toBe(0);
+  });
+});
+
+/**
+ * Three levels (#4453): the skipped DELETE lives in the GRANDCHILD. The root
+ * row's marker comes from the child's `deleteSkipped`, which carries the
+ * grandchild's (#1989), and on the unchanged re-run the CHILD engine's diff
+ * must see its own `Grandchild` row's marker to re-run the level below.
+ */
+describe('a grandchild skipped DELETE through two real nested levels (#4453)', () => {
+  const ROOT = 'Root4453';
+  const MID = `${ROOT}~Child`;
+  const LEAF_STACK = `${MID}~Grandchild`;
+  const MID_ARN = `arn:cdkd-local:${REGION}:123456789012:nested-stack/${ROOT}/Child`;
+  const LEAF_ARN = `arn:cdkd-local:${REGION}:123456789012:nested-stack/${MID}/Grandchild`;
+  let states: Map<string, StackState>;
+  let leaf: ResourceProvider;
+  let childPath: string;
+
+  const stackRow = (physicalId: string, url: string) => ({
+    physicalId,
+    resourceType: 'AWS::CloudFormation::Stack',
+    properties: { TemplateURL: url },
+    observedProperties: { TemplateURL: url },
+    attributes: {},
+    dependencies: [],
+  });
+  const stateOf = (stackName: string, resources: StackState['resources']): StackState => ({
+    version: STATE_SCHEMA_VERSION_CURRENT,
+    region: REGION,
+    stackName,
+    resources,
+    outputs: {},
+    lastModified: 0,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-4453-e2e-'));
+    childPath = join(dir, 'child.nested.template.json');
+    writeFileSync(
+      childPath,
+      JSON.stringify({
+        Resources: {
+          Grandchild: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'https://s3.amazonaws.com/a/gc-v2.json' },
+            Metadata: { 'aws:asset:path': 'grandchild.nested.template.json' },
+          },
+        },
+      })
+    );
+    writeFileSync(
+      join(dir, 'grandchild.nested.template.json'),
+      JSON.stringify({
+        Resources: {
+          Keep: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Name: '/g/keep', Type: 'String', Value: 'v1' },
+          },
+        },
+      })
+    );
+    states = new Map<string, StackState>([
+      [ROOT, stateOf(ROOT, { Child: stackRow(MID_ARN, 'https://s3.amazonaws.com/a/child-v1.json') })],
+      [MID, stateOf(MID, { Grandchild: stackRow(LEAF_ARN, 'https://s3.amazonaws.com/a/gc-v1.json') })],
+      [LEAF_STACK, stateOf(LEAF_STACK, { Keep: param('/g/keep', 'v1'), Gone: param('/g/gone', 'x') })],
+    ]);
+    leaf = {
+      create: vi.fn(),
+      update: vi.fn((_id: string, physicalId: string) =>
+        Promise.resolve({ physicalId, wasReplaced: false })
+      ),
+      delete: vi.fn().mockResolvedValue({ outcome: 'skipped', reason: 'test skip' }),
+      getAttribute: vi.fn(),
+      readCurrentState: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ResourceProvider;
+  });
+
+  function run(): Promise<Awaited<ReturnType<DeployEngine['deploy']>>> {
+    vi.clearAllMocks();
+    const nested = new NestedStackProvider();
+    const pick = (type: string) =>
+      type === 'AWS::CloudFormation::Stack' ? (nested as unknown as ResourceProvider) : leaf;
+    const providerRegistry = {
+      getProvider: vi.fn((type: string) => pick(type)),
+      getProviderFor: vi.fn((input: { resourceType: string }) => ({
+        provider: pick(input.resourceType),
+        provisionedBy: 'sdk',
+      })),
+      getRegisteredTypes: vi.fn().mockReturnValue([]),
+      validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
+      ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
+    };
+    const stateBackend = {
+      getState: vi.fn(async (name: string) => {
+        const state = states.get(name);
+        return state ? { state: structuredClone(state), etag: `etag-${name}` } : null;
+      }),
+      saveState: vi.fn(async (name: string, _region: string, state: StackState) => {
+        states.set(name, structuredClone(state));
+        return `etag-${name}`;
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      saveRollbackJournal: vi.fn().mockResolvedValue(undefined),
+      appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
+      deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
+    };
+    const lockManager = {
+      acquireLockWithRetry: vi.fn().mockResolvedValue(true),
+      releaseLock: vi.fn().mockResolvedValue(undefined),
+    };
+    const exportIndexStore = {
+      updateForStack: vi.fn().mockResolvedValue(undefined),
+      lookup: vi.fn().mockResolvedValue(null),
+      patchEntry: vi.fn().mockResolvedValue(undefined),
+    };
+    const dagBuilder = new DagBuilder();
+    const diffCalculator = new DiffCalculator();
+    const options = { dryRun: false, concurrency: 1 };
+    const engine = new DeployEngine(
+      stateBackend as never,
+      lockManager as never,
+      dagBuilder,
+      diffCalculator,
+      providerRegistry as never,
+      options,
+      REGION,
+      exportIndexStore as never
+    );
+    const ctx: NestedStackProviderContext = {
+      stateBackend: stateBackend as never,
+      lockManager: lockManager as never,
+      providerRegistry: providerRegistry as never,
+      parentStackName: ROOT,
+      parentRegion: REGION,
+      accountId: '123456789012',
+      awsClients: {} as never,
+      stateBucket: 'cdkd-state-test',
+      exportIndexStore: exportIndexStore as never,
+      nestedTemplates: { Child: childPath },
+      dagBuilder,
+      diffCalculator,
+      options,
+    };
+    const rootTemplate: CloudFormationTemplate = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'https://s3.amazonaws.com/a/child-v2.json' },
+        },
+      },
+    };
+    return withNestedStackContext(ctx, () => engine.deploy(ROOT, rootTemplate));
+  }
+
+  const marker = (stack: string, row: string): unknown =>
+    states.get(stack)!.resources[row]!.properties[PENDING_CHILD_DELETES_KEY];
+
+  it('both nested rows carry the marker, and an unchanged re-run reaches the grandchild again', async () => {
+    const first = await run();
+    expect(vi.mocked(leaf.delete)).toHaveBeenCalledTimes(1);
+    expect(first.deleteSkipped).toBe(1);
+    expect(marker(ROOT, 'Child')).toBe(1);
+    expect(marker(MID, 'Grandchild')).toBe(1);
+
+    const second = await run();
+    expect(vi.mocked(leaf.delete)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(leaf.update)).not.toHaveBeenCalled();
+    expect(second.deleteSkipped).toBe(1);
+    expect(states.get(LEAF_STACK)!.resources['Gone']).toBeDefined();
+    expect(marker(ROOT, 'Child')).toBe(1);
+    expect(marker(MID, 'Grandchild')).toBe(1);
+
+    // Landed: both markers clear, and the next unchanged deploy is quiet.
+    vi.mocked(leaf.delete).mockResolvedValue(undefined);
+    const landed = await run();
+    expect(landed.deleteSkipped).toBe(0);
+    expect(marker(ROOT, 'Child')).toBeUndefined();
+    expect(marker(MID, 'Grandchild')).toBeUndefined();
+    const quiet = await run();
+    expect(vi.mocked(leaf.delete)).not.toHaveBeenCalled();
+    expect(quiet.updated).toBe(0);
   });
 });
