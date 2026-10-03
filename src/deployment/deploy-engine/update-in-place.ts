@@ -864,6 +864,24 @@ export async function updateInPlace(
           )
         );
       }
+      // go-to-k/cdkd#4444: the old resource was deleted and the new one holds
+      // its physical id, so whatever AWS stored inside it went with it. The
+      // diff never promoted those children (this was an in-place row); the
+      // executor dispatches them as soon as this resource completes
+      // (`noChangeChildrenOfRecreatedParents`).
+      if (
+        !retainOldOnReplace &&
+        !createFirst &&
+        createResult.physicalId === currentResource.physicalId &&
+        !equalIdNamesDifferentResources({
+          resourceType,
+          physicalId: currentResource.physicalId,
+          oldProperties: currentResource.properties,
+          newProperties: resolvedProps,
+        })
+      ) {
+        this.recreatedUnderSameId.add(logicalId);
+      }
       if (retainOldOnReplace) {
         // Issue #1238's shape, on this path: a name-idempotent Create
         // API (e.g. SQS `CreateQueue` with an unchanged `QueueName`)

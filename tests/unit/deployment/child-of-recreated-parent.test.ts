@@ -3,6 +3,7 @@ import {
   childLostWithRecreatedParent,
   childStoredInParentTypes,
   lostChildActions,
+  noChangeChildrenOfRecreatedParents,
 } from '../../../src/deployment/child-of-recreated-parent.js';
 
 /** go-to-k/cdkd#4411: which resource went with a parent recreated under the same id. */
@@ -295,5 +296,44 @@ describe('lostChildActions (go-to-k/cdkd#4443)', () => {
         written
       )
     ).toEqual([{ logicalId: 'IamPolicy', parent: 'Role', action: 'forget' }]);
+  });
+});
+
+describe('noChangeChildrenOfRecreatedParents (go-to-k/cdkd#4444)', () => {
+  const templateResources = {
+    Fn: { Type: 'AWS::Lambda::Function' },
+    Perm: { Type: 'AWS::Lambda::Permission', Properties: { FunctionName: { Ref: 'Fn' } } },
+    Updated: { Type: 'AWS::Lambda::Permission', Properties: { FunctionName: { Ref: 'Fn' } } },
+    Gone: { Type: 'AWS::Lambda::Permission', Properties: { FunctionName: { Ref: 'Fn' } } },
+    Param: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'Fn' } } },
+  };
+  const types: Record<string, string> = {
+    Fn: 'AWS::Lambda::Function',
+    Perm: 'AWS::Lambda::Permission',
+    Updated: 'AWS::Lambda::Permission',
+    Gone: 'AWS::Lambda::Permission',
+    Param: 'AWS::SSM::Parameter',
+  };
+  const find = (recreated: string[], skip: string[] = []) =>
+    noChangeChildrenOfRecreatedParents({
+      changes: new Map([
+        ['Fn', { changeType: 'UPDATE' }],
+        ['Perm', { changeType: 'NO_CHANGE' }],
+        ['Updated', { changeType: 'UPDATE' }],
+        ['Gone', { changeType: 'NO_CHANGE' }],
+        ['Param', { changeType: 'NO_CHANGE' }],
+      ]),
+      skip: new Set(skip),
+      templateResources,
+      recreatedUnderSameId: new Set(recreated),
+      recordedTypeOf: (id) => (Object.hasOwn(types, id) ? types[id] : undefined),
+    });
+
+  it('names the NO_CHANGE children of a recreated parent, never a non-child, an UPDATE row or a skipped one', () => {
+    expect(find(['Fn'], ['Gone'])).toEqual(['Perm']);
+  });
+
+  it('names nothing when no parent was recreated', () => {
+    expect(find([])).toEqual([]);
   });
 });

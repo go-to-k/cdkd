@@ -1080,6 +1080,11 @@
       "scenarios": []
     },
     {
+      "name": "fallback-recreate-children",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "fifo-sqs-event-source",
       "annotated": false,
       "scenarios": []
@@ -3186,6 +3191,7 @@
     "eventbridge-scheduler",
     "eventbus-policy",
     "export-nested-stack",
+    "fallback-recreate-children",
     "fifo-sqs-event-source",
     "getatt-fallback-guard",
     "glue-securityconfig-replace",

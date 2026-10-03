@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-fallback-recreate-children",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd re-creates the children of a fallback same-id re-create (#4444)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
