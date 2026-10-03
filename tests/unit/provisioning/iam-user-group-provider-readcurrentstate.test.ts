@@ -40,6 +40,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('IAMUserGroupProvider.readCurrentState', () => {
   let provider: IAMUserGroupProvider;
@@ -98,7 +106,7 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
       mockSend.mockResolvedValueOnce({ Groups: [] });
       mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
 
-      const result = await provider.readCurrentState('alice', 'Logical', 'AWS::IAM::User');
+      const result = bagOf(await provider.readCurrentState('alice', 'Logical', 'AWS::IAM::User'));
       expect(result?.PermissionsBoundary).toBe('');
     });
 
@@ -129,12 +137,12 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
         return Promise.resolve({});
       });
 
-      const result = await provider.readCurrentState('alice', 'Logical', 'AWS::IAM::User', {
+      const result = bagOf(await provider.readCurrentState('alice', 'Logical', 'AWS::IAM::User', {
         Policies: [
           { PolicyName: 'B', PolicyDocument: docB },
           { PolicyName: 'A', PolicyDocument: docA },
         ],
-      });
+      }));
 
       // Order should match state's (B, A) so positional compare passes.
       expect(result?.Policies).toEqual([
@@ -143,13 +151,13 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
       ]);
     });
 
-    it('returns undefined when user gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when user gone', async () => {
       mockSend.mockRejectedValueOnce(
         new NoSuchEntityException({ message: 'gone', $metadata: {} })
       );
 
       const result = await provider.readCurrentState('alice', 'Logical', 'AWS::IAM::User');
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -204,11 +212,11 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
         return Promise.resolve({});
       });
 
-      const result = await provider.readCurrentState('engineers', 'Logical', 'AWS::IAM::Group');
+      const result = bagOf(await provider.readCurrentState('engineers', 'Logical', 'AWS::IAM::Group'));
       expect(result?.Policies).toEqual([{ PolicyName: 'Inline1', PolicyDocument: doc }]);
     });
 
-    it('returns undefined when group gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when group gone', async () => {
       mockSend.mockRejectedValueOnce(
         new NoSuchEntityException({ message: 'gone', $metadata: {} })
       );
@@ -218,7 +226,7 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
         'Logical',
         'AWS::IAM::Group'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -244,7 +252,7 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
         return Promise.resolve({ Tags: [], IsTruncated: false });
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'alice',
         'User',
         'AWS::IAM::User',
@@ -257,7 +265,7 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
             },
           },
         }
-      );
+      ));
 
       expect(result?.Policies).toEqual([]);
     });
@@ -282,7 +290,7 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
         return Promise.resolve({ Tags: [], IsTruncated: false });
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'engineers',
         'Group',
         'AWS::IAM::Group',
@@ -295,7 +303,7 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
             },
           },
         }
-      );
+      ));
 
       expect(result?.Policies).toEqual([]);
     });
@@ -321,7 +329,7 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
         return Promise.resolve({ Tags: [], IsTruncated: false });
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'alice',
         'User',
         'AWS::IAM::User',
@@ -336,7 +344,7 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
             },
           },
         }
-      );
+      ));
 
       expect(result?.Policies).toEqual([
         { PolicyName: 'MyPolicy', PolicyDocument: { Doc: 'mine' } },

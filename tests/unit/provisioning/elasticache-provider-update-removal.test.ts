@@ -287,7 +287,7 @@ describe('ElastiCacheProvider removal reset to CFn defaults (issue #1160)', () =
         'AWS::ElastiCache::CacheCluster'
       );
       expect(state).toBeDefined();
-      expect(state!['NotificationTopicArn']).toBeUndefined();
+      expect((state as Record<string, unknown>)['NotificationTopicArn']).toBeUndefined();
     });
 
     it('emits NotificationTopicArn when the topic status is active', async () => {
@@ -310,7 +310,7 @@ describe('ElastiCacheProvider removal reset to CFn defaults (issue #1160)', () =
         'AWS::ElastiCache::CacheCluster'
       );
       expect(state).toBeDefined();
-      expect(state!['NotificationTopicArn']).toBe('arn:aws:sns:us-east-1:123:topic');
+      expect((state as Record<string, unknown>)['NotificationTopicArn']).toBe('arn:aws:sns:us-east-1:123:topic');
     });
   });
 });

@@ -35,7 +35,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -1273,13 +1275,11 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * dropped by `normalizeAwsTagsToCfn` so a CDK-deployed repository does not
    * report drift on the metadata tag cdkd never templated.
    *
-   * Returns `undefined` when the repository no longer exists (or
-   * `GetRepository` returns no metadata) so the caller reports it as
-   * drift-unknown rather than throwing — mirrors the optional `import`
-   * method's incremental opt-in shape. A repository deleted BETWEEN the
+   * Returns `RESOURCE_NOT_FOUND` when the repository no longer exists
+   * (`RepositoryDoesNotExistException`), including one deleted BETWEEN the
    * `GetRepository` and `ListTagsForResource` calls (a race with a
-   * concurrent destroy) is handled the same way rather than aborting the
-   * whole `cdkd drift` run.
+   * concurrent destroy), so `cdkd drift` reports it as deleted. Returns
+   * `undefined` when `GetRepository` returns no metadata.
    *
    * Caveat: `KmsKeyId` is returned as AWS resolves it — the full key ARN.
    * On the normal drift path the baseline is `observedProperties` (captured
@@ -1293,12 +1293,12 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let metadata: RepositoryMetadata | undefined;
     try {
       metadata = await this.getRepositoryMetadata(physicalId);
     } catch (err) {
-      if (err instanceof RepositoryDoesNotExistException) return undefined;
+      if (err instanceof RepositoryDoesNotExistException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!metadata) return undefined;
@@ -1307,8 +1307,8 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     // tag map is a flat `Record<string, string>`, normalized back to the CFn
     // list shape). GetRepository does not return tags inline. `?? []` when
     // the ARN is somehow absent so `Tags` is always emitted. A repo deleted
-    // between the two reads throws NotFound here — treat that as drift-unknown
-    // (return undefined) instead of letting one racing delete abort the run.
+    // between the two reads throws NotFound here — report it as gone instead
+    // of letting one racing delete abort the run.
     let tags: Array<{ Key: string; Value: string }> = [];
     if (metadata.Arn) {
       try {
@@ -1317,7 +1317,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         );
         tags = normalizeAwsTagsToCfn(tagsResp.tags);
       } catch (err) {
-        if (err instanceof RepositoryDoesNotExistException) return undefined;
+        if (err instanceof RepositoryDoesNotExistException) return RESOURCE_NOT_FOUND;
         throw err;
       }
     }

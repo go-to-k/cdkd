@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { S3TablesProvider } from '../../../src/provisioning/providers/s3-tables-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('S3TablesProvider.readCurrentState', () => {
   let provider: S3TablesProvider;
@@ -108,7 +109,7 @@ describe('S3TablesProvider.readCurrentState', () => {
       expect(result).toMatchObject({ Tags: [] });
     });
 
-    it('returns undefined when bucket gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when bucket gone', async () => {
       mockSend.mockRejectedValueOnce(
         new NotFoundException({ message: 'gone', $metadata: {} })
       );
@@ -117,12 +118,13 @@ describe('S3TablesProvider.readCurrentState', () => {
         'Logical',
         'AWS::S3Tables::TableBucket'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
   describe('AWS::S3Tables::Namespace', () => {
-    it('parses physical id and surfaces TableBucketARN + Namespace (no SDK call)', async () => {
+    it('parses physical id and surfaces TableBucketARN + Namespace (GetNamespace for existence only)', async () => {
+      mockSend.mockResolvedValueOnce({ namespace: ['my-namespace'] });
       const physicalId = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket|my-namespace';
       const result = await provider.readCurrentState(
         physicalId,
@@ -136,7 +138,32 @@ describe('S3TablesProvider.readCurrentState', () => {
         // see provider comment for the drift-comparison rationale.
         Namespace: 'my-namespace',
       });
-      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when the namespace is gone (go-to-k/cdkd#4283)', async () => {
+      mockSend.mockRejectedValueOnce(
+        new NotFoundException({ message: 'gone', $metadata: {} })
+      );
+      const result = await provider.readCurrentState(
+        'arn:aws:s3tables:us-east-1:123:bucket/my-bucket|my-namespace',
+        'Logical',
+        'AWS::S3Tables::Namespace'
+      );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('rethrows a non-not-found GetNamespace error', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+      );
+      await expect(
+        provider.readCurrentState(
+          'arn:aws:s3tables:us-east-1:123:bucket/my-bucket|my-namespace',
+          'Logical',
+          'AWS::S3Tables::Namespace'
+        )
+      ).rejects.toThrow('denied');
     });
 
     it('returns undefined for malformed physical id', async () => {
@@ -232,7 +259,7 @@ describe('S3TablesProvider.readCurrentState', () => {
       expect(result).toMatchObject({ Tags: [] });
     });
 
-    it('returns undefined when table gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when table gone', async () => {
       mockSend.mockRejectedValueOnce(
         new NotFoundException({ message: 'gone', $metadata: {} })
       );
@@ -241,7 +268,25 @@ describe('S3TablesProvider.readCurrentState', () => {
         'Logical',
         'AWS::S3Tables::Table'
       );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when a bare-TableARN row resolves to a gone table', async () => {
+      mockSend.mockRejectedValueOnce(
+        new NotFoundException({ message: 'gone', $metadata: {} })
+      );
+      const result = await provider.readCurrentState(
+        'arn:aws:s3tables:us-east-1:123:bucket/my-bucket/table/0000-1111',
+        'Logical',
+        'AWS::S3Tables::Table'
+      );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('keeps returning undefined (not gone) for an unparseable physical id', async () => {
+      const result = await provider.readCurrentState('malformed', 'Logical', 'AWS::S3Tables::Table');
       expect(result).toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 });

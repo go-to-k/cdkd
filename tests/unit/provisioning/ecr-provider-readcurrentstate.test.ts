@@ -40,6 +40,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ECRProvider } from '../../../src/provisioning/providers/ecr-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('ECRProvider.readCurrentState', () => {
   let provider: ECRProvider;
@@ -114,14 +123,57 @@ describe('ECRProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when repository is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when repository is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new RepositoryNotFoundException({ message: 'not found', $metadata: {} })
     );
 
     const result = await provider.readCurrentState('gone', 'RepoLogical', 'AWS::ECR::Repository');
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when DescribeRepositories returns an empty list', async () => {
+    mockSend.mockResolvedValueOnce({ repositories: [] });
+
+    const result = await provider.readCurrentState('gone', 'RepoLogical', 'AWS::ECR::Repository');
+
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when the repository vanishes before GetLifecyclePolicy', async () => {
+    mockSend
+      .mockResolvedValueOnce({ repositories: [{ repositoryName: 'my-repo' }] })
+      .mockRejectedValueOnce(
+        new RepositoryNotFoundException({ message: 'not found', $metadata: {} })
+      );
+
+    const result = await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository');
+
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when the repository vanishes before ListTagsForResource', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        repositories: [
+          {
+            repositoryName: 'my-repo',
+            repositoryArn: 'arn:aws:ecr:us-east-1:123:repository/my-repo',
+          },
+        ],
+      })
+      .mockRejectedValueOnce(
+        new LifecyclePolicyNotFoundException({ message: 'not found', $metadata: {} })
+      )
+      .mockRejectedValueOnce(
+        new RepositoryNotFoundException({ message: 'not found', $metadata: {} })
+      );
+
+    const result = await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository');
+
+    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
@@ -144,7 +196,7 @@ describe('ECRProvider.readCurrentState', () => {
         ],
       });
 
-    const result = await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository');
+    const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository'));
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -165,7 +217,7 @@ describe('ECRProvider.readCurrentState', () => {
         tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRepo/Resource' }],
       });
 
-    const result = await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository');
+    const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository'));
     expect(result?.Tags).toEqual([]);
   });
 });

@@ -41,6 +41,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { KMSProvider } from '../../../src/provisioning/providers/kms-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('KMSProvider.readCurrentState', () => {
   let provider: KMSProvider;
@@ -136,7 +144,7 @@ describe('KMSProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({ KeyRotationEnabled: false });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState('k', 'KeyLogical', 'AWS::KMS::Key');
+    const result = bagOf(await provider.readCurrentState('k', 'KeyLogical', 'AWS::KMS::Key'));
     expect(result?.EnableKeyRotation).toBe(false);
     // RotationPeriodInDays is omitted when AWS doesn't report it (rotation disabled).
     expect(result).not.toHaveProperty('RotationPeriodInDays');
@@ -180,17 +188,72 @@ describe('KMSProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when key is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when key is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new NotFoundException({ message: 'not found', $metadata: {} })
     );
 
     const result = await provider.readCurrentState('gone', 'KeyLogical', 'AWS::KMS::Key');
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
-  it('returns undefined when alias not in any page', async () => {
+  it('returns RESOURCE_NOT_FOUND when the key vanishes between DescribeKey and GetKeyPolicy', async () => {
+    mockSend.mockResolvedValueOnce({
+      KeyMetadata: { KeyId: 'abcd-1234', KeySpec: 'SYMMETRIC_DEFAULT', Enabled: true },
+    });
+    mockSend.mockRejectedValueOnce(new NotFoundException({ message: 'not found', $metadata: {} }));
+
+    const result = await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key');
+
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when the key vanishes before GetKeyRotationStatus', async () => {
+    mockSend.mockResolvedValueOnce({
+      KeyMetadata: { KeyId: 'abcd-1234', KeySpec: 'SYMMETRIC_DEFAULT', Enabled: true },
+    });
+    mockSend.mockResolvedValueOnce({ Policy: '{"Version":"2012-10-17","Statement":[]}' });
+    mockSend.mockRejectedValueOnce(new NotFoundException({ message: 'not found', $metadata: {} }));
+
+    const result = await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key');
+
+    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(GetKeyRotationStatusCommand);
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when the key vanishes before ListResourceTags', async () => {
+    mockSend.mockResolvedValueOnce({
+      KeyMetadata: { KeyId: 'abcd-1234', KeySpec: 'SYMMETRIC_DEFAULT', Enabled: true },
+    });
+    mockSend.mockResolvedValueOnce({ Policy: '{"Version":"2012-10-17","Statement":[]}' });
+    mockSend.mockResolvedValueOnce({ KeyRotationEnabled: false });
+    mockSend.mockRejectedValueOnce(new NotFoundException({ message: 'not found', $metadata: {} }));
+
+    const result = await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key');
+
+    expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(ListResourceTagsCommand);
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('keeps reading the key when GetKeyPolicy is denied (not the sentinel)', async () => {
+    mockSend.mockResolvedValueOnce({
+      KeyMetadata: { KeyId: 'abcd-1234', KeySpec: 'SYMMETRIC_DEFAULT', Enabled: true },
+    });
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+    );
+    mockSend.mockResolvedValueOnce({ KeyRotationEnabled: false });
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key');
+
+    expect(result).not.toBe(RESOURCE_NOT_FOUND);
+    expect(result).toMatchObject({ Enabled: true, EnableKeyRotation: false });
+    expect(result).not.toHaveProperty('KeyPolicy');
+  });
+
+  it('returns RESOURCE_NOT_FOUND when alias not in any page', async () => {
     mockSend.mockResolvedValueOnce({
       Aliases: [{ AliasName: 'alias/other', TargetKeyId: 'other-key' }],
     });
@@ -201,7 +264,7 @@ describe('KMSProvider.readCurrentState', () => {
       'AWS::KMS::Alias'
     );
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('surfaces Key Tags from ListResourceTags with aws:* filtered out (KMS TagKey/TagValue shape)', async () => {
@@ -217,7 +280,7 @@ describe('KMSProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key');
+    const result = bagOf(await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key'));
 
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
@@ -232,7 +295,7 @@ describe('KMSProvider.readCurrentState', () => {
       Tags: [{ TagKey: 'aws:cdk:path', TagValue: 'MyStack/MyKey/Resource' }],
     });
 
-    const result = await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key');
+    const result = bagOf(await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key'));
 
     expect(result?.Tags).toEqual([]);
   });

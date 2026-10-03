@@ -58,7 +58,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
@@ -2607,7 +2609,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     _logicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
         return this.readCurrentStateAccount();
@@ -2629,7 +2631,7 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async readCurrentStateAuthorizer(
     physicalId: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const restApiId = properties?.['RestApiId'] as string | undefined;
     if (!restApiId) return undefined;
 
@@ -2656,7 +2658,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
       return result;
     } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
+      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
   }
@@ -2664,7 +2666,7 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async readCurrentStateResource(
     physicalId: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const restApiId = properties?.['RestApiId'] as string | undefined;
     if (!restApiId) return undefined;
 
@@ -2677,7 +2679,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       if (resp.pathPart !== undefined) result['PathPart'] = resp.pathPart;
       return result;
     } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
+      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
   }
@@ -2685,7 +2687,7 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async readCurrentStateDeployment(
     physicalId: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const restApiId = properties?.['RestApiId'] as string | undefined;
     if (!restApiId) return undefined;
 
@@ -2697,7 +2699,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       result['Description'] = resp.description ?? '';
       return result;
     } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
+      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
   }
@@ -2705,7 +2707,7 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async readCurrentStateStage(
     physicalId: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const restApiId = properties?.['RestApiId'] as string | undefined;
     if (!restApiId) return undefined;
 
@@ -2789,7 +2791,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
       return result;
     } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
+      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
   }
@@ -2808,7 +2810,7 @@ export class ApiGatewayProvider implements ResourceProvider {
 
   private async readCurrentStateMethod(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const parts = physicalId.split('|');
     if (parts.length !== 3) return undefined;
     const [restApiId, resourceId, httpMethod] = parts;
@@ -2845,7 +2847,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       result['MethodResponses'] = resp.methodResponses ?? {};
       return result;
     } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
+      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
   }

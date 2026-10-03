@@ -765,10 +765,12 @@ the resource's own secret references can certify. Re-running this command
 afterwards writes the masks back, since it resolves nothing. See
 [Redacted baselines](cli-drift.md#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
 
-Resources whose provider cannot read current state, and resources AWS reports
-as not found, are counted as unsupported and keep their previous baseline —
-a transient not-found can never null one out. Per-resource read failures are
-reported individually and make the run exit `2`.
+Resources whose provider cannot read current state are counted as unsupported
+and keep their previous baseline. A resource AWS reports as not found — deleted
+outside cdkd — is named in a warning, counted as failed and also keeps its
+previous baseline, so a transient not-found can never null one out. Per-resource
+read failures, a not-found one included, are reported individually and make the
+run exit `2`.
 
 **A malformed record is refused, not refreshed.** This is the one command in
 the `cdkd state` family that writes the record back, so — unlike the read-only
@@ -810,7 +812,7 @@ record without touching the AWS resources.
 | --- | --- |
 | `0` | Success, including a declined confirmation prompt and a no-op run. |
 | `1` | The command failed — missing record, ambiguous region, lock contention, a refused prompt in a non-interactive shell, or an AWS/S3 error. |
-| `2` | Partial completion. `state destroy`: per-resource delete failures, skips, or an interruption with targets left. `state refresh-observed`: per-resource readback failures. |
+| `2` | Partial completion. `state destroy`: per-resource delete failures, skips, or an interruption with targets left. `state refresh-observed`: per-resource readback failures, including a resource AWS reports as not found. |
 | `130` | Force-quit by Ctrl-C during a destroy: a second one, or one that arrived before the stack's own graceful stop was armed. A stack lock may be left behind; the message names `cdkd force-unlock`. |
 
 Every mutating subcommand refuses its confirmation prompt with exit `1` in a

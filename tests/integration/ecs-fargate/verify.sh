@@ -539,11 +539,11 @@ echo "    OK: service taskDefinition tracks the new ACTIVE revision ${SERVICE_TD
 # captured here is what Phase 3 puts back.
 #
 # drift_ecs_verdicts prints `<type> <verdict>` for each of the three ECS
-# types: `compared` (drifted or clean), `notSupported` (the read answered
-# nothing, which is how drift reports a resource that is not there),
-# `skipped`, or `notCompared` (only in the incomplete list, e.g. a read that
-# threw). It fails the run on a drift exit code that is not a verdict
-# (0 / 1 / 2), or a payload that does not hold exactly one of each type.
+# types: `compared` (drifted or clean), `deleted` (AWS reports the resource
+# is not there, go-to-k/cdkd#4283), `notSupported` (no read path), `skipped`,
+# or `notCompared` (only in the incomplete list, e.g. a read that threw).
+# It fails the run on a drift exit code that is not a verdict (0 / 1 / 2),
+# or a payload that does not hold exactly one of each type.
 drift_ecs_verdicts() {
   local out rc
   out="$(mktemp)"
@@ -564,7 +564,7 @@ drift_ecs_verdicts() {
   node -e '
 const fs = require("fs");
 const [s] = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-const primary = [["compared", [...s.drifted, ...s.clean]], ["notSupported", s.notSupported], ["skipped", s.skipped]];
+const primary = [["compared", [...s.drifted, ...s.clean]], ["deleted", s.deleted], ["notSupported", s.notSupported], ["skipped", s.skipped]];
 for (const type of ["AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition"]) {
   const found = primary.flatMap(([k, list]) => list.filter((o) => o.type === type).map(() => k));
   // An incomplete DRIFTED entry also sits in notCompared, so that list only
@@ -576,6 +576,9 @@ for (const type of ["AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDef
   console.log(`${type} ${found[0] ?? "notCompared"}`);
 }' "${out}" || { rm -f "${out}"; return 1; }
   rm -f "${out}"
+  # The drift exit code rides the verdicts as its own line, so a caller can
+  # pin it (go-to-k/cdkd#4283: a deleted resource exits 1).
+  echo "drift_rc ${rc}"
 }
 
 echo "==> Phase 1c: drift compares the live ECS Cluster / Service / TaskDefinition (issue #4272 control)"
@@ -673,10 +676,14 @@ if [ "${DEAD_RC}" != "0" ]; then
   exit 1
 fi
 echo "${DEAD_VERDICTS}" | sed 's/^/    /'
-# All three must stay uncompared; only the ones ECS still lists as INACTIVE
-# are named as verified below.
+# All three must read as DELETED (go-to-k/cdkd#4283; before it, `notSupported`);
+# only the ones ECS still lists as INACTIVE are named as verified below.
+if ! echo "${DEAD_VERDICTS}" | grep -qx "drift_rc 1"; then
+  echo "FAIL: drift over the deleted ECS resources did not exit 1: $(echo "${DEAD_VERDICTS}" | grep '^drift_rc ')" >&2
+  exit 1
+fi
 for type in AWS::ECS::Cluster AWS::ECS::Service AWS::ECS::TaskDefinition; do
-  if ! echo "${DEAD_VERDICTS}" | grep -qx "${type} notSupported"; then
+  if ! echo "${DEAD_VERDICTS}" | grep -qx "${type} deleted"; then
     echo "FAIL: drift read the deleted ${type} as present (issue #4272): $(echo "${DEAD_VERDICTS}" | grep "^${type} ")" >&2
     exit 1
   fi
@@ -687,7 +694,7 @@ else
   PHASE3_VERIFIED="Cluster / TaskDefinition"
   echo "    note: ECS no longer lists the deleted service as INACTIVE, so its arm reads absent either way; the Service rule is unit-covered only on this run"
 fi
-echo "    OK: drift no longer compares the deleted ECS ${PHASE3_VERIFIED} that ECS still lists as INACTIVE"
+echo "    OK: drift reports the deleted ECS ${PHASE3_VERIFIED} that ECS still lists as INACTIVE as deleted"
 
 echo ""
-echo "==> ecs-fargate test passed (EnableFaultInjection backfill + ConfiguredAtLaunch volume pairing (#806) + SDK-routed ServiceConnectConfiguration/VolumeConfigurations delivery (#609 route flip) + #807 replacement propagation + #4272 drift leaves the deleted ECS ${PHASE3_VERIFIED} uncompared + clean destroy)"
+echo "==> ecs-fargate test passed (EnableFaultInjection backfill + ConfiguredAtLaunch volume pairing (#806) + SDK-routed ServiceConnectConfiguration/VolumeConfigurations delivery (#609 route flip) + #807 replacement propagation + #4272/#4283 drift reports the deleted ECS ${PHASE3_VERIFIED} as deleted + clean destroy)"

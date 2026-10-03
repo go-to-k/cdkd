@@ -34,6 +34,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SQSQueueProvider } from '../../../src/provisioning/providers/sqs-queue-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const QUEUE_URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/my-queue';
 
@@ -98,13 +99,21 @@ describe('SQSQueueProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when queue does not exist', async () => {
+  it('returns RESOURCE_NOT_FOUND when queue does not exist', async () => {
     mockSend.mockRejectedValueOnce(
       new QueueDoesNotExist({ message: 'gone', $metadata: {} })
     );
 
     const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when the queue disappears before ListQueueTags', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: { VisibilityTimeout: '30' } });
+    mockSend.mockRejectedValueOnce(new QueueDoesNotExist({ message: 'gone', $metadata: {} }));
+
+    const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('surfaces Tags from ListQueueTags with aws:* filtered out', async () => {
@@ -113,7 +122,7 @@ describe('SQSQueueProvider.readCurrentState', () => {
       Tags: { Foo: 'Bar', 'aws:cdk:path': 'MyStack/MyQueue/Resource' },
     });
 
-    const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
+    const result = (await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue')) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -121,7 +130,7 @@ describe('SQSQueueProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({ Attributes: { VisibilityTimeout: '30' } });
     mockSend.mockResolvedValueOnce({ Tags: { 'aws:cdk:path': 'MyStack/MyQueue/Resource' } });
 
-    const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
+    const result = (await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue')) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([]);
   });
 
@@ -154,7 +163,7 @@ describe('SQSQueueProvider.readCurrentState', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: {} });
 
-    const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
+    const result = (await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue')) as Record<string, unknown> | undefined;
     expect(result?.['RedriveAllowPolicy']).toEqual(redriveAllow);
   });
 

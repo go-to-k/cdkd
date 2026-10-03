@@ -17,7 +17,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { refuseMalformedDesiredTags } from '../tag-list.js';
@@ -261,14 +263,14 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
   /**
    * Read the AWS-current DB subnet group in CFn-property shape: the keys
    * `create()` accepts, plus `Tags` via a follow-up
-   * `ListTagsForResource(ResourceName=arn)`. Returns `undefined` when the
-   * group is gone (`DBSubnetGroupNotFoundFault`).
+   * `ListTagsForResource(ResourceName=arn)`. Returns `RESOURCE_NOT_FOUND` when
+   * the group is gone (`DBSubnetGroupNotFoundFault` or an empty list).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     if (resourceType !== 'AWS::DocDB::DBSubnetGroup') return undefined;
     let resp: {
       DBSubnetGroups?: Array<{
@@ -283,11 +285,15 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
         new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: physicalId })
       )) as unknown as typeof resp;
     } catch (err) {
+      // go-to-k/cdkd#4283: only the fault NAME proves the resource is gone;
+      // the looser message match keeps its old "cannot tell" answer.
+      if ((err as { name?: unknown } | null)?.name === 'DBSubnetGroupNotFoundFault')
+        return RESOURCE_NOT_FOUND;
       if (isDocDBNotFoundError(err, 'DBSubnetGroupNotFoundFault')) return undefined;
       throw err;
     }
     const sg = resp.DBSubnetGroups?.[0];
-    if (!sg) return undefined;
+    if (!sg) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (sg.DBSubnetGroupName !== undefined) result['DBSubnetGroupName'] = sg.DBSubnetGroupName;

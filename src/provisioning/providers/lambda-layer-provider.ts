@@ -22,7 +22,9 @@ import type {
   ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { createMaskedLogSinks, withDerivedNameMasks } from '../masked-retry-logger.js';
 
 /**
@@ -333,19 +335,19 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
    * the version ARN format is
    *   `arn:aws:lambda:<region>:<account>:layer:<name>:<version>`.
    *
-   * Returns `undefined` when the layer version is gone
+   * Returns `RESOURCE_NOT_FOUND` when the layer version is gone
    * (`ResourceNotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp;
     try {
       resp = await this.lambdaClient.send(new GetLayerVersionByArnCommand({ Arn: physicalId }));
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
 

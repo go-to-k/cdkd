@@ -62,7 +62,7 @@ import {
 } from '../../state/malformed-resources-bag.js';
 import { producerRecordKey } from '../../state/record-keys.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
-import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import {
@@ -96,6 +96,7 @@ import {
 import { buildCdkdStateStackTree, type CdkdStateStackTree } from './export.js';
 import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { LockInfo, StackState, ResourceState } from '../../types/state.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
 import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
@@ -3432,9 +3433,32 @@ async function stateRefreshObservedCommand(
   }
 
   const setup = await setupStateBackend(options);
-  const providerRegistry = new ProviderRegistry();
-  registerAllProviders(providerRegistry);
-  providerRegistry.setCustomResourceResponseBucket(setup.bucket);
+  // Per-STACK-region clients and providers for the readback
+  // (go-to-k/cdkd#4283): a provider takes its clients at construction, so one
+  // registry built from the command's region would ask it about every stack,
+  // and a not-found answer now reads as "deleted outside cdkd". Same shape as
+  // `cdkd drift`'s and `cdkd diff`'s `stackRegionScope`.
+  const stackRegionScopes = new Map<string, { clients: AwsClients; registry: ProviderRegistry }>();
+  const stackRegionScope = (
+    scopeRegion: string
+  ): { clients: AwsClients; registry: ProviderRegistry } => {
+    let scope = stackRegionScopes.get(scopeRegion);
+    if (scope === undefined) {
+      const clients = new AwsClients({
+        region: scopeRegion,
+        ...(options.profile && { profile: options.profile }),
+      });
+      const registry = runWithStackAwsClients(clients, () => {
+        const scoped = new ProviderRegistry();
+        registerAllProviders(scoped);
+        scoped.setCustomResourceResponseBucket(setup.bucket);
+        return scoped;
+      });
+      scope = { clients, registry };
+      stackRegionScopes.set(scopeRegion, scope);
+    }
+    return scope;
+  };
 
   try {
     const stateRefs = await setup.stateBackend.listStacks();
@@ -3581,32 +3605,39 @@ async function stateRefreshObservedCommand(
     let totalRefreshed = 0;
     let totalUnsupported = 0;
     let totalFailed = 0;
+    let totalNotFound = 0;
     let totalRefusedBaseline = 0;
     let totalRefusedSticky = 0;
 
     for (const target of regionScoped) {
-      const counts = await refreshObservedForStack(
-        target.stackName,
-        target.region,
-        setup.stateBackend,
-        setup.lockManager,
-        providerRegistry,
-        {
-          dryRun: options.dryRun ?? false,
-          logger,
-          lockRecovery,
-        }
+      const targetRegion = target.region;
+      const scope = stackRegionScope(targetRegion);
+      const counts = await runWithStackAwsClients(scope.clients, () =>
+        refreshObservedForStack(
+          target.stackName,
+          targetRegion,
+          setup.stateBackend,
+          setup.lockManager,
+          scope.registry,
+          {
+            dryRun: options.dryRun ?? false,
+            logger,
+            lockRecovery,
+          }
+        )
       );
       totalRefreshed += counts.refreshed;
       totalUnsupported += counts.unsupported;
       totalFailed += counts.failed;
+      totalNotFound += counts.notFound;
       totalRefusedBaseline += counts.refusedBaseline;
       totalRefusedSticky += counts.refusedSticky;
     }
 
     const summary = options.dryRun
       ? `Plan: ${totalRefreshed} resource(s) would be refreshed, ${totalUnsupported} unsupported, ${totalFailed} would fail (--dry-run, no state was written)`
-      : `Done: ${totalRefreshed} resource(s) refreshed, ${totalUnsupported} unsupported, ${totalFailed} failed`;
+      : `Done: ${totalRefreshed} resource(s) refreshed, ${totalUnsupported} unsupported, ${totalFailed} failed` +
+        (totalNotFound > 0 ? `, ${totalNotFound} not found in AWS` : '');
     logger.info(safeMsg`\n${summary}`);
 
     // Issue #2944. Its OWN line rather than a fourth count in the summary, and
@@ -3645,14 +3676,26 @@ async function stateRefreshObservedCommand(
       );
     }
 
-    if (totalFailed > 0) {
+    if (totalFailed > 0 || totalNotFound > 0) {
+      const parts: string[] = [];
+      if (totalFailed > 0) {
+        parts.push(
+          `${totalFailed} per-resource readback failure(s); re-run 'cdkd state refresh-observed' to retry them.`
+        );
+      }
+      if (totalNotFound > 0) {
+        parts.push(
+          `${totalNotFound} resource(s) not found in AWS (deleted outside cdkd); a retry will not ` +
+            `change that, and 'cdkd drift' reports them as deleted.`
+        );
+      }
       throw new PartialFailureError(
-        `Refresh completed with ${totalFailed} per-resource readCurrentState failure(s). ` +
-          `Affected resources keep their previous observedProperties (or no observedProperties at all). ` +
-          `Re-run 'cdkd state refresh-observed' to retry.`
+        `Refresh completed with ${parts.join(' ')} ` +
+          `Affected resources keep their previous observedProperties (or no observedProperties at all).`
       );
     }
   } finally {
+    for (const { clients } of stackRegionScopes.values()) clients.destroy();
     setup.dispose();
   }
 }
@@ -3738,6 +3781,8 @@ interface RefreshObservedCounts {
   refreshed: number;
   unsupported: number;
   failed: number;
+  /** AWS reports the resource gone — deleted outside cdkd (go-to-k/cdkd#4283). */
+  notFound: number;
   /** Declined over an `observedBaselineRefused` marker (issue #2944). */
   refusedBaseline: number;
   /**
@@ -3825,7 +3870,14 @@ async function refreshObservedForStack(
 
   if (entries.length === 0) {
     logger.info(safeMsg`✓ ${ref}: no resources in state, skipping`);
-    return { refreshed: 0, unsupported: 0, failed: 0, refusedBaseline: 0, refusedSticky: 0 };
+    return {
+      refreshed: 0,
+      unsupported: 0,
+      failed: 0,
+      notFound: 0,
+      refusedBaseline: 0,
+      refusedSticky: 0,
+    };
   }
 
   if (opts.dryRun) {
@@ -3865,6 +3917,7 @@ async function refreshObservedForStack(
       refreshed: wouldRefresh,
       unsupported: wouldUnsupported,
       failed: 0,
+      notFound: 0,
       refusedBaseline: wouldRefuse,
       refusedSticky: wouldRefuseSticky,
     };
@@ -3895,6 +3948,7 @@ async function refreshObservedForStack(
     let refreshed = 0;
     let unsupported = 0;
     let failed = 0;
+    let notFound = 0;
     let refusedBaseline = 0;
     let refusedSticky = 0;
 
@@ -3959,13 +4013,24 @@ async function refreshObservedForStack(
             buildReadCurrentStateContext(state, logicalId)
           );
           if (observed === undefined) {
-            // Provider is registered with readCurrentState but the
-            // implementation chose to return undefined — typically
-            // because the AWS resource is gone (NotFound). Treat as
-            // unsupported for the count, leave observed unchanged so
-            // we don't accidentally null it out under a transient
-            // eventual-consistency window.
+            // Provider is registered with readCurrentState but has no read
+            // path for this type. Leave observed unchanged.
             unsupported++;
+            return;
+          }
+          if (observed === RESOURCE_NOT_FOUND) {
+            // AWS reports the resource gone (go-to-k/cdkd#4283). Not a type
+            // without a read path, so not `unsupported`: there is nothing to
+            // refresh, and saying so is what tells the user. Counted on its own
+            // (the run exits 2, with its own advice), and the record keeps
+            // whatever baseline it had rather than being nulled out under what
+            // may be an eventual-consistency window.
+            notFound++;
+            logger.warn(
+              safeMsg`  ✗ ${displayStackName(stackName)}/${displayIdent(logicalId)} ` +
+                safeMsg`(${displayIdent(resource.resourceType)}): ` +
+                `not found in AWS — it was deleted outside cdkd; 'cdkd drift' reports it as deleted.`
+            );
             return;
           }
           // GHSA-p5qg-v9gv-hc7w (issue #1926). The readback is what AWS
@@ -4089,12 +4154,13 @@ async function refreshObservedForStack(
     logger.info(
       safeMsg`✓ ${ref}: ` +
         safeMsg`${refreshed} refreshed, ${unsupported} unsupported, ${failed} failed` +
+        (notFound > 0 ? safeMsg`, ${notFound} not found in AWS` : '') +
         // Issue #2944: appended rather than always printed, so a stack with no
         // refused record renders byte-identically to the pre-v10 line.
         (refusedBaseline > 0 ? safeMsg`, ${refusedBaseline} refused (import baseline refusal)` : '')
     );
 
-    return { refreshed, unsupported, failed, refusedBaseline, refusedSticky };
+    return { refreshed, unsupported, failed, notFound, refusedBaseline, refusedSticky };
   } finally {
     await lockManager.releaseLock(stackName, region).catch((err) => {
       logger.warn(

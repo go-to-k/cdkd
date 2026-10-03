@@ -30,7 +30,9 @@ import type {
   ResourceImportResult,
   CreateContext,
   SecretMasker,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { definedAttributes } from '../attribute-map.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { logicalIdShown } from '../composite-id.js';
@@ -674,7 +676,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     _logicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     if (resourceType !== 'AWS::CloudFront::Distribution') return undefined;
 
     let config: DistributionConfig | undefined;
@@ -684,7 +686,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       );
       config = response.DistributionConfig;
     } catch (error) {
-      if (error instanceof NoSuchDistribution) return undefined;
+      if (error instanceof NoSuchDistribution) return RESOURCE_NOT_FOUND;
       throw error;
     }
     if (!config) return undefined;

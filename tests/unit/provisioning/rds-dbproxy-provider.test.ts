@@ -37,6 +37,7 @@ import { RDSDBProxyProvider } from '../../../src/provisioning/providers/rds-dbpr
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const RESOURCE_TYPE = 'AWS::RDS::DBProxy';
 const PROXY_NAME = 'AuroraProxy';
@@ -579,7 +580,7 @@ describe('RDSDBProxyProvider', () => {
         DebugLogging: false,
         Tags: [{ Key: 'env', Value: 'prod' }],
       });
-      expect(result?.['Auth']).toEqual([
+      expect((result as Record<string, unknown> | undefined)?.['Auth']).toEqual([
         {
           Description: undefined,
           UserName: undefined,
@@ -591,12 +592,18 @@ describe('RDSDBProxyProvider', () => {
       ]);
     });
 
-    it('returns undefined when proxy is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when proxy is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new DBProxyNotFoundFault({ message: 'gone', $metadata: {} })
       );
       const result = await provider.readCurrentState(PROXY_NAME);
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when DescribeDBProxies lists no proxy', async () => {
+      mockSend.mockResolvedValueOnce({ DBProxies: [] });
+      const result = await provider.readCurrentState(PROXY_NAME);
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 

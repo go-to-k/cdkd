@@ -65,6 +65,15 @@ import {
   FORGED_QUOTE,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const PROPS = { ImageId: 'ami-12345678', InstanceType: 't3.micro', SubnetId: 'subnet-1' };
 
@@ -430,11 +439,11 @@ describe('EC2 Instance AvailabilityZone -> Placement mapping (issue #1276)', () 
     // Signature is (physicalId, logicalId, resourceType) — passing them the
     // other way round still passes against an input-blind mock, so assert the
     // DescribeInstances call actually targeted the physical id too.
-    const current = await new EC2Provider().readCurrentState!(
+    const current = bagOf(await new EC2Provider().readCurrentState!(
       'i-1234567890abcdef0',
       'MyInstance',
       'AWS::EC2::Instance'
-    );
+    ));
 
     expect(current?.['AvailabilityZone']).toBe('us-east-1a');
     const describeCall = mockSend.mock.calls.at(-1)?.[0] as { input?: { InstanceIds?: string[] } };
@@ -642,11 +651,11 @@ describe('readInstanceCurrentState IamInstanceProfile backfill under --no-wait (
     process.env['CDKD_NO_WAIT'] = 'true';
     mockDescribe({ state: 'pending', associations: [{ state: 'associating', arn: PROFILE_ARN }] });
 
-    const current = await new EC2Provider().readCurrentState!(
+    const current = bagOf(await new EC2Provider().readCurrentState!(
       INSTANCE_ID,
       'MyInstance',
       'AWS::EC2::Instance'
-    );
+    ));
 
     expect(current?.['IamInstanceProfile']).toBe(PROFILE_ARN);
     expect(associationCalls()).toHaveLength(1);
@@ -656,11 +665,11 @@ describe('readInstanceCurrentState IamInstanceProfile backfill under --no-wait (
     process.env['CDKD_NO_WAIT'] = 'true';
     mockDescribe({ state: 'pending', associations: [] });
 
-    const current = await new EC2Provider().readCurrentState!(
+    const current = bagOf(await new EC2Provider().readCurrentState!(
       INSTANCE_ID,
       'MyInstance',
       'AWS::EC2::Instance'
-    );
+    ));
 
     expect(current && 'IamInstanceProfile' in current).toBe(false);
   });
@@ -673,11 +682,11 @@ describe('readInstanceCurrentState IamInstanceProfile backfill under --no-wait (
     process.env['CDKD_NO_WAIT'] = 'true';
     mockDescribe({ state: 'running' });
 
-    const current = await new EC2Provider().readCurrentState!(
+    const current = bagOf(await new EC2Provider().readCurrentState!(
       INSTANCE_ID,
       'MyInstance',
       'AWS::EC2::Instance'
-    );
+    ));
 
     expect(current && 'IamInstanceProfile' in current).toBe(false);
     expect(associationCalls()).toHaveLength(0);
@@ -690,11 +699,11 @@ describe('readInstanceCurrentState IamInstanceProfile backfill under --no-wait (
       associations: [{ state: 'disassociated', arn: PROFILE_ARN }],
     });
 
-    const current = await new EC2Provider().readCurrentState!(
+    const current = bagOf(await new EC2Provider().readCurrentState!(
       INSTANCE_ID,
       'MyInstance',
       'AWS::EC2::Instance'
-    );
+    ));
 
     expect(current && 'IamInstanceProfile' in current).toBe(false);
   });
@@ -718,11 +727,11 @@ describe('readInstanceCurrentState IamInstanceProfile backfill under --no-wait (
       });
     });
 
-    const current = await new EC2Provider().readCurrentState!(
+    const current = bagOf(await new EC2Provider().readCurrentState!(
       INSTANCE_ID,
       'MyInstance',
       'AWS::EC2::Instance'
-    );
+    ));
 
     expect(current).toBeDefined();
     expect(current?.['ImageId']).toBe('ami-12345678');
@@ -732,7 +741,7 @@ describe('readInstanceCurrentState IamInstanceProfile backfill under --no-wait (
   it('makes NO extra call on ordinary drift reads (env unset)', async () => {
     mockDescribe({ state: 'pending' });
 
-    await new EC2Provider().readCurrentState!(INSTANCE_ID, 'MyInstance', 'AWS::EC2::Instance');
+    bagOf(await new EC2Provider().readCurrentState!(INSTANCE_ID, 'MyInstance', 'AWS::EC2::Instance'));
 
     expect(associationCalls()).toHaveLength(0);
   });
@@ -741,11 +750,11 @@ describe('readInstanceCurrentState IamInstanceProfile backfill under --no-wait (
     process.env['CDKD_NO_WAIT'] = 'true';
     mockDescribe({ state: 'pending', instanceProfileArn: PROFILE_ARN });
 
-    const current = await new EC2Provider().readCurrentState!(
+    const current = bagOf(await new EC2Provider().readCurrentState!(
       INSTANCE_ID,
       'MyInstance',
       'AWS::EC2::Instance'
-    );
+    ));
 
     expect(current?.['IamInstanceProfile']).toBe(PROFILE_ARN);
     expect(associationCalls()).toHaveLength(0);

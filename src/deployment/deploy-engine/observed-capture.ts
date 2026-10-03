@@ -3,7 +3,11 @@ import {
   type ParameterNamingVerdict,
   resourcesNamingDeclaredParameter,
 } from '../../analyzer/parameter-dependence.js';
-import type { CloudFormationTemplate, ResourceProvider } from '../../types/resource.js';
+import {
+  RESOURCE_NOT_FOUND,
+  type CloudFormationTemplate,
+  type ResourceProvider,
+} from '../../types/resource.js';
 import {
   type ResourceState,
   type StackState,
@@ -73,7 +77,11 @@ export function kickOffObservedCapture(
 
   const readCurrentState = provider.readCurrentState.bind(provider);
   const read = (): Promise<Record<string, unknown> | undefined> =>
-    readCurrentState(physicalId, logicalId, resourceType, resolvedProps, context).catch(
+    readCurrentState(physicalId, logicalId, resourceType, resolvedProps, context).then(
+      // A resource AWS reports gone has no baseline to capture
+      // (go-to-k/cdkd#4283): the same "no observedProperties" a failed read
+      // leaves, never the sentinel installed as a property bag.
+      (observed) => (observed === RESOURCE_NOT_FOUND ? undefined : observed),
       (err: unknown) => {
         this.logger.debug(
           `observedProperties capture for ${logicalId} (${resourceType}) failed: ${err instanceof Error ? err.message : String(err)} — drift will fall back to template properties for this resource until the next successful deploy.`
@@ -619,7 +627,8 @@ export function kickOffMaskedBaselineRecapture(
     const readback = await withCurrentResourceSecrets(secrets, () =>
       readCurrentState(resource.physicalId, logicalId, resource.resourceType, properties, context)
     );
-    if (readback === undefined) return undefined;
+    // A resource AWS reports gone keeps its masked baseline (go-to-k/cdkd#4283).
+    if (readback === undefined || readback === RESOURCE_NOT_FOUND) return undefined;
     const recaptured = recaptureMaskedBaseline({ previous, readback, properties, secrets });
     if (recaptured === undefined) {
       this.logger.debug(

@@ -38,6 +38,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { StepFunctionsProvider } from '../../../src/provisioning/providers/stepfunctions-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('StepFunctionsProvider.readCurrentState', () => {
   let provider: StepFunctionsProvider;
@@ -96,7 +105,7 @@ describe('StepFunctionsProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when state machine is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when state machine is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new StateMachineDoesNotExist({ message: 'not found', $metadata: {} })
     );
@@ -107,7 +116,7 @@ describe('StepFunctionsProvider.readCurrentState', () => {
       'AWS::StepFunctions::StateMachine'
     );
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('surfaces Tags from ListTagsForResource with aws:* filtered out (SFN lower-case shape)', async () => {
@@ -119,11 +128,11 @@ describe('StepFunctionsProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'arn:aws:states:us-east-1:123:stateMachine:my-sm',
       'SMLogical',
       'AWS::StepFunctions::StateMachine'
-    );
+    ));
 
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
@@ -134,11 +143,11 @@ describe('StepFunctionsProvider.readCurrentState', () => {
       tags: [{ key: 'aws:cdk:path', value: 'MyStack/MyStateMachine/Resource' }],
     });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'arn:aws:states:us-east-1:123:stateMachine:my-sm',
       'SMLogical',
       'AWS::StepFunctions::StateMachine'
-    );
+    ));
 
     expect(result?.Tags).toEqual([]);
   });

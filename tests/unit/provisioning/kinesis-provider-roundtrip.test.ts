@@ -82,11 +82,11 @@ describe('KinesisStreamProvider read-update round-trip', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       STREAM_NAME,
       'L',
       'AWS::Kinesis::Stream'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(observed?.['StreamModeDetails']).toEqual({ StreamMode: 'ON_DEMAND' });
     expect(observed).not.toHaveProperty('ShardCount');
@@ -105,11 +105,11 @@ describe('KinesisStreamProvider read-update round-trip', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       STREAM_NAME,
       'L',
       'AWS::Kinesis::Stream'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(observed?.['ShardCount']).toBe(2);
   });

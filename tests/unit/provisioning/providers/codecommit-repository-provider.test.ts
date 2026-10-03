@@ -52,6 +52,15 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { CodeCommitRepositoryProvider } from '../../../../src/provisioning/providers/codecommit-repository-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 import {
   CreateCommitCommand,
   CreateRepositoryCommand,
@@ -1117,11 +1126,11 @@ describe('CodeCommitRepositoryProvider', () => {
         })
         .mockResolvedValueOnce({ tags: {} });
 
-      const current = await provider.readCurrentState(
+      const current = bagOf(await provider.readCurrentState(
         'my-repo',
         'MyRepo',
         'AWS::CodeCommit::Repository'
-      );
+      ));
 
       const drifts = calculateResourceDrift(
         { RepositoryName: 'my-repo', RepositoryDescription: 'state desc' },
@@ -1140,11 +1149,11 @@ describe('CodeCommitRepositoryProvider', () => {
         })
         .mockResolvedValueOnce({ tags: { env: 'test' } });
 
-      const current = await provider.readCurrentState(
+      const current = bagOf(await provider.readCurrentState(
         'my-repo',
         'MyRepo',
         'AWS::CodeCommit::Repository'
-      );
+      ));
 
       const drifts = calculateResourceDrift(
         {
@@ -1163,11 +1172,11 @@ describe('CodeCommitRepositoryProvider', () => {
         .mockResolvedValueOnce({ repositoryMetadata: metadata() })
         .mockResolvedValueOnce({ tags: { b: '2', a: '1' } }); // AWS order differs
 
-      const current = await provider.readCurrentState(
+      const current = bagOf(await provider.readCurrentState(
         'my-repo',
         'MyRepo',
         'AWS::CodeCommit::Repository'
-      );
+      ));
 
       const drifts = calculateResourceDrift(
         {
@@ -1188,11 +1197,11 @@ describe('CodeCommitRepositoryProvider', () => {
         .mockResolvedValueOnce({ repositoryMetadata: metadata() })
         .mockResolvedValueOnce({ tags: {} });
 
-      const current = await provider.readCurrentState(
+      const current = bagOf(await provider.readCurrentState(
         'my-repo',
         'MyRepo',
         'AWS::CodeCommit::Repository'
-      );
+      ));
 
       // A state written under --allow-unsupported-properties could carry Code;
       // GetRepository never returns it, so it must be ignored, not drift.
@@ -1224,11 +1233,11 @@ describe('CodeCommitRepositoryProvider', () => {
         }) // GetRepository
         .mockResolvedValueOnce({ tags: {} }); // ListTagsForResource
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'my-repo',
         'MyRepo',
         'AWS::CodeCommit::Repository'
-      );
+      ));
 
       expect(Object.keys(result ?? {}).sort()).toEqual(
         ['KmsKeyId', 'RepositoryDescription', 'RepositoryName', 'Tags'].sort()
@@ -1244,11 +1253,11 @@ describe('CodeCommitRepositoryProvider', () => {
         repositoryMetadata: { repositoryName: 'my-repo' }, // no Arn -> no ListTagsForResource
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'my-repo',
         'MyRepo',
         'AWS::CodeCommit::Repository'
-      );
+      ));
 
       expect(mockSend).toHaveBeenCalledTimes(1); // no ListTagsForResource call
       expect(result?.Tags).toEqual([]);
@@ -1259,11 +1268,11 @@ describe('CodeCommitRepositoryProvider', () => {
         .mockResolvedValueOnce({ repositoryMetadata: metadata() })
         .mockResolvedValueOnce({ tags: { env: 'prod' } }); // AWS has env=prod
 
-      const current = await provider.readCurrentState(
+      const current = bagOf(await provider.readCurrentState(
         'my-repo',
         'MyRepo',
         'AWS::CodeCommit::Repository'
-      );
+      ));
 
       const drifts = calculateResourceDrift(
         {
@@ -1278,7 +1287,7 @@ describe('CodeCommitRepositoryProvider', () => {
       ]);
     });
 
-    it('returns undefined when the repository no longer exists (drift-unknown)', async () => {
+    it('returns RESOURCE_NOT_FOUND when the repository no longer exists', async () => {
       mockSend.mockRejectedValueOnce(notFound());
 
       const current = await provider.readCurrentState(
@@ -1287,7 +1296,7 @@ describe('CodeCommitRepositoryProvider', () => {
         'AWS::CodeCommit::Repository'
       );
 
-      expect(current).toBeUndefined();
+      expect(current).toBe(RESOURCE_NOT_FOUND);
     });
 
     it('returns undefined when GetRepository resolves with no metadata (drift-unknown)', async () => {
@@ -1303,7 +1312,7 @@ describe('CodeCommitRepositoryProvider', () => {
       expect(mockSend).toHaveBeenCalledTimes(1); // no ListTagsForResource
     });
 
-    it('treats a repo deleted BETWEEN GetRepository and ListTagsForResource as drift-unknown', async () => {
+    it('reports a repo deleted BETWEEN GetRepository and ListTagsForResource as RESOURCE_NOT_FOUND', async () => {
       mockSend
         .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // GetRepository succeeds
         .mockRejectedValueOnce(notFound()); // ListTagsForResource: repo gone mid-read
@@ -1314,8 +1323,8 @@ describe('CodeCommitRepositoryProvider', () => {
         'AWS::CodeCommit::Repository'
       );
 
-      // Must not abort the whole drift run — reported as drift-unknown.
-      expect(current).toBeUndefined();
+      // Must not abort the whole drift run — reported as gone.
+      expect(current).toBe(RESOURCE_NOT_FOUND);
     });
 
     it('propagates non-NotFound errors', async () => {

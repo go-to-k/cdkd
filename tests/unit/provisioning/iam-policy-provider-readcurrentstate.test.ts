@@ -34,6 +34,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMPolicyProvider } from '../../../src/provisioning/providers/iam-policy-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('IAMPolicyProvider.readCurrentState', () => {
   let provider: IAMPolicyProvider;
@@ -116,7 +117,7 @@ describe('IAMPolicyProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when policy is gone (NoSuchEntityException)', async () => {
+  it('returns RESOURCE_NOT_FOUND when policy is gone (NoSuchEntityException)', async () => {
     mockSend.mockRejectedValueOnce(
       new NoSuchEntityException({ message: 'no such', $metadata: {} })
     );
@@ -127,7 +128,7 @@ describe('IAMPolicyProvider.readCurrentState', () => {
       Roles: ['my-role'],
     });
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('returns undefined when properties is missing', async () => {

@@ -54,6 +54,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { GlueCrawlerProvider } from '../../../src/provisioning/providers/glue-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('GlueCrawlerProvider', () => {
   let provider: GlueCrawlerProvider;
@@ -430,14 +431,14 @@ describe('GlueCrawlerProvider', () => {
     });
   });
 
-  it('readCurrentState() returns undefined when crawler does not exist', async () => {
+  it('readCurrentState() returns RESOURCE_NOT_FOUND when crawler does not exist', async () => {
     const { EntityNotFoundException } = await import('@aws-sdk/client-glue');
     mockSend.mockRejectedValueOnce(
       new EntityNotFoundException({ message: 'not found', $metadata: {} })
     );
 
     const result = await provider.readCurrentState('missing', 'L', 'AWS::Glue::Crawler');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('startSchedule() and stopSchedule() call StartCrawlerSchedule / StopCrawlerSchedule', async () => {

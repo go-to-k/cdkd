@@ -451,9 +451,9 @@ describe('ApiGatewayV2 Integration config properties (#609)', () => {
         TlsConfig: { ServerNameToVerify: 'backend.example.com' },
       });
 
-      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+      const state = (await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
         ApiId: API_ID,
-      });
+      })) as Record<string, unknown> | undefined;
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetIntegrationCommand);
       expect(state).toMatchObject({
@@ -656,10 +656,10 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
         ResponseParameters: flatResponseParameters,
       });
 
-      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+      const state = (await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
         ApiId: API_ID,
         ResponseParameters: flatResponseParameters,
-      });
+      })) as Record<string, unknown> | undefined;
 
       // Baseline (flat) and read-back (flat) now compare equal — object
       // comparison is key-based, so no sort is needed on this arm.
@@ -673,10 +673,10 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
         ResponseParameters: flatResponseParameters,
       });
 
-      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+      const state = (await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
         ApiId: API_ID,
         ResponseParameters: cfnListResponseParameters,
-      });
+      })) as Record<string, unknown> | undefined;
 
       expect(state?.['ResponseParameters']).toEqual(cfnListResponseParameters);
     });
@@ -691,7 +691,7 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
         },
       });
 
-      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+      const state = (await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
         ApiId: API_ID,
         ResponseParameters: {
           '404': flatResponseParameters['404'],
@@ -699,7 +699,7 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
             ResponseParameters: [{ Destination: 'overwrite:statuscode', Source: '502' }],
           },
         },
-      });
+      })) as Record<string, unknown> | undefined;
 
       expect(state?.['ResponseParameters']).toEqual({
         '404': flatResponseParameters['404'],
@@ -729,10 +729,10 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
           ],
         },
       };
-      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+      const state = (await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
         ApiId: API_ID,
         ResponseParameters: declared,
-      });
+      })) as Record<string, unknown> | undefined;
 
       expect(state?.['ResponseParameters']).toEqual(declared);
     });
@@ -750,10 +750,10 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
       const declared = {
         '404': { ResponseParameters: [{ Destination: 'overwrite:statuscode', Source: 403 }] },
       };
-      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+      const state = (await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
         ApiId: API_ID,
         ResponseParameters: declared,
-      });
+      })) as Record<string, unknown> | undefined;
 
       expect(state?.['ResponseParameters']).toEqual(declared);
     });
@@ -767,12 +767,12 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
         ResponseParameters: { '404': { 'overwrite:statuscode': '500' } },
       });
 
-      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+      const state = (await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
         ApiId: API_ID,
         ResponseParameters: {
           '404': { ResponseParameters: [{ Destination: 'overwrite:statuscode', Source: 403 }] },
         },
-      });
+      })) as Record<string, unknown> | undefined;
 
       expect(state?.['ResponseParameters']).toEqual({
         '404': { ResponseParameters: [{ Destination: 'overwrite:statuscode', Source: '500' }] },
@@ -792,14 +792,14 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
         },
       });
 
-      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+      const state = (await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
         ApiId: API_ID,
         ResponseParameters: {
           '404': {
             ResponseParameters: [{ Destination: 'overwrite:statuscode', Source: '200' }],
           },
         },
-      });
+      })) as Record<string, unknown> | undefined;
 
       expect(state?.['ResponseParameters']).toEqual({
         '404': {
@@ -822,10 +822,10 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
         },
       });
 
-      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+      const state = (await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
         ApiId: API_ID,
         ResponseParameters: { '404': flatResponseParameters['404'] },
-      });
+      })) as Record<string, unknown> | undefined;
 
       expect(state?.['ResponseParameters']).toEqual({
         '404': flatResponseParameters['404'],
@@ -848,10 +848,10 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
         ResponseParameters: flatResponseParameters,
       });
 
-      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+      const state = (await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
         ApiId: API_ID,
         ResponseParameters: declared,
-      });
+      })) as Record<string, unknown> | undefined;
 
       expect(state?.['ResponseParameters']).toEqual(cfnListResponseParameters);
     });
@@ -871,10 +871,10 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
           ResponseParameters: flatResponseParameters,
         });
 
-        const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+        const state = (await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
           ApiId: API_ID,
           ResponseParameters: { '404': declaredBlock },
-        });
+        })) as Record<string, unknown> | undefined;
 
         expect(state?.['ResponseParameters']).toEqual(cfnListResponseParameters);
       }
@@ -887,9 +887,9 @@ describe('ApiGatewayV2 Integration TlsConfig visibility + flat ResponseParameter
         ResponseParameters: flatResponseParameters,
       });
 
-      const state = await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
+      const state = (await provider.readCurrentState!(INTEGRATION_ID, 'L', INTEGRATION_TYPE, {
         ApiId: API_ID,
-      });
+      })) as Record<string, unknown> | undefined;
 
       expect(state?.['ResponseParameters']).toEqual(cfnListResponseParameters);
     });

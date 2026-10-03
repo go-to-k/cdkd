@@ -56,7 +56,7 @@ describe('S3BucketPolicyProvider read-update round-trip', () => {
     };
     mockSend.mockResolvedValueOnce({ Policy: JSON.stringify(policy) });
 
-    const observed = await provider.readCurrentState(BUCKET_NAME, 'L', RESOURCE_TYPE);
+    const observed = (await provider.readCurrentState(BUCKET_NAME, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
     expect(observed).toEqual({
       Bucket: BUCKET_NAME,
       PolicyDocument: policy,

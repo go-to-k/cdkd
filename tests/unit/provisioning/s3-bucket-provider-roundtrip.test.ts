@@ -113,7 +113,7 @@ describe('S3BucketProvider read-update round-trip', () => {
     // GetBucketTagging — NoSuchTagSet (bucket has zero user tags)
     mockSend.mockRejectedValueOnce(notConfigured('NoSuchTagSet'));
 
-    const result = await provider.readCurrentState(BUCKET_NAME, 'L', 'AWS::S3::Bucket');
+    const result = (await provider.readCurrentState(BUCKET_NAME, 'L', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
 
     // Critical: Tags MUST be present (as []), not omitted.
     expect(result).toBeDefined();
@@ -141,7 +141,7 @@ describe('S3BucketProvider read-update round-trip', () => {
       TagSet: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBucket/Resource' }],
     });
 
-    const result = await provider.readCurrentState(BUCKET_NAME, 'L', 'AWS::S3::Bucket');
+    const result = (await provider.readCurrentState(BUCKET_NAME, 'L', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
 
     expect(result?.Tags).toEqual([]);
   });
@@ -351,7 +351,7 @@ describe('S3BucketProvider read-update round-trip', () => {
       TagSet: [{ Key: 'Owner', Value: 'platform' }],
     });
 
-    const result = await provider.readCurrentState(BUCKET_NAME, 'L', 'AWS::S3::Bucket');
+    const result = (await provider.readCurrentState(BUCKET_NAME, 'L', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
 
     // Index 5, not 4: readOwnershipControls was inserted ahead of the PAB /
     // Tags reads by issue #1466.
@@ -1431,7 +1431,7 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
       }
       return Promise.resolve({});
     });
-    const read = await provider.readCurrentState(BUCKET_NAME, 'L', 'AWS::S3::Bucket');
+    const read = (await provider.readCurrentState(BUCKET_NAME, 'L', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
 
     expect(read?.ObjectLockConfiguration).toEqual(declared);
   });

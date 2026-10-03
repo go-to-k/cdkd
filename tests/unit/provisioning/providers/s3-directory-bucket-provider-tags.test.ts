@@ -275,7 +275,7 @@ describe('S3DirectoryBucketProvider Tags (issue #609)', () => {
         Tags: [{ Key: 'team', Value: 'platform' }],
       });
 
-      const result = await provider.readCurrentState(PHYSICAL_ID, 'Logical', RESOURCE_TYPE);
+      const result = (await provider.readCurrentState(PHYSICAL_ID, 'Logical', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
 
       expect(result?.['Tags']).toEqual([{ Key: 'team', Value: 'platform' }]);
       const listCmd = mockControlSend.mock.calls[0][0];

@@ -17,7 +17,8 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { markRedactedCause } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
-import type { CreateContext, UpdateContext } from '../../types/resource.js';
+import type { CreateContext, ResourceNotFound, UpdateContext } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1043,16 +1044,18 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
    *   per-target Endpoint / Port / TargetHealth but those are read-only
    *   AWS-managed fields, intentionally not surfaced.
    *
-   * Best-effort: a missing parent DBProxyName (state corruption) or any
-   * AWS API failure surfaces as `undefined` (drift comparator skips the
-   * resource), not a crash.
+   * A missing parent DBProxyName (state corruption) surfaces as `undefined`
+   * (drift comparator skips the resource), not a crash. A gone proxy, or a
+   * gone `default` group, is `RESOURCE_NOT_FOUND`; a group NotFound for any
+   * other recorded name addresses no group this resource made, so it stays
+   * `undefined`.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string,
     properties: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const dbProxyName = readProxyName(properties['DBProxyName']);
     const targetGroupName = requireConfigString(
       properties['TargetGroupName'],
@@ -1067,6 +1070,9 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     }
 
     const client = this.getClient();
+    const groupGone = (error: unknown): boolean =>
+      error instanceof DBProxyNotFoundFault ||
+      (targetGroupName === 'default' && error instanceof DBProxyTargetGroupNotFoundFault);
 
     let connectionPoolConfig: Record<string, unknown> | undefined;
     try {
@@ -1084,12 +1090,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       // drift on the v3 observedProperties baseline.
       connectionPoolConfig = tg?.ConnectionPoolConfig as Record<string, unknown> | undefined;
     } catch (error) {
-      if (
-        error instanceof DBProxyNotFoundFault ||
-        error instanceof DBProxyTargetGroupNotFoundFault
-      ) {
-        return undefined;
-      }
+      if (groupGone(error)) return RESOURCE_NOT_FOUND;
+      if (error instanceof DBProxyTargetGroupNotFoundFault) return undefined;
       throw error;
     }
 
@@ -1097,8 +1099,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     try {
       live = await this.readLiveTargets(dbProxyName, targetGroupName);
     } catch (error) {
+      if (groupGone(error)) return RESOURCE_NOT_FOUND;
       if (
-        error instanceof DBProxyNotFoundFault ||
         error instanceof DBProxyTargetGroupNotFoundFault ||
         error instanceof DBProxyTargetNotFoundFault
       ) {

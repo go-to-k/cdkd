@@ -43,6 +43,7 @@ import {
   Route53Provider,
   parseRecordSetCompositeId,
 } from '../../../src/provisioning/providers/route53-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const RECORD_PROPS = {
   HostedZoneId: 'Z0123456789ABCDEFGHIJ',

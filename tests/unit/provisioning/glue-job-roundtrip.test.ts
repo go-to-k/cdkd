@@ -52,6 +52,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { GlueJobProvider } from '../../../src/provisioning/providers/glue-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('GlueJobProvider', () => {
   let provider: GlueJobProvider;
@@ -400,14 +401,14 @@ describe('GlueJobProvider', () => {
     });
   });
 
-  it('readCurrentState() returns undefined when job does not exist', async () => {
+  it('readCurrentState() returns RESOURCE_NOT_FOUND when job does not exist', async () => {
     const { EntityNotFoundException } = await import('@aws-sdk/client-glue');
     mockSend.mockRejectedValueOnce(
       new EntityNotFoundException({ message: 'not found', $metadata: {} })
     );
 
     const result = await provider.readCurrentState('missing', 'L', 'AWS::Glue::Job');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('readCurrentState() falls back to empty Tags array when GetTags fails', async () => {
@@ -422,7 +423,7 @@ describe('GlueJobProvider', () => {
     });
 
     const result = await provider.readCurrentState('my-job', 'L', 'AWS::Glue::Job');
-    expect(result?.Tags).toEqual([]);
+    expect((result as Record<string, unknown> | undefined)?.Tags).toEqual([]);
   });
 
   it('handledProperties declares the full mutable surface', () => {

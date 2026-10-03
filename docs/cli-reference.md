@@ -486,7 +486,7 @@ bench scripts can react without grepping log output:
 Two commands use `1` for a non-crash outcome, because there the operative
 meaning is "non-zero result", not "the command crashed":
 
-- **`cdkd drift` exits `1` when drift is detected.**
+- **`cdkd drift` exits `1` when drift is detected**, including a resource deleted outside cdkd.
 - **`cdkd diff --fail` exits `1` when any change is detected.**
 
 `cdkd diff` also exits **`3`** when it finds a condition that would make
@@ -524,10 +524,10 @@ collapse it into the general `1` bucket.
 | --- | --- |
 | `cdkd destroy`, `cdkd state destroy` | Per-resource delete failures, and per-resource **skips**. |
 | `cdkd deploy` | Resources left **unaddressed** — a skipped DELETE, or a replacement's surviving predecessor. Suppressible with `--allow-unaddressed`. |
-| `cdkd state refresh-observed` | Per-resource read-back failures; the affected resources keep their previous baseline. |
+| `cdkd state refresh-observed` | Per-resource read-back failures, and resources AWS reports as not found (deleted outside cdkd); the affected resources keep their previous baseline. |
 | `cdkd publish-assets` | Per-stack asset publish failures. |
 | `cdkd rollback` | Per-op failures, or ops skipped with a warning. The journal is kept so the run can be repeated. |
-| `cdkd drift` | Nothing drifted, but at least one comparison did not happen for a reason you can act on — cdkd **refused to compare** a secret-bearing property, a read failed, an import refused a baseline, a recorded baseline holds a mask cdkd could not certify, or a state row is unreadable. |
+| `cdkd drift` | Nothing drifted, but at least one comparison did not happen for a reason you can act on — cdkd **refused to compare** a secret-bearing property, a read failed, an import refused a baseline, a recorded baseline holds a mask cdkd could not certify, or a state row is unreadable. With `--accept` / `--revert`: the run refused at least one resource deleted outside cdkd (or, for `--revert`, left one not reverted). |
 
 For `cdkd drift`, whether re-running clears it depends on the cause — a refused
 comparison needs the reference spelled as a full ARN, for instance. See [`cdkd drift`](cli-drift.md).

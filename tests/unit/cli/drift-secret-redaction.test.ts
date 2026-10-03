@@ -121,6 +121,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     destroy: vi.fn(),
   })),
   setAwsClients: vi.fn(),
+  runWithStackAwsClients: (_clients: unknown, fn: () => unknown) => fn(),
   getAwsClients: () => ({
     secretsManager: { send: mockSecretsManagerSend },
     ssm: { send: mockSsmSend },

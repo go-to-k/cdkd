@@ -112,7 +112,9 @@ import type {
   ResourceImportResult,
   CreateContext,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
@@ -251,6 +253,33 @@ function isPlainCfnObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * True when a `Describe{Clusters,Services}` answer that listed nothing says
+ * the requested id is gone: at least one failure, and every one `MISSING`.
+ * An empty failure list is no answer (`[].every` is vacuously true, so the
+ * length check is load-bearing), and any other reason is a lookup that did not
+ * answer.
+ */
+function describeListedNothingGone(failures: Array<{ reason?: string }> | undefined): boolean {
+  return (failures ?? []).length > 0 && failures!.every((f) => f.reason === 'MISSING');
+}
+
+/**
+ * `DescribeTaskDefinition`'s answer for a revision that does not exist: a
+ * `ClientException` reading "Unable to describe task definition." Narrower
+ * than `isNotFoundException` (which reads EVERY `ClientException` as gone), so
+ * an access or validation failure never reads as a deleted revision. The
+ * message match is safe to rely on: it is AWS's fixed ASCII wording, matched
+ * case-insensitively, and ECS gives this case no error name of its own.
+ */
+function isTaskDefinitionMissingError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    err.name === 'ClientException' &&
+    /unable to describe task definition/i.test(err.message)
+  );
+}
+
+/**
  * Whether a `DescribeTaskDefinition` status means the revision is gone in
  * cdkd's sense (go-to-k/cdkd#4272). `deleteTaskDefinition` DEREGISTERS, which
  * leaves the revision describable as `INACTIVE` indefinitely, and
@@ -339,6 +368,12 @@ function recordedServiceNames(physicalId: string): {
     service: serviceNameFromServiceArn(physicalId),
     cluster: clusterNameFromServiceArn(physicalId),
   };
+}
+
+/** An ECS error by exact NAME — the only answer that proves a resource gone (go-to-k/cdkd#4283). */
+function isEcsErrorNamed(error: unknown, names: readonly string[]): boolean {
+  const name = (error as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && names.includes(name);
 }
 
 /**
@@ -3485,7 +3520,7 @@ export class ECSProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::ECS::Cluster':
         return this.readCurrentStateCluster(physicalId);
@@ -3500,7 +3535,7 @@ export class ECSProvider implements ResourceProvider {
 
   private async readCurrentStateCluster(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp: {
       clusters?: Array<{
         clusterName?: string;
@@ -3512,6 +3547,7 @@ export class ECSProvider implements ResourceProvider {
         serviceConnectDefaults?: { namespace?: string };
         tags?: Array<{ key?: string; value?: string }>;
       }>;
+      failures?: Array<{ reason?: string }>;
     };
     try {
       resp = (await this.getClient().send(
@@ -3528,16 +3564,21 @@ export class ECSProvider implements ResourceProvider {
           include: ['TAGS', 'SETTINGS', 'CONFIGURATIONS'],
         })
       )) as unknown as typeof resp;
-    } catch {
+    } catch (err) {
+      if (isEcsErrorNamed(err, ['ClusterNotFoundException'])) return RESOURCE_NOT_FOUND;
       return undefined;
     }
     const c = resp.clusters?.[0];
-    if (!c || !c.clusterName) return undefined;
+    if (!c || !c.clusterName) {
+      // Nothing listed: only `MISSING` failures say the cluster is gone; any
+      // other failure reason is a lookup that did not answer.
+      return describeListedNothingGone(resp.failures) ? RESOURCE_NOT_FOUND : undefined;
+    }
     // An `INACTIVE` cluster is a DELETED one that `DescribeClusters` still
     // lists for a while; reading it as present would make `cdkd drift`
     // compare a deleted cluster's properties. Same rule as `importCluster`
     // (go-to-k/cdkd#4272); every other status is a live cluster.
-    if (c.status === 'INACTIVE') return undefined;
+    if (c.status === 'INACTIVE') return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = { ClusterName: c.clusterName };
     result['CapacityProviders'] = c.capacityProviders ? [...c.capacityProviders] : [];
@@ -3567,7 +3608,7 @@ export class ECSProvider implements ResourceProvider {
 
   private async readCurrentStateService(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     // Service physicalId can be either the composite form `<clusterArn>|<serviceName>`
     // or the service ARN. `createService` stores the ARN (which has no `|`), so a
     // clusterArn|name split alone made `cdkd drift` report every cdkd-created
@@ -3614,6 +3655,7 @@ export class ECSProvider implements ResourceProvider {
         deploymentController?: DeploymentController;
         tags?: Array<{ key?: string; value?: string }>;
       }>;
+      failures?: Array<{ reason?: string }>;
     };
     try {
       resp = (await this.getClient().send(
@@ -3623,15 +3665,34 @@ export class ECSProvider implements ResourceProvider {
           include: ['TAGS'],
         })
       )) as unknown as typeof resp;
-    } catch {
+    } catch (err) {
+      // A deleted cluster takes its services with it. Error NAMES only: the
+      // message matches the delete path also uses prove nothing here. And only
+      // for a cluster the id NAMED: with none, the call asked the DEFAULT
+      // cluster, whose answer says nothing about a service in a named one.
+      if (
+        cluster !== undefined &&
+        isEcsErrorNamed(err, [
+          'ClusterNotFoundException',
+          'ServiceNotFoundException',
+          'ServiceNotActiveException',
+        ])
+      ) {
+        return RESOURCE_NOT_FOUND;
+      }
       return undefined;
     }
     const s = resp.services?.[0];
-    if (!s || !s.serviceName) return undefined;
+    if (!s || !s.serviceName) {
+      // Same default-cluster caveat as the catch above.
+      return cluster !== undefined && describeListedNothingGone(resp.failures)
+        ? RESOURCE_NOT_FOUND
+        : undefined;
+    }
     // `DescribeServices` keeps listing a DELETED service as `INACTIVE` for a
     // while (go-to-k/cdkd#4272, the cluster rule). `DRAINING` is a delete in
     // progress, but the service still exists, so it stays present.
-    if (s.status === 'INACTIVE') return undefined;
+    if (s.status === 'INACTIVE') return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (s.serviceName !== undefined) result['ServiceName'] = s.serviceName;
@@ -3742,7 +3803,7 @@ export class ECSProvider implements ResourceProvider {
 
   private async readCurrentStateTaskDefinition(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp: {
       taskDefinition?: {
         family?: string;
@@ -3769,12 +3830,13 @@ export class ECSProvider implements ResourceProvider {
       resp = (await this.getClient().send(
         new DescribeTaskDefinitionCommand({ taskDefinition: physicalId, include: ['TAGS'] })
       )) as unknown as typeof resp;
-    } catch {
+    } catch (err) {
+      if (isTaskDefinitionMissingError(err)) return RESOURCE_NOT_FOUND;
       return undefined;
     }
     const td = resp.taskDefinition;
     if (!td) return undefined;
-    if (isDeregisteredTaskDefinitionStatus(td.status)) return undefined;
+    if (isDeregisteredTaskDefinitionStatus(td.status)) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (td.family !== undefined) result['Family'] = td.family;

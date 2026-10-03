@@ -13,6 +13,7 @@ import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { readConfigString } from '../config-shape.js';
 import { stackScopedCreateToken } from './idempotency-token.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -315,13 +316,14 @@ export class CloudFrontOAIProvider implements ResourceProvider {
    * cdkd-managed property (CallerReference is set by cdkd itself and is
    * not part of the user-configurable surface).
    *
-   * Returns `undefined` when the OAI is gone (`NoSuchCloudFrontOriginAccessIdentity`).
+   * Returns `RESOURCE_NOT_FOUND` when the OAI is gone
+   * (`NoSuchCloudFrontOriginAccessIdentity`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       const resp = await this.cloudFrontClient.send(
         new GetCloudFrontOriginAccessIdentityCommand({ Id: physicalId })
@@ -334,7 +336,7 @@ export class CloudFrontOAIProvider implements ResourceProvider {
         CloudFrontOriginAccessIdentityConfig: inner,
       };
     } catch (err) {
-      if (err instanceof NoSuchCloudFrontOriginAccessIdentity) return undefined;
+      if (err instanceof NoSuchCloudFrontOriginAccessIdentity) return RESOURCE_NOT_FOUND;
       throw err;
     }
   }

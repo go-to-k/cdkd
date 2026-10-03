@@ -40,6 +40,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { GlueSecurityConfigurationProvider } from '../../../src/provisioning/providers/glue-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('GlueSecurityConfigurationProvider', () => {
   let provider: GlueSecurityConfigurationProvider;
@@ -272,7 +273,7 @@ describe('GlueSecurityConfigurationProvider', () => {
     });
   });
 
-  it('readCurrentState() returns undefined when SecurityConfiguration does not exist', async () => {
+  it('readCurrentState() returns RESOURCE_NOT_FOUND when SecurityConfiguration does not exist', async () => {
     const { EntityNotFoundException } = await import('@aws-sdk/client-glue');
     mockSend.mockRejectedValueOnce(
       new EntityNotFoundException({ message: 'not found', $metadata: {} })
@@ -283,7 +284,7 @@ describe('GlueSecurityConfigurationProvider', () => {
       'L',
       'AWS::Glue::SecurityConfiguration'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('handledProperties declares Name + EncryptionConfiguration', () => {

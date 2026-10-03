@@ -55,6 +55,7 @@ import {
   markReplayMayCollide,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1758,13 +1759,14 @@ export class EFSProvider implements ResourceProvider {
    * `MountTarget` are not surfaced for tags here (`AccessPointTags` would
    * mirror this approach but the test scope below covers `FileSystem`
    * only; further coverage can land in a follow-up).
-   * Returns `undefined` when the resource is gone (`*NotFound`).
+   * Returns `RESOURCE_NOT_FOUND` when the resource is gone (`*NotFound`, or an
+   * empty describe list for the id).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::EFS::FileSystem':
         return this.readFileSystem(physicalId);
@@ -1777,18 +1779,24 @@ export class EFSProvider implements ResourceProvider {
     }
   }
 
-  private async readFileSystem(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readFileSystem(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let fs;
+    let listed: readonly unknown[] | undefined;
     try {
       const resp = await this.getClient().send(
         new DescribeFileSystemsCommand({ FileSystemId: physicalId })
       );
+      listed = resp.FileSystems;
       fs = resp.FileSystems?.[0];
     } catch (err) {
-      if (err instanceof FileSystemNotFound) return undefined;
+      if (err instanceof FileSystemNotFound) return RESOURCE_NOT_FOUND;
       throw err;
     }
-    if (!fs) return undefined;
+    // An empty list for the requested id is AWS saying it is gone; an absent
+    // list (empty body) keeps `undefined`.
+    if (!fs) return listed?.length === 0 ? RESOURCE_NOT_FOUND : undefined;
 
     const result: Record<string, unknown> = {};
     if (fs.PerformanceMode !== undefined) result['PerformanceMode'] = fs.PerformanceMode;
@@ -1835,8 +1843,8 @@ export class EFSProvider implements ResourceProvider {
       }
     } catch (err) {
       // "Not configured" is service-specific; FileSystemNotFound on this call
-      // means the FS itself is gone (already covered above), so re-throw.
-      if (err instanceof FileSystemNotFound) return undefined;
+      // means the FS itself is gone between the two calls.
+      if (err instanceof FileSystemNotFound) return RESOURCE_NOT_FOUND;
       // Other errors (e.g. PolicyNotFound, AccessDenied) — omit the key,
       // don't fail the whole snapshot.
       const e = err as { name?: string };
@@ -1855,7 +1863,7 @@ export class EFSProvider implements ResourceProvider {
         result['BackupPolicy'] = { Status: resp.BackupPolicy.Status };
       }
     } catch (err) {
-      if (err instanceof FileSystemNotFound) return undefined;
+      if (err instanceof FileSystemNotFound) return RESOURCE_NOT_FOUND;
       // PolicyNotFound or similar — omit the key.
     }
 
@@ -1876,7 +1884,7 @@ export class EFSProvider implements ResourceProvider {
         }
       }
     } catch (err) {
-      if (err instanceof FileSystemNotFound) return undefined;
+      if (err instanceof FileSystemNotFound) return RESOURCE_NOT_FOUND;
       // PolicyNotFound or similar — omit the key.
     }
 
@@ -1887,18 +1895,24 @@ export class EFSProvider implements ResourceProvider {
     return result;
   }
 
-  private async readAccessPoint(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readAccessPoint(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let ap;
+    let listed: readonly unknown[] | undefined;
     try {
       const resp = await this.getClient().send(
         new DescribeAccessPointsCommand({ AccessPointId: physicalId })
       );
+      listed = resp.AccessPoints;
       ap = resp.AccessPoints?.[0];
     } catch (err) {
-      if (err instanceof AccessPointNotFound) return undefined;
+      if (err instanceof AccessPointNotFound) return RESOURCE_NOT_FOUND;
       throw err;
     }
-    if (!ap) return undefined;
+    // An empty list for the requested id is AWS saying it is gone; an absent
+    // list (empty body) keeps `undefined`.
+    if (!ap) return listed?.length === 0 ? RESOURCE_NOT_FOUND : undefined;
 
     const result: Record<string, unknown> = {};
     if (ap.FileSystemId !== undefined) result['FileSystemId'] = ap.FileSystemId;
@@ -1932,18 +1946,24 @@ export class EFSProvider implements ResourceProvider {
     return result;
   }
 
-  private async readMountTarget(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readMountTarget(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let mt;
+    let listed: readonly unknown[] | undefined;
     try {
       const resp = await this.getClient().send(
         new DescribeMountTargetsCommand({ MountTargetId: physicalId })
       );
+      listed = resp.MountTargets;
       mt = resp.MountTargets?.[0];
     } catch (err) {
-      if (err instanceof MountTargetNotFound) return undefined;
+      if (err instanceof MountTargetNotFound) return RESOURCE_NOT_FOUND;
       throw err;
     }
-    if (!mt) return undefined;
+    // An empty list for the requested id is AWS saying it is gone; an absent
+    // list (empty body) keeps `undefined`.
+    if (!mt) return listed?.length === 0 ? RESOURCE_NOT_FOUND : undefined;
 
     const result: Record<string, unknown> = {};
     if (mt.FileSystemId !== undefined) result['FileSystemId'] = mt.FileSystemId;

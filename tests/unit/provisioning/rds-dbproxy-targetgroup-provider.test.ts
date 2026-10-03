@@ -44,6 +44,7 @@ import {
 } from '../../../src/provisioning/providers/rds-dbproxy-targetgroup-provider.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const RESOURCE_TYPE = 'AWS::RDS::DBProxyTargetGroup';
 const TARGET_GROUP_ARN =
@@ -447,7 +448,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
         DBProxyName: 'AuroraProxy',
       });
       expect(mockSend.mock.calls[2]![0].input).toEqual({ ResourceName: TARGET_GROUP_ARN });
-      expect(result?.['Tags']).toEqual([{ Key: 'team', Value: 'db' }]);
+      expect((result as Record<string, unknown> | undefined)?.['Tags']).toEqual([{ Key: 'team', Value: 'db' }]);
     });
 
     it('readCurrentState OMITS Tags when the tag read fails, rather than reporting none', async () => {
@@ -997,7 +998,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
         DBClusterIdentifiers: ['MyCluster'],
       });
       // A real extra target keeps AWS's spelling, so real drift still shows.
-      expect(result?.['DBClusterIdentifiers']).toEqual(['MyCluster', 'othercluster']);
+      expect((result as Record<string, unknown> | undefined)?.['DBClusterIdentifiers']).toEqual(['MyCluster', 'othercluster']);
     });
 
     it('applies the recorded spelling to DBInstanceIdentifiers too', async () => {
@@ -1008,7 +1009,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
         DBProxyName: 'AuroraProxy',
         DBInstanceIdentifiers: ['MyDb'],
       });
-      expect(result?.['DBInstanceIdentifiers']).toEqual(['MyDb']);
+      expect((result as Record<string, unknown> | undefined)?.['DBInstanceIdentifiers']).toEqual(['MyDb']);
     });
 
     it('keeps the live spelling when the recorded list is malformed', async () => {
@@ -1021,7 +1022,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
         DBProxyName: 'AuroraProxy',
         DBClusterIdentifiers: 'MyCluster',
       });
-      expect(result?.['DBClusterIdentifiers']).toEqual(['mycluster']);
+      expect((result as Record<string, unknown> | undefined)?.['DBClusterIdentifiers']).toEqual(['mycluster']);
     });
 
     it('reads every page of targets and leaves a tracked cluster member out of the instance list', async () => {
@@ -1053,7 +1054,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       });
     });
 
-    it('returns undefined when AWS reports DBProxyNotFound (parent gone)', async () => {
+    it('returns RESOURCE_NOT_FOUND when AWS reports DBProxyNotFound (parent gone)', async () => {
       mockSend.mockRejectedValueOnce(
         new DBProxyNotFoundFault({ message: 'gone', $metadata: {} })
       );
@@ -1063,6 +1064,51 @@ describe('RDSDBProxyTargetGroupProvider', () => {
         RESOURCE_TYPE,
         { DBProxyName: 'AuroraProxy' }
       );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when the default target group is gone', async () => {
+      mockSend.mockRejectedValueOnce(
+        new DBProxyTargetGroupNotFoundFault({ message: 'gone', $metadata: {} })
+      );
+      const result = await provider.readCurrentState(TARGET_GROUP_ARN, 'TG', RESOURCE_TYPE, {
+        DBProxyName: 'AuroraProxy',
+      });
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('keeps undefined for a target group NotFound on a non-default recorded name', async () => {
+      // CloudFormation accepts only `default`: a miss on any other name
+      // addresses no group this resource made, so it proves nothing.
+      mockSend.mockRejectedValueOnce(
+        new DBProxyTargetGroupNotFoundFault({ message: 'gone', $metadata: {} })
+      );
+      const result = await provider.readCurrentState(TARGET_GROUP_ARN, 'TG', RESOURCE_TYPE, {
+        DBProxyName: 'AuroraProxy',
+        TargetGroupName: 'custom',
+      });
+      expect(result).toBeUndefined();
+    });
+
+    it('returns RESOURCE_NOT_FOUND when the proxy vanishes between the group and target reads', async () => {
+      mockSend
+        .mockResolvedValueOnce({ TargetGroups: [{ ConnectionPoolConfig: {} }] })
+        .mockRejectedValueOnce(new DBProxyNotFoundFault({ message: 'gone', $metadata: {} }));
+      const result = await provider.readCurrentState(TARGET_GROUP_ARN, 'TG', RESOURCE_TYPE, {
+        DBProxyName: 'AuroraProxy',
+      });
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('keeps undefined for DBProxyTargetNotFoundFault on the target read (a target, not the group)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ TargetGroups: [{ ConnectionPoolConfig: {} }] })
+        .mockRejectedValueOnce(
+          new DBProxyTargetNotFoundFault({ message: 'target gone', $metadata: {} })
+        );
+      const result = await provider.readCurrentState(TARGET_GROUP_ARN, 'TG', RESOURCE_TYPE, {
+        DBProxyName: 'AuroraProxy',
+      });
       expect(result).toBeUndefined();
     });
 
@@ -1080,8 +1126,8 @@ describe('RDSDBProxyTargetGroupProvider', () => {
         { DBProxyName: 'AuroraProxy' }
       );
       expect(result).not.toHaveProperty('ConnectionPoolConfigurationInfo');
-      expect(result?.['DBClusterIdentifiers']).toEqual([]);
-      expect(result?.['DBInstanceIdentifiers']).toEqual([]);
+      expect((result as Record<string, unknown> | undefined)?.['DBClusterIdentifiers']).toEqual([]);
+      expect((result as Record<string, unknown> | undefined)?.['DBInstanceIdentifiers']).toEqual([]);
     });
   });
 

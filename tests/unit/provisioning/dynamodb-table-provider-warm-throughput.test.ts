@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   CreateTableCommand,
   DescribeTableCommand,
@@ -56,6 +57,15 @@ function findCalls<T>(ctor: new (...args: never[]) => T): T[] {
  * control-plane API), and works with BOTH PROVISIONED and PAY_PER_REQUEST
  * billing modes.
  */
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
+
 describe('DynamoDBTableProvider WarmThroughput wiring', () => {
   let provider: DynamoDBTableProvider;
 
@@ -540,7 +550,7 @@ describe('DynamoDBTableProvider WarmThroughput wiring', () => {
       mockSend.mockResolvedValueOnce({ Tags: [] }); // ListTagsOfResource
       primeTtlPitrEmpty();
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, DECLARED);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, DECLARED));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeTableCommand);
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsOfResourceCommand);
@@ -567,7 +577,7 @@ describe('DynamoDBTableProvider WarmThroughput wiring', () => {
       mockSend.mockResolvedValueOnce({ Tags: [] });
       primeTtlPitrEmpty();
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, DECLARED);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, DECLARED));
 
       expect(result).toBeDefined();
       expect(result).not.toHaveProperty('WarmThroughput');
@@ -585,7 +595,7 @@ describe('DynamoDBTableProvider WarmThroughput wiring', () => {
       mockSend.mockResolvedValueOnce({ Tags: [] });
       primeTtlPitrEmpty();
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, DECLARED);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, DECLARED));
 
       expect(result?.WarmThroughput).toEqual({ ReadUnitsPerSecond: 12000 });
     });

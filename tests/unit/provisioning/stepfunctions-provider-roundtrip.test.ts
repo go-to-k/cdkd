@@ -34,6 +34,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { StepFunctionsProvider } from '../../../src/provisioning/providers/stepfunctions-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const SM_ARN = 'arn:aws:states:us-east-1:123456789012:stateMachine:my-sm';
 const RESOURCE_TYPE = 'AWS::StepFunctions::StateMachine';
@@ -94,7 +103,7 @@ describe('StepFunctionsProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ tags: [] });
 
-    const observed = await provider.readCurrentState(SM_ARN, 'L', RESOURCE_TYPE);
+    const observed = bagOf(await provider.readCurrentState(SM_ARN, 'L', RESOURCE_TYPE));
     expect(observed?.['EncryptionConfiguration']).toEqual({});
 
     // Round-trip: pass the placeholder back through update() as both new
@@ -126,7 +135,7 @@ describe('StepFunctionsProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ tags: [] });
 
-    const observed = await provider.readCurrentState(SM_ARN, 'L', RESOURCE_TYPE);
+    const observed = bagOf(await provider.readCurrentState(SM_ARN, 'L', RESOURCE_TYPE));
     expect(observed?.['LoggingConfiguration']).toEqual({});
 
     vi.clearAllMocks();
@@ -171,7 +180,7 @@ describe('StepFunctionsProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ tags: [] });
 
-    const observed = await provider.readCurrentState(SM_ARN, 'L', RESOURCE_TYPE);
+    const observed = bagOf(await provider.readCurrentState(SM_ARN, 'L', RESOURCE_TYPE));
     // Pre-condition: readCurrentState surfaced the CFn (PascalCase) shape.
     expect(observed?.['LoggingConfiguration']).toEqual({
       Level: 'ALL',
@@ -228,7 +237,7 @@ describe('StepFunctionsProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ tags: [] });
 
-    const observed = await provider.readCurrentState(SM_ARN, 'L', RESOURCE_TYPE);
+    const observed = bagOf(await provider.readCurrentState(SM_ARN, 'L', RESOURCE_TYPE));
 
     vi.clearAllMocks();
     mockSend.mockResolvedValueOnce({});
@@ -263,7 +272,7 @@ describe('StepFunctionsProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ tags: [] });
 
-    const observed = await provider.readCurrentState(SM_ARN, 'L', RESOURCE_TYPE);
+    const observed = bagOf(await provider.readCurrentState(SM_ARN, 'L', RESOURCE_TYPE));
 
     vi.clearAllMocks();
     mockSend.mockResolvedValueOnce({});

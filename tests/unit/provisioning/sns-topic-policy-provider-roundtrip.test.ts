@@ -68,7 +68,7 @@ describe('SNSTopicPolicyProvider read-update round-trip', () => {
       },
     });
 
-    const observed = await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE);
+    const observed = (await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
 
     expect(observed).toBeDefined();
     expect(observed?.Topics).toEqual([TOPIC_ARN_1, TOPIC_ARN_2]);
@@ -95,7 +95,7 @@ describe('SNSTopicPolicyProvider read-update round-trip', () => {
         TopicArn: TOPIC_ARN_1,
       },
     });
-    const observed = await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE);
+    const observed = (await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
     expect(observed).toBeDefined();
 
     // 2. Reset and prep update mocks (one SetTopicAttributes per topic).

@@ -38,6 +38,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('CognitoUserPoolProvider.readCurrentState', () => {
   let provider: CognitoUserPoolProvider;
@@ -201,7 +202,7 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
     expect('WebAuthnRelyingPartyID' in result).toBe(false);
   });
 
-  it('returns undefined when pool is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when pool is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'gone', $metadata: {} })
     );
@@ -212,7 +213,17 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
       'AWS::Cognito::UserPool'
     );
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('still rethrows a non-NotFound DescribeUserPool error', async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+    );
+
+    await expect(
+      provider.readCurrentState('us-east-1_x', 'PoolLogical', 'AWS::Cognito::UserPool')
+    ).rejects.toThrow('denied');
   });
 
   it('returns undefined for unsupported resource types', async () => {
@@ -235,11 +246,11 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'us-east-1_abcd',
       'PoolLogical',
       'AWS::Cognito::UserPool'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.UserPoolTags).toEqual({ Foo: 'Bar' });
   });
@@ -253,11 +264,11 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'us-east-1_abcd',
       'PoolLogical',
       'AWS::Cognito::UserPool'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.UserPoolTags).toEqual({});
   });
@@ -284,11 +295,11 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
     // GetUserPoolMfaConfig — empty (no MFA factors / WebAuthn configured).
     mockSend.mockResolvedValueOnce({});
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'us-east-1_x',
       'PoolLogical',
       'AWS::Cognito::UserPool'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(Object.keys(result ?? {}).sort()).toEqual(
       [

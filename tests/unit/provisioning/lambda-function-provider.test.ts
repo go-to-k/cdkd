@@ -55,6 +55,15 @@ import {
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import * as zlib from 'node:zlib';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('LambdaFunctionProvider', () => {
   let provider: LambdaFunctionProvider;
@@ -921,11 +930,11 @@ describe('LambdaFunctionProvider', () => {
         })
         .mockResolvedValueOnce({ RecursiveLoop: 'Allow' }); // GetFunctionRecursionConfig
 
-      const observed = await provider.readCurrentState(
+      const observed = bagOf(await provider.readCurrentState(
         'fn',
         'RlFn',
         'AWS::Lambda::Function'
-      );
+      ));
       expect(observed!['RecursiveLoop']).toBe('Allow');
 
       const getRlCall = mockLambdaSend.mock.calls.find(
@@ -1150,11 +1159,11 @@ describe('LambdaFunctionProvider', () => {
         .mockResolvedValueOnce({}) // GetFunctionRecursionConfig (undefined)
         .mockResolvedValueOnce({ ReservedConcurrentExecutions: 50 }); // GetFunctionConcurrency
 
-      const observed = await provider.readCurrentState(
+      const observed = bagOf(await provider.readCurrentState(
         'fn',
         'PcFn',
         'AWS::Lambda::Function'
-      );
+      ));
       expect(observed!['ReservedConcurrentExecutions']).toBe(50);
     });
 

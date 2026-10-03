@@ -40,6 +40,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { GlueProvider } from '../../../src/provisioning/providers/glue-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('GlueProvider.readCurrentState', () => {
   let provider: GlueProvider;
@@ -77,12 +78,12 @@ describe('GlueProvider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined when DB is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when DB is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new EntityNotFoundException({ message: 'gone', $metadata: {} })
       );
       const result = await provider.readCurrentState('mydb', 'L', 'AWS::Glue::Database');
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -126,7 +127,7 @@ describe('GlueProvider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined when table is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when table is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new EntityNotFoundException({ message: 'gone', $metadata: {} })
       );
@@ -135,7 +136,7 @@ describe('GlueProvider.readCurrentState', () => {
         'L',
         'AWS::Glue::Table'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 });

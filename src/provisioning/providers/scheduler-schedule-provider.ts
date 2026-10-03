@@ -23,7 +23,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -547,7 +549,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     _logicalId: string,
     _resourceType: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const groupName = this.groupNameOf(properties);
     try {
       const response = await this.getClient().send(
@@ -588,7 +590,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       };
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
-        return undefined; // drift unknown — resource gone
+        return RESOURCE_NOT_FOUND;
       }
       throw error;
     }

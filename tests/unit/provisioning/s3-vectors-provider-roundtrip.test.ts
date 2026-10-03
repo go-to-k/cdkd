@@ -104,7 +104,7 @@ describe('S3VectorsProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ tags: {} }); // ListTagsForResource (no tags)
 
-    const result = await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE);
+    const result = (await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
 
     expect(result).toEqual({
       VectorBucketName: PHYSICAL_ID,

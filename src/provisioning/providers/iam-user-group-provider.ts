@@ -75,7 +75,9 @@ import type {
   ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
@@ -2090,7 +2092,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
    *    drift comparator falls back to "drift unknown" and the user can
    *    inspect the membership manually.
    *
-   * Returns `undefined` when the user / group is gone
+   * Returns `RESOURCE_NOT_FOUND` when the user / group is gone
    * (`NoSuchEntityException`).
    */
   async readCurrentState(
@@ -2099,7 +2101,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: import('../../types/resource.js').ReadCurrentStateContext
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::IAM::User':
         return this.readUserCurrentState(physicalId, properties, context);
@@ -2120,13 +2122,13 @@ export class IAMUserGroupProvider implements ResourceProvider {
     physicalId: string,
     properties?: Record<string, unknown>,
     context?: import('../../types/resource.js').ReadCurrentStateContext
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let user;
     try {
       const resp = await this.iamClient.send(new GetUserCommand({ UserName: physicalId }));
       user = resp.User;
     } catch (err) {
-      if (err instanceof NoSuchEntityException) return undefined;
+      if (err instanceof NoSuchEntityException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!user) return undefined;
@@ -2182,13 +2184,13 @@ export class IAMUserGroupProvider implements ResourceProvider {
     physicalId: string,
     properties?: Record<string, unknown>,
     context?: import('../../types/resource.js').ReadCurrentStateContext
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let group;
     try {
       const resp = await this.iamClient.send(new GetGroupCommand({ GroupName: physicalId }));
       group = resp.Group;
     } catch (err) {
-      if (err instanceof NoSuchEntityException) return undefined;
+      if (err instanceof NoSuchEntityException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!group) return undefined;

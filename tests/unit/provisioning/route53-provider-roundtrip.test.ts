@@ -58,6 +58,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('Route53Provider read-update round-trip', () => {
   let provider: Route53Provider;
@@ -86,7 +95,7 @@ describe('Route53Provider read-update round-trip', () => {
       })
       .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z1', Tags: [] } });
 
-    const observed = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
+    const observed = bagOf(await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone'));
 
     expect(observed).toBeDefined();
     expect(observed).not.toHaveProperty('VPCs');
@@ -143,7 +152,7 @@ describe('Route53Provider read-update round-trip', () => {
       })
       .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z2', Tags: [] } });
 
-    const observed = await provider.readCurrentState('Z2', 'L', 'AWS::Route53::HostedZone');
+    const observed = bagOf(await provider.readCurrentState('Z2', 'L', 'AWS::Route53::HostedZone'));
 
     expect(observed?.['VPCs']).toEqual([
       { VPCId: 'vpc-aaa', VPCRegion: 'us-east-1' },
@@ -199,11 +208,11 @@ describe('Route53Provider read-update round-trip', () => {
       ],
     });
 
-    const observed = await provider.readCurrentState(
+    const observed = bagOf(await provider.readCurrentState(
       'Z1|a.example.com.|A',
       'L',
       'AWS::Route53::RecordSet'
-    );
+    ));
     expect(observed).toEqual({
       HostedZoneId: 'Z1',
       Name: 'a.example.com.',
@@ -265,11 +274,11 @@ describe('Route53Provider read-update round-trip', () => {
       ],
     });
 
-    const observed = await provider.readCurrentState(
+    const observed = bagOf(await provider.readCurrentState(
       'Z1|alias.example.com.|A',
       'L',
       'AWS::Route53::RecordSet'
-    );
+    ));
     expect(observed).toEqual({
       HostedZoneId: 'Z1',
       Name: 'alias.example.com.',
@@ -334,11 +343,11 @@ describe('Route53Provider read-update round-trip', () => {
       ],
     });
 
-    const observed = await provider.readCurrentState(
+    const observed = bagOf(await provider.readCurrentState(
       'Z1|a.example.com.|A',
       'L',
       'AWS::Route53::RecordSet'
-    );
+    ));
 
     mockSend.mockReset();
     mockSend.mockResolvedValueOnce({});
@@ -383,11 +392,11 @@ describe('Route53Provider read-update round-trip', () => {
       ],
     });
 
-    const observed = await provider.readCurrentState(
+    const observed = bagOf(await provider.readCurrentState(
       'Z1|w.example.com.|A',
       'L',
       'AWS::Route53::RecordSet'
-    );
+    ));
     expect(observed?.['Weight']).toBe(0);
     expect(observed?.['SetIdentifier']).toBe('primary');
 
@@ -433,7 +442,7 @@ describe('Route53Provider read-update round-trip', () => {
       })
       .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z1', Tags: [] } });
 
-    const observed = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
+    const observed = bagOf(await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone'));
 
     mockSend.mockReset();
     mockSend

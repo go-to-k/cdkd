@@ -40,6 +40,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { CodeBuildProvider } from '../../../src/provisioning/providers/codebuild-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const RESOURCE_TYPE = 'AWS::CodeBuild::Project';
 
@@ -161,7 +170,7 @@ describe('CodeBuildProvider read-update round-trip', () => {
       ],
     });
 
-    const observed = await provider.readCurrentState('myproj', 'L', RESOURCE_TYPE);
+    const observed = bagOf(await provider.readCurrentState('myproj', 'L', RESOURCE_TYPE));
     expect(observed).toBeDefined();
 
     // Confirm the always-emit placeholders are present (these are what

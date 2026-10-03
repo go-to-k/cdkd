@@ -73,11 +73,11 @@ describe('S3TablesProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ tags: {} });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       BUCKET_ARN,
       'L',
       'AWS::S3Tables::TableBucket'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(observed).toEqual({
       TableBucketName: 'my-bucket',
       // #609 backfill: empty Tags array (no tags on the live resource).
@@ -106,13 +106,14 @@ describe('S3TablesProvider read-update round-trip', () => {
   });
 
   it('AWS::S3Tables::Namespace — no-op update fires zero SDK calls on round-trip', async () => {
-    // readCurrentState for Namespace does no SDK call (physical id is
-    // the source of truth).
-    const observed = await provider.readCurrentState(
+    // readCurrentState for Namespace calls GetNamespace for existence only
+    // (the physical id is the source of truth for the values).
+    mockSend.mockResolvedValueOnce({ namespace: ['my-namespace'] });
+    const observed = (await provider.readCurrentState(
       NAMESPACE_PHYSICAL_ID,
       'L',
       'AWS::S3Tables::Namespace'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(observed).toEqual({
       TableBucketARN: BUCKET_ARN,
       // String form matches CDK 2.x's CfnNamespace template output;
@@ -150,11 +151,11 @@ describe('S3TablesProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ tags: {} });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       TABLE_PHYSICAL_ID,
       'L',
       'AWS::S3Tables::Table'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(observed).toEqual({
       TableBucketARN: BUCKET_ARN,
       Namespace: 'my-namespace',
@@ -201,11 +202,11 @@ describe('S3TablesProvider read-update round-trip', () => {
     // Second mock: ListTagsForResource (always called post-#609 readback).
     mockSend.mockResolvedValueOnce({ tags: {} });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       TABLE_PHYSICAL_ID,
       'L',
       'AWS::S3Tables::Table'
-    );
+    )) as Record<string, unknown> | undefined;
 
     // Format is create-only (Iceberg is the only legal value), so the
     // skip-emit on undefined is justified per § 3b "Immutable on create".

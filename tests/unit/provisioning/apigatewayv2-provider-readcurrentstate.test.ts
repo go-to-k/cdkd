@@ -41,6 +41,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ApiGatewayV2Provider } from '../../../src/provisioning/providers/apigatewayv2-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('ApiGatewayV2Provider.readCurrentState', () => {
   let provider: ApiGatewayV2Provider;
@@ -75,12 +76,12 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when api is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when api is gone', async () => {
     mockSend.mockRejectedValueOnce(new NotFoundException({ message: 'gone', $metadata: {} }));
 
     const result = await provider.readCurrentState('gone', 'ApiLogical', 'AWS::ApiGatewayV2::Api');
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('returns Stage fields via GetStage using properties.ApiId', async () => {
@@ -225,12 +226,12 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       OperationName: 'GetPets',
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'route-1',
       'RouteLogical',
       'AWS::ApiGatewayV2::Route',
       { ApiId: 'abcd1234' }
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result!['OperationName']).toBe('GetPets');
   });
@@ -265,12 +266,12 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       EnableSimpleResponses: true,
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'auth-1',
       'AuthorizerLogical',
       'AWS::ApiGatewayV2::Authorizer',
       { ApiId: 'abcd1234' }
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result!['AuthorizerResultTtlInSeconds']).toBe(300);
     expect(result!['EnableSimpleResponses']).toBe(true);
@@ -287,12 +288,12 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       EnableSimpleResponses: false,
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'auth-1',
       'AuthorizerLogical',
       'AWS::ApiGatewayV2::Authorizer',
       { ApiId: 'abcd1234' }
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result!).toHaveProperty('EnableSimpleResponses');
     expect(result!['EnableSimpleResponses']).toBe(false);
@@ -351,12 +352,12 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       IdentityValidationExpression: '^Bearer .+$',
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'auth-1',
       'AuthorizerLogical',
       'AWS::ApiGatewayV2::Authorizer',
       { ApiId: 'abcd1234' }
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result!['IdentityValidationExpression']).toBe('^Bearer .+$');
   });
@@ -410,12 +411,12 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       AuthorizerCredentialsArn: 'arn:aws:iam::123456789012:role/RequestAuthorizerRole',
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'auth-1',
       'AuthorizerLogical',
       'AWS::ApiGatewayV2::Authorizer',
       { ApiId: 'abcd1234' }
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result!['AuthorizerCredentialsArn']).toBe(
       'arn:aws:iam::123456789012:role/RequestAuthorizerRole'
@@ -472,17 +473,30 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('returns undefined for sub-resources when AWS reports NotFound', async () => {
+  // go-to-k/cdkd#4283: a deleted sub-resource reads as gone, not "no read path".
+  it.each([
+    'AWS::ApiGatewayV2::Stage',
+    'AWS::ApiGatewayV2::Integration',
+    'AWS::ApiGatewayV2::Route',
+    'AWS::ApiGatewayV2::Authorizer',
+  ])('returns RESOURCE_NOT_FOUND for %s when AWS reports NotFound', async (type) => {
     mockSend.mockRejectedValueOnce(new NotFoundException({ message: 'gone', $metadata: {} }));
 
-    const result = await provider.readCurrentState(
-      'route-1',
-      'RouteLogical',
-      'AWS::ApiGatewayV2::Route',
-      { ApiId: 'abcd1234' }
+    const result = await provider.readCurrentState('sub-1', 'Logical', type, {
+      ApiId: 'abcd1234',
+    });
+
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('still rethrows a non-NotFound error', async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
     );
 
-    expect(result).toBeUndefined();
+    await expect(
+      provider.readCurrentState('gone', 'ApiLogical', 'AWS::ApiGatewayV2::Api')
+    ).rejects.toThrow('denied');
   });
 
   it('surfaces Tags from GetApi with aws:* filtered out', async () => {
@@ -492,11 +506,11 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       Tags: { Foo: 'Bar', 'aws:cdk:path': 'MyStack/MyApi/Resource' },
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'abcd1234',
       'ApiLogical',
       'AWS::ApiGatewayV2::Api'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
@@ -508,11 +522,11 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       Tags: { 'aws:cdk:path': 'MyStack/MyApi/Resource' },
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'abcd1234',
       'ApiLogical',
       'AWS::ApiGatewayV2::Api'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.Tags).toEqual([]);
   });
@@ -530,11 +544,11 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       // Name / Description / CorsConfiguration / Tags deliberately undefined.
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'a',
       'ApiLogical',
       'AWS::ApiGatewayV2::Api'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(Object.keys(result ?? {}).sort()).toEqual(
       ['CorsConfiguration', 'Description', 'Name', 'ProtocolType', 'Tags'].sort()

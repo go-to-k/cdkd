@@ -130,7 +130,9 @@ import type {
   UpdateContext,
   SecretMasker,
   ReadCurrentStateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 
 /**
  * AWS DynamoDB Table Provider
@@ -6806,7 +6808,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *    write traffic. Each entry is now reverse-mapped to its CFn shape by
    *    {@link reverseMapSecondaryIndex}.
    *
-   * Returns `undefined` when the table is gone (`ResourceNotFoundException`).
+   * Returns {@link RESOURCE_NOT_FOUND} when the table is gone
+   * (`ResourceNotFoundException`, also when it disappears mid-read under
+   * `ListTagsOfResource`); `undefined` only for an empty `DescribeTable` body.
    *
    * Tags are surfaced via a follow-up `ListTagsOfResource` call (DynamoDB
    * doesn't include tags in `DescribeTable`). CDK's `aws:*` auto-tags are
@@ -6829,7 +6833,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
     _resourceType: string,
     properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       const resp = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
@@ -6985,7 +6989,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         } catch (err) {
           // Tag fetch failures shouldn't tank the whole drift read; rethrow
           // only on hard "table gone" semantics.
-          if (err instanceof ResourceNotFoundException) return undefined;
+          if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
           throw err;
         }
       }
@@ -7161,7 +7165,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
 
       return result;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
   }

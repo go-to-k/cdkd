@@ -120,16 +120,25 @@ records.
 
 ## Per-resource outcomes
 
-Every resource ends in exactly one of four states.
+Every resource ends in exactly one of five states.
 
 | Outcome | Meaning | In the report |
 | --- | --- | --- |
 | **drifted** | At least one property differs between state and AWS. | `~ <logicalId> (<type>)`, with one `+/-` line per diverging property path. |
+| **deleted** | AWS reports the resource does not exist: it was deleted outside cdkd. | `- <logicalId> (<type>) — DELETED outside cdkd`, in the drift block, counted in `drift detected on N resources`. |
 | **clean** | Every state-recorded property was compared against AWS and matched. | Counted in the per-stack summary, not listed individually. |
 | **not compared** | Nothing differed, but cdkd did not compare every property. | Listed in the partially-compared block, with its own reason. |
-| **drift unknown** | Nothing could be read back for the resource. | `? <logicalId> (<type>)`, in a separate block at the bottom of the stack's report. |
+| **drift unknown** | Nothing read back proves the resource's state: typically no provider reads its type back, or the read could not tell whether it still exists. | `? <logicalId> (<type>)`, in a separate block at the bottom of the stack's report. |
 
 A **clean** verdict never means anything except compared-and-matched.
+
+A **deleted** resource is drift and exits `1`. It is reported only on AWS's own
+answer that the resource is not there (a not-found error, or a status such as
+an ECS cluster's `INACTIVE` that the service keeps listing for a while after a
+delete). An access-denied or throttled read is never reported as deleted, and
+neither is a read that cannot tell. A deleted resource of a type cdkd has no
+reader for (a nested `AWS::CloudFormation::Stack` or an `AWS::EC2::EIP`, for
+two) still reads as **drift unknown**. See [JSON output](#json-output) for the `--json` shape change.
 
 ### Why a resource was not compared
 
@@ -324,9 +333,10 @@ sequence.
 | --- | --- |
 | `0` (detection) | Nothing drifted, and every resource under `notCompared`, if any, is there for an `unresolvedToken`. |
 | `0` (`--accept` / `--revert`) | The remediation run completed. This does NOT assert every comparison completed. |
-| `1` | Drift was detected on at least one resource, OR the command failed (no state found, an AWS error, bad arguments). |
+| `1` | Drift was detected on at least one resource (a **deleted** resource counts), OR the command failed (no state found, an AWS error, bad arguments). |
 | `2` (detection) | Nothing drifted, but at least one comparison did not happen for a reason you can act on. |
 | `2` (`--revert`) | The revert finished with one or more resources not reverted. |
+| `2` (`--accept` / `--revert`) | The run refused at least one **deleted** resource; see [Deleted resources](#deleted-resources). |
 
 The full cross-command table is in the
 [CLI Reference](cli-reference.md#exit-codes).
@@ -372,7 +382,9 @@ refusal is warned about by name, and the drift is still reported next run.
 WITHOUT `--accept` / `--revert` and read its exit code, or read `--json`'s
 `notCompared[].cause`.
 
-**Exit `2` on `--revert`** (`PartialFailureError`) covers three shapes: a
+**Exit `2` on `--revert`** (`PartialFailureError`) covers four shapes: a
+resource refused because it was deleted outside cdkd (see
+[Deleted resources](#deleted-resources)), a
 `provider.update` call that failed, one that threw
 `ResourceUpdateNotSupportedError`, and — counted and reported separately,
 since it never reached `provider.update` at all — a resource whose recorded
@@ -809,6 +821,24 @@ Both are no-ops on a clean stack. Resources reported as `drift unknown` are
 skipped by both, because the comparator never produced a property difference
 for them.
 
+### Deleted resources
+
+Neither flag acts on a resource AWS reports **deleted**. `--revert` updates a
+resource in place and cannot recreate one. `--accept` copies AWS-current values
+into state and there are none; the only thing left for it to do would be to drop
+the record, and `--accept` does not silently erase state. Each such resource is
+refused by name, nothing is changed for it, and the run still resolves every
+other drifted resource. The run then exits `2` (`--dry-run` prints the refusal
+and exits `0`; declining the confirmation prompt exits `0`).
+
+First confirm the resource really is gone, in the AWS console or with the AWS
+CLI. A plain `cdkd deploy` does not recreate it: a deploy compares the template
+with cdkd state, not with AWS, so a resource whose template did not change is
+left alone. To recreate it, remove it from the CDK app and deploy, then restore
+it and deploy again. If it is meant to be gone, the first of those deploys is
+enough. Anything in the app that references the resource has to come out with
+it, and that deploy **deletes** those resources too.
+
 **A dropped row is REPORTED, and the run does not exit `0`.** An entry the
 detection run could not read is reported as `not compared` — it appears in the
 `--json` payload with the cause `unreadableRecord`, in the `NOT fully compared`
@@ -1040,6 +1070,9 @@ resolved.
         "referencesUnresolved": false
       }
     ],
+    "deleted": [
+      { "logicalId": "Topic1", "type": "AWS::SNS::Topic" }
+    ],
     "clean": [
       { "logicalId": "Queue1", "type": "AWS::SQS::Queue", "referencesUnresolved": false }
     ],
@@ -1050,6 +1083,10 @@ resolved.
   }
 ]
 ```
+
+**`--json` shape change:** `deleted` is new. A resource AWS reports deleted
+outside cdkd used to be listed in `notSupported`; it is now listed in `deleted`
+only, and it makes the detection run exit `1`.
 
 A report may also carry a `warnings` array of stack-level advisory strings. It
 is **omitted when there is nothing to say**, so an ordinary payload is unchanged.

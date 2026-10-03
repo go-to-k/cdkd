@@ -34,7 +34,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -837,8 +839,8 @@ export class WAFv2WebACLProvider implements ResourceProvider {
    * Tags are surfaced via a follow-up `ListTagsForResource(ResourceARN)`
    * call. CDK's `aws:*` auto-tags are filtered out and the result key is
    * omitted when AWS reports no user tags. Returns `undefined`
-   * when the ARN can't be parsed or the WebACL is gone
-   * (`WAFNonexistentItemException`).
+   * when the ARN can't be parsed, and `RESOURCE_NOT_FOUND` when the WebACL
+   * is gone (`WAFNonexistentItemException`).
    */
   async readCurrentState(
     physicalId: string,
@@ -849,7 +851,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     // needle `SearchString` or `SearchStringBase64` (identical bytes), so
     // the reverse mapping is baseline-driven. See {@link toCfnRules}.
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const { id, name, scope } = parseWebACLArn(physicalId);
     if (!id || !name) return undefined;
 
@@ -860,7 +862,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
       );
       webACL = resp.WebACL;
     } catch (err) {
-      if (err instanceof WAFNonexistentItemException) return undefined;
+      if (err instanceof WAFNonexistentItemException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!webACL) return undefined;

@@ -67,7 +67,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   createMaskedLogSinks,
   isSecretDerivedValue,
@@ -2148,13 +2150,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * behavior of only sending `Tags` when the user explicitly passes
    * them.
    *
-   * Returns `undefined` when the function is gone (`ResourceNotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the function is gone (`ResourceNotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       const resp = await this.lambdaClient.send(
         new GetFunctionCommand({ FunctionName: physicalId })
@@ -2399,7 +2401,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
       return result;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
   }

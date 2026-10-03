@@ -37,7 +37,9 @@ import type {
   ResourceImportResult,
   CreateContext,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -985,7 +987,7 @@ export class KinesisStreamProvider implements ResourceProvider {
    * description (only present for PROVISIONED-mode streams; ON_DEMAND
    * mode reports an empty list).
    *
-   * Returns `undefined` when the stream is gone (`ResourceNotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the stream is gone (`ResourceNotFoundException`).
    *
    * `AWS::Kinesis::StreamConsumer` is intentionally not handled here: this
    * provider only registers `AWS::Kinesis::Stream`, so consumer resources
@@ -999,7 +1001,7 @@ export class KinesisStreamProvider implements ResourceProvider {
     _logicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     if (resourceType !== 'AWS::Kinesis::Stream') return undefined;
 
     let stream;
@@ -1009,7 +1011,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       );
       stream = resp.StreamDescription;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!stream) return undefined;
@@ -1068,7 +1070,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       const maxRecordSize = summaryResp.StreamDescriptionSummary?.MaxRecordSizeInKiB;
       if (maxRecordSize !== undefined) result['MaxRecordSizeInKiB'] = maxRecordSize;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
 
@@ -1080,7 +1082,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
       result['Tags'] = tags;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       this.logger.debug(
         `Kinesis ListTagsForStream(${physicalId}) failed: ${describeAwsFailure(err).detail}`
       );

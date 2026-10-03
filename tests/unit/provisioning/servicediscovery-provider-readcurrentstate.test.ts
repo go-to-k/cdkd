@@ -43,6 +43,16 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ServiceDiscoveryProvider } from '../../../src/provisioning/providers/servicediscovery-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import type { ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('ServiceDiscoveryProvider.readCurrentState', () => {
   let provider: ServiceDiscoveryProvider;
@@ -58,11 +68,11 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
         Namespace: { Id: 'ns-1', Name: 'mynamespace.local', Description: 'mine' },
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'ns-1',
         'L',
         'AWS::ServiceDiscovery::PrivateDnsNamespace'
-      );
+      ));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetNamespaceCommand);
       // Properties always emitted as `{}` placeholder when AWS doesn't
@@ -85,11 +95,11 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
         },
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'ns-1',
         'L',
         'AWS::ServiceDiscovery::PrivateDnsNamespace'
-      );
+      ));
 
       expect(result).toEqual({
         Name: 'mynamespace.local',
@@ -98,7 +108,7 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined when namespace is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when namespace is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new NamespaceNotFound({ message: 'gone', $metadata: {} })
       );
@@ -107,7 +117,7 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
         'L',
         'AWS::ServiceDiscovery::PrivateDnsNamespace'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -126,11 +136,11 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
         // GetServiceAttributes (no attributes set)
         .mockResolvedValueOnce({ ServiceAttributes: { Attributes: {} } });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'srv-1',
         'L',
         'AWS::ServiceDiscovery::Service'
-      );
+      ));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetServiceCommand);
       expect(result).toEqual({
@@ -152,11 +162,11 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
           ServiceAttributes: { Attributes: { team: 'cdkd', tier: 'backend' } },
         });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'srv-1',
         'L',
         'AWS::ServiceDiscovery::Service'
-      );
+      ));
 
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(GetServiceAttributesCommand);
       expect(result?.ServiceAttributes).toEqual({ team: 'cdkd', tier: 'backend' });
@@ -169,15 +179,15 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
         })
         .mockResolvedValueOnce({});
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'srv-1',
         'L',
         'AWS::ServiceDiscovery::Service'
-      );
+      ));
       expect(result?.ServiceAttributes).toEqual({});
     });
 
-    it('returns undefined when service is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when service is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new ServiceNotFound({ message: 'gone', $metadata: {} })
       );
@@ -186,6 +196,42 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
         'L',
         'AWS::ServiceDiscovery::Service'
       );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+  });
+
+  describe('gone vs no read path (go-to-k/cdkd#4283)', () => {
+    it.each([
+      ['AWS::ServiceDiscovery::HttpNamespace', {}],
+      ['AWS::ServiceDiscovery::PublicDnsNamespace', {}],
+      ['AWS::ServiceDiscovery::Service', {}],
+    ])('keeps undefined for %s when the Get succeeds with no resource (not a not-found answer)', async (type, resp) => {
+      mockSend.mockResolvedValueOnce(resp);
+      const result = await provider.readCurrentState('id-1', 'L', type);
+      expect(result).toBeUndefined();
+    });
+
+    it('returns RESOURCE_NOT_FOUND for an HttpNamespace that is gone', async () => {
+      mockSend.mockRejectedValueOnce(new NamespaceNotFound({ message: 'gone', $metadata: {} }));
+      const result = await provider.readCurrentState(
+        'ns-1',
+        'L',
+        'AWS::ServiceDiscovery::HttpNamespace'
+      );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('rethrows a non-not-found error instead of reporting the resource gone', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('User is not authorized'), { name: 'AccessDeniedException' })
+      );
+      await expect(
+        provider.readCurrentState('srv-1', 'L', 'AWS::ServiceDiscovery::Service')
+      ).rejects.toThrow('not authorized');
+    });
+
+    it('keeps undefined for a type it has no read path for', async () => {
+      const result = bagOf(await provider.readCurrentState('i-1', 'L', 'AWS::ServiceDiscovery::Instance'));
       expect(result).toBeUndefined();
     });
   });
@@ -206,11 +252,11 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
         ],
       });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'ns-1',
       'L',
       'AWS::ServiceDiscovery::PrivateDnsNamespace'
-    );
+    ));
 
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
@@ -229,11 +275,11 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
         Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyNs/Resource' }],
       });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'ns-1',
       'L',
       'AWS::ServiceDiscovery::PrivateDnsNamespace'
-    );
+    ));
     expect(result?.Tags).toEqual([]);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 
 // Logger / config-loader / aws-clients mocks: same pattern as the
@@ -32,14 +33,32 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
 }));
 
+// The region of the per-stack AWS scope the code runs in (go-to-k/cdkd#4283).
+const awsScope = vi.hoisted(() => ({
+  region: undefined as string | undefined,
+  providerRegion: undefined as string | undefined,
+}));
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn().mockImplementation((config?: { region?: string }) => ({
+    configuredRegion: config?.region,
     get s3() {
       return {};
     },
     destroy: vi.fn(),
   })),
   setAwsClients: vi.fn(),
+  runWithStackAwsClients: (clients: { configuredRegion?: string }, fn: () => unknown) => {
+    const previous = awsScope.region;
+    awsScope.region = clients.configuredRegion;
+    const result = fn();
+    if (result instanceof Promise) {
+      return result.finally(() => {
+        awsScope.region = previous;
+      });
+    }
+    awsScope.region = previous;
+    return result;
+  },
   getAwsClients: vi.fn(),
 }));
 
@@ -98,12 +117,21 @@ const mockRegistryGetProviderFor = vi
     provisionedBy: 'sdk',
   }));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
-    getProvider: mockRegistryGetProvider,
-    getProviderFor: mockRegistryGetProviderFor,
-    shouldSkipResource: mockRegistryShouldSkip,
-    setCustomResourceResponseBucket: vi.fn(),
-  })),
+  // Each registry remembers the AWS scope region it was CONSTRUCTED in — a
+  // provider takes its clients at construction (go-to-k/cdkd#4283) — and
+  // publishes it as `awsScope.providerRegion` when it hands out a provider.
+  ProviderRegistry: vi.fn().mockImplementation(() => {
+    const constructedIn = awsScope.region;
+    return {
+      getProvider: mockRegistryGetProvider,
+      getProviderFor: (input: { resourceType: string }) => {
+        awsScope.providerRegion = constructedIn;
+        return mockRegistryGetProviderFor(input);
+      },
+      shouldSkipResource: mockRegistryShouldSkip,
+      setCustomResourceResponseBucket: vi.fn(),
+    };
+  }),
 }));
 
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
@@ -477,6 +505,83 @@ describe('cdkd state refresh-observed', () => {
     const savedState = mockSaveState.mock.calls[0]?.[2] as StackState;
     expect(savedState.resources['Good']?.observedProperties).toEqual({ BucketName: 'g' });
     expect(savedState.resources['Bad']?.observedProperties).toBeUndefined();
+  });
+
+  it('reports a resource AWS says is gone as a named failure, keeping its baseline (go-to-k/cdkd#4283)', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Gone: makeResource({
+          physicalId: 'q',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: 'q' },
+          observedProperties: { QueueName: 'q' },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => RESOURCE_NOT_FOUND });
+
+    const { error } = await runRefresh(['TestStack']);
+
+    expect((error as Error).message).toBe('__exit__');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('Gone (AWS::SQS::Queue): not found in AWS — it was deleted outside cdkd');
+    const failure = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(failure).toContain('1 resource(s) not found in AWS (deleted outside cdkd)');
+    // The retry advice belongs to read FAILURES only; none happened here.
+    expect(failure).not.toContain('to retry');
+    const savedState = mockSaveState.mock.calls[0]?.[2] as StackState;
+    // Never the sentinel installed as a bag, and never nulled out.
+    expect(savedState.resources['Gone']?.observedProperties).toEqual({ QueueName: 'q' });
+  });
+
+  it('reads a stack in another region through that region (go-to-k/cdkd#4283)', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'eu-west-1' }]);
+    mockGetState.mockResolvedValueOnce({
+      ...makeState({
+        Q: makeResource({ physicalId: 'q', resourceType: 'AWS::SQS::Queue', properties: { QueueName: 'q' } }),
+      }),
+    });
+    const readRegions: Array<string | undefined> = [];
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => {
+        readRegions.push(`${awsScope.providerRegion}/${awsScope.region}`);
+        return awsScope.region === 'eu-west-1' && awsScope.providerRegion === 'eu-west-1'
+          ? { QueueName: 'q' }
+          : RESOURCE_NOT_FOUND;
+      },
+    });
+
+    const { error } = await runRefresh(['TestStack']);
+
+    expect(error).toBeUndefined();
+    expect(readRegions).toEqual(['eu-west-1/eu-west-1']);
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('--all across two regions reads each stack through its own region (go-to-k/cdkd#4283)', async () => {
+    mockListStacks.mockResolvedValueOnce([
+      { stackName: 'StackA', region: 'us-east-1' },
+      { stackName: 'StackB', region: 'eu-west-1' },
+    ]);
+    mockGetState.mockImplementation(async (name: string, region: string) => {
+      const st = makeState({
+        [`Q${name}`]: makeResource({ physicalId: name, resourceType: 'AWS::SQS::Queue', properties: {} }),
+      });
+      return { ...st, state: { ...st.state, stackName: name, region } };
+    });
+    const readRegions: string[] = [];
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => {
+        readRegions.push(`${awsScope.providerRegion}/${awsScope.region}`);
+        return { QueueName: 'q' };
+      },
+    });
+
+    await runRefresh(['--all']);
+
+    expect(readRegions).toEqual(['us-east-1/us-east-1', 'eu-west-1/eu-west-1']);
   });
 
   it('--dry-run prints the planned counts without acquiring a lock or saving state', async () => {

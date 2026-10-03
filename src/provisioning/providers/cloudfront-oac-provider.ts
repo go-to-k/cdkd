@@ -17,7 +17,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 
 /**
  * SDK Provider for AWS::CloudFront::OriginAccessControl
@@ -273,13 +275,14 @@ export class CloudFrontOACProvider implements ResourceProvider {
    * `properties` fallback baseline is unaffected, since that walk only
    * descends into keys the template itself carries.
    *
-   * Returns `undefined` when the OAC is gone (`NoSuchOriginAccessControl`).
+   * Returns `RESOURCE_NOT_FOUND` when the OAC is gone
+   * (`NoSuchOriginAccessControl`), `undefined` for another type.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     if (resourceType !== 'AWS::CloudFront::OriginAccessControl') return undefined;
 
     try {
@@ -299,7 +302,7 @@ export class CloudFrontOACProvider implements ResourceProvider {
         },
       };
     } catch (error) {
-      if (error instanceof NoSuchOriginAccessControl) return undefined;
+      if (error instanceof NoSuchOriginAccessControl) return RESOURCE_NOT_FOUND;
       throw error;
     }
   }

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   CreateTableCommand,
   DeleteTableCommand,
@@ -48,6 +49,15 @@ const ATTRIBUTE_DEFINITIONS = [{ AttributeName: 'id', AttributeType: 'S' }];
 
 function findCalls<T>(ctor: new (...args: never[]) => T): T[] {
   return mockSend.mock.calls.filter((c) => c[0] instanceof ctor).map((c) => c[0] as T);
+}
+
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
 }
 
 describe('DynamoDBTableProvider PITR / TTL wiring', () => {
@@ -354,7 +364,7 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
         TimeToLiveDescription: { TimeToLiveStatus: 'ENABLED', AttributeName: 'expiresAt' },
       }); // DescribeTimeToLive
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeTableCommand);
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsOfResourceCommand);
@@ -382,7 +392,7 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
       }); // DescribeContinuousBackups
       mockSend.mockResolvedValueOnce({ TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' } }); // DescribeTimeToLive
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE));
 
       expect(result?.PointInTimeRecoverySpecification).toEqual({
         PointInTimeRecoveryEnabled: true,
@@ -401,7 +411,7 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
         TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' },
       });
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE));
 
       expect(result?.PointInTimeRecoverySpecification).toEqual({
         PointInTimeRecoveryEnabled: false,
@@ -422,7 +432,7 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
         TimeToLiveDescription: { TimeToLiveStatus: 'ENABLING', AttributeName: 'expiresAt' },
       });
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE));
 
       expect(result).not.toHaveProperty('TimeToLiveSpecification');
     });
@@ -432,7 +442,7 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
       mockSend.mockResolvedValueOnce({}); // DescribeContinuousBackups (empty)
       mockSend.mockResolvedValueOnce({}); // DescribeTimeToLive (empty)
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE));
 
       expect(result).not.toHaveProperty('PointInTimeRecoverySpecification');
       expect(result).not.toHaveProperty('TimeToLiveSpecification');

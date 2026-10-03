@@ -142,7 +142,7 @@ describe('LoggingConfiguration.TargetObjectKeyFormat (issue #1495)', () => {
       return Promise.resolve({});
     });
 
-    const current = await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE);
+    const current = (await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
 
     expect(
       (current?.['LoggingConfiguration'] as Record<string, unknown>)['TargetObjectKeyFormat']
@@ -281,7 +281,7 @@ describe('ReplicationConfiguration Destination blocks (issue #1495)', () => {
       return Promise.resolve({});
     });
 
-    const current = await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE);
+    const current = (await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
 
     const rule = (
       (current?.['ReplicationConfiguration'] as Record<string, unknown>)['Rules'] as Array<
@@ -350,7 +350,7 @@ describe('LifecycleConfiguration.TransitionDefaultMinimumObjectSize (issue #1495
         return Promise.resolve({});
       });
 
-      const current = await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE);
+      const current = (await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
       expect(
         (current?.['LifecycleConfiguration'] as Record<string, unknown>)[
           'TransitionDefaultMinimumObjectSize'
@@ -367,7 +367,7 @@ describe('LifecycleConfiguration.TransitionDefaultMinimumObjectSize (issue #1495
       return Promise.resolve({});
     });
 
-    const current = await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE);
+    const current = (await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
     expect(
       (current?.['LifecycleConfiguration'] as Record<string, unknown>)[
         'TransitionDefaultMinimumObjectSize'
@@ -434,7 +434,7 @@ describe('BucketEncryption BlockedEncryptionTypes (issue #1495)', () => {
       return Promise.resolve({});
     });
 
-    const current = await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE);
+    const current = (await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
 
     const rules = (current?.['BucketEncryption'] as Record<string, unknown>)[
       'ServerSideEncryptionConfiguration'

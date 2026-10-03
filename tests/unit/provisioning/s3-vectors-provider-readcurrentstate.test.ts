@@ -37,6 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { S3VectorsProvider } from '../../../src/provisioning/providers/s3-vectors-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('S3VectorsProvider.readCurrentState', () => {
   let provider: S3VectorsProvider;
@@ -78,7 +79,7 @@ describe('S3VectorsProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when bucket gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when bucket gone', async () => {
     const err = new Error('not found');
     (err as { name?: string }).name = 'NotFoundException';
     mockSend.mockRejectedValueOnce(err);
@@ -88,7 +89,17 @@ describe('S3VectorsProvider.readCurrentState', () => {
       'Logical',
       'AWS::S3Vectors::VectorBucket'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('rethrows a non-not-found error instead of reporting the bucket gone', async () => {
+    const err = new Error('denied');
+    (err as { name?: string }).name = 'AccessDeniedException';
+    mockSend.mockRejectedValueOnce(err);
+
+    await expect(
+      provider.readCurrentState('my-vec-bucket', 'Logical', 'AWS::S3Vectors::VectorBucket')
+    ).rejects.toThrow('denied');
   });
 
   it('omits EncryptionConfiguration when AWS returns no encryption', async () => {
@@ -119,11 +130,11 @@ describe('S3VectorsProvider.readCurrentState', () => {
       tags: { env: 'prod', team: 'platform' },
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'tagged',
       'Logical',
       'AWS::S3Vectors::VectorBucket'
-    );
+    )) as Record<string, unknown> | undefined;
 
     // The SDK Record<string,string> shape is order-preserving via
     // Object.entries; the test asserts the set semantically rather than
@@ -158,11 +169,11 @@ describe('S3VectorsProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'cdk-deployed',
       'Logical',
       'AWS::S3Vectors::VectorBucket'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.Tags).toEqual([{ Key: 'env', Value: 'prod' }]);
   });
@@ -198,11 +209,11 @@ describe('S3VectorsProvider.readCurrentState', () => {
     });
     mockSend.mockRejectedValueOnce(new Error('AccessDenied on ListTagsForResource'));
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'tags-error-bucket',
       'Logical',
       'AWS::S3Vectors::VectorBucket'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([]);
   });
 });

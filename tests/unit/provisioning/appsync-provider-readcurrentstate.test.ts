@@ -51,6 +51,7 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
 }));
 
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('AppSyncProvider.readCurrentState', () => {
   let provider: AppSyncProvider;
@@ -107,7 +108,7 @@ describe('AppSyncProvider.readCurrentState', () => {
         },
       });
 
-      const result = await provider.readCurrentState('api-1', 'L', 'AWS::AppSync::GraphQLApi');
+      const result = (await provider.readCurrentState('api-1', 'L', 'AWS::AppSync::GraphQLApi')) as Record<string, unknown> | undefined;
       expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
     });
 
@@ -121,11 +122,11 @@ describe('AppSyncProvider.readCurrentState', () => {
         },
       });
 
-      const result = await provider.readCurrentState('api-1', 'L', 'AWS::AppSync::GraphQLApi');
+      const result = (await provider.readCurrentState('api-1', 'L', 'AWS::AppSync::GraphQLApi')) as Record<string, unknown> | undefined;
       expect(result?.Tags).toEqual([]);
     });
 
-    it('returns undefined when API is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when API is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new AppSyncNotFoundException({ message: 'gone', $metadata: {} })
       );
@@ -134,7 +135,7 @@ describe('AppSyncProvider.readCurrentState', () => {
         'L',
         'AWS::AppSync::GraphQLApi'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
 
     // Structural regression test for the always-emit-placeholder convention
@@ -152,11 +153,11 @@ describe('AppSyncProvider.readCurrentState', () => {
         },
       });
 
-      const result = await provider.readCurrentState(
+      const result = (await provider.readCurrentState(
         'api-1',
         'L',
         'AWS::AppSync::GraphQLApi'
-      );
+      )) as Record<string, unknown> | undefined;
 
       expect(Object.keys(result ?? {}).sort()).toEqual(
         ['AuthenticationType', 'LogConfig', 'Name', 'Tags', 'XrayEnabled'].sort()
@@ -230,7 +231,7 @@ describe('AppSyncProvider.readCurrentState', () => {
         },
       });
 
-      const result = await provider.readCurrentState('api-1|ds1', 'L', 'AWS::AppSync::DataSource');
+      const result = (await provider.readCurrentState('api-1|ds1', 'L', 'AWS::AppSync::DataSource')) as Record<string, unknown> | undefined;
 
       expect(result?.['EventBridgeConfig']).toEqual({
         EventBusArn: 'arn:aws:events:us-east-1:1:event-bus/bus',
@@ -252,7 +253,7 @@ describe('AppSyncProvider.readCurrentState', () => {
           },
         },
       });
-      const os = await provider.readCurrentState('api-1|ds1', 'L', 'AWS::AppSync::DataSource');
+      const os = (await provider.readCurrentState('api-1|ds1', 'L', 'AWS::AppSync::DataSource')) as Record<string, unknown> | undefined;
       expect(os?.['OpenSearchServiceConfig']).toEqual({
         Endpoint: 'https://os.example.com',
         AwsRegion: 'us-east-1',
@@ -269,7 +270,7 @@ describe('AppSyncProvider.readCurrentState', () => {
           },
         },
       });
-      const es = await provider.readCurrentState('api-1|ds1', 'L', 'AWS::AppSync::DataSource');
+      const es = (await provider.readCurrentState('api-1|ds1', 'L', 'AWS::AppSync::DataSource')) as Record<string, unknown> | undefined;
       expect(es?.['ElasticsearchConfig']).toEqual({
         Endpoint: 'https://es.example.com',
         AwsRegion: 'us-east-1',
@@ -295,7 +296,7 @@ describe('AppSyncProvider.readCurrentState', () => {
         },
       });
 
-      const result = await provider.readCurrentState('api-1|ds1', 'L', 'AWS::AppSync::DataSource');
+      const result = (await provider.readCurrentState('api-1|ds1', 'L', 'AWS::AppSync::DataSource')) as Record<string, unknown> | undefined;
 
       expect(result?.['RelationalDatabaseConfig']).toEqual({
         RelationalDatabaseSourceType: 'RDS_HTTP_ENDPOINT',
@@ -427,11 +428,11 @@ describe('AppSyncProvider.readCurrentState', () => {
         },
       });
 
-      const result = await provider.readCurrentState(
+      const result = (await provider.readCurrentState(
         'api-1|Query|getThing',
         'L',
         'AWS::AppSync::Resolver'
-      );
+      )) as Record<string, unknown> | undefined;
 
       expect(result?.['CachingConfig']).toEqual({
         Ttl: 120,
@@ -494,14 +495,35 @@ describe('AppSyncProvider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined when ApiKey not found', async () => {
+    it('returns RESOURCE_NOT_FOUND when ApiKey not found', async () => {
       mockSend.mockResolvedValueOnce({ apiKeys: [{ id: 'other' }] });
       const result = await provider.readCurrentState(
         'api-1|missing',
         'L',
         'AWS::AppSync::ApiKey'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    // go-to-k/cdkd#4283: a deleted resource reads as gone, not "no read path".
+    it.each([
+      ['AWS::AppSync::DataSource', 'api-1|ds'],
+      ['AWS::AppSync::Resolver', 'api-1|Query|f'],
+      ['AWS::AppSync::ApiKey', 'api-1|key-1'],
+    ])('returns RESOURCE_NOT_FOUND for %s on NotFoundException', async (type, id) => {
+      mockSend.mockRejectedValueOnce(
+        new AppSyncNotFoundException({ message: 'gone', $metadata: {} })
+      );
+      expect(await provider.readCurrentState(id, 'L', type)).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('still rethrows a non-NotFound error', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+      );
+      await expect(
+        provider.readCurrentState('api-1', 'L', 'AWS::AppSync::GraphQLApi')
+      ).rejects.toThrow('denied');
     });
   });
 
@@ -562,12 +584,12 @@ type Query {
 
       mockSend.mockResolvedValueOnce({ schema: encode(awsSdl) });
 
-      const result = await provider.readCurrentState(
+      const result = (await provider.readCurrentState(
         'api-1',
         'L',
         'AWS::AppSync::GraphQLSchema',
         { ApiId: 'api-1', Definition: stateSdl }
-      );
+      )) as Record<string, unknown> | undefined;
 
       // Canonical forms differ → AWS canonical SDL is returned as-is so
       // the drift surfaces. This is the documented behavior — graphql-js
@@ -593,12 +615,12 @@ type Query {
 
       mockSend.mockResolvedValueOnce({ schema: encode(awsSdl) });
 
-      const result = await provider.readCurrentState(
+      const result = (await provider.readCurrentState(
         'api-1',
         'L',
         'AWS::AppSync::GraphQLSchema',
         { ApiId: 'api-1', Definition: stateSdl }
-      );
+      )) as Record<string, unknown> | undefined;
 
       // Canonical forms differ → AWS canonical form is returned. The
       // comparator will surface this as a Definition drift.
@@ -614,12 +636,12 @@ type Query {
 
       mockSend.mockResolvedValueOnce({ schema: encode(awsSdl) });
 
-      const result = await provider.readCurrentState(
+      const result = (await provider.readCurrentState(
         'api-1',
         'L',
         'AWS::AppSync::GraphQLSchema',
         { ApiId: 'api-1', Definition: stateSdl }
-      );
+      )) as Record<string, unknown> | undefined;
 
       // Graceful fallback: returns the raw AWS SDL. Comparator may fire
       // whitespace drift, but the command does not crash.
@@ -637,12 +659,12 @@ type Query {
 
       mockSend.mockResolvedValueOnce({ schema: encode(awsSdl) });
 
-      const result = await provider.readCurrentState(
+      const result = (await provider.readCurrentState(
         'api-1',
         'L',
         'AWS::AppSync::GraphQLSchema',
         { ApiId: 'api-1', Definition: stateSdl }
-      );
+      )) as Record<string, unknown> | undefined;
 
       // Canonical forms differ → AWS canonical form is returned.
       // Drift surfaces; user can resolve via cdkd state refresh-observed.
@@ -650,7 +672,7 @@ type Query {
       expect(result?.Definition).not.toBe(stateSdl);
     });
 
-    it('returns undefined when API is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when API is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new AppSyncNotFoundException({ message: 'gone', $metadata: {} })
       );
@@ -659,7 +681,7 @@ type Query {
         'L',
         'AWS::AppSync::GraphQLSchema'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
 
     it('returns canonical SDL when state has no Definition (initial baseline)', async () => {
@@ -670,11 +692,11 @@ type Query {
 
       mockSend.mockResolvedValueOnce({ schema: encode(awsSdl) });
 
-      const result = await provider.readCurrentState(
+      const result = (await provider.readCurrentState(
         'api-1',
         'L',
         'AWS::AppSync::GraphQLSchema'
-      );
+      )) as Record<string, unknown> | undefined;
 
       // No state.Definition to compare against → emit canonical AWS SDL.
       // Comments stripped, whitespace normalized.

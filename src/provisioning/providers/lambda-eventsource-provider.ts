@@ -24,7 +24,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { lambdaFunctionNameForMask } from '../../utils/lambda-function-name.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -1035,7 +1037,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
    * untagged event source mapping is detectable on the v3
    * observedProperties baseline.
    *
-   * Returns `undefined` when the mapping is gone
+   * Returns `RESOURCE_NOT_FOUND` when the mapping is gone
    * (`ResourceNotFoundException`).
    */
   async readCurrentState(
@@ -1043,12 +1045,12 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     _logicalId: string,
     _resourceType: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp;
     try {
       resp = await this.lambdaClient.send(new GetEventSourceMappingCommand({ UUID: physicalId }));
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
 
@@ -1175,7 +1177,8 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
           .map(([Key, Value]) => ({ Key, Value }))
           .sort((a, b) => a.Key.localeCompare(b.Key));
       } catch (err) {
-        if (err instanceof ResourceNotFoundException) return undefined;
+        // The mapping vanished between GetEventSourceMapping and ListTags.
+        if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
         // Permission errors etc — fall through with empty placeholder.
       }
     }

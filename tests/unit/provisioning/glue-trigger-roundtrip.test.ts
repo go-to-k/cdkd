@@ -54,6 +54,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { GlueTriggerProvider } from '../../../src/provisioning/providers/glue-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('GlueTriggerProvider', () => {
   let provider: GlueTriggerProvider;
@@ -427,14 +428,14 @@ describe('GlueTriggerProvider', () => {
     });
   });
 
-  it('readCurrentState() returns undefined when trigger does not exist', async () => {
+  it('readCurrentState() returns RESOURCE_NOT_FOUND when trigger does not exist', async () => {
     const { EntityNotFoundException } = await import('@aws-sdk/client-glue');
     mockSend.mockRejectedValueOnce(
       new EntityNotFoundException({ message: 'not found', $metadata: {} })
     );
 
     const result = await provider.readCurrentState('missing', 'L', 'AWS::Glue::Trigger');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('handledProperties declares the full mutable surface', () => {

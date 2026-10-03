@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { DescribeTableCommand, UpdateTableCommand } from '@aws-sdk/client-dynamodb';
 
 const mockSend = vi.fn();
@@ -88,6 +89,15 @@ function primeLiveTable(table: Record<string, unknown>): void {
  * one-directionally", which would hide a template edit, and not "leave as is",
  * which fails the whole revert with an AWS error.
  */
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
+
 describe('DynamoDBTableProvider WarmThroughput decrease (issue #1768)', () => {
   let provider: DynamoDBTableProvider;
 
@@ -550,8 +560,8 @@ describe('DynamoDBTableProvider WarmThroughput decrease (issue #1768)', () => {
       })
     );
 
-    const captured = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, declared);
-    const current = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, declared);
+    const captured = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, declared));
+    const current = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, declared));
 
     expect(captured?.['WarmThroughput']).toEqual({
       ReadUnitsPerSecond: 24000,

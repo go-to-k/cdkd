@@ -39,6 +39,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { CodeBuildProvider } from '../../../src/provisioning/providers/codebuild-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('CodeBuildProvider.readCurrentState', () => {
   let provider: CodeBuildProvider;
@@ -152,7 +161,7 @@ describe('CodeBuildProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    const result = bagOf(await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project'));
 
     expect(result?.SecondarySources).toEqual([
       { Type: 'GITHUB', Location: 'https://example/repo2', SourceIdentifier: 'sec1' },
@@ -196,7 +205,7 @@ describe('CodeBuildProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    const result = bagOf(await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project'));
     expect(result?.VpcConfig).toEqual({
       VpcId: 'vpc-abc',
       Subnets: ['subnet-1', 'subnet-2'],
@@ -209,7 +218,7 @@ describe('CodeBuildProvider.readCurrentState', () => {
       projects: [{ name: 'myproj', autoRetryLimit: 2 }],
     });
 
-    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    const result = bagOf(await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project'));
     expect(result?.AutoRetryLimit).toBe(2);
   });
 
@@ -218,7 +227,7 @@ describe('CodeBuildProvider.readCurrentState', () => {
       projects: [{ name: 'myproj' }],
     });
 
-    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    const result = bagOf(await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project'));
     expect(result).toBeDefined();
     expect('AutoRetryLimit' in result!).toBe(false);
   });
@@ -242,7 +251,7 @@ describe('CodeBuildProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    const result = bagOf(await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project'));
     const env = result?.['Environment'] as Record<string, unknown> | undefined;
     expect(env?.['HostKernel']).toBe('LINUX_KERNEL_6');
   });
@@ -261,16 +270,24 @@ describe('CodeBuildProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    const result = bagOf(await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project'));
     const env = result?.['Environment'] as Record<string, unknown> | undefined;
     expect(env).toBeDefined();
     expect('HostKernel' in env!).toBe(false);
   });
 
-  it('returns undefined when project is gone (empty projects array)', async () => {
+  it('returns RESOURCE_NOT_FOUND when project is gone (empty projects array)', async () => {
     mockSend.mockResolvedValueOnce({ projects: [] });
     const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when BatchGetProjects raises ResourceNotFoundException', async () => {
+    mockSend.mockRejectedValueOnce(
+      new ResourceNotFoundException({ message: 'gone', $metadata: {} })
+    );
+    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('surfaces Tags from BatchGetProjects with aws:* filtered out (CodeBuild lower-case shape)', async () => {
@@ -286,7 +303,7 @@ describe('CodeBuildProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    const result = bagOf(await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project'));
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -300,7 +317,7 @@ describe('CodeBuildProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    const result = bagOf(await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project'));
     expect(result?.Tags).toEqual([]);
   });
 });

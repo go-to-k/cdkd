@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   CreateTableCommand,
   DeleteResourcePolicyCommand,
@@ -203,6 +204,15 @@ function writeTargets(): string[] {
         cmd instanceof UntagResourceCommand
     )
     .map((cmd) => (cmd as { input: { ResourceArn?: string } }).input.ResourceArn ?? '<none>');
+}
+
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
 }
 
 describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue #3458)', () => {
@@ -687,8 +697,8 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
   });
 
   describe('readCurrentState()', () => {
-    const read = (desired: unknown) =>
-      provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE, tableProps(desired));
+    const read = async (desired: unknown) =>
+      bagOf(await provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE, tableProps(desired)));
 
     it('reads both members off the CURRENT stream arn, in the template shape, so both baselines converge', async () => {
       const aws = primeAws({ generation: 2, streamEnabled: true, viewType: 'KEYS_ONLY' });
@@ -797,7 +807,7 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       const live = await read(desired);
       expect(calculateResourceDrift({ StreamSpecification: desired }, live!)).toEqual([]);
       mockSend.mockClear();
-      await provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE);
+      bagOf(await provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE));
       expect(sent(ListTagsOfResourceCommand)).toHaveLength(1);
     });
 
@@ -900,10 +910,12 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
     });
 
     describe("the baseline captured right after cdkd's own write (issue #4112)", () => {
-      const capture = (desired: unknown) =>
-        provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE, tableProps(desired), {
-          afterOwnWrite: true,
-        });
+      const capture = async (desired: unknown) =>
+        bagOf(
+          await provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE, tableProps(desired), {
+            afterOwnWrite: true,
+          })
+        );
       const streamOf = (live: Record<string, unknown> | undefined) =>
         live!['StreamSpecification'] as Record<string, unknown>;
 
@@ -1119,13 +1131,13 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
         primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
         const desired = streamBlock('NEW_IMAGE', MEMBERS);
         for (const context of [undefined, {}, { afterOwnWrite: false }]) {
-          const live = await provider.readCurrentState(
+          const live = bagOf(await provider.readCurrentState(
             TABLE_NAME,
             'T',
             RESOURCE_TYPE,
             tableProps(desired),
             context
-          );
+          ));
           expect(streamOf(live)).toEqual({ StreamEnabled: true, StreamViewType: 'NEW_IMAGE' });
         }
       });

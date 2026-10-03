@@ -34,6 +34,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('LogsLogGroupProvider.readCurrentState', () => {
   let provider: LogsLogGroupProvider;
@@ -119,11 +120,11 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       '/aws/lambda/my-fn',
       'Logical',
       'AWS::Logs::LogGroup'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.FieldIndexPolicies).toEqual([policyDoc]);
   });
 
@@ -152,11 +153,11 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({ policyDocument: JSON.stringify(policyDoc) });
     mockSend.mockResolvedValueOnce({ indexPolicies: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       '/aws/lambda/my-fn',
       'Logical',
       'AWS::Logs::LogGroup'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.DataProtectionPolicy).toEqual(policyDoc);
   });
@@ -178,11 +179,11 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     );
     mockSend.mockResolvedValueOnce({ indexPolicies: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       '/aws/lambda/my-fn',
       'Logical',
       'AWS::Logs::LogGroup'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -203,11 +204,11 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     );
     mockSend.mockResolvedValueOnce({ indexPolicies: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       '/aws/lambda/my-fn',
       'Logical',
       'AWS::Logs::LogGroup'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([]);
   });
 
@@ -233,11 +234,11 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     );
     mockSend.mockResolvedValueOnce({ indexPolicies: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       '/aws/lambda/min',
       'Logical',
       'AWS::Logs::LogGroup'
-    );
+    )) as Record<string, unknown> | undefined;
 
     // LogGroupClass is immutable on create — skip emit is correct
     // (per the § 3b "immutable on create" rule).
@@ -263,7 +264,7 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     expect(result?.FieldIndexPolicies).toEqual([]);
   });
 
-  it('returns undefined when log group does not exist (no exact match)', async () => {
+  it('returns RESOURCE_NOT_FOUND when log group does not exist (no exact match)', async () => {
     // logGroupNamePrefix can return matching-prefix log groups; the impl
     // narrows to exact name. Simulate "no exact match" via empty list.
     mockSend.mockResolvedValueOnce({ logGroups: [] });
@@ -273,10 +274,10 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
       'Logical',
       'AWS::Logs::LogGroup'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
-  it('returns undefined when DescribeLogGroups throws ResourceNotFoundException', async () => {
+  it('returns RESOURCE_NOT_FOUND when DescribeLogGroups throws ResourceNotFoundException', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'gone', $metadata: {} })
     );
@@ -286,6 +287,37 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
       'Logical',
       'AWS::Logs::LogGroup'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when the group is deleted before ListTagsForResource', async () => {
+    mockSend.mockResolvedValueOnce({
+      logGroups: [
+        {
+          logGroupName: '/aws/lambda/my-fn',
+          arn: 'arn:aws:logs:us-east-1:123:log-group:/aws/lambda/my-fn:*',
+        },
+      ],
+    });
+    mockSend.mockRejectedValueOnce(
+      new ResourceNotFoundException({ message: 'gone', $metadata: {} })
+    );
+
+    const result = await provider.readCurrentState(
+      '/aws/lambda/my-fn',
+      'Logical',
+      'AWS::Logs::LogGroup'
+    );
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('still rethrows a non-NotFound DescribeLogGroups error', async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+    );
+
+    await expect(
+      provider.readCurrentState('/aws/lambda/x', 'Logical', 'AWS::Logs::LogGroup')
+    ).rejects.toThrow('denied');
   });
 });

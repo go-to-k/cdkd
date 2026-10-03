@@ -62,7 +62,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 
@@ -1445,20 +1447,20 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * filtered out so they don't fire false-positive drift; the result key is
    * omitted entirely when AWS reports no user tags.
    *
-   * Returns `undefined` when the log group is gone.
+   * Returns `RESOURCE_NOT_FOUND` when the log group is gone.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       const resp = await this.logsClient.send(
         new DescribeLogGroupsCommand({ logGroupNamePrefix: physicalId })
       );
       // logGroupNamePrefix is a prefix match; pick the exact match if any.
       const found = resp.logGroups?.find((g) => g.logGroupName === physicalId);
-      if (!found) return undefined;
+      if (!found) return RESOURCE_NOT_FOUND;
 
       const result: Record<string, unknown> = {};
       if (found.logGroupName !== undefined) result['LogGroupName'] = found.logGroupName;
@@ -1489,7 +1491,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
           );
           tags = normalizeAwsTagsToCfn(tagsResp.tags);
         } catch (err) {
-          if (err instanceof ResourceNotFoundException) return undefined;
+          if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
           throw err;
         }
       }
@@ -1551,7 +1553,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
 
       return result;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
   }

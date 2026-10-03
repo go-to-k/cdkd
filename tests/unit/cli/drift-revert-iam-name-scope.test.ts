@@ -49,6 +49,7 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
     destroy: vi.fn(),
   })),
   setAwsClients: vi.fn(),
+  runWithStackAwsClients: (_clients: unknown, fn: () => unknown) => fn(),
   getAwsClients: () => ({
     iam: { send: mockIamSend, config: { region: () => Promise.resolve('us-east-1') } },
   }),

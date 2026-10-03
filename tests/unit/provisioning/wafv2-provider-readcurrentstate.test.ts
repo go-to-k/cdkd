@@ -40,6 +40,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { WAFv2WebACLProvider } from '../../../src/provisioning/providers/wafv2-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const ARN = 'arn:aws:wafv2:us-east-1:123456789012:regional/webacl/my-acl/abc-123';
 
@@ -105,12 +113,12 @@ describe('WAFv2WebACLProvider.readCurrentState', () => {
     expect(result).toMatchObject({ Name: 'cf-acl', Scope: 'CLOUDFRONT' });
   });
 
-  it('returns undefined when WebACL is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when WebACL is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new WAFNonexistentItemException({ message: 'gone', $metadata: {} })
     );
     const result = await provider.readCurrentState(ARN, 'L', 'AWS::WAFv2::WebACL');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
@@ -128,7 +136,7 @@ describe('WAFv2WebACLProvider.readCurrentState', () => {
         },
       });
 
-    const result = await provider.readCurrentState(ARN, 'L', 'AWS::WAFv2::WebACL');
+    const result = bagOf(await provider.readCurrentState(ARN, 'L', 'AWS::WAFv2::WebACL'));
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -144,7 +152,7 @@ describe('WAFv2WebACLProvider.readCurrentState', () => {
         },
       });
 
-    const result = await provider.readCurrentState(ARN, 'L', 'AWS::WAFv2::WebACL');
+    const result = bagOf(await provider.readCurrentState(ARN, 'L', 'AWS::WAFv2::WebACL'));
     expect(result?.Tags).toEqual([]);
   });
 });

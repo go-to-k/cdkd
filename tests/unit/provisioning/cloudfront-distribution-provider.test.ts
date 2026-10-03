@@ -41,6 +41,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import { CloudFrontDistributionProvider } from '../../../src/provisioning/providers/cloudfront-distribution-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
@@ -52,6 +53,15 @@ import {
   spansThatRun,
   withPasteDir,
 } from '../utils/paste-harness.js';
+import type { ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('CloudFrontDistributionProvider', () => {
   let provider: CloudFrontDistributionProvider;
@@ -896,11 +906,11 @@ describe('CloudFrontDistributionProvider', () => {
       // ListTagsForResourceCommand
       mockSend.mockResolvedValueOnce({ Tags: { Items: [] } });
 
-      const state = await provider.readCurrentState(
+      const state = bagOf(await provider.readCurrentState(
         'EDFDVBD6EXAMPLE',
         'MyDistribution',
         'AWS::CloudFront::Distribution'
-      );
+      ));
 
       const config = state!['DistributionConfig'] as Record<string, unknown>;
       expect(config['IPV6Enabled']).toBe(true);
@@ -927,11 +937,11 @@ describe('CloudFrontDistributionProvider', () => {
       mockSend.mockResolvedValueOnce({ Distribution: { ARN: 'arn:aws:cloudfront::1:distribution/E1' } });
       mockSend.mockResolvedValueOnce({ Tags: { Items: [] } });
 
-      const state = await provider.readCurrentState(
+      const state = bagOf(await provider.readCurrentState(
         'EDFDVBD6EXAMPLE',
         'MyDistribution',
         'AWS::CloudFront::Distribution'
-      );
+      ));
 
       const config = state!['DistributionConfig'] as Record<string, unknown>;
       expect(config['Restrictions']).toEqual({ GeoRestriction: { RestrictionType: 'none' } });
@@ -1929,16 +1939,16 @@ describe('CloudFrontDistributionProvider', () => {
 
   describe('readCurrentState', () => {
     it('returns undefined for a non-CloudFront resource type', async () => {
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'EDFDVBD6EXAMPLE',
         'MyDistribution',
         'AWS::S3::Bucket'
-      );
+      ));
       expect(result).toBeUndefined();
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('returns undefined when the distribution no longer exists', async () => {
+    it('returns RESOURCE_NOT_FOUND when the distribution no longer exists', async () => {
       mockSend.mockRejectedValueOnce(
         new NoSuchDistribution({ message: 'gone', $metadata: {} })
       );
@@ -1947,7 +1957,16 @@ describe('CloudFrontDistributionProvider', () => {
         'MyDistribution',
         'AWS::CloudFront::Distribution'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('rethrows a non-not-found error instead of reporting the distribution gone', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('User is not authorized'), { name: 'AccessDenied' })
+      );
+      await expect(
+        provider.readCurrentState('EDFDVBD6EXAMPLE', 'MyDistribution', 'AWS::CloudFront::Distribution')
+      ).rejects.toThrow('not authorized');
     });
 
     it('inverts convertToSdkFormat: drops Quantity wrappers + CallerReference, surfaces tags', async () => {
@@ -2019,11 +2038,11 @@ describe('CloudFrontDistributionProvider', () => {
         },
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'EDFDVBD6EXAMPLE',
         'MyDistribution',
         'AWS::CloudFront::Distribution'
-      );
+      ));
 
       expect(result).toBeDefined();
       const cfg = result!['DistributionConfig'] as Record<string, unknown>;
@@ -2098,11 +2117,11 @@ describe('CloudFrontDistributionProvider', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: { Items: [] } });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'EDFDVBD6EXAMPLE',
         'MyDistribution',
         'AWS::CloudFront::Distribution'
-      );
+      ));
 
       const dcb = (result!['DistributionConfig'] as Record<string, unknown>)[
         'DefaultCacheBehavior'
@@ -2128,11 +2147,11 @@ describe('CloudFrontDistributionProvider', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: { Items: [] } });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'EDFDVBD6EXAMPLE',
         'MyDistribution',
         'AWS::CloudFront::Distribution'
-      );
+      ));
       expect(result).toBeDefined();
       expect(result!['Tags']).toBeUndefined();
       expect(result!['DistributionConfig']).toEqual({ Enabled: true, Comment: '' });
@@ -2164,11 +2183,11 @@ describe('CloudFrontDistributionProvider', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: { Items: [] } });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'EDFDVBD6EXAMPLE',
         'MyDistribution',
         'AWS::CloudFront::Distribution'
-      );
+      ));
 
       // OriginGroups is byte-equal to the input { Quantity, Items } shape — not
       // unwrapped to a bare array (which is what caused the #873 phantom drift).
@@ -2184,11 +2203,11 @@ describe('CloudFrontDistributionProvider', () => {
       // GetDistributionCommand fails — tag read is best-effort.
       mockSend.mockRejectedValueOnce(new Error('throttled'));
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'EDFDVBD6EXAMPLE',
         'MyDistribution',
         'AWS::CloudFront::Distribution'
-      );
+      ));
       expect(result).toBeDefined();
       expect(result!['DistributionConfig']).toEqual({ Enabled: true });
       expect(result!['Tags']).toBeUndefined();
@@ -2214,11 +2233,11 @@ describe('CloudFrontDistributionProvider', () => {
           Distribution: { ARN: 'arn:aws:cloudfront::111122223333:distribution/EDFDVBD6EXAMPLE' },
         });
         mockSend.mockResolvedValueOnce({ Tags: { Items: [{ Key: 'Env', Value: 'prod' }] } });
-        return provider.readCurrentState(
+        return bagOf(await provider.readCurrentState(
           'EDFDVBD6EXAMPLE',
           'MyDistribution',
           'AWS::CloudFront::Distribution'
-        );
+        ));
       };
       const first = await read();
       const second = await read();

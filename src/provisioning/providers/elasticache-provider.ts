@@ -37,7 +37,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { slowCcOperationTimeoutMs } from '../slow-cc-operation-timeouts.js';
@@ -952,14 +954,14 @@ export class ElastiCacheProvider implements ResourceProvider {
    * Tags are surfaced via a follow-up `ListTagsForResource(ResourceName=arn)`
    * for both types (ARN derived from `cluster.ARN` / `group.ARN`). CDK's
    * `aws:*` auto-tags are filtered out and the result key is omitted when
-   * AWS reports no user tags. Returns `undefined` when the resource is gone
-   * (`*NotFoundFault`).
+   * AWS reports no user tags. Returns `RESOURCE_NOT_FOUND` when the resource
+   * is gone (`*NotFoundFault` or an empty describe list).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::ElastiCache::CacheCluster':
         return this.readCacheCluster(physicalId);
@@ -970,7 +972,9 @@ export class ElastiCacheProvider implements ResourceProvider {
     }
   }
 
-  private async readCacheCluster(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readCacheCluster(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let cluster;
     try {
       const resp = await this.getClient().send(
@@ -981,10 +985,14 @@ export class ElastiCacheProvider implements ResourceProvider {
       );
       cluster = resp.CacheClusters?.[0];
     } catch (err) {
+      // go-to-k/cdkd#4283: only the fault NAME proves the resource is gone;
+      // the looser message match keeps its old "cannot tell" answer.
+      if ((err as { name?: unknown } | null)?.name === 'CacheClusterNotFoundFault')
+        return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err, 'CacheClusterNotFoundFault')) return undefined;
       throw err;
     }
-    if (!cluster) return undefined;
+    if (!cluster) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (cluster.CacheClusterId !== undefined) result['ClusterName'] = cluster.CacheClusterId;
@@ -1045,7 +1053,9 @@ export class ElastiCacheProvider implements ResourceProvider {
     return result;
   }
 
-  private async readSubnetGroup(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readSubnetGroup(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let group;
     try {
       const resp = await this.getClient().send(
@@ -1053,10 +1063,14 @@ export class ElastiCacheProvider implements ResourceProvider {
       );
       group = resp.CacheSubnetGroups?.[0];
     } catch (err) {
+      // go-to-k/cdkd#4283: only the fault NAME proves the resource is gone;
+      // the looser message match keeps its old "cannot tell" answer.
+      if ((err as { name?: unknown } | null)?.name === 'CacheSubnetGroupNotFoundFault')
+        return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err, 'CacheSubnetGroupNotFoundFault')) return undefined;
       throw err;
     }
-    if (!group) return undefined;
+    if (!group) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (group.CacheSubnetGroupName !== undefined) {

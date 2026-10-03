@@ -28,7 +28,9 @@ import type {
   ResourceCreateResult,
   ResourceUpdateResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
@@ -445,14 +447,14 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
    * surfaces it defensively so future schema revisions or custom
    * property overrides can round-trip cleanly.
    *
-   * Returns `undefined` when the consumer is gone
+   * Returns `RESOURCE_NOT_FOUND` when the consumer is gone
    * (`ResourceNotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     if (resourceType !== 'AWS::Kinesis::StreamConsumer') return undefined;
 
     let desc;
@@ -462,7 +464,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       );
       desc = resp.ConsumerDescription;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!desc) return undefined;
@@ -480,7 +482,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       );
       result['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       // Best-effort: log and emit empty placeholder.
       this.logger.debug(
         `ListTagsForResource(${physicalId}) failed: ${describeAwsFailure(err).detail}`

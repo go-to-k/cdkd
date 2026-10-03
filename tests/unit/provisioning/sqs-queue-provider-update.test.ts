@@ -553,7 +553,7 @@ describe('SQSQueueProvider.update', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: {} });
 
-    const observed = await provider.readCurrentState(QUEUE_URL, 'L', 'AWS::SQS::Queue');
+    const observed = (await provider.readCurrentState(QUEUE_URL, 'L', 'AWS::SQS::Queue')) as Record<string, unknown> | undefined;
     // Spot-check the Class 2 placeholder is present (the always-emit
     // contract — see § 3b "emits placeholders for every user-controllable
     // top-level key").

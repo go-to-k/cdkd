@@ -38,6 +38,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 import { IAMAccessKeyProvider } from '../../../../src/provisioning/providers/iam-access-key-provider.js';
 import { findSilentDropProperties } from '../../../../src/provisioning/property-coverage.js';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
+import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 
 const TYPE = 'AWS::IAM::AccessKey';
 const KEY_ID = 'AKIAIOSFODNN7EXAMPLE';
@@ -375,16 +376,16 @@ describe('IAMAccessKeyProvider', () => {
       expect(callsOf(ListAccessKeysCommand)[1]!['Marker']).toBe('page2');
     });
 
-    it('returns undefined when the key is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when the key is gone', async () => {
       mockSend.mockRejectedValueOnce(notFound());
-      await expect(provider.readCurrentState(KEY_ID, 'CiKey', TYPE)).resolves.toBeUndefined();
+      await expect(provider.readCurrentState(KEY_ID, 'CiKey', TYPE)).resolves.toBe(RESOURCE_NOT_FOUND);
     });
 
-    it('returns undefined when the key is not in the user listing', async () => {
+    it('returns RESOURCE_NOT_FOUND when the key is not in the user listing', async () => {
       mockSend
         .mockResolvedValueOnce({ UserName: 'ci-user' })
         .mockResolvedValueOnce({ AccessKeyMetadata: [], IsTruncated: false });
-      await expect(provider.readCurrentState(KEY_ID, 'CiKey', TYPE)).resolves.toBeUndefined();
+      await expect(provider.readCurrentState(KEY_ID, 'CiKey', TYPE)).resolves.toBe(RESOURCE_NOT_FOUND);
     });
 
     it('returns undefined when GetAccessKeyLastUsed carries no UserName', async () => {
@@ -395,7 +396,7 @@ describe('IAMAccessKeyProvider', () => {
 
     it('treats NoSuchEntity from ListAccessKeys as gone (user deleted mid-read)', async () => {
       mockSend.mockResolvedValueOnce({ UserName: 'ci-user' }).mockRejectedValueOnce(notFound());
-      await expect(provider.readCurrentState(KEY_ID, 'CiKey', TYPE)).resolves.toBeUndefined();
+      await expect(provider.readCurrentState(KEY_ID, 'CiKey', TYPE)).resolves.toBe(RESOURCE_NOT_FOUND);
     });
   });
 

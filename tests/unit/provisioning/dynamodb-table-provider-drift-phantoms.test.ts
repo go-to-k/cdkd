@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   DescribeContinuousBackupsCommand,
   DescribeContributorInsightsCommand,
@@ -98,6 +99,15 @@ function primeDescribeTable(table: Record<string, unknown>): void {
  * below therefore compare a TEMPLATE-shaped baseline against the AWS-shaped
  * readback, which is the shape that actually fires.
  */
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
+
 describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
   let provider: DynamoDBTableProvider;
 
@@ -195,9 +205,9 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
         AttributeDefinitions: AWS_ATTRIBUTE_DEFINITIONS,
       });
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, {
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, {
         AttributeDefinitions: TEMPLATE_ATTRIBUTE_DEFINITIONS,
-      });
+      }));
 
       expect(result?.['AttributeDefinitions']).toEqual(AWS_ATTRIBUTE_DEFINITIONS);
     });
@@ -211,10 +221,10 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
         WarmThroughput: AWS_COMPUTED_WARM_THROUGHPUT,
       });
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, {
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, {
         TableName: TABLE_NAME,
         AttributeDefinitions: TEMPLATE_ATTRIBUTE_DEFINITIONS,
-      });
+      }));
 
       expect(result).toBeDefined();
       expect(result).not.toHaveProperty('WarmThroughput');
@@ -227,9 +237,9 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
         WarmThroughput: { ReadUnitsPerSecond: 24000, WriteUnitsPerSecond: 8000, Status: 'ACTIVE' },
       });
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, {
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, {
         WarmThroughput: { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 },
-      });
+      }));
 
       expect(result?.['WarmThroughput']).toEqual({
         ReadUnitsPerSecond: 24000,
@@ -244,7 +254,7 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
         WarmThroughput: AWS_COMPUTED_WARM_THROUGHPUT,
       });
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE));
 
       expect(result?.['WarmThroughput']).toEqual({
         ReadUnitsPerSecond: 12000,
@@ -259,7 +269,7 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
         WarmThroughput: AWS_COMPUTED_WARM_THROUGHPUT,
       });
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, {});
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, {}));
 
       expect(result?.['WarmThroughput']).toEqual({
         ReadUnitsPerSecond: 12000,
@@ -303,7 +313,7 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
       });
 
       const declared = { TableName: TABLE_NAME, WarmThroughput: null };
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, declared);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, declared));
 
       expect(result).not.toHaveProperty('WarmThroughput');
       expect(provider.getDriftUnknownPaths(RESOURCE_TYPE, declared)).toEqual([
@@ -350,7 +360,7 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
           TableArn: TABLE_ARN,
           WarmThroughput: AWS_COMPUTED_WARM_THROUGHPUT,
         });
-        const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, bag);
+        const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, bag));
         observed.push({
           bag,
           emitted: result !== undefined && 'WarmThroughput' in result,

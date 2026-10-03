@@ -30,7 +30,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -381,13 +383,13 @@ export class StepFunctionsProvider implements ResourceProvider {
    * CDK's `aws:*` auto-tags are filtered out; the result key is omitted
    * entirely when AWS reports no user tags.
    *
-   * Returns `undefined` when the state machine is gone (`StateMachineDoesNotExist`).
+   * Returns `RESOURCE_NOT_FOUND` when the state machine is gone (`StateMachineDoesNotExist`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp: {
       name?: string;
       roleArn?: string;
@@ -402,7 +404,7 @@ export class StepFunctionsProvider implements ResourceProvider {
         new DescribeStateMachineCommand({ stateMachineArn: physicalId })
       )) as unknown as typeof resp;
     } catch (err) {
-      if (err instanceof StateMachineDoesNotExist) return undefined;
+      if (err instanceof StateMachineDoesNotExist) return RESOURCE_NOT_FOUND;
       throw err;
     }
 

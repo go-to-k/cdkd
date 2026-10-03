@@ -29,6 +29,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { LambdaUrlProvider } from '../../../src/provisioning/providers/lambda-url-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('LambdaUrlProvider.readCurrentState', () => {
   let provider: LambdaUrlProvider;
@@ -74,7 +83,7 @@ describe('LambdaUrlProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when URL config gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when URL config gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'gone', $metadata: {} })
     );
@@ -84,7 +93,7 @@ describe('LambdaUrlProvider.readCurrentState', () => {
       'Logical',
       'AWS::Lambda::Url'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('emits Cors with empty-array placeholders when AWS returns empty cors object', async () => {
@@ -94,11 +103,11 @@ describe('LambdaUrlProvider.readCurrentState', () => {
       Cors: {}, // empty — placeholders fill in.
     });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'arn:aws:lambda:us-east-1:123:function:fn',
       'Logical',
       'AWS::Lambda::Url'
-    );
+    ));
     expect(result?.Cors).toEqual({
       AllowOrigins: [],
       AllowMethods: [],

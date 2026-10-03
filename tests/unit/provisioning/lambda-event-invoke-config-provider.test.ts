@@ -30,6 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { LambdaEventInvokeConfigProvider } from '../../../src/provisioning/providers/lambda-event-invoke-config-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const DLQ_ARN = 'arn:aws:sqs:us-east-1:123456789012:my-dlq';
 
@@ -321,7 +322,7 @@ describe('LambdaEventInvokeConfigProvider', () => {
       });
     });
 
-    it('returns undefined when the config is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when the config is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new ResourceNotFoundException({ message: 'gone', $metadata: {} })
       );
@@ -330,7 +331,7 @@ describe('LambdaEventInvokeConfigProvider', () => {
         'Cfg',
         'AWS::Lambda::EventInvokeConfig'
       );
-      expect(state).toBeUndefined();
+      expect(state).toBe(RESOURCE_NOT_FOUND);
     });
   });
 

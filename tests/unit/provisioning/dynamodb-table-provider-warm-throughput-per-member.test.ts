@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   DescribeContinuousBackupsCommand,
   DescribeContributorInsightsCommand,
@@ -93,6 +94,15 @@ function gsiTemplate(warm: unknown): Record<string, unknown> {
  * members whenever the declared block had ONE usable member, so the member cdkd
  * never sent was compared against the baseline forever.
  */
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
+
 describe('DynamoDBTableProvider WarmThroughput per-member readback (issue #3777)', () => {
   let provider: DynamoDBTableProvider;
 
@@ -107,7 +117,7 @@ describe('DynamoDBTableProvider WarmThroughput per-member readback (issue #3777)
     table: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     primeDescribeTable(table);
-    const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, desired);
+    const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, desired));
     expect(result).toBeDefined();
     return result!;
   }

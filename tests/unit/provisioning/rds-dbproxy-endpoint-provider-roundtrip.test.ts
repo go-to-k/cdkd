@@ -35,6 +35,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { RDSDBProxyEndpointProvider } from '../../../src/provisioning/providers/rds-dbproxy-endpoint-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const RESOURCE_TYPE = 'AWS::RDS::DBProxyEndpoint';
 const EP_NAME = 'MyEndpoint';
@@ -444,15 +445,27 @@ describe('RDSDBProxyEndpointProvider', () => {
         })
         .mockResolvedValueOnce({ TagList: [] });
       const result = await provider.readCurrentState(EP_NAME);
-      expect(result?.['TargetRole']).toBe('READ_WRITE');
+      expect((result as Record<string, unknown> | undefined)?.['TargetRole']).toBe('READ_WRITE');
     });
 
-    it('returns undefined when the endpoint is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when the endpoint is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new DBProxyEndpointNotFoundFault({ message: 'gone', $metadata: {} })
       );
       const result = await provider.readCurrentState(EP_NAME);
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when the parent proxy is gone', async () => {
+      mockSend.mockRejectedValueOnce(new DBProxyNotFoundFault({ message: 'gone', $metadata: {} }));
+      const result = await provider.readCurrentState(EP_NAME);
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when DescribeDBProxyEndpoints lists no endpoint', async () => {
+      mockSend.mockResolvedValueOnce({ DBProxyEndpoints: [] });
+      const result = await provider.readCurrentState(EP_NAME);
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 

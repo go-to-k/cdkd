@@ -39,7 +39,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -603,13 +605,13 @@ export class ECRProvider implements ResourceProvider {
    * `aws:*` auto-tags are filtered out; the result key is omitted entirely
    * when AWS reports no user tags.
    *
-   * Returns `undefined` when the repository is gone (`RepositoryNotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the repository is gone (`RepositoryNotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let repo: {
       repositories?: Array<{
         repositoryName?: string;
@@ -625,11 +627,11 @@ export class ECRProvider implements ResourceProvider {
         new DescribeRepositoriesCommand({ repositoryNames: [physicalId] })
       )) as unknown as typeof repo;
     } catch (err) {
-      if (err instanceof RepositoryNotFoundException) return undefined;
+      if (err instanceof RepositoryNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     const r = repo.repositories?.[0];
-    if (!r) return undefined;
+    if (!r) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (r.repositoryName !== undefined) result['RepositoryName'] = r.repositoryName;
@@ -669,6 +671,8 @@ export class ECRProvider implements ResourceProvider {
         result['LifecyclePolicy'] = { LifecyclePolicyText: lp.lifecyclePolicyText };
       }
     } catch (err) {
+      // The repository vanished between DescribeRepositories and this read.
+      if (err instanceof RepositoryNotFoundException) return RESOURCE_NOT_FOUND;
       if (!(err instanceof LifecyclePolicyNotFoundException)) {
         throw err;
       }
@@ -684,7 +688,8 @@ export class ECRProvider implements ResourceProvider {
         const tags = normalizeAwsTagsToCfn(tagsResp.tags);
         result['Tags'] = tags;
       } catch (err) {
-        if (!(err instanceof RepositoryNotFoundException)) throw err;
+        if (err instanceof RepositoryNotFoundException) return RESOURCE_NOT_FOUND;
+        throw err;
       }
     }
 

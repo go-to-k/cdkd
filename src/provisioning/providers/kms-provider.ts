@@ -38,7 +38,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
@@ -959,13 +961,14 @@ export class KMSProvider implements ResourceProvider {
    * support tags. `BypassPolicyLockoutSafetyCheck` and `PendingWindowInDays`
    * are not part of the persisted AWS state visible via `DescribeKey`.
    *
-   * Returns `undefined` when the resource is gone (`NotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the resource is gone (`NotFoundException`,
+   * or an alias absent from every `ListAliases` page).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::KMS::Key':
         return this.readCurrentStateKey(physicalId);
@@ -978,7 +981,7 @@ export class KMSProvider implements ResourceProvider {
 
   private async readCurrentStateKey(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp: {
       KeyMetadata?: {
         KeyId?: string;
@@ -995,7 +998,7 @@ export class KMSProvider implements ResourceProvider {
         new DescribeKeyCommand({ KeyId: physicalId })
       )) as unknown as typeof resp;
     } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
+      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     const md = resp.KeyMetadata;
@@ -1032,7 +1035,7 @@ export class KMSProvider implements ResourceProvider {
           }
         }
       } catch (err) {
-        if (err instanceof NotFoundException) return undefined;
+        if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
         // Permission errors etc — leave key absent rather than firing
         // false drift on every run.
       }
@@ -1054,7 +1057,7 @@ export class KMSProvider implements ResourceProvider {
             result['RotationPeriodInDays'] = rotationResp.RotationPeriodInDays;
           }
         } catch (err) {
-          if (err instanceof NotFoundException) return undefined;
+          if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
           // UnsupportedOperationException (asymmetric edge cases AWS
           // changes over time) / AccessDenied — leave key absent.
         }
@@ -1069,7 +1072,7 @@ export class KMSProvider implements ResourceProvider {
         const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
         result['Tags'] = tags;
       } catch (err) {
-        if (err instanceof NotFoundException) return undefined;
+        if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
         // Permission errors etc — leave key absent.
       }
     }
@@ -1098,7 +1101,7 @@ export class KMSProvider implements ResourceProvider {
 
   private async readCurrentStateAlias(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let marker: string | undefined;
     do {
       const list = await this.getClient().send(
@@ -1115,8 +1118,8 @@ export class KMSProvider implements ResourceProvider {
       }
       marker = list.NextMarker;
     } while (marker);
-    // Not found across all pages → drift unknown.
-    return undefined;
+    // Absent from every page: the alias is gone (go-to-k/cdkd#4283).
+    return RESOURCE_NOT_FOUND;
   }
 
   /**

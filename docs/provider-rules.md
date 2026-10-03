@@ -1162,9 +1162,10 @@ and of a resource something else created in the same window: a sibling resource
 in the same stack (the deploy engine dispatches at `--concurrency 10` by
 default), a second `cdkd` process, or a human. Deleting the second kind is
 strictly worse than the bug being fixed — it destroys something cdkd state still
-advertises, and for a type whose `readCurrentState` returns `undefined` when the
-resource is gone, `cdkd drift` reports UNKNOWN rather than drift, so the loss is
-invisible. `IAMAccessKeyProvider` shows the shape:
+advertises, and for a type whose `readCurrentState` cannot tell that the
+resource is gone (returning `undefined` rather than `RESOURCE_NOT_FOUND`),
+`cdkd drift` reports UNKNOWN rather than drift, so the loss is invisible.
+`IAMAccessKeyProvider` shows the shape:
 
 - **Serialize per owning resource in-process.** A `Map<owner, Promise>` queue,
   with the baseline read, the create, and the reconcile all inside it, so no
@@ -2226,6 +2227,8 @@ The round-trip test catches all three classes mechanically:
 - **Truthy gate** — assert that empty-string / 0 / false placeholder values DO reach the relevant AWS API call (e.g. `UpdateRoleCommand` input must contain `Description: ''` when `observedProperties.Description === ''`).
 
 See [tests/unit/provisioning/sqs-queue-provider-update.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/sqs-queue-provider-update.test.ts) (Class 2 round-trip), [tests/unit/provisioning/iam-role-provider.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/iam-role-provider.test.ts) (truthy-gate round-trip), and [tests/unit/provisioning/sns-topic-provider-roundtrip.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/sns-topic-provider-roundtrip.test.ts) (Class 1 round-trip) for canonical examples.
+
+**Gone versus no read path**. Return `RESOURCE_NOT_FOUND` (from `src/types/resource.ts`) when AWS itself says the resource does not exist: the service's not-found error code or fault NAME, an empty describe list for the requested id, or a terminal deleted status the service keeps listing (ECS `INACTIVE`, EMR `TERMINATED`). `cdkd drift` reports it as `deleted` and exits `1`. Return `undefined` only for a type the provider has no read path for, or an answer that proves nothing (an unparseable id, a successful call with no body). Never return the sentinel on a message-text match alone, an access-denied or a throttle: rethrow those, or keep the old `undefined`, so a permissions gap is never reported as a deleted resource.
 
 ## `handledProperties` against the CFn schema
 

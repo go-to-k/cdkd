@@ -22,7 +22,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
@@ -508,10 +510,12 @@ export class LambdaPermissionProvider implements ResourceProvider {
    * string, and we have to scan its `Statement` array for the one with our
    * `Sid` (cdkd's physicalId).
    *
-   * Returns `undefined` when:
-   *   - `properties.FunctionName` is missing (sub-resource needs the parent).
-   *   - The function has no policy at all (`ResourceNotFoundException`) or
-   *     the matching `Sid` isn't present.
+   * Returns `undefined` when `properties.FunctionName` is missing (the
+   * sub-resource needs the parent) or the policy document does not parse.
+   *
+   * Returns `RESOURCE_NOT_FOUND` when the function or its policy is gone
+   * (`ResourceNotFoundException`), the policy is empty, or the matching
+   * `Sid` isn't present.
    *
    * The reverse-mapping from policy statement back to CFn shape:
    *   - `Action` → `Sid`'s `Action` (string or first element if array).
@@ -535,7 +539,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
     _logicalId: string,
     _resourceType: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const functionName = properties?.['FunctionName'] as string | undefined;
     if (!functionName) return undefined;
 
@@ -549,11 +553,11 @@ export class LambdaPermissionProvider implements ResourceProvider {
       );
       policyDoc = resp.Policy;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
 
-    if (!policyDoc) return undefined;
+    if (!policyDoc) return RESOURCE_NOT_FOUND;
 
     interface PolicyStatement {
       Sid?: string;
@@ -569,7 +573,8 @@ export class LambdaPermissionProvider implements ResourceProvider {
     }
 
     const statement = parsed.Statement?.find((s) => s.Sid === statementId);
-    if (!statement) return undefined;
+    // go-to-k/cdkd#4283: the statement is gone from a readable policy.
+    if (!statement) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = { FunctionName: functionName };
 

@@ -45,6 +45,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
 import { DocDBSubnetGroupProvider } from '../../../src/provisioning/providers/docdb-subnet-group-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -472,7 +473,7 @@ describe('DocDBProvider', () => {
       });
     });
 
-    it('returns undefined when DBCluster is gone (DBClusterNotFoundFault)', async () => {
+    it('returns RESOURCE_NOT_FOUND when DBCluster is gone (DBClusterNotFoundFault)', async () => {
       const err = new Error('not found') as Error & { name: string };
       err.name = 'DBClusterNotFoundFault';
       mockSend.mockRejectedValueOnce(err);
@@ -482,8 +483,66 @@ describe('DocDBProvider', () => {
         'C',
         'AWS::DocDB::DBCluster'
       );
-      expect(state).toBeUndefined();
+      expect(state).toBe(RESOURCE_NOT_FOUND);
     });
+
+    it('returns RESOURCE_NOT_FOUND when DBInstance is gone (DBInstanceNotFoundFault)', async () => {
+      const err = new Error('not found') as Error & { name: string };
+      err.name = 'DBInstanceNotFoundFault';
+      mockSend.mockRejectedValueOnce(err);
+      const provider = new DocDBProvider();
+      const state = await provider.readCurrentState!('my-instance', 'X', 'AWS::DocDB::DBInstance');
+      expect(state).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('DBSubnetGroup returns RESOURCE_NOT_FOUND when the group is gone', async () => {
+      const err = new Error('not found') as Error & { name: string };
+      err.name = 'DBSubnetGroupNotFoundFault';
+      mockSend.mockRejectedValueOnce(err);
+      const provider = new DocDBSubnetGroupProvider();
+      const state = await provider.readCurrentState!('my-sg', 'X', 'AWS::DocDB::DBSubnetGroup');
+      expect(state).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when DescribeDBClusters lists no cluster', async () => {
+      mockSend.mockResolvedValueOnce({ DBClusters: [] });
+      const provider = new DocDBProvider();
+      const state = await provider.readCurrentState!('my-cluster', 'C', 'AWS::DocDB::DBCluster');
+      expect(state).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when DescribeDBInstances lists no instance', async () => {
+      mockSend.mockResolvedValueOnce({ DBInstances: [] });
+      const provider = new DocDBProvider();
+      const state = await provider.readCurrentState!('my-instance', 'X', 'AWS::DocDB::DBInstance');
+      expect(state).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    // go-to-k/cdkd#4283: only the exact fault NAME proves the resource is gone.
+    it.each(['AWS::DocDB::DBInstance', 'AWS::DocDB::DBCluster'])(
+      'keeps undefined for %s on a message-only "not found" under another fault name',
+      async (type) => {
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('DBParameterGroup default.x not found'), {
+            name: 'DBParameterGroupNotFoundFault',
+          })
+        );
+        const state = await new DocDBProvider().readCurrentState!('x', 'X', type);
+        expect(state).toBeUndefined();
+      }
+    );
+
+    it.each(['AWS::DocDB::DBInstance', 'AWS::DocDB::DBCluster'])(
+      'rethrows an AccessDenied describe error for %s rather than reporting it gone',
+      async (type) => {
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('User is not authorized'), { name: 'AccessDenied' })
+        );
+        await expect(new DocDBProvider().readCurrentState!('x', 'X', type)).rejects.toThrow(
+          'User is not authorized'
+        );
+      }
+    );
   });
 
   // ─── import ───────────────────────────────────────────────────────

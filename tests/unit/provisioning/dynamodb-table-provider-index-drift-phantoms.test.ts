@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   DescribeContinuousBackupsCommand,
   DescribeContributorInsightsCommand,
@@ -134,6 +135,15 @@ function primeDescribeTable(table: Record<string, unknown>): void {
  *     untouched in-use table with any GSI drifts against its own
  *     `observedProperties` on a schedule set by its own traffic.
  */
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
+
 describe('DynamoDBTableProvider secondary-index drift phantoms (issue #1767)', () => {
   let provider: DynamoDBTableProvider;
 
@@ -149,7 +159,7 @@ describe('DynamoDBTableProvider secondary-index drift phantoms (issue #1767)', (
     table: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     primeDescribeTable({ TableName: TABLE_NAME, TableArn: TABLE_ARN, ...table });
-    return provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, desired);
+    return bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, desired));
   }
 
   describe('readCurrentState reverse-maps the index description', () => {

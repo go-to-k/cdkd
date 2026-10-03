@@ -32,6 +32,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { CloudWatchAlarmProvider } from '../../../src/provisioning/providers/cloudwatch-alarm-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('CloudWatchAlarmProvider.readCurrentState', () => {
   let provider: CloudWatchAlarmProvider;
@@ -107,7 +108,7 @@ describe('CloudWatchAlarmProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
+    const result = (await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm')) as Record<string, unknown> | undefined;
 
     expect(result?.['ExtendedStatistic']).toBe('p99');
     expect(result?.['EvaluateLowSampleCountPercentile']).toBe('ignore');
@@ -133,10 +134,10 @@ describe('CloudWatchAlarmProvider.readCurrentState', () => {
     expect(result).not.toHaveProperty('ThresholdMetricId');
   });
 
-  it('returns undefined when alarm is gone (empty MetricAlarms)', async () => {
+  it('returns RESOURCE_NOT_FOUND when alarm is gone (empty MetricAlarms)', async () => {
     mockSend.mockResolvedValueOnce({ MetricAlarms: [] });
     const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
@@ -156,7 +157,7 @@ describe('CloudWatchAlarmProvider.readCurrentState', () => {
         ],
       });
 
-    const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
+    const result = (await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm')) as Record<string, unknown> | undefined;
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
@@ -175,7 +176,7 @@ describe('CloudWatchAlarmProvider.readCurrentState', () => {
         Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyAlarm/Resource' }],
       });
 
-    const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
+    const result = (await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm')) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([]);
   });
 
@@ -204,7 +205,7 @@ describe('CloudWatchAlarmProvider.readCurrentState', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState('a', 'L', 'AWS::CloudWatch::Alarm');
+    const result = (await provider.readCurrentState('a', 'L', 'AWS::CloudWatch::Alarm')) as Record<string, unknown> | undefined;
 
     expect(Object.keys(result ?? {}).sort()).toEqual(
       [

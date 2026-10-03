@@ -29,6 +29,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SNSTopicPolicyProvider } from '../../../src/provisioning/providers/sns-topic-policy-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('SNSTopicPolicyProvider.readCurrentState', () => {
   let provider: SNSTopicPolicyProvider;
@@ -61,7 +62,7 @@ describe('SNSTopicPolicyProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when first topic does not exist', async () => {
+  it('returns RESOURCE_NOT_FOUND when first topic does not exist', async () => {
     const err = new Error('not found');
     (err as { name?: string }).name = 'NotFoundException';
     mockSend.mockRejectedValueOnce(err);
@@ -71,7 +72,17 @@ describe('SNSTopicPolicyProvider.readCurrentState', () => {
       'Logical',
       'AWS::SNS::TopicPolicy'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('rethrows a non-not-found error instead of reporting the topic gone', async () => {
+    const err = new Error('denied');
+    (err as { name?: string }).name = 'AuthorizationErrorException';
+    mockSend.mockRejectedValueOnce(err);
+
+    await expect(
+      provider.readCurrentState('arn:aws:sns:us-east-1:123:topic-a', 'Logical', 'AWS::SNS::TopicPolicy')
+    ).rejects.toThrow('denied');
   });
 
   it('returns undefined for empty physical id', async () => {

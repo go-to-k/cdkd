@@ -26,7 +26,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -574,13 +576,13 @@ export class SQSQueueProvider implements ResourceProvider {
    * `create()`'s behavior of only sending Tags when the template carries
    * them).
    *
-   * Returns `undefined` when the queue is gone (`QueueDoesNotExist`).
+   * Returns `RESOURCE_NOT_FOUND` when the queue is gone (`QueueDoesNotExist`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let attributes: Record<string, string> | undefined;
     try {
       const resp = await this.sqsClient.send(
@@ -591,7 +593,11 @@ export class SQSQueueProvider implements ResourceProvider {
       );
       attributes = resp.Attributes;
     } catch (err) {
-      if (err instanceof QueueDoesNotExist) return undefined;
+      // go-to-k/cdkd#4283. SQS answers `QueueDoesNotExist` for a queue URL in
+      // an account the caller cannot see, too, so a queue read by the wrong
+      // principal also reads as deleted. cdkd records same-account queue
+      // URLs, where the name is unambiguous.
+      if (err instanceof QueueDoesNotExist) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!attributes) return undefined;
@@ -683,7 +689,7 @@ export class SQSQueueProvider implements ResourceProvider {
       const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
       result['Tags'] = tags;
     } catch (err) {
-      if (err instanceof QueueDoesNotExist) return undefined;
+      if (err instanceof QueueDoesNotExist) return RESOURCE_NOT_FOUND;
       throw err;
     }
 

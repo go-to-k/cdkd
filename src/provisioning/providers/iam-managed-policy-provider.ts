@@ -44,7 +44,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
@@ -699,20 +701,20 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
    *  - `Tags` — via `ListPolicyTags`, with the `aws:cdk:path` etc. filtered
    *    out by `normalizeAwsTagsToCfn`.
    *
-   * Returns `undefined` when the policy is gone (`NoSuchEntityException`).
+   * Returns `RESOURCE_NOT_FOUND` when the policy is gone (`NoSuchEntityException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string,
     _properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let policy;
     try {
       const resp = await this.iamClient.send(new GetPolicyCommand({ PolicyArn: physicalId }));
       policy = resp.Policy;
     } catch (err) {
-      if (err instanceof NoSuchEntityException) return undefined;
+      if (err instanceof NoSuchEntityException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!policy) return undefined;

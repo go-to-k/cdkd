@@ -61,7 +61,9 @@ import type {
   CreateContext,
   UpdateContext,
   SecretMasker,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -1709,14 +1711,14 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * call (using the resource ARN from `GetNamespace.Arn` or
    * `GetService.Arn`). CDK's `aws:*` auto-tags are filtered out and the
    * result key is omitted when AWS reports no user tags. Returns
-   * `undefined` when the resource is gone (`NamespaceNotFound` /
-   * `ServiceNotFound`).
+   * `RESOURCE_NOT_FOUND` when the resource is gone (`NamespaceNotFound` /
+   * `ServiceNotFound`), `undefined` for another type.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
       case 'AWS::ServiceDiscovery::PublicDnsNamespace':
@@ -1753,13 +1755,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   private async readNamespace(
     physicalId: string,
     options: { includeProperties: boolean }
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let ns;
     try {
       const resp = await this.getClient().send(new GetNamespaceCommand({ Id: physicalId }));
       ns = resp.Namespace;
     } catch (err) {
-      if (err instanceof NamespaceNotFound) return undefined;
+      if (err instanceof NamespaceNotFound) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!ns) return undefined;
@@ -1784,13 +1786,15 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     return result;
   }
 
-  private async readService(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readService(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let svc;
     try {
       const resp = await this.getClient().send(new GetServiceCommand({ Id: physicalId }));
       svc = resp.Service;
     } catch (err) {
-      if (err instanceof ServiceNotFound) return undefined;
+      if (err instanceof ServiceNotFound) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!svc) return undefined;

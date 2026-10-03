@@ -35,6 +35,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { AgentCoreRuntimeProvider } from '../../../src/provisioning/providers/agentcore-runtime-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('AgentCoreRuntimeProvider.readCurrentState', () => {
   let provider: AgentCoreRuntimeProvider;
@@ -83,7 +84,7 @@ describe('AgentCoreRuntimeProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when runtime gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when runtime gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'gone', $metadata: {} })
     );
@@ -93,7 +94,17 @@ describe('AgentCoreRuntimeProvider.readCurrentState', () => {
       'Logical',
       'AWS::BedrockAgentCore::Runtime'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('still rethrows a non-NotFound GetAgentRuntime error', async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+    );
+
+    await expect(
+      provider.readCurrentState('runtime-1', 'Logical', 'AWS::BedrockAgentCore::Runtime')
+    ).rejects.toThrow('denied');
   });
 
   it('emits empty Description placeholder when AWS returns empty string', async () => {
@@ -103,11 +114,11 @@ describe('AgentCoreRuntimeProvider.readCurrentState', () => {
       roleArn: 'arn:aws:iam::123:role/runtime',
       description: '',
     });
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'runtime-1',
       'Logical',
       'AWS::BedrockAgentCore::Runtime'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.Description).toBe('');
   });
 });

@@ -33,6 +33,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { EventBridgeBusProvider } from '../../../src/provisioning/providers/eventbridge-bus-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('EventBridgeBusProvider.readCurrentState', () => {
   let provider: EventBridgeBusProvider;
@@ -67,14 +68,28 @@ describe('EventBridgeBusProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when bus is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when bus is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'not found', $metadata: {} })
     );
 
     const result = await provider.readCurrentState('gone', 'BusLogical', 'AWS::Events::EventBus');
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when the bus disappears before ListTagsForResource', async () => {
+    mockSend.mockResolvedValueOnce({
+      Name: 'my-bus',
+      Arn: 'arn:aws:events:us-east-1:123:event-bus/my-bus',
+    });
+    mockSend.mockRejectedValueOnce(
+      new ResourceNotFoundException({ message: 'not found', $metadata: {} })
+    );
+
+    const result = await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus');
+
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
@@ -89,7 +104,7 @@ describe('EventBridgeBusProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus');
+    const result = (await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus')) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -102,7 +117,7 @@ describe('EventBridgeBusProvider.readCurrentState', () => {
       Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBus/Resource' }],
     });
 
-    const result = await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus');
+    const result = (await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus')) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([]);
   });
 
@@ -114,7 +129,7 @@ describe('EventBridgeBusProvider.readCurrentState', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus');
+    const result = (await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus')) as Record<string, unknown> | undefined;
     expect(result?.LogConfig).toEqual({ Level: 'INFO', IncludeDetail: 'FULL' });
   });
 

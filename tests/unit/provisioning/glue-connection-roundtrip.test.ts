@@ -40,6 +40,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { GlueConnectionProvider } from '../../../src/provisioning/providers/glue-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('GlueConnectionProvider', () => {
   let provider: GlueConnectionProvider;
@@ -281,14 +282,14 @@ describe('GlueConnectionProvider', () => {
     });
   });
 
-  it('readCurrentState() returns undefined when connection does not exist', async () => {
+  it('readCurrentState() returns RESOURCE_NOT_FOUND when connection does not exist', async () => {
     const { EntityNotFoundException } = await import('@aws-sdk/client-glue');
     mockSend.mockRejectedValueOnce(
       new EntityNotFoundException({ message: 'not found', $metadata: {} })
     );
 
     const result = await provider.readCurrentState('missing', 'L', 'AWS::Glue::Connection');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('readCurrentState() forwards CatalogId from properties to GetConnection input', async () => {

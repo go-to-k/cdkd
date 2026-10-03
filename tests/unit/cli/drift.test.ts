@@ -6,10 +6,12 @@ import {
   withPasteDir,
 } from '../utils/paste-harness.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 // Hoisted so the issue-#1515 denial tests can read what the command WARNED.
 const warnSpy = vi.hoisted(() => vi.fn());
+const infoSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   // Issue #2230: `drift.ts` calls this on the `--json` path to claim stdout for
@@ -20,7 +22,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
-    info: vi.fn(),
+    info: infoSpy,
     warn: warnSpy,
     error: errorSpy,
     child: () => ({
@@ -32,6 +34,18 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
+const confirmOverride = vi.hoisted(() => ({ answer: undefined as boolean | undefined }));
+vi.mock('../../../src/cli/commands/confirm-prompt.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/cli/commands/confirm-prompt.js')>();
+  return {
+    ...actual,
+    confirmOrRefuse: (...args: Parameters<typeof actual.confirmOrRefuse>) =>
+      confirmOverride.answer === undefined
+        ? actual.confirmOrRefuse(...args)
+        : Promise.resolve(confirmOverride.answer),
+  };
+});
+
 vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
 }));
@@ -41,8 +55,17 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 // a policy actually carries a unique-id principal, so every other test in this
 // file never reaches it.
 const mockIamSend = vi.hoisted(() => vi.fn());
+// The region of the per-stack AWS scope the code is running in, or
+// `undefined` outside one (go-to-k/cdkd#4283: detection reads run in the
+// STACK's region, never the command's).
+const awsScope = vi.hoisted(() => ({
+  region: undefined as string | undefined,
+  providerRegion: undefined as string | undefined,
+  ccRegion: undefined as string | undefined,
+}));
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
-  AwsClients: vi.fn().mockImplementation(() => ({
+  AwsClients: vi.fn().mockImplementation((config?: { region?: string }) => ({
+    configuredRegion: config?.region,
     get s3() {
       return {};
     },
@@ -52,6 +75,18 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
     destroy: vi.fn(),
   })),
   setAwsClients: vi.fn(),
+  runWithStackAwsClients: (clients: { configuredRegion?: string }, fn: () => unknown) => {
+    const previous = awsScope.region;
+    awsScope.region = clients.configuredRegion;
+    const result = fn();
+    if (result instanceof Promise) {
+      return result.finally(() => {
+        awsScope.region = previous;
+      });
+    }
+    awsScope.region = previous;
+    return result;
+  },
   getAwsClients: vi.fn(),
 }));
 
@@ -112,12 +147,21 @@ const mockRegistryGetProviderFor = vi
     provisionedBy: 'sdk',
   }));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({
-    getProvider: mockRegistryGetProvider,
-    getProviderFor: mockRegistryGetProviderFor,
-    shouldSkipResource: mockRegistryShouldSkip,
-    setCustomResourceResponseBucket: mockRegistrySetCustomBucket,
-  })),
+  // Each registry remembers the AWS scope region it was CONSTRUCTED in — a
+  // provider takes its clients at construction (go-to-k/cdkd#4283) — and
+  // publishes it as `awsScope.providerRegion` when it hands out a provider.
+  ProviderRegistry: vi.fn().mockImplementation(() => {
+    const constructedIn = awsScope.region;
+    return {
+      getProvider: mockRegistryGetProvider,
+      getProviderFor: (input: { resourceType: string }) => {
+        awsScope.providerRegion = constructedIn;
+        return mockRegistryGetProviderFor(input);
+      },
+      shouldSkipResource: mockRegistryShouldSkip,
+      setCustomResourceResponseBucket: mockRegistrySetCustomBucket,
+    };
+  }),
 }));
 
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
@@ -131,10 +175,18 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 const mockCcReadCurrentState = vi
   .fn<(physicalId: string, logicalId: string, type: string) => Promise<Record<string, unknown> | undefined>>()
   .mockResolvedValue(undefined);
+// Each fallback records the AWS scope region it was CONSTRUCTED in
+// (go-to-k/cdkd#4283), published as `awsScope.ccRegion` when it reads.
 vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
-  CloudControlProvider: vi.fn().mockImplementation(() => ({
-    readCurrentState: mockCcReadCurrentState,
-  })),
+  CloudControlProvider: vi.fn().mockImplementation(() => {
+    const constructedIn = awsScope.region;
+    return {
+      readCurrentState: (...args: Parameters<typeof mockCcReadCurrentState>) => {
+        awsScope.ccRegion = constructedIn;
+        return mockCcReadCurrentState(...args);
+      },
+    };
+  }),
 }));
 
 import {
@@ -3530,6 +3582,490 @@ describe('cdkd drift', () => {
 
       expect(output).toContain('no drift detected');
       expect(mockIamSend).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('a resource deleted outside cdkd (go-to-k/cdkd#4283)', () => {
+    const stageDeleted = (extra: Record<string, ResourceState> = {}): void => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Queue1: makeResource({
+            physicalId: 'https://sqs/queue-1',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'queue-1' },
+          }),
+          ...extra,
+        })
+      );
+    };
+    const warned = (): string => warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+
+    it('reports it as DELETED drift and exits 1, not as an unsupported type', async () => {
+      stageDeleted();
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => RESOURCE_NOT_FOUND,
+      });
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('drift detected on 1 resource');
+      expect(output).toContain('  - Queue1 (AWS::SQS::Queue) — DELETED outside cdkd');
+      // Not "run cdkd deploy": a deploy diffs against state and recreates nothing.
+      expect(output).not.toContain("Run 'cdkd deploy'");
+      expect(output).not.toContain('drift unknown');
+      expect(output).not.toContain('no drift detected');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('keeps `undefined` meaning "no read path": unsupported, exit 0', async () => {
+      // The negative control: the sentinel, not the absence of a bag, is what
+      // reports a deletion.
+      stageDeleted();
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => undefined });
+
+      const { output, error } = await runDrift(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(output).toContain('drift unknown');
+      expect(output).not.toContain('DELETED');
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('lists it under `deleted` in --json, never under `notSupported`', async () => {
+      stageDeleted();
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => RESOURCE_NOT_FOUND,
+      });
+
+      const { output } = await runDrift(['TestStack', '--json']);
+
+      const [report] = JSON.parse(output) as Array<Record<string, unknown>>;
+      expect(report!['deleted']).toEqual([{ logicalId: 'Queue1', type: 'AWS::SQS::Queue' }]);
+      expect(report!['notSupported']).toEqual([]);
+      expect(report!['drifted']).toEqual([]);
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('maps the Cloud Control fallback sentinel to `deleted` too', async () => {
+      stageDeleted();
+      // A provider with no `readCurrentState` routes the read through Cloud Control.
+      mockRegistryGetProvider.mockReturnValue({});
+      mockCcReadCurrentState.mockResolvedValue(
+        RESOURCE_NOT_FOUND as unknown as Record<string, unknown>
+      );
+
+      const { output } = await runDrift(['TestStack', '--json']);
+
+      const [report] = JSON.parse(output) as Array<Record<string, unknown>>;
+      expect(report!['deleted']).toEqual([{ logicalId: 'Queue1', type: 'AWS::SQS::Queue' }]);
+      expect(report!['notSupported']).toEqual([]);
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('builds the Cloud Control fallback in the stack region', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'eu-west-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Queue1: makeResource({ physicalId: 'q', resourceType: 'AWS::SQS::Queue', properties: {} }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({});
+      const ccRegions: Array<string | undefined> = [];
+      mockCcReadCurrentState.mockImplementation(async () => {
+        ccRegions.push(`${awsScope.ccRegion}/${awsScope.region}`);
+        return { QueueName: 'q' };
+      });
+
+      await runDrift(['TestStack', '--region', 'us-east-1']);
+
+      expect(ccRegions).toEqual(['eu-west-1/eu-west-1']);
+    });
+
+    it('--all across two regions reads each stack through its own region', async () => {
+      mockListStacks.mockResolvedValueOnce([
+        { stackName: 'StackA', region: 'us-east-1' },
+        { stackName: 'StackB', region: 'eu-west-1' },
+      ]);
+      mockGetState.mockImplementation(async (name: string, region: string) => {
+        const st = makeState({
+          [`Q${name}`]: makeResource({ physicalId: name, resourceType: 'AWS::SQS::Queue', properties: {} }),
+        });
+        return { ...st, state: { ...st.state, stackName: name, region } };
+      });
+      const readRegions: string[] = [];
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => {
+          readRegions.push(`${awsScope.providerRegion}/${awsScope.region}`);
+          return {};
+        },
+      });
+
+      await runDrift(['--all', '--region', 'us-east-1']);
+
+      expect(readRegions).toEqual(['us-east-1/us-east-1', 'eu-west-1/eu-west-1']);
+    });
+
+    it('--revert refuses it by name, calls no update, and exits 2', async () => {
+      stageDeleted();
+      const update = vi.fn(async () => ({ physicalId: 'x', wasReplaced: false }));
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => RESOURCE_NOT_FOUND,
+        update,
+      });
+
+      await runDrift(['TestStack', '--revert', '--yes']);
+
+      expect(update).not.toHaveBeenCalled();
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(mockAcquireLock).not.toHaveBeenCalled();
+      expect(warned()).toContain('Queue1 (AWS::SQS::Queue): NOT reverted');
+      expect(warned()).toContain('it cannot recreate one');
+      expect(warned()).toContain('remove it from the CDK app and deploy, then restore it');
+      expect(exitSpy).toHaveBeenCalledWith(2);
+    });
+
+    it('--accept refuses it by name, writes no state, and exits 2', async () => {
+      stageDeleted();
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => RESOURCE_NOT_FOUND,
+      });
+
+      await runDrift(['TestStack', '--accept', '--yes']);
+
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(mockAcquireLock).not.toHaveBeenCalled();
+      expect(warned()).toContain('Queue1 (AWS::SQS::Queue): NOT accepted');
+      expect(warned()).toContain('no AWS-current value to write to state');
+      expect(exitSpy).toHaveBeenCalledWith(2);
+    });
+
+    it('--accept --dry-run prints the refusal and exits 0', async () => {
+      stageDeleted();
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => RESOURCE_NOT_FOUND,
+      });
+
+      const { error } = await runDrift(['TestStack', '--accept', '--dry-run']);
+
+      expect(error).toBeUndefined();
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(warned()).toContain('Queue1 (AWS::SQS::Queue): NOT accepted');
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('--revert --dry-run prints the refusal and exits 0', async () => {
+      stageDeleted();
+      const update = vi.fn();
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => RESOURCE_NOT_FOUND,
+        update,
+      });
+
+      const { error } = await runDrift(['TestStack', '--revert', '--dry-run']);
+
+      expect(error).toBeUndefined();
+      expect(update).not.toHaveBeenCalled();
+      expect(warned()).toContain('Queue1 (AWS::SQS::Queue): NOT reverted');
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('--accept still accepts the drifted sibling, then exits 2 for the deleted one', async () => {
+      stageDeleted({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { VersioningConfiguration: { Status: 'Enabled' } },
+        }),
+      });
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::SQS::Queue'
+          ? { readCurrentState: async () => RESOURCE_NOT_FOUND }
+          : { readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }) }
+      );
+
+      await runDrift(['TestStack', '--accept', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const saved = mockSaveState.mock.calls[0]![2];
+      expect(saved.resources['Bucket1']?.properties).toEqual({
+        VersioningConfiguration: { Status: 'Suspended' },
+      });
+      // The deleted resource's record is kept as it was.
+      expect(saved.resources['Queue1']?.properties).toEqual({ QueueName: 'queue-1' });
+      expect(warned()).toContain('Queue1 (AWS::SQS::Queue): NOT accepted');
+      expect(exitSpy).toHaveBeenCalledWith(2);
+    });
+
+    it('--revert over a deleted and an unreadable resource keeps the re-run pointer, says exit 1, and exits 2', async () => {
+      stageDeleted({
+        Bucket1: makeResource({ physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} }),
+      });
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::SQS::Queue'
+          ? { readCurrentState: async () => RESOURCE_NOT_FOUND }
+          : {
+              readCurrentState: async () => {
+                throw new Error('throttled');
+              },
+            }
+      );
+      infoSpy.mockClear();
+
+      await runDrift(['TestStack', '--revert', '--yes']);
+
+      const info = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(info).toContain('Comparison INCOMPLETE');
+      expect(info).toContain("Re-run 'cdkd drift' without --revert to see which resources and why");
+      expect(info).toContain('that run exits 1');
+      expect(info).not.toContain('exits 2 while');
+      expect(exitSpy).toHaveBeenCalledWith(2);
+    });
+
+    it('reads a stack in another region through that region, so its live resources never read as deleted', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'eu-west-1' }]);
+      mockGetState.mockResolvedValueOnce({
+        ...makeState({
+          Queue1: makeResource({
+            physicalId: 'q',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'q' },
+          }),
+        }),
+      });
+      const readRegions: Array<string | undefined> = [];
+      // Simulates AWS: the queue exists in eu-west-1 only.
+      mockRegistryGetProvider.mockReturnValue({
+        // The provider's clients come from where its registry was BUILT; a
+        // lazily-built client from where the call RUNS. Both must be eu-west-1.
+        readCurrentState: async () => {
+          readRegions.push(`${awsScope.providerRegion}/${awsScope.region}`);
+          return awsScope.region === 'eu-west-1' && awsScope.providerRegion === 'eu-west-1'
+            ? { QueueName: 'q' }
+            : RESOURCE_NOT_FOUND;
+        },
+      });
+
+      const { output, error } = await runDrift(['TestStack', '--region', 'us-east-1']);
+
+      expect(readRegions).toEqual(['eu-west-1/eu-west-1']);
+      expect(output).not.toContain('DELETED');
+      expect(error).toBeUndefined();
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('writes a --revert for a stack in another region through that region, never the command one', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'eu-west-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Bucket1: makeResource({
+            physicalId: 'b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { VersioningConfiguration: { Status: 'Enabled' } },
+          }),
+        })
+      );
+      const writeRegions: Array<string | undefined> = [];
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
+        update: vi.fn(async () => {
+          writeRegions.push(`${awsScope.providerRegion}/${awsScope.region}`);
+          return { physicalId: 'b', wasReplaced: false };
+        }),
+      });
+
+      await runDrift(['TestStack', '--region', 'us-east-1', '--revert', '--yes']);
+
+      // An upsert through the us-east-1 clients would create an untracked
+      // twin there and leave the eu-west-1 resource drifted.
+      expect(writeRegions).toEqual(['eu-west-1/eu-west-1']);
+    });
+
+    it('a declined --revert prompt exits 0, not 2, with a deleted resource in the stack', async () => {
+      stageDeleted({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { VersioningConfiguration: { Status: 'Enabled' } },
+        }),
+      });
+      const update = vi.fn(async () => ({ physicalId: 'b', wasReplaced: false }));
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::SQS::Queue'
+          ? { readCurrentState: async () => RESOURCE_NOT_FOUND, update }
+          : {
+              readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
+              update,
+            }
+      );
+      confirmOverride.answer = false;
+      try {
+        const { error } = await runDrift(['TestStack', '--revert']);
+        expect(error).toBeUndefined();
+      } finally {
+        confirmOverride.answer = undefined;
+      }
+      expect(update).not.toHaveBeenCalled();
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('--revert whose own update fails still names the deleted count in its final error', async () => {
+      stageDeleted({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { VersioningConfiguration: { Status: 'Enabled' } },
+        }),
+      });
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::SQS::Queue'
+          ? { readCurrentState: async () => RESOURCE_NOT_FOUND }
+          : {
+              readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
+              update: vi.fn(async () => {
+                throw new Error('update blew up');
+              }),
+            }
+      );
+      errorSpy.mockClear();
+
+      await runDrift(['TestStack', '--revert', '--yes']);
+
+      const failure = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(failure).toContain('Revert completed with');
+      expect(failure).toContain('1 resource(s) deleted outside cdkd were not reverted');
+      expect(exitSpy).toHaveBeenCalledWith(2);
+    });
+
+    it('a declined --accept prompt exits 0 with a deleted resource in the stack', async () => {
+      stageDeleted({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { VersioningConfiguration: { Status: 'Enabled' } },
+        }),
+      });
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::SQS::Queue'
+          ? { readCurrentState: async () => RESOURCE_NOT_FOUND }
+          : { readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }) }
+      );
+      confirmOverride.answer = false;
+      try {
+        const { error } = await runDrift(['TestStack', '--accept']);
+        expect(error).toBeUndefined();
+      } finally {
+        confirmOverride.answer = undefined;
+      }
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('deleted-only plus incomplete under --dry-run prints both and exits 0', async () => {
+      stageDeleted({
+        Bucket1: makeResource({ physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} }),
+      });
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::SQS::Queue'
+          ? { readCurrentState: async () => RESOURCE_NOT_FOUND }
+          : {
+              readCurrentState: async () => {
+                throw new Error('throttled');
+              },
+            }
+      );
+      infoSpy.mockClear();
+
+      const { error } = await runDrift(['TestStack', '--revert', '--dry-run']);
+
+      expect(error).toBeUndefined();
+      expect(warned()).toContain('Queue1 (AWS::SQS::Queue): NOT reverted');
+      expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('Comparison INCOMPLETE');
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('across two stacks: one deleted resource makes the run exit 1; each stack keeps its own heading', async () => {
+      mockListStacks.mockResolvedValueOnce([
+        { stackName: 'StackA', region: 'us-east-1' },
+        { stackName: 'StackB', region: 'us-east-1' },
+      ]);
+      const stateA = makeState({
+        Queue1: makeResource({ physicalId: 'qa', resourceType: 'AWS::SQS::Queue', properties: {} }),
+      });
+      const stateB = makeState({
+        Queue2: makeResource({
+          physicalId: 'qb',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: 'qb' },
+        }),
+      });
+      mockGetState.mockImplementation(async (name: string) =>
+        name === 'StackA'
+          ? { ...stateA, state: { ...stateA.state, stackName: 'StackA' } }
+          : { ...stateB, state: { ...stateB.state, stackName: 'StackB' } }
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async (physicalId: string) =>
+          physicalId === 'qa' ? RESOURCE_NOT_FOUND : { QueueName: 'qb' },
+      });
+
+      const { output } = await runDrift(['--all']);
+
+      expect(output).toContain('StackA (us-east-1): drift detected on 1 resource');
+      expect(output).toContain('✓ StackB (us-east-1): no drift detected');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('across two stacks under --accept: the refusal count sums both stacks', async () => {
+      mockListStacks.mockResolvedValueOnce([
+        { stackName: 'StackA', region: 'us-east-1' },
+        { stackName: 'StackB', region: 'us-east-1' },
+      ]);
+      mockGetState.mockImplementation(async (name: string) => {
+        const st = makeState({
+          [`Q${name}`]: makeResource({ physicalId: name, resourceType: 'AWS::SQS::Queue', properties: {} }),
+        });
+        return { ...st, state: { ...st.state, stackName: name } };
+      });
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => RESOURCE_NOT_FOUND });
+      errorSpy.mockClear();
+
+      await runDrift(['--all', '--accept', '--yes']);
+
+      expect(warned()).toContain('QStackA (AWS::SQS::Queue): NOT accepted');
+      expect(warned()).toContain('QStackB (AWS::SQS::Queue): NOT accepted');
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        '2 resource(s) deleted outside cdkd were not accepted'
+      );
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(exitSpy).toHaveBeenCalledWith(2);
+    });
+
+    it('--revert still reverts the drifted sibling, then exits 2 for the deleted one', async () => {
+      stageDeleted({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { VersioningConfiguration: { Status: 'Enabled' } },
+        }),
+      });
+      const update = vi.fn(async () => ({ physicalId: 'b', wasReplaced: false }));
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::SQS::Queue'
+          ? { readCurrentState: async () => RESOURCE_NOT_FOUND, update }
+          : {
+              readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
+              update,
+            }
+      );
+
+      const { output } = await runDrift(['TestStack', '--revert', '--yes']);
+
+      expect(output).toContain('drift detected on 2 resources');
+      expect(update).toHaveBeenCalledTimes(1);
+      expect((update.mock.calls[0] as unknown[])[0]).toBe('Bucket1');
+      expect(warned()).toContain('Queue1 (AWS::SQS::Queue): NOT reverted');
+      expect(exitSpy).toHaveBeenCalledWith(2);
     });
   });
 });

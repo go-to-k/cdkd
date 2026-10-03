@@ -41,6 +41,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { KinesisStreamProvider } from '../../../src/provisioning/providers/kinesis-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('KinesisStreamProvider.readCurrentState', () => {
   let provider: KinesisStreamProvider;
@@ -108,12 +109,27 @@ describe('KinesisStreamProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when stream is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when stream is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'gone', $metadata: {} })
     );
     const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when ListTagsForStream reports the stream gone', async () => {
+    mockSend
+      .mockResolvedValueOnce({ StreamDescription: { StreamName: 'mystream' } })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
+      .mockRejectedValueOnce(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+    const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('keeps returning undefined (no read path) for a type other than AWS::Kinesis::Stream', async () => {
+    const result = await provider.readCurrentState('x', 'L', 'AWS::Kinesis::StreamConsumer');
     expect(result).toBeUndefined();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('surfaces Tags from ListTagsForStream with aws:* filtered out', async () => {
@@ -127,7 +143,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
         ],
       });
 
-    const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+    const result = (await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream')) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -139,7 +155,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
         Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyStream/Resource' }],
       });
 
-    const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+    const result = (await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream')) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([]);
   });
 
@@ -158,7 +174,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
       .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+    const result = (await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream')) as Record<string, unknown> | undefined;
 
     expect(result?.['DesiredShardLevelMetrics']).toEqual([
       'IncomingBytes',
@@ -173,7 +189,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
       .mockResolvedValueOnce({ StreamDescriptionSummary: { MaxRecordSizeInKiB: 2048 } })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+    const result = (await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream')) as Record<string, unknown> | undefined;
 
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeStreamSummaryCommand);
     expect(result?.['MaxRecordSizeInKiB']).toBe(2048);
@@ -185,7 +201,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
       .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+    const result = (await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream')) as Record<string, unknown> | undefined;
 
     expect(result).toBeDefined();
     expect(result).not.toHaveProperty('MaxRecordSizeInKiB');
@@ -221,12 +237,12 @@ describe('KinesisStreamProvider.readCurrentState', () => {
     expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
-  it('returns undefined when the summary call reports the stream gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when the summary call reports the stream gone', async () => {
     mockSend
       .mockResolvedValueOnce({ StreamDescription: { StreamName: 'mystream' } })
       .mockRejectedValueOnce(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
 
     const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 });

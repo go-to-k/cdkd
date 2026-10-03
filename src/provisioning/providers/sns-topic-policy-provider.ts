@@ -19,7 +19,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 
 /**
  * AWS SNS Topic Policy Provider
@@ -233,14 +235,15 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
    * drift cases involve a single topic and the body content is what users
    * actually care about.
    *
-   * Returns `undefined` when no topics are listed in the physical id, or
-   * when the first listed topic is gone (`NotFoundException`).
+   * Returns `undefined` when no topics are listed in the physical id, and
+   * `RESOURCE_NOT_FOUND` when the first listed topic is gone
+   * (`NotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const topics = physicalId.split(',').filter((t) => t.length > 0);
     if (topics.length === 0) return undefined;
 
@@ -253,12 +256,9 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
       policyAttr = resp.Attributes?.['Policy'];
     } catch (err) {
       const e = err as { name?: string; message?: string };
-      if (
-        e.name === 'NotFoundException' ||
-        e.name === 'NotFound' ||
-        (typeof e.message === 'string' && e.message.includes('does not exist'))
-      ) {
-        return undefined;
+      // The error NAME only (go-to-k/cdkd#4283): message text proves nothing.
+      if (e.name === 'NotFoundException' || e.name === 'NotFound') {
+        return RESOURCE_NOT_FOUND;
       }
       throw err;
     }

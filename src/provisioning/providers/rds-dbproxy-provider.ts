@@ -32,7 +32,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
@@ -538,15 +540,15 @@ export class RDSDBProxyProvider implements ResourceProvider {
    * Reads the AWS-current configuration. Drift comparator uses this as the
    * authoritative snapshot for resources written under schema v3+.
    */
-  async readCurrentState(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  async readCurrentState(physicalId: string): Promise<Record<string, unknown> | ResourceNotFound> {
     const client = this.getClient();
     let proxy: unknown;
     try {
       const describe = await client.send(new DescribeDBProxiesCommand({ DBProxyName: physicalId }));
       proxy = describe.DBProxies?.[0];
-      if (!proxy) return undefined;
+      if (!proxy) return RESOURCE_NOT_FOUND;
     } catch (error) {
-      if (error instanceof DBProxyNotFoundFault) return undefined;
+      if (error instanceof DBProxyNotFoundFault) return RESOURCE_NOT_FOUND;
       throw error;
     }
     const p = proxy as {

@@ -27,7 +27,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import {
@@ -683,13 +685,13 @@ export class EventBridgeRuleProvider implements ResourceProvider {
    * auto-tags are filtered out; the result key is omitted entirely when AWS
    * reports no user tags.
    *
-   * Returns `undefined` when the rule is gone (`ResourceNotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the rule is gone (`ResourceNotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const ruleName = this.extractRuleNameFromArn(physicalId);
     const busParam = this.busParamFromArn(physicalId);
 
@@ -710,7 +712,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
         })
       )) as unknown as typeof resp;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
 

@@ -34,6 +34,7 @@ import {
   S3BucketPolicyProvider,
   clearOaiCanonicalUserIdCacheForTest,
 } from '../../../src/provisioning/providers/s3-bucket-policy-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('S3BucketPolicyProvider.readCurrentState', () => {
   let provider: S3BucketPolicyProvider;
@@ -66,7 +67,7 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when bucket gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when bucket gone', async () => {
     mockSend.mockRejectedValueOnce(new NoSuchBucket({ message: 'gone', $metadata: {} }));
 
     const result = await provider.readCurrentState(
@@ -74,10 +75,10 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
       'Logical',
       'AWS::S3::BucketPolicy'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
-  it('returns undefined when bucket has no attached policy', async () => {
+  it('returns RESOURCE_NOT_FOUND when bucket has no attached policy (NoSuchBucketPolicy)', async () => {
     const err = new Error('No policy');
     (err as { name?: string }).name = 'NoSuchBucketPolicy';
     mockSend.mockRejectedValueOnce(err);
@@ -87,7 +88,17 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
       'Logical',
       'AWS::S3::BucketPolicy'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('rethrows a non-not-found error instead of reporting the policy gone', async () => {
+    const err = new Error('denied');
+    (err as { name?: string }).name = 'AccessDenied';
+    mockSend.mockRejectedValueOnce(err);
+
+    await expect(
+      provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::BucketPolicy')
+    ).rejects.toThrow('denied');
   });
 
   // --- OAI principal canonicalization (issue #872) ----------------------
@@ -133,13 +144,13 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
       },
     };
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'my-bucket',
       'L',
       'AWS::S3::BucketPolicy',
       undefined,
       context
-    );
+    )) as Record<string, unknown> | undefined;
 
     const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
     expect(stmt['Principal']).toEqual({ CanonicalUser: CANONICAL });
@@ -159,12 +170,12 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
       CloudFrontOriginAccessIdentity: { Id: 'EDIFFERENTOAI9', S3CanonicalUserId: OTHER_CANONICAL },
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'my-bucket',
       'L',
       'AWS::S3::BucketPolicy',
       templateProps // template carries the ORIGINAL CANONICAL
-    );
+    )) as Record<string, unknown> | undefined;
 
     const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
     // Resolved to the OTHER OAI's canonical id (not the template's) -> drift stands.
@@ -175,7 +186,7 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
   it('leaves an `AWS` ARRAY-of-principals statement untouched (single-OAI grant uses the string form)', async () => {
     mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: [OAI_ARN, 'arn:aws:iam::123:role/R'] }) });
 
-    const result = await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy');
+    const result = (await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy')) as Record<string, unknown> | undefined;
 
     const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
     expect(stmt['Principal']).toEqual({ AWS: [OAI_ARN, 'arn:aws:iam::123:role/R'] });
@@ -195,12 +206,12 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
       },
     };
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'my-bucket',
       'L',
       'AWS::S3::BucketPolicy',
       ambiguousTemplate
-    );
+    )) as Record<string, unknown> | undefined;
 
     const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
     // Ambiguous -> do not adopt either; left unchanged.
@@ -213,7 +224,7 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
       CloudFrontOriginAccessIdentity: { Id: 'E1UREC9EUJDVG5', S3CanonicalUserId: CANONICAL },
     });
 
-    const result = await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy');
+    const result = (await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy')) as Record<string, unknown> | undefined;
 
     const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
     expect(stmt['Principal']).toEqual({ CanonicalUser: CANONICAL });
@@ -225,12 +236,12 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
   it('normalizes the transient bare IAM-unique-id principal via the matching template statement', async () => {
     mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'my-bucket',
       'L',
       'AWS::S3::BucketPolicy',
       templateProps
-    );
+    )) as Record<string, unknown> | undefined;
 
     const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
     expect(stmt['Principal']).toEqual({ CanonicalUser: CANONICAL });
@@ -241,7 +252,7 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
   it('leaves the bare IAM-unique-id principal unchanged when no matching template statement exists', async () => {
     mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
 
-    const result = await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy');
+    const result = (await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy')) as Record<string, unknown> | undefined;
 
     const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
     expect(stmt['Principal']).toEqual({ AWS: 'AIDAIBJOSOJSBZ753XCAW' });
@@ -251,7 +262,7 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: OAI_ARN }) });
     mockCloudFrontSend.mockRejectedValueOnce(new Error('NoSuchCloudFrontOriginAccessIdentity'));
 
-    const result = await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy');
+    const result = (await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy')) as Record<string, unknown> | undefined;
 
     const stmt = (result!['PolicyDocument'] as { Statement: Record<string, unknown>[] }).Statement[0]!;
     expect(stmt['Principal']).toEqual({ AWS: OAI_ARN });
@@ -278,7 +289,7 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
     };
     mockSend.mockResolvedValueOnce({ Policy: JSON.stringify(policy) });
 
-    const result = await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy');
+    const result = (await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy')) as Record<string, unknown> | undefined;
 
     expect(result!['PolicyDocument']).toEqual(policy);
     expect(mockCloudFrontSend).not.toHaveBeenCalled();

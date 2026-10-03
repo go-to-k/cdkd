@@ -50,7 +50,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 
 /**
  * AWS IAM Role Provider
@@ -1059,7 +1061,7 @@ export class IAMRoleProvider implements ResourceProvider {
    *    console-side tag ADD on an originally-untagged role surfaces as
    *    drift on the v3 observedProperties baseline.
    *
-   * Returns `undefined` when the role is gone (`NoSuchEntityException`).
+   * Returns `RESOURCE_NOT_FOUND` when the role is gone (`NoSuchEntityException`).
    */
   async readCurrentState(
     physicalId: string,
@@ -1067,13 +1069,13 @@ export class IAMRoleProvider implements ResourceProvider {
     _resourceType: string,
     properties?: Record<string, unknown>,
     context?: import('../../types/resource.js').ReadCurrentStateContext
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let role;
     try {
       const resp = await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }));
       role = resp.Role;
     } catch (err) {
-      if (err instanceof NoSuchEntityException) return undefined;
+      if (err instanceof NoSuchEntityException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!role) return undefined;

@@ -97,7 +97,9 @@ import type {
   ResourceImportResult,
   UpdateContext,
   IndeterminateGuard,
+  ResourceNotFound,
 } from '../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../types/resource.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../utils/stack-aws-scope.js';
 
@@ -4245,10 +4247,11 @@ export class CloudControlProvider implements ResourceProvider {
    * this against the keys present in cdkd state, so AWS-only keys (timestamps,
    * generated ids, etc.) are filtered out at compare time.
    *
-   * Returns `undefined` for the unique cases that mean "drift unknown" (the
-   * resource was deleted out from under cdkd, or the response had no
-   * Properties field). Re-throws on any other error so the drift command can
-   * surface throttling / access-denied issues to the user.
+   * Returns `RESOURCE_NOT_FOUND` when Cloud Control reports the resource does
+   * not exist (`ResourceNotFoundException`), which `cdkd drift` reports as
+   * `deleted` (go-to-k/cdkd#4283), and `undefined` when the response had no
+   * Properties field ("drift unknown"). Re-throws on any other error so the
+   * drift command can surface throttling / access-denied issues to the user.
    *
    * This single CC API implementation gives drift detection coverage to every
    * resource type that goes through CC API — the majority of cdkd's surface.
@@ -4259,7 +4262,7 @@ export class CloudControlProvider implements ResourceProvider {
     _logicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       const response = await this.cloudControlClient.send(
         new GetResourceCommand({
@@ -4282,7 +4285,7 @@ export class CloudControlProvider implements ResourceProvider {
     } catch (error) {
       const err = error as { name?: string };
       if (err.name === 'ResourceNotFoundException') {
-        return undefined;
+        return RESOURCE_NOT_FOUND;
       }
       throw error;
     }

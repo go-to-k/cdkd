@@ -29,6 +29,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SQSQueuePolicyProvider } from '../../../src/provisioning/providers/sqs-queue-policy-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('SQSQueuePolicyProvider.readCurrentState', () => {
   let provider: SQSQueuePolicyProvider;
@@ -59,7 +60,7 @@ describe('SQSQueuePolicyProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when queue gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when queue gone', async () => {
     const err = new Error('not found');
     (err as { name?: string }).name = 'QueueDoesNotExist';
     mockSend.mockRejectedValueOnce(err);
@@ -69,10 +70,10 @@ describe('SQSQueuePolicyProvider.readCurrentState', () => {
       'Logical',
       'AWS::SQS::QueuePolicy'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
-  it('returns undefined when queue has no policy attached', async () => {
+  it('returns RESOURCE_NOT_FOUND when queue has no policy attached (what deleting the QueuePolicy leaves)', async () => {
     mockSend.mockResolvedValueOnce({ Attributes: {} });
 
     const result = await provider.readCurrentState(
@@ -80,6 +81,20 @@ describe('SQSQueuePolicyProvider.readCurrentState', () => {
       'Logical',
       'AWS::SQS::QueuePolicy'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('rethrows a non-not-found error instead of reporting the policy gone', async () => {
+    const err = new Error('denied');
+    (err as { name?: string }).name = 'AccessDenied';
+    mockSend.mockRejectedValueOnce(err);
+
+    await expect(
+      provider.readCurrentState(
+        'https://sqs.us-east-1.amazonaws.com/123/my-queue',
+        'Logical',
+        'AWS::SQS::QueuePolicy'
+      )
+    ).rejects.toThrow('denied');
   });
 });

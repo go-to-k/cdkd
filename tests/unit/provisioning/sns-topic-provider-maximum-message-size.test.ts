@@ -161,7 +161,9 @@ describe('SNSTopicProvider MaximumMessageSize (issue #3413)', () => {
       }
       throw new Error(`unexpected ${String((cmd as { constructor: { name: string } }).constructor.name)}`);
     });
-    return provider.readCurrentState(TOPIC_ARN, 'L', 'AWS::SNS::Topic', recorded);
+    return (await provider.readCurrentState(TOPIC_ARN, 'L', 'AWS::SNS::Topic', recorded)) as
+      | Record<string, unknown>
+      | undefined;
   };
 
   it('readCurrentState() surfaces the live value as a NUMBER when the record declares the member', async () => {

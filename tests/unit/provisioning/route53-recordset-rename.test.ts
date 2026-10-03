@@ -43,8 +43,18 @@ import {
   Route53Provider,
   recordIdentityChanged,
 } from '../../../src/provisioning/providers/route53-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { isNameCollisionErrorFrom } from '../../../src/deployment/retryable-errors.js';
+import type { ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const ZONE = 'Z1234567890';
 const TYPE = 'AWS::Route53::RecordSet';
@@ -413,12 +423,12 @@ describe('Route53Provider readCurrentState matches the recorded SetIdentifier (i
 
   it('reads the record with the recorded SetIdentifier, not the sibling that sorts first', async () => {
     routeSend([sibling, target]);
-    const observed = await provider.readCurrentState(
+    const observed = bagOf(await provider.readCurrentState(
       `${ZONE}|w.example.com.|A`,
       'Rec',
       TYPE,
       record({ Name: 'w.example.com.', SetIdentifier: 'id9', Weight: 9 })
-    );
+    ));
     expect(calls(ListResourceRecordSetsCommand)[0]?.input.StartRecordIdentifier).toBe('id9');
     expect(observed?.['SetIdentifier']).toBe('id9');
     expect(observed?.['Weight']).toBe(9);
@@ -426,12 +436,12 @@ describe('Route53Provider readCurrentState matches the recorded SetIdentifier (i
 
   it('a recorded bag with no SetIdentifier reads the record without one', async () => {
     routeSend([sibling, simple]);
-    const observed = await provider.readCurrentState(
+    const observed = bagOf(await provider.readCurrentState(
       `${ZONE}|w.example.com.|A`,
       'Rec',
       TYPE,
       record({ Name: 'w.example.com.' })
-    );
+    ));
     expect(calls(ListResourceRecordSetsCommand)[0]?.input).not.toHaveProperty('StartRecordIdentifier');
     expect(observed).not.toHaveProperty('SetIdentifier');
     expect(observed?.['ResourceRecords']).toEqual(['192.0.2.5']);
@@ -450,31 +460,31 @@ describe('Route53Provider readCurrentState matches the recorded SetIdentifier (i
 
   it('with no recorded bag (the import verification) the name + type match stands', async () => {
     routeSend([sibling, target]);
-    const observed = await provider.readCurrentState(`${ZONE}|w.example.com.|A`, 'Rec', TYPE);
+    const observed = bagOf(await provider.readCurrentState(`${ZONE}|w.example.com.|A`, 'Rec', TYPE));
     expect(calls(ListResourceRecordSetsCommand)[0]?.input).not.toHaveProperty('StartRecordIdentifier');
     expect(observed?.['SetIdentifier']).toBe('id1');
   });
 
   it('a redacted recorded SetIdentifier keeps the name + type match', async () => {
     routeSend([sibling, target]);
-    const observed = await provider.readCurrentState(
+    const observed = bagOf(await provider.readCurrentState(
       `${ZONE}|w.example.com.|A`,
       'Rec',
       TYPE,
       record({ Name: 'w.example.com.', SetIdentifier: '{{resolve:ssm:/sid}}' })
-    );
+    ));
     expect(calls(ListResourceRecordSetsCommand)[0]?.input).not.toHaveProperty('StartRecordIdentifier');
     expect(observed?.['SetIdentifier']).toBe('id1');
   });
 
   it('a malformed recorded SetIdentifier keeps the name + type match', async () => {
     routeSend([sibling, target]);
-    const observed = await provider.readCurrentState(
+    const observed = bagOf(await provider.readCurrentState(
       `${ZONE}|w.example.com.|A`,
       'Rec',
       TYPE,
       record({ Name: 'w.example.com.', SetIdentifier: 7 })
-    );
+    ));
     expect(observed?.['SetIdentifier']).toBe('id1');
   });
 });

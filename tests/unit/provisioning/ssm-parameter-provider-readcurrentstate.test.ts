@@ -42,6 +42,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SSMParameterProvider } from '../../../src/provisioning/providers/ssm-parameter-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('SSMParameterProvider.readCurrentState', () => {
   let provider: SSMParameterProvider;
@@ -117,18 +125,18 @@ describe('SSMParameterProvider.readCurrentState', () => {
       })
       .mockResolvedValueOnce({ TagList: [] });
 
-    const result = await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter');
+    const result = bagOf(await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter'));
     expect(result?.Policies).toEqual([expirationPolicy]);
   });
 
-  it('returns undefined when parameter is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when parameter is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ParameterNotFound({ message: 'not found', $metadata: {} })
     );
 
     const result = await provider.readCurrentState('/gone', 'ParamLogical', 'AWS::SSM::Parameter');
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('emits Policies=[] placeholder when DescribeParameters fails (best-effort)', async () => {
@@ -170,7 +178,7 @@ describe('SSMParameterProvider.readCurrentState', () => {
         ],
       });
 
-    const result = await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter');
+    const result = bagOf(await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter'));
     // SSM Tags surface as the CFn key->value MAP shape (matching the template
     // shape cdkd stores in state), not the {Key,Value}[] list other providers use.
     expect(result?.Tags).toEqual({ Foo: 'Bar' });
@@ -186,7 +194,7 @@ describe('SSMParameterProvider.readCurrentState', () => {
         TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyParam/Resource' }],
       });
 
-    const result = await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter');
+    const result = bagOf(await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter'));
     expect(result?.Tags).toEqual({});
   });
 });

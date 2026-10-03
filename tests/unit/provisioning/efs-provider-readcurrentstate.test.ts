@@ -45,6 +45,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { EFSProvider } from '../../../src/provisioning/providers/efs-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+function bagOf(r: Record<string, unknown> | ResourceNotFound | undefined): Record<string, unknown> {
+  if (r === undefined || r === RESOURCE_NOT_FOUND) throw new Error('expected a property bag');
+  return r;
+}
+
+const fsItem = { FileSystemId: 'fs-1', PerformanceMode: 'generalPurpose', Encrypted: false };
 
 describe('EFSProvider.readCurrentState', () => {
   let provider: EFSProvider;
@@ -110,12 +118,77 @@ describe('EFSProvider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined when filesystem is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when filesystem is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new FileSystemNotFound({ message: 'gone', $metadata: {}, ErrorCode: 'FileSystemNotFound' })
       );
       const result = await provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem');
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND on an empty FileSystems list for the id', async () => {
+      mockSend.mockResolvedValueOnce({ FileSystems: [] });
+      const result = await provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem');
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('keeps undefined when DescribeFileSystems answers with an empty body', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem');
       expect(result).toBeUndefined();
+    });
+
+    it.each([
+      ['DescribeLifecycleConfiguration', 1],
+      ['DescribeBackupPolicy', 2],
+      ['DescribeFileSystemPolicy', 3],
+    ])(
+      'returns RESOURCE_NOT_FOUND when the FS vanishes before %s',
+      async (_call, failingIndex) => {
+        mockSend.mockResolvedValueOnce({ FileSystems: [fsItem] });
+        for (let i = 1; i < failingIndex; i++) mockSend.mockResolvedValueOnce({});
+        mockSend.mockRejectedValueOnce(
+          new FileSystemNotFound({ message: 'gone', $metadata: {}, ErrorCode: 'FileSystemNotFound' })
+        );
+        const result = await provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem');
+        expect(result).toBe(RESOURCE_NOT_FOUND);
+      }
+    );
+
+    it('rethrows a message-only "not found" under a different name (no sentinel)', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('FileSystemNotFound: fs-1 not found'), { name: 'BadRequest' })
+      );
+      await expect(
+        provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem')
+      ).rejects.toThrow('not found');
+    });
+
+    it('rethrows AccessDenied on DescribeFileSystems (no sentinel)', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+      );
+      await expect(
+        provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem')
+      ).rejects.toThrow('denied');
+    });
+
+    it('omits the key (no sentinel) on a message-only "not found" or AccessDenied from a sub-call', async () => {
+      mockSend
+        .mockResolvedValueOnce({ FileSystems: [fsItem] })
+        .mockRejectedValueOnce(
+          Object.assign(new Error('FileSystemNotFound: not found'), { name: 'BadRequest' })
+        )
+        .mockRejectedValueOnce(
+          Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+        )
+        .mockRejectedValueOnce(Object.assign(new Error('not found'), { name: 'PolicyNotFound' }));
+      const result = await provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem');
+      expect(result).toEqual({
+        PerformanceMode: 'generalPurpose',
+        Encrypted: false,
+        FileSystemTags: [],
+      });
     });
 
     it('surfaces FileSystemTags from DescribeFileSystems with aws:* filtered out', async () => {
@@ -136,7 +209,7 @@ describe('EFSProvider.readCurrentState', () => {
         .mockRejectedValueOnce(Object.assign(new Error('PolicyNotFound'), { name: 'PolicyNotFound' }));
 
       const result = await provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem');
-      expect(result?.FileSystemTags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+      expect(bagOf(result).FileSystemTags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
     });
 
     it('emits empty FileSystemTags placeholder when DescribeFileSystems returns no user tags', async () => {
@@ -154,7 +227,7 @@ describe('EFSProvider.readCurrentState', () => {
         .mockRejectedValueOnce(Object.assign(new Error('PolicyNotFound'), { name: 'PolicyNotFound' }));
 
       const result = await provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem');
-      expect(result?.FileSystemTags).toEqual([]);
+      expect(bagOf(result).FileSystemTags).toEqual([]);
     });
   });
 
@@ -187,7 +260,7 @@ describe('EFSProvider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined when AP is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when AP is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new AccessPointNotFound({
           message: 'gone',
@@ -196,7 +269,28 @@ describe('EFSProvider.readCurrentState', () => {
         })
       );
       const result = await provider.readCurrentState('fsap-1', 'L', 'AWS::EFS::AccessPoint');
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND on an empty AccessPoints list for the id', async () => {
+      mockSend.mockResolvedValueOnce({ AccessPoints: [] });
+      const result = await provider.readCurrentState('fsap-1', 'L', 'AWS::EFS::AccessPoint');
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('keeps undefined when DescribeAccessPoints answers with no list at all (empty body)', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.readCurrentState('fsap-1', 'L', 'AWS::EFS::AccessPoint');
       expect(result).toBeUndefined();
+    });
+
+    it('rethrows AccessDenied on DescribeAccessPoints (no sentinel)', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+      );
+      await expect(
+        provider.readCurrentState('fsap-1', 'L', 'AWS::EFS::AccessPoint')
+      ).rejects.toThrow('denied');
     });
   });
 
@@ -230,10 +324,10 @@ describe('EFSProvider.readCurrentState', () => {
         .mockResolvedValueOnce({ SecurityGroups: [] });
 
       const result = await provider.readCurrentState('fsmt-1', 'L', 'AWS::EFS::MountTarget');
-      expect(result?.SecurityGroups).toEqual([]);
+      expect(bagOf(result).SecurityGroups).toEqual([]);
     });
 
-    it('returns undefined when MT is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when MT is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new MountTargetNotFound({
           message: 'gone',
@@ -242,7 +336,28 @@ describe('EFSProvider.readCurrentState', () => {
         })
       );
       const result = await provider.readCurrentState('fsmt-1', 'L', 'AWS::EFS::MountTarget');
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND on an empty MountTargets list for the id', async () => {
+      mockSend.mockResolvedValueOnce({ MountTargets: [] });
+      const result = await provider.readCurrentState('fsmt-1', 'L', 'AWS::EFS::MountTarget');
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('keeps undefined when DescribeMountTargets answers with no list at all (empty body)', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.readCurrentState('fsmt-1', 'L', 'AWS::EFS::MountTarget');
       expect(result).toBeUndefined();
+    });
+
+    it('rethrows a message-only "not found" under a different name (no sentinel)', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('MountTargetNotFound: not found'), { name: 'BadRequest' })
+      );
+      await expect(
+        provider.readCurrentState('fsmt-1', 'L', 'AWS::EFS::MountTarget')
+      ).rejects.toThrow('not found');
     });
   });
 });

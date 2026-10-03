@@ -40,6 +40,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ElastiCacheProvider } from '../../../src/provisioning/providers/elasticache-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('ElastiCacheProvider.readCurrentState', () => {
   let provider: ElastiCacheProvider;
@@ -93,7 +94,7 @@ describe('ElastiCacheProvider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined when cluster is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when cluster is gone', async () => {
       mockSend.mockRejectedValueOnce(
         Object.assign(new Error('cluster not found'), { name: 'CacheClusterNotFoundFault' })
       );
@@ -102,7 +103,17 @@ describe('ElastiCacheProvider.readCurrentState', () => {
         'L',
         'AWS::ElastiCache::CacheCluster'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when DescribeCacheClusters lists no cluster', async () => {
+      mockSend.mockResolvedValueOnce({ CacheClusters: [] });
+      const result = await provider.readCurrentState(
+        'mycluster',
+        'L',
+        'AWS::ElastiCache::CacheCluster'
+      );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -139,7 +150,7 @@ describe('ElastiCacheProvider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined when subnet group is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when subnet group is gone', async () => {
       mockSend.mockRejectedValueOnce(
         Object.assign(new Error('not found'), { name: 'CacheSubnetGroupNotFoundFault' })
       );
@@ -148,8 +159,48 @@ describe('ElastiCacheProvider.readCurrentState', () => {
         'L',
         'AWS::ElastiCache::SubnetGroup'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
+
+    it('returns RESOURCE_NOT_FOUND when DescribeCacheSubnetGroups lists no group', async () => {
+      mockSend.mockResolvedValueOnce({ CacheSubnetGroups: [] });
+      const result = await provider.readCurrentState(
+        'mygrp',
+        'L',
+        'AWS::ElastiCache::SubnetGroup'
+      );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+  });
+
+  // go-to-k/cdkd#4283: only the exact fault NAME proves the resource is gone.
+  describe('fault name vs message (go-to-k/cdkd#4283)', () => {
+    const READ_TYPES = ['AWS::ElastiCache::CacheCluster', 'AWS::ElastiCache::SubnetGroup'];
+
+    it.each(READ_TYPES)(
+      'keeps undefined for %s on a message-only "not found" under another fault name',
+      async (type) => {
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('CacheParameterGroup default.x not found'), {
+            name: 'CacheParameterGroupNotFoundFault',
+          })
+        );
+        const result = await provider.readCurrentState('x', 'L', type);
+        expect(result).toBeUndefined();
+      }
+    );
+
+    it.each(READ_TYPES)(
+      'rethrows an AccessDenied describe error for %s rather than reporting it gone',
+      async (type) => {
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('User is not authorized'), { name: 'AccessDenied' })
+        );
+        await expect(provider.readCurrentState('x', 'L', type)).rejects.toThrow(
+          'User is not authorized'
+        );
+      }
+    );
   });
 
   it('surfaces CacheCluster Tags from ListTagsForResource with aws:* filtered out', async () => {
@@ -176,7 +227,7 @@ describe('ElastiCacheProvider.readCurrentState', () => {
     );
 
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
-    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+    expect((result as Record<string, unknown> | undefined)?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
   it('omits Tags when ListTagsForResource returns no user tags', async () => {
@@ -199,6 +250,6 @@ describe('ElastiCacheProvider.readCurrentState', () => {
       'AWS::ElastiCache::CacheCluster'
     );
 
-    expect(result?.Tags).toEqual([]);
+    expect((result as Record<string, unknown> | undefined)?.Tags).toEqual([]);
   });
 });

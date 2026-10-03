@@ -42,6 +42,15 @@ import {
   TagResourceCommand,
   UntagResourceCommand,
 } from '@aws-sdk/client-ecr';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('ECRProvider import', () => {
   let provider: ECRProvider;
@@ -493,7 +502,7 @@ describe('ECRProvider ImageTagMutabilityExclusionFilters', () => {
     );
     mockSend.mockResolvedValueOnce({ tags: [] });
 
-    const state = await provider.readCurrentState('my-repo', 'MyRepo', 'AWS::ECR::Repository');
+    const state = bagOf(await provider.readCurrentState('my-repo', 'MyRepo', 'AWS::ECR::Repository'));
 
     expect(state?.['ImageTagMutabilityExclusionFilters']).toEqual([
       {

@@ -450,7 +450,9 @@ describe('EFSProvider', () => {
           return Promise.resolve({});
         });
 
-        const state = await provider.readCurrentState('fs-read', 'ReadFS', 'AWS::EFS::FileSystem');
+        const state = (await provider.readCurrentState('fs-read', 'ReadFS', 'AWS::EFS::FileSystem')) as
+          | Record<string, unknown>
+          | undefined;
 
         expect(state).toBeDefined();
         expect(state!['AvailabilityZoneName']).toBe('us-east-1a');
@@ -476,7 +478,9 @@ describe('EFSProvider', () => {
           return Promise.resolve({});
         });
 
-        const state = await provider.readCurrentState('fs-nopol', 'NoPolFS', 'AWS::EFS::FileSystem');
+        const state = (await provider.readCurrentState('fs-nopol', 'NoPolFS', 'AWS::EFS::FileSystem')) as
+          | Record<string, unknown>
+          | undefined;
 
         expect(state).toBeDefined();
         expect(state!['FileSystemPolicy']).toBeUndefined();

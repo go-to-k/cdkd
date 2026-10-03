@@ -32,6 +32,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SecretsManagerSecretProvider } from '../../../src/provisioning/providers/secretsmanager-secret-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('SecretsManagerSecretProvider.readCurrentState', () => {
   let provider: SecretsManagerSecretProvider;
@@ -68,7 +76,7 @@ describe('SecretsManagerSecretProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when secret is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when secret is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'not found', $metadata: {} })
     );
@@ -79,7 +87,7 @@ describe('SecretsManagerSecretProvider.readCurrentState', () => {
       'AWS::SecretsManager::Secret'
     );
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('surfaces Tags from DescribeSecret with aws:* filtered out', async () => {
@@ -91,11 +99,11 @@ describe('SecretsManagerSecretProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'arn:aws:secretsmanager:us-east-1:123:secret:my-secret-AbCdEf',
       'SecretLogical',
       'AWS::SecretsManager::Secret'
-    );
+    ));
 
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
@@ -114,11 +122,11 @@ describe('SecretsManagerSecretProvider.readCurrentState', () => {
       Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MySecret/Resource' }],
     });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'arn:aws:secretsmanager:us-east-1:123:secret:my-secret-AbCdEf',
       'SecretLogical',
       'AWS::SecretsManager::Secret'
-    );
+    ));
 
     expect(result?.Tags).toEqual([]);
   });
@@ -129,11 +137,11 @@ describe('SecretsManagerSecretProvider.readCurrentState', () => {
       Type: 'urn:partner:example',
     });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'arn:aws:secretsmanager:us-east-1:123:secret:partner-secret-AbCdEf',
       'SecretLogical',
       'AWS::SecretsManager::Secret'
-    );
+    ));
 
     expect(result?.Type).toBe('urn:partner:example');
   });
