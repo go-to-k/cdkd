@@ -356,6 +356,26 @@ describe('CustomResourceProvider synthetic StackId (issue #1866)', () => {
       expect(slept.reduce((a, b) => a + b, 0)).toBe(2_000 + 5_000 + 10_000);
     });
 
+    it('does NOT re-ask on a failure other than the unknown account', async () => {
+      const resolverModule = await import(
+        '../../../src/deployment/intrinsic-function-resolver.js'
+      );
+      const spy = vi
+        .spyOn(resolverModule, 'getAccountInfo')
+        .mockRejectedValue(new Error('unexpected failure'));
+      try {
+        const provider = makeProvider();
+        const outcome = await provider.delete('CrResource', 'phys-123', 'Custom::CrResource', {
+          ServiceToken: SERVICE_TOKEN,
+        });
+        expect(outcome).toMatchObject({ outcome: 'skipped' });
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(slept).toEqual([]);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('a CREATE does not re-ask: its refusal fails before anything exists', async () => {
       mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
       const provider = makeProvider();

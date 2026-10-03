@@ -291,18 +291,17 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
           rejectSts = reject;
         })
     );
-    const both = Promise.allSettled([getAccountInfo(), getAccountInfo()]);
+    // THREE callers: one starts the lookup and two join it, so a shared
+    // instance between the two JOINERS is what this can see.
+    const all = Promise.allSettled([getAccountInfo(), getAccountInfo(), getAccountInfo()]);
     await Promise.resolve();
     rejectSts?.(new Error('STS unreachable'));
-    const [first, second] = await both;
+    const errors = (await all).map((r) => (r.status === 'rejected' ? (r.reason as Error) : undefined));
 
     expect(stsSend).toHaveBeenCalledTimes(1);
-    const a = first?.status === 'rejected' ? (first.reason as Error) : undefined;
-    const b = second?.status === 'rejected' ? (second.reason as Error) : undefined;
-    expect(a).toBeInstanceOf(AccountIdUnavailableError);
-    expect(b).toBeInstanceOf(AccountIdUnavailableError);
-    expect(a).not.toBe(b);
-    expect(a?.message).toBe(b?.message);
+    for (const error of errors) expect(error).toBeInstanceOf(AccountIdUnavailableError);
+    expect(new Set(errors).size).toBe(3);
+    expect(new Set(errors.map((e) => e?.message)).size).toBe(1);
   });
 
   it('uses AWS_ACCOUNT_ID when STS answers with no Account', async () => {
