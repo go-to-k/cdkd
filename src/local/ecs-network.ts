@@ -115,6 +115,12 @@ export interface CreateTaskNetworkOptions {
   /** Skip `docker pull <sidecar>`. */
   skipPull?: boolean;
   /**
+   * The full network name, from {@link newTaskNetworkName}. Lets a caller name
+   * the network and its sidecar before `createTaskNetwork` returns, to remove
+   * them if it never does (issue #4495). Default: a fresh one from `prefix`.
+   */
+  networkName?: string;
+  /**
    * Optional second-from-last octet of the link-local /24 subnet
    * (1..254). Default 170 (the AWS-documented metadata-endpoint subnet).
    */
@@ -162,7 +168,7 @@ async function createNetworkAndSidecar(args: {
     '-d',
     '--rm',
     '--name',
-    `${networkName}-metadata`,
+    taskSidecarName(networkName),
     '--network',
     networkName,
     '--ip',
@@ -230,6 +236,16 @@ async function createNetworkAndSidecar(args: {
   }
 }
 
+/** A fresh per-task network name, `<prefix>-task-<rand>`. */
+export function newTaskNetworkName(prefix = 'cdkd-local'): string {
+  return `${prefix}-task-${randomBytes(4).toString('hex')}`;
+}
+
+/** The docker name of the metadata-endpoints sidecar on a per-task network. */
+export function taskSidecarName(networkName: string): string {
+  return `${networkName}-metadata`;
+}
+
 /**
  * Create the per-task docker network + start the metadata-endpoints
  * sidecar. The sidecar must come up at the well-known address BEFORE any
@@ -239,9 +255,7 @@ async function createNetworkAndSidecar(args: {
 export async function createTaskNetwork(
   options: CreateTaskNetworkOptions = {}
 ): Promise<TaskNetwork> {
-  const prefix = options.prefix ?? 'cdkd-local';
-  const suffix = randomBytes(4).toString('hex');
-  const networkName = `${prefix}-task-${suffix}`;
+  const networkName = options.networkName ?? newTaskNetworkName(options.prefix);
   const { cidr, sidecarIp } =
     options.subnetOctet === undefined
       ? { cidr: DEFAULT_METADATA_ENDPOINT_SUBNET, sidecarIp: METADATA_ENDPOINT_IP }

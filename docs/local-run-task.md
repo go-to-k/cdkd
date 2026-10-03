@@ -434,7 +434,11 @@ A normal run:
 3. The metadata sidecar is removed and the Docker network is deleted.
 4. cdkd exits with the essential container's exit code.
 
-`^C` runs the same teardown. A second `^C` exits `130` immediately, skipping
+`^C` runs the same teardown. A `^C` that lands while a container, the network
+or a volume is still being created waits for that `docker` command (up to 20
+seconds, then removes what it creates by name and warns with the command to
+re-run, since a late `docker` command can still create it) so it is torn down
+too, and nothing more is started. A second `^C` exits `130` immediately, skipping
 the rest of the container cleanup. When `--profile <p>` was passed and the
 second `^C` lands before the credentials file is removed (right after the
 containers are stopped, or, under `--keep-running`, once cdkd stops following

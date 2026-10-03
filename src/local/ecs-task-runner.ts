@@ -16,7 +16,7 @@ import {
   isMalformedEnvKey,
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
-import { displayIdent, displaySafe, safeMsg } from '../utils/display-safe.js';
+import { displayIdent, displaySafe, isPasteableIdent, safeMsg } from '../utils/display-safe.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 import { displayAssemblyPath } from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
@@ -35,8 +35,11 @@ import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { AssetManifestLoader } from '../assets/asset-manifest-loader.js';
 import {
   buildMetadataEnv,
+  METADATA_ENDPOINT_IMAGE,
   createTaskNetwork,
   destroyTaskNetwork,
+  newTaskNetworkName,
+  taskSidecarName,
   type TaskNetwork,
 } from './ecs-network.js';
 import { resolveEcsSecrets, type ResolvedSecret } from './ecs-secrets-resolver.js';
@@ -240,7 +243,50 @@ export interface EcsRunState {
    * lost to the daemon's relay lag (issue #4480).
    */
   logStreams: { containerId: string; stream: ContainerLogStream }[];
+  /**
+   * Set once {@link cleanupEcsRun} begins: from then on `runEcsTask` creates
+   * nothing more (issue #4495).
+   */
+  closing?: boolean;
+  /**
+   * The docker step creating something cleanup must remove — the network and
+   * its sidecar, a volume, or a container — while it is in flight, so a ^C
+   * landing inside it neither misses what it creates nor exits first (issue
+   * #4495). See {@link InFlightDockerStep}.
+   */
+  inFlight?: InFlightDockerStep | undefined;
 }
+
+/**
+ * One in-flight docker step of {@link runEcsTask}. `settled` never rejects, and
+ * settles only once what the step created is recorded in the state, where
+ * cleanup finds it. `abandon` removes it by its docker name, for a step that
+ * does not settle within {@link IN_FLIGHT_STEP_TIMEOUT_MS}.
+ */
+export interface InFlightDockerStep {
+  settled: Promise<void>;
+  abandon: () => Promise<void>;
+  /**
+   * What `abandon` removes and the command that removes it, for the warning:
+   * a `docker` command still running past the bound can create it after the
+   * removal (its CLI child outlives cdkd's exit).
+   */
+  subject: { what: string; remedy: string };
+  /**
+   * Set when cleanup stopped waiting and removed the step by name: a step that
+   * completes afterwards removes what it created rather than recording it into
+   * a state cleanup has already read.
+   */
+  abandoned?: boolean;
+}
+
+/**
+ * How long {@link cleanupEcsRun} waits for an in-flight docker step before
+ * removing what it creates by name. `docker run` has no timeout of its own and
+ * a terminal ^C does not interrupt it, so a hung daemon would otherwise hold
+ * the ^C forever.
+ */
+export const IN_FLIGHT_STEP_TIMEOUT_MS = 20_000;
 
 export interface RunEcsTaskResult {
   /** Exit code of the essential container (0 by default when `--keep-running` and no exit awaited). */
@@ -256,7 +302,14 @@ export interface RunEcsTaskResult {
  * internals.
  */
 export function createEcsRunState(): EcsRunState {
-  return { network: undefined, dockerVolumeNames: [], startedContainers: [], logStreams: [] };
+  return {
+    network: undefined,
+    dockerVolumeNames: [],
+    startedContainers: [],
+    logStreams: [],
+    closing: false,
+    inFlight: undefined,
+  };
 }
 
 async function runAfterContainersStopped(
@@ -271,6 +324,121 @@ async function runAfterContainersStopped(
       safeMsg`afterContainersStopped hook failed: ${err instanceof Error ? err.message : String(err)}`
     );
   }
+}
+
+/**
+ * Wait for {@link EcsRunState.inFlight}, so what it creates is in the state
+ * before the teardown reads it; past {@link IN_FLIGHT_STEP_TIMEOUT_MS}, remove
+ * it by name instead.
+ */
+async function settleInFlightStep(
+  state: EcsRunState,
+  logger: ReturnType<typeof getLogger>
+): Promise<void> {
+  const step = state.inFlight;
+  if (!step) return;
+  logger.info('Waiting for the in-flight docker command so what it creates can be removed...');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = await Promise.race([
+    step.settled.then(() => true),
+    new Promise<false>((r) => {
+      timer = setTimeout(() => r(false), IN_FLIGHT_STEP_TIMEOUT_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+  if (settled) return;
+  step.abandoned = true;
+  try {
+    await step.abandon();
+  } catch (err) {
+    logger.debug(
+      safeMsg`in-flight step removal failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  logger.warn(
+    safeMsg`The in-flight docker command did not finish within ${IN_FLIGHT_STEP_TIMEOUT_MS / 1000}s; removed ${step.subject.what} if it existed, but a docker command that completes later can still create it -- run '${step.subject.remedy}' if it appears.`
+  );
+}
+
+/**
+ * Run one docker step that creates something {@link cleanupEcsRun} must
+ * remove (issue #4495). It starts nothing once cleanup has begun, and while it
+ * runs it is {@link EcsRunState.inFlight}: `record` puts its result in the
+ * state before cleanup's wait on it ends. A step that completes under a
+ * closing run throws, so the task goes no further.
+ *
+ * Under a closing run, a step that FAILS still runs `abandon` before it
+ * settles: a terminal ^C signals the `docker` CLI too, which can abort
+ * `docker run -d` after the container was created, and nothing would record
+ * that container. `abandon` removes by a name unique to this run with high
+ * probability (24 random bits or more), so it is safe when nothing was created.
+ */
+async function runDockerStep<T>(
+  state: EcsRunState,
+  step: () => Promise<T>,
+  record: (result: T) => void,
+  abandon: () => Promise<void>,
+  subject: InFlightDockerStep['subject']
+): Promise<T> {
+  if (state.closing) throw interruptedError();
+  const run = step();
+  const removeByName = (): Promise<void> => abandon().catch(() => undefined);
+  // Registered before the `await` below, so `record` runs first.
+  const settled = run.then(
+    async (result) => {
+      if (entry.abandoned) await removeByName();
+      else record(result);
+    },
+    async () => {
+      if (state.closing) await removeByName();
+    }
+  );
+  const entry: InFlightDockerStep = { settled, abandon, subject };
+  state.inFlight = entry;
+  let result: T;
+  try {
+    result = await run;
+  } finally {
+    if (state.inFlight === entry) state.inFlight = undefined;
+  }
+  if (state.closing) throw interruptedError();
+  return result;
+}
+
+/**
+ * {@link runEcsTask} stopped because {@link cleanupEcsRun} began while it ran
+ * (a ^C). The caller's cleanup owns the exit; this is not a failure to report.
+ */
+export class EcsTaskInterruptedError extends EcsTaskRunnerError {
+  constructor() {
+    super('Interrupted; the task is being torn down.');
+    this.name = 'EcsTaskInterruptedError';
+    Object.setPrototypeOf(this, EcsTaskInterruptedError.prototype);
+  }
+}
+
+/**
+ * The warning's subject for docker objects removed by name: each name quoted
+ * when it is a plain identifier, and each kind's unfiltered listing
+ * (`docker ps -a` / `docker volume ls` / `docker network ls`) as the remedy when
+ * one is not (a name never reaches a pasteable command unvetted).
+ */
+function namedSubject(
+  kinds: readonly { kind: string; name: string; rm: string; list: string }[]
+): InFlightDockerStep['subject'] {
+  const what = kinds
+    .map((k) => `${k.kind} ${quotedOrDescribed(k.name, `${k.kind} name`)}`)
+    .join(' and ');
+  // A name that is not a plain identifier never reaches a pasteable command:
+  // list that kind instead, unfiltered, since `--cluster` sets the prefix.
+  const remedy = kinds.every((k) => isPasteableIdent(k.name))
+    ? kinds.map((k) => `${k.rm} ${k.name}`).join('; ')
+    : kinds.map((k) => k.list).join('; ');
+  return { what, remedy };
+}
+
+function interruptedError(): EcsTaskInterruptedError {
+  return new EcsTaskInterruptedError();
 }
 
 /**
@@ -292,6 +460,8 @@ export async function cleanupEcsRun(
   }
 ): Promise<void> {
   const logger = getLogger().child('ecs-runner');
+  state.closing = true;
+  await settleInFlightStep(state, logger);
   const logStreams = state.logStreams;
   state.logStreams = [];
 
@@ -462,20 +632,48 @@ export async function runEcsTask(
     // `cleanupEcsRun()` skips teardown (only the CLI tears down once).
     state.network = { ...options.existingNetwork, ownedByCaller: true };
   } else {
+    const networkName = newTaskNetworkName(options.cluster);
+    // Pulled outside the tracked step: a pull creates nothing a ^C has to
+    // wait for.
+    await pullImage(METADATA_ENDPOINT_IMAGE, options.skipPull);
     const netCreateOpts: Parameters<typeof createTaskNetwork>[0] = {
       prefix: options.cluster,
-      skipPull: options.skipPull,
+      networkName,
+      skipPull: true,
     };
     if (options.taskCredentials) netCreateOpts.credentials = options.taskCredentials;
     if (options.cluster) netCreateOpts.cluster = options.cluster;
     if (options.subnetOctet !== undefined) netCreateOpts.subnetOctet = options.subnetOctet;
-    state.network = await createTaskNetwork(netCreateOpts);
+    await runDockerStep(
+      state,
+      () => createTaskNetwork(netCreateOpts),
+      (net) => {
+        state.network = net;
+      },
+      () =>
+        destroyTaskNetwork({
+          networkName,
+          sidecarContainerId: taskSidecarName(networkName),
+          sidecarIp: '',
+        }),
+      namedSubject([
+        {
+          kind: 'container',
+          name: taskSidecarName(networkName),
+          rm: 'docker rm -f',
+          list: 'docker ps -a',
+        },
+        { kind: 'network', name: networkName, rm: 'docker network rm', list: 'docker network ls' },
+      ])
+    );
   }
+  if (!state.network) throw interruptedError();
 
   // Realize docker volumes (per-task `Scope: 'task'` are torn down at
   // cleanup; `Scope: 'shared'` would survive but the docs explicitly
   // pin v1 to per-task semantics).
   const volumeByName = await realizeDockerVolumes(task.volumes, state);
+  if (state.closing) throw interruptedError();
 
   // Merge the Cloud Map peer-discovery `--add-host` flags with the
   // boot-resolved `host.docker.internal:host-gateway` mapping so every
@@ -491,6 +689,7 @@ export async function runEcsTask(
   // Pre-compute every container's CMD args so the start loop only does
   // docker calls.
   const dockerCmds = new Map<string, string[]>();
+  const dockerNames = new Map<string, string>();
   // Sensitive env values kept OUT of argv (see `buildDockerRunArgs`), keyed by
   // container name and forwarded to each `docker run` via the spawn `env`.
   // (`collisions` is consumed in the build loop below, not stored — the start
@@ -526,6 +725,7 @@ export async function runEcsTask(
       }),
     });
     dockerCmds.set(container.name, built.args);
+    dockerNames.set(container.name, built.dockerName);
     dockerEnvs.set(container.name, built.sensitiveEnv);
     // A resolved secret whose NAME collides with a var the docker CLIENT reads
     // — or is a MALFORMED env name (`isMalformedEnvKey`: empty, or containing
@@ -553,30 +753,44 @@ export async function runEcsTask(
   for (const containerName of startOrder) {
     const container = task.containers.find((c) => c.name === containerName)!;
     await awaitDependencies(container, startedByName);
+    if (state.closing) throw interruptedError();
 
     const args = dockerCmds.get(container.name)!;
+    const dockerName = dockerNames.get(container.name)!;
     logger.info(`Starting container '${container.name}' (image=${imagePlan.get(container.name)})`);
-    let id: string;
     const sensitiveEnv = dockerEnvs.get(container.name)!;
     warnFinchArgvExposure(Object.keys(sensitiveEnv));
-    try {
-      const { stdout } = await execFileAsync(getDockerCmd(), args, {
-        maxBuffer: 10 * 1024 * 1024,
-        // The `-e KEY` (value-less) flags read their values from here, so
-        // secrets / credentials never reach the `docker run` argv.
-        env: dockerSpawnEnvWithSensitive(sensitiveEnv),
-      });
-      id = stdout.trim();
-    } catch (err) {
-      // `execFile` folds the whole `docker run` command line into
-      // `err.message` (and into `String(err)`), so an unredacted fallback
-      // echoes every `-e KEY=value` pair -- the container's resolved
-      // `Environment` plus any `--env-vars` override (issue #2440).
-      throw new DockerRunnerError(
-        `docker run failed for container '${container.name}': ${describeDockerFailure(err, args)}`
-      );
-    }
-    state.startedContainers.push({ name: container.name, id });
+    // A ^C while this `docker run` is in flight waits for it, so the container
+    // it starts is recorded and removed (issue #4495).
+    const id = await runDockerStep(
+      state,
+      async () => {
+        try {
+          const { stdout } = await execFileAsync(getDockerCmd(), args, {
+            maxBuffer: 10 * 1024 * 1024,
+            // The `-e KEY` (value-less) flags read their values from here, so
+            // secrets / credentials never reach the `docker run` argv.
+            env: dockerSpawnEnvWithSensitive(sensitiveEnv),
+          });
+          return stdout.trim();
+        } catch (err) {
+          // `execFile` folds the whole `docker run` command line into
+          // `err.message` (and into `String(err)`), so an unredacted fallback
+          // echoes every `-e KEY=value` pair -- the container's resolved
+          // `Environment` plus any `--env-vars` override (issue #2440).
+          throw new DockerRunnerError(
+            `docker run failed for container '${container.name}': ${describeDockerFailure(err, args)}`
+          );
+        }
+      },
+      (startedId) => {
+        state.startedContainers.push({ name: container.name, id: startedId });
+      },
+      () => removeContainer(dockerName),
+      namedSubject([
+        { kind: 'container', name: dockerName, rm: 'docker rm -f', list: 'docker ps -a' },
+      ])
+    );
     startedByName.set(container.name, { id, container });
 
     if (!options.detach) {
@@ -1005,18 +1219,38 @@ async function realizeDockerVolumes(
     }
     const dockerVolumeName = `cdkd-local-${v.name}-${randHex(4)}`;
     args.push(dockerVolumeName);
-    try {
-      await execFileAsync(getDockerCmd(), args);
-      state.dockerVolumeNames.push(dockerVolumeName);
-      logger.debug(`Created docker volume ${dockerVolumeName} for task volume '${v.name}'`);
-    } catch (err) {
-      // `--opt` carries `DockerVolumeConfiguration.DriverOpts`, which for the
-      // `local` driver holds mount options (`o=addr=...,username=...,password=...`).
-      // `execFile` puts the whole command line in `err.message` (issue #2440).
-      throw new DockerRunnerError(
-        `docker volume create failed for '${v.name}': ${describeDockerFailure(err, args)}`
-      );
-    }
+    await runDockerStep(
+      state,
+      async () => {
+        try {
+          await execFileAsync(getDockerCmd(), args);
+        } catch (err) {
+          // `--opt` carries `DockerVolumeConfiguration.DriverOpts`, which for the
+          // `local` driver holds mount options (`o=addr=...,username=...,password=...`).
+          // `execFile` puts the whole command line in `err.message` (issue #2440).
+          throw new DockerRunnerError(
+            `docker volume create failed for '${v.name}': ${describeDockerFailure(err, args)}`
+          );
+        }
+      },
+      () => {
+        state.dockerVolumeNames.push(dockerVolumeName);
+        logger.debug(`Created docker volume ${dockerVolumeName} for task volume '${v.name}'`);
+      },
+      async () => {
+        await execFileAsync(getDockerCmd(), ['volume', 'rm', '-f', dockerVolumeName]).catch(
+          () => undefined
+        );
+      },
+      namedSubject([
+        {
+          kind: 'volume',
+          name: dockerVolumeName,
+          rm: 'docker volume rm -f',
+          list: 'docker volume ls',
+        },
+      ])
+    );
     out.set(v.name, { ...v, dockerVolumeName });
   }
   return out;
@@ -1102,6 +1336,8 @@ interface BuildDockerRunArgs {
  */
 export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   args: string[];
+  /** The `--name` the container gets, known before `docker run` returns its id. */
+  dockerName: string;
   sensitiveEnv: Record<string, string>;
   /** Secret names dropped because they name a docker-client var (issue #2183). */
   collisions: string[];
@@ -1110,7 +1346,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   const args: string[] = ['run', '-d'];
 
   // Stable name so siblings can reach this container via DNS.
-  args.push('--name', `cdkd-local-${task.family}-${container.name}-${randHex(3)}`);
+  const dockerName = `cdkd-local-${task.family}-${container.name}-${randHex(3)}`;
+  args.push('--name', dockerName);
   args.push('--network', network);
   args.push('--network-alias', container.name);
 
@@ -1286,7 +1523,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   }
 
   args.push(image, ...entryPointTail, ...(container.command ?? []));
-  return { args, sensitiveEnv, collisions };
+  return { args, dockerName, sensitiveEnv, collisions };
 }
 
 function applyOverrideMap(

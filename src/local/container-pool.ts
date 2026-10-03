@@ -1,4 +1,6 @@
+import { isPasteableIdent, safeMsg } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
+import { quotedOrDescribed } from '../utils/pasteable-command.js';
 import { pickFreePort, removeContainer, runDetached, streamLogs } from './docker-runner.js';
 import type { ResolvedImageLambda, ResolvedZipLambda } from './lambda-resolver.js';
 import { waitForRieReady } from './rie-client.js';
@@ -256,6 +258,13 @@ export interface ContainerPool {
 }
 
 const DEFAULT_IDLE_MS = 60_000;
+/**
+ * How long `dispose()` waits for an in-flight container start before removing
+ * the container by its `--name` (issue #4495). `docker run` has no timeout of
+ * its own and a terminal ^C does not interrupt it, so a hung daemon would
+ * otherwise hold the shutdown forever.
+ */
+export const IN_FLIGHT_START_TIMEOUT_MS = 20_000;
 const MAX_PER_LAMBDA_CONCURRENCY = 4;
 const MIN_PER_LAMBDA_CONCURRENCY = 1;
 
@@ -284,6 +293,14 @@ export function createContainerPool(
   // `docker rm -f cdkd-local-*` sweep is the safety net for the
   // not-yet-torn-down container itself.
   let disposed = false;
+  /** `dispose()`'s run, so a second call waits for the first (issue #4495). */
+  let disposeRun: Promise<void> | undefined;
+  /**
+   * One per start waiting for RIE readiness: `dispose()` calls each, so that
+   * start stops waiting and removes its container (issue #4495). A start
+   * removes its own on finishing, so none outlives it.
+   */
+  const disposeWaiters = new Set<() => void>();
 
   /**
    * Tracks every in-flight `startOne` promise so `dispose()` can wait
@@ -293,9 +310,11 @@ export function createContainerPool(
    * `runDetached` / `waitForRieReady`; when the start eventually
    * resolves, `entries.get(...)` is undefined and the handle is
    * dropped on the floor. Populated inside `startOne`'s entry path
-   * (via `trackStart`); drained in `dispose()`.
+   * (via `trackStart`); drained in `dispose()`. Each maps to the
+   * container's `--name`, which `dispose()` removes by when the start does
+   * not settle in time.
    */
-  const inFlightStarts = new Set<Promise<ContainerHandle>>();
+  const inFlightStarts = new Map<Promise<ContainerHandle>, string>();
 
   // Pre-create empty entries so `acquire()` never has to lazily build
   // the map under contention. Pool starts at size 0 per entry; growth
@@ -330,11 +349,10 @@ export function createContainerPool(
    *     `ImageConfig.Command` (may be empty), optional EntryPoint /
    *     WorkingDirectory / --platform applied verbatim.
    */
-  async function startOne(spec: ContainerSpec): Promise<ContainerHandle> {
+  async function startOne(spec: ContainerSpec, name: string): Promise<ContainerHandle> {
     const hostPort = await pickFreePort();
-    const name = `cdkd-local-${spec.lambda.logicalId}-${process.pid}-${Math.floor(
-      Math.random() * 1_000_000
-    )}`;
+    // Once `dispose()` began, start nothing (issue #4495).
+    if (disposed) throw disposedDuringStart(spec);
     logger.debug(
       `Starting container ${name} for ${spec.lambda.logicalId} (kind=${spec.kind}) on ${spec.containerHost}:${hostPort}`
     );
@@ -372,23 +390,26 @@ export function createContainerPool(
       // /var/runtime/bootstrap); every other runtime expects /var/task.
       const containerCodePath = resolveRuntimeCodeMountPath(spec.lambda.runtime);
       const image = resolveRuntimeImage(spec.lambda.runtime);
-      containerId = await runDetached({
-        image,
-        mounts: [{ hostPath: spec.codeDir, containerPath: containerCodePath, readOnly: true }],
-        extraMounts,
-        env: spec.env,
-        cmd: [spec.lambda.handler],
-        hostPort,
-        host: spec.containerHost,
+      containerId = await removedIfDisposedOnFailure(
         name,
-        // Issue #768: pin the ZIP container to the function's declared arch
-        // so a `provided.*` cross-arch `bootstrap` runs under emulation
-        // instead of failing with `exec format error`.
-        platform: spec.platform,
-        ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
-        ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
-        ...(spec.extraHosts !== undefined && { extraHosts: spec.extraHosts }),
-      });
+        runDetached({
+          image,
+          mounts: [{ hostPath: spec.codeDir, containerPath: containerCodePath, readOnly: true }],
+          extraMounts,
+          env: spec.env,
+          cmd: [spec.lambda.handler],
+          hostPort,
+          host: spec.containerHost,
+          name,
+          // Issue #768: pin the ZIP container to the function's declared arch
+          // so a `provided.*` cross-arch `bootstrap` runs under emulation
+          // instead of failing with `exec format error`.
+          platform: spec.platform,
+          ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
+          ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
+          ...(spec.extraHosts !== undefined && { extraHosts: spec.extraHosts }),
+        })
+      );
     } else {
       // IMAGE branch (closes #453). The pre-built local tag is on
       // `spec.image`; the architecture-derived `--platform` is on
@@ -399,39 +420,64 @@ export function createContainerPool(
       // so we never emit a `/opt` mount on this branch (matches the
       // AWS-side invoke behavior). `tmpfs` (#440) applies inside any
       // container image just like on the public base images.
-      containerId = await runDetached({
-        image: spec.image,
-        mounts: [],
-        ...(spec.profileCredentialsFile && {
-          extraMounts: [
-            {
-              hostPath: spec.profileCredentialsFile.hostPath,
-              containerPath: spec.profileCredentialsFile.containerPath,
-              readOnly: true,
-            },
-          ],
-        }),
-        env: spec.env,
-        cmd: spec.command,
-        hostPort,
-        host: spec.containerHost,
+      containerId = await removedIfDisposedOnFailure(
         name,
-        platform: spec.platform,
-        ...(spec.entryPoint !== undefined && { entryPoint: spec.entryPoint }),
-        ...(spec.workingDir !== undefined && { workingDir: spec.workingDir }),
-        ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
-        ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
-        ...(spec.extraHosts !== undefined && { extraHosts: spec.extraHosts }),
-      });
+        runDetached({
+          image: spec.image,
+          mounts: [],
+          ...(spec.profileCredentialsFile && {
+            extraMounts: [
+              {
+                hostPath: spec.profileCredentialsFile.hostPath,
+                containerPath: spec.profileCredentialsFile.containerPath,
+                readOnly: true,
+              },
+            ],
+          }),
+          env: spec.env,
+          cmd: spec.command,
+          hostPort,
+          host: spec.containerHost,
+          name,
+          platform: spec.platform,
+          ...(spec.entryPoint !== undefined && { entryPoint: spec.entryPoint }),
+          ...(spec.workingDir !== undefined && { workingDir: spec.workingDir }),
+          ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
+          ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
+          ...(spec.extraHosts !== undefined && { extraHosts: spec.extraHosts }),
+        })
+      );
+    }
+    // `dispose()` began while `docker run` was in flight: remove the container
+    // here, before this start settles, since `dispose()` waits for it.
+    if (disposed) {
+      await removeContainer(containerId).catch(() => undefined);
+      throw disposedDuringStart(spec);
     }
     const stopLogStream = streamingEnabled ? streamLogs(containerId) : (): void => undefined;
+    let ready: boolean;
+    let wakeOnDispose: (() => void) | undefined;
     try {
-      await waitForRieReady(spec.containerHost, hostPort, 30_000);
+      // `dispose()` does not wait out RIE's 30s readiness bound.
+      ready = await Promise.race([
+        waitForRieReady(spec.containerHost, hostPort, 30_000).then(() => true),
+        new Promise<false>((resolve) => {
+          wakeOnDispose = () => resolve(false);
+          disposeWaiters.add(wakeOnDispose);
+        }),
+      ]);
     } catch (err) {
       // RIE didn't start — clean up before propagating.
+      if (wakeOnDispose) disposeWaiters.delete(wakeOnDispose);
       stopLogStream();
       await removeContainer(containerId).catch(() => undefined);
       throw err;
+    }
+    if (wakeOnDispose) disposeWaiters.delete(wakeOnDispose);
+    if (!ready || disposed) {
+      stopLogStream();
+      await removeContainer(containerId).catch(() => undefined);
+      throw disposedDuringStart(spec);
     }
     return {
       logicalId: spec.lambda.logicalId,
@@ -481,6 +527,26 @@ export function createContainerPool(
     }
   }
 
+  /**
+   * A `docker run` that FAILS once `dispose()` began may still have created its
+   * container: a terminal ^C signals the `docker` CLI too, which can abort
+   * `docker run -d` between create and start (issue #4495). Remove it by its
+   * `--name`, unique to this start with high probability (the pid plus ~20
+   * random bits), before the failure settles.
+   */
+  async function removedIfDisposedOnFailure(name: string, run: Promise<string>): Promise<string> {
+    try {
+      return await run;
+    } catch (err) {
+      if (disposed) await removeContainer(name).catch(() => undefined);
+      throw err;
+    }
+  }
+
+  function disposedDuringStart(spec: ContainerSpec): Error {
+    return new Error(`Container pool disposed while ${spec.lambda.logicalId} was starting`);
+  }
+
   function poolSize(entry: ContainerPoolEntry): number {
     return entry.warm.length + entry.inUse.size;
   }
@@ -512,7 +578,7 @@ export function createContainerPool(
     await Promise.allSettled(handles.map((h) => tearDown(h)));
   }
 
-  return {
+  const pool: ContainerPool = {
     async acquire(logicalId: string): Promise<ContainerHandle> {
       const entry = entries.get(logicalId);
       if (!entry) {
@@ -548,8 +614,11 @@ export function createContainerPool(
           // Track the start promise so `dispose()` can wait for it (with
           // a timeout) and tear down the resulting container instead of
           // leaking it on a SIGINT-during-cold-start race.
-          const startPromise = startOne(spec);
-          inFlightStarts.add(startPromise);
+          const name = `cdkd-local-${spec.lambda.logicalId}-${process.pid}-${Math.floor(
+            Math.random() * 1_000_000
+          )}`;
+          const startPromise = startOne(spec, name);
+          inFlightStarts.set(startPromise, name);
           let handle: ContainerHandle;
           try {
             handle = await startPromise;
@@ -616,131 +685,157 @@ export function createContainerPool(
       }
     },
 
-    async dispose(): Promise<void> {
-      if (disposed) {
-        logger.debug('Container pool dispose() called more than once; ignoring');
-        return;
-      }
-      disposed = true;
-      logger.debug('Disposing container pool');
+    dispose(): Promise<void> {
+      // A second caller (the ^C after a `--watch` reload's background dispose
+      // of this pool) waits for the first run to finish (issue #4495).
+      disposeRun ??= disposeOnce();
+      return disposeRun;
+    },
+  };
 
-      // Cancel idle timers and reject pending acquire-waiters up front;
-      // those don't carry an in-flight request to wait on.
-      for (const entry of entries.values()) {
-        if (entry.idleTimer) {
-          clearTimeout(entry.idleTimer);
-          entry.idleTimer = null;
-        }
-        for (const waiter of entry.waitQueue.splice(0, entry.waitQueue.length)) {
-          try {
-            waiter.reject(
-              new Error(`Container pool disposed while ${entry.logicalId} was waiting`)
-            );
-          } catch {
-            /* swallow */
-          }
-        }
-      }
-
-      // Wait for every in-flight handle to release before tearing down
-      // the underlying container. A request mid-`invokeRie` that gets
-      // its container killed surfaces as a 502 — exactly the leak the
-      // PR review caught. Bounded by `drainTimeoutMs` so a hung
-      // request can't block shutdown forever; the verify.sh
-      // `docker rm -f cdkd-local-*` sweep is the safety net for the
-      // timeout case.
-      const drainTimeoutMs = 30_000;
-      const drainStart = Date.now();
-      const entryDrains: Array<Promise<{ entry: ContainerPoolEntry; timedOut: boolean }>> = [];
-      for (const entry of entries.values()) {
-        if (entry.inUse.size === 0) continue;
-        entryDrains.push(
-          new Promise<{ entry: ContainerPoolEntry; timedOut: boolean }>((resolveDrain) => {
-            entry.drainResolvers.push(() => resolveDrain({ entry, timedOut: false }));
-            const t = setTimeout(() => {
-              resolveDrain({ entry, timedOut: true });
-            }, drainTimeoutMs);
-            t.unref?.();
-          })
-        );
-      }
-      if (entryDrains.length > 0) {
-        logger.debug(
-          `Waiting for ${entryDrains.length} entry/entries' in-flight handle(s) to drain before teardown`
-        );
-        const drainResults = await Promise.all(entryDrains);
-        let anyTimedOut = false;
-        for (const r of drainResults) {
-          if (r.timedOut) {
-            anyTimedOut = true;
-            logger.warn(
-              `Container pool dispose timed out waiting for ${r.entry.inUse.size} in-flight handle(s) on ${r.entry.logicalId} after ${drainTimeoutMs}ms; tearing down anyway. The verify.sh \`docker rm -f cdkd-local-*\` sweep is the safety net.`
-            );
-          }
-        }
-        if (!anyTimedOut) {
-          logger.debug(`In-flight drain completed in ${Date.now() - drainStart}ms`);
-        }
-      }
-
-      // Now harvest every handle the entry owns (warm + still-in-use
-      // for the timed-out case) for teardown.
-      const allHandles: ContainerHandle[] = [];
-      for (const entry of entries.values()) {
-        allHandles.push(...entry.warm.splice(0, entry.warm.length));
-        for (const h of entry.inUse) allHandles.push(h);
-        entry.inUse.clear();
-      }
-
-      // Wait for any cold-start `startOne` calls that were mid-flight at
-      // dispose time, with a short timeout so a hung docker-run can't
-      // block shutdown forever. Each settled start contributes its
-      // resulting handle to the teardown set so the container does not
-      // leak (the verify.sh `docker rm -f cdkd-local-*` sweep is a
-      // safety net for the timeout case).
-      const startPromises = [...inFlightStarts];
-      if (startPromises.length > 0) {
-        logger.debug(
-          `Waiting for ${startPromises.length} in-flight container start(s) to settle before teardown`
-        );
-        const drainTimeoutMs = 5_000;
-        const wrapped = startPromises.map((p) =>
-          Promise.race([
-            p.then((h): { kind: 'ok'; handle: ContainerHandle } => ({ kind: 'ok', handle: h })),
-            new Promise<{ kind: 'timeout' }>((r) => {
-              const t = setTimeout(() => r({ kind: 'timeout' }), drainTimeoutMs);
-              t.unref?.();
-            }),
-          ]).catch((err: unknown) => {
-            // `startOne` rejected — log and skip; nothing to tear down.
+  /**
+   * Wait for the cold-start `startOne` calls that were mid-flight at
+   * dispose time (issue #4495). Each one stops at its next step once it
+   * sees `disposed`, removing its own container; one that completed first
+   * contributes its handle to the teardown set. A start still pending after
+   * the bound (a hung `docker run`) has its container removed by `--name`
+   * instead.
+   */
+  async function settleInFlightStarts(): Promise<ContainerHandle[]> {
+    const settledHandles: ContainerHandle[] = [];
+    const starts = [...inFlightStarts];
+    if (starts.length > 0) {
+      logger.info(
+        `Waiting for ${starts.length} in-flight container start(s) so their containers can be removed...`
+      );
+      const wrapped = starts.map(([p, name]) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        return Promise.race([
+          p.then((h): { kind: 'ok'; handle: ContainerHandle } => ({ kind: 'ok', handle: h })),
+          new Promise<{ kind: 'timeout'; name: string }>((r) => {
+            timer = setTimeout(() => r({ kind: 'timeout', name }), IN_FLIGHT_START_TIMEOUT_MS);
+          }),
+        ])
+          .catch((err: unknown) => {
+            // `startOne` rejected — it removed whatever it started.
             logger.debug(
               `In-flight startOne rejected during dispose: ${err instanceof Error ? err.message : String(err)}`
             );
             return { kind: 'rejected' as const };
           })
-        );
-        const results = await Promise.all(wrapped);
-        let timedOut = 0;
-        for (const r of results) {
-          if (r.kind === 'ok') {
-            allHandles.push(r.handle);
-          } else if (r.kind === 'timeout') {
-            timedOut++;
-          }
+          .finally(() => clearTimeout(timer));
+      });
+      const results = await Promise.all(wrapped);
+      const abandoned: string[] = [];
+      for (const r of results) {
+        if (r.kind === 'ok') {
+          settledHandles.push(r.handle);
+        } else if (r.kind === 'timeout') {
+          abandoned.push(r.name);
         }
-        if (timedOut > 0) {
+      }
+      await Promise.allSettled(abandoned.map((name) => removeContainer(name)));
+      for (const name of abandoned) {
+        const shown = quotedOrDescribed(name, 'container name');
+        const remedy = isPasteableIdent(name)
+          ? `docker rm -f ${name}`
+          : // The pool's names always start `cdkd-local-` (no `--cluster` prefix).
+            'docker ps -a --filter name=cdkd-local-';
+        // cdkd-raw-beside-safe: a constant number, and a remedy built only from a
+        // name `isPasteableIdent` admitted or a fixed command.
+        logger.warn(
+          safeMsg`A container start was still pending after ${IN_FLIGHT_START_TIMEOUT_MS / 1000}s; removed container ${shown} if it existed, but a docker run that completes later can still start it -- run '${remedy}' if it appears.`
+        );
+      }
+      inFlightStarts.clear();
+    }
+    return settledHandles;
+  }
+
+  async function disposeOnce(): Promise<void> {
+    disposed = true;
+    for (const wake of disposeWaiters) wake();
+    disposeWaiters.clear();
+    logger.debug('Disposing container pool');
+
+    // Cancel idle timers and reject pending acquire-waiters up front;
+    // those don't carry an in-flight request to wait on.
+    for (const entry of entries.values()) {
+      if (entry.idleTimer) {
+        clearTimeout(entry.idleTimer);
+        entry.idleTimer = null;
+      }
+      for (const waiter of entry.waitQueue.splice(0, entry.waitQueue.length)) {
+        try {
+          waiter.reject(new Error(`Container pool disposed while ${entry.logicalId} was waiting`));
+        } catch {
+          /* swallow */
+        }
+      }
+    }
+
+    // Started now, so its bound runs alongside the request drain below
+    // rather than after it. No start begins after `disposed` is set.
+    const startsSettled = settleInFlightStarts();
+
+    // Wait for every in-flight handle to release before tearing down
+    // the underlying container. A request mid-`invokeRie` that gets
+    // its container killed surfaces as a 502 — exactly the leak the
+    // PR review caught. Bounded by `drainTimeoutMs` so a hung
+    // request can't block shutdown forever; the verify.sh
+    // `docker rm -f cdkd-local-*` sweep is the safety net for the
+    // timeout case.
+    const drainTimeoutMs = 30_000;
+    const drainStart = Date.now();
+    const entryDrains: Array<Promise<{ entry: ContainerPoolEntry; timedOut: boolean }>> = [];
+    for (const entry of entries.values()) {
+      if (entry.inUse.size === 0) continue;
+      entryDrains.push(
+        new Promise<{ entry: ContainerPoolEntry; timedOut: boolean }>((resolveDrain) => {
+          entry.drainResolvers.push(() => resolveDrain({ entry, timedOut: false }));
+          const t = setTimeout(() => {
+            resolveDrain({ entry, timedOut: true });
+          }, drainTimeoutMs);
+          t.unref?.();
+        })
+      );
+    }
+    if (entryDrains.length > 0) {
+      logger.debug(
+        `Waiting for ${entryDrains.length} entry/entries' in-flight handle(s) to drain before teardown`
+      );
+      const drainResults = await Promise.all(entryDrains);
+      let anyTimedOut = false;
+      for (const r of drainResults) {
+        if (r.timedOut) {
+          anyTimedOut = true;
           logger.warn(
-            `Container pool disposed with ${timedOut} in-flight start(s) still pending after ${drainTimeoutMs}ms; relying on docker --rm + the verify.sh sweep to clean up.`
+            `Container pool dispose timed out waiting for ${r.entry.inUse.size} in-flight handle(s) on ${r.entry.logicalId} after ${drainTimeoutMs}ms; tearing down anyway. The verify.sh \`docker rm -f cdkd-local-*\` sweep is the safety net.`
           );
         }
-        inFlightStarts.clear();
       }
+      if (!anyTimedOut) {
+        logger.debug(`In-flight drain completed in ${Date.now() - drainStart}ms`);
+      }
+    }
 
-      // Tear down in parallel; `tearDown` swallows individual failures.
-      await Promise.allSettled(allHandles.map((h) => tearDown(h)));
-      entries.clear();
-    },
-  };
+    // Now harvest every handle the entry owns (warm + still-in-use
+    // for the timed-out case) for teardown.
+    const allHandles: ContainerHandle[] = [];
+    for (const entry of entries.values()) {
+      allHandles.push(...entry.warm.splice(0, entry.warm.length));
+      for (const h of entry.inUse) allHandles.push(h);
+      entry.inUse.clear();
+    }
+
+    allHandles.push(...(await startsSettled));
+
+    // Tear down in parallel; `tearDown` swallows individual failures.
+    await Promise.allSettled(allHandles.map((h) => tearDown(h)));
+    entries.clear();
+  }
+
+  return pool;
 }
 
 /**

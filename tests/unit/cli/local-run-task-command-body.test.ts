@@ -680,6 +680,79 @@ describe('localRunTaskCommand body: --profile credentials file (issue #3394)', (
     expect(beforeExit).toContain('flush:stderr');
   });
 
+  // Issue #4495: the runner rejects with `EcsTaskInterruptedError` once a ^C's
+  // cleanup has begun mid-step. That is the ^C's exit (130), not an error.
+  it.each([
+    { kind: 'interrupted', interrupted: true, closingError: false },
+    {
+      kind: 'a docker failure while the ^C tears down',
+      interrupted: true,
+      closingError: true,
+    },
+    { kind: 'any other runner error', interrupted: false, closingError: false },
+  ])('a runner rejection that is $kind', async ({ interrupted, closingError }) => {
+    const { EcsTaskInterruptedError, EcsTaskRunnerError } = await import(
+      '../../../src/local/ecs-task-runner.js'
+    );
+    const exits: number[] = [];
+    const realExit = process.exit;
+    const realOut = process.stdout.write;
+    const realErr = process.stderr.write;
+    const stderrChunks: string[] = [];
+    (process as unknown as { exit: (code?: number) => void }).exit = (code?: number): void => {
+      exits.push(code ?? 0);
+    };
+    const sink =
+      (into?: string[]) =>
+      (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        into?.push(String(chunk));
+        const cb = rest.find((a): a is () => void => typeof a === 'function');
+        if (cb) cb();
+        return true;
+      };
+    (process.stdout as unknown as { write: unknown }).write = sink();
+    (process.stderr as unknown as { write: unknown }).write = sink(stderrChunks);
+    let error: unknown;
+    let runState: { closing?: boolean } | undefined;
+    // As the real teardown does, the ^C's cleanup marks the run closing.
+    cleanupEcsRunMock.mockImplementation(async (state: { closing?: boolean }) => {
+      state.closing = true;
+    });
+    try {
+      runEcsTaskMock.mockImplementation(async (_task: unknown, _opts: unknown, state) => {
+        runState = state as { closing?: boolean };
+        if (interrupted) {
+          const listeners = process.listeners('SIGINT');
+          (listeners[listeners.length - 1] as () => void)();
+          await new Promise((r) => setImmediate(r));
+          if (closingError) throw new EcsTaskRunnerError('cdkd-unit-network-gone');
+          throw new EcsTaskInterruptedError();
+        }
+        throw new EcsTaskRunnerError('cdkd-unit-runner-failure');
+      });
+      await runTask().catch((err: unknown) => {
+        error = err;
+      });
+      await new Promise((r) => setImmediate(r));
+    } finally {
+      (process as unknown as { exit: typeof realExit }).exit = realExit;
+      (process.stdout as unknown as { write: typeof realOut }).write = realOut;
+      (process.stderr as unknown as { write: typeof realErr }).write = realErr;
+      // `createEcsRunState` is mocked to one shared object.
+      if (runState) delete runState.closing;
+    }
+
+    expect(error).toBeUndefined();
+    // `handleError` reports any other rejection and exits 1.
+    expect(exits).toEqual(interrupted ? [130] : [1]);
+    if (interrupted) {
+      expect(stderrChunks.join('')).not.toContain(
+        closingError ? 'cdkd-unit-network-gone' : 'Interrupted'
+      );
+    }
+    expect(cleanupEcsRunMock).toHaveBeenCalledTimes(1);
+  });
+
   it('writes and mounts NOTHING when --profile is absent', async () => {
     // The gate's other arm. Without it every assertion above is satisfied by a
     // body that writes a credentials file unconditionally — which would mount

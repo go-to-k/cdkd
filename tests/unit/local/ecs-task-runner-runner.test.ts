@@ -227,6 +227,9 @@ vi.mock('../../../src/local/ecs-network.js', () => ({
   createTaskNetwork: networkStubs.createTaskNetwork,
   destroyTaskNetwork: networkStubs.destroyTaskNetwork,
   buildMetadataEnv: networkStubs.buildMetadataEnv,
+  METADATA_ENDPOINT_IMAGE: 'amazon/amazon-ecs-local-container-endpoints:latest-amd64',
+  newTaskNetworkName: (prefix = 'cdkd-local') => `${prefix}-task-test`,
+  taskSidecarName: (networkName: string) => `${networkName}-metadata`,
 }));
 
 // ecs-secrets-resolver
@@ -279,6 +282,7 @@ vi.mock('../../../src/assets/asset-manifest-loader.js', () => ({
 }));
 
 import {
+  IN_FLIGHT_STEP_TIMEOUT_MS,
   cleanupEcsRun,
   createEcsRunState,
   runEcsTask,
@@ -1763,5 +1767,381 @@ describe('runEcsTask under finch on macOS (issue #3600)', () => {
     });
     await runEcsTask(makeTask({ containers: [c] }), baseOptions(), createEcsRunState());
     expect(dockerRunCalls()).toHaveLength(1);
+  });
+});
+
+// =====================================================================
+// Issue #4495: a ^C (cleanupEcsRun) landing while a docker step that
+// creates something is still in flight.
+// =====================================================================
+
+describe('cleanupEcsRun while a docker step is in flight (issue #4495)', () => {
+  /** A promise plus its resolver, for holding one docker call open. */
+  function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  /** Resolves once `pred` holds, polling across macrotasks. */
+  async function until(pred: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !pred(); i++) await new Promise((r) => setImmediate(r));
+    expect(pred()).toBe(true);
+  }
+
+  it("during a container's docker run: cleanup waits, removes the started container, and the next container never starts", async () => {
+    const held = deferred<{ stdout: string }>();
+    captured.responder = (_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return held.promise;
+      return { stdout: '' };
+    };
+    const a = makeContainer({ name: 'alpha' });
+    const b = makeContainer({
+      name: 'beta',
+      dependsOn: [{ containerName: 'alpha', condition: 'START' }],
+    });
+    const state = createEcsRunState();
+    const run = runEcsTask(makeTask({ containers: [a, b] }), baseOptions(), state);
+    const runError = run.then(
+      () => undefined,
+      (err: unknown) => err
+    );
+    await until(() => dockerRunCalls().length === 1);
+
+    let cleanedUp = false;
+    const cleanup = cleanupEcsRun(state, { keepRunning: false }).then(() => {
+      cleanedUp = true;
+    });
+    // The docker run is still in flight: cleanup must not finish before it.
+    await new Promise((r) => setImmediate(r));
+    expect(cleanedUp).toBe(false);
+
+    held.resolve({ stdout: 'cid-alpha\n' });
+    await cleanup;
+
+    expect(dockerRunnerStubs.removeContainer).toHaveBeenCalledWith('cid-alpha');
+    expect(String(await runError)).toContain('Interrupted');
+    // `beta` never reached its docker run.
+    expect(dockerRunCalls()).toHaveLength(1);
+    expect(networkStubs.destroyTaskNetwork).toHaveBeenCalledTimes(1);
+  });
+
+  it('during the network + sidecar start: cleanup waits and tears the network down, and no container starts', async () => {
+    const held = deferred<{ networkName: string; sidecarContainerId: string; sidecarIp: string }>();
+    networkStubs.createTaskNetwork.mockImplementationOnce(async () => held.promise);
+    captured.responder = () => ({ stdout: 'cid\n' });
+    const state = createEcsRunState();
+    const runError = runEcsTask(makeTask(), baseOptions(), state).then(
+      () => undefined,
+      (err: unknown) => err
+    );
+    await until(() => networkStubs.createTaskNetwork.mock.calls.length === 1);
+
+    const cleanup = cleanupEcsRun(state, { keepRunning: false });
+    const net = {
+      networkName: 'cdkd-local-task-held',
+      sidecarContainerId: 'sidecar-held',
+      sidecarIp: '169.254.170.2',
+    };
+    held.resolve(net);
+    await cleanup;
+
+    expect(networkStubs.destroyTaskNetwork).toHaveBeenCalledWith(net);
+    expect(String(await runError)).toContain('Interrupted');
+    expect(dockerRunCalls()).toHaveLength(0);
+  });
+
+  it('during a docker volume create: cleanup waits and removes the volume', async () => {
+    const held = deferred<{ stdout: string }>();
+    captured.responder = (_cmd: string, args: string[]) => {
+      if (args[0] === 'volume' && args[1] === 'create') return held.promise;
+      return { stdout: '' };
+    };
+    const volume: ResolvedEcsVolume = {
+      name: 'data',
+      kind: 'docker',
+      dockerVolumeConfig: { scope: 'task' },
+    } as ResolvedEcsVolume;
+    const state = createEcsRunState();
+    const runError = runEcsTask(makeTask({ volumes: [volume] }), baseOptions(), state).then(
+      () => undefined,
+      (err: unknown) => err
+    );
+    await until(() => captured.calls.some((c) => c.args[1] === 'create'));
+    const volumeName = captured.calls.find((c) => c.args[1] === 'create')!.args.at(-1)!;
+
+    const cleanup = cleanupEcsRun(state, { keepRunning: false });
+    held.resolve({ stdout: '' });
+    await cleanup;
+
+    expect(captured.calls.some((c) => c.args.join(' ') === `volume rm ${volumeName}`)).toBe(true);
+    expect(String(await runError)).toContain('Interrupted');
+    expect(dockerRunCalls()).toHaveLength(0);
+  });
+
+  it('a docker run that never returns: cleanup gives up after the bound and removes the container by its --name', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      captured.responder = (_cmd: string, args: string[]) => {
+        if (args[0] === 'run') return new Promise<never>(() => {});
+        return { stdout: '' };
+      };
+      const state = createEcsRunState();
+      void runEcsTask(makeTask(), baseOptions(), state).catch(() => undefined);
+      await until(() => dockerRunCalls().length === 1);
+      const runArgs = dockerRunCalls()[0]!.args;
+      const dockerName = runArgs[runArgs.indexOf('--name') + 1]!;
+
+      let cleanedUp = false;
+      const cleanup = cleanupEcsRun(state, { keepRunning: false }).then(() => {
+        cleanedUp = true;
+      });
+      await vi.advanceTimersByTimeAsync(IN_FLIGHT_STEP_TIMEOUT_MS - 1);
+      expect(cleanedUp).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await cleanup;
+
+      expect(dockerRunnerStubs.removeContainer).toHaveBeenCalledWith(dockerName);
+      expect(networkStubs.destroyTaskNetwork).toHaveBeenCalledTimes(1);
+      // The removal may have run before docker created the container, and the
+      // still-running `docker run` can start it later: the warning says so,
+      // names the container and gives the command that removes it.
+      const line = warnSpy.mock.calls.map((c) => String(c[0])).filter((w) => w.includes('did not finish')).at(-1);
+      expect(line).toContain(`removed container '${dockerName}' if it existed`);
+      expect(line).toContain('can still create it');
+      expect(line).toContain(`run 'docker rm -f ${dockerName}' if it appears`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("during the ONLY container's docker run: the runner stops there, following and waiting on nothing", async () => {
+    const held = deferred<{ stdout: string }>();
+    captured.responder = (_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return held.promise;
+      return { stdout: '' };
+    };
+    const state = createEcsRunState();
+    const runError = runEcsTask(makeTask(), baseOptions(), state).then(
+      () => undefined,
+      (err: unknown) => err
+    );
+    await until(() => dockerRunCalls().length === 1);
+    const cleanup = cleanupEcsRun(state, { keepRunning: false });
+    held.resolve({ stdout: 'cid-only\n' });
+    await cleanup;
+
+    expect(String(await runError)).toContain('Interrupted');
+    expect(dockerRunnerStubs.removeContainer).toHaveBeenCalledWith('cid-only');
+    expect(captured.calls.some((c) => c.args[0] === 'wait')).toBe(false);
+    expect(state.logStreams).toHaveLength(0);
+  });
+
+  it('a docker run that FAILS once cleanup began: its container is removed by --name before cleanup ends', async () => {
+    // A terminal ^C signals the docker CLI too, which can abort `docker run -d`
+    // after the container was created.
+    const held = deferred<{ err: Error }>();
+    captured.responder = (_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return held.promise;
+      return { stdout: '' };
+    };
+    const state = createEcsRunState();
+    void runEcsTask(makeTask(), baseOptions(), state).catch(() => undefined);
+    await until(() => dockerRunCalls().length === 1);
+    const runArgs = dockerRunCalls()[0]!.args;
+    const dockerName = runArgs[runArgs.indexOf('--name') + 1]!;
+
+    const cleanup = cleanupEcsRun(state, { keepRunning: false });
+    held.resolve({ err: new Error('context canceled') });
+    await cleanup;
+    expect(dockerRunnerStubs.removeContainer).toHaveBeenCalledWith(dockerName);
+  });
+
+  it('a docker run that fails with no ^C removes nothing by name', async () => {
+    captured.responder = (_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return { err: new Error('boom') };
+      return { stdout: '' };
+    };
+    const state = createEcsRunState();
+    await expect(runEcsTask(makeTask(), baseOptions(), state)).rejects.toThrow(/docker run failed/);
+    expect(dockerRunnerStubs.removeContainer).not.toHaveBeenCalled();
+  });
+
+  it('a step that finishes AFTER cleanup gave up on it removes what it created instead of recording it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const held = deferred<{ stdout: string }>();
+      captured.responder = (_cmd: string, args: string[]) => {
+        if (args[0] === 'run') return held.promise;
+        return { stdout: '' };
+      };
+      const state = createEcsRunState();
+      void runEcsTask(makeTask(), baseOptions(), state).catch(() => undefined);
+      await until(() => dockerRunCalls().length === 1);
+      const runArgs = dockerRunCalls()[0]!.args;
+      const dockerName = runArgs[runArgs.indexOf('--name') + 1]!;
+      const cleanup = cleanupEcsRun(state, { keepRunning: false });
+      await vi.advanceTimersByTimeAsync(IN_FLIGHT_STEP_TIMEOUT_MS);
+      await cleanup;
+      dockerRunnerStubs.removeContainer.mockClear();
+
+      held.resolve({ stdout: 'cid-late\n' });
+      await until(() => dockerRunnerStubs.removeContainer.mock.calls.length > 0);
+      expect(dockerRunnerStubs.removeContainer).toHaveBeenCalledWith(dockerName);
+      expect(state.startedContainers).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a name that is not a plain identifier: the warning lists the kind instead of pasting the name', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      captured.responder = (_cmd: string, args: string[]) => {
+        if (args[0] === 'run') return new Promise<never>(() => {});
+        return { stdout: '' };
+      };
+      const state = createEcsRunState();
+      void runEcsTask(makeTask({ family: 'fam;ily' }), baseOptions(), state).catch(() => undefined);
+      await until(() => dockerRunCalls().length === 1);
+      const runArgs = dockerRunCalls()[0]!.args;
+      const dockerName = runArgs[runArgs.indexOf('--name') + 1]!;
+      const cleanup = cleanupEcsRun(state, { keepRunning: false });
+      await vi.advanceTimersByTimeAsync(IN_FLIGHT_STEP_TIMEOUT_MS);
+      await cleanup;
+      const line = warnSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((w) => w.includes('did not finish'))
+        .at(-1);
+      expect(line).toContain("run 'docker ps -a' if it appears");
+      expect(line).not.toContain(dockerName);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a network + sidecar start that never returns: cleanup removes the sidecar and network by name', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      networkStubs.createTaskNetwork.mockImplementationOnce(() => new Promise<never>(() => {}));
+      const state = createEcsRunState();
+      void runEcsTask(makeTask(), baseOptions(), state).catch(() => undefined);
+      await until(() => networkStubs.createTaskNetwork.mock.calls.length === 1);
+      const { networkName } = networkStubs.createTaskNetwork.mock.calls[0]![0] as {
+        networkName: string;
+      };
+      const cleanup = cleanupEcsRun(state, { keepRunning: false });
+      await vi.advanceTimersByTimeAsync(IN_FLIGHT_STEP_TIMEOUT_MS);
+      await cleanup;
+      expect(networkStubs.destroyTaskNetwork).toHaveBeenCalledWith(
+        expect.objectContaining({ networkName, sidecarContainerId: `${networkName}-metadata` })
+      );
+      const line = warnSpy.mock.calls.map((c) => String(c[0])).filter((w) => w.includes('did not finish')).at(-1);
+      expect(line).toContain(
+        `run 'docker rm -f ${networkName}-metadata; docker network rm ${networkName}' if it appears`
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a docker volume create that never returns: cleanup removes the volume by name', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      captured.responder = (_cmd: string, args: string[]) => {
+        if (args[0] === 'volume' && args[1] === 'create') return new Promise<never>(() => {});
+        return { stdout: '' };
+      };
+      const volume = {
+        name: 'data',
+        kind: 'docker',
+        dockerVolumeConfig: { scope: 'task' },
+      } as ResolvedEcsVolume;
+      const state = createEcsRunState();
+      void runEcsTask(makeTask({ volumes: [volume] }), baseOptions(), state).catch(() => undefined);
+      await until(() => captured.calls.some((c) => c.args[1] === 'create'));
+      const volumeName = captured.calls.find((c) => c.args[1] === 'create')!.args.at(-1)!;
+      const cleanup = cleanupEcsRun(state, { keepRunning: false });
+      await vi.advanceTimersByTimeAsync(IN_FLIGHT_STEP_TIMEOUT_MS);
+      await cleanup;
+      expect(captured.calls.some((c) => c.args.join(' ') === `volume rm -f ${volumeName}`)).toBe(
+        true
+      );
+      const line = warnSpy.mock.calls.map((c) => String(c[0])).filter((w) => w.includes('did not finish')).at(-1);
+      expect(line).toContain(`removed volume '${volumeName}' if it existed`);
+      expect(line).toContain(`run 'docker volume rm -f ${volumeName}' if it appears`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('during the sidecar image pull: cleanup does not wait on it, and no network is created', async () => {
+    const held = deferred<void>();
+    dockerRunnerStubs.pullImage.mockImplementation(async (image: string) => {
+      if (image.includes('container-endpoints')) await held.promise;
+    });
+    try {
+      captured.responder = () => ({ stdout: 'cid\n' });
+      const state = createEcsRunState();
+      const runError = runEcsTask(makeTask(), baseOptions(), state).then(
+        () => undefined,
+        (err: unknown) => err
+      );
+      await until(() =>
+        dockerRunnerStubs.pullImage.mock.calls.some((c) => String(c[0]).includes('container-endpoints'))
+      );
+      // Cleanup finishes while the pull is still held.
+      await cleanupEcsRun(state, { keepRunning: false });
+      held.resolve();
+      expect(String(await runError)).toContain('Interrupted');
+      expect(networkStubs.createTaskNetwork).not.toHaveBeenCalled();
+    } finally {
+      dockerRunnerStubs.pullImage.mockImplementation(async () => undefined);
+    }
+  });
+
+  it.each([true, false])(
+    'pulls the sidecar image outside the tracked step, honoring skipPull=%s',
+    async (skipPull) => {
+      captured.responder = (_cmd: string, args: string[]) => {
+        if (args[0] === 'run') return { stdout: 'cid\n' };
+        if (args[0] === 'wait') return { stdout: '0\n' };
+        return { stdout: '' };
+      };
+      await runEcsTask(makeTask(), baseOptions({ skipPull }), createEcsRunState());
+      expect(dockerRunnerStubs.pullImage).toHaveBeenCalledWith(
+        'amazon/amazon-ecs-local-container-endpoints:latest-amd64',
+        skipPull
+      );
+      expect(networkStubs.createTaskNetwork).toHaveBeenCalledWith(
+        expect.objectContaining({ skipPull: true })
+      );
+    }
+  );
+
+  it('cleanup before the run starts anything: runEcsTask creates no network and starts no container', async () => {
+    captured.responder = () => ({ stdout: 'cid\n' });
+    const state = createEcsRunState();
+    await cleanupEcsRun(state, { keepRunning: false });
+    await expect(runEcsTask(makeTask(), baseOptions(), state)).rejects.toThrow('Interrupted');
+    expect(networkStubs.createTaskNetwork).not.toHaveBeenCalled();
+    expect(dockerRunCalls()).toHaveLength(0);
+  });
+
+  it('with no ^C, a completed run is torn down without waiting on anything', async () => {
+    let seq = 0;
+    captured.responder = (_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: `c${++seq}\n` };
+      if (args[0] === 'wait') return { stdout: '0\n' };
+      return { stdout: '' };
+    };
+    const state = createEcsRunState();
+    const result = await runEcsTask(makeTask(), baseOptions(), state);
+    expect(result.exitCode).toBe(0);
+    expect(state.inFlight).toBeUndefined();
+    await cleanupEcsRun(state, { keepRunning: false });
+    expect(dockerRunnerStubs.removeContainer).toHaveBeenCalledWith('c1');
   });
 });
