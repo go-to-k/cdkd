@@ -646,8 +646,14 @@ it while reporting success (issue
 A conflict that carries no name at all is never sound to swallow: an
 `AWS::EC2::SecurityGroupIngress` duplicate means only that an identical rule is
 on the group, whoever added it. Such a create adopts only on this stack's own
-evidence — its rollback journal (`getPriorAttempts`) or a rollback replay — and
+evidence — its rollback journal (`getPriorAttempts`), a rollback replay, or
+another record of the same stack holding the rule (`getStackRecords`; two
+template rules CDK could not dedupe, issue
+[#4492](https://github.com/go-to-k/cdkd/issues/4492), waiting for such a twin
+still being created in the same deploy, as CloudFormation accepts both) — and
 refuses otherwise.
+Two records then share one rule, so a delete leaves it in place while a record
+that outlives the operation still holds it, and the last holder revokes it.
 
 `S3BucketProvider.assertExistingBucketRegion` is the create-side twin of
 `assertRegionMatch`. It reads the bucket's region from the
