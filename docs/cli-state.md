@@ -478,12 +478,16 @@ logical id through the default routing, which ignores the old stamp, and
 deletes the old one through the layer that created it. This is a destroy and
 recreate, and the deploy does not ask first: the stateful guard and
 `--force-stateful-recreation` cover replacements, not the delete of a logical
-id that left the template. A stateful resource comes back empty. Under a
-delete policy, empty a non-empty S3 bucket that lacks `autoDeleteObjects` and
-turn off deletion protection beforehand: creates run before deletes, so the
-old resource's refused delete fails the deploy after the new one exists, and
-the automatic rollback removes the new one again (`--no-rollback` leaves
-both). A resource with a fixed
+id that left the template. A stateful resource comes back empty (under a
+`Snapshot` policy, the RDS default, the old one is deleted after a final
+snapshot). Creates run before deletes, so an old resource whose delete is
+refused fails the deploy after the new one exists. Empty a non-empty S3 bucket
+that lacks `autoDeleteObjects` first; otherwise the automatic rollback deletes
+the new bucket again (`--no-rollback` leaves both). Deletion protection needs
+its own deploy BEFORE the rename, setting the property to false: a deploy
+never lifts protection (only `cdkd destroy --remove-protection` does), and the
+renamed resource is created from the same properties, so it is born protected
+and the rollback cannot delete it either, leaving both live. A resource with a fixed
 physical name needs a new name, or its removal deployed first and its re-add
 in a second deploy. Under `DeletionPolicy: Retain` (the CDK default for many
 stateful constructs) the old resource is only dropped from state and stays in
