@@ -86,6 +86,12 @@ import {
 } from '../../provisioning/create-only-properties.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 import {
+  conditionFingerprint,
+  conditionInputsFrom,
+  parentSuppliedValues,
+  readRecordedConditionVerdicts,
+} from '../../deployment/condition-verdicts.js';
+import {
   findNestedStackTypeChanges,
   type NestedStackTypeChange,
 } from '../../deployment/type-change-guard.js';
@@ -1173,6 +1179,14 @@ export async function computeStackDiff(
      * record and resolves it. Omitted, no provider read is issued.
      */
     attributeHealer?: StaleAttributeHealer;
+    /**
+     * Input parameters the parent row names but whose value could not be
+     * resolved for this diff (go-to-k/cdkd#4479). This node binds its own
+     * `Default` for each, which serves the comparison, but the deploy binds
+     * whatever the parent resolves then, so a recorded verdict's fingerprint
+     * never reads one.
+     */
+    parentUnresolvedParameters?: ReadonlySet<string>;
   } = {}
 ): Promise<StackDiffResult> {
   const {
@@ -1182,6 +1196,7 @@ export async function computeStackDiff(
     inheritSecretBearingTemplate,
     inheritedSecrets,
     attributeHealer,
+    parentUnresolvedParameters,
   } = options;
   // The parent's printing corpus (go-to-k/cdkd#4049), as the `inheritedSecrets`
   // of every resolver pass this node runs: parameter binding, condition
@@ -1347,15 +1362,64 @@ export async function computeStackDiff(
   //    rather than pruned": with `conditions` undefined `resolveIf` takes the
   //    FALSE branch for EVERY `Fn::If`, so a condition-true property on a
   //    condition that reads no parameter at all diffed as a perpetual
-  //    spurious UPDATE and `--fail` exited 1. An `Fn::If` on an UNKNOWN
-  //    condition still takes FALSE, as it always did: the resolver has no
-  //    "unknown" verdict, and inferring one is out of this fix's scope.
+  //    spurious UPDATE and `--fail` exited 1.
+  //
+  //    An UNKNOWN condition takes the verdict the last deploy RECORDED for it
+  //    (go-to-k/cdkd#4479), but only when the fingerprint of its definitions
+  //    and parameter inputs, recomputed here, equals the recorded one: the
+  //    deploy then computes that same verdict, so it drives `Fn::If` and
+  //    pruning exactly as a known one does. No record, a different
+  //    fingerprint, or an unbound parameter in its closure keeps it unknown,
+  //    so an `Fn::If` on it takes FALSE and it never prunes.
   let effectiveTemplate = template;
   let conditions: Record<string, boolean> | undefined;
   const unknownConditions = unknownConditionNames(
     template,
     new Set([...unboundParameterNames, ...tokenParameterNames])
   );
+  // go-to-k/cdkd#4479: each unknown condition whose recorded fingerprint
+  // matches. A secret-fed parameter's input is its `{{resolve:...}}` token as
+  // this diff received it (the expression the deploy redacted the value
+  // back to); an UNBOUND parameter has no input, because its deploy-time value
+  // may be new, so a condition reaching one is never matched. It is named in
+  // `unavailable` even though `templateParameters` never holds it today, so a
+  // later binding change cannot hand it a stale input.
+  const recordedVerdicts = nullPrototypeRecord<boolean>();
+  const recorded = readRecordedConditionVerdicts(currentState);
+  const recordedTokens = nullPrototypeRecord<string>();
+  const unusableTokens = new Set<string>();
+  for (const name of tokenParameterNames) {
+    const token = (parameters ?? {})[name];
+    if (typeof token === 'string') recordedTokens[name] = token;
+    else unusableTokens.add(name);
+  }
+  const inputOf = conditionInputsFrom({
+    tokens: recordedTokens,
+    bound: templateParameters,
+    // A name the resolver serves from a state RESOURCE first (`Ref` checks
+    // resources before parameters) is no parameter input, as on the deploy.
+    unavailable: new Set([
+      ...unboundParameterNames,
+      ...unusableTokens,
+      ...Object.keys(currentState.resources ?? {}),
+      // A row value that threw here: this node bound its Default, the deploy
+      // binds what the parent resolves then.
+      ...(parentUnresolvedParameters ?? []),
+      // A plain value the parent supplied, withheld exactly as the deploy
+      // withholds it, so both fingerprints read the same inputs.
+      ...parentSuppliedValues(template, parameters, tokenParameterNames),
+    ]),
+  });
+  const mismatchedRecords: string[] = [];
+  for (const name of unknownConditions) {
+    if (!Object.hasOwn(recorded, name)) continue;
+    const fingerprinted = conditionFingerprint(template, name, inputOf);
+    if (fingerprinted !== undefined && fingerprinted.fingerprint === recorded[name]!.fingerprint) {
+      recordedVerdicts[name] = recorded[name]!.verdict;
+    } else {
+      mismatchedRecords.push(name);
+    }
+  }
   // Whether EVERY parameter bound and EVERY condition has a verdict — what
   // `conditions !== undefined` meant before go-to-k/cdkd#4470. The Outputs merge
   // below still needs all of it.
@@ -1372,7 +1436,7 @@ export async function computeStackDiff(
               Object.entries(template.Conditions).filter(([name]) => !unknownConditions.has(name))
             ),
           };
-    conditions = await intrinsicResolver.evaluateConditions({
+    const evaluated = await intrinsicResolver.evaluateConditions({
       template: knownTemplate,
       resources: currentState.resources,
       stateBackend,
@@ -1384,6 +1448,11 @@ export async function computeStackDiff(
       ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
       ...(attributeHealer && { attributeHealer }),
     });
+    // The recorded verdicts join the evaluated ones in the SAME bag: a known
+    // condition never references an unknown one, so neither can contradict
+    // the other.
+    for (const [name, verdict] of Object.entries(recordedVerdicts)) evaluated[name] = verdict;
+    conditions = evaluated;
     effectiveTemplate = new TemplateParser().filterResourcesByCondition(template, conditions);
     everyConditionKnown = unboundParameterNames.size === 0 && unknownConditions.size === 0;
   } catch (error) {
@@ -1391,10 +1460,21 @@ export async function computeStackDiff(
       `Diff condition evaluation for stack ${displayStackName(stackName)} skipped: ${error instanceof Error ? error.message : String(error)}`
     );
   }
-  if (unknownConditions.size > 0) {
-    const names = [...unknownConditions].map((name) => displayIdent(name)).join(', ');
+  if (mismatchedRecords.length > 0) {
+    // The FALSE fallback can HIDE a change as well as show a phantom one: a
+    // condition edited since a deploy that recorded FALSE may now be TRUE.
+    // Named so a clean result over such a condition is not read as proof.
+    logger.warn(
+      safeMsg`Stack ${displayStackName(stackName)}: condition(s) ${mismatchedRecords.map((name) => displayIdent(name)).join(', ')} read a secret-fed parameter and changed since the last deploy, or one of their inputs did. This diff cannot tell which branch the next deploy takes, and shows each Fn::If on them as its FALSE branch.`
+    );
+  }
+  const stillUnknown = [...unknownConditions].filter(
+    (name) => !Object.hasOwn(recordedVerdicts, name)
+  );
+  if (stillUnknown.length > 0) {
+    const names = stillUnknown.map((name) => displayIdent(name)).join(', ');
     logger.debug(
-      safeMsg`Stack ${displayStackName(stackName)}: condition(s) ${names} depend on a parameter this diff cannot bind or read; resources gated on them are not pruned, and an Fn::If on them still takes its FALSE branch`
+      safeMsg`Stack ${displayStackName(stackName)}: condition(s) ${names} depend on a parameter this diff cannot bind or read and have no matching recorded verdict; resources gated on them are not pruned, and an Fn::If on them takes its FALSE branch`
     );
   }
 
@@ -2114,7 +2194,15 @@ async function resolveChildStackParameters(
   // The parent node's read-only healer (issue go-to-k/cdkd#3456): the deploy
   // resolves this row's `Parameters` on a parent-engine context, which carries
   // the parent's healer.
-  attributeHealer?: StaleAttributeHealer
+  attributeHealer?: StaleAttributeHealer,
+  /**
+   * Filled with every row key whose value THREW here (go-to-k/cdkd#4479). The
+   * child binds its own `Default` for such a key, which is right for the
+   * comparison but no evidence of what the deploy binds, so the child's
+   * recorded-verdict fingerprint must not read it. An `AWS::NoValue` key is
+   * not one: the deploy binds the `Default` there too.
+   */
+  unresolvedKeys?: Set<string>
 ): Promise<Record<string, unknown>> {
   const rawParams = parentStackRow.Properties?.['Parameters'];
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
@@ -2161,6 +2249,7 @@ async function resolveChildStackParameters(
     } catch {
       // Unresolvable (e.g. references a not-yet-deployed resource): omit it so
       // the child diff falls back to the intrinsic-vs-resolved comparison.
+      unresolvedKeys?.add(name);
     }
   }
   return resolved;
@@ -2255,6 +2344,11 @@ export async function buildDiffTree(args: {
    */
   parameters?: Record<string, unknown>;
   /**
+   * The input parameters the parent row names but could not resolve for this
+   * diff (go-to-k/cdkd#4479); see `computeStackDiff`'s option of this name.
+   */
+  parentUnresolvedParameters?: ReadonlySet<string>;
+  /**
    * Per-type property normalization shared with the deploy engine (issue
    * #1591). Threaded through the whole tree so a nested child's preview
    * narrows exactly like its apply.
@@ -2348,6 +2442,7 @@ export async function buildDiffTree(args: {
     diffCalculator,
     parentHasSecretReference,
     parameters,
+    parentUnresolvedParameters,
     canonicalizeProperties,
     assetRedirect,
     cfnFallback,
@@ -2407,6 +2502,7 @@ export async function buildDiffTree(args: {
       diffCalculator,
       {
         ...(parameters && { parameters }),
+        ...(parentUnresolvedParameters && { parentUnresolvedParameters }),
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
@@ -2553,6 +2649,7 @@ export async function buildDiffTree(args: {
     // `Ref` / `Fn::GetAtt` to a resource this node just adopted resolves on
     // the deploy path and would drop here, swallowed by the best-effort catch,
     // leaving the child preview degraded for a reason nothing prints.
+    const childUnresolvedParameters = new Set<string>();
     const childParameters = await resolveChildStackParameters(
       resource,
       effectiveTemplate,
@@ -2564,7 +2661,8 @@ export async function buildDiffTree(args: {
       conditions,
       cfnFallback,
       printingSecrets,
-      attributeHealer
+      attributeHealer,
+      childUnresolvedParameters
     );
     node.children.push(
       await buildDiffTree({
@@ -2577,6 +2675,7 @@ export async function buildDiffTree(args: {
         stateBackend,
         diffCalculator,
         parameters: childParameters,
+        parentUnresolvedParameters: childUnresolvedParameters,
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(assetRedirect && { assetRedirect }),
         ...(cfnFallback !== undefined && { cfnFallback }),
