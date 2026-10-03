@@ -921,22 +921,27 @@ for ATTEMPT in first second; do
   done
   echo "    OK: the ${ATTEMPT} deploy refused, naming ${STRANGER_RULE_ID}"
   if [ "${ATTEMPT}" = first ]; then
-    # The refusal is journaled as a failed CREATE WITHOUT its attempted bag —
-    # the bag is what the next deploy would read as "this stack attempted it".
-    if ! STRANGER_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
-      echo "FAIL: could not read the rollback journal at s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json after the refused deploy: ${STRANGER_JOURNAL}" >&2
+    # The refused CREATE is NOT journaled as a failed op (go-to-k/cdkd#4356):
+    # nothing was applied and it recorded no physical id, so the record could
+    # only be the next deploy's adoption evidence (its attempted bag,
+    # go-to-k/cdkd#4355) or a `--revert-failed` line advising to delete the
+    # rule by hand — the stranger's rule. Absent journal is fine; a present one
+    # must not name StrangerIngress. Tri-state: an unreadable journal fails.
+    STRANGER_JOURNAL_ERR="$(mktemp)"
+    if STRANGER_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>"${STRANGER_JOURNAL_ERR}"); then
+      REFUSED_OPS=$(printf '%s' "${STRANGER_JOURNAL}" | jq '[.segments[].failedOperations[]? | select(.logicalId == "StrangerIngress")]')
+      if [ "$(printf '%s' "${REFUSED_OPS}" | jq 'length')" -ne 0 ]; then
+        echo "FAIL: the journal records the refused StrangerIngress CREATE as a failed op: ${REFUSED_OPS}" >&2
+        rm -f "${STRANGER_JOURNAL_ERR}"
+        exit 1
+      fi
+    elif ! grep -qF '(404)' "${STRANGER_JOURNAL_ERR}" && ! grep -qF 'NoSuchKey' "${STRANGER_JOURNAL_ERR}"; then
+      echo "FAIL: could not read the rollback journal at s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json after the refused deploy: $(cat "${STRANGER_JOURNAL_ERR}")" >&2
+      rm -f "${STRANGER_JOURNAL_ERR}"
       exit 1
     fi
-    REFUSED_OPS=$(printf '%s' "${STRANGER_JOURNAL}" | jq '[.segments[].failedOperations[]? | select(.logicalId == "StrangerIngress" and .changeType == "CREATE")]')
-    if [ "$(printf '%s' "${REFUSED_OPS}" | jq 'length')" -lt 1 ]; then
-      echo "FAIL: the journal holds no failed CREATE for StrangerIngress: ${STRANGER_JOURNAL}" >&2
-      exit 1
-    fi
-    if [ "$(printf '%s' "${REFUSED_OPS}" | jq '[.[] | select(has("attemptedProperties"))] | length')" -ne 0 ]; then
-      echo "FAIL: the refused CREATE was journaled WITH attemptedProperties — the next deploy would adopt ${STRANGER_RULE_ID}: ${REFUSED_OPS}" >&2
-      exit 1
-    fi
-    echo "    OK: the refusal is journaled without its attempted bag"
+    rm -f "${STRANGER_JOURNAL_ERR}"
+    echo "    OK: the refusal left no failed-op record in the journal"
   fi
 done
 
