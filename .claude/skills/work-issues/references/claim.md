@@ -3,8 +3,7 @@
 ## 4. CLAIM the chosen issues BEFORE editing
 
 When lanes run as SUBAGENTS (the default for stages 5-8), the PARENT posts every
-claim — the lock names the session accountable — and its `<ref>` names the branch
-or worktree the lane agent will create.
+claim, and its `<ref>` names the branch or worktree the lane agent will create.
 
 **IN-PLACE runs name the tree they are STANDING IN**: the `<ref>` is the branch
 §5 will create plus the opening report's `LANE_TREE`, never
@@ -46,10 +45,8 @@ gh issue comment <n> --body-file "$SCRATCH/standdown-<n>.md"
 For EACH issue you start — PROMOTING a QUEUED one included — first re-check
 `gh issue view <n> --json state`, §2's open-PR `files` query, and §3's premise
 check on CURRENT `origin/main` — in a call BEFORE the claim, never chained with
-it. Triage's findings date from TRIAGE time: a peer can fix and close a queued
-issue, or open a PR holding its files, before its turn (#3979: a chained claim
-posted before the query showed #3975 holding its files).
-Then:
+it. Triage's findings date from TRIAGE time: a peer can close a queued issue,
+or open a PR holding its files, before its turn (#3979). Then:
 
 ```bash
 gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <files>. \
@@ -60,8 +57,11 @@ Mandatory, BEFORE the first edit (the issue-level DISJOINT-FILE rule).
 **`<files>` is every file the lane will EDIT, and the lane is dispatched with
 that list**: beside the fix and its unit test, the integ fixture §8-c will
 extend (`grep -rl '<type's last segment>' tests/integration/*/lib`) and, when a
-provider gains `context?: UpdateContext`, triage.md §2's checker/test pair — a
-narrower list stops the lane mid-run to ask (go-to-k/cdkd#1160).
+provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
+every comment, doc or rule the fix makes FALSE — stating the old invariant or
+calling the issue open (`grep -rnw '<issue digits>\|<key symbol>' src docs
+.claude/rules`, minus `docs/_generated`, each through §2's open-PR `files`
+query) — a narrower list stops the lane mid-run to ask (go-to-k/cdkd#1160).
 
 **Correct the classification lines in the same turn as the claim**, the first
 moment the run holds evidence: rewrite a legacy packed body to the four-line
@@ -72,8 +72,7 @@ never enters a body).
 `effort:<v>`, plus `--remove-label` for the one superseded — else §3's query
 picks between TWO), BEFORE the lane's PR exists, so the PR inherits them.
 
-**Claim at SHORTLIST time, not after the analysis** — retracting costs one
-comment, a collision costs a lane.
+**Claim at SHORTLIST time, not after the analysis.**
 
 **Then VERIFY the claim stuck** — posting is not winning:
 
@@ -91,9 +90,9 @@ Re-read the thread to the END before publishing a precedence account, and never
 infer absence from a missing branch: a signal shows LIFE only (§9), and a claim
 has no TTL, so one you believe dead goes to arbitration.
 
-**The tie-break only works if the LOSER re-reads, and nothing makes it** — the
-check above catches only a rival who posted BEFORE you. Re-read the claims before
-you PUSH; if yours is later, stand down even with code written.
+**The tie-break only works if the LOSER re-reads, and nothing makes it.**
+Re-read the claims before you PUSH; if yours is later, stand down even with
+code written.
 
 **Claim what you FILE, too — filing is not claiming**, since a self-filed
 deferral is invisible to every ownership probe. For one THIS run means to pick up
@@ -102,4 +101,4 @@ current branch, which §9 deletes. One handed off (`next`) gets NO claim until a
 later run takes it.
 
 **Verify occupancy live, never from a handoff table** (`gh pr list`, `git
-worktree list`, the comments): LIFE only; a stand-down or a close RELEASES (§9).
+worktree list`, the comments); a stand-down or a close RELEASES (§9).

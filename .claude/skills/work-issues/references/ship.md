@@ -37,10 +37,13 @@ so FIRST push plainly until `git rev-list origin/<branch>..HEAD` is empty (a
 denied plain push is re-authorized, never routed round through the arm). Then,
 when the harness denies the `git reset`, the rebase or the `--force-with-lease`
 push, take §7's MERGE ARM from `origin/<branch>` (go-to-k/cdkd#4327), spelled
-here as a denial also blocks re-reading §7 — all in `<LANE_TREE>` by literal
-path: `checkout -B <branch> origin/<branch>`, `merge origin/main`, re-run the
+here as a denial blocks re-reading §7, in `<LANE_TREE>` by literal path:
+`checkout -B <branch> origin/<branch>`, `merge origin/main`, re-run the
 generators and `vp run integ-ledger-normalize` (`merge=union` hides the ledger
-conflict locally), commit what changed, push plainly. Otherwise:
+conflict locally), commit what changed, push plainly. When the arm's checkout
+or merge is denied TOO, `git merge --abort` any half-done merge and ask the
+maintainer (`AskUserQuestion`) to authorize the flatten. With no denial, or
+on that yes:
 
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
@@ -78,9 +81,9 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 
 - **Read the merge state before you watch CI** — at `CONFLICTING` CI never
   fires, and `--watch` returns at once while no check EXISTS. Wait with THIS, not
-  a hand-written loop (an unknown `--json` field exits 1 on EVERY poll). It
-  re-reads the state every pass and ends non-zero on anything but green CI; the
-  merge verdict is still `CLEAN` (next bullet), not the watch's exit:
+  a hand-written loop. It re-reads the state every pass and ends non-zero on
+  anything but green CI; the merge verdict is still `CLEAN` (next bullet), not
+  the watch's exit:
 
   ```bash
   R=<owner>/<repo>; N=<n>; rc=1; i=0
@@ -115,7 +118,7 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 - **An OUTSIDE reporter's issue is thanked after the RELEASE, not the merge**:
   merge the release PR, confirm the npm version, then comment on the issue in
   English — thanks, the version it shipped in, "feel free to open an issue"
-  (maintainer direction, go-to-k/cdkd#3624).
+  (go-to-k/cdkd#3624).
 
 ### Pull, then rebuild the linked binary
 
@@ -180,9 +183,9 @@ git branch --show-current      # must print <LAUNCH_BRANCH>
 git branch --list '<your prefix>*'             # ...and every branch this run added is gone
 ```
 
-Every line and the ORDER are load-bearing. `--no-guess`: plain `git switch`
-DWIMs, re-creating the branch from `origin` and reporting success where the run
-should fall through to the fallback. The dirty check runs FIRST and is a TEST,
+`--no-guess`: plain `git switch` DWIMs, re-creating the branch from `origin`
+and reporting success where the run should fall through to the fallback. The
+dirty check runs FIRST and is a TEST,
 since `--porcelain` exits 0 either way and `git switch` carries uncommitted
 changes ACROSS. Unchained, a FAILED switch still runs the `-D`, which git refuses
 only for the CHECKED-OUT branch. The delete is PLURAL (§10-d adds a retro branch)
@@ -202,8 +205,7 @@ git fetch origin \
 Never `git pull` into `<LAUNCH_BRANCH>`, never `git merge --ff-only origin/main`
 onto it, never `git rebase <LAUNCH_BRANCH>`, and never
 `git branch -D <LAUNCH_BRANCH>`. **AS-IS is the whole rule: RESTORE, never
-ADJUST.** **This step runs LAST, not per-lane**: §10 branches in this same tree,
-so restoring here and branching again in §10-d would undo itself.
+ADJUST.** **This step runs LAST, not per-lane**: §10-d branches in this tree.
 
 ### Release the claims
 
