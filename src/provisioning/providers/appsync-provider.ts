@@ -365,27 +365,13 @@ export class AppSyncProvider implements ResourceProvider {
     // which is the region their AWS calls actually went to.
     const region =
       regionOverride ?? this.providerRegion ?? (await this.getClient().config.region());
+    // REJECTS when STS cannot name the account and `AWS_ACCOUNT_ID` is unset
+    // (issue #1730) — there is no placeholder account to build from, and every
+    // caller already has a degradation arm for a failed build. That matters
+    // most on the UPDATE path: `childRefAttributes` rebuilds the ARN on every
+    // in-place update, so building from a wrong account there would REPLACE a
+    // correct, create-time-recorded ARN.
     const accountInfo = await getAccountInfo(region);
-    // REFUSE a fabricated account rather than building an ARN from it (issue
-    // #1728 review). `getAccountInfo` CATCHES its own STS failure and answers
-    // the hardcoded `123456789012`, so without this the build "succeeds" and
-    // every caller persists `arn:aws:appsync:<region>:123456789012:...` — a
-    // value carrying no wildcard, therefore invisible to `isPlaceholderArn`,
-    // therefore handed to consumers as if it were real.
-    //
-    // It lives HERE rather than at the import call site because the UPDATE path
-    // is the worse of the two: `childRefAttributes` rebuilds the ARN on every
-    // in-place update, so an STS blip mid-deploy would REPLACE a correct,
-    // create-time-recorded ARN with the fabricated one — destroying a known-good
-    // value, where import merely fails to write a missing one. Every caller
-    // already has a degradation arm for a failed build; this just makes them
-    // reachable for the failure mode that actually occurs.
-    if (accountInfo.fabricated) {
-      throw new Error(
-        `cannot determine the AWS account (STS is unreachable, and the resolved ` +
-          `account id is a placeholder), so an ARN for ${suffix} would be fabricated`
-      );
-    }
     // The PARTITION comes from the region via the closed mapping the repo
     // already uses for `${AWS::Partition}`. This USED to be load-bearing
     // because `accountInfo.partition` was hardcoded to `'aws'` — inert on the
@@ -586,12 +572,8 @@ export class AppSyncProvider implements ResourceProvider {
    * attribute. `childRefAttributes` already answers `undefined` for a mis-arity
    * id, which degrades the same way rather than guessing.
    *
-   * The fabricated-account refusal that makes this honest lives in
-   * `buildAppSyncArn`, not here (issue #1728 review): the UPDATE path rebuilds
-   * the ARN on every in-place update, so an STS blip there would REPLACE a
-   * correct recorded ARN rather than merely fail to write one. Guarding only
-   * this call site would have left the worse path open. The fabrication itself
-   * is issue #1730.
+   * When STS cannot name the account, `getAccountInfo` rejects inside
+   * `buildAppSyncArn` (issue #1730), which lands in the catch below.
    */
   private async childImportAttributes(
     resourceType: string,
@@ -607,7 +589,7 @@ export class AppSyncProvider implements ResourceProvider {
       // names the same region the state key does — misregioned together rather
       // than against each other.)
       //
-      // `omitArnOnFailure`: a fabricated account costs the ARN, not the whole
+      // `omitArnOnFailure`: an unknown account costs the ARN, not the whole
       // attribute set — `Name` / `ApiKey` come out of the physical id and are
       // account-independent.
       return (await this.childRefAttributes(resourceType, physicalId, region, true)) ?? {};

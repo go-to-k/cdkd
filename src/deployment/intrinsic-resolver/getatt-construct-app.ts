@@ -185,8 +185,8 @@ export async function constructAttributeForAppTypes(
   // an issue for an attribute cdkd can construct from what it already holds.
   // Constructed rather than fetched: no ApiGatewayV2 API returns this ARN.
   // `constructGuardedAttribute` refuses the result when STS did not report
-  // the real account, so a fabricated account cannot be baked in here any
-  // more than in the provider's own builder.
+  // the real account, so a wrong account cannot be baked in here any more
+  // than in the provider's own builder.
   if (resourceType === 'AWS::ApiGatewayV2::Api') {
     switch (attributeName) {
       case 'ExecuteApiArn':

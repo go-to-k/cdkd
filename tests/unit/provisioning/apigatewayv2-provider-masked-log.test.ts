@@ -21,6 +21,7 @@
  * `apigatewayv2-provider-masked-warn.test.ts` (issue #1997).
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { AccountIdUnavailableError } from '../../../src/utils/error-handler.js';
 
 const { mockSend, warnSpy, debugSpy, mockGetAccountInfo } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -291,7 +292,6 @@ describe('ApiGatewayV2Provider masked log sinks (issue #2177)', () => {
       accountId: '111122223333',
       region: 'us-east-1',
       partition: 'aws',
-      fabricated: false,
     });
     provider = new ApiGatewayV2Provider();
   });
@@ -453,12 +453,9 @@ describe('ApiGatewayV2Provider masked log sinks (issue #2177)', () => {
     }
 
     it('create() Api: the ExecuteApiArn decline warning goes through the masked sink', async () => {
-      mockGetAccountInfo.mockResolvedValue({
-        accountId: '123456789012',
-        region: 'us-east-1',
-        partition: 'aws',
-        fabricated: true,
-      });
+      mockGetAccountInfo.mockRejectedValue(
+        new AccountIdUnavailableError('Cannot determine the AWS account id: STS unreachable.')
+      );
       fakeApiGatewayV2({ CreateApiCommand: API_CREATED });
       await provider.create(
         'Api',
@@ -467,7 +464,7 @@ describe('ApiGatewayV2Provider masked log sinks (issue #2177)', () => {
         { maskSecrets: (t) => t.replaceAll('abc123', SECRET_MASK) }
       );
       const warned = warnSpy.mock.calls.map((args) => String(args[0])).join('\n');
-      expect(warned).toContain(`ExecuteApiArn attribute for API ${SECRET_MASK} would be`);
+      expect(warned).toContain(`ExecuteApiArn attribute for API ${SECRET_MASK} is NOT recorded`);
       expect(warned).not.toContain('abc123');
     });
 
@@ -486,12 +483,9 @@ describe('ApiGatewayV2Provider masked log sinks (issue #2177)', () => {
     });
 
     it('update() Api: the skipped-heal line goes through the masked sink', async () => {
-      mockGetAccountInfo.mockResolvedValue({
-        accountId: '123456789012',
-        region: 'us-east-1',
-        partition: 'aws',
-        fabricated: true,
-      });
+      mockGetAccountInfo.mockRejectedValue(
+        new AccountIdUnavailableError('Cannot determine the AWS account id: STS unreachable.')
+      );
       fakeApiGatewayV2({ UpdateApiCommand: API_CREATED });
       await provider.update(
         'Api',

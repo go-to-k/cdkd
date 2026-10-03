@@ -37,7 +37,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - [Lambda Deployment Fails](#lambda-deployment-fails)
 - [Intrinsic Function Issues](#intrinsic-function-issues)
   - ["Unresolved intrinsic function" Error](#unresolved-intrinsic-function-error)
-  - [STS cannot report the account, and pseudo parameters fall back](#sts-cannot-report-the-account-and-pseudo-parameters-fall-back)
+  - [STS cannot report the account](#sts-cannot-report-the-account)
   - ["Refusing to resolve" a reference whose service cdkd does not resolve](#refusing-to-resolve-a-reference-whose-service-cdkd-does-not-resolve)
   - ["Refusing to resolve" a reference whose name was built from a secret](#refusing-to-resolve-a-reference-whose-name-was-built-from-a-secret)
   - ["Cannot resolve" a GetAtt on a resource an older cdkd deployed](#cannot-resolve-a-getatt-on-a-resource-an-older-cdkd-deployed)
@@ -1500,29 +1500,29 @@ If it **is** in the table, the installed cdkd predates its support. Upgrade:
 npm i -g @go-to-k/cdkd
 ```
 
-### STS cannot report the account, and pseudo parameters fall back
+### STS cannot report the account
 
 **Symptoms:**
 
 cdkd resolves `AWS::AccountId` from `sts:GetCallerIdentity`. When that call
-fails it warns and continues on a placeholder account id:
+fails and `AWS_ACCOUNT_ID` is not set, cdkd refuses rather than substituting a
+placeholder account:
 
 ```
-Failed to get AWS account info from STS: <the AWS error>, using defaults
+Cannot determine the AWS account id: STS GetCallerIdentity failed (ExpiredToken. Re-run with --verbose for AWS's own message.). cdkd does not substitute a placeholder account, because AWS::AccountId, AWS::StackId and every ARN built from it would look valid while naming a different account. Fix the AWS credentials (`aws sts get-caller-identity` must succeed), or set AWS_ACCOUNT_ID to this deploy's 12-digit account id, and re-run.
 ```
 
-A value CONSTRUCTED from that placeholder — an ARN built by `Fn::GetAtt` —
-is refused rather than deployed, because it would be structurally valid while
-naming a different account:
+It is raised by `Ref: AWS::AccountId`, `AWS::StackId`, a custom resource
+(whose request carries a `StackId`), and an `Fn::GetAtt` whose value embeds the
+account — an `Fn::GetAtt` the account is not in, `AWS::Region`,
+`AWS::Partition` and `AWS::URLSuffix` still resolve. A failed lookup is never
+cached, so the next lookup asks STS again.
 
-```
-IntrinsicResolutionRefusalError: Cannot resolve Fn::GetAtt [MyTable, Arn] for AWS::DynamoDB::Table: STS did not report this deploy's account id, so cdkd would build the value from the placeholder account 123456789012 — structurally valid, naming a different account, and indistinguishable downstream from a real one. Fix the AWS credentials (or set AWS_ACCOUNT_ID to this deploy's account) and deploy again.
-```
-
-**A bare `Ref: AWS::AccountId` is NOT refused** — it resolves to the
-placeholder silently. So a warn with no refusal does not mean the deploy is
-fine; it means nothing happened to embed the placeholder in a constructed ARN.
-`AWS::StackName` degrades the same way, to `UnknownStack`.
+Where cdkd would only RECORD an ARN after the resource already exists (a KMS
+key, ECR repository or Kinesis stream through Cloud Control, an SSM parameter,
+an AppSync child, an API Gateway V2 API), it warns and leaves that attribute
+out instead of failing the create; the record heals on the resource's next
+update.
 
 **Causes:**
 
@@ -1543,6 +1543,10 @@ aws sts get-caller-identity
 #   "Arn": "arn:aws:iam::123456789012:user/myuser"
 # }
 ```
+
+Where STS genuinely cannot be reached (an emulated endpoint, a locked-down
+network), set `AWS_ACCOUNT_ID` to the deploy's 12-digit account id. cdkd warns
+and uses it; a value that is not 12 digits is refused.
 
 ---
 

@@ -13,7 +13,7 @@
  * enough). Reachability is real: a child `DeployEngine.deploy()` re-throws
  * through `NestedStackProvider.create`, which the parent wraps in `withRetry`.
  *
- * The FOURTH — the #1730 fabricated-account guard — is deliberately left
+ * The FOURTH — the #1730 unknown-account guard — is deliberately left
  * unmarked, which is why the marking is at each `throw` rather than in the
  * class constructor. Issue #3096's `refuseUnservedAttribute` is the second
  * unmarked site (a live read that can succeed next time); its behavioural
@@ -49,8 +49,8 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 // STS is the knob for the #1730 arm: a REJECTING `GetCallerIdentity` is what
-// makes `getAccountInfo` fabricate an account id, which is the only way to
-// reach `constructGuardedAttribute`'s refusal.
+// makes `getAccountInfo` refuse, which is the only way to reach
+// `constructGuardedAttribute`'s refusal.
 const stsSend = vi.hoisted(() =>
   vi.fn().mockResolvedValue({
     Account: '123456789012',
@@ -167,15 +167,15 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     expectTerminal(error);
   });
 
-  it('leaves the #1730 fabricated-account SITE unmarked, so it can still heal', async () => {
+  it('leaves the #1730 unknown-account SITE unmarked, so it can still heal', async () => {
     // A SITE-level fence, not a constructor one. The earlier version of this
     // test constructed a bare `IntrinsicResolutionRefusalError` and asserted it
     // was unmarked, which pins only the CONSTRUCTOR: adding `markNonRetryable`
     // at the #1730 throw left it green, so the decision it claimed to guard was
     // unguarded. Driving the real refusal is what makes the probe discriminate.
     //
-    // Reaching it needs a REJECTING STS (so `getAccountInfo` fabricates
-    // `123456789012`) plus an attribute whose constructed value embeds that id.
+    // Reaching it needs a REJECTING STS (so `getAccountInfo` refuses) plus an
+    // attribute whose constructed value embeds the account.
     stsSend.mockRejectedValue(new Error('STS unreachable'));
     resetAccountInfoCache();
 
@@ -185,9 +185,9 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
 
     // It really is the #1730 refusal...
     expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
-    expect(error.message).toContain('STS did not report');
-    // ...and it must stay RETRYABLE: `getAccountInfo` caches a fabricated
-    // answer for only 10s precisely so a later attempt can heal. A
+    expect(error.message).toContain("embeds this deploy's account id");
+    // ...and it must stay RETRYABLE: `getAccountInfo` never caches a failed
+    // lookup precisely so a later attempt can heal. A
     // constructor-level marker (the `ResourceUpdateNotSupportedError` shape)
     // would wrongly make this terminal, which is why the marking is per-SITE.
     expect(isMarkedNonRetryable(error)).toBe(false);
@@ -240,7 +240,7 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
 
     // EXACTLY TWO deliberate exceptions, each identified by its message rather
     // than by a line number, which every edit above it would shift: the #1730
-    // fabricated-account guard (behavioural fence: the test above) and the
+    // unknown-account guard (behavioural fence: the test above) and the
     // #3096 live-read refusal `refuseUnservedAttribute` raises for the EC2
     // Instance / VPC `DefaultSecurityGroup` / CloudFront `DomainName` arms and
     // (#3097) the SecurityGroup `VpcId` arm (behavioural fences:
@@ -251,7 +251,7 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     // do the three id-shape guards in front of the cache reads.
     expect(unmarked).toHaveLength(2);
     const windows = unmarked.map((line) => lines.slice(line - 1, line + 6).join('\n'));
-    expect(windows.some((w) => w.includes('STS did not report'))).toBe(true);
+    expect(windows.some((w) => w.includes("embeds this deploy's account id"))).toBe(true);
     expect(windows.some((w) => w.includes('so cdkd refuses to substitute it'))).toBe(true);
   });
 

@@ -217,19 +217,19 @@ export function createNameQuestion(input: {
  * `import()` has no name lookup) and SNS (whose name lookup pages `ListTopics`
  * region-wide). `undefined` for any other type, which looks the name up
  * itself. Otherwise the ARN, or why it cannot be built honestly:
- * `'name'` for a name carrying `:`, `'account'` for an account
- * `getAccountInfo` FABRICATED because STS was unreachable (or a malformed
- * one) — a lookup of a made-up ARN answers "free".
+ * `'name'` for a name carrying `:`, `'account'` for a malformed account id or
+ * an empty region — a lookup of a made-up ARN answers "free". (An account STS
+ * could not name never gets here: `getAccountInfo` refuses, issue #1730.)
  */
 export function createLookupArn(
   resourceType: string,
   name: string,
-  account: { partition: string; region: string; accountId: string; fabricated?: boolean }
+  account: { partition: string; region: string; accountId: string }
 ): { arn: string } | { unbuildable: 'name' | 'account' } | undefined {
   const shape = CREATE_LOOKUP_ARN[resourceType];
   if (shape === undefined) return undefined;
   if (name.includes(':')) return { unbuildable: 'name' };
-  if (account.fabricated === true || !/^\d{12}$/.test(account.accountId) || account.region === '') {
+  if (!/^\d{12}$/.test(account.accountId) || account.region === '') {
     return { unbuildable: 'account' };
   }
   return {

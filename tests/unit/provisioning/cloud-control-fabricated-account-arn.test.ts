@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockLoggerWarn = vi.hoisted(() => vi.fn());
 const mockAccountInfo = vi.hoisted(() => ({
+  unavailable: false,
   value: {
     partition: 'aws',
     region: 'us-east-1',
@@ -25,7 +26,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
-vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
+vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async () => {
+  const { AccountIdUnavailableError } = await import('../../../src/utils/error-handler.js');
+  return {
   // Records the override it was CALLED with. Ignoring the argument is what let
   // the region fix ship unpinned: reverting the call site to a bare
   // `getAccountInfo()` left every test green (PR review).
@@ -36,12 +39,18 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
     // that reaches a built ARN. Those `region:` fields are kept only so the
     // records read as realistic; changing one alone has no effect.
     getAccountInfoCalls.push(overrideRegion);
+    if (mockAccountInfo.unavailable) {
+      return Promise.reject(
+        new AccountIdUnavailableError('Cannot determine the AWS account id: STS unreachable.')
+      );
+    }
     return Promise.resolve({
       ...mockAccountInfo.value,
       ...(overrideRegion ? { region: overrideRegion } : {}),
     });
   },
-}));
+  };
+});
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => {
@@ -65,17 +74,16 @@ vi.mock('../../../src/utils/logger.js', () => ({
 import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
 
 /**
- * Issue #1730: `getAccountInfo` reports `fabricated: true` when the account id
- * is the hardcoded `123456789012` fallback rather than this deploy's real
- * account. An ARN built from it carries no wildcard, so `isPlaceholderArn`
- * (issue #1681) cannot catch it — the value is RECORDED into state and served
- * as the resource's `Fn::GetAtt` answer, indistinguishable from a real one.
+ * Issue #1730: `getAccountInfo` REJECTS with `AccountIdUnavailableError` when
+ * STS cannot name the account. Enrichment runs AFTER the resource was created,
+ * so letting that escape would fail a create that already succeeded in AWS and
+ * orphan the resource.
  *
  * These sites must omit the attribute instead. The counter-cases are what make
- * the assertions meaningful: a non-fabricated answer must still enrich, and the
+ * the assertions meaningful: a known account must still enrich, and the
  * non-ARN attributes of the same branch must be untouched.
  */
-describe('CloudControlProvider ARN enrichment refuses a fabricated account (issue #1730)', () => {
+describe('CloudControlProvider ARN enrichment omits on an unknown account (issue #1730)', () => {
   let provider: CloudControlProvider;
 
   const enrich = (resourceType: string, physicalId: string) =>
@@ -94,6 +102,7 @@ describe('CloudControlProvider ARN enrichment refuses a fabricated account (issu
     getAccountInfoCalls.length = 0;
     ccClientRegion.value = 'us-east-1';
     provider = new CloudControlProvider();
+    mockAccountInfo.unavailable = false;
     mockAccountInfo.value = {
       partition: 'aws',
       region: 'us-east-1',
@@ -122,20 +131,17 @@ describe('CloudControlProvider ARN enrichment refuses a fabricated account (issu
   });
 
   const fabricate = () => {
-    mockAccountInfo.value = {
-      partition: 'aws',
-      region: 'us-east-1',
-      accountId: '123456789012',
-      fabricated: true,
-    };
+    mockAccountInfo.unavailable = true;
   };
 
-  it('omits the KMS Key Arn rather than building one from a placeholder account', async () => {
+  it('omits the KMS Key Arn rather than failing the already-created resource', async () => {
     fabricate();
     const enriched = await enrich('AWS::KMS::Key', 'abcd-1234');
     expect(enriched['Arn']).toBeUndefined();
     expect(mockLoggerWarn).toHaveBeenCalledWith(
-      expect.stringContaining('Not enriching AWS::KMS::Key Arn')
+      expect.stringMatching(
+        /^Not enriching AWS::KMS::Key Arn for abcd-1234: Cannot determine the AWS account id: .* the record heals on its next update\.$/
+      )
     );
   });
 

@@ -660,7 +660,10 @@ interface ResolutionContext {
 
 **Pseudo Parameters**:
 
-- `AWS::AccountId`: Retrieved from STS `GetCallerIdentity`
+- `AWS::AccountId`: Retrieved from STS `GetCallerIdentity`, else from a
+  12-digit `AWS_ACCOUNT_ID`; with neither, resolution REFUSES rather than
+  substituting a placeholder account (issue
+  [#1730](https://github.com/go-to-k/cdkd/issues/1730))
 - `AWS::Region`: From CLI options, CANONICALIZED (issue
   [#1882](https://github.com/go-to-k/cdkd/issues/1882)) — folded to lower
   case at its source so a user `Fn::Sub` cannot inherit a spelling AWS

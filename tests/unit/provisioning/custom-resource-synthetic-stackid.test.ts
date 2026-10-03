@@ -249,38 +249,46 @@ describe('CustomResourceProvider synthetic StackId (issue #1866)', () => {
     expect(stackId).not.toContain('000000000000');
   });
 
-  it('falls back to the ALL-ZERO placeholder — not 123456789012 — when STS cannot answer', async () => {
+  it('REFUSES before invoking the handler when STS cannot answer (issue #1730)', async () => {
     // `StackId` is a REQUIRED member of the request, so omission (the Cloud
-    // Control enrichment answer) is unavailable. Between two wrong strings the
-    // honest one is the one a handler cannot mistake for a live account:
-    // `getAccountInfo`'s own fallback id is shaped exactly like a real one.
+    // Control enrichment answer) is unavailable, and every stand-in account is
+    // a wrong string a handler may act on. The create fails BEFORE the handler
+    // runs, so nothing is created.
     mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
     configuredRegion = 'ap-northeast-1';
     const provider = makeProvider();
 
-    await provider.create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN });
-
-    const stackId = String(sentRequests()[0]?.['StackId']);
-    expect(stackId).toBe(
-      'arn:aws:cloudformation:ap-northeast-1:000000000000:stack/cdkd-CrResource/cdkd'
-    );
-    expect(stackId).not.toContain('123456789012');
-    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-      'STS did not report this deploy'
-    );
+    await expect(
+      provider.create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN })
+    ).rejects.toThrow(/Cannot determine the AWS account id/);
+    expect(sentRequests()).toEqual([]);
   });
 
-  it('does not warn about a placeholder account when STS answered', async () => {
-    // Polarity for the case above — a warning on every ordinary deploy would
-    // train users to ignore the one that matters.
+  it('uses an operator AWS_ACCOUNT_ID when STS cannot answer', async () => {
+    mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
+    process.env['AWS_ACCOUNT_ID'] = '444455556666';
     configuredRegion = 'ap-northeast-1';
     const provider = makeProvider();
 
     await provider.create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN });
 
-    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
-      'STS did not report this deploy'
+    expect(String(sentRequests()[0]?.['StackId'])).toBe(
+      'arn:aws:cloudformation:ap-northeast-1:444455556666:stack/cdkd-CrResource/cdkd'
     );
+  });
+
+  it('a DELETE that cannot resolve the account is reported skipped, never deleted', async () => {
+    // Delete's catch must keep the record: a `Delete` the handler never
+    // received proves nothing was cleaned up.
+    mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
+    const provider = makeProvider();
+
+    const outcome = await provider.delete('CrResource', 'phys-123', 'Custom::CrResource', {
+      ServiceToken: SERVICE_TOKEN,
+    });
+
+    expect(outcome).toMatchObject({ outcome: 'skipped' });
+    expect(sentRequests()).toEqual([]);
   });
 
   it('pins the region at CONSTRUCTION, so a mid-flight bag swap cannot leak in', async () => {

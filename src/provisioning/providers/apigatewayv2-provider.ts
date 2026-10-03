@@ -50,9 +50,16 @@ import {
   type UpdateAuthorizerCommandInput,
 } from '@aws-sdk/client-apigatewayv2';
 import { getLogger } from '../../utils/logger.js';
-import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
+import {
+  getAccountInfo,
+  type AwsAccountInfo,
+} from '../../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import {
+  AccountIdUnavailableError,
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../utils/error-handler.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -784,13 +791,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       // `AWS_REGION`, which records an ARN for the wrong region whenever the
       // deploy targets another one.
       const region = await this.getClient().config.region();
-      const accountInfo = await getAccountInfo(region);
-      if (accountInfo.fabricated) {
+      let accountInfo: AwsAccountInfo;
+      try {
+        accountInfo = await getAccountInfo(region);
+      } catch (error) {
+        // STS cannot name the account and `AWS_ACCOUNT_ID` is unset (issue
+        // #1730). Its message is cdkd-authored (it names the STS failure by
+        // class only), so it is the warning's reason as written.
+        if (!(error instanceof AccountIdUnavailableError)) throw error;
         log.warn(
-          `Cannot determine the AWS account (STS is unreachable, and the resolved account id ` +
-            `is a placeholder), so the ExecuteApiArn attribute for API ${apiId} would be ` +
-            `fabricated and is NOT recorded. An Fn::GetAtt on it will fail until a later ` +
-            `deploy resolves the account.`
+          `The ExecuteApiArn attribute for API ${apiId} is NOT recorded: ${error.message} ` +
+            `An Fn::GetAtt on it will fail until a later deploy records it.`
         );
         return undefined;
       }
@@ -1987,9 +1998,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       //
       // Gating on the ARN as well as the endpoint is what stops this HEAL from
       // being destructive. `buildExecuteApiArn` yields `undefined` on a
-      // REACHABLE, TRANSIENT condition: `getAccountInfo` does not reject when
-      // STS is unreachable, it returns `fabricated: true`, and the refusal arm
-      // declines. Writing `{ ApiId, ApiEndpoint }` there would erase an
+      // REACHABLE, TRANSIENT condition: `getAccountInfo` rejects when STS
+      // cannot name the account (issue #1730), and the refusal arm declines. Writing `{ ApiId, ApiEndpoint }` there would erase an
       // `ExecuteApiArn` an earlier deploy recorded correctly — and a consumer's
       // `Fn::GetAtt` reading the freshly written attributes IN THE SAME DEPLOY
       // would then hard-throw from `guardedPhysicalIdFallback`, with the loss

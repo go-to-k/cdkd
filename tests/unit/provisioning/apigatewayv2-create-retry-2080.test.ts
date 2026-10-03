@@ -68,7 +68,6 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importO
     getAccountInfo: vi.fn().mockResolvedValue({
       accountId: '123456789012',
       region: 'us-east-1',
-      fabricated: false,
     }),
   };
 });

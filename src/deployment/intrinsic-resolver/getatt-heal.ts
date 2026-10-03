@@ -1,8 +1,19 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import type { ResourceState } from '../../types/state.js';
-import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
+import {
+  AccountIdUnavailableError,
+  IntrinsicResolutionRefusalError,
+} from '../../utils/error-handler.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { isSensitiveAttributeName, stringifyAttributeForLog } from '../../utils/stringify.js';
-import { type ResolverContext, embedsAccountId, getAccountInfo, isStructured } from './support.js';
+import {
+  type AwsAccountInfo,
+  type ResolverContext,
+  effectiveAccountInfoRegion,
+  embedsAccountId,
+  getAccountInfo,
+  isStructured,
+} from './support.js';
 import { carriesSecretMask } from '../secret-redaction.js';
 import {
   type StaleAttributeHealOutcome,
@@ -305,44 +316,43 @@ export async function constructWithStaleRecordHeal(
 }
 
 /**
- * Construct resource attribute value based on resource type, refusing to
- * SERVE one built from a fabricated account id (issue #1730).
+ * Stand-in account id {@link constructGuardedAttribute} builds with when
+ * `getAccountInfo` refuses (issue #1730). Never served: a value that embeds it
+ * is refused, and one that does not never needed the account. A NUL cannot
+ * occur in an AWS physical id, so a match is always this stand-in.
+ */
+const UNKNOWN_ACCOUNT_STAND_IN = '\u0000cdkd-unknown-account\u0000';
+
+/**
+ * Construct resource attribute value based on resource type, refusing a value
+ * that needs an account id STS could not report (issue #1730).
  *
- * Thin wrapper over {@link constructAttribute}. ~30 branches there
- * build `arn:<partition>:<svc>:<region>:<accountId>:...`, and when the account
- * id is the hardcoded `123456789012` fallback the result is an ARN naming
- * SOMEONE ELSE'S account with no wildcard in it — so `isPlaceholderArn` cannot
- * catch it and every consumer downstream, the state record included, receives
- * a confidently wrong value. Refusing matches how
- * {@link guardedPhysicalIdFallback} already treats a knowably-wrong `*Arn`
- * (the #1103 class): a resource in this state has no correct value to serve.
+ * Thin wrapper over {@link constructAttribute}. ~30 branches there build
+ * `arn:<partition>:<svc>:<region>:<accountId>:...`, and `getAccountInfo`
+ * REFUSES when STS cannot name the account and `AWS_ACCOUNT_ID` is unset —
+ * there is no placeholder account to build from. Refusing every
+ * `Fn::GetAtt` on that refusal would also fail the values the account is NOT
+ * in, so the construction runs against {@link UNKNOWN_ACCOUNT_STAND_IN} and
+ * the result is refused only when it EMBEDS that stand-in.
  *
  * The test is on the CONSTRUCTED VALUE, not on the attribute NAME, and that
  * precision is the whole point: `AWS::S3::Bucket`'s `Arn` is
  * `arn:aws:s3:::<bucket>` with no account field, so a name-based `*Arn` guard
- * would refuse a value the fabricated id cannot corrupt. Everything the
- * account id does not appear in — `DomainName`, `Endpoint`, `WebsiteURL` —
- * keeps resolving unchanged.
- *
+ * would refuse a value that needs no account. Everything the account id does
+ * not appear in — `DomainName`, `Endpoint`, `WebsiteURL` — keeps resolving.
  * The match is a BARE substring rather than the colon-delimited `:<id>:` an
- * ARN uses, because not every account embedding is an ARN field: PR review
- * caught `AWS::ECR::Repository`'s `RepositoryUri`
- * (`<accountId>.dkr.ecr.<region>.amazonaws.com/<repo>`), the one such site in
- * this method, where a colon-delimited test served the fabricated URI and
- * silently nullified the `CloudControlProvider` omission of the SAME
- * attribute. The direction is deliberately fail-SAFE: refusing is the honest
- * answer whenever cdkd cannot confirm the account, so a value that merely
- * CONTAINS the placeholder digits (a physicalId recorded against the AWS
- * documentation account) is refused rather than served — and only while STS
- * is failing, when the deploy has bigger problems.
+ * ARN uses, because not every account embedding is an ARN field:
+ * `AWS::ECR::Repository`'s `RepositoryUri` is
+ * `<accountId>.dkr.ecr.<region>.amazonaws.com/<repo>`.
+ *
+ * The refusal is an {@link IntrinsicResolutionRefusalError}, so `resolveSub`
+ * re-raises it rather than keeping a literal `${Resource.Attribute}`.
  *
  * NOTE the naming: the per-type construction below KEEPS the name
  * `constructAttribute` and this guard takes a new one, rather than the other
  * way round. `scripts/gen-sdk-attr-coverage.ts` collects the set of resource
  * types `constructAttribute` references to decide which `*Arn` attributes the
- * resolver can already answer, so renaming that method emptied its walk and
- * the critic reported fresh `gap`s for CloudTrail Trail / RDS DBCluster /
- * DBInstance (measured — the first cut of this change did exactly that).
+ * resolver can already answer, so renaming that method emptied its walk.
  */
 export async function constructGuardedAttribute(
   this: IntrinsicFunctionResolver,
@@ -351,7 +361,20 @@ export async function constructGuardedAttribute(
   context: ResolverContext,
   logicalId: string
 ): Promise<unknown> {
-  const accountInfo = await getAccountInfo(this.resolverRegion);
+  let accountInfo: AwsAccountInfo;
+  let unavailable: AccountIdUnavailableError | undefined;
+  try {
+    accountInfo = await getAccountInfo(this.resolverRegion);
+  } catch (error) {
+    if (!(error instanceof AccountIdUnavailableError)) throw error;
+    unavailable = error;
+    const region = effectiveAccountInfoRegion(this.resolverRegion);
+    accountInfo = {
+      accountId: UNKNOWN_ACCOUNT_STAND_IN,
+      region,
+      partition: derivePartitionAndUrlSuffix(region).partition,
+    };
+  }
   const value = await this.constructAttribute(
     resource,
     attributeName,
@@ -359,18 +382,18 @@ export async function constructGuardedAttribute(
     logicalId,
     accountInfo
   );
-  if (accountInfo.fabricated && embedsAccountId(value, accountInfo.accountId)) {
-    // not-in-class(accountInfo.accountId): an AWS ACCOUNT ID from STS, never a resolved template value.
+  if (unavailable !== undefined && embedsAccountId(value, UNKNOWN_ACCOUNT_STAND_IN)) {
+    // `attributeName` masked for the reason its nested-stack sibling above
+    // states (issue #2827 review). The type too (issue #3441): this guard vets
+    // EVERY constructed value, and for a type no arm matched that value is the
+    // physical id, so the type is arbitrary template text. The account
+    // refusal's own message is cdkd-authored (it names the STS failure by class
+    // only), so it is appended as written. NOT `markNonRetryable`: a failed
+    // lookup is never cached, so a later attempt can heal.
     throw new IntrinsicResolutionRefusalError(
-      // `attributeName` masked for the reason its nested-stack sibling above
-      // states (issue #2827 review). The type too (issue #3441): this guard
-      // vets EVERY constructed value, and for a type no arm matched that
-      // value is the physical id, so the type is arbitrary template text.
       `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resource.resourceType, context)}: ` +
-        `STS did not report this deploy's account id, so cdkd would build the value from the ` +
-        `placeholder account ${accountInfo.accountId} — structurally valid, naming a different ` +
-        `account, and indistinguishable downstream from a real one. Fix the AWS credentials ` +
-        `(or set AWS_ACCOUNT_ID to this deploy's account) and deploy again.`
+        `the value embeds this deploy's account id. ${unavailable.message}`,
+      unavailable
     );
   }
   return value;

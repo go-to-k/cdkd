@@ -215,26 +215,24 @@ describe('a hostile resource TYPE is sanitized where an arbitrary type reaches t
     );
   });
 
-  it('sanitizes the FABRICATED-ACCOUNT refusal, which an unknown type reaches through the fallback', async () => {
-    // NOT gated on a type: `constructGuardedAttribute` vets whatever
-    // `constructAttribute` returned, and for a type no arm matches that is the
-    // physical id itself — so a physical id carrying the placeholder account
-    // is refused under the template's own type string.
+  it('an unknown type no longer reaches the unknown-account refusal (issue #1730)', async () => {
+    // The guard used to match the PLACEHOLDER DIGITS, so a type no arm matched
+    // was refused whenever its physical id carried `123456789012`, and the
+    // template's own type string reached the render. It now matches a stand-in
+    // no physical id can carry, so only a type with a construction arm (a
+    // literal) can be refused. The render still masks the type.
     stsState.response = {};
     const got = await getAtt(EVIL_TYPE, 'Whatever', {
       over: { physicalId: 'thing-123456789012' },
     });
-    expect(got.error, `did not reach the arm: ${JSON.stringify(got)}`).toContain(
-      'STS did not report'
-    );
-    expectSanitized(got.error ?? '', 'the fabricated-account refusal');
+    expect(got.error ?? '').not.toContain('account id');
 
     resetAccountInfoCache();
     stsState.response = {};
-    const control = await getAtt('AWS::SQS::Queue', 'Whatever', {
-      over: { physicalId: 'thing-123456789012' },
+    const control = await getAtt('AWS::SQS::Queue', 'Arn', {
+      over: { physicalId: 'https://sqs.us-east-1.amazonaws.com/1/q' },
     });
-    expect(control.error).toContain('for AWS::SQS::Queue: STS did not report');
+    expect(control.error).toContain("for AWS::SQS::Queue: the value embeds this deploy's account id");
   });
 
   it("sanitizes refuseUnservedAttribute's own render, independent of what its callers gate on", async () => {

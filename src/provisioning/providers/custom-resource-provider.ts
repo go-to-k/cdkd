@@ -954,21 +954,6 @@ const CR_LOG_TAIL_BOILERPLATE =
 const SNS_SERVICE_TOKEN_ARN_RE = /^arn:aws[a-z0-9-]*:sns:/;
 
 /**
- * Account segment {@link syntheticStackId} falls back to when STS could not
- * answer (`AwsAccountInfo.fabricated`, issue
- * [#1730](https://github.com/go-to-k/cdkd/issues/1730)).
- *
- * The Cloud Control enrichment sites answer a fabricated account by OMITTING
- * the value they would have built. That is not available here — `StackId` is a
- * REQUIRED member of the custom-resource request payload — so the choice is
- * between two wrong strings, and the honest one is the one a handler cannot
- * mistake for real. `getAccountInfo`'s own fallback id (`123456789012`) is
- * shaped exactly like a live account; the all-zero id is not a valid AWS
- * account and reads as the placeholder it is.
- */
-const SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT = '000000000000';
-
-/**
  * The synthetic `StackId` handed to a custom-resource handler in place of the
  * CloudFormation stack ARN cdkd does not have.
  *
@@ -997,10 +982,7 @@ const SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT = '000000000000';
  * {@link CustomResourceProvider.resolveSyntheticStackId}.
  */
 function syntheticStackId(logicalId: string, accountInfo: AwsAccountInfo): string {
-  const account = accountInfo.fabricated
-    ? SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT
-    : accountInfo.accountId;
-  return `arn:${accountInfo.partition}:cloudformation:${accountInfo.region}:${account}:stack/cdkd-${logicalId}/cdkd`;
+  return `arn:${accountInfo.partition}:cloudformation:${accountInfo.region}:${accountInfo.accountId}:stack/cdkd-${logicalId}/cdkd`;
 }
 
 /**
@@ -1548,24 +1530,17 @@ export class CustomResourceProvider implements ResourceProvider {
    * Resolve {@link syntheticStackId} against this deploy's REAL account /
    * region / partition (issue #1866).
    *
-   * `getAccountInfo` never throws — it answers a `fabricated` account when STS
-   * cannot, which {@link SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT} handles — so
-   * this cannot turn a working deploy into a failing one on the credential
-   * path. It is resolved ONCE per `create` / `update` / `delete` rather than
-   * per invocation attempt: the value does not vary between attempts, and the
-   * request builder the retry loop re-runs is synchronous.
+   * REJECTS when STS cannot name the account and `AWS_ACCOUNT_ID` is unset
+   * (issue [#1730](https://github.com/go-to-k/cdkd/issues/1730)): `StackId` is
+   * a REQUIRED member of the request payload and has no honest stand-in, so the
+   * create / update / delete fails BEFORE the handler is invoked rather than
+   * handing it a `StackId` naming no account. It is resolved ONCE per `create`
+   * / `update` / `delete` rather than per invocation attempt: the value does not
+   * vary between attempts, and the request builder the retry loop re-runs is
+   * synchronous.
    */
   private async resolveSyntheticStackId(logicalId: string): Promise<string> {
     const accountInfo = await getAccountInfo(this.configuredRegion);
-    if (accountInfo.fabricated) {
-      this.logger.warn(
-        `Custom resource ${logicalId}: STS did not report this deploy's account id, so the ` +
-          `synthetic StackId handed to the handler carries the placeholder account ` +
-          `${SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT}. A handler that parses StackId to re-derive ` +
-          `the account it is running in will not get a usable one — fix the credentials (or set ` +
-          `AWS_ACCOUNT_ID) and re-run.`
-      );
-    }
     return syntheticStackId(logicalId, accountInfo);
   }
 
@@ -2140,8 +2115,9 @@ export class CustomResourceProvider implements ResourceProvider {
     const watch = startInterruptWatch(`Custom resource ${logicalId}`);
     try {
       // Resolved ONCE per call, and deliberately AFTER the watch above: the
-      // value does not vary between attempts, and `getAccountInfo` never
-      // throws, so there is nothing to gain from re-resolving it per attempt.
+      // value does not vary between attempts. It REJECTS when STS cannot name
+      // the account (issue #1730), before any invocation: create / update
+      // fail, and delete's catch reports the resource `skipped` and keeps it.
       const stackId = await this.resolveSyntheticStackId(logicalId);
       // Two budgets, counted SEPARATELY (issue #2033). Sharing the loop counter
       // would let a pre-delivery throw consume the FAILED-response arm's budget

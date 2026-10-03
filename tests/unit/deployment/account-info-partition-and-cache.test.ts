@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import {
   getAccountInfo,
   resetAccountInfoCache,
-  accountInfoClock,
   IntrinsicFunctionResolver,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
-import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
+import {
+  AccountIdUnavailableError,
+  IntrinsicResolutionRefusalError,
+} from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 const warnSpy = vi.hoisted(() => vi.fn());
@@ -39,13 +41,12 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
  *    outside the commercial partition, and structurally valid, so nothing
  *    downstream could catch it.
  * 2. The FABRICATED fallback was cached for the process, so one transient STS
- *    failure poisoned every later caller in the run.
+ *    failure poisoned every later caller in the run. It is now a refusal, and
+ *    a refusal is never cached.
  */
 describe('getAccountInfo partition + caching (issue #1730)', () => {
   const originalRegion = process.env['AWS_REGION'];
   const originalAccountId = process.env['AWS_ACCOUNT_ID'];
-  const realNow = accountInfoClock.now;
-  let now = 1_000_000;
 
   beforeEach(() => {
     resetAccountInfoCache();
@@ -53,13 +54,10 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
     warnSpy.mockClear();
     delete process.env['AWS_ACCOUNT_ID'];
     process.env['AWS_REGION'] = 'us-east-1';
-    now = 1_000_000;
-    accountInfoClock.now = () => now;
   });
 
   afterEach(() => {
     resetAccountInfoCache();
-    accountInfoClock.now = realNow;
     if (originalRegion === undefined) delete process.env['AWS_REGION'];
     else process.env['AWS_REGION'] = originalRegion;
     if (originalAccountId === undefined) delete process.env['AWS_ACCOUNT_ID'];
@@ -158,96 +156,116 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
     expect(stsSend).toHaveBeenCalledTimes(1);
   });
 
-  it('derives the partition on the STS-failure fallback too', async () => {
+  /**
+   * Issue #1730, direction (1): with no account from STS and no
+   * `AWS_ACCOUNT_ID`, there is no honest answer, so `getAccountInfo` REFUSES.
+   * It used to answer the hardcoded `123456789012`, which no consumer could
+   * tell from a real account.
+   */
+  it('REFUSES when STS fails and AWS_ACCOUNT_ID is unset — no placeholder account', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    const error = await getAccountInfo().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(error).toBeInstanceOf(AccountIdUnavailableError);
+    const message = (error as Error).message;
+    expect(message).toMatch(/^Cannot determine the AWS account id: STS GetCallerIdentity failed/);
+    expect(message).toContain('STS unreachable');
+    expect(message).toContain('set AWS_ACCOUNT_ID');
+    expect(message).toContain('aws sts get-caller-identity');
+    expect(message).not.toContain('123456789012');
+    // No `cause`: `formatError` renders one at default verbosity, and an STS
+    // failure's text is AWS-authored.
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it('REFUSES a SUCCESS that carried no Account too', async () => {
+    stsSend.mockResolvedValue({});
+    await expect(getAccountInfo()).rejects.toThrow(
+      /Cannot determine the AWS account id: STS GetCallerIdentity returned no Account/
+    );
+  });
+
+  /**
+   * The refusal is THROWN, so it is persisted to the deployment event log; an
+   * AWS-authored message can spell out the caller's identity. Only the wire
+   * class reaches the thrown text.
+   */
+  it('puts only the AWS failure CLASS into the thrown message, never its text', async () => {
+    const awsError = Object.assign(
+      new Error('User arn:aws:sts::444455556666:assumed-role/Deployer/me is not authorized'),
+      { name: 'AccessDenied', $fault: 'client', $metadata: { httpStatusCode: 403 } }
+    );
+    stsSend.mockRejectedValue(awsError);
+    const error = await getAccountInfo().then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(error?.message).toContain('AccessDenied');
+    expect(error?.message).not.toContain('444455556666');
+    expect(error?.message).not.toContain('assumed-role');
+  });
+
+  it('does NOT cache a refusal — the next call asks STS again and heals', async () => {
+    stsSend.mockRejectedValueOnce(new Error('transient STS blip'));
+    await expect(getAccountInfo()).rejects.toThrow(/transient STS blip/);
+
+    stsSend.mockResolvedValue({ Account: '999988887777' });
+    const healed = await getAccountInfo();
+    expect(healed.accountId).toBe('999988887777');
+    expect(stsSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('every sequential call after a failure re-asks STS (no negative cache)', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    for (let i = 0; i < 3; i++) await expect(getAccountInfo()).rejects.toThrow(/STS unreachable/);
+    expect(stsSend).toHaveBeenCalledTimes(3);
+  });
+
+  it('uses AWS_ACCOUNT_ID when STS fails, deriving the partition from the region', async () => {
+    process.env['AWS_ACCOUNT_ID'] = '111122223333';
     stsSend.mockRejectedValue(new Error('STS unreachable'));
     process.env['AWS_REGION'] = 'us-gov-east-1';
     const info = await getAccountInfo();
+    expect(info.accountId).toBe('111122223333');
     expect(info.partition).toBe('aws-us-gov');
-    expect(info.fabricated).toBe(true);
-  });
-
-  it('does NOT cache a fabricated fallback for the process — a later call heals', async () => {
-    stsSend.mockRejectedValueOnce(new Error('transient STS blip'));
-    const fabricated = await getAccountInfo();
-    expect(fabricated.fabricated).toBe(true);
-    expect(fabricated.accountId).toBe('123456789012');
-
-    // Past the bounded fabricated-answer window, STS is retried.
-    now += 60_000;
-    stsSend.mockResolvedValue({ Account: '999988887777' });
-    const healed = await getAccountInfo();
-    expect(healed.fabricated).toBeUndefined();
-    expect(healed.accountId).toBe('999988887777');
-    expect(stsSend).toHaveBeenCalledTimes(2);
-  });
-
-  it('does NOT cache a SUCCESS that carried no Account either', async () => {
-    stsSend.mockResolvedValueOnce({});
-    const fabricated = await getAccountInfo();
-    expect(fabricated.fabricated).toBe(true);
-
-    now += 60_000;
-    stsSend.mockResolvedValue({ Account: '999988887777' });
-    const healed = await getAccountInfo();
-    expect(healed.accountId).toBe('999988887777');
-    expect(stsSend).toHaveBeenCalledTimes(2);
-  });
-
-  /**
-   * PR review: without the bounded window, an unreachable STS made EVERY
-   * `Fn::GetAtt` and every `AWS::AccountId` / `AWS::Partition` / `AWS::StackId`
-   * pseudo-parameter re-issue GetCallerIdentity (each with the SDK's own
-   * 3-attempt retry) and print a warning — hundreds of calls on a large stack.
-   */
-  it('reuses a fabricated answer inside the TTL instead of hammering STS', async () => {
-    stsSend.mockRejectedValue(new Error('STS unreachable'));
-    for (let i = 0; i < 25; i++) await getAccountInfo();
-    expect(stsSend).toHaveBeenCalledTimes(1);
-  });
-
-  it('retries once the fabricated window expires', async () => {
-    stsSend.mockRejectedValue(new Error('STS unreachable'));
-    await getAccountInfo();
-    expect(stsSend).toHaveBeenCalledTimes(1);
-
-    now += 10_001;
-    await getAccountInfo();
-    expect(stsSend).toHaveBeenCalledTimes(2);
-  });
-
-  it('re-derives the partition for an override served from the FABRICATED window', async () => {
-    stsSend.mockRejectedValue(new Error('STS unreachable'));
-    const first = await getAccountInfo();
-    expect(first.partition).toBe('aws');
-
-    const overridden = await getAccountInfo('cn-north-1');
-    expect(overridden.region).toBe('cn-north-1');
+    const overridden = await getAccountInfo('cn-northwest-1');
+    expect(overridden.region).toBe('cn-northwest-1');
     expect(overridden.partition).toBe('aws-cn');
-    expect(stsSend).toHaveBeenCalledTimes(1);
   });
 
-  it('resetAccountInfoCache clears the fabricated window too', async () => {
+  it('REFUSES a malformed AWS_ACCOUNT_ID rather than building ARNs from it', async () => {
+    process.env['AWS_ACCOUNT_ID'] = 'my-account';
     stsSend.mockRejectedValue(new Error('STS unreachable'));
-    await getAccountInfo();
-    expect(stsSend).toHaveBeenCalledTimes(1);
-
-    resetAccountInfoCache();
-    await getAccountInfo();
-    expect(stsSend).toHaveBeenCalledTimes(2);
+    const error = await getAccountInfo().then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(error).toBeInstanceOf(AccountIdUnavailableError);
+    expect(error?.message).toContain('AWS_ACCOUNT_ID is not a 12-digit account id');
+    expect(error?.message).not.toContain('my-account');
+    // Not cached as an answer either: the next call asks STS again.
+    stsSend.mockResolvedValue({ Account: '999988887777' });
+    expect((await getAccountInfo()).accountId).toBe('999988887777');
   });
 
-  it('derives the partition from an OVERRIDE region on the STS-failure path', async () => {
-    stsSend.mockRejectedValue(new Error('STS unreachable'));
-    const info = await getAccountInfo('cn-northwest-1');
-    expect(info.region).toBe('cn-northwest-1');
-    expect(info.partition).toBe('aws-cn');
+  it('uses AWS_ACCOUNT_ID when STS answers with no Account', async () => {
+    process.env['AWS_ACCOUNT_ID'] = '111122223333';
+    stsSend.mockResolvedValue({});
+    expect((await getAccountInfo()).accountId).toBe('111122223333');
+  });
+
+  it('prefers the REAL STS answer over AWS_ACCOUNT_ID when STS succeeds', async () => {
+    process.env['AWS_ACCOUNT_ID'] = '111122223333';
+    succeed('999988887777');
+    expect((await getAccountInfo()).accountId).toBe('999988887777');
   });
 
   /**
-   * PR review: the TTL collapses SEQUENTIAL callers only. `cdkd deploy
-   * --concurrency 10` resolves ten resources' intrinsics at once, so without
-   * in-flight dedup an STS outage still costs ten calls (each with the SDK's
-   * own retry) and ten identical warnings per window.
+   * `cdkd deploy --concurrency 10` resolves ten resources' intrinsics at
+   * once, so without in-flight dedup an STS outage costs ten calls, each with
+   * the SDK's own retry.
    */
   it('shares ONE STS round trip across concurrent callers', async () => {
     let resolveSts: ((value: unknown) => void) | undefined;
@@ -266,7 +284,7 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
     for (const info of results) expect(info.accountId).toBe('999988887777');
   });
 
-  it('dedups concurrent callers on the FAILURE path too', async () => {
+  it('dedups concurrent callers on the FAILURE path too, rejecting each', async () => {
     let rejectSts: ((reason: unknown) => void) | undefined;
     stsSend.mockImplementation(
       () =>
@@ -274,13 +292,13 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
           rejectSts = reject;
         })
     );
-    const inFlight = Promise.all(Array.from({ length: 10 }, () => getAccountInfo()));
+    const inFlight = Promise.allSettled(Array.from({ length: 10 }, () => getAccountInfo()));
     await Promise.resolve();
     rejectSts?.(new Error('STS unreachable'));
     const results = await inFlight;
 
     expect(stsSend).toHaveBeenCalledTimes(1);
-    for (const info of results) expect(info.fabricated).toBe(true);
+    for (const result of results) expect(result.status).toBe('rejected');
   });
 
   it('a concurrent caller with its own override still gets its own partition', async () => {
@@ -302,10 +320,9 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
     expect(overridden?.region).toBe('cn-north-1');
   });
 
-  it('releases the in-flight slot so a later call can retry', async () => {
+  it('releases the in-flight slot after a failure so a later call can retry', async () => {
     stsSend.mockRejectedValueOnce(new Error('blip'));
-    await getAccountInfo();
-    now += 60_000;
+    await expect(getAccountInfo()).rejects.toThrow(/blip/);
     stsSend.mockResolvedValue({ Account: '999988887777' });
     const healed = await getAccountInfo();
     expect(healed.accountId).toBe('999988887777');
@@ -320,30 +337,18 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
     expect(stsSend).toHaveBeenCalledTimes(1);
   });
 
-  it('an operator-supplied AWS_ACCOUNT_ID is a real answer, and IS cached', async () => {
-    process.env['AWS_ACCOUNT_ID'] = '111122223333';
-    stsSend.mockRejectedValue(new Error('STS unreachable'));
-    const first = await getAccountInfo();
-    expect(first.accountId).toBe('111122223333');
-    expect(first.fabricated).toBeUndefined();
-
-    await getAccountInfo();
-    expect(stsSend).toHaveBeenCalledTimes(1);
-  });
 });
 
 /**
  * The consumer half: `constructAttribute` builds ~30 account-bearing ARNs, and
- * an ARN carrying the placeholder account has no wildcard for
- * `isPlaceholderArn` (#1681) to catch — it is served as the resource's
- * `Fn::GetAtt` answer and recorded into state.
+ * with no account there is nothing honest to build them from.
  *
- * The refusal is keyed on the CONSTRUCTED VALUE containing the fabricated
- * account, never on the attribute NAME: `AWS::S3::Bucket`'s `Arn` has no
- * account field, so a name-based `*Arn` guard would refuse a value the
- * fabricated id cannot corrupt. The counter-cases are what pin that.
+ * The refusal is keyed on the CONSTRUCTED VALUE embedding the account, never
+ * on the attribute NAME: `AWS::S3::Bucket`'s `Arn` has no account field, so a
+ * name-based `*Arn` guard would refuse a value that needs no account. The
+ * counter-cases are what pin that.
  */
-describe('Fn::GetAtt refuses an ARN built from a fabricated account (issue #1730)', () => {
+describe('Fn::GetAtt refuses a value that needs an unknown account (issue #1730)', () => {
   const originalRegion = process.env['AWS_REGION'];
   const originalAccountId = process.env['AWS_ACCOUNT_ID'];
 
@@ -386,8 +391,7 @@ describe('Fn::GetAtt refuses an ARN built from a fabricated account (issue #1730
    * `:<accountId>:` an ARN uses, but `RepositoryUri` embeds the account with no
    * colons (`<acct>.dkr.ecr.<region>.amazonaws.com/<repo>`) — the only such site
    * in `constructAttribute`. `CloudControlProvider` omits that exact attribute
-   * when the account is fabricated, and the resolver then served it anyway,
-   * nullifying the omission.
+   * when the account is unknown, so the resolver must not serve it either.
    */
   it('refuses ECR RepositoryUri, whose account embedding has no colons', async () => {
     stsSend.mockRejectedValue(new Error('STS unreachable'));
@@ -397,7 +401,7 @@ describe('Fn::GetAtt refuses an ARN built from a fabricated account (issue #1730
         { 'Fn::GetAtt': ['Thing', 'RepositoryUri'] },
         mkContext('AWS::ECR::Repository', 'my-repo')
       )
-    ).rejects.toThrow(/placeholder account 123456789012/);
+    ).rejects.toThrow(/RepositoryUri.*Cannot determine the AWS account id/s);
   });
 
   it('resolves ECR RepositoryUri normally for a REAL account (counter-case)', async () => {
@@ -421,17 +425,17 @@ describe('Fn::GetAtt refuses an ARN built from a fabricated account (issue #1730
     expect(result).toBe('999988887777.dkr.ecr.cn-north-1.amazonaws.com.cn/my-repo');
   });
 
-  // The documented fail-SAFE over-refusal: a value that merely CONTAINS the
-  // placeholder digits is refused rather than served, and only while STS fails.
-  it('refuses a value that merely CONTAINS the placeholder digits (documented fail-safe)', async () => {
+  // The old guard matched the PLACEHOLDER DIGITS, so a physical id that merely
+  // contained `123456789012` was refused while STS failed. The stand-in it
+  // matches now cannot occur in a physical id, so that value is served.
+  it('serves an account-free value whose physical id contains 12 digits', async () => {
     stsSend.mockRejectedValue(new Error('STS unreachable'));
     const resolver = new IntrinsicFunctionResolver();
-    await expect(
-      resolver.resolve(
-        { 'Fn::GetAtt': ['Thing', 'Arn'] },
-        mkContext('AWS::DynamoDB::Table', 'table-123456789012-x')
-      )
-    ).rejects.toThrow(IntrinsicResolutionRefusalError);
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['Thing', 'Arn'] },
+      mkContext('AWS::S3::Bucket', 'bucket-123456789012-x')
+    );
+    expect(result).toBe('arn:aws:s3:::bucket-123456789012-x');
   });
 
   it('refuses an account-bearing ARN when STS could not answer', async () => {
@@ -445,15 +449,21 @@ describe('Fn::GetAtt refuses an ARN built from a fabricated account (issue #1730
     ).rejects.toThrow(IntrinsicResolutionRefusalError);
   });
 
-  it('the refusal names the placeholder account and the remedy', async () => {
+  it('the refusal names the attribute, the cause and the remedy, and no stand-in', async () => {
     stsSend.mockRejectedValue(new Error('STS unreachable'));
     const resolver = new IntrinsicFunctionResolver();
-    await expect(
-      resolver.resolve(
-        { 'Fn::GetAtt': ['Thing', 'Arn'] },
-        mkContext('AWS::DynamoDB::Table', 'my-table')
-      )
-    ).rejects.toThrow(/placeholder account 123456789012.*set AWS_ACCOUNT_ID/s);
+    const error = await resolver
+      .resolve({ 'Fn::GetAtt': ['Thing', 'Arn'] }, mkContext('AWS::DynamoDB::Table', 'my-table'))
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    expect(error?.message).toMatch(
+      /Fn::GetAtt \[Thing, Arn\].*Cannot determine the AWS account id: .*STS unreachable.*set AWS_ACCOUNT_ID/s
+    );
+    expect(error?.message).not.toContain('\u0000');
+    expect(error?.message).not.toContain('cdkd-unknown-account');
+    expect(error?.cause).toBeInstanceOf(AccountIdUnavailableError);
   });
 
   it('does NOT refuse an ARN with no account field (S3 bucket, counter-case)', async () => {
@@ -541,6 +551,48 @@ describe('Fn::GetAtt refuses an ARN built from a fabricated account (issue #1730
         { 'Fn::Sub': 'x-${Thing.Arn}-y' },
         mkContext('AWS::DynamoDB::Table', 'my-table')
       )
-    ).rejects.toThrow(/placeholder account 123456789012/);
+    ).rejects.toThrow(IntrinsicResolutionRefusalError);
+  });
+
+  /**
+   * The pseudo parameters (issue #1730, direction 1). `AWS::AccountId` and
+   * `AWS::StackId` used to serve the placeholder account silently; now they
+   * refuse. `AWS::Region` / `AWS::Partition` need no account, so they take no
+   * STS hop at all and an outage cannot refuse them.
+   */
+  it('Ref AWS::AccountId REFUSES when STS cannot name the account', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    const resolver = new IntrinsicFunctionResolver();
+    await expect(
+      resolver.resolve({ Ref: 'AWS::AccountId' }, mkContext('AWS::S3::Bucket', 'b'))
+    ).rejects.toThrow(AccountIdUnavailableError);
+  });
+
+  it('AWS::StackId REFUSES rather than carrying a placeholder account', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    const resolver = new IntrinsicFunctionResolver();
+    await expect(
+      resolver.resolve(
+        { Ref: 'AWS::StackId' },
+        { ...mkContext('AWS::S3::Bucket', 'b'), stackName: 'MyStack' }
+      )
+    ).rejects.toThrow(AccountIdUnavailableError);
+  });
+
+  it('${AWS::AccountId} inside Fn::Sub refuses rather than staying a literal', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    const resolver = new IntrinsicFunctionResolver();
+    await expect(
+      resolver.resolve({ 'Fn::Sub': 'x-${AWS::AccountId}' }, mkContext('AWS::S3::Bucket', 'b'))
+    ).rejects.toThrow(AccountIdUnavailableError);
+  });
+
+  it('AWS::Region and AWS::Partition resolve WITHOUT asking STS', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    const resolver = new IntrinsicFunctionResolver('cn-north-1');
+    const ctx = mkContext('AWS::S3::Bucket', 'b');
+    expect(await resolver.resolve({ Ref: 'AWS::Region' }, ctx)).toBe('cn-north-1');
+    expect(await resolver.resolve({ Ref: 'AWS::Partition' }, ctx)).toBe('aws-cn');
+    expect(stsSend).not.toHaveBeenCalled();
   });
 });
