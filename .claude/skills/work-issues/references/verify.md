@@ -21,11 +21,13 @@ the lane's tree. Brief the lane: no build, `/check` or `/verify-pr` there (a
 build rewrites the live fixture's `dist/`), no rebase or install, never the
 live fixture's directory, and stage only its own test files, since the
 integ's ledger row lands in the same tree (#4302). A lane REPORTS
-`markgate status integ-destroy --explain`'s line, never "integ not needed":
-comment-only edits count (#3873). The
+`mise exec -- markgate status integ-destroy --explain`'s line, never "integ
+not needed": comment-only edits count (#3873). Bare `markgate` can resolve to
+a stale PATH copy that dies `unknown hash "diff"` (#4477's lane, three
+reports). The
 gate's `hash: diff` stales on a rebase only when main changed a scoped file
 THIS branch changes too, so a set marker on a MERGEABLE PR needs no rebase
-(`markgate status`) — unless main changed code the fixture EXERCISES: re-run
+(`mise exec -- markgate status`) — unless main changed code the fixture EXERCISES: re-run
 it on the rebased head (#3726).
 
 - **DECLARE the tree final, in words, to whoever is still editing it** — every
