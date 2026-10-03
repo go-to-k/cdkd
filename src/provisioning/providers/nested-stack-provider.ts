@@ -472,6 +472,8 @@ export class NestedStackProvider implements ResourceProvider {
       parentStackName: childStackName,
       parentRegion: childRegion,
       nestedTemplates: undefined,
+      // A row's report slot never crosses a nesting boundary (issue #1989).
+      childUnaddressed: undefined,
     };
 
     const childResult = await withNestedStackContext(childCtx, () =>
@@ -814,9 +816,31 @@ export class NestedStackProvider implements ResourceProvider {
       parentStackName: childStackName,
       parentRegion: childRegion,
       nestedTemplates: grandchildTemplates,
+      // The PARENT row's slot never reaches the child: the child engine binds
+      // its own per row, and a grandchild writing straight into this one would
+      // be counted again through the child's `DeployResult` below.
+      childUnaddressed: undefined,
     };
 
-    await withNestedStackContext(childCtx, () => childEngine.deploy(childStackName, childTemplate));
+    const childResult = await withNestedStackContext(childCtx, () =>
+      childEngine.deploy(childStackName, childTemplate)
+    );
+    // Issue #1989: hand what the child left unaddressed to the parent engine,
+    // which adds it to this run's counters -- the summary rows, `RunCounts`
+    // and the exit code. `childResult` already carries the grandchildren's.
+    // Should one row ever run the child twice (this provider sets
+    // `disableOuterRetry`, so today it does not), the two counters differ: a
+    // skipped DELETE keeps its record and is counted again by the re-run, so
+    // the LAST report holds it; an orphaned predecessor is untracked, so the
+    // re-run diffs that row NO_CHANGE and reports 0 -- it must ADD, or the
+    // survivor drops out of the exit code.
+    const slot = parentCtx.childUnaddressed;
+    if (slot) {
+      slot.last = {
+        deleteSkipped: childResult.deleteSkipped,
+        updatePartial: (slot.last?.updatePartial ?? 0) + childResult.updatePartial,
+      };
+    }
   }
 
   /**

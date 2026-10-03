@@ -18,6 +18,10 @@ import { isReplacementCeiling } from '../deploy-value-equality.js';
 import { withResourceDeadline } from '../resource-deadline.js';
 import { maskSecretsInError } from '../secret-redaction.js';
 import {
+  type NestedChildUnaddressed,
+  collectNestedChildUnaddressed,
+} from '../../provisioning/nested-stack-context.js';
+import {
   priorAttemptLookup,
   priorAttemptsInJournal,
   withPriorAttempts,
@@ -180,22 +184,29 @@ export async function provisionResource(
   // id is gone from state and only the free-text reason would still carry it.
   const physicalIdBeforeUpdate = stateResources[logicalId]?.physicalId;
   const provisionedByBeforeUpdate = stateResources[logicalId]?.provisionedBy;
+  // Issue #1989: what a nested child's deploy left unaddressed, when this row
+  // is an `AWS::CloudFormation::Stack`. Added to `counts` only once the row
+  // has succeeded, beside the row's own outcome, never in place of it.
+  let nestedChildUnaddressed: NestedChildUnaddressed | undefined;
   try {
     await withResourceDeadline(
       async () => {
-        const bodyResult = await this.provisionResourceBody(
-          logicalId,
-          change,
-          stateResources,
-          stackName,
-          template,
-          parameterValues,
-          conditions,
-          counts,
-          progress
+        const { value: bodyResult, unaddressed } = await collectNestedChildUnaddressed(() =>
+          this.provisionResourceBody(
+            logicalId,
+            change,
+            stateResources,
+            stackName,
+            template,
+            parameterValues,
+            conditions,
+            counts,
+            progress
+          )
         );
         deleteSkipped = bodyResult?.deleteSkipped;
         updatePartial = bodyResult?.updatePartial;
+        nestedChildUnaddressed = unaddressed;
       },
       {
         warnAfterMs,
@@ -225,6 +236,15 @@ export async function provisionResource(
           ),
       }
     );
+    // Issue #1989: the child's own rows already logged each survivor and
+    // recorded its `RESOURCE_SKIPPED` (a nested child's events belong to this
+    // run), so what was missing is only the COUNT. Adding it here carries it
+    // to `DeployResult`, the summary rows, `RunCounts.skipped` and the exit
+    // code, and up through every ancestor's `DeployResult` in turn.
+    if (counts && nestedChildUnaddressed) {
+      counts.deleteSkipped += nestedChildUnaddressed.deleteSkipped;
+      counts.updatePartial += nestedChildUnaddressed.updatePartial;
+    }
     // Issue #1762: a DELETE the provider refused to issue is NOT a
     // success — the events store is the durable post-mortem, and
     // `RESOURCE_SUCCEEDED` there would claim cdkd deleted a resource that
