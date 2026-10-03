@@ -558,7 +558,7 @@ describe('Lambda tokenless create retry safety (issue #2080, detection only)', (
       expect(line.split(WITHHELD_AWS_COMMAND)).toHaveLength(3);
     });
 
-    it('a secret-derived layer ARN given as LayerName: its bare name is masked in the candidate ARNs too', async () => {
+    it('a secret-derived layer ARN given as LayerName is masked in the candidate ARNs', async () => {
       const secretArn = `${LAYER_ARN_PREFIX}zq`;
       aws.loseNextCreateResponse = transient500();
 
@@ -570,6 +570,34 @@ describe('Lambda tokenless create retry safety (issue #2080, detection only)', (
       expect(line).toContain('1 layer version(s) were created');
       expect(line).not.toMatch(/\bzq\b/);
       expect(line.split(WITHHELD_AWS_COMMAND)).toHaveLength(3);
+    });
+
+    it('a secret-derived layer ARN given as LayerName: a failure quoting only its bare name is masked', async () => {
+      const secretArn = `${LAYER_ARN_PREFIX}zq`;
+      aws.loseNextCreateResponse = transient500();
+      // AWS quotes the bare layer name, which the whole-ARN masker never sees.
+      aws.failNext.set('ListLayerVersionsCommand', [
+        Object.assign(new Error('Layer zq is not accessible to this account'), {
+          name: 'AccessDeniedException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 403 },
+        }),
+      ]);
+
+      await createWithRetry(LAYER, { ...LAYER_PROPS, LayerName: secretArn }, 'Res', (t) =>
+        t.split(secretArn).join('***')
+      );
+
+      expect(warnLines().some((l) => l.includes('could not look for it (ListLayerVersions'))).toBe(
+        true
+      );
+      // The warn line carries only the error class for an AWS-authored
+      // failure; the failure's own text goes to the debug line.
+      const detail = debugSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.startsWith('ListLayerVersions failed with'))!;
+      expect(detail).toContain('is not accessible');
+      expect(detail).not.toMatch(/\bzq\b/);
     });
 
     it('a region that cannot be read drops the --region flag rather than the command', async () => {
