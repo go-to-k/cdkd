@@ -250,6 +250,24 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
     expect((await getAccountInfo()).accountId).toBe('999988887777');
   });
 
+  it.each(['1234567890123', 'acct-123456789012', '12345678901'])(
+    'REFUSES an AWS_ACCOUNT_ID that is not exactly 12 digits (%s)',
+    async (value) => {
+      process.env['AWS_ACCOUNT_ID'] = value;
+      stsSend.mockRejectedValue(new Error('STS unreachable'));
+      await expect(getAccountInfo()).rejects.toThrow(/AWS_ACCOUNT_ID is not a 12-digit account id/);
+    }
+  );
+
+  it('WARNS when it falls back to AWS_ACCOUNT_ID', async () => {
+    process.env['AWS_ACCOUNT_ID'] = '111122223333';
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    await getAccountInfo();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('using AWS_ACCOUNT_ID for the account id')
+    );
+  });
+
   it('uses AWS_ACCOUNT_ID when STS answers with no Account', async () => {
     process.env['AWS_ACCOUNT_ID'] = '111122223333';
     stsSend.mockResolvedValue({});
@@ -463,7 +481,29 @@ describe('Fn::GetAtt refuses a value that needs an unknown account (issue #1730)
     );
     expect(error?.message).not.toContain('\u0000');
     expect(error?.message).not.toContain('cdkd-unknown-account');
-    expect(error?.cause).toBeInstanceOf(AccountIdUnavailableError);
+    // Said ONCE: no `cause`, which `formatError` would print a second time.
+    expect(error?.cause).toBeUndefined();
+    expect(error?.message.split('Cannot determine the AWS account id').length).toBe(2);
+  });
+
+  it('propagates a NON-account failure rather than building against the stand-in', async () => {
+    // Only `AccountIdUnavailableError` takes the stand-in arm. Anything else
+    // must surface as itself.
+    const resolver = new IntrinsicFunctionResolver();
+    const boom = new Error('unexpected failure');
+    const spy = vi
+      .spyOn(await import('../../../src/deployment/intrinsic-resolver/support.js'), 'getAccountInfo')
+      .mockRejectedValue(boom);
+    try {
+      await expect(
+        resolver.resolve(
+          { 'Fn::GetAtt': ['Thing', 'DomainName'] },
+          mkContext('AWS::S3::Bucket', 'my-bucket')
+        )
+      ).rejects.toBe(boom);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('does NOT refuse an ARN with no account field (S3 bucket, counter-case)', async () => {

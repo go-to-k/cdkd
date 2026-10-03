@@ -754,10 +754,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * `arn:{partition}:execute-api:{region}:{account}:{apiId}` — the ARN AWS
    * documents for an API Gateway v2 API, which no API call returns.
    *
-   * Refuses to record a FABRICATED account, exactly as
-   * `SSMParameterProvider.buildParameterArn` does: an ARN naming a placeholder
-   * account is worse than an absent one, because it is persisted into
-   * `state.json` and outlives the deploy that produced it. The partition is
+   * Records NOTHING when `getAccountInfo` cannot name the account (issue
+   * #1730), exactly as `SSMParameterProvider.buildParameterArn` does: an ARN
+   * naming the wrong account is worse than an absent one, because it is
+   * persisted into `state.json` and outlives the deploy that produced it. The partition is
    * DERIVED through the same closed region mapping `${AWS::Partition}` uses,
    * and the region segment is canonicalized — defence in depth rather than the
    * only fold, since `getAccountInfo` already canonicalizes what it returns
@@ -796,8 +796,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         accountInfo = await getAccountInfo(region);
       } catch (error) {
         // STS cannot name the account and `AWS_ACCOUNT_ID` is unset (issue
-        // #1730). Its message is cdkd-authored (it names the STS failure by
-        // class only), so it is the warning's reason as written.
+        // #1730). Its message is cdkd-authored (it names an AWS-authored STS
+        // failure by class only), so it is the warning's reason as written.
         if (!(error instanceof AccountIdUnavailableError)) throw error;
         log.warn(
           `The ExecuteApiArn attribute for API ${apiId} is NOT recorded: ${error.message} ` +

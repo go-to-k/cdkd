@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 const mockLoggerWarn = vi.hoisted(() => vi.fn());
 const mockAccountInfo = vi.hoisted(() => ({
   unavailable: false,
+  otherFailure: undefined as Error | undefined,
   value: {
     partition: 'aws',
     region: 'us-east-1',
@@ -39,6 +40,7 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async () => {
     // that reaches a built ARN. Those `region:` fields are kept only so the
     // records read as realistic; changing one alone has no effect.
     getAccountInfoCalls.push(overrideRegion);
+    if (mockAccountInfo.otherFailure) return Promise.reject(mockAccountInfo.otherFailure);
     if (mockAccountInfo.unavailable) {
       return Promise.reject(
         new AccountIdUnavailableError('Cannot determine the AWS account id: STS unreachable.')
@@ -103,6 +105,7 @@ describe('CloudControlProvider ARN enrichment omits on an unknown account (issue
     ccClientRegion.value = 'us-east-1';
     provider = new CloudControlProvider();
     mockAccountInfo.unavailable = false;
+    mockAccountInfo.otherFailure = undefined;
     mockAccountInfo.value = {
       partition: 'aws',
       region: 'us-east-1',
@@ -143,6 +146,17 @@ describe('CloudControlProvider ARN enrichment omits on an unknown account (issue
         /^Not enriching AWS::KMS::Key Arn for abcd-1234: Cannot determine the AWS account id: .* the record heals on its next update\.$/
       )
     );
+  });
+
+  it('does NOT swallow a failure other than the unknown account', async () => {
+    // Only `AccountIdUnavailableError` is the omit-with-reason case. Anything
+    // else goes back to the enrichment site's own catch, and must not be
+    // reported as the unknown-account omission.
+    mockAccountInfo.otherFailure = new Error('unexpected failure');
+    const enriched = await enrich('AWS::KMS::Key', 'abcd-1234');
+    expect(enriched['Arn']).toBeUndefined();
+    const messages = mockLoggerWarn.mock.calls.map((call) => String(call[0]));
+    expect(messages.some((m) => m.startsWith('Not enriching'))).toBe(false);
   });
 
   it('still sets the KMS KeyId, which needs no account id', async () => {

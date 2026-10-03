@@ -146,8 +146,8 @@ export function replacementCreateAdoptsName(
  * take is derived from the old resource's ARN — a state machine's, or, across
  * a Type change, any ARN in the STACK's region (`region`), for its partition,
  * region and account; an ARN of another region refuses. Not from
- * `getAccountInfo`, which answers a FABRICATED account when STS is
- * unreachable: a lookup of a made-up ARN answers "free".
+ * `getAccountInfo`, which refuses when STS is unreachable (issue #1730), and a
+ * lookup of a made-up ARN would answer "free".
  */
 export function replacementNameProbe(input: {
   resourceType: string;

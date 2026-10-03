@@ -387,13 +387,14 @@ export async function constructGuardedAttribute(
     // states (issue #2827 review). The type too (issue #3441): this guard vets
     // EVERY constructed value, and for a type no arm matched that value is the
     // physical id, so the type is arbitrary template text. The account
-    // refusal's own message is cdkd-authored (it names the STS failure by class
-    // only), so it is appended as written. NOT `markNonRetryable`: a failed
-    // lookup is never cached, so a later attempt can heal.
+    // refusal's own message is cdkd-authored (it names an AWS-authored STS
+    // failure by class only), so it is appended as written, and NOT passed as
+    // `cause`, which `formatError` would print a second time. NOT
+    // `markNonRetryable`: a failed lookup is never cached, so a later attempt
+    // can heal.
     throw new IntrinsicResolutionRefusalError(
       `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resource.resourceType, context)}: ` +
-        `the value embeds this deploy's account id. ${unavailable.message}`,
-      unavailable
+        `the value embeds this deploy's account id. ${unavailable.message}`
     );
   }
   return value;

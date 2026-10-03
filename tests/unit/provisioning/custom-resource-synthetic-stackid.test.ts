@@ -264,6 +264,22 @@ describe('CustomResourceProvider synthetic StackId (issue #1866)', () => {
     expect(sentRequests()).toEqual([]);
   });
 
+  it('an UPDATE that cannot resolve the account fails before invoking the handler', async () => {
+    mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
+    const provider = makeProvider();
+
+    await expect(
+      provider.update(
+        'CrResource',
+        'phys-123',
+        'Custom::CrResource',
+        { ServiceToken: SERVICE_TOKEN, Value: 'new' },
+        { ServiceToken: SERVICE_TOKEN, Value: 'old' }
+      )
+    ).rejects.toThrow(/Cannot determine the AWS account id/);
+    expect(sentRequests()).toEqual([]);
+  });
+
   it('uses an operator AWS_ACCOUNT_ID when STS cannot answer', async () => {
     mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
     process.env['AWS_ACCOUNT_ID'] = '444455556666';

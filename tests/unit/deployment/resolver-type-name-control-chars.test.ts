@@ -220,7 +220,7 @@ describe('a hostile resource TYPE is sanitized where an arbitrary type reaches t
     // was refused whenever its physical id carried `123456789012`, and the
     // template's own type string reached the render. It now matches a stand-in
     // no physical id can carry, so only a type with a construction arm (a
-    // literal) can be refused. The render still masks the type.
+    // literal) can be refused, and a hostile type cannot reach that render.
     stsState.response = {};
     const got = await getAtt(EVIL_TYPE, 'Whatever', {
       over: { physicalId: 'thing-123456789012' },

@@ -192,6 +192,21 @@ describe('resolvePseudoParameterIntrinsics (issue #1897)', () => {
     }
   });
 
+  it('propagates a NON-account failure instead of leaving the intrinsic unresolved', async () => {
+    // Only `AccountIdUnavailableError` means "no account"; anything else is a
+    // bug or an outage the importer must surface (as a `failed` row).
+    const resolverModule = await import('../../../src/deployment/intrinsic-function-resolver.js');
+    const boom = new Error('unexpected failure');
+    const spy = vi.spyOn(resolverModule, 'getAccountInfo').mockRejectedValue(boom);
+    try {
+      await expect(
+        resolvePseudoParameterIntrinsics({ Name: ACCOUNT_JOIN }, 'us-east-1')
+      ).rejects.toBe(boom);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('asks STS nothing when no intrinsic needs the account', async () => {
     await resolvePseudoParameterIntrinsics(
       { A: { Ref: 'AWS::URLSuffix' }, B: { Ref: 'MyBucket' }, C: 'plain' },

@@ -243,3 +243,47 @@ describe('embedsAccountId (issue #1746)', () => {
     );
   });
 });
+
+/**
+ * Issue #1730: `getAccountInfo` now REFUSES when STS cannot name the account.
+ * `Fn::GetAZs ''` (what an environment-agnostic CDK VPC emits) needs only the
+ * region, so it must take no STS hop and keep resolving through an outage.
+ */
+describe('Fn::GetAZs with no region takes no STS hop (issue #1730)', () => {
+  const originalRegion = process.env['AWS_REGION'];
+  const originalAccountId = process.env['AWS_ACCOUNT_ID'];
+
+  beforeEach(() => {
+    resetAccountInfoCache();
+    stsSend.mockReset();
+    ec2Send.mockReset();
+    delete process.env['AWS_ACCOUNT_ID'];
+    process.env['AWS_REGION'] = 'eu-central-1';
+  });
+
+  afterEach(() => {
+    resetAccountInfoCache();
+    if (originalRegion === undefined) delete process.env['AWS_REGION'];
+    else process.env['AWS_REGION'] = originalRegion;
+    if (originalAccountId === undefined) delete process.env['AWS_ACCOUNT_ID'];
+    else process.env['AWS_ACCOUNT_ID'] = originalAccountId;
+  });
+
+  it('resolves the current region AZs while STS is failing', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    ec2Send.mockResolvedValue({
+      AvailabilityZones: [{ ZoneName: 'ap-south-1a' }, { ZoneName: 'ap-south-1b' }],
+    });
+    const resolver = new IntrinsicFunctionResolver('ap-south-1');
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAZs': '' },
+      { template: { Resources: {} }, resources: {} }
+    );
+
+    expect(result).toEqual(['ap-south-1a', 'ap-south-1b']);
+    expect(stsSend).not.toHaveBeenCalled();
+    // The region filter is the resolver's own region, not a default.
+    expect(JSON.stringify(ec2Send.mock.calls[0]?.[0]?.input)).toContain('ap-south-1');
+  });
+});
