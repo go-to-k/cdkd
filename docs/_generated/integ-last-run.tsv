@@ -68,6 +68,7 @@ cross-stack-secret-import	2026-10-03T10:40:20Z	PASS	381	verify.sh	rc ok, orph cl
 custom-resource-getatt-data	2026-10-03T06:00:30Z	PASS	110	verify.sh	rc ok, orph clean (#4497)
 custom-resource-masked-service-token	2026-09-28T21:40:21Z	PASS	156	verify.sh	rc ok, orph clean; #3938 + #3976 refusal + #3960 seeded arms; pre-#3976 probe RED at R1
 custom-resource-noecho-nested	2026-10-03T10:45:56Z	PASS	997	verify.sh	rc ok, orph clean (#4508)
+custom-resource-noecho-nested	2026-10-03T13:11:36Z	PASS	896	verify.sh	rc ok, orph clean; #4474 deploy/diff/destroy --all over 4 top-level stacks (two earlier runs voided by a peer machine destroying the fixture mid-run)
 custom-resource-provider	2026-10-01T03:26:48Z	PASS	778	verify.sh	rc ok, orph clean; #4255 waiter-payload rebased head (26 del/0 err)
 custom-resource-resolved-secret	2026-10-03T10:28:29Z	PASS	341	verify.sh	rc ok, orph clean (#4508)
 data-analytics	2026-09-29T12:11:12Z	PASS	226	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
@@ -210,7 +211,7 @@ local-invoke-layers	2026-09-26T00:09:00Z	PASS	20	verify.sh	rc ok, docker sweep c
 local-invoke-provided	2026-09-26T00:19:48Z	PASS	50	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-python	2026-09-26T00:16:52Z	PASS	120	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
 local-invoke-ruby	2026-09-26T00:18:52Z	PASS	55	verify.sh	rc ok, docker sweep clean, 0 orphans; #2419 PR 3804
-local-invoke-stage	2026-09-28T13:38:31Z	PASS	20	verify.sh	PR #3964 new fixture head e6acbb9aa: 4/4 pass, docker sweep clean; pre-fix build reddens [1/4] (Stack 'CdkdLocalInvokeStage' not found)
+local-invoke-stage	2026-10-03T13:11:36Z	PASS	25	verify.sh	rc ok, docker sweep clean; #4474
 local-run-task	2026-10-03T07:48:20Z	PASS	20	verify.sh	rc ok, docker clean; #4495 test 3 (^C mid docker run) red pre-fix, green post-fix (parent-review nits)
 local-run-task-awsvpc	2026-09-25T23:53:54Z	PASS	10	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
 local-run-task-cdkd-assets	2026-09-25T23:53:54Z	PASS	15	verify.sh	rc ok, docker sweep clean (#1846 PR #3799)
@@ -331,7 +332,7 @@ sqs-esm-max-concurrency	2026-09-27T12:27:25Z	PASS	80	verify.sh	rc ok, orph clean
 ssm-secure-dynamic-ref	2026-10-03T10:33:59Z	PASS	115	verify.sh	rc ok, orph clean (#4508)
 stack-copy-create-tokens	2026-10-02T23:58:36Z	PASS	1818	verify.sh	rc ok, orph clean; #4428 first run: EFS/OAI copies, RETAIN refusal, FSx copies
 stack-lock-renewal	2026-10-01T10:51:21Z	PASS	426	verify.sh	rc ok, orph clean (PR #4311 stack-lock guard)
-stage-assets	2026-10-03T02:54:56Z	PASS	161	verify.sh	rc ok, orph clean; #3507 failed Stage fatal for every command (2b + 2g ghost Stage)
+stage-assets	2026-10-03T13:11:36Z	PASS	196	verify.sh	rc ok, orph clean; #4474 Phase 2h stack selection
 stale-attribute-heal	2026-10-03T05:56:27Z	PASS	85	verify.sh	rc ok, orph clean (#4497)
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
 state-info-command	2026-09-30T02:50:34Z	PASS	170	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
