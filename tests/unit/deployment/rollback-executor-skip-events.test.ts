@@ -361,3 +361,32 @@ describe('the skip reason goes through the op masker', () => {
     expect(reason).not.toContain(needle);
   });
 });
+
+describe('a reverse-replacement whose re-create adopted the live new resource', () => {
+  it('gives its SUCCEEDED event a reason, and no survivor id', async () => {
+    // A name-idempotent Create API hands the live NEW resource back, so the
+    // replacement is not fully reversed; the warn line was the only trace.
+    const create = vi.fn().mockResolvedValue({ physicalId: 'phys-new', attributes: {} });
+    const del = vi.fn();
+    const { ctx, events } = makeCtx({ create, delete: del });
+    const op: CompletedOperation = {
+      logicalId: 'R',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      provisionedBy: 'sdk',
+      physicalId: 'phys-new',
+      previousState: res({ physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } }),
+    };
+    const state = { R: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 } }) };
+    const result = await replayRollback([op], state, 'S', ctx);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(del).not.toHaveBeenCalled();
+    // Reverted with a warning, not skipped: the journal may still settle.
+    expect(result).toMatchObject({ failures: 0, warnings: 1, skipped: 0 });
+    expect(skips(events)).toEqual([]);
+    const succeeded = events.filter((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED');
+    expect(succeeded).toHaveLength(1);
+    expect(succeeded[0]!.reason).toContain('NOT fully reversed');
+    expect(succeeded[0]).not.toHaveProperty('physicalId');
+  });
+});
