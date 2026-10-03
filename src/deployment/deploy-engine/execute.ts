@@ -34,6 +34,7 @@ import { withSharedDrainBudget } from '../drain-budget.js';
 import type { SettledNestedRows } from '../nested-child-journal.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
 import { isRefusedBeforeApplying } from '../prior-attempt-scope.js';
+import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -148,6 +149,23 @@ export async function executeDeployment(
       .map(([logicalId]) => logicalId)
   );
 
+  // go-to-k/cdkd#4492: the stack's records, for a provider whose AWS object two
+  // records of this stack can share (a `SecurityGroupIngress` rule). A record
+  // whose UPDATE is IN FLIGHT is in neither view until it completes; a pending
+  // one still describes what AWS serves, and stays.
+  const startedUpdates = new Set<string>();
+  const settledUpdates = new Set<string>();
+  // Every create / update in flight, with the promise its settlement resolves:
+  // a write that met its twin's identical rule waits for it (#4492).
+  const inFlightWrites = new Map<string, { write: InFlightWrite; settle: (ok: boolean) => void }>();
+  this.stackRecordsView = deployStackRecordsView(
+    newResources,
+    currentState.resources,
+    deleteChanges,
+    (logicalId) => startedUpdates.has(logicalId) && !settledUpdates.has(logicalId),
+    () => [...inFlightWrites.values()].map(({ write }) => write)
+  );
+
   try {
     // Step 1: Process CREATE/UPDATE via event-driven DAG dispatch.
     // A node starts as soon as ALL of its dependencies are completed, rather
@@ -240,18 +258,43 @@ export async function executeDeployment(
           ? { ...currentState.resources[logicalId] }
           : undefined;
 
-        try {
-          await this.provisionResource(
+        if (change.changeType === 'UPDATE') startedUpdates.add(logicalId);
+        let settle!: (ok: boolean) => void;
+        const settled = new Promise<boolean>((resolve) => {
+          settle = resolve;
+        });
+        inFlightWrites.set(logicalId, {
+          write: {
             logicalId,
-            change,
-            newResources,
-            stackName,
-            template,
-            parameterValues,
-            conditions,
-            actualCounts,
-            progress
-          );
+            resourceType: change.resourceType,
+            properties: () => this.attemptedResolvedProps.get(logicalId),
+            settled,
+          },
+          settle,
+        });
+        // Settled on EVERY exit (a `finally`), so a twin waiting on this write
+        // can never hang on bookkeeping that throws below.
+        let succeeded = false;
+        try {
+          try {
+            await this.provisionResource(
+              logicalId,
+              change,
+              newResources,
+              stackName,
+              template,
+              parameterValues,
+              conditions,
+              actualCounts,
+              progress
+            );
+            // Before the settle: an UPDATE twin re-asked after it is settled.
+            settledUpdates.add(logicalId);
+            succeeded = true;
+          } finally {
+            inFlightWrites.delete(logicalId);
+            settle(succeeded);
+          }
         } catch (provisionError) {
           // Signal interruption so that long-running operations (e.g., CloudFront
           // waitForDeployed) in sibling tasks abort promptly instead of blocking

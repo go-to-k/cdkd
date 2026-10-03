@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
   buildImportPlan,
+  sharedImportIdentifierKey,
+  sharedImportIdentifierReason,
   securityGroupRuleLookupRetryDelays,
 } from '../../../src/cli/commands/export.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -597,6 +599,62 @@ describe('cdkd export — SecurityGroupIngress rule-id backfill (issue #1791)', 
     expect(plan.blocked.map((b) => b.logicalId)).toEqual(['SshIn']);
     expect(plan.phase1Imports.map((p) => p.logicalId)).toEqual(['OtherIn']);
     expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ Id: OTHER_RULE_ID });
+  });
+
+  // go-to-k/cdkd#4492: two records of one stack can share one sgr- rule (two
+  // template rules CDK could not dedupe). An import adopts a resource into ONE
+  // logical id, so both rows are refused, each naming the other.
+  it('refuses two rows that share one sgr- rule, naming each other, and keeps a third', async () => {
+    const twin = (physicalId: string, Id: string) => ({
+      physicalId,
+      resourceType: 'AWS::EC2::SecurityGroupIngress',
+      properties: {},
+      attributes: { Id },
+      dependencies: [],
+    });
+    const state = stateWithIngress(`${GROUP_ID}|tcp|443|443`);
+    state.resources['ExplicitIn'] = twin(`${GROUP_ID}|tcp|3306|3306`, OTHER_RULE_ID);
+    state.resources['ProxyIn'] = twin(`${GROUP_ID}|tcp|3306|3306`, OTHER_RULE_ID);
+    state.resources['SshIn'] = twin(`${GROUP_ID}|tcp|443|443`, SG_RULE_ID);
+    const template = {
+      Resources: {
+        SshIn: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: {} },
+        ExplicitIn: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: {} },
+        ProxyIn: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: {} },
+      },
+    };
+
+    const plan = await buildImportPlan(state, template, cfnClient(), 'MyStack', {
+      recreateImportUnsupported: true,
+    });
+
+    expect(plan.phase1Imports.map((p) => p.logicalId)).toEqual(['SshIn']);
+    expect(plan.blocked.map((b) => b.logicalId).sort()).toEqual(['ExplicitIn', 'ProxyIn']);
+    const byId = Object.fromEntries(plan.blocked.map((b) => [b.logicalId, b.reason]));
+    expect(byId['ExplicitIn']).toContain('this resource and resource ProxyIn are the SAME AWS resource');
+    expect(byId['ProxyIn']).toContain('this resource and resource ExplicitIn are the SAME AWS resource');
+  });
+
+  it('keys a shared identifier by TYPE too, so rows of different types never pair, and by sorted fields', () => {
+    const row = (resourceType: string, resourceIdentifier: Record<string, string>) => ({
+      logicalId: 'X',
+      resourceType,
+      physicalId: 'p',
+      resourceIdentifier,
+    });
+    expect(sharedImportIdentifierKey(row('AWS::EC2::SecurityGroupIngress', { Id: 'sgr-1' }))).not.toBe(
+      sharedImportIdentifierKey(row('AWS::EC2::SecurityGroupEgress', { Id: 'sgr-1' }))
+    );
+    expect(sharedImportIdentifierKey(row('T', { A: '1', B: '2' }))).toBe(
+      sharedImportIdentifierKey(row('T', { B: '2', A: '1' }))
+    );
+  });
+
+  it('names several twins in the plural, and counts them when a name is not plain', () => {
+    expect(sharedImportIdentifierReason(['A', 'B'])).toContain('this resource and resources A, B are the SAME');
+    const hostile = sharedImportIdentifierReason(['A', "x'; rm -rf ~"]);
+    expect(hostile).toContain('this resource and 2 other resource(s) of this stack are the SAME');
+    expect(hostile).not.toContain('rm -rf');
   });
 
   it('names BOTH causes of an ambiguity, since only one of them is splittable', async () => {

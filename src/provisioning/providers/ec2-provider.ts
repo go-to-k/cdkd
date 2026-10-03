@@ -142,6 +142,7 @@ import type {
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import type { ResourceState } from '../../types/state.js';
 import { pasteableAwsCommand, WITHHELD_AWS_COMMAND } from '../replacement-protection-advice.js';
 import { displayIdent, safeMsg } from '../../utils/display-safe.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
@@ -156,6 +157,7 @@ import {
   getPriorAttempts,
   markRefusedBeforeApplying,
 } from '../../deployment/prior-attempt-scope.js';
+import { awaitInFlightSibling, getStackRecords } from '../../deployment/stack-records-scope.js';
 import { deleteSkipReason } from '../../deployment/delete-outcome.js';
 
 /** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
@@ -3231,7 +3233,8 @@ export class EC2Provider implements ResourceProvider {
         physicalId,
         (previousProperties['SecurityGroupIngress'] as Array<Record<string, unknown>>) ?? [],
         (properties['SecurityGroupIngress'] as Array<Record<string, unknown>>) ?? [],
-        'ingress'
+        'ingress',
+        logicalId
       );
 
       // Diff and apply egress rule changes
@@ -3239,7 +3242,8 @@ export class EC2Provider implements ResourceProvider {
         physicalId,
         (previousProperties['SecurityGroupEgress'] as Array<Record<string, unknown>>) ?? [],
         (properties['SecurityGroupEgress'] as Array<Record<string, unknown>>) ?? [],
-        'egress'
+        'egress',
+        logicalId
       );
 
       this.logger.debug(`Successfully updated SecurityGroup ${logicalId}`);
@@ -3755,6 +3759,37 @@ export class EC2Provider implements ResourceProvider {
       return;
     }
     const wanted = ingressRuleIdentity(groupId, desired);
+    // go-to-k/cdkd#4492: another record of THIS stack already holds the rule —
+    // two template rules CDK could not dedupe (a token port resolving to a
+    // literal one), or a standalone rule repeating its group's inline one. AWS
+    // keeps one rule for both. Not when the holder records a rule id the live
+    // rule does not carry (or the live id is unknown): then the live rule is
+    // not proven to be the one this stack made.
+    const holder = stackIngressRuleHolder(getStackRecords()?.live(), logicalId, groupId, desired, {
+      live: existingRuleId,
+    });
+    if (holder !== undefined) {
+      this.logger.info(
+        safeMsg`SecurityGroupIngress ${logicalId}: the identical rule ${existingRuleId ?? '(id not found)'} on ${groupId} is already held by ${holder} of this stack; both records share it`
+      );
+      return;
+    }
+    // A twin dispatched in the same deploy may have authorized the rule and
+    // not yet recorded it. Wait for it to settle, then ask again: adopted only
+    // once its record holds the live rule, never when it failed.
+    const sibling = await this.settledInFlightIngressHolder(
+      logicalId,
+      resourceType,
+      groupId,
+      desired,
+      existingRuleId
+    );
+    if (sibling !== undefined) {
+      this.logger.info(
+        safeMsg`SecurityGroupIngress ${logicalId}: the identical rule ${existingRuleId ?? '(id not found)'} on ${groupId} was just created in this deploy and is held by ${sibling} of this stack; both records share it`
+      );
+      return;
+    }
     const lookup = getPriorAttempts(logicalId);
     let unreadable: string | undefined;
     if (lookup !== undefined) {
@@ -3824,6 +3859,41 @@ export class EC2Provider implements ResourceProvider {
     // rule: then the bag is the evidence the next deploy adopts on.
     if (!input.ownAttemptMayHaveLanded) markRefusedBeforeApplying(refusal);
     throw refusal;
+  }
+
+  /**
+   * go-to-k/cdkd#4492: a create or update of this deploy still in flight whose
+   * rule is the one `desired` describes — a twin dispatched beside this one,
+   * whose Authorize won — awaited until it settles, then the live records
+   * re-asked for a holder of the live rule (any record, by the same check). `undefined` when there is none, when it failed, or when
+   * it is itself waiting (two writes that both met someone else's rule).
+   */
+  private async settledInFlightIngressHolder(
+    logicalId: string,
+    resourceType: string,
+    groupId: string,
+    desired: Record<string, unknown>,
+    existingRuleId: string | undefined
+  ): Promise<string | undefined> {
+    const view = getStackRecords();
+    const wanted = comparableIngressIdentity(groupId, desired);
+    if (view?.inFlight === undefined || wanted === undefined) return undefined;
+    for (const sibling of [...view.inFlight()]) {
+      if (sibling.logicalId === logicalId || sibling.resourceType !== resourceType) continue;
+      const props = sibling.properties();
+      if (props === undefined || comparableIngressIdentity(props['GroupId'], props) !== wanted) {
+        continue;
+      }
+      if ((await awaitInFlightSibling(view, logicalId, sibling)) !== true) continue;
+      const holder = stackIngressRuleHolder(view.live(), logicalId, groupId, desired, {
+        live: existingRuleId,
+      });
+      // Any record now holding the live rule is this stack's evidence, as on
+      // the first ask — the twin itself, or another record that settled
+      // meanwhile (the twin may record a stale id).
+      if (holder !== undefined) return holder;
+    }
+    return undefined;
   }
 
   /**
@@ -3941,9 +4011,20 @@ export class EC2Provider implements ResourceProvider {
       );
       return;
     }
+    // go-to-k/cdkd#4492: a surviving record of the stack that records THIS live
+    // rule's id holds it (this record's id is the stale one), so the rule is
+    // its, and only this record goes.
+    const liveId = ours[0]!.SecurityGroupRuleId!;
+    const keeper = survivingRecordOfRuleId(getStackRecords()?.survivors(), logicalId, liveId);
+    if (keeper !== undefined) {
+      this.logger.info(
+        safeMsg`SecurityGroupIngress ${logicalId}: its recorded rule id is stale, and the live rule ${liveId} matching its record is held by ${keeper} of this stack, so it was left in place`
+      );
+      return;
+    }
     const outcome = await this.revokeIngressRule(logicalId, physicalId, resourceType, context, {
       GroupId: groupId,
-      SecurityGroupRuleIds: [ours[0]!.SecurityGroupRuleId!],
+      SecurityGroupRuleIds: [liveId],
     });
     if (outcome === 'not-matched') {
       this.logger.debug(
@@ -4064,17 +4145,57 @@ export class EC2Provider implements ResourceProvider {
       };
     }
 
+    // go-to-k/cdkd#4492: when another surviving record of the stack holds this
+    // record's OLD rule, revoking it would cut that record's access. A change
+    // that keeps the rule's identity (a description — every identity key is
+    // create-only, so the diff never sends more) then needs nothing at all:
+    // re-authorizing would only meet the rule again, so the shared rule stays
+    // exactly as it is and this record keeps naming it. A caller without a
+    // diff (`drift --revert`) can still change the identity: the old rule
+    // stays for its holder and the new one is authorized below.
+    const keptFor = this.survivingIngressHolder(
+      logicalId,
+      physicalId.split('|')[0],
+      previousProperties,
+      recordedAttributes
+    );
+    if (
+      keptFor !== undefined &&
+      comparableIngressIdentity(properties['GroupId'], properties) ===
+        comparableIngressIdentity(previousProperties['GroupId'], previousProperties)
+    ) {
+      this.logger.info(
+        safeMsg`SecurityGroupIngress ${logicalId}: its rule is also held by ${keptFor} of this stack, so the update left it in place (AWS keeps one description for both)`
+      );
+      return {
+        physicalId,
+        wasReplaced: false,
+        ...(recordedAttributes && { attributes: { ...recordedAttributes } }),
+      };
+    }
+
     // SecurityGroupIngress updates require replacement: revoke old, authorize new
     try {
-      const revoked = await this.deleteSecurityGroupIngress(
-        logicalId,
-        physicalId,
-        resourceType,
-        previousProperties,
-        // The old rule's recorded `sgr-` id, when there is one, revokes exactly
-        // it (go-to-k/cdkd#4355).
-        recordedAttributes ? { recordedAttributes } : undefined
-      );
+      // go-to-k/cdkd#4492: an old rule a surviving record still holds is not
+      // revoked (the delete would skip it for the same holder), and nothing
+      // below may then claim it was.
+      if (keptFor !== undefined) {
+        this.logger.info(
+          safeMsg`SecurityGroupIngress ${logicalId}: its previous rule is also held by ${keptFor} of this stack, so the update left it in place`
+        );
+      }
+      const revoked =
+        keptFor !== undefined
+          ? undefined
+          : await this.deleteSecurityGroupIngress(
+              logicalId,
+              physicalId,
+              resourceType,
+              previousProperties,
+              // The old rule's recorded `sgr-` id, when there is one, revokes
+              // exactly it (go-to-k/cdkd#4355).
+              recordedAttributes ? { recordedAttributes } : undefined
+            );
       // go-to-k/cdkd#3952: delete-then-create must ABORT when the revoke was
       // skipped (provider-delete-path.md): authorizing the new rule would leave
       // the old one live beside it with no record of it.
@@ -4110,8 +4231,12 @@ export class EC2Provider implements ResourceProvider {
         maskSecrets,
         replayingState,
         // Named in a refusal: the recorded `sgr-` id when there is one, else the
-        // composite tuple.
-        typeof recordedAttributes?.['Id'] === 'string' ? recordedAttributes['Id'] : physicalId
+        // composite tuple — and nothing when the old rule was left in place.
+        keptFor !== undefined
+          ? undefined
+          : typeof recordedAttributes?.['Id'] === 'string'
+            ? recordedAttributes['Id']
+            : physicalId
       );
       return {
         physicalId: createResult.physicalId,
@@ -4170,6 +4295,23 @@ export class EC2Provider implements ResourceProvider {
     return out as T;
   }
 
+  /**
+   * go-to-k/cdkd#4492: another record of this stack, outliving the operation,
+   * that holds the rule `properties` describe on `groupId` — so this record's
+   * revoke would cut its access. One predicate for the delete and the update's
+   * revoke half, so the two cannot disagree about the same holder.
+   */
+  private survivingIngressHolder(
+    logicalId: string,
+    groupId: string | undefined,
+    properties: Record<string, unknown>,
+    recordedAttributes: Readonly<Record<string, unknown>> | undefined
+  ): string | undefined {
+    return stackIngressRuleHolder(getStackRecords()?.survivors(), logicalId, groupId, properties, {
+      own: recordedSgRuleId(recordedAttributes),
+    });
+  }
+
   private async deleteSecurityGroupIngress(
     logicalId: string,
     physicalId: string,
@@ -4191,6 +4333,24 @@ export class EC2Provider implements ResourceProvider {
     }
 
     const [groupId, ipProtocol, fromPortStr, toPortStr] = parts;
+
+    // go-to-k/cdkd#4492: another record of this stack that outlives this
+    // delete holds the same rule (see `resolveDuplicateIngress`), so revoking
+    // it would cut that record's access. Only this record goes.
+    if (properties !== undefined) {
+      const holder = this.survivingIngressHolder(
+        logicalId,
+        groupId,
+        properties,
+        context?.recordedAttributes
+      );
+      if (holder !== undefined) {
+        this.logger.info(
+          safeMsg`SecurityGroupIngress ${logicalId}: its rule on ${groupId} is also held by ${holder} of this stack, so it was left in place`
+        );
+        return;
+      }
+    }
 
     // go-to-k/cdkd#4355: the recorded `sgr-` id addresses EXACTLY the rule it
     // names. But a recorded id can be STALE — a revoke-and-authorize that minted
@@ -5428,7 +5588,9 @@ export class EC2Provider implements ResourceProvider {
     groupId: string,
     previousRules: Array<Record<string, unknown>>,
     nextRules: Array<Record<string, unknown>>,
-    direction: 'ingress' | 'egress'
+    direction: 'ingress' | 'egress',
+    /** The group's logical id; only an INGRESS revoke asks which other records hold the rule. */
+    logicalId?: string
   ): Promise<void> {
     const ruleKey = (rule: Record<string, unknown>): string => {
       const peerKey =
@@ -5479,6 +5641,23 @@ export class EC2Provider implements ResourceProvider {
     }
 
     for (const rule of toRevoke) {
+      // go-to-k/cdkd#4492: a standalone `SecurityGroupIngress` record of this
+      // stack that outlives the update holds the same rule, so dropping it from
+      // the group's inline list must not revoke it.
+      if (direction === 'ingress' && logicalId !== undefined) {
+        const holder = stackIngressRuleHolder(
+          getStackRecords()?.survivors(),
+          logicalId,
+          groupId,
+          rule
+        );
+        if (holder !== undefined) {
+          this.logger.info(
+            safeMsg`SecurityGroup ${logicalId}: an ingress rule dropped from it is also held by ${holder} of this stack, so it was left in place`
+          );
+          continue;
+        }
+      }
       try {
         if (direction === 'egress') {
           await this.ec2Client.send(
@@ -7634,6 +7813,131 @@ function ingressRuleIdentity(groupId: unknown, properties: Record<string, unknow
     sgOwner: source('SourceSecurityGroupOwnerId'),
     pl: source('SourcePrefixListId'),
   });
+}
+
+/** The keys `ingressRuleIdentity` reads: a redacted one names no rule. */
+const INGRESS_IDENTITY_KEYS = [
+  'IpProtocol',
+  'FromPort',
+  'ToPort',
+  'CidrIp',
+  'CidrIpv6',
+  'SourceSecurityGroupId',
+  'SourceSecurityGroupName',
+  'SourceSecurityGroupOwnerId',
+  'SourcePrefixListId',
+] as const;
+
+/**
+ * go-to-k/cdkd#4492: `rule`'s {@link ingressRuleIdentity} on `group`, or
+ * `undefined` when it cannot be compared. A rule whose ports are not readable
+ * numbers, or whose identity holds a redacted value (`***`, an unresolved
+ * reference), matches nothing — two such records can compare equal while
+ * naming different rules. Spellings are compared as written otherwise
+ * (`IpProtocol` / ports aside), so two spellings of one rule (a group name
+ * against its id, `-1` with explicit ports, a CIDR written two ways, an owner
+ * id present on one side only) do not pair: that fails CLOSED (a refusal, or
+ * a revoke the sibling's own create re-authorizes on the next deploy).
+ */
+function comparableIngressIdentity(group: unknown, rule: unknown): string | undefined {
+  if (
+    !isPlainRecord(rule) ||
+    typeof group !== 'string' ||
+    group === '' ||
+    isRedactedRecordedValue(group) ||
+    !INGRESS_IDENTITY_KEYS.every((key) => !isRedactedRecordedValue(rule[key])) ||
+    !Number.isFinite(cfnIngressPortValue(rule['FromPort'])) ||
+    !Number.isFinite(cfnIngressPortValue(rule['ToPort']))
+  ) {
+    return undefined;
+  }
+  return ingressRuleIdentity(group, rule);
+}
+
+/** A record's recorded `sgr-` rule id, when it has one. */
+function recordedSgRuleId(
+  attributes: Readonly<Record<string, unknown>> | undefined
+): string | undefined {
+  const recorded = attributes?.['Id'];
+  return typeof recorded === 'string' && SG_RULE_ID_PATTERN.test(recorded) ? recorded : undefined;
+}
+
+/**
+ * go-to-k/cdkd#4492: a `SecurityGroupIngress` record in `records`, other than
+ * `selfLogicalId`'s, recording `ruleId` as its rule — the rule is that
+ * record's, whatever this one's stale record says.
+ */
+function survivingRecordOfRuleId(
+  records: Iterable<readonly [string, ResourceState]> | undefined,
+  selfLogicalId: string,
+  ruleId: string
+): string | undefined {
+  for (const [lid, record] of records ?? []) {
+    if (lid === selfLogicalId || record.resourceType !== 'AWS::EC2::SecurityGroupIngress') continue;
+    if (recordedSgRuleId(record.attributes) === ruleId) return lid;
+  }
+  return undefined;
+}
+
+/**
+ * How a standalone holder's recorded `sgr-` id must relate to the rule:
+ * - `live`: the id of the rule AWS holds (a create's duplicate). A holder
+ *   recording an id counts only when it IS that id — not when the live id is
+ *   unknown — or the live rule is not proven to be the one this stack made.
+ * - `own`: the deleting record's own recorded id. When both record one they
+ *   must be equal: a holder recording another rule does not hold this one,
+ *   and deferring to it would leave this record's rule live with no record.
+ */
+type HolderRuleIdCheck = { live: string | undefined } | { own: string | undefined };
+
+/**
+ * go-to-k/cdkd#4492: a record in `records`, other than `selfLogicalId`'s, that
+ * holds the ingress rule `rule` describes on `groupId`: an
+ * `AWS::EC2::SecurityGroupIngress` record describing it (subject to
+ * `idCheck`), or the `AWS::EC2::SecurityGroup` record of `groupId` declaring
+ * it inline. An inline holder has no id to check: AWS mints no per-rule id a
+ * group record keeps, and only the stack's OWN group (`physicalId === groupId`)
+ * qualifies, so the rule is on a group this stack created.
+ */
+function stackIngressRuleHolder(
+  records: Iterable<readonly [string, ResourceState]> | undefined,
+  selfLogicalId: string,
+  groupId: string | undefined,
+  rule: Record<string, unknown>,
+  idCheck?: HolderRuleIdCheck
+): string | undefined {
+  if (records === undefined) return undefined;
+  const wanted = comparableIngressIdentity(groupId, rule);
+  if (wanted === undefined) return undefined;
+  for (const [lid, record] of records) {
+    if (lid === selfLogicalId) continue;
+    const props = record.properties;
+    if (record.resourceType === 'AWS::EC2::SecurityGroupIngress') {
+      if (!isPlainRecord(props) || comparableIngressIdentity(props['GroupId'], props) !== wanted) {
+        continue;
+      }
+      const ruleId = recordedSgRuleId(record.attributes);
+      if (ruleId !== undefined && idCheck !== undefined) {
+        if ('live' in idCheck && ruleId !== idCheck.live) continue;
+        if ('own' in idCheck && idCheck.own !== undefined && ruleId !== idCheck.own) continue;
+      }
+      return lid;
+    }
+    if (record.resourceType === 'AWS::EC2::SecurityGroup' && record.physicalId === groupId) {
+      const inline = isPlainRecord(props) ? props['SecurityGroupIngress'] : undefined;
+      if (
+        Array.isArray(inline) &&
+        inline.some((entry) => comparableIngressIdentity(groupId, entry) === wanted)
+      ) {
+        return lid;
+      }
+    }
+  }
+  return undefined;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
