@@ -486,6 +486,65 @@ describe('localRunTaskCommand body: --profile credentials file (issue #3394)', (
     expect(exitCodes).toContain(130);
   });
 
+  it('flushes stdout and stderr after the cleanup and before the single-^C exit', async () => {
+    // Issue #4480. The cleanup drains the containers' `docker logs -f`
+    // followers onto our stdout / stderr, and `process.exit` drops writes still
+    // queued on a pipe, so the handler hands both streams to the OS first.
+    const events: string[] = [];
+    const realExit = process.exit;
+    const realOut = process.stdout.write;
+    const realErr = process.stderr.write;
+    let exited!: () => void;
+    const exitCalled = new Promise<void>((r) => {
+      exited = r;
+    });
+    (process as unknown as { exit: (code?: number) => void }).exit = (code?: number): void => {
+      events.push(`exit:${String(code)}`);
+      exited();
+    };
+    const recorder =
+      (name: string) =>
+      (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (String(chunk) === '') events.push(`flush:${name}`);
+        const cb = rest.find((a): a is () => void => typeof a === 'function');
+        if (cb) cb();
+        return true;
+      };
+    (process.stdout as unknown as { write: unknown }).write = recorder('stdout');
+    (process.stderr as unknown as { write: unknown }).write = recorder('stderr');
+    cleanupEcsRunMock.mockImplementation(async () => {
+      events.push('cleanup');
+    });
+
+    try {
+      runEcsTaskMock.mockImplementation(async () => {
+        const listeners = process.listeners('SIGINT');
+        const handler = listeners[listeners.length - 1] as (() => void) | undefined;
+        expect(handler, 'the command body registered no SIGINT handler').toBeDefined();
+        handler!();
+        await exitCalled;
+        return {
+          state: { network: { networkName: 'cdkd-unit-net' } },
+          exitCode: 0,
+          essentialContainerName: undefined,
+        };
+      });
+
+      await runTask();
+    } finally {
+      (process as unknown as { exit: typeof realExit }).exit = realExit;
+      (process.stdout as unknown as { write: typeof realOut }).write = realOut;
+      (process.stderr as unknown as { write: typeof realErr }).write = realErr;
+    }
+
+    const exitAt = events.indexOf('exit:130');
+    expect(exitAt, JSON.stringify(events)).toBeGreaterThan(0);
+    const beforeExit = events.slice(0, exitAt);
+    expect(beforeExit[0]).toBe('cleanup');
+    expect(beforeExit).toContain('flush:stdout');
+    expect(beforeExit).toContain('flush:stderr');
+  });
+
   it('writes and mounts NOTHING when --profile is absent', async () => {
     // The gate's other arm. Without it every assertion above is satisfied by a
     // body that writes a credentials file unconditionally — which would mount
