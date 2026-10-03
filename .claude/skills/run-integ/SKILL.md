@@ -335,8 +335,7 @@ Which fixture to run is a coverage judgement, not a marker lookup.
 
   **Only five carry a `verify.sh`; from an agent session the other four cannot
   be run at all** (step 5's dispatch note). Runnable from a session: **`lambda`**
-  (the cheap default — ~100 s over a 9-resource SQS / IAM / Lambda / LayerVersion
-  / DynamoDB DAG), `drift-revert`, `drift-revert-vpc`, `remove-protection`,
+  (the cheap default), `drift-revert`, `drift-revert-vpc`, `remove-protection`,
   `export`. Re-derive the split with `ls tests/integration/<name>/verify.sh`;
   nothing compares the copies of this list, which `/pick-integ` and `/verify-pr`
   also carry.
@@ -390,8 +389,10 @@ Which fixture to run is a coverage judgement, not a marker lookup.
 
 - **A fixture that discards the CLI's stderr cannot report its own failure.**
   `RESULT=$(${CDKD} ... 2>/dev/null | tail -1)` under `set -euo pipefail` prints
-  the arm header and exits 1 with NO error text. The shape is banned and fenced
-  ([../../rules/abort-capture.md](../../rules/abort-capture.md)): a failing
-  invoke prints `[verify] command exited N` plus the stderr tail. A log that ends
-  at an arm header with no error text means a fixture outside the fence — re-run
-  that command with stderr attached BEFORE concluding anything.
+  the arm header and exits 1 with NO error text. The shape is banned
+  ([../../rules/abort-capture.md](../../rules/abort-capture.md)); a failing
+  fenced invoke prints `[verify] command exited N` plus the stderr tail, so a log
+  ending at a bare arm header is an unfenced fixture — re-run that command with
+  stderr attached BEFORE concluding anything.
+
+- **A FAIL that passes on re-run is not a flake** until its path is traced (#4480).
