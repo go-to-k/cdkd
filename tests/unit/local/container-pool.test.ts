@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
+  IN_FLIGHT_START_TIMEOUT_MS,
   createContainerPool,
   type ContainerSpec,
   type ZipContainerSpec,
@@ -253,6 +254,193 @@ describe('container-pool — dispose', () => {
     await disposePromise;
     // The acquire surfaces the RIE failure; it must not hang.
     await expect(acquirePromise).rejects.toThrow();
+  });
+});
+
+/**
+ * Issue #4495: `cdkd local start-api`'s ^C cleanup, and a `--watch` reload's
+ * background dispose of the previous pool, end in `process.exit` once
+ * `dispose()` resolves. Every container a start began must be gone by then.
+ */
+describe('container-pool — dispose while a start is in flight (issue #4495)', () => {
+  const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+  it("during the start's docker run: dispose waits for it and removes the container", async () => {
+    let finishRun!: (id: string) => void;
+    (runDetached as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () =>
+        new Promise<string>((r) => {
+          finishRun = r;
+        })
+    );
+    const specs = new Map([['Fn', makeSpec('Fn')]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+    const acquired = pool.acquire('Fn').then(
+      () => 'resolved',
+      (err: unknown) => String(err)
+    );
+    await tick();
+    expect(runDetached).toHaveBeenCalledTimes(1);
+
+    let disposed = false;
+    const disposePromise = pool.dispose().then(() => {
+      disposed = true;
+    });
+    await tick();
+    expect(disposed).toBe(false);
+
+    finishRun('container-held');
+    await disposePromise;
+    expect(removeContainer).toHaveBeenCalledWith('container-held');
+    // It went no further than the docker run.
+    expect(waitForRieReady).not.toHaveBeenCalled();
+    expect(await acquired).toContain('disposed while Fn was starting');
+  });
+
+  it('during the RIE readiness wait: dispose does not wait the wait out, and removes the container', async () => {
+    (waitForRieReady as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise<void>(() => {})
+    );
+    const specs = new Map([['Fn', makeSpec('Fn')]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+    const acquired = pool.acquire('Fn').catch((err: unknown) => String(err));
+    await tick();
+    expect(waitForRieReady).toHaveBeenCalledTimes(1);
+
+    await pool.dispose();
+    expect(removeContainer).toHaveBeenCalledWith('container-' + (runDetached as ReturnType<typeof vi.fn>).mock.calls[0]![0].name);
+    expect(await acquired).toContain('disposed while Fn was starting');
+  });
+
+  it('a docker run that never returns: dispose gives up after the bound and removes the container by its --name', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    (runDetached as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise<string>(() => {})
+    );
+    const specs = new Map([['Fn', makeSpec('Fn')]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+    void pool.acquire('Fn').catch(() => undefined);
+    await tick();
+    const name = (runDetached as ReturnType<typeof vi.fn>).mock.calls[0]![0].name as string;
+
+    const warned: string[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((msg: unknown) => {
+      warned.push(String(msg));
+    });
+    try {
+      let disposed = false;
+      const disposePromise = pool.dispose().then(() => {
+        disposed = true;
+      });
+      await vi.advanceTimersByTimeAsync(IN_FLIGHT_START_TIMEOUT_MS - 1);
+      expect(disposed).toBe(false);
+      expect(removeContainer).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await disposePromise;
+      expect(removeContainer).toHaveBeenCalledWith(name);
+    } finally {
+      warnSpy.mockRestore();
+    }
+    // The removal may have run before docker created the container, and the
+    // `docker run` still pending can start it later: the warning says so,
+    // names the container and gives the command that removes it.
+    const line = warned.find((w) => w.includes('still pending'));
+    expect(line, JSON.stringify(warned)).toBeDefined();
+    expect(line).toContain(`removed container '${name}' if it existed`);
+    expect(line).toContain('can still start it');
+    expect(line).toContain(`run 'docker rm -f ${name}' if it appears`);
+  });
+
+  it('a docker run that FAILS once dispose began: its container is removed by --name', async () => {
+    let failRun!: (err: Error) => void;
+    (runDetached as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () =>
+        new Promise<string>((_, reject) => {
+          failRun = reject;
+        })
+    );
+    const specs = new Map([['Fn', makeSpec('Fn')]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+    void pool.acquire('Fn').catch(() => undefined);
+    await tick();
+    const name = (runDetached as ReturnType<typeof vi.fn>).mock.calls[0]![0].name as string;
+    const disposePromise = pool.dispose();
+    failRun(new Error('context canceled'));
+    await disposePromise;
+    expect(removeContainer).toHaveBeenCalledWith(name);
+  });
+
+  it('a docker run that fails with no dispose removes nothing by name', async () => {
+    (runDetached as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'));
+    const specs = new Map([['Fn', makeSpec('Fn')]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+    await expect(pool.acquire('Fn')).rejects.toThrow(/boom/);
+    expect(removeContainer).not.toHaveBeenCalled();
+    await pool.dispose();
+  });
+
+  it("the in-flight start's bound runs alongside the request drain, not after it", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const specs = new Map([['Fn', makeSpec('Fn')]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 2, streamLogs: false });
+    // One request holds a container and never releases it.
+    await pool.acquire('Fn');
+    // A second request's start hangs in `docker run`.
+    (runDetached as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise<string>(() => {})
+    );
+    void pool.acquire('Fn').catch(() => undefined);
+    await tick();
+    const name = (runDetached as ReturnType<typeof vi.fn>).mock.calls[1]![0].name as string;
+
+    const disposePromise = pool.dispose();
+    await vi.advanceTimersByTimeAsync(IN_FLIGHT_START_TIMEOUT_MS);
+    // Still inside the 30s request drain, the hung start is already removed.
+    expect(removeContainer).toHaveBeenCalledWith(name);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await disposePromise;
+  });
+
+  it('a second dispose() waits for the first one to finish tearing down', async () => {
+    const specs = new Map([['Fn', makeSpec('Fn')]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+    const h = await pool.acquire('Fn');
+    // The first dispose waits for the in-use handle to drain.
+    const first = pool.dispose();
+    let secondDone = false;
+    const second = pool.dispose().then(() => {
+      secondDone = true;
+    });
+    await tick();
+    expect(secondDone).toBe(false);
+    expect(removeContainer).not.toHaveBeenCalled();
+
+    pool.release(h);
+    await Promise.all([first, second]);
+    expect(removeContainer).toHaveBeenCalledWith(h.containerId);
+    expect(removeContainer).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts no container once dispose() began', async () => {
+    const specs = new Map([['Fn', makeSpec('Fn')]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 2, streamLogs: false });
+    const h = await pool.acquire('Fn');
+    // The dispose is still draining `h` when a request asks for a second one.
+    const disposePromise = pool.dispose();
+    await expect(pool.acquire('Fn')).rejects.toThrow(/disposed while Fn was starting/);
+    expect(runDetached).toHaveBeenCalledTimes(1);
+    pool.release(h);
+    await disposePromise;
+  });
+
+  it('with no dispose, a completed start is handed out and not removed', async () => {
+    const specs = new Map([['Fn', makeSpec('Fn')]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+    const h = await pool.acquire('Fn');
+    expect(h.containerId).toBeTruthy();
+    expect(removeContainer).not.toHaveBeenCalled();
+    pool.release(h);
+    await pool.dispose();
   });
 });
 

@@ -47,6 +47,7 @@ CONTAINER_HOST="127.0.0.1"
 LOG_FILE="$(mktemp)"
 SERVER_PID=""
 WATCH_SRC=""
+SHIM_DIR=""
 
 cleanup() {
   if [[ -n "${SERVER_PID:-}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null; then
@@ -75,6 +76,7 @@ cleanup() {
     git checkout -- "${WATCH_SRC}" 2>/dev/null || true
   fi
   rm -f "${LOG_FILE}"
+  [[ -n "${SHIM_DIR:-}" ]] && rm -rf "${SHIM_DIR}" || true
 }
 trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
@@ -661,6 +663,150 @@ if [[ "${RELOADED}" -eq 0 ]]; then
   exit 1
 fi
 echo "    [--watch source-edit reload] OK (watcher fired on a source-tree change)"
+
+# Issue #4495: a ^C that lands while a --watch reload's swapped-out pool is
+# still tearing down must not leave that pool's containers. The reload disposes
+# the previous pool in the background, and that dispose waits for the pool's
+# in-flight container starts; cdkd's ^C cleanup disposed only the pools the
+# servers held NOW, then exited, so a start the old pool was still waiting on
+# left its container running. A `CDK_DOCKER` shim holds the ItemsHandler
+# container's `docker run` (a request's cold start) across a source-edit
+# reload until the script releases it right after the ^C (capped at 120s), so
+# the ^C lands after the swap while that run is in flight.
+# Only cdkd's node process is signalled, so the shim's run completes either
+# way and the check reads what cdkd left behind.
+echo "==> Asserting ^C after a --watch reload, during the old pool's in-flight start, leaves no container (#4495)"
+kill -TERM "${SERVER_PID}" 2>/dev/null || true
+for _ in $(seq 1 120); do
+  kill -0 "${SERVER_PID}" 2>/dev/null || break
+  sleep 1
+done
+if kill -0 "${SERVER_PID}" 2>/dev/null; then
+  echo "FAIL: the first server did not exit within 120s of SIGTERM."
+  exit 1
+fi
+SERVER_PID=""
+docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+
+SHIM_DIR=$(mktemp -d -t cdkd-docker-shim-XXXX)
+: > "${LOG_FILE}"
+cat > "${SHIM_DIR}/docker-shim" <<'SHIM'
+#!/usr/bin/env bash
+d="${CDKD_VERIFY_SHIM_DIR}"
+if [[ "${1:-}" == "run" && "$*" == *cdkd-local-ItemsHandler* && -f "${d}/armed" ]]; then
+  rm -f "${d}/armed"
+  touch "${d}/in-run"
+  for _ in $(seq 1 240); do [[ -f "${d}/release" ]] && break; sleep 0.5; done
+  rc=0
+  docker "$@" > "${d}/run-id" 2>"${d}/run-err" || rc=$?
+  cat "${d}/run-id"
+  echo "${rc}" > "${d}/run-done"
+  exit "${rc}"
+fi
+exec docker "$@"
+SHIM
+chmod +x "${SHIM_DIR}/docker-shim"
+
+CDK_DOCKER="${SHIM_DIR}/docker-shim" CDKD_VERIFY_SHIM_DIR="${SHIM_DIR}" ${CDKD} local start-api \
+  --port "${PORT}" \
+  --container-host "${CONTAINER_HOST}" \
+  --no-pull \
+  --watch \
+  </dev/null >"${LOG_FILE}" 2>&1 &
+SERVER_PID=$!
+READY=0
+for _ in $(seq 1 60); do
+  count=$(grep -c "Server listening" "${LOG_FILE}" 2>/dev/null) || count=0
+  if [[ "${count}" -ge "${EXPECTED_SERVERS}" ]]; then
+    READY=1
+    break
+  fi
+  sleep 0.5
+done
+if [[ "${READY}" -eq 0 ]]; then
+  echo "FAIL: the shimmed server did not come up within 30s. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+
+touch "${SHIM_DIR}/armed"
+curl -s -m 60 -o /dev/null "http://127.0.0.1:${PORT_HTTP}/items/42" >/dev/null 2>&1 &
+for _ in $(seq 1 60); do
+  [[ -f "${SHIM_DIR}/in-run" ]] && break
+  sleep 0.5
+done
+[[ -f "${SHIM_DIR}/in-run" ]] || {
+  echo "FAIL: the request never reached its container's docker run. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+}
+# The route table prints once at boot and again after each reload's swap.
+TABLES_BEFORE=$(grep -c 'HTTP API v2)  (http://' "${LOG_FILE}") || TABLES_BEFORE=0
+WATCH_SRC="lambda-items/index.js"
+printf '\n// #4495 live-test touch %s\n' "$(date +%s)" >> "${WATCH_SRC}"
+SWAPPED=0
+for _ in $(seq 1 240); do
+  tables=$(grep -c 'HTTP API v2)  (http://' "${LOG_FILE}") || tables=0
+  if [[ "${tables}" -gt "${TABLES_BEFORE}" ]]; then
+    SWAPPED=1
+    break
+  fi
+  sleep 0.25
+done
+if [[ "${SWAPPED}" -eq 0 ]]; then
+  echo "FAIL: the reload never swapped the pool within 60s. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+# Guards against vacuity: the old pool's start must still be in flight at the
+# ^C, or there is nothing for the cleanup to wait for.
+[[ ! -f "${SHIM_DIR}/run-done" ]] || {
+  echo "FAIL: the held docker run finished before the ^C. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+}
+
+kill -INT "${SERVER_PID}"
+# Released only after the ^C, and well inside the pool's 20s start bound.
+sleep 1
+touch "${SHIM_DIR}/release"
+# Restored after the ^C, so the restore cannot start a second reload first.
+git checkout -- "${WATCH_SRC}" 2>/dev/null || true
+for _ in $(seq 1 90); do
+  kill -0 "${SERVER_PID}" 2>/dev/null || break
+  sleep 1
+done
+if kill -0 "${SERVER_PID}" 2>/dev/null; then
+  echo "FAIL: cdkd did not exit within 90s of the ^C. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+SERVER_RC=0
+wait "${SERVER_PID}" || SERVER_RC=$?
+SERVER_PID=""
+for _ in $(seq 1 30); do
+  [[ -f "${SHIM_DIR}/run-done" ]] && break
+  sleep 1
+done
+[[ "$(cat "${SHIM_DIR}/run-done" 2>/dev/null)" == "0" ]] || {
+  echo "FAIL: the held docker run did not start a container (rc $(cat "${SHIM_DIR}/run-done" 2>/dev/null || echo missing); stderr: $(cat "${SHIM_DIR}/run-err" 2>/dev/null)). Log:"
+  cat "${LOG_FILE}"
+  exit 1
+}
+RUN_ID=$(cat "${SHIM_DIR}/run-id")
+LEFT=$(docker ps -a --filter "id=${RUN_ID}" --format ' {{.Names}}')
+LEFT="${LEFT}$(docker ps -a --filter "name=cdkd-local-" --format ' {{.Names}} ({{.Status}})')"
+[[ -z "${LEFT}" ]] || {
+  echo "FAIL: ^C during the old pool's in-flight start left a container behind:${LEFT}. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+}
+[[ "${SERVER_RC}" == "130" ]] || {
+  echo "FAIL: expected cdkd to exit 130 on ^C, got ${SERVER_RC}. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+}
+echo "    [^C after reload, old pool mid-start] OK (container removed, exit 130)"
 
 echo ""
 echo "==> All local-start-api smoke tests passed"

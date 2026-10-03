@@ -464,7 +464,17 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     const hostGatewayExtraHosts = await resolveHostGatewayExtraHosts();
     if (hostGatewayExtraHosts.length > 0) runOpts.hostGatewayExtraHosts = hostGatewayExtraHosts;
 
-    const result = await runEcsTask(task, runOpts, state);
+    let result: Awaited<ReturnType<typeof runEcsTask>>;
+    try {
+      result = await runEcsTask(task, runOpts, state);
+    } catch (err) {
+      // A ^C began the teardown while the runner was mid-step (it then throws
+      // `EcsTaskInterruptedError`, or a docker call fails against what the
+      // teardown removed): the SIGINT handler's cleanup removes what it
+      // started and exits 130 (issue #4495).
+      if (state.closing) return;
+      throw err;
+    }
 
     if (options.detach) {
       logger.info('Task containers started in detached mode; cdkd is exiting.');

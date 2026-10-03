@@ -812,10 +812,13 @@ materials are not reloaded; restart the command to pick those up.
 
 `SIGINT`, `SIGTERM`, an uncaught exception and an unhandled rejection all run
 the same dispose path: stop the watcher, drain in-flight requests, close every
-server, dispose every container pool, and remove the temporary directories cdkd
-materialized for inline code, merged layers and synthesized profile
-credentials. A per-container removal failure is logged at warn and the loop
-continues.
+server, dispose every container pool — including a pool a `--watch` reload
+replaced that is still tearing down, and any container a pool is still starting
+(waited for up to 20 seconds alongside the request drain, then removed by
+name with a warning naming the `docker rm -f` command, since a late `docker run`
+can still start it) — and remove the temporary directories cdkd materialized for inline code,
+merged layers and synthesized profile credentials. A per-container removal
+failure is logged at warn and the loop continues.
 
 A second `Ctrl-C` bypasses dispose and exits immediately, so you can escape a
 hung Docker daemon. The warning names the containers that were skipped along

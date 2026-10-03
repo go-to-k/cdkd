@@ -6,6 +6,8 @@ import {
   buildMetadataEnv,
   createTaskNetwork,
   destroyTaskNetwork,
+  newTaskNetworkName,
+  taskSidecarName,
 } from '../../../src/local/ecs-network.js';
 import { resetFinchArgvWarningsForTest } from '../../../src/utils/docker-cmd.js';
 import { getLogger } from '../../../src/utils/logger.js';
@@ -167,6 +169,27 @@ describe('createTaskNetwork / destroyTaskNetwork', () => {
     expect(runCall!.opts?.env?.['AWS_ACCESS_KEY_ID']).toBe('AKIAFAKEKEYID');
     expect(runCall!.opts?.env?.['AWS_SECRET_ACCESS_KEY']).toBe('super-secret-value-xyz');
     expect(runCall!.opts?.env?.['AWS_SESSION_TOKEN']).toBe('session-token-abc');
+  });
+
+  // Issue #4495: the runner names the network up front, so a ^C landing inside
+  // this call can still remove the network and its sidecar by name.
+  it('creates the network and the sidecar under a caller-chosen networkName', async () => {
+    const networkName = newTaskNetworkName('cdkd-unit');
+    expect(networkName).toMatch(/^cdkd-unit-task-[0-9a-f]{8}$/);
+    const net = await createTaskNetwork({ prefix: 'ignored', networkName, skipPull: true });
+    expect(net.networkName).toBe(networkName);
+    const create = captured.calls.find((c) => c.args[0] === 'network' && c.args[1] === 'create');
+    expect(create?.args.at(-1)).toBe(networkName);
+    const run = captured.calls.find((c) => c.args[0] === 'run')!;
+    expect(run.args[run.args.indexOf('--name') + 1]).toBe(taskSidecarName(networkName));
+    expect(taskSidecarName(networkName)).toBe(`${networkName}-metadata`);
+  });
+
+  it('without a networkName, names a fresh network from the prefix', async () => {
+    const a = await createTaskNetwork({ prefix: 'cdkd-unit', skipPull: true });
+    const b = await createTaskNetwork({ prefix: 'cdkd-unit', skipPull: true });
+    expect(a.networkName).toMatch(/^cdkd-unit-task-[0-9a-f]{8}$/);
+    expect(a.networkName).not.toBe(b.networkName);
   });
 
   it('destroyTaskNetwork is idempotent on undefined', async () => {

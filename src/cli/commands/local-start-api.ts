@@ -129,7 +129,7 @@ import {
 } from '../../local/cognito-jwt.js';
 import { defaultCredentialsLoader, type CredentialsLoader } from '../../local/sigv4-verify.js';
 import { singleFlight } from '../../utils/single-flight.js';
-import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import { displayIdent, ROLE_ARN_MAX_CODE_POINTS, safeMsg } from '../../utils/display-safe.js';
 import { isPasteableIdent } from './state-file-keys.js';
 import {
   plainOrDescribed,
@@ -1170,6 +1170,18 @@ async function localStartApiCommand(
   // the user is warned and the server set stays static until restart.
   let watcher: FileWatcher | undefined;
   let reloadChain: Promise<unknown> = Promise.resolve();
+  /**
+   * Set once `runCleanup` begins: from then on a reload swaps in no new pool
+   * (issue #4495).
+   */
+  let closing = false;
+  /**
+   * Each reload's background dispose of a swapped-out pool, while it runs.
+   * `runCleanup` awaits them: its `process.exit` would otherwise end one still
+   * draining in-flight requests or starts, before it removed its containers
+   * (issue #4495).
+   */
+  const retiredPoolDisposals = new Set<Promise<void>>();
   if (options.watch) {
     // Watch the CDK app's source tree (the synth working directory, where
     // `cdk.json` lives) so editing handler / construct source re-synths and
@@ -1194,6 +1206,8 @@ async function localStartApiCommand(
             servers,
             buildPool,
             logger,
+            isClosing: () => closing,
+            retiredPoolDisposals,
           })
         );
         reloadChain = next.catch(() => undefined);
@@ -1225,6 +1239,7 @@ async function localStartApiCommand(
   let firstExitCode = 0;
   let forceExitArmed = false;
   const runCleanup = singleFlight(async (): Promise<void> => {
+    closing = true;
     logger.info(`Received ${firstSignal}, shutting down...`);
     if (watcher) {
       try {
@@ -1287,6 +1302,13 @@ async function localStartApiCommand(
         }
       })
     );
+    // A pool a `--watch` reload swapped out may still be draining.
+    if (retiredPoolDisposals.size > 0) {
+      logger.info(
+        safeMsg`Waiting for ${retiredPoolDisposals.size} container pool(s) replaced by a reload to finish tearing down...`
+      );
+      await Promise.allSettled([...retiredPoolDisposals]);
+    }
     await Promise.allSettled(
       wsServers.map(async (ws) => {
         try {
@@ -3243,13 +3265,20 @@ function warnSsrfRiskyIntegrations(
  *      vanished groups (= an API was removed) — those require a
  *      server restart in v1.
  */
-async function reloadAllServers(args: {
+export async function reloadAllServers(args: {
   synthesizeAndBuild: () => Promise<NextStateMaterial>;
   servers: readonly BootedApiServer[];
   buildPool: (specs: Map<string, ContainerSpec>) => ContainerPool;
   logger: ReturnType<typeof getLogger>;
+  /** True once shutdown began; the reload then swaps nothing (issue #4495). */
+  isClosing?: () => boolean;
+  /**
+   * Receives each swapped-out pool's background dispose for as long as it
+   * runs, so shutdown can await it (issue #4495).
+   */
+  retiredPoolDisposals?: Set<Promise<void>>;
 }): Promise<void> {
-  const { synthesizeAndBuild, servers, buildPool, logger } = args;
+  const { synthesizeAndBuild, servers, buildPool, logger, isClosing, retiredPoolDisposals } = args;
   let material: NextStateMaterial;
   try {
     material = await synthesizeAndBuild();
@@ -3259,6 +3288,9 @@ async function reloadAllServers(args: {
     );
     return;
   }
+  // Shutdown began during the re-synth: it disposed the pools it found, so a
+  // pool swapped in now would be one nothing disposes.
+  if (isClosing?.()) return;
   const newGroups = groupRoutesByServer(material.routes);
   const newByKey = new Map(newGroups.map((g) => [g.serverKey, g] as const));
   const oldKeys = new Set(servers.map((s) => s.group.serverKey));
@@ -3297,11 +3329,13 @@ async function reloadAllServers(args: {
     booted.group = group;
     // Dispose the previous pool in the background. `pool.dispose()`
     // waits for in-flight requests to drain (30s per-entry cap).
-    void previousState.pool.dispose().catch((err) => {
+    const disposal = previousState.pool.dispose().catch((err) => {
       logger.debug(
         `Previous pool dispose() failed for ${group.displayName}: ${err instanceof Error ? err.message : String(err)}`
       );
     });
+    retiredPoolDisposals?.add(disposal);
+    void disposal.then(() => retiredPoolDisposals?.delete(disposal));
   }
 
   // Re-print the per-server route table when any routes changed.
