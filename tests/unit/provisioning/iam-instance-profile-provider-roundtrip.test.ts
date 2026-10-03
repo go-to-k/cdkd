@@ -164,4 +164,56 @@ describe('IAMInstanceProfileProvider read-update round-trip', () => {
     expect(addCalls).toHaveLength(1);
     expect((addCalls[0]![0] as AddRoleToInstanceProfileCommand).input.RoleName).toBe('role-b');
   });
+
+  describe('re-adding a role the profile already holds (go-to-k/cdkd#4461)', () => {
+    const limit = () =>
+      Object.assign(new Error('Cannot exceed quota for InstanceSessionsPerInstanceProfile: 1'), {
+        name: 'LimitExceededException',
+      });
+    const profileWith = (roleName: string) => ({
+      InstanceProfile: { Arn: 'arn:aws:iam::1:instance-profile/p', Roles: [{ RoleName: roleName }] },
+    });
+    const run = () =>
+      provider.update(
+        'L',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        { InstanceProfileName: PHYSICAL_ID, Roles: ['fixed-role'] },
+        { InstanceProfileName: PHYSICAL_ID, Roles: [] }
+      );
+
+    it('treats a LimitExceeded for the SAME role as success', async () => {
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof AddRoleToInstanceProfileCommand
+          ? Promise.reject(limit())
+          : Promise.resolve(profileWith('fixed-role'))
+      );
+      await expect(run()).resolves.toMatchObject({ physicalId: PHYSICAL_ID });
+    });
+
+    it('still fails when the profile holds ANOTHER role, or the read fails', async () => {
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof AddRoleToInstanceProfileCommand
+          ? Promise.reject(limit())
+          : Promise.resolve(profileWith('other-role'))
+      );
+      await expect(run()).rejects.toThrow(/quota/);
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof AddRoleToInstanceProfileCommand
+          ? Promise.reject(limit())
+          : Promise.reject(new Error('AccessDenied'))
+      );
+      await expect(run()).rejects.toThrow(/quota/);
+    });
+
+    it('does not read back on any other error', async () => {
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof AddRoleToInstanceProfileCommand
+          ? Promise.reject(Object.assign(new Error('nope'), { name: 'NoSuchEntityException' }))
+          : Promise.resolve(profileWith('fixed-role'))
+      );
+      await expect(run()).rejects.toThrow(/nope/);
+      expect(mockSend.mock.calls.filter((c) => c[0] instanceof GetInstanceProfileCommand)).toHaveLength(0);
+    });
+  });
 });

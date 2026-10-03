@@ -1175,6 +1175,11 @@
       ]
     },
     {
+      "name": "iam-recreate-reattach",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "iam-role-policies-drift-clean",
       "annotated": false,
       "scenarios": []
@@ -3197,6 +3202,7 @@
     "glue-securityconfig-replace",
     "healthimaging-stateful-update-fallback",
     "iam-managed-policy",
+    "iam-recreate-reattach",
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
     "iam-secret-derived-principals",

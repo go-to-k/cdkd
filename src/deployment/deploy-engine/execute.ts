@@ -3,6 +3,7 @@ import { ccBrokenReason } from '../../provisioning/provider-registry.js';
 import {
   lostChildActions,
   noChangeChildrenOfRecreatedParents,
+  survivesParent,
 } from '../child-of-recreated-parent.js';
 import { shownType } from '../recreate-target-readers.js';
 import {
@@ -207,7 +208,9 @@ export async function executeDeployment(
           change.changeType = 'UPDATE';
           change.propertyChanges = [];
           this.logger.info(
-            safeMsg`  ${id} went with a resource the update-failure fallback re-created under the same id: re-creating it`
+            survivesParent(change.resourceType)
+              ? safeMsg`  ${id} was attached to a resource the update-failure fallback re-created under the same name: attaching it again`
+              : safeMsg`  ${id} went with a resource the update-failure fallback re-created under the same id: re-creating it`
           );
         }
         if (progress) progress.total += lostIds.length;
@@ -506,7 +509,16 @@ export async function executeDeployment(
       // overwrite-style puts, which the next deploy re-writes whatever landed,
       // or else the next CREATE collides loudly (a Cloud Control-only alias or
       // log stream that did land).
-      if (attempted.has(lost.logicalId) && recovery !== undefined) {
+      // A resource merely ATTACHED to the parent (go-to-k/cdkd#4461) is
+      // always trimmed instead: re-attaching is idempotent (`Attach*Policy`,
+      // `AddUserToGroup`; an instance profile that kept its role fails loudly),
+      // while the flag would destroy and re-create the resource itself -- for
+      // a user, revoking its access keys -- to redo one attach.
+      if (
+        attempted.has(lost.logicalId) &&
+        recovery !== undefined &&
+        !survivesParent(record.resourceType)
+      ) {
         this.logger.warn(
           safeMsg`  ⚠ ${lost.logicalId} (${childType}) went with a resource this deploy re-created under the same id; restoring it failed, and its state record is kept because the write may have reached AWS. If it is missing there, re-run the deploy with `.concat(
             recovery,
@@ -542,10 +554,33 @@ export async function executeDeployment(
         this.logger.warn(
           safeMsg`  ⚠ ${lost.logicalId} (${childType}) went with a resource this deploy re-created under the same id, and the deploy failed before restoring it: it is gone from AWS and the resource runs without it until the next deploy, which creates it again (its state record is dropped).`
         );
+      } else if (survivesParent(record.resourceType)) {
+        // go-to-k/cdkd#4461: the resource exists; only its attachment to the
+        // re-created principal is gone. An attach that partly landed is NOT
+        // in the trimmed record: harmless while the template keeps naming
+        // the principal (the next attach is idempotent), and a delete of the
+        // resource detaches whatever IAM lists, but a list that drops the
+        // principal before the next deploy diffs unchanged and leaves the
+        // landed attachment untracked.
+        newResources[lost.logicalId] = {
+          ...record,
+          properties: { ...record.properties, ...lost.trimmed },
+        };
+        const lists = Object.keys(lost.trimmed).join(' / ');
+        this.logger.warn(
+          safeMsg`  ⚠ ${lost.logicalId} (${childType}) lost its attachment to a resource this deploy re-created under the same name, and the deploy failed before attaching it again: its record keeps only the attachments that survived, so the next deploy attaches it again.`.concat(
+            attempted.has(lost.logicalId)
+              ? safeMsg` Its attach may already have landed on `.concat(
+                  parentShown,
+                  safeMsg`: if ${lost.logicalId}'s ${lists} stops naming it before the next deploy, nothing will detach it, so detach it by hand.`
+                )
+              : ''
+          )
+        );
       } else {
         newResources[lost.logicalId] = {
           ...record,
-          properties: { ...record.properties, [lost.property]: lost.kept },
+          properties: { ...record.properties, ...lost.trimmed },
         };
         this.logger.warn(
           safeMsg`  ⚠ ${lost.logicalId} (${childType}) was removed from a resource this deploy re-created under the same id, and the deploy failed before writing it again: the next deploy writes it there again (its record keeps only the holders it is still on).`.concat(

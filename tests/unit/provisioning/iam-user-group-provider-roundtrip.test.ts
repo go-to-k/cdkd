@@ -126,6 +126,54 @@ describe('IAMUserGroupProvider read-update round-trip', () => {
     }
   });
 
+  it('User: an unchanged LoginProfile is not re-sent, a changed one is (go-to-k/cdkd#4461)', async () => {
+    // An update reached for another reason (re-adding the user to a group the
+    // deploy re-created) must not reset the password.
+    mockSend.mockResolvedValue({
+      User: { UserName: USER_NAME, Arn: `arn:aws:iam::123:user/${USER_NAME}` },
+    });
+    const profile = { Password: 'Example-Passw0rd!', PasswordResetRequired: true };
+    await provider.update(
+      'L',
+      USER_NAME,
+      'AWS::IAM::User',
+      { UserName: USER_NAME, Groups: ['engineers'], LoginProfile: profile },
+      { UserName: USER_NAME, Groups: [], LoginProfile: { ...profile } }
+    );
+    const updates = () => mockSend.mock.calls.filter((c) => c[0] instanceof UpdateLoginProfileCommand);
+    expect(updates()).toHaveLength(0);
+    expect(mockSend.mock.calls.filter((c) => c[0] instanceof AddUserToGroupCommand)).toHaveLength(1);
+
+    for (const changed of [
+      { ...profile, Password: 'Another-Passw0rd!' },
+      { ...profile, PasswordResetRequired: false },
+    ]) {
+      mockSend.mockClear();
+      await provider.update(
+        'L',
+        USER_NAME,
+        'AWS::IAM::User',
+        { UserName: USER_NAME, LoginProfile: changed },
+        { UserName: USER_NAME, LoginProfile: profile }
+      );
+      expect(updates()).toHaveLength(1);
+    }
+
+    // A secret-derived password is recorded as its reference (or the mask),
+    // so it never equals the resolved value and is still sent.
+    for (const recorded of ['{{resolve:ssm-secure:/app/pw}}', '***']) {
+      mockSend.mockClear();
+      await provider.update(
+        'L',
+        USER_NAME,
+        'AWS::IAM::User',
+        { UserName: USER_NAME, LoginProfile: profile },
+        { UserName: USER_NAME, LoginProfile: { ...profile, Password: recorded } }
+      );
+      expect(updates()).toHaveLength(1);
+    }
+  });
+
   it('User: round-trip with empty ManagedPolicyArns and Groups arrays does not emit Class-2-shaped requests', async () => {
     // Class 2 guard: a user with NO managed policies and NO groups
     // produces `ManagedPolicyArns: []` / `Groups: []` placeholders from
