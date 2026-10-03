@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 85,
-    "declaredProperties": 1143,
-    "wiredProperties": 1141,
-    "wired": 83,
+    "classifiedCount": 86,
+    "declaredProperties": 1156,
+    "wiredProperties": 1154,
+    "wired": 84,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 37
+    "classesWithBlindSpots": 38
   },
   "classes": [
     {
@@ -15481,6 +15481,191 @@
       "gaps": [],
       "blindSpots": [
         "withoutSilentDropProperties(...) in recordWithPendingChildDeletes()"
+      ]
+    },
+    {
+      "file": "pipes-provider.ts",
+      "className": "PipesPipeProvider",
+      "bucket": "wired",
+      "declaredCount": 13,
+      "properties": [
+        {
+          "name": "Description",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "DesiredState",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "Enrichment",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "EnrichmentParameters",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "KmsKeyIdentifier",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "LogConfiguration",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "Name",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read",
+            "table-loop"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "RoleArn",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "Source",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read",
+            "table-loop"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "SourceParameters",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "Tags",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "Target",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "TargetParameters",
+          "status": "wired",
+          "types": [
+            "AWS::Pipes::Pipe"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        }
+      ],
+      "gaps": [],
+      "blindSpots": [
+        "withRemovalDefaults(...) in update()"
       ]
     },
     {

@@ -629,6 +629,7 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::Glue::SecurityConfiguration
 - AWS::Kinesis::Stream
 - AWS::Kinesis::StreamConsumer
+- AWS::Pipes::Pipe (the template `Name`, or the pipe name via `--resource`)
 - AWS::KinesisFirehose::DeliveryStream
 - AWS::WAFv2::WebACL
 - AWS::EFS::FileSystem

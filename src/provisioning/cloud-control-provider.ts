@@ -3946,9 +3946,12 @@ export class CloudControlProvider implements ResourceProvider {
       }
 
       case 'AWS::Pipes::Pipe': {
-        // Pipes has NO SDK provider, so it always routes through Cloud
-        // Control, and the CC CREATE ResourceModel is sparse — it does not
-        // surface the pipe ARN. `Fn::GetAtt(<Pipe>, 'Arn')` would fall
+        // Pipes has had an SDK provider since issue #4423, and a cc-api
+        // record moves to it (a 'cc-broken' sticky exemption). A pipe still
+        // reaches Cloud Control when its template carries a schema-known
+        // property that provider does not handle (the silent-drop auto-route
+        // in `getProviderFor`). The CC CREATE ResourceModel is sparse there:
+        // it does not surface the pipe ARN. `Fn::GetAtt(<Pipe>, 'Arn')` would fall
         // through the resolver's constructAttribute to the physicalId (the
         // pipe NAME), poisoning IAM policies / alarm actions / outputs that
         // need the ARN. Overlay the documented GetAtt attributes from a CC

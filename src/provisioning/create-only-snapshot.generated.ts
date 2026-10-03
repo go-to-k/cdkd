@@ -415,6 +415,26 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
   ],
   ['AWS::Neptune::DBSubnetGroup', [['DBSubnetGroupName']]],
   [
+    'AWS::Pipes::Pipe',
+    [
+      ['Name'],
+      ['Source'],
+      ['SourceParameters', 'ActiveMQBrokerParameters', 'QueueName'],
+      ['SourceParameters', 'DynamoDBStreamParameters', 'StartingPosition'],
+      ['SourceParameters', 'KinesisStreamParameters', 'StartingPosition'],
+      ['SourceParameters', 'KinesisStreamParameters', 'StartingPositionTimestamp'],
+      ['SourceParameters', 'ManagedStreamingKafkaParameters', 'ConsumerGroupID'],
+      ['SourceParameters', 'ManagedStreamingKafkaParameters', 'StartingPosition'],
+      ['SourceParameters', 'ManagedStreamingKafkaParameters', 'TopicName'],
+      ['SourceParameters', 'RabbitMQBrokerParameters', 'QueueName'],
+      ['SourceParameters', 'RabbitMQBrokerParameters', 'VirtualHost'],
+      ['SourceParameters', 'SelfManagedKafkaParameters', 'AdditionalBootstrapServers'],
+      ['SourceParameters', 'SelfManagedKafkaParameters', 'ConsumerGroupID'],
+      ['SourceParameters', 'SelfManagedKafkaParameters', 'StartingPosition'],
+      ['SourceParameters', 'SelfManagedKafkaParameters', 'TopicName'],
+    ],
+  ],
+  [
     'AWS::RDS::DBCluster',
     [
       ['ClusterScalabilityType'],

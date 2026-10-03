@@ -252,6 +252,7 @@ no-op placeholder — outside CloudFormation the real pre-signed signal URL cann
 - `AWS::Events::Rule`
 - `AWS::Events::EventBus`
 - `AWS::Scheduler::Schedule`
+- `AWS::Pipes::Pipe`
 
 ### GraphQL
 

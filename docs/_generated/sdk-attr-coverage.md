@@ -12,8 +12,8 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 
 ## Summary
 
-- SDK-backed types classified: **134**
-- Covered (every Arn/Url readOnly resolvable): **63**
+- SDK-backed types classified: **135**
+- Covered (every Arn/Url readOnly resolvable): **64**
 - No Arn/Url readOnly attribute: **71**
 - **Latent gaps (blocks CI): 0**
 - Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): **0**
@@ -69,6 +69,7 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::Lambda::MicrovmImage` | covered | `ImageArn` (cached) |
 | `AWS::Lambda::Url` | covered | `FunctionArn` (cached), `FunctionUrl` (cached) |
 | `AWS::Logs::LogGroup` | covered | `Arn` (cached) |
+| `AWS::Pipes::Pipe` | covered | `Arn` (cached) |
 | `AWS::RDS::DBCluster` | covered | `DBClusterArn` (ctor) |
 | `AWS::RDS::DBInstance` | covered | `DBInstanceArn` (ctor) |
 | `AWS::RDS::DBProxy` | covered | `DBProxyArn` (cached) |

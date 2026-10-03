@@ -6,10 +6,10 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as pipes from 'aws-cdk-lib/aws-pipes';
 
 /**
- * EventBridge Pipes (SQS source -> SNS target). `AWS::Pipes::Pipe` is not in
- * cdkd's SDK provider set, so it routes through Cloud Control. Exercises a
- * role-arn intrinsic plus `SourceParameters` nested config. Confirmed CLEAN by
- * a /hunt-bugs sweep; this fixture is the regression guard.
+ * EventBridge Pipes (SQS source -> SNS target), through cdkd's
+ * `AWS::Pipes::Pipe` SDK provider (go-to-k/cdkd#4423; Cloud Control before
+ * it). Exercises a role-arn intrinsic plus `SourceParameters` nested config.
+ * Confirmed CLEAN by a /hunt-bugs sweep; this fixture is the regression guard.
  */
 export class EventbridgePipesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

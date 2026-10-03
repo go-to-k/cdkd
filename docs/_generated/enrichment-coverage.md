@@ -16,8 +16,8 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **134**
-- Fully enriched: **47**
+- Classified types (cached schema): **135**
+- Fully enriched: **48**
 - No computed attribute (Ref == physicalId is correct): **17**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **70**
@@ -213,6 +213,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Neptune::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Port` (GAP), `ReadEndpoint` (GAP) |
 | `AWS::Neptune::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Port` (GAP) |
 | `AWS::Neptune::DBSubnetGroup` | yes | no-computed-attr | _(none)_ |
+| `AWS::Pipes::Pipe` | yes | enriched | `Arn` (OK), `CreationTime` (OK), `CurrentState` (OK), `LastModifiedTime` (OK), `StateReason` (OK) |
 | `AWS::RDS::DBCluster` | yes | sdk-fallback-gap | `DBClusterArn` (GAP), `DBClusterResourceId` (OK), `Endpoint` (OK), `ReadEndpoint` (OK), `StorageEncryptionType` (GAP), `StorageThroughput` (GAP) |
 | `AWS::RDS::DBInstance` | yes | sdk-fallback-gap | `AutomaticRestartTime` (GAP), `CertificateDetails` (GAP), `DBInstanceArn` (GAP), `DBInstanceStatus` (GAP), `DbiResourceId` (GAP), `Endpoint` (OK), `InstanceCreateTime` (GAP), `IsStorageConfigUpgradeAvailable` (GAP), `LatestRestorableTime` (GAP), `ListenerEndpoint` (GAP), `PercentProgress` (GAP), `ReadReplicaDBClusterIdentifiers` (GAP), `ReadReplicaDBInstanceIdentifiers` (GAP), `ResumeFullAutomationModeTime` (GAP), `SecondaryAvailabilityZone` (GAP), `StatusInfos` (GAP), `StorageOperationPercentProgress` (GAP), `StorageOperationStatus` (GAP) |
 | `AWS::RDS::DBProxy` | yes | sdk-fallback-gap | `DBProxyArn` (GAP), `Endpoint` (GAP), `VpcId` (GAP) |
@@ -256,7 +257,6 @@ These types have an `enrichResourceAttributes` case but no cached CFn schema, so
 - `AWS::Events::Connection`
 - `AWS::Lambda::Version`
 - `AWS::OpenSearchService::Domain`
-- `AWS::Pipes::Pipe`
 - `AWS::Redshift::Cluster`
 - `AWS::ResourceGroups::Group`
 - `AWS::Route53::HealthCheck`

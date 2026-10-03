@@ -7,7 +7,7 @@ import * as pipes from 'aws-cdk-lib/aws-pipes';
 import * as rg from 'aws-cdk-lib/aws-resourcegroups';
 
 /**
- * Regression fixture for issue #1103: CC-routed types whose async CREATE
+ * Regression fixture for issue #1103: types then routed through Cloud Control whose async CREATE
  * ResourceModel is sparse ended up with empty state `attributes`, so
  * `Fn::GetAtt` fell through the resolver's constructAttribute default to the
  * bare physicalId (the resource NAME) instead of the documented attribute
@@ -20,6 +20,10 @@ import * as rg from 'aws-cdk-lib/aws-resourcegroups';
  * The fix overlays the readOnly attributes from a CC GetResource read-back
  * (`enrichResourceAttributes` in src/provisioning/cloud-control-provider.ts),
  * generalizing the Backup-scoped read-back shipped for issue #984.
+ *
+ * The pipe has had an SDK provider since issue #4423, which records the same
+ * GetAtt set from DescribePipe, so its outputs now cover that provider; the
+ * access point and the group still go through Cloud Control.
  */
 export class CcGetattReadbackStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -34,7 +38,7 @@ export class CcGetattReadbackStack extends cdk.Stack {
       name: 'cdkd-ccgar-ap',
     });
 
-    // --- Pipes::Pipe (CC-routed; physicalId = pipe name), SQS -> SQS ---
+    // --- Pipes::Pipe (SDK provider since #4423; physicalId = pipe name), SQS -> SQS ---
     const src = new sqs.Queue(this, 'Src');
     const tgt = new sqs.Queue(this, 'Tgt');
     const pipeRole = new iam.Role(this, 'PipeRole', {

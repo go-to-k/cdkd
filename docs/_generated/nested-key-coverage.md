@@ -12,17 +12,17 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 ## Summary
 
-- Audited targets: **24**
-- Nested CFn key paths audited: **1227**
-- Same spelling in SDK model: **1135**
-- Explicitly handled in provider: **71**
+- Audited targets: **25**
+- Nested CFn key paths audited: **1435**
+- Same spelling in SDK model: **1334**
+- Explicitly handled in provider: **80**
 - Allow-listed pass-throughs (does NOT block CI): **21**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
 - Write-evidence pass — fresh-object targets audited: **15**
 - **No write evidence (blocks CI): 0**
-- Shape pass — bare-array pairs clean: **148**
-- Shape pass — explicitly handled in provider: **40**
+- Shape pass — bare-array pairs clean: **173**
+- Shape pass — explicitly handled in provider: **48**
 - Shape pass — allow-listed (does NOT block CI): **9**
 - **Array-vs-wrapper divergences (blocks CI): 0**
 - **Definition-member-missing divergences (blocks CI): 0**
@@ -101,6 +101,15 @@ Keys with no same-spelling SDK member that the provider explicitly names (conver
 | `AWS::Glue::Table` | `OpenTableFormatInput.IcebergInput.IcebergTableInput` |
 | `AWS::Lambda::EventSourceMapping` | `SelfManagedEventSource.Endpoints.KafkaBootstrapServers` |
 | `AWS::Lambda::EventSourceMapping` | `SelfManagedKafkaEventSourceConfig.ConsumptionMode` |
+| `AWS::Pipes::Pipe` | `TargetParameters.EcsTaskParameters.CapacityProviderStrategy.Base` |
+| `AWS::Pipes::Pipe` | `TargetParameters.EcsTaskParameters.CapacityProviderStrategy.CapacityProvider` |
+| `AWS::Pipes::Pipe` | `TargetParameters.EcsTaskParameters.CapacityProviderStrategy.Weight` |
+| `AWS::Pipes::Pipe` | `TargetParameters.EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration` |
+| `AWS::Pipes::Pipe` | `TargetParameters.EcsTaskParameters.Overrides.EphemeralStorage.SizeInGiB` |
+| `AWS::Pipes::Pipe` | `TargetParameters.EcsTaskParameters.Overrides.InferenceAcceleratorOverrides.DeviceName` |
+| `AWS::Pipes::Pipe` | `TargetParameters.EcsTaskParameters.Overrides.InferenceAcceleratorOverrides.DeviceType` |
+| `AWS::Pipes::Pipe` | `TargetParameters.EcsTaskParameters.PlacementConstraints.Expression` |
+| `AWS::Pipes::Pipe` | `TargetParameters.EcsTaskParameters.PlacementStrategy.Field` |
 | `AWS::S3::Bucket` | `AccelerateConfiguration.AccelerationStatus` |
 | `AWS::S3::Bucket` | `AnalyticsConfigurations.TagFilters` |
 | `AWS::S3::Bucket` | `BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault` |
@@ -177,6 +186,14 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Events::Rule` | `PlacementConstraint` | `Type` | definition | SDK interface `PlacementConstraint` has no `Type` member |
 | `AWS::Glue::Crawler` | `DynamoDBTarget` | `ScanAll` | definition | SDK interface `DynamoDBTarget` has no `ScanAll` member |
 | `AWS::Lambda::EventSourceMapping` | `#top` | `Tags` | wrapper | — |
+| `AWS::Pipes::Pipe` | `EcsEnvironmentFile` | `Type` | definition | SDK interface `EcsEnvironmentFile` has no `Type` member |
+| `AWS::Pipes::Pipe` | `EcsEnvironmentFile` | `Value` | definition | SDK interface `EcsEnvironmentFile` has no `Value` member |
+| `AWS::Pipes::Pipe` | `EcsEnvironmentVariable` | `Name` | definition | SDK interface `EcsEnvironmentVariable` has no `Name` member |
+| `AWS::Pipes::Pipe` | `EcsEnvironmentVariable` | `Value` | definition | SDK interface `EcsEnvironmentVariable` has no `Value` member |
+| `AWS::Pipes::Pipe` | `EcsResourceRequirement` | `Type` | definition | SDK interface `EcsResourceRequirement` has no `Type` member |
+| `AWS::Pipes::Pipe` | `EcsResourceRequirement` | `Value` | definition | SDK interface `EcsResourceRequirement` has no `Value` member |
+| `AWS::Pipes::Pipe` | `PlacementConstraint` | `Type` | definition | SDK interface `PlacementConstraint` has no `Type` member |
+| `AWS::Pipes::Pipe` | `PlacementStrategy` | `Type` | definition | SDK interface `PlacementStrategy` has no `Type` member |
 | `AWS::S3::Bucket` | `ReplicationRule` | `Id` | definition | SDK interface `ReplicationRule` has no `Id` member |
 | `AWS::S3::Bucket` | `S3KeyFilter` | `Rules` | definition | SDK interface `S3KeyFilter` has no `Rules` member |
 | `AWS::S3::Bucket` | `AnalyticsConfiguration` | `Prefix` | definition | SDK interface `AnalyticsConfiguration` has no `Prefix` member |
@@ -218,6 +235,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Glue::Table` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 88 | 2 |
 | `AWS::Glue::Trigger` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 16 | 0 |
 | `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | no | 38 | 6 |
+| `AWS::Pipes::Pipe` | `pipes-provider.ts` | `@aws-sdk/client-pipes` | exact | no | 208 | 0 |
 | `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | yes | 193 | 15 |
 | `AWS::Scheduler::Schedule` | `scheduler-schedule-provider.ts` | `@aws-sdk/client-scheduler` | exact | no | 47 | 0 |
 

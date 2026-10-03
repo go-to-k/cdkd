@@ -68,6 +68,7 @@ import { BudgetsBudgetProvider } from './providers/budgets-budget-provider.js';
 import { KinesisStreamProvider } from './providers/kinesis-provider.js';
 import { KinesisStreamConsumerProvider } from './providers/kinesis-streamconsumer-provider.js';
 import { SchedulerScheduleProvider } from './providers/scheduler-schedule-provider.js';
+import { PipesPipeProvider } from './providers/pipes-provider.js';
 import { EFSProvider } from './providers/efs-provider.js';
 import { FSxFileSystemProvider } from './providers/fsx-filesystem-provider.js';
 import { EMRClusterProvider } from './providers/emr-cluster-provider.js';
@@ -286,6 +287,9 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   // Custom-group schedules are unaddressable via Cloud Control (issue #961) —
   // the SDK provider threads GroupName from the resource properties.
   registry.register('AWS::Scheduler::Schedule', new SchedulerScheduleProvider());
+  // Cloud Control cannot change a stream source's SourceParameters (issue
+  // #4423); UpdatePipe takes a shape without the create-only members.
+  registry.register('AWS::Pipes::Pipe', new PipesPipeProvider());
 
   // EFS
   const efsProvider = new EFSProvider();

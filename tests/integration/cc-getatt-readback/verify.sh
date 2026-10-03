@@ -2,12 +2,15 @@
 # verify.sh — cdkd CC-routed Fn::GetAtt read-back enrichment integ.
 #
 # Regression coverage for issue #1103: AWS::Pipes::Pipe, AWS::S3::AccessPoint
-# and AWS::ResourceGroups::Group have NO SDK provider (pure Cloud Control) and
+# and AWS::ResourceGroups::Group had NO SDK provider (pure Cloud Control) and
 # the CC CREATE ResourceModel is sparse for all three, so `Fn::GetAtt` on
 # their computed attributes (`Arn`, and `Alias` for the access point) fell
 # through cdkd's intrinsic resolver's constructAttribute default to the
 # physicalId — the bare resource NAME. Deploy stayed green (a silent GetAtt
-# divergence poisoning outputs and downstream consumers).
+# divergence poisoning outputs and downstream consumers). The pipe has had an
+# SDK provider since issue #4423, which records the same GetAtt set from
+# DescribePipe, so its assertions now cover that provider; the access point
+# and the group still go through Cloud Control.
 #
 # Phases:
 #   1. Deploy bucket + access point, SQS->SQS pipe (+role), resource group.

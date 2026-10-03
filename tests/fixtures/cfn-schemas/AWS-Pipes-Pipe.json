@@ -1,0 +1,1105 @@
+{
+  "resourceType": "AWS::Pipes::Pipe",
+  "generatedAt": "2026-10-02",
+  "properties": [
+    "Arn",
+    "CreationTime",
+    "CurrentState",
+    "Description",
+    "DesiredState",
+    "Enrichment",
+    "EnrichmentParameters",
+    "KmsKeyIdentifier",
+    "LastModifiedTime",
+    "LogConfiguration",
+    "Name",
+    "RoleArn",
+    "Source",
+    "SourceParameters",
+    "StateReason",
+    "Tags",
+    "Target",
+    "TargetParameters"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "CreationTime",
+    "CurrentState",
+    "LastModifiedTime",
+    "StateReason"
+  ],
+  "createOnlyProperties": [
+    "Name",
+    "Source"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "Name"
+    ],
+    [
+      "Source"
+    ],
+    [
+      "SourceParameters",
+      "ActiveMQBrokerParameters",
+      "QueueName"
+    ],
+    [
+      "SourceParameters",
+      "DynamoDBStreamParameters",
+      "StartingPosition"
+    ],
+    [
+      "SourceParameters",
+      "KinesisStreamParameters",
+      "StartingPosition"
+    ],
+    [
+      "SourceParameters",
+      "KinesisStreamParameters",
+      "StartingPositionTimestamp"
+    ],
+    [
+      "SourceParameters",
+      "ManagedStreamingKafkaParameters",
+      "ConsumerGroupID"
+    ],
+    [
+      "SourceParameters",
+      "ManagedStreamingKafkaParameters",
+      "StartingPosition"
+    ],
+    [
+      "SourceParameters",
+      "ManagedStreamingKafkaParameters",
+      "TopicName"
+    ],
+    [
+      "SourceParameters",
+      "RabbitMQBrokerParameters",
+      "QueueName"
+    ],
+    [
+      "SourceParameters",
+      "RabbitMQBrokerParameters",
+      "VirtualHost"
+    ],
+    [
+      "SourceParameters",
+      "SelfManagedKafkaParameters",
+      "AdditionalBootstrapServers"
+    ],
+    [
+      "SourceParameters",
+      "SelfManagedKafkaParameters",
+      "ConsumerGroupID"
+    ],
+    [
+      "SourceParameters",
+      "SelfManagedKafkaParameters",
+      "StartingPosition"
+    ],
+    [
+      "SourceParameters",
+      "SelfManagedKafkaParameters",
+      "TopicName"
+    ]
+  ],
+  "primaryIdentifier": [
+    "Name"
+  ],
+  "nestedProperties": {
+    "EnrichmentParameters": [
+      "HeaderParameters",
+      "HttpParameters",
+      "InputTemplate",
+      "PathParameterValues",
+      "QueryStringParameters"
+    ],
+    "LogConfiguration": [
+      "BucketName",
+      "BucketOwner",
+      "CloudwatchLogsLogDestination",
+      "DeliveryStreamArn",
+      "FirehoseLogDestination",
+      "IncludeExecutionData",
+      "Level",
+      "LogGroupArn",
+      "OutputFormat",
+      "Prefix",
+      "S3LogDestination"
+    ],
+    "SourceParameters": [
+      "ActiveMQBrokerParameters",
+      "AdditionalBootstrapServers",
+      "Arn",
+      "BasicAuth",
+      "BatchSize",
+      "ClientCertificateTlsAuth",
+      "ConsumerGroupID",
+      "Credentials",
+      "DeadLetterConfig",
+      "DynamoDBStreamParameters",
+      "FilterCriteria",
+      "Filters",
+      "KinesisStreamParameters",
+      "ManagedStreamingKafkaParameters",
+      "MaximumBatchingWindowInSeconds",
+      "MaximumRecordAgeInSeconds",
+      "MaximumRetryAttempts",
+      "OnPartialBatchItemFailure",
+      "ParallelizationFactor",
+      "Pattern",
+      "QueueName",
+      "RabbitMQBrokerParameters",
+      "SaslScram256Auth",
+      "SaslScram512Auth",
+      "SecurityGroup",
+      "SelfManagedKafkaParameters",
+      "ServerRootCaCertificate",
+      "SqsQueueParameters",
+      "StartingPosition",
+      "StartingPositionTimestamp",
+      "Subnets",
+      "TopicName",
+      "VirtualHost",
+      "Vpc"
+    ],
+    "TargetParameters": [
+      "ArrayProperties",
+      "AssignPublicIp",
+      "Attempts",
+      "AwsvpcConfiguration",
+      "Base",
+      "BatchJobParameters",
+      "CapacityProvider",
+      "CapacityProviderStrategy",
+      "CloudWatchLogsParameters",
+      "Command",
+      "ContainerOverrides",
+      "Cpu",
+      "Database",
+      "DbUser",
+      "DependsOn",
+      "DetailType",
+      "DeviceName",
+      "DeviceType",
+      "DimensionMappings",
+      "DimensionName",
+      "DimensionValue",
+      "DimensionValueType",
+      "EcsTaskParameters",
+      "EnableECSManagedTags",
+      "EnableExecuteCommand",
+      "EndpointId",
+      "Environment",
+      "EnvironmentFiles",
+      "EphemeralStorage",
+      "EpochTimeUnit",
+      "EventBridgeEventBusParameters",
+      "ExecutionRoleArn",
+      "Expression",
+      "Field",
+      "Group",
+      "HeaderParameters",
+      "HttpParameters",
+      "InferenceAcceleratorOverrides",
+      "InputTemplate",
+      "InstanceType",
+      "InvocationType",
+      "JobDefinition",
+      "JobId",
+      "JobName",
+      "Key",
+      "KinesisStreamParameters",
+      "LambdaFunctionParameters",
+      "LaunchType",
+      "LogStreamName",
+      "MeasureName",
+      "MeasureValue",
+      "MeasureValueType",
+      "Memory",
+      "MemoryReservation",
+      "MessageDeduplicationId",
+      "MessageGroupId",
+      "MultiMeasureAttributeMappings",
+      "MultiMeasureAttributeName",
+      "MultiMeasureMappings",
+      "MultiMeasureName",
+      "Name",
+      "NetworkConfiguration",
+      "Overrides",
+      "Parameters",
+      "PartitionKey",
+      "PathParameterValues",
+      "PipelineParameterList",
+      "PlacementConstraints",
+      "PlacementStrategy",
+      "PlatformVersion",
+      "PropagateTags",
+      "QueryStringParameters",
+      "RedshiftDataParameters",
+      "ReferenceId",
+      "ResourceRequirements",
+      "Resources",
+      "RetryStrategy",
+      "SageMakerPipelineParameters",
+      "SecretManagerArn",
+      "SecurityGroups",
+      "SingleMeasureMappings",
+      "Size",
+      "SizeInGiB",
+      "Source",
+      "Sqls",
+      "SqsQueueParameters",
+      "StatementName",
+      "StepFunctionStateMachineParameters",
+      "Subnets",
+      "Tags",
+      "TaskCount",
+      "TaskDefinitionArn",
+      "TaskRoleArn",
+      "Time",
+      "TimeFieldType",
+      "TimeValue",
+      "Timestamp",
+      "TimestampFormat",
+      "TimestreamParameters",
+      "Type",
+      "Value",
+      "VersionValue",
+      "Weight",
+      "WithEvent"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "EnrichmentParameters": [
+      "HttpParameters",
+      "HttpParameters.HeaderParameters",
+      "HttpParameters.PathParameterValues",
+      "HttpParameters.QueryStringParameters",
+      "InputTemplate"
+    ],
+    "LogConfiguration": [
+      "CloudwatchLogsLogDestination",
+      "CloudwatchLogsLogDestination.LogGroupArn",
+      "FirehoseLogDestination",
+      "FirehoseLogDestination.DeliveryStreamArn",
+      "IncludeExecutionData",
+      "Level",
+      "S3LogDestination",
+      "S3LogDestination.BucketName",
+      "S3LogDestination.BucketOwner",
+      "S3LogDestination.OutputFormat",
+      "S3LogDestination.Prefix"
+    ],
+    "SourceParameters": [
+      "ActiveMQBrokerParameters",
+      "ActiveMQBrokerParameters.BatchSize",
+      "ActiveMQBrokerParameters.Credentials",
+      "ActiveMQBrokerParameters.Credentials.BasicAuth",
+      "ActiveMQBrokerParameters.MaximumBatchingWindowInSeconds",
+      "ActiveMQBrokerParameters.QueueName",
+      "DynamoDBStreamParameters",
+      "DynamoDBStreamParameters.BatchSize",
+      "DynamoDBStreamParameters.DeadLetterConfig",
+      "DynamoDBStreamParameters.DeadLetterConfig.Arn",
+      "DynamoDBStreamParameters.MaximumBatchingWindowInSeconds",
+      "DynamoDBStreamParameters.MaximumRecordAgeInSeconds",
+      "DynamoDBStreamParameters.MaximumRetryAttempts",
+      "DynamoDBStreamParameters.OnPartialBatchItemFailure",
+      "DynamoDBStreamParameters.ParallelizationFactor",
+      "DynamoDBStreamParameters.StartingPosition",
+      "FilterCriteria",
+      "FilterCriteria.Filters",
+      "FilterCriteria.Filters.Pattern",
+      "KinesisStreamParameters",
+      "KinesisStreamParameters.BatchSize",
+      "KinesisStreamParameters.DeadLetterConfig",
+      "KinesisStreamParameters.DeadLetterConfig.Arn",
+      "KinesisStreamParameters.MaximumBatchingWindowInSeconds",
+      "KinesisStreamParameters.MaximumRecordAgeInSeconds",
+      "KinesisStreamParameters.MaximumRetryAttempts",
+      "KinesisStreamParameters.OnPartialBatchItemFailure",
+      "KinesisStreamParameters.ParallelizationFactor",
+      "KinesisStreamParameters.StartingPosition",
+      "KinesisStreamParameters.StartingPositionTimestamp",
+      "ManagedStreamingKafkaParameters",
+      "ManagedStreamingKafkaParameters.BatchSize",
+      "ManagedStreamingKafkaParameters.ConsumerGroupID",
+      "ManagedStreamingKafkaParameters.Credentials",
+      "ManagedStreamingKafkaParameters.Credentials.ClientCertificateTlsAuth",
+      "ManagedStreamingKafkaParameters.Credentials.SaslScram512Auth",
+      "ManagedStreamingKafkaParameters.MaximumBatchingWindowInSeconds",
+      "ManagedStreamingKafkaParameters.StartingPosition",
+      "ManagedStreamingKafkaParameters.TopicName",
+      "RabbitMQBrokerParameters",
+      "RabbitMQBrokerParameters.BatchSize",
+      "RabbitMQBrokerParameters.Credentials",
+      "RabbitMQBrokerParameters.Credentials.BasicAuth",
+      "RabbitMQBrokerParameters.MaximumBatchingWindowInSeconds",
+      "RabbitMQBrokerParameters.QueueName",
+      "RabbitMQBrokerParameters.VirtualHost",
+      "SelfManagedKafkaParameters",
+      "SelfManagedKafkaParameters.AdditionalBootstrapServers",
+      "SelfManagedKafkaParameters.BatchSize",
+      "SelfManagedKafkaParameters.ConsumerGroupID",
+      "SelfManagedKafkaParameters.Credentials",
+      "SelfManagedKafkaParameters.Credentials.BasicAuth",
+      "SelfManagedKafkaParameters.Credentials.ClientCertificateTlsAuth",
+      "SelfManagedKafkaParameters.Credentials.SaslScram256Auth",
+      "SelfManagedKafkaParameters.Credentials.SaslScram512Auth",
+      "SelfManagedKafkaParameters.MaximumBatchingWindowInSeconds",
+      "SelfManagedKafkaParameters.ServerRootCaCertificate",
+      "SelfManagedKafkaParameters.StartingPosition",
+      "SelfManagedKafkaParameters.TopicName",
+      "SelfManagedKafkaParameters.Vpc",
+      "SelfManagedKafkaParameters.Vpc.SecurityGroup",
+      "SelfManagedKafkaParameters.Vpc.Subnets",
+      "SqsQueueParameters",
+      "SqsQueueParameters.BatchSize",
+      "SqsQueueParameters.MaximumBatchingWindowInSeconds"
+    ],
+    "TargetParameters": [
+      "BatchJobParameters",
+      "BatchJobParameters.ArrayProperties",
+      "BatchJobParameters.ArrayProperties.Size",
+      "BatchJobParameters.ContainerOverrides",
+      "BatchJobParameters.ContainerOverrides.Command",
+      "BatchJobParameters.ContainerOverrides.Environment",
+      "BatchJobParameters.ContainerOverrides.Environment.Name",
+      "BatchJobParameters.ContainerOverrides.Environment.Value",
+      "BatchJobParameters.ContainerOverrides.InstanceType",
+      "BatchJobParameters.ContainerOverrides.ResourceRequirements",
+      "BatchJobParameters.ContainerOverrides.ResourceRequirements.Type",
+      "BatchJobParameters.ContainerOverrides.ResourceRequirements.Value",
+      "BatchJobParameters.DependsOn",
+      "BatchJobParameters.DependsOn.JobId",
+      "BatchJobParameters.DependsOn.Type",
+      "BatchJobParameters.JobDefinition",
+      "BatchJobParameters.JobName",
+      "BatchJobParameters.Parameters",
+      "BatchJobParameters.RetryStrategy",
+      "BatchJobParameters.RetryStrategy.Attempts",
+      "CloudWatchLogsParameters",
+      "CloudWatchLogsParameters.LogStreamName",
+      "CloudWatchLogsParameters.Timestamp",
+      "EcsTaskParameters",
+      "EcsTaskParameters.CapacityProviderStrategy",
+      "EcsTaskParameters.CapacityProviderStrategy.Base",
+      "EcsTaskParameters.CapacityProviderStrategy.CapacityProvider",
+      "EcsTaskParameters.CapacityProviderStrategy.Weight",
+      "EcsTaskParameters.EnableECSManagedTags",
+      "EcsTaskParameters.EnableExecuteCommand",
+      "EcsTaskParameters.Group",
+      "EcsTaskParameters.LaunchType",
+      "EcsTaskParameters.NetworkConfiguration",
+      "EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration",
+      "EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIp",
+      "EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration.SecurityGroups",
+      "EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration.Subnets",
+      "EcsTaskParameters.Overrides",
+      "EcsTaskParameters.Overrides.ContainerOverrides",
+      "EcsTaskParameters.Overrides.ContainerOverrides.Command",
+      "EcsTaskParameters.Overrides.ContainerOverrides.Cpu",
+      "EcsTaskParameters.Overrides.ContainerOverrides.Environment",
+      "EcsTaskParameters.Overrides.ContainerOverrides.Environment.Name",
+      "EcsTaskParameters.Overrides.ContainerOverrides.Environment.Value",
+      "EcsTaskParameters.Overrides.ContainerOverrides.EnvironmentFiles",
+      "EcsTaskParameters.Overrides.ContainerOverrides.EnvironmentFiles.Type",
+      "EcsTaskParameters.Overrides.ContainerOverrides.EnvironmentFiles.Value",
+      "EcsTaskParameters.Overrides.ContainerOverrides.Memory",
+      "EcsTaskParameters.Overrides.ContainerOverrides.MemoryReservation",
+      "EcsTaskParameters.Overrides.ContainerOverrides.Name",
+      "EcsTaskParameters.Overrides.ContainerOverrides.ResourceRequirements",
+      "EcsTaskParameters.Overrides.ContainerOverrides.ResourceRequirements.Type",
+      "EcsTaskParameters.Overrides.ContainerOverrides.ResourceRequirements.Value",
+      "EcsTaskParameters.Overrides.Cpu",
+      "EcsTaskParameters.Overrides.EphemeralStorage",
+      "EcsTaskParameters.Overrides.EphemeralStorage.SizeInGiB",
+      "EcsTaskParameters.Overrides.ExecutionRoleArn",
+      "EcsTaskParameters.Overrides.InferenceAcceleratorOverrides",
+      "EcsTaskParameters.Overrides.InferenceAcceleratorOverrides.DeviceName",
+      "EcsTaskParameters.Overrides.InferenceAcceleratorOverrides.DeviceType",
+      "EcsTaskParameters.Overrides.Memory",
+      "EcsTaskParameters.Overrides.TaskRoleArn",
+      "EcsTaskParameters.PlacementConstraints",
+      "EcsTaskParameters.PlacementConstraints.Expression",
+      "EcsTaskParameters.PlacementConstraints.Type",
+      "EcsTaskParameters.PlacementStrategy",
+      "EcsTaskParameters.PlacementStrategy.Field",
+      "EcsTaskParameters.PlacementStrategy.Type",
+      "EcsTaskParameters.PlatformVersion",
+      "EcsTaskParameters.PropagateTags",
+      "EcsTaskParameters.ReferenceId",
+      "EcsTaskParameters.Tags",
+      "EcsTaskParameters.Tags.Key",
+      "EcsTaskParameters.Tags.Value",
+      "EcsTaskParameters.TaskCount",
+      "EcsTaskParameters.TaskDefinitionArn",
+      "EventBridgeEventBusParameters",
+      "EventBridgeEventBusParameters.DetailType",
+      "EventBridgeEventBusParameters.EndpointId",
+      "EventBridgeEventBusParameters.Resources",
+      "EventBridgeEventBusParameters.Source",
+      "EventBridgeEventBusParameters.Time",
+      "HttpParameters",
+      "HttpParameters.HeaderParameters",
+      "HttpParameters.PathParameterValues",
+      "HttpParameters.QueryStringParameters",
+      "InputTemplate",
+      "KinesisStreamParameters",
+      "KinesisStreamParameters.PartitionKey",
+      "LambdaFunctionParameters",
+      "LambdaFunctionParameters.InvocationType",
+      "RedshiftDataParameters",
+      "RedshiftDataParameters.Database",
+      "RedshiftDataParameters.DbUser",
+      "RedshiftDataParameters.SecretManagerArn",
+      "RedshiftDataParameters.Sqls",
+      "RedshiftDataParameters.StatementName",
+      "RedshiftDataParameters.WithEvent",
+      "SageMakerPipelineParameters",
+      "SageMakerPipelineParameters.PipelineParameterList",
+      "SageMakerPipelineParameters.PipelineParameterList.Name",
+      "SageMakerPipelineParameters.PipelineParameterList.Value",
+      "SqsQueueParameters",
+      "SqsQueueParameters.MessageDeduplicationId",
+      "SqsQueueParameters.MessageGroupId",
+      "StepFunctionStateMachineParameters",
+      "StepFunctionStateMachineParameters.InvocationType",
+      "TimestreamParameters",
+      "TimestreamParameters.DimensionMappings",
+      "TimestreamParameters.DimensionMappings.DimensionName",
+      "TimestreamParameters.DimensionMappings.DimensionValue",
+      "TimestreamParameters.DimensionMappings.DimensionValueType",
+      "TimestreamParameters.EpochTimeUnit",
+      "TimestreamParameters.MultiMeasureMappings",
+      "TimestreamParameters.MultiMeasureMappings.MultiMeasureAttributeMappings",
+      "TimestreamParameters.MultiMeasureMappings.MultiMeasureAttributeMappings.MeasureValue",
+      "TimestreamParameters.MultiMeasureMappings.MultiMeasureAttributeMappings.MeasureValueType",
+      "TimestreamParameters.MultiMeasureMappings.MultiMeasureAttributeMappings.MultiMeasureAttributeName",
+      "TimestreamParameters.MultiMeasureMappings.MultiMeasureName",
+      "TimestreamParameters.SingleMeasureMappings",
+      "TimestreamParameters.SingleMeasureMappings.MeasureName",
+      "TimestreamParameters.SingleMeasureMappings.MeasureValue",
+      "TimestreamParameters.SingleMeasureMappings.MeasureValueType",
+      "TimestreamParameters.TimeFieldType",
+      "TimestreamParameters.TimeValue",
+      "TimestreamParameters.TimestampFormat",
+      "TimestreamParameters.VersionValue"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Arn": "scalar",
+      "CreationTime": "scalar",
+      "CurrentState": "scalar",
+      "Description": "scalar",
+      "DesiredState": "scalar",
+      "Enrichment": "scalar",
+      "EnrichmentParameters": "object",
+      "KmsKeyIdentifier": "scalar",
+      "LastModifiedTime": "scalar",
+      "LogConfiguration": "object",
+      "Name": "scalar",
+      "RoleArn": "scalar",
+      "Source": "scalar",
+      "SourceParameters": "object",
+      "StateReason": "scalar",
+      "Tags": "object",
+      "Target": "scalar",
+      "TargetParameters": "object"
+    },
+    "AwsVpcConfiguration": {
+      "Subnets": "array",
+      "SecurityGroups": "array",
+      "AssignPublicIp": "scalar"
+    },
+    "BatchArrayProperties": {
+      "Size": "scalar"
+    },
+    "BatchContainerOverrides": {
+      "Command": "array",
+      "Environment": "array",
+      "InstanceType": "scalar",
+      "ResourceRequirements": "array"
+    },
+    "BatchEnvironmentVariable": {
+      "Name": "scalar",
+      "Value": "scalar"
+    },
+    "BatchJobDependency": {
+      "JobId": "scalar",
+      "Type": "scalar"
+    },
+    "BatchResourceRequirement": {
+      "Type": "scalar",
+      "Value": "scalar"
+    },
+    "BatchRetryStrategy": {
+      "Attempts": "scalar"
+    },
+    "CapacityProviderStrategyItem": {
+      "CapacityProvider": "scalar",
+      "Weight": "scalar",
+      "Base": "scalar"
+    },
+    "CloudwatchLogsLogDestination": {
+      "LogGroupArn": "scalar"
+    },
+    "DeadLetterConfig": {
+      "Arn": "scalar"
+    },
+    "DimensionMapping": {
+      "DimensionValue": "scalar",
+      "DimensionValueType": "scalar",
+      "DimensionName": "scalar"
+    },
+    "EcsContainerOverride": {
+      "Command": "array",
+      "Cpu": "scalar",
+      "Environment": "array",
+      "EnvironmentFiles": "array",
+      "Memory": "scalar",
+      "MemoryReservation": "scalar",
+      "Name": "scalar",
+      "ResourceRequirements": "array"
+    },
+    "EcsEnvironmentFile": {
+      "Type": "scalar",
+      "Value": "scalar"
+    },
+    "EcsEnvironmentVariable": {
+      "Name": "scalar",
+      "Value": "scalar"
+    },
+    "EcsEphemeralStorage": {
+      "SizeInGiB": "scalar"
+    },
+    "EcsInferenceAcceleratorOverride": {
+      "DeviceName": "scalar",
+      "DeviceType": "scalar"
+    },
+    "EcsResourceRequirement": {
+      "Type": "scalar",
+      "Value": "scalar"
+    },
+    "EcsTaskOverride": {
+      "ContainerOverrides": "array",
+      "Cpu": "scalar",
+      "EphemeralStorage": "object",
+      "ExecutionRoleArn": "scalar",
+      "InferenceAcceleratorOverrides": "array",
+      "Memory": "scalar",
+      "TaskRoleArn": "scalar"
+    },
+    "Filter": {
+      "Pattern": "scalar"
+    },
+    "FilterCriteria": {
+      "Filters": "array"
+    },
+    "FirehoseLogDestination": {
+      "DeliveryStreamArn": "scalar"
+    },
+    "MultiMeasureAttributeMapping": {
+      "MeasureValue": "scalar",
+      "MeasureValueType": "scalar",
+      "MultiMeasureAttributeName": "scalar"
+    },
+    "MultiMeasureMapping": {
+      "MultiMeasureName": "scalar",
+      "MultiMeasureAttributeMappings": "array"
+    },
+    "NetworkConfiguration": {
+      "AwsvpcConfiguration": "object"
+    },
+    "PipeEnrichmentHttpParameters": {
+      "PathParameterValues": "array",
+      "HeaderParameters": "object",
+      "QueryStringParameters": "object"
+    },
+    "PipeEnrichmentParameters": {
+      "InputTemplate": "scalar",
+      "HttpParameters": "object"
+    },
+    "PipeLogConfiguration": {
+      "S3LogDestination": "object",
+      "FirehoseLogDestination": "object",
+      "CloudwatchLogsLogDestination": "object",
+      "Level": "scalar",
+      "IncludeExecutionData": "array"
+    },
+    "PipeSourceActiveMQBrokerParameters": {
+      "Credentials": "object",
+      "QueueName": "scalar",
+      "BatchSize": "scalar",
+      "MaximumBatchingWindowInSeconds": "scalar"
+    },
+    "PipeSourceDynamoDBStreamParameters": {
+      "BatchSize": "scalar",
+      "DeadLetterConfig": "object",
+      "OnPartialBatchItemFailure": "scalar",
+      "MaximumBatchingWindowInSeconds": "scalar",
+      "MaximumRecordAgeInSeconds": "scalar",
+      "MaximumRetryAttempts": "scalar",
+      "ParallelizationFactor": "scalar",
+      "StartingPosition": "scalar"
+    },
+    "PipeSourceKinesisStreamParameters": {
+      "BatchSize": "scalar",
+      "DeadLetterConfig": "object",
+      "OnPartialBatchItemFailure": "scalar",
+      "MaximumBatchingWindowInSeconds": "scalar",
+      "MaximumRecordAgeInSeconds": "scalar",
+      "MaximumRetryAttempts": "scalar",
+      "ParallelizationFactor": "scalar",
+      "StartingPosition": "scalar",
+      "StartingPositionTimestamp": "scalar"
+    },
+    "PipeSourceManagedStreamingKafkaParameters": {
+      "TopicName": "scalar",
+      "StartingPosition": "scalar",
+      "BatchSize": "scalar",
+      "MaximumBatchingWindowInSeconds": "scalar",
+      "ConsumerGroupID": "scalar",
+      "Credentials": "object"
+    },
+    "PipeSourceParameters": {
+      "FilterCriteria": "object",
+      "KinesisStreamParameters": "object",
+      "DynamoDBStreamParameters": "object",
+      "SqsQueueParameters": "object",
+      "ActiveMQBrokerParameters": "object",
+      "RabbitMQBrokerParameters": "object",
+      "ManagedStreamingKafkaParameters": "object",
+      "SelfManagedKafkaParameters": "object"
+    },
+    "PipeSourceRabbitMQBrokerParameters": {
+      "Credentials": "object",
+      "QueueName": "scalar",
+      "VirtualHost": "scalar",
+      "BatchSize": "scalar",
+      "MaximumBatchingWindowInSeconds": "scalar"
+    },
+    "PipeSourceSelfManagedKafkaParameters": {
+      "TopicName": "scalar",
+      "StartingPosition": "scalar",
+      "AdditionalBootstrapServers": "array",
+      "BatchSize": "scalar",
+      "MaximumBatchingWindowInSeconds": "scalar",
+      "ConsumerGroupID": "scalar",
+      "Credentials": "object",
+      "ServerRootCaCertificate": "scalar",
+      "Vpc": "object"
+    },
+    "PipeSourceSqsQueueParameters": {
+      "BatchSize": "scalar",
+      "MaximumBatchingWindowInSeconds": "scalar"
+    },
+    "PipeTargetBatchJobParameters": {
+      "JobDefinition": "scalar",
+      "JobName": "scalar",
+      "ArrayProperties": "object",
+      "RetryStrategy": "object",
+      "ContainerOverrides": "object",
+      "DependsOn": "array",
+      "Parameters": "object"
+    },
+    "PipeTargetCloudWatchLogsParameters": {
+      "LogStreamName": "scalar",
+      "Timestamp": "scalar"
+    },
+    "PipeTargetEcsTaskParameters": {
+      "TaskDefinitionArn": "scalar",
+      "TaskCount": "scalar",
+      "LaunchType": "scalar",
+      "NetworkConfiguration": "object",
+      "PlatformVersion": "scalar",
+      "Group": "scalar",
+      "CapacityProviderStrategy": "array",
+      "EnableECSManagedTags": "scalar",
+      "EnableExecuteCommand": "scalar",
+      "PlacementConstraints": "array",
+      "PlacementStrategy": "array",
+      "PropagateTags": "scalar",
+      "ReferenceId": "scalar",
+      "Overrides": "object",
+      "Tags": "array"
+    },
+    "PipeTargetEventBridgeEventBusParameters": {
+      "EndpointId": "scalar",
+      "DetailType": "scalar",
+      "Source": "scalar",
+      "Resources": "array",
+      "Time": "scalar"
+    },
+    "PipeTargetHttpParameters": {
+      "PathParameterValues": "array",
+      "HeaderParameters": "object",
+      "QueryStringParameters": "object"
+    },
+    "PipeTargetKinesisStreamParameters": {
+      "PartitionKey": "scalar"
+    },
+    "PipeTargetLambdaFunctionParameters": {
+      "InvocationType": "scalar"
+    },
+    "PipeTargetParameters": {
+      "InputTemplate": "scalar",
+      "LambdaFunctionParameters": "object",
+      "StepFunctionStateMachineParameters": "object",
+      "KinesisStreamParameters": "object",
+      "EcsTaskParameters": "object",
+      "BatchJobParameters": "object",
+      "SqsQueueParameters": "object",
+      "HttpParameters": "object",
+      "RedshiftDataParameters": "object",
+      "SageMakerPipelineParameters": "object",
+      "EventBridgeEventBusParameters": "object",
+      "CloudWatchLogsParameters": "object",
+      "TimestreamParameters": "object"
+    },
+    "PipeTargetRedshiftDataParameters": {
+      "SecretManagerArn": "scalar",
+      "Database": "scalar",
+      "DbUser": "scalar",
+      "StatementName": "scalar",
+      "WithEvent": "scalar",
+      "Sqls": "array"
+    },
+    "PipeTargetSageMakerPipelineParameters": {
+      "PipelineParameterList": "array"
+    },
+    "PipeTargetSqsQueueParameters": {
+      "MessageGroupId": "scalar",
+      "MessageDeduplicationId": "scalar"
+    },
+    "PipeTargetStateMachineParameters": {
+      "InvocationType": "scalar"
+    },
+    "PipeTargetTimestreamParameters": {
+      "TimeValue": "scalar",
+      "EpochTimeUnit": "scalar",
+      "TimeFieldType": "scalar",
+      "TimestampFormat": "scalar",
+      "VersionValue": "scalar",
+      "DimensionMappings": "array",
+      "SingleMeasureMappings": "array",
+      "MultiMeasureMappings": "array"
+    },
+    "PlacementConstraint": {
+      "Type": "scalar",
+      "Expression": "scalar"
+    },
+    "PlacementStrategy": {
+      "Type": "scalar",
+      "Field": "scalar"
+    },
+    "S3LogDestination": {
+      "BucketName": "scalar",
+      "Prefix": "scalar",
+      "BucketOwner": "scalar",
+      "OutputFormat": "scalar"
+    },
+    "SageMakerPipelineParameter": {
+      "Name": "scalar",
+      "Value": "scalar"
+    },
+    "SelfManagedKafkaAccessConfigurationVpc": {
+      "Subnets": "array",
+      "SecurityGroup": "array"
+    },
+    "SingleMeasureMapping": {
+      "MeasureValue": "scalar",
+      "MeasureValueType": "scalar",
+      "MeasureName": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "RoleArn",
+      "Source",
+      "Target"
+    ],
+    "AwsVpcConfiguration": [
+      "Subnets"
+    ],
+    "BatchResourceRequirement": [
+      "Type",
+      "Value"
+    ],
+    "CapacityProviderStrategyItem": [
+      "CapacityProvider"
+    ],
+    "DimensionMapping": [
+      "DimensionName",
+      "DimensionValue",
+      "DimensionValueType"
+    ],
+    "EcsEnvironmentFile": [
+      "Type",
+      "Value"
+    ],
+    "EcsEphemeralStorage": [
+      "SizeInGiB"
+    ],
+    "EcsResourceRequirement": [
+      "Type",
+      "Value"
+    ],
+    "MultiMeasureAttributeMapping": [
+      "MeasureValue",
+      "MeasureValueType",
+      "MultiMeasureAttributeName"
+    ],
+    "MultiMeasureMapping": [
+      "MultiMeasureAttributeMappings",
+      "MultiMeasureName"
+    ],
+    "PipeSourceActiveMQBrokerParameters": [
+      "Credentials",
+      "QueueName"
+    ],
+    "PipeSourceDynamoDBStreamParameters": [
+      "StartingPosition"
+    ],
+    "PipeSourceKinesisStreamParameters": [
+      "StartingPosition"
+    ],
+    "PipeSourceManagedStreamingKafkaParameters": [
+      "TopicName"
+    ],
+    "PipeSourceRabbitMQBrokerParameters": [
+      "Credentials",
+      "QueueName"
+    ],
+    "PipeSourceSelfManagedKafkaParameters": [
+      "TopicName"
+    ],
+    "PipeTargetBatchJobParameters": [
+      "JobDefinition",
+      "JobName"
+    ],
+    "PipeTargetEcsTaskParameters": [
+      "TaskDefinitionArn"
+    ],
+    "PipeTargetKinesisStreamParameters": [
+      "PartitionKey"
+    ],
+    "PipeTargetRedshiftDataParameters": [
+      "Database",
+      "Sqls"
+    ],
+    "PipeTargetTimestreamParameters": [
+      "DimensionMappings",
+      "TimeValue",
+      "VersionValue"
+    ],
+    "SageMakerPipelineParameter": [
+      "Name",
+      "Value"
+    ],
+    "SingleMeasureMapping": [
+      "MeasureName",
+      "MeasureValue",
+      "MeasureValueType"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "SourceParameters.ActiveMQBrokerParameters": [
+      "Credentials",
+      "QueueName"
+    ],
+    "SourceParameters.DynamoDBStreamParameters": [
+      "StartingPosition"
+    ],
+    "SourceParameters.KinesisStreamParameters": [
+      "StartingPosition"
+    ],
+    "SourceParameters.ManagedStreamingKafkaParameters": [
+      "TopicName"
+    ],
+    "SourceParameters.RabbitMQBrokerParameters": [
+      "Credentials",
+      "QueueName"
+    ],
+    "SourceParameters.SelfManagedKafkaParameters": [
+      "TopicName"
+    ],
+    "TargetParameters.BatchJobParameters": [
+      "JobDefinition",
+      "JobName"
+    ],
+    "TargetParameters.BatchJobParameters.ContainerOverrides.ResourceRequirements": [
+      "Type",
+      "Value"
+    ],
+    "TargetParameters.EcsTaskParameters": [
+      "TaskDefinitionArn"
+    ],
+    "TargetParameters.EcsTaskParameters.CapacityProviderStrategy": [
+      "CapacityProvider"
+    ],
+    "TargetParameters.EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration": [
+      "Subnets"
+    ],
+    "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.EnvironmentFiles": [
+      "Type",
+      "Value"
+    ],
+    "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.ResourceRequirements": [
+      "Type",
+      "Value"
+    ],
+    "TargetParameters.EcsTaskParameters.Overrides.EphemeralStorage": [
+      "SizeInGiB"
+    ],
+    "TargetParameters.EcsTaskParameters.Tags": [
+      "Key",
+      "Value"
+    ],
+    "TargetParameters.KinesisStreamParameters": [
+      "PartitionKey"
+    ],
+    "TargetParameters.RedshiftDataParameters": [
+      "Database",
+      "Sqls"
+    ],
+    "TargetParameters.SageMakerPipelineParameters.PipelineParameterList": [
+      "Name",
+      "Value"
+    ],
+    "TargetParameters.TimestreamParameters": [
+      "DimensionMappings",
+      "TimeValue",
+      "VersionValue"
+    ],
+    "TargetParameters.TimestreamParameters.DimensionMappings": [
+      "DimensionName",
+      "DimensionValue",
+      "DimensionValueType"
+    ],
+    "TargetParameters.TimestreamParameters.MultiMeasureMappings": [
+      "MultiMeasureAttributeMappings",
+      "MultiMeasureName"
+    ],
+    "TargetParameters.TimestreamParameters.MultiMeasureMappings.MultiMeasureAttributeMappings": [
+      "MeasureValue",
+      "MeasureValueType",
+      "MultiMeasureAttributeName"
+    ],
+    "TargetParameters.TimestreamParameters.SingleMeasureMappings": [
+      "MeasureName",
+      "MeasureValue",
+      "MeasureValueType"
+    ]
+  },
+  "propertyShapes": {
+    "EnrichmentParameters": "object",
+    "EnrichmentParameters.HttpParameters": "object",
+    "EnrichmentParameters.HttpParameters.HeaderParameters": "object",
+    "EnrichmentParameters.HttpParameters.PathParameterValues": "array",
+    "EnrichmentParameters.HttpParameters.QueryStringParameters": "object",
+    "LogConfiguration": "object",
+    "LogConfiguration.CloudwatchLogsLogDestination": "object",
+    "LogConfiguration.FirehoseLogDestination": "object",
+    "LogConfiguration.IncludeExecutionData": "array",
+    "LogConfiguration.S3LogDestination": "object",
+    "SourceParameters": "object",
+    "SourceParameters.ActiveMQBrokerParameters": "object",
+    "SourceParameters.ActiveMQBrokerParameters.Credentials": "object",
+    "SourceParameters.DynamoDBStreamParameters": "object",
+    "SourceParameters.DynamoDBStreamParameters.DeadLetterConfig": "object",
+    "SourceParameters.FilterCriteria": "object",
+    "SourceParameters.FilterCriteria.Filters": "array",
+    "SourceParameters.FilterCriteria.Filters[]": "object",
+    "SourceParameters.KinesisStreamParameters": "object",
+    "SourceParameters.KinesisStreamParameters.DeadLetterConfig": "object",
+    "SourceParameters.ManagedStreamingKafkaParameters": "object",
+    "SourceParameters.ManagedStreamingKafkaParameters.Credentials": "object",
+    "SourceParameters.RabbitMQBrokerParameters": "object",
+    "SourceParameters.RabbitMQBrokerParameters.Credentials": "object",
+    "SourceParameters.SelfManagedKafkaParameters": "object",
+    "SourceParameters.SelfManagedKafkaParameters.AdditionalBootstrapServers": "array",
+    "SourceParameters.SelfManagedKafkaParameters.Credentials": "object",
+    "SourceParameters.SelfManagedKafkaParameters.Vpc": "object",
+    "SourceParameters.SelfManagedKafkaParameters.Vpc.SecurityGroup": "array",
+    "SourceParameters.SelfManagedKafkaParameters.Vpc.Subnets": "array",
+    "SourceParameters.SqsQueueParameters": "object",
+    "Tags": "object",
+    "TargetParameters": "object",
+    "TargetParameters.BatchJobParameters": "object",
+    "TargetParameters.BatchJobParameters.ArrayProperties": "object",
+    "TargetParameters.BatchJobParameters.ContainerOverrides": "object",
+    "TargetParameters.BatchJobParameters.ContainerOverrides.Command": "array",
+    "TargetParameters.BatchJobParameters.ContainerOverrides.Environment": "array",
+    "TargetParameters.BatchJobParameters.ContainerOverrides.Environment[]": "object",
+    "TargetParameters.BatchJobParameters.ContainerOverrides.ResourceRequirements": "array",
+    "TargetParameters.BatchJobParameters.ContainerOverrides.ResourceRequirements[]": "object",
+    "TargetParameters.BatchJobParameters.DependsOn": "array",
+    "TargetParameters.BatchJobParameters.DependsOn[]": "object",
+    "TargetParameters.BatchJobParameters.Parameters": "object",
+    "TargetParameters.BatchJobParameters.RetryStrategy": "object",
+    "TargetParameters.CloudWatchLogsParameters": "object",
+    "TargetParameters.EcsTaskParameters": "object",
+    "TargetParameters.EcsTaskParameters.CapacityProviderStrategy": "array",
+    "TargetParameters.EcsTaskParameters.CapacityProviderStrategy[]": "object",
+    "TargetParameters.EcsTaskParameters.NetworkConfiguration": "object",
+    "TargetParameters.EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration": "object",
+    "TargetParameters.EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration.SecurityGroups": "array",
+    "TargetParameters.EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration.Subnets": "array",
+    "TargetParameters.EcsTaskParameters.Overrides": "object",
+    "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides": "array",
+    "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides[]": "object",
+    "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides[].Command": "array",
+    "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides[].Environment": "array",
+    "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides[].EnvironmentFiles": "array",
+    "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides[].EnvironmentFiles[]": "object",
+    "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides[].Environment[]": "object",
+    "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides[].ResourceRequirements": "array",
+    "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides[].ResourceRequirements[]": "object",
+    "TargetParameters.EcsTaskParameters.Overrides.EphemeralStorage": "object",
+    "TargetParameters.EcsTaskParameters.Overrides.InferenceAcceleratorOverrides": "array",
+    "TargetParameters.EcsTaskParameters.Overrides.InferenceAcceleratorOverrides[]": "object",
+    "TargetParameters.EcsTaskParameters.PlacementConstraints": "array",
+    "TargetParameters.EcsTaskParameters.PlacementConstraints[]": "object",
+    "TargetParameters.EcsTaskParameters.PlacementStrategy": "array",
+    "TargetParameters.EcsTaskParameters.PlacementStrategy[]": "object",
+    "TargetParameters.EcsTaskParameters.Tags": "array",
+    "TargetParameters.EcsTaskParameters.Tags[]": "object",
+    "TargetParameters.EventBridgeEventBusParameters": "object",
+    "TargetParameters.EventBridgeEventBusParameters.Resources": "array",
+    "TargetParameters.HttpParameters": "object",
+    "TargetParameters.HttpParameters.HeaderParameters": "object",
+    "TargetParameters.HttpParameters.PathParameterValues": "array",
+    "TargetParameters.HttpParameters.QueryStringParameters": "object",
+    "TargetParameters.KinesisStreamParameters": "object",
+    "TargetParameters.LambdaFunctionParameters": "object",
+    "TargetParameters.RedshiftDataParameters": "object",
+    "TargetParameters.RedshiftDataParameters.Sqls": "array",
+    "TargetParameters.SageMakerPipelineParameters": "object",
+    "TargetParameters.SageMakerPipelineParameters.PipelineParameterList": "array",
+    "TargetParameters.SageMakerPipelineParameters.PipelineParameterList[]": "object",
+    "TargetParameters.SqsQueueParameters": "object",
+    "TargetParameters.StepFunctionStateMachineParameters": "object",
+    "TargetParameters.TimestreamParameters": "object",
+    "TargetParameters.TimestreamParameters.DimensionMappings": "array",
+    "TargetParameters.TimestreamParameters.DimensionMappings[]": "object",
+    "TargetParameters.TimestreamParameters.MultiMeasureMappings": "array",
+    "TargetParameters.TimestreamParameters.MultiMeasureMappings[]": "object",
+    "TargetParameters.TimestreamParameters.MultiMeasureMappings[].MultiMeasureAttributeMappings": "array",
+    "TargetParameters.TimestreamParameters.MultiMeasureMappings[].MultiMeasureAttributeMappings[]": "object",
+    "TargetParameters.TimestreamParameters.SingleMeasureMappings": "array",
+    "TargetParameters.TimestreamParameters.SingleMeasureMappings[]": "object"
+  }
+}

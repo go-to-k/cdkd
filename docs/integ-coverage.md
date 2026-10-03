@@ -9,7 +9,7 @@ unlisted: true
 
 Run `vp run integ-coverage` to regenerate.
 
-**130 / 134 registered SDK Providers** have at least one integ fixture exercising them. 4 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
+**131 / 135 registered SDK Providers** have at least one integ fixture exercising them. 4 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -36,7 +36,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::RDS::DBProxy` | rds-aurora provisions it through the L2 rds.DatabaseProxy, whose type name never appears literally in the fixture, so the literal scan cannot credit it. |
 | `AWS::RDS::DBProxyTargetGroup` | see DBProxy above; rds-aurora's phase 2 also drives its UPDATE path (go-to-k/cdkd#3945). |
 
-## Covered providers (130)
+## Covered providers (131)
 
 | Resource Type | Integ Fixture(s) |
 |---|---|
@@ -143,6 +143,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::Neptune::DBCluster` | [`cc-final-snapshot-handlers`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-final-snapshot-handlers/) (l1,literal)<br>[`docdb-neptune`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/docdb-neptune/) (l1) |
 | `AWS::Neptune::DBInstance` | [`docdb-neptune`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/docdb-neptune/) (l1) |
 | `AWS::Neptune::DBSubnetGroup` | [`cc-final-snapshot-handlers`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-final-snapshot-handlers/) (l1)<br>[`docdb-neptune`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/docdb-neptune/) (l1) |
+| `AWS::Pipes::Pipe` | [`cc-getatt-readback`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-getatt-readback/) (literal)<br>[`cc-write-only-create-only`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-write-only-create-only/) (literal)<br>[`eventbridge`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/eventbridge/) (literal)<br>[`eventbridge-pipes`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/eventbridge-pipes/) (literal) |
 | `AWS::RDS::DBCluster` | [`cc-final-snapshot-handlers`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-final-snapshot-handlers/) (l1,literal)<br>[`import-attribute-readback-final`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-attribute-readback-final/) (l1)<br>[`rds-aurora`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rds-aurora/) (l1,l2) |
 | `AWS::RDS::DBInstance` | [`rds-aurora`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rds-aurora/) (l2)<br>[`rds-dbinstance-backfill`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rds-dbinstance-backfill/) (l1)<br>[`rds-full-stack`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rds-full-stack/) (l2) |
 | `AWS::RDS::DBProxyEndpoint` | [`rds-aurora`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rds-aurora/) (literal) |
@@ -171,7 +172,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`iam-propagation-stress`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/iam-propagation-stress/) (l2)<br>[`import-attribute-readback-final`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-attribute-readback-final/) (l1)<br>[`replacement-immutable-name`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replacement-immutable-name/) (l2,literal)<br>[`stepfunctions`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions/) (l2)<br>[`stepfunctions-logging`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-logging/) (l2)<br>[`stepfunctions-s3-definition`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-s3-definition/) (l1) |
 | `AWS::WAFv2::WebACL` | [`import-attribute-readback-final`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-attribute-readback-final/) (l1)<br>[`wafv2`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (79)
+## Resource types referenced in integs without an SDK Provider (78)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
@@ -236,7 +237,6 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::Logs::SubscriptionFilter`
 - `AWS::NeptuneGraph::Graph`
 - `AWS::OpenSearchService::Domain`
-- `AWS::Pipes::Pipe`
 - `AWS::RDS::GlobalCluster`
 - `AWS::Redshift::Cluster`
 - `AWS::ResourceGroups::Group`

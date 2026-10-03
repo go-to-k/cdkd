@@ -16,9 +16,9 @@ A **candidate** is a tier-2 CloudFormation resource type — no cdkd SDK provide
 
 | Measure | Count |
 |---------|-------|
-| Tier-2 types considered | 1469 |
-| Registry schemas read | 1469 |
-| ...of which declare a createOnly property | 1279 |
+| Tier-2 types considered | 1468 |
+| Registry schemas read | 1468 |
+| ...of which declare a createOnly property | 1278 |
 | Schemas declaring no top-level properties | 0 |
 | ...and fire a data-bearing signal (**candidates**) | 99 |
 | Candidates already guarded | 72 |

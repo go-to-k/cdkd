@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 134,
-    "covered": 63,
+    "classifiedCount": 135,
+    "covered": 64,
     "noArnAttr": 71,
     "gap": 0,
     "knownGap": 0
@@ -879,6 +879,17 @@
       "resourceType": "AWS::Neptune::DBSubnetGroup",
       "bucket": "no-arn-attr",
       "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Pipes::Pipe",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {

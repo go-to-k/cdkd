@@ -1,16 +1,16 @@
 {
   "summary": {
-    "targetCount": 24,
-    "nestedKeyCount": 1227,
-    "sameSpelling": 1135,
-    "providerHandled": 71,
+    "targetCount": 25,
+    "nestedKeyCount": 1435,
+    "sameSpelling": 1334,
+    "providerHandled": 80,
     "allowListed": 21,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
     "freshObjectTargets": 15,
-    "shapeClean": 148,
-    "shapeHandled": 40,
+    "shapeClean": 173,
+    "shapeHandled": 48,
     "shapeAllowListed": 9,
     "arrayVsWrapper": 0,
     "definitionMemberMissing": 0,
@@ -7573,6 +7573,1542 @@
         "SchemaValidationConfig",
         "Tag"
       ],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::Pipes::Pipe",
+      "providerFile": "pipes-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-pipes",
+      "keyStyle": "exact",
+      "freshObjectMapper": false,
+      "nestedKeyCount": 208,
+      "entries": [
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "EnrichmentParameters.HttpParameters",
+          "topLevelProperty": "EnrichmentParameters",
+          "terminalKey": "HttpParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "EnrichmentParameters.HttpParameters.HeaderParameters",
+          "topLevelProperty": "EnrichmentParameters",
+          "terminalKey": "HeaderParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "EnrichmentParameters.HttpParameters.PathParameterValues",
+          "topLevelProperty": "EnrichmentParameters",
+          "terminalKey": "PathParameterValues",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "EnrichmentParameters.HttpParameters.QueryStringParameters",
+          "topLevelProperty": "EnrichmentParameters",
+          "terminalKey": "QueryStringParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "EnrichmentParameters.InputTemplate",
+          "topLevelProperty": "EnrichmentParameters",
+          "terminalKey": "InputTemplate",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "LogConfiguration.CloudwatchLogsLogDestination",
+          "topLevelProperty": "LogConfiguration",
+          "terminalKey": "CloudwatchLogsLogDestination",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "LogConfiguration.CloudwatchLogsLogDestination.LogGroupArn",
+          "topLevelProperty": "LogConfiguration",
+          "terminalKey": "LogGroupArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "LogConfiguration.FirehoseLogDestination",
+          "topLevelProperty": "LogConfiguration",
+          "terminalKey": "FirehoseLogDestination",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "LogConfiguration.FirehoseLogDestination.DeliveryStreamArn",
+          "topLevelProperty": "LogConfiguration",
+          "terminalKey": "DeliveryStreamArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "LogConfiguration.IncludeExecutionData",
+          "topLevelProperty": "LogConfiguration",
+          "terminalKey": "IncludeExecutionData",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "LogConfiguration.Level",
+          "topLevelProperty": "LogConfiguration",
+          "terminalKey": "Level",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "LogConfiguration.S3LogDestination",
+          "topLevelProperty": "LogConfiguration",
+          "terminalKey": "S3LogDestination",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "LogConfiguration.S3LogDestination.BucketName",
+          "topLevelProperty": "LogConfiguration",
+          "terminalKey": "BucketName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "LogConfiguration.S3LogDestination.BucketOwner",
+          "topLevelProperty": "LogConfiguration",
+          "terminalKey": "BucketOwner",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "LogConfiguration.S3LogDestination.OutputFormat",
+          "topLevelProperty": "LogConfiguration",
+          "terminalKey": "OutputFormat",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "LogConfiguration.S3LogDestination.Prefix",
+          "topLevelProperty": "LogConfiguration",
+          "terminalKey": "Prefix",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ActiveMQBrokerParameters",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "ActiveMQBrokerParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ActiveMQBrokerParameters.BatchSize",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "BatchSize",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ActiveMQBrokerParameters.Credentials",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "Credentials",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ActiveMQBrokerParameters.Credentials.BasicAuth",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "BasicAuth",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ActiveMQBrokerParameters.MaximumBatchingWindowInSeconds",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "MaximumBatchingWindowInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ActiveMQBrokerParameters.QueueName",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "QueueName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.DynamoDBStreamParameters",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "DynamoDBStreamParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.DynamoDBStreamParameters.BatchSize",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "BatchSize",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.DynamoDBStreamParameters.DeadLetterConfig",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "DeadLetterConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.DynamoDBStreamParameters.DeadLetterConfig.Arn",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "Arn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.DynamoDBStreamParameters.MaximumBatchingWindowInSeconds",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "MaximumBatchingWindowInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.DynamoDBStreamParameters.MaximumRecordAgeInSeconds",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "MaximumRecordAgeInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.DynamoDBStreamParameters.MaximumRetryAttempts",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "MaximumRetryAttempts",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.DynamoDBStreamParameters.OnPartialBatchItemFailure",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "OnPartialBatchItemFailure",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.DynamoDBStreamParameters.ParallelizationFactor",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "ParallelizationFactor",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.DynamoDBStreamParameters.StartingPosition",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "StartingPosition",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.FilterCriteria",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "FilterCriteria",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.FilterCriteria.Filters",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "Filters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.FilterCriteria.Filters.Pattern",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "Pattern",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.KinesisStreamParameters",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "KinesisStreamParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.KinesisStreamParameters.BatchSize",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "BatchSize",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.KinesisStreamParameters.DeadLetterConfig",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "DeadLetterConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.KinesisStreamParameters.DeadLetterConfig.Arn",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "Arn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.KinesisStreamParameters.MaximumBatchingWindowInSeconds",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "MaximumBatchingWindowInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.KinesisStreamParameters.MaximumRecordAgeInSeconds",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "MaximumRecordAgeInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.KinesisStreamParameters.MaximumRetryAttempts",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "MaximumRetryAttempts",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.KinesisStreamParameters.OnPartialBatchItemFailure",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "OnPartialBatchItemFailure",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.KinesisStreamParameters.ParallelizationFactor",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "ParallelizationFactor",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.KinesisStreamParameters.StartingPosition",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "StartingPosition",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.KinesisStreamParameters.StartingPositionTimestamp",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "StartingPositionTimestamp",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ManagedStreamingKafkaParameters",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "ManagedStreamingKafkaParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ManagedStreamingKafkaParameters.BatchSize",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "BatchSize",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ManagedStreamingKafkaParameters.ConsumerGroupID",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "ConsumerGroupID",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ManagedStreamingKafkaParameters.Credentials",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "Credentials",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ManagedStreamingKafkaParameters.Credentials.ClientCertificateTlsAuth",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "ClientCertificateTlsAuth",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ManagedStreamingKafkaParameters.Credentials.SaslScram512Auth",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "SaslScram512Auth",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ManagedStreamingKafkaParameters.MaximumBatchingWindowInSeconds",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "MaximumBatchingWindowInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ManagedStreamingKafkaParameters.StartingPosition",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "StartingPosition",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.ManagedStreamingKafkaParameters.TopicName",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "TopicName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.RabbitMQBrokerParameters",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "RabbitMQBrokerParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.RabbitMQBrokerParameters.BatchSize",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "BatchSize",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.RabbitMQBrokerParameters.Credentials",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "Credentials",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.RabbitMQBrokerParameters.Credentials.BasicAuth",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "BasicAuth",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.RabbitMQBrokerParameters.MaximumBatchingWindowInSeconds",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "MaximumBatchingWindowInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.RabbitMQBrokerParameters.QueueName",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "QueueName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.RabbitMQBrokerParameters.VirtualHost",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "VirtualHost",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "SelfManagedKafkaParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.AdditionalBootstrapServers",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "AdditionalBootstrapServers",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.BatchSize",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "BatchSize",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.ConsumerGroupID",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "ConsumerGroupID",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.Credentials",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "Credentials",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.Credentials.BasicAuth",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "BasicAuth",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.Credentials.ClientCertificateTlsAuth",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "ClientCertificateTlsAuth",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.Credentials.SaslScram256Auth",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "SaslScram256Auth",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.Credentials.SaslScram512Auth",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "SaslScram512Auth",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.MaximumBatchingWindowInSeconds",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "MaximumBatchingWindowInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.ServerRootCaCertificate",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "ServerRootCaCertificate",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.StartingPosition",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "StartingPosition",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.TopicName",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "TopicName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.Vpc",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "Vpc",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.Vpc.SecurityGroup",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "SecurityGroup",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SelfManagedKafkaParameters.Vpc.Subnets",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "Subnets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SqsQueueParameters",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "SqsQueueParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SqsQueueParameters.BatchSize",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "BatchSize",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "SourceParameters.SqsQueueParameters.MaximumBatchingWindowInSeconds",
+          "topLevelProperty": "SourceParameters",
+          "terminalKey": "MaximumBatchingWindowInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "BatchJobParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.ArrayProperties",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "ArrayProperties",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.ArrayProperties.Size",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Size",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.ContainerOverrides",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "ContainerOverrides",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.ContainerOverrides.Command",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Command",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.ContainerOverrides.Environment",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Environment",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.ContainerOverrides.Environment.Name",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.ContainerOverrides.Environment.Value",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.ContainerOverrides.InstanceType",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "InstanceType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.ContainerOverrides.ResourceRequirements",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "ResourceRequirements",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.ContainerOverrides.ResourceRequirements.Type",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.ContainerOverrides.ResourceRequirements.Value",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.DependsOn",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "DependsOn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.DependsOn.JobId",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "JobId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.DependsOn.Type",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.JobDefinition",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "JobDefinition",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.JobName",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "JobName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.Parameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Parameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.RetryStrategy",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "RetryStrategy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.BatchJobParameters.RetryStrategy.Attempts",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Attempts",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.CloudWatchLogsParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "CloudWatchLogsParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.CloudWatchLogsParameters.LogStreamName",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "LogStreamName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.CloudWatchLogsParameters.Timestamp",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Timestamp",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "EcsTaskParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.CapacityProviderStrategy",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "CapacityProviderStrategy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.CapacityProviderStrategy.Base",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Base",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.CapacityProviderStrategy.CapacityProvider",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "CapacityProvider",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.CapacityProviderStrategy.Weight",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Weight",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.EnableECSManagedTags",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "EnableECSManagedTags",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.EnableExecuteCommand",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "EnableExecuteCommand",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Group",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Group",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.LaunchType",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "LaunchType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.NetworkConfiguration",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "NetworkConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "AwsvpcConfiguration",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIp",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "AssignPublicIp",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration.SecurityGroups",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "SecurityGroups",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration.Subnets",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Subnets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Overrides",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "ContainerOverrides",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.Command",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Command",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.Cpu",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Cpu",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.Environment",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Environment",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.Environment.Name",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.Environment.Value",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.EnvironmentFiles",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "EnvironmentFiles",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.EnvironmentFiles.Type",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.EnvironmentFiles.Value",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.Memory",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Memory",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.MemoryReservation",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "MemoryReservation",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.Name",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.ResourceRequirements",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "ResourceRequirements",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.ResourceRequirements.Type",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.ResourceRequirements.Value",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.Cpu",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Cpu",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.EphemeralStorage",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "EphemeralStorage",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.EphemeralStorage.SizeInGiB",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "SizeInGiB",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.ExecutionRoleArn",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "ExecutionRoleArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.InferenceAcceleratorOverrides",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "InferenceAcceleratorOverrides",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.InferenceAcceleratorOverrides.DeviceName",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "DeviceName",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.InferenceAcceleratorOverrides.DeviceType",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "DeviceType",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.Memory",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Memory",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Overrides.TaskRoleArn",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "TaskRoleArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.PlacementConstraints",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "PlacementConstraints",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.PlacementConstraints.Expression",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Expression",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.PlacementConstraints.Type",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.PlacementStrategy",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "PlacementStrategy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.PlacementStrategy.Field",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Field",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.PlacementStrategy.Type",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.PlatformVersion",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "PlatformVersion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.PropagateTags",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "PropagateTags",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.ReferenceId",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "ReferenceId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Tags",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Tags",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Tags.Key",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Key",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.Tags.Value",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.TaskCount",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "TaskCount",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EcsTaskParameters.TaskDefinitionArn",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "TaskDefinitionArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EventBridgeEventBusParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "EventBridgeEventBusParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EventBridgeEventBusParameters.DetailType",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "DetailType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EventBridgeEventBusParameters.EndpointId",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "EndpointId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EventBridgeEventBusParameters.Resources",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Resources",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EventBridgeEventBusParameters.Source",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Source",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.EventBridgeEventBusParameters.Time",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Time",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.HttpParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "HttpParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.HttpParameters.HeaderParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "HeaderParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.HttpParameters.PathParameterValues",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "PathParameterValues",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.HttpParameters.QueryStringParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "QueryStringParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.InputTemplate",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "InputTemplate",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.KinesisStreamParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "KinesisStreamParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.KinesisStreamParameters.PartitionKey",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "PartitionKey",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.LambdaFunctionParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "LambdaFunctionParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.LambdaFunctionParameters.InvocationType",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "InvocationType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.RedshiftDataParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "RedshiftDataParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.RedshiftDataParameters.Database",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Database",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.RedshiftDataParameters.DbUser",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "DbUser",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.RedshiftDataParameters.SecretManagerArn",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "SecretManagerArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.RedshiftDataParameters.Sqls",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Sqls",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.RedshiftDataParameters.StatementName",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "StatementName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.RedshiftDataParameters.WithEvent",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "WithEvent",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.SageMakerPipelineParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "SageMakerPipelineParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.SageMakerPipelineParameters.PipelineParameterList",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "PipelineParameterList",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.SageMakerPipelineParameters.PipelineParameterList.Name",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.SageMakerPipelineParameters.PipelineParameterList.Value",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.SqsQueueParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "SqsQueueParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.SqsQueueParameters.MessageDeduplicationId",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "MessageDeduplicationId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.SqsQueueParameters.MessageGroupId",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "MessageGroupId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.StepFunctionStateMachineParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "StepFunctionStateMachineParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.StepFunctionStateMachineParameters.InvocationType",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "InvocationType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "TimestreamParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.DimensionMappings",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "DimensionMappings",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.DimensionMappings.DimensionName",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "DimensionName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.DimensionMappings.DimensionValue",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "DimensionValue",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.DimensionMappings.DimensionValueType",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "DimensionValueType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.EpochTimeUnit",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "EpochTimeUnit",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.MultiMeasureMappings",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "MultiMeasureMappings",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.MultiMeasureMappings.MultiMeasureAttributeMappings",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "MultiMeasureAttributeMappings",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.MultiMeasureMappings.MultiMeasureAttributeMappings.MeasureValue",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "MeasureValue",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.MultiMeasureMappings.MultiMeasureAttributeMappings.MeasureValueType",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "MeasureValueType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.MultiMeasureMappings.MultiMeasureAttributeMappings.MultiMeasureAttributeName",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "MultiMeasureAttributeName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.MultiMeasureMappings.MultiMeasureName",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "MultiMeasureName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.SingleMeasureMappings",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "SingleMeasureMappings",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.SingleMeasureMappings.MeasureName",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "MeasureName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.SingleMeasureMappings.MeasureValue",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "MeasureValue",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.SingleMeasureMappings.MeasureValueType",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "MeasureValueType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.TimeFieldType",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "TimeFieldType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.TimestampFormat",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "TimestampFormat",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.TimeValue",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "TimeValue",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "TargetParameters.TimestreamParameters.VersionValue",
+          "topLevelProperty": "TargetParameters",
+          "terminalKey": "VersionValue",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "Type",
+          "definition": "EcsEnvironmentFile",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `EcsEnvironmentFile` has no `Type` member"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "Value",
+          "definition": "EcsEnvironmentFile",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `EcsEnvironmentFile` has no `Value` member"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "Name",
+          "definition": "EcsEnvironmentVariable",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `EcsEnvironmentVariable` has no `Name` member"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "Value",
+          "definition": "EcsEnvironmentVariable",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `EcsEnvironmentVariable` has no `Value` member"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "Type",
+          "definition": "EcsResourceRequirement",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `EcsResourceRequirement` has no `Type` member"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "Value",
+          "definition": "EcsResourceRequirement",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `EcsResourceRequirement` has no `Value` member"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "Type",
+          "definition": "PlacementConstraint",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `PlacementConstraint` has no `Type` member"
+        },
+        {
+          "resourceType": "AWS::Pipes::Pipe",
+          "nestedKey": "Type",
+          "definition": "PlacementStrategy",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `PlacementStrategy` has no `Type` member"
+        }
+      ],
+      "shapeCleanCount": 25,
+      "unmatchedDefinitions": [],
       "usedSegmentRenames": [],
       "usedTerminalRenames": []
     },

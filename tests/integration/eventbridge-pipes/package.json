@@ -2,7 +2,7 @@
   "name": "cdkd-integ-eventbridge-pipes",
   "version": "1.0.0",
   "private": true,
-  "description": "cdkd EventBridge Pipes (SQS->SNS, CC-API) integ probe",
+  "description": "cdkd EventBridge Pipes (SQS->SNS, SDK provider) integ probe",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w"

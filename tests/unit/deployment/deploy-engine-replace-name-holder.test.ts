@@ -78,6 +78,7 @@ import { withStackName } from '../../../src/provisioning/resource-name.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { reverseReplacementNameKeyKind } from '../../../src/deployment/replacement-name-holder.js';
 
 type Inner = Error & { code?: string; cause?: unknown };
 
@@ -701,18 +702,20 @@ describe('the parent review round of #3979', () => {
   });
 
   it('an SDK-made record does not let a Cloud Control create prove an unkeyed type by its identifier', async () => {
+    // Premise: the type has no name key (`AWS::Pipes::Pipe` gained one, #4423).
+    expect(reverseReplacementNameKeyKind('AWS::S3::AccessPoint')).toBe('unknown');
     const { provider, calls } = recordingProvider(
-      awsSdkError('Pipe my-pipe already exists.', 'AlreadyExistsException'),
-      'my-pipe'
+      awsSdkError('Access point my-ap already exists.', 'AlreadyExistsException'),
+      'my-ap'
     );
     const err = await replaceOnce({
       provider,
-      logicalId: 'Pipe',
-      type: 'AWS::Pipes::Pipe',
-      physicalId: 'my-pipe',
-      oldProps: { Name: 'my-pipe', Source: 'arn:a' },
-      newProps: { Name: 'my-pipe', Source: 'arn:b' },
-      changedPath: 'Source',
+      logicalId: 'AccessPoint',
+      type: 'AWS::S3::AccessPoint',
+      physicalId: 'my-ap',
+      oldProps: { Name: 'my-ap', Bucket: 'bucket-a' },
+      newProps: { Name: 'my-ap', Bucket: 'bucket-b' },
+      changedPath: 'Bucket',
       provisionedBy: 'cc-api',
       holderProvisionedBy: 'sdk',
     });
@@ -722,18 +725,20 @@ describe('the parent review round of #3979', () => {
   });
 
   it('a record from an older cdkd (no provisionedBy) is refused with that reason', async () => {
+    // Premise: the type has no name key (`AWS::Pipes::Pipe` gained one, #4423).
+    expect(reverseReplacementNameKeyKind('AWS::S3::AccessPoint')).toBe('unknown');
     const { provider, calls } = recordingProvider(
-      awsSdkError('Pipe my-pipe already exists.', 'AlreadyExistsException'),
-      'my-pipe'
+      awsSdkError('Access point my-ap already exists.', 'AlreadyExistsException'),
+      'my-ap'
     );
     const err = await replaceOnce({
       provider,
-      logicalId: 'Pipe',
-      type: 'AWS::Pipes::Pipe',
-      physicalId: 'my-pipe',
-      oldProps: { Name: 'my-pipe', Source: 'arn:a' },
-      newProps: { Name: 'my-pipe', Source: 'arn:b' },
-      changedPath: 'Source',
+      logicalId: 'AccessPoint',
+      type: 'AWS::S3::AccessPoint',
+      physicalId: 'my-ap',
+      oldProps: { Name: 'my-ap', Bucket: 'bucket-a' },
+      newProps: { Name: 'my-ap', Bucket: 'bucket-b' },
+      changedPath: 'Bucket',
       provisionedBy: 'cc-api',
       holderProvisionedBy: null,
     });

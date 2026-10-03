@@ -404,8 +404,14 @@
  *     cast would typecheck while leaving the 8 CHILD paths `no-write-evidence`,
  *     since only a per-member write is delivery proof on a fresh-object target.
  *
- * The calibration test pins all ten numbers so the decision is re-measured on
- * every provider change rather than inherited.
+ *   - `AWS::Pipes::Pipe` 196 (issue #4423, key pass only) are FALSE positives
+ *     of the same kind: every blob reaches the SDK object whole, but through a
+ *     small converter (`toSdkSourceParameters`, `toSdkTargetParameters`,
+ *     `logConfigurationOf`, `toUpdateSourceParameters`) that names one or two
+ *     members, so the walk does not credit it as a generic hand-off.
+ *
+ * The calibration test pins all eleven numbers so the decision is re-measured
+ * on every provider change rather than inherited.
  *
  * FOUR KNOWN BOUNDS on this group, all measured and all pinned by tests, so a
  * reader does not over-trust a clean row:
@@ -418,7 +424,7 @@
  *         `IcebergTableInput` under `::Crawler` by the TABLE class's; a name
  *         no class mentions still flags). Scoping the pool to the enclosing
  *         CLASS is a change to {@link collectStringLiterals}, which every one
- *         of the 24 targets consults — including the 14 opted-in ones whose
+ *         of the 25 targets consults — including the 14 opted-in ones whose
  *         floors and all 22 allow-list entries were calibrated under file
  *         scope — so it is a re-measurement of the whole table, not a rider on
  *         a registration. It is also the un-scoped REMAINDER of issue #1393
@@ -1936,6 +1942,20 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     sdkClientPackage: '@aws-sdk/client-scheduler',
     keyStyle: 'exact',
     minNestedKeys: 38,
+  },
+  {
+    // The same ECS-target islands a third time, through `@aws-sdk/client-pipes`
+    // (issue #4423): `TargetParameters.EcsTaskParameters` spells its
+    // `NetworkConfiguration.AwsvpcConfiguration`, placement, capacity-provider
+    // and container-override members PascalCase in CFn and camelCase in the
+    // SDK, renamed by the provider's `toSdkEcsTaskParameters`.
+    //
+    // Measured at opt-in: 208 audited paths, 0 blocking findings.
+    resourceType: 'AWS::Pipes::Pipe',
+    providerFile: 'pipes-provider.ts',
+    sdkClientPackage: '@aws-sdk/client-pipes',
+    keyStyle: 'exact',
+    minNestedKeys: 180,
   },
   {
     // Glue's camelCase island, and the third client item 1 named. `client-glue`
