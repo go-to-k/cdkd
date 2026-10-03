@@ -468,7 +468,7 @@ export async function evaluateConditions(
       // [#2827](https://github.com/go-to-k/cdkd/issues/2827); this sentence
       // used to say it was "thrown unmasked by construction because every
       // other consumer masks at ITS own boundary", which that fix retired. Same class as the
-      // lookup echoes issue #2728 closed in `dynamic-refs.ts`, and this sink
+      // lookup echoes issue #2728 closed in `dynamic-refs.ts` / `dynamic-ref-lookups.ts`, and this sink
       // was missed there because it lives in a different method and renders
       // ANY error, not only a lookup echo. What used to stand here as the
       // residual — a plaintext shorter than `MIN_NEEDLE_LENGTH` (4) embedded

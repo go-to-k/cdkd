@@ -538,7 +538,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         isSecret = true;
         resolved = param.value;
       } else {
-        // Masked like the lookup echoes above (issue #2728, review round 1):
+        // Masked like the lookup echoes in dynamic-ref-lookups.ts (issue #2728, review round 1):
         // `service` is whatever sits before the first `:` of the ASSEMBLED
         // token, and `resolveSub` re-enters this method with the assembled
         // string — a body of `{{resolve:${Pw}}}` over a variable that
