@@ -262,14 +262,14 @@ export function refuseCoercedInheritedSecret(
     inherited
   ).length;
   if (carriedAfter >= carriedBefore) return;
-  // `markNonRetryable` for the same reason the `Fn::GetAtt` refusals above
+  // `markNonRetryable` for the same reason the `Fn::GetAtt` refusals (`getatt.ts`)
   // carry it: the decision comes from the template's declared `Type`, which
   // no retry rewrites, and the message interpolates a template-controlled
   // parameter NAME that the substring-matching retry classifiers can read as
   // transient (issue #1838).
   //
   // `name` is a template-declared PARAMETER key, i.e. arbitrary JSON, so it
-  // takes the builder like every other identifier this file renders
+  // takes the builder like every other identifier the resolver renders
   // (go-to-k/cdkd#3435 review round 2). It appears TWICE in this message, so
   // it is bound once. The declared `Type` takes it too (issue #3441): this
   // arm is reached by any type the coercion SPLITS, and

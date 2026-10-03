@@ -333,7 +333,7 @@ export async function evaluateConditions(
   // LITERALLY, so a plaintext that reaches the message RE-ENCODED is not
   // masked by the bag alone. Issue
   // [#2759](https://github.com/go-to-k/cdkd/issues/2759) — which claimed
-  // this note — closed the two spellings this file produces, each at the
+  // this note — closed the two spellings the resolver produces, each at the
   // site that still holds both forms: `Fn::Base64` registers its OUTPUT as a
   // derived mask-only needle, and the JSON encodings AT `maskValueLeaves`'s
   // call sites are leaf-masked before `stringifyValue` / `JSON.stringify`
@@ -468,7 +468,7 @@ export async function evaluateConditions(
       // [#2827](https://github.com/go-to-k/cdkd/issues/2827); this sentence
       // used to say it was "thrown unmasked by construction because every
       // other consumer masks at ITS own boundary", which that fix retired. Same class as the
-      // lookup echoes issue #2728 closed further down this file, and this sink
+      // lookup echoes issue #2728 closed in `dynamic-refs.ts`, and this sink
       // was missed there because it lives in a different method and renders
       // ANY error, not only a lookup echo. What used to stand here as the
       // residual — a plaintext shorter than `MIN_NEEDLE_LENGTH` (4) embedded
