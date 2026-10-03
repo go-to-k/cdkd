@@ -456,6 +456,25 @@ What every mode here does with a record whose `resources` is not a JSON object â
 including `--show-nested` at any depth â€” is described once, under
 [When `resources` is not an object](#when-resources-is-not-an-object).
 
+### When a nested resource shows the wrong `provisionedBy`
+
+Earlier versions let `--recreate-via-cc-api <LogicalId>` also recreate a
+nested child's resource that shared the logical id, stamping the child's
+record `provisionedBy: cc-api`. The stamp is sticky and the recreate flags
+cannot target a child (see
+[Nested stacks](cli-deploy-safety.md#nested-stacks)), and there is no
+`state` subcommand that edits it, by design: the stamp travels with the
+physical id that layer recorded, and Cloud Control's identifier and the id
+cdkd's SDK provider stores differ for many types (an ARN versus a name, or a
+composite id), so relabelling the record alone would hand the SDK provider an
+id it may not address. To move such a resource back, change its construct id
+(and so its logical id) in the child. The next deploy then creates the new
+logical id through the default routing, which ignores the old stamp, and
+deletes the old one through the layer that created it. This is a destroy and
+recreate: a stateful resource comes back empty, and a resource with a fixed
+physical name needs a new name, or its removal deployed first and its re-add
+in a second deploy.
+
 ### Skipped outputs
 
 A `Skipped outputs:` block appears when `skippedOutputs` contains entries. Its
