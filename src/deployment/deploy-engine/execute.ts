@@ -782,7 +782,7 @@ export async function executeDeployment(
         // No command named: a nested child's stack-less `cdkd rollback` would
         // resolve to the top-level stack (go-to-k/cdkd#3864).
         this.logger.warn(
-          `The automatic rollback could not revert ${rollbackResult.skipped} operation(s) ` +
+          safeMsg`The automatic rollback could not revert ${rollbackResult.skipped} operation(s) ` +
             `(see the warnings above; each is recorded as a ROLLBACK_RESOURCE_SKIPPED event). ` +
             `The rollback journal keeps them.`
         );
