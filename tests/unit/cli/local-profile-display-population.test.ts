@@ -1010,6 +1010,7 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
       'src/cli/commands/rollback.ts',
       'src/utils/role-arn.ts',
       'src/deployment/intrinsic-resolver/stack-output.ts',
+      'src/deployment/intrinsic-resolver/stack-state.ts',
     ]) {
       expect(arnFiles.has(file), `no role-ARN site in ${file}`).toBe(true);
     }
