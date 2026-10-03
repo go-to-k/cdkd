@@ -64,10 +64,8 @@ cross-region-concurrent-stacks	2026-10-01T12:54:14Z	PASS	276	verify.sh	rc ok, or
 cross-region-state-bucket	2026-08-01T09:42:37Z	PASS	29	verify.sh	0801 regression sweep; cross-region bucket round-trip ok, temp bucket removed
 cross-stack-cfn-fallback	2026-10-02T23:48:50Z	PASS	150	verify.sh	rc ok, orph clean (#4475)
 cross-stack-references	2026-10-02T23:49:40Z	PASS	45	standard	rc ok, orph clean (#4475)
-cross-stack-secret-import	2026-10-02T23:59:36Z	PASS	596	verify.sh	rc ok, orph clean (#4475)
-custom-resource-getatt-data	2026-10-03T04:05:18Z	PASS	105	verify.sh	rc ok, orph clean (#4477)
 cross-stack-secret-import	2026-10-03T04:56:13Z	PASS	386	verify.sh	rc ok, orph clean (#4491)
-custom-resource-getatt-data	2026-09-28T09:01:57Z	PASS	90	verify.sh	rc ok, orph clean, embedded arm (#2453)
+custom-resource-getatt-data	2026-10-03T04:05:18Z	PASS	105	verify.sh	rc ok, orph clean (#4477)
 custom-resource-masked-service-token	2026-09-28T21:40:21Z	PASS	156	verify.sh	rc ok, orph clean; #3938 + #3976 refusal + #3960 seeded arms; pre-#3976 probe RED at R1
 custom-resource-noecho-nested	2026-10-03T04:45:57Z	PASS	951	verify.sh	rc ok, orph clean (#4491)
 custom-resource-provider	2026-10-01T03:26:48Z	PASS	778	verify.sh	rc ok, orph clean; #4255 waiter-payload rebased head (26 del/0 err)
