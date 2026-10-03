@@ -69,6 +69,7 @@ export {
   clearRecordedSecretExpressions,
   recordMaskOnlyValue,
   recordMaskOnlyValuesIn,
+  recordNoEchoAttributeValues,
   wholeStringLeavesOf,
   carriesSecretMask,
   recordDerivedMaskOnlyValue,

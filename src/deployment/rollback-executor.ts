@@ -51,6 +51,7 @@ import {
   createSecretMasker,
   carryLogOnlyValues,
   recordNestedStackParameterExpressions,
+  recordNoEchoAttributeValues,
   STATE_DERIVED_RULES,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -911,6 +912,11 @@ async function replayFailedOperationsUnbound(
               mask
             )
           );
+          // go-to-k/cdkd#4434, the `revert` arm's twin: the returned
+          // attributes' `NoEcho` needles, before the redaction below.
+          if (revertFailedResult) {
+            recordNoEchoAttributeValues(revertFailedResult, secrets, desiredProps);
+          }
           stateResources[op.logicalId] = redactRollbackRecord(
             recordAfterRollbackUpdate(prev, revertFailedResult),
             secrets,

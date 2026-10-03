@@ -2117,6 +2117,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "rollback-failure-injection",
+        "rollback-replay-effective-props",
         "sg-circular-dependency",
         "stack-copy-create-tokens",
         "update-replace",
@@ -2225,6 +2226,9 @@
         "rollback-failure-injection": [
           "l2"
         ],
+        "rollback-replay-effective-props": [
+          "l1"
+        ],
         "sg-circular-dependency": [
           "l1",
           "l2",
@@ -2252,6 +2256,7 @@
         "alb",
         "drift-revert-arrays",
         "export",
+        "rollback-replay-effective-props",
         "sg-circular-dependency"
       ],
       "signals": {
@@ -2262,6 +2267,9 @@
           "l1"
         ],
         "export": [
+          "l1"
+        ],
+        "rollback-replay-effective-props": [
           "l1"
         ],
         "sg-circular-dependency": [

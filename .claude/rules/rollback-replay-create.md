@@ -13,7 +13,10 @@ and the delete-new-first fallback the name-collision catch routes to.
 **`effectiveProperties` is honoured**
 (#1682): `create()` gets
 `previousState.properties`; a RETURNED bag replaces the record's `properties`
-wholesale, reporting none keeps it. Do not re-narrow that result type.
+wholesale, reporting none keeps it. Do not re-narrow that result type. Its
+`attributes` are recorded too, after its `NoEcho` declaration is registered
+(`recordNoEchoAttributeValues`, go-to-k/cdkd#4434) — the UPDATE arms'
+`recordAfterRollbackUpdate` does the same with an update's.
 
 **When the ROUTING DECISION is `cc-api`, both arms run the bag through
 `applyDefaultNameForFallback`**

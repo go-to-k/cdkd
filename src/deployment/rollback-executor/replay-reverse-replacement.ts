@@ -11,6 +11,7 @@ import { displaySafe } from '../../utils/display-safe.js';
 import {
   maskSecretsInError,
   recordNestedStackParameterExpressions,
+  recordNoEchoAttributeValues,
   STATE_DERIVED_RULES,
 } from '../secret-redaction.js';
 import {
@@ -813,6 +814,13 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // Redact resolved secret plaintext back out (GHSA fix): the create
   // result's `effectiveProperties` can echo the value we resolved for the
   // re-CREATE, so scrub the rebuilt record before it is persisted.
+  //
+  // The create's `NoEcho` declaration becomes needles first
+  // (go-to-k/cdkd#4434), as the deploy engine's create registers it: the
+  // attributes below are the create's, so a custom resource answering
+  // `NoEcho: true` (or a nested stack's masked outputs) would otherwise land
+  // in the record in the clear.
+  recordNoEchoAttributeValues(createResult, secrets, resolvedPrevProps);
   stateResources[op.logicalId] = redactRollbackRecord(
     {
       ...prevRecord,

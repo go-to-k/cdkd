@@ -3,6 +3,7 @@ import { displaySafe } from '../../utils/display-safe.js';
 import {
   createSecretMasker,
   recordNestedStackParameterExpressions,
+  recordNoEchoAttributeValues,
   STATE_DERIVED_RULES,
 } from '../secret-redaction.js';
 import { updatePartialMessage, updatePartialReason } from '../update-outcome.js';
@@ -438,6 +439,11 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
       mask
     )
   );
+  // go-to-k/cdkd#4434: the record now takes the attributes `update()` returned,
+  // so a `NoEcho` declaration on them (a custom resource's response, a nested
+  // stack's masked outputs) must become needles BEFORE the redaction below,
+  // exactly as the deploy engine registers them — or they persist in the clear.
+  if (revertResult) recordNoEchoAttributeValues(revertResult, secrets, desiredProps);
   stateResources[op.logicalId] = redactRollbackRecord(
     recordAfterRollbackUpdate(previousState, revertResult),
     secrets,
