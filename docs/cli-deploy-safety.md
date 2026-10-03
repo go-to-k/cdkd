@@ -355,7 +355,7 @@ attachment and an instance profile's role are not handled this way. The same
 holds when the parent is re-created by the update-failure fallback (an in-place
 update the provider refuses, re-created under `--replace`, or automatically when
 Cloud Control reports `UnsupportedAction`): its children are re-created as soon
-as it is, before anything that reads them.
+as it is, before any pending resource that reads them.
 If the deploy fails after re-creating the parent and before restoring such a
 child, cdkd drops the child's state record, since AWS no longer has it, and the
 next deploy creates it again; until then the parent runs without it. A policy
