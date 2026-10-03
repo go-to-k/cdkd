@@ -72,6 +72,7 @@ import {
   type DeployEngineOptions,
   type DeployResult,
 } from '../../deployment/deploy-engine.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { WorkGraph } from '../../deployment/work-graph.js';
 import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -1179,7 +1180,9 @@ async function deployCommand(
           // Worded as a SUBSET of the line above ("of which"), because it is
           // one: the same resources are counted in both, and a reader adding
           // the two would otherwise double-count them.
-          logger.info(`    of which left an orphaned predecessor: ${yellow(ownUpdatePartial)}`);
+          logger.info(
+            safeMsg`    of which left an orphaned predecessor: ${yellow(ownUpdatePartial)}`
+          );
         }
         // Issue #1989: NOT indented under `Updated:` — these are rows of a
         // nested child or grandchild, so they are not part of that total. Each
@@ -1187,7 +1190,7 @@ async function deployCommand(
         // deploy, naming the survivor.
         if (nestedUpdatePartial > 0) {
           logger.info(
-            `  Left an orphaned predecessor in a nested stack: ${yellow(nestedUpdatePartial)}`
+            safeMsg`  Left an orphaned predecessor in a nested stack: ${yellow(nestedUpdatePartial)}`
           );
         }
         // Issue #1960: the two rows above are the deploy-side twin of what
