@@ -3481,6 +3481,9 @@ export class EC2Provider implements ResourceProvider {
    *   (go-to-k/cdkd#4355, {@link resolveDuplicateIngress}).
    * @param revokedRule Set by `updateSecurityGroupIngress`: the physical id of
    *   the previous rule it has just revoked, which a refusal names.
+   * @param onAdopted Called when the rule was not authorized but an identical
+   *   existing one adopted, so a caller can tell a re-created rule (a new
+   *   `sgr-` id) from an adopted one (go-to-k/cdkd#4484).
    */
   private async createSecurityGroupIngress(
     logicalId: string,
@@ -3489,7 +3492,8 @@ export class EC2Provider implements ResourceProvider {
     onUnusableProtocol?: (message: string) => void,
     maskSecrets?: MaskerFn,
     replayingState = false,
-    revokedRule?: string
+    revokedRule?: string,
+    onAdopted?: () => void
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SecurityGroupIngress ${logicalId}`);
 
@@ -3631,6 +3635,7 @@ export class EC2Provider implements ResourceProvider {
           ...(maskSecrets && { maskSecrets }),
           ...(revokedRule !== undefined && { revokedRule }),
         });
+        onAdopted?.();
         // The same record the success arm writes: this arm reports the rule as
         // provisioned, so state is written here too and the narrowing has to
         // reach it or the phantom drift survives on the idempotent path.
@@ -4127,14 +4132,45 @@ export class EC2Provider implements ResourceProvider {
       // revoked rule is re-created, and a live one answers Duplicate, which the
       // replay adopts. Short-circuiting would report a restore that never
       // happened; revoking first would drop a live rule for nothing.
+      let adopted = false;
       const restored = await this.createSecurityGroupIngress(
         logicalId,
         resourceType,
         properties,
         (message) => this.logger.warn(message),
         maskSecrets,
-        true
+        true,
+        undefined,
+        () => {
+          adopted = true;
+        }
       );
+      // go-to-k/cdkd#4484: a re-created rule is a NEW rule under a new `sgr-`
+      // id, and the recorded one names the rule the refused update revoked. An
+      // in-place answer is merged key-wise over the restored record
+      // (`recordAfterRollbackUpdate`), so a response naming no single id would
+      // leave that revoked id under `Id` for `cdkd export` and `Fn::GetAtt`.
+      // Answer a replacement, whose attributes REPLACE the record's, and look
+      // the new id up by identity when the response named none: best-effort
+      // (`lookupIngressRuleId` never throws), and safe to `await` here since
+      // the record this replay restores already names the rule.
+      if (!adopted) {
+        const ruleId =
+          typeof restored.attributes?.['Id'] === 'string'
+            ? restored.attributes['Id']
+            : await this.lookupIngressRuleId(logicalId, properties['GroupId'] as string, {
+                ...properties,
+                ...restored.effectiveProperties,
+              });
+        return {
+          physicalId: restored.physicalId,
+          wasReplaced: true,
+          attributes: ruleId ? { Id: ruleId } : {},
+          ...(restored.effectiveProperties && {
+            effectiveProperties: restored.effectiveProperties,
+          }),
+        };
+      }
       return {
         physicalId: restored.physicalId,
         wasReplaced: false,

@@ -52,6 +52,8 @@ import {
   withPriorAttempts,
 } from '../../../src/deployment/prior-attempt-scope.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { recordAfterRollbackUpdate } from '../../../src/deployment/rollback-executor/replay-retry.js';
+import type { ResourceState } from '../../../src/types/state.js';
 
 /**
  * go-to-k/cdkd#4355: `AuthorizeSecurityGroupIngress` answers
@@ -372,8 +374,108 @@ describe('EC2Provider SecurityGroupIngress duplicate ownership (#4355)', () => {
 
       expect(sent()).toEqual(['AuthorizeSecurityGroupIngressCommand']);
       expect(result.physicalId).toBe(`${GROUP_ID}|tcp|5432|5432`);
-      expect(result.wasReplaced).toBe(false);
+      // A re-created rule is a new rule: its attributes replace the record's.
+      expect(result.wasReplaced).toBe(true);
       expect(result.attributes).toEqual({ Id: RULE_ID });
+    });
+
+    describe('a re-created rule whose Authorize response names no single id (#4484)', () => {
+      const REVOKED_ID = 'sgr-0ffffffffffffffff';
+      const RESTORED: ResourceState = {
+        physicalId: `${GROUP_ID}|tcp|5432|5432`,
+        resourceType: TYPE,
+        properties: { ...PROPS },
+        attributes: { Id: REVOKED_ID },
+      };
+      const replayWith = (authorized: unknown[], described: () => Promise<unknown>) => {
+        mockSend.mockImplementation((command: unknown) => {
+          if (command instanceof AuthorizeSecurityGroupIngressCommand) {
+            return Promise.resolve({ SecurityGroupRules: authorized });
+          }
+          if (command instanceof DescribeSecurityGroupRulesCommand) return described();
+          return Promise.reject(new Error('unexpected call'));
+        });
+        return provider.update(
+          'Rule',
+          `${GROUP_ID}|tcp|5432|5432`,
+          TYPE,
+          PROPS,
+          { ...PROPS },
+          { replayingState: true }
+        );
+      };
+      const liveRule = (id: string) => ({
+        SecurityGroupRuleId: id,
+        IsEgress: false,
+        IpProtocol: 'tcp',
+        FromPort: 5432,
+        ToPort: 5432,
+        CidrIpv4: '10.0.0.0/16',
+      });
+
+      it.each([
+        ['zero', []],
+        [
+          'two',
+          [{ SecurityGroupRuleId: 'sgr-0000000000000000a' }, { SecurityGroupRuleId: 'sgr-0000000000000000b' }],
+        ],
+      ])('%s rules in the response: the new id is looked up by identity', async (_n, authorized) => {
+        const result = await replayWith(authorized, () =>
+          Promise.resolve({ SecurityGroupRules: [liveRule(RULE_ID)] })
+        );
+
+        expect(sent()).toEqual([
+          'AuthorizeSecurityGroupIngressCommand',
+          'DescribeSecurityGroupRulesCommand',
+        ]);
+        expect(result.wasReplaced).toBe(true);
+        expect(recordAfterRollbackUpdate(RESTORED, result).attributes).toEqual({ Id: RULE_ID });
+      });
+
+      it.each([
+        ['the lookup fails', () => Promise.reject(new Error('DescribeSecurityGroupRules throttled'))],
+        [
+          'two live rules match',
+          () =>
+            Promise.resolve({
+              SecurityGroupRules: [liveRule(RULE_ID), liveRule('sgr-0000000000000000c')],
+            }),
+        ],
+      ])('%s: the revoked id is dropped, not kept', async (_why, described) => {
+        const result = await replayWith([], described);
+
+        expect(result.wasReplaced).toBe(true);
+        expect(result.attributes).toEqual({});
+        const record = recordAfterRollbackUpdate(RESTORED, result);
+        expect(record.attributes).toEqual({});
+        expect(record.physicalId).toBe(RESTORED.physicalId);
+      });
+
+      it('an ADOPTED live rule whose id cannot be found keeps the recorded one (merged in place)', async () => {
+        // The rule was never revoked, so the recorded id still names it.
+        mockSend.mockImplementation((command: unknown) => {
+          if (command instanceof AuthorizeSecurityGroupIngressCommand) {
+            return Promise.reject(
+              Object.assign(new Error('the specified rule already exists'), {
+                name: 'InvalidPermission.Duplicate',
+              })
+            );
+          }
+          return Promise.reject(new Error('DescribeSecurityGroupRules throttled'));
+        });
+
+        const result = await provider.update(
+          'Rule',
+          `${GROUP_ID}|tcp|5432|5432`,
+          TYPE,
+          PROPS,
+          { ...PROPS },
+          { replayingState: true }
+        );
+
+        expect(result.wasReplaced).toBe(false);
+        expect(recordAfterRollbackUpdate(RESTORED, result).attributes).toEqual({ Id: REVOKED_ID });
+      });
     });
 
     it('adopts, never revokes, a LIVE rule on an equal-sides replay', async () => {
