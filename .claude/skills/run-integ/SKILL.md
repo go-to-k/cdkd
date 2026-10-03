@@ -109,21 +109,23 @@ verify, clean up.
 
    **Never run it unwatched, and do not reach for `timeout`** — it is not in
    stock macOS (its absence is exit 127 in 0s, which reads as instant
-   completion), and a hung run is indistinguishable from a slow one. Shell
-   watchdog, firing made visible:
+   completion). Shell watchdog, firing made visible:
 
    ```bash
    LOG=$(mktemp)   # assign HERE: a separate block is a separate shell, and
                    # `> ""` is a loud failure that costs you the whole run
-   # Budget: 2x the ledger's last duration, floor 1500s.
-   LAST=$(awk -F'\t' -v t="<test-name>" '$1==t{print $4; exit}' ../../../docs/_generated/integ-last-run.tsv)
+   # Budget: 2x the last PASS's duration, floor 1500s. A FAIL row times the
+   # failure, not a pass: walk the ledger's history back to a PASS.
+   L=../../../docs/_generated/integ-last-run.tsv; T="<test-name>"
+   LAST=$(awk -F'\t' -v t="$T" '$1==t && $3=="PASS"{print $4; exit}' "$L")
+   [ -n "$LAST" ] || LAST=$(git log -n 300 --format=%h -- "$L" | while read -r c; do
+     git show "$c:docs/_generated/integ-last-run.tsv" | awk -F'\t' -v t="$T" '$1==t && $3=="PASS"{print $4; exit}'
+   done | head -n 1)
    case "$LAST" in ''|*[!0-9]*) LAST=750;; esac
    POLLS=$(( 10#$LAST * 2 / 5 )); [ "$POLLS" -lt 300 ] && POLLS=300
-   # Own process group, so a FIRE kills verify's `node` deploy/destroy child too
-   # (`kill -9 $VPID` alone reparents it to PID 1, still calling AWS). `perl`,
-   # since zsh — the agent's shell — refuses `set -m` outside a terminal.
-   # Its own group also outlives a harness kill of THIS call: before a re-run,
-   # `ps -g <old VPID>` must list no process (rc=1).
+   # Own process group (`perl`: zsh refuses `set -m` without a terminal), so a
+   # FIRE also kills verify's `node` child, which would keep calling AWS. The
+   # group outlives a harness kill: before a re-run, `ps -g <old VPID>` is rc=1.
    perl -e 'setpgrp(0,0); exec @ARGV or die' bash verify.sh > "$LOG" 2>&1 &
    VPID=$!
    # 5s polls that end on their own: NEVER kill the watchdog — a kill orphans
@@ -185,10 +187,8 @@ verify, clean up.
    - Other types: infer delete order from CFn dependency rules (children before
      parents). Always pass `--region`. Re-run step 6 after cleanup.
 
-   **Never** end the run with orphans present (a NAT GW alone is ~$1/hr). If a
-   resource genuinely cannot be deleted after reasonable retries, surface it with
-   the exact ID, region, and what was tried — but only after the auto-cleanup
-   pass.
+   **Never** end the run with orphans present. One that resists deletion after
+   this pass is surfaced with its ID, region and what was tried.
 
 8. **Report results**: pass/fail per test, resource counts, timing. Always state
    "destroy completed: 0 errors, 0 orphans" or itemize what remained.
@@ -205,9 +205,7 @@ verify, clean up.
      echo "markgate set integ-destroy FAILED — the marker was NOT recorded." >&2
      exit 1
    }
-   # The marker, not the rc. `grep` exits 0 even for `no marker`, so it cannot
-   # fail the block — ABSENCE of the line is the signal, which is what the
-   # untrusted-config case produces (markgate status itself dies).
+   # ABSENCE of the line is the signal, not the rc (`grep` exits 0 on `no marker`).
    mise exec -- markgate status | grep integ-destroy \
      || echo 'NO integ-destroy LINE — markgate status itself failed' >&2
    ```
@@ -304,6 +302,7 @@ verify, clean up.
     # whatever header it finds (none).
     TEST="<test-name>"; TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     RESULT="PASS"; DUR="<seconds>"; FLOW="verify.sh"; NOTE="rc ok, orph clean"
+    # One printf per row from NAMED variables: zsh never word-splits `set -- $row`.
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$TEST" "$TS" "$RESULT" "$DUR" "$FLOW" "$NOTE" >> "$LEDGER"
     vp run integ-ledger-normalize
     ```
