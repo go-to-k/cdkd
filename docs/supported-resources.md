@@ -330,7 +330,7 @@ no-op placeholder — outside CloudFormation the real pre-signed signal URL cann
 
 - `AWS::S3::Bucket`
 - `AWS::S3::BucketPolicy`
-- `AWS::EFS::FileSystem` — **Destroy caveat**: automatic backups taken while the file system existed outlive it, see [EFS automatic backups survive destroy](#efs-automatic-backups-survive-destroy) below
+- `AWS::EFS::FileSystem` — **Destroy caveat**: automatic backups taken while the file system existed outlive it, see [EFS automatic backups survive destroy](#efs-automatic-backups-survive-destroy) below. **Redeploy caveat**: a file system an earlier destroy kept (`RemovalPolicy.RETAIN`, CDK's default) still holds the stack's create token, so the same stack's next deploy refuses it, naming it, rather than adopting it
 - `AWS::EFS::MountTarget`
 - `AWS::EFS::AccessPoint`
 - `AWS::S3Express::DirectoryBucket`
@@ -342,7 +342,7 @@ no-op placeholder — outside CloudFormation the real pre-signed signal URL cann
 
 #### `AWS::FSx::FileSystem`
 
-all four variants — Lustre / Windows / ONTAP / OpenZFS; `NON_PROVISIONABLE` in the CFn registry so no Cloud Control fallback exists; per-variant create/update property mapping against the `UpdateFileSystem` mutable surface — a change to an immutable sub-property is rejected with a `--replace` pointer; async create/delete polled to `AVAILABLE`/gone with a self-reported 1h resource timeout. Variant-config drift is computed for all four config blocks; only the inputs AWS never returns stay drift-unknown — the two write-only credentials (`WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password`, `OntapConfiguration.FsxAdminPassword`) and `OpenZFSConfiguration.RootVolumeConfiguration`, which lives on the root volume rather than the file system. **Destroy caveat**: delete keeps CloudFormation parity and may leave a chargeable final backup, see [FSx final backup on destroy](#fsx-final-backup-on-destroy) below
+all four variants — Lustre / Windows / ONTAP / OpenZFS; `NON_PROVISIONABLE` in the CFn registry so no Cloud Control fallback exists; per-variant create/update property mapping against the `UpdateFileSystem` mutable surface — a change to an immutable sub-property is rejected with a `--replace` pointer; async create/delete polled to `AVAILABLE`/gone with a self-reported 1h resource timeout. Variant-config drift is computed for all four config blocks; only the inputs AWS never returns stay drift-unknown — the two write-only credentials (`WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password`, `OntapConfiguration.FsxAdminPassword`) and `OpenZFSConfiguration.RootVolumeConfiguration`, which lives on the root volume rather than the file system. **Destroy caveat**: delete keeps CloudFormation parity and may leave a chargeable final backup, see [FSx final backup on destroy](#fsx-final-backup-on-destroy) below. **Redeploy caveat**: as for EFS, a file system an earlier destroy kept is refused by the same stack's next deploy rather than recorded
 
 ### Streaming
 

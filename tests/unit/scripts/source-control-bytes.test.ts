@@ -302,18 +302,17 @@ describe('the working tree', () => {
     expect(read.length).toBeGreaterThan(floor);
   }, SWEEP_TIMEOUT_MS);
 
-  it('keeps the efs-provider creationToken separator as the escape, not a raw NUL', () => {
-    // The #1587 site. Pinned by NAME because it is the one occurrence the
-    // tree-wide sweep above exists to have caught, and a re-introduction here
-    // would be invisible to the grep-based audits that read this provider.
-    const source = readFileSync(
-      join(REPO_ROOT, 'src/provisioning/providers/efs-provider.ts'),
-      'utf8',
-    );
-    // Tolerant of quote style / spacing so a benign reformat is not a false
-    // failure. The absence assertion below is the one that cannot be dodged —
-    // it catches a re-introduction in ANY spelling.
-    expect(source).toMatch(/join\(\s*['"]\\0['"]\s*\)/);
+  it.each([
+    'src/provisioning/providers/efs-provider.ts',
+    'src/provisioning/providers/idempotency-token.ts',
+  ])('keeps a raw NUL out of %s, where the creation-token derivation lives', (rel) => {
+    // The #1587 site: the EFS creationToken digest once joined its inputs with
+    // a separator a re-save had turned into a raw NUL. The derivation moved to
+    // `stackScopedCreateToken` (go-to-k/cdkd#4428), which encodes with
+    // `injectiveKey` and so has no separator; both files are pinned by NAME
+    // because a re-introduction would be invisible to the grep-based audits.
+    const source = readFileSync(join(REPO_ROOT, rel), 'utf8');
+    expect(source.length).toBeGreaterThan(0);
     expect(source.includes('\u0000')).toBe(false);
   });
 });

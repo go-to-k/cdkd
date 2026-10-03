@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vite-plus/test';
 import { NoSuchCloudFrontOriginAccessIdentity } from '@aws-sdk/client-cloudfront';
 
 // Mock AWS clients before importing the provider
@@ -31,6 +31,17 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { CloudFrontOAIProvider } from '../../../src/provisioning/providers/cloudfront-oai-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
+
+// These cases drive create() directly, outside a withStackName scope, so the
+// stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
+beforeAll(() => {
+  allowUnscopedCreateTokensForTests(true);
+});
+afterAll(() => {
+  allowUnscopedCreateTokensForTests(false);
+});
 
 describe('CloudFrontOAIProvider', () => {
   let provider: CloudFrontOAIProvider;
@@ -68,10 +79,34 @@ describe('CloudFrontOAIProvider', () => {
 
       const createCall = mockSend.mock.calls[0][0];
       expect(createCall.constructor.name).toBe('CreateCloudFrontOriginAccessIdentityCommand');
-      expect(createCall.input.CloudFrontOriginAccessIdentityConfig.CallerReference).toBe('MyOAI');
+      expect(createCall.input.CloudFrontOriginAccessIdentityConfig.CallerReference).toMatch(
+        /^cdkd-MyOAI-[0-9a-f]{12}$/
+      );
       expect(createCall.input.CloudFrontOriginAccessIdentityConfig.Comment).toBe(
         'My OAI comment'
       );
+    });
+
+    it('scopes the CallerReference to the stack, so a second stack copy is not handed the first one\'s identity (go-to-k/cdkd#4428)', async () => {
+      mockSend.mockResolvedValue({
+        CloudFrontOriginAccessIdentity: { Id: 'E1', S3CanonicalUserId: 'c' },
+      });
+      // CDK's default OAI comment is a constant, so two copies send identical configs.
+      const props = {
+        CloudFrontOriginAccessIdentityConfig: { Comment: 'Allows CloudFront to reach the bucket' },
+      };
+      const type = 'AWS::CloudFront::CloudFrontOriginAccessIdentity';
+      await withStackName('DevStack', () => provider.create('MyOAI', type, props));
+      await withStackName('StagingStack', () => provider.create('MyOAI', type, props));
+      await withStackName('DevStack', () => provider.create('MyOAI', type, props));
+
+      const refs = mockSend.mock.calls.map(
+        ([cmd]) => cmd.input.CloudFrontOriginAccessIdentityConfig.CallerReference
+      );
+      expect(refs[0]).not.toBe(refs[1]);
+      // Deterministic within one stack: a retry after a lost response is
+      // answered with the identity the first attempt made.
+      expect(refs[0]).toBe(refs[2]);
     });
 
     it('should create an OAI with empty Comment when config is missing', async () => {
@@ -95,26 +130,6 @@ describe('CloudFrontOAIProvider', () => {
       expect(createCall.input.CloudFrontOriginAccessIdentityConfig.Comment).toBe('');
     });
 
-    it('should use logicalId as CallerReference', async () => {
-      mockSend.mockResolvedValueOnce({
-        CloudFrontOriginAccessIdentity: {
-          Id: 'E1ABCDEF123456',
-          S3CanonicalUserId: 'abc123canonical',
-        },
-      });
-
-      await provider.create('MyUniqueOAI', 'AWS::CloudFront::CloudFrontOriginAccessIdentity', {
-        CloudFrontOriginAccessIdentityConfig: {
-          Comment: 'test',
-        },
-      });
-
-      const createCall = mockSend.mock.calls[0][0];
-      expect(createCall.input.CloudFrontOriginAccessIdentityConfig.CallerReference).toBe(
-        'MyUniqueOAI'
-      );
-    });
-
     it('should throw ProvisioningError on failure', async () => {
       mockSend.mockRejectedValueOnce(new Error('Access Denied'));
 
@@ -129,6 +144,23 @@ describe('CloudFrontOAIProvider', () => {
   });
 
   describe('update', () => {
+    it('refuses an update when the identity read back carries no CallerReference, rather than guessing one (go-to-k/cdkd#4428)', async () => {
+      mockSend.mockResolvedValueOnce({
+        ETag: 'E1',
+        CloudFrontOriginAccessIdentity: { Id: 'E1ABC', CloudFrontOriginAccessIdentityConfig: {} },
+      });
+      await expect(
+        provider.update(
+          'MyOAI',
+          'E1ABC',
+          'AWS::CloudFront::CloudFrontOriginAccessIdentity',
+          { CloudFrontOriginAccessIdentityConfig: { Comment: 'x' } },
+          {}
+        )
+      ).rejects.toThrow(/^GetCloudFrontOriginAccessIdentity returned no CallerReference/);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
     it('should call UpdateCloudFrontOriginAccessIdentity with the new Comment', async () => {
       // First send call: GetCloudFrontOriginAccessIdentity (fetch ETag)
       mockSend.mockResolvedValueOnce({

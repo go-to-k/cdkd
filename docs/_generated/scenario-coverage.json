@@ -2264,6 +2264,11 @@
       ]
     },
     {
+      "name": "stack-copy-create-tokens",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "stack-lock-renewal",
       "annotated": false,
       "scenarios": []

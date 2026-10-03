@@ -729,7 +729,8 @@
       "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
       "integs": [
         "import-attribute-readback-network",
-        "s3-cloudfront"
+        "s3-cloudfront",
+        "stack-copy-create-tokens"
       ],
       "signals": {
         "import-attribute-readback-network": [
@@ -737,6 +738,10 @@
         ],
         "s3-cloudfront": [
           "l2"
+        ],
+        "stack-copy-create-tokens": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -1247,6 +1252,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -1397,6 +1403,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "stack-copy-create-tokens": [
+          "l2"
+        ],
         "vpc-lambda": [
           "l2"
         ],
@@ -1456,6 +1465,7 @@
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -1594,6 +1604,9 @@
           "l2"
         ],
         "sg-circular-dependency": [
+          "l2"
+        ],
+        "stack-copy-create-tokens": [
           "l2"
         ],
         "vpc-lambda": [
@@ -1686,6 +1699,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -1836,6 +1850,9 @@
           "l1"
         ],
         "sg-circular-dependency": [
+          "l2"
+        ],
+        "stack-copy-create-tokens": [
           "l2"
         ],
         "vpc-lambda": [
@@ -1900,6 +1917,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -2050,6 +2068,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "stack-copy-create-tokens": [
+          "l2"
+        ],
         "vpc-lambda": [
           "l2"
         ],
@@ -2097,6 +2118,7 @@
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "stack-copy-create-tokens",
         "update-replace",
         "vpc-lambda",
         "vpc-lambda-cr-race"
@@ -2208,6 +2230,10 @@
           "l2",
           "literal"
         ],
+        "stack-copy-create-tokens": [
+          "l2",
+          "literal"
+        ],
         "update-replace": [
           "l2",
           "literal"
@@ -2298,6 +2324,7 @@
         "replacement-rename-onto-holder",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -2460,6 +2487,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "stack-copy-create-tokens": [
+          "l2"
+        ],
         "vpc-lambda": [
           "l2"
         ],
@@ -2530,6 +2560,7 @@
         "remove-protection",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -2671,6 +2702,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "stack-copy-create-tokens": [
+          "l2"
+        ],
         "vpc-lambda": [
           "l2"
         ],
@@ -2739,6 +2773,7 @@
         "rollback-replay-effective-props",
         "servicediscovery",
         "sg-circular-dependency",
+        "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -2920,6 +2955,10 @@
           "l2",
           "literal"
         ],
+        "stack-copy-create-tokens": [
+          "l2",
+          "literal"
+        ],
         "vpc-lambda": [
           "l2"
         ],
@@ -2982,6 +3021,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -3131,6 +3171,9 @@
           "l1"
         ],
         "sg-circular-dependency": [
+          "l2"
+        ],
+        "stack-copy-create-tokens": [
           "l2"
         ],
         "vpc-lambda": [
@@ -3416,7 +3459,8 @@
         "efs-immutable-replacement",
         "efs-lambda",
         "efs-standalone",
-        "import-attribute-readback-network"
+        "import-attribute-readback-network",
+        "stack-copy-create-tokens"
       ],
       "signals": {
         "drift-revert-vpc": [
@@ -3440,6 +3484,10 @@
         ],
         "import-attribute-readback-network": [
           "l1"
+        ],
+        "stack-copy-create-tokens": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -3774,7 +3822,8 @@
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
-        "fsx-windows"
+        "fsx-windows",
+        "stack-copy-create-tokens"
       ],
       "signals": {
         "fsx-lustre": [
@@ -3787,6 +3836,9 @@
           "literal"
         ],
         "fsx-windows": [
+          "literal"
+        ],
+        "stack-copy-create-tokens": [
           "literal"
         ]
       }

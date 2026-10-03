@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vite-plus/test';
 import {
   CreateFileSystemCommand,
   TagResourceCommand,
@@ -42,6 +42,16 @@ import {
   PROVIDER_MALFORMED_RECORDED,
   TAG_FIXTURE,
 } from './tag-list-fixtures.js';
+import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
+
+// These cases drive create() directly, outside a withStackName scope, so the
+// stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
+beforeAll(() => {
+  allowUnscopedCreateTokensForTests(true);
+});
+afterAll(() => {
+  allowUnscopedCreateTokensForTests(false);
+});
 
 const TYPE = 'AWS::FSx::FileSystem';
 const FS_ID = 'fs-0123456789abcdef0';
@@ -87,7 +97,7 @@ describe('FSxFileSystemProvider Tags (go-to-k/cdkd#3994)', () => {
     vi.clearAllMocks();
     mockSend.mockImplementation(async (cmd: unknown) =>
       cmd instanceof CreateFileSystemCommand
-        ? { FileSystem: { FileSystemId: FS_ID, Lifecycle: 'CREATING' } }
+        ? { FileSystem: { FileSystemId: FS_ID, Lifecycle: 'CREATING', CreationTime: new Date() } }
         : {
             FileSystems: [
               {

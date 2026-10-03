@@ -18,7 +18,7 @@
  *    (`MIN_NEEDLE_LENGTH`) and in no fixed wording, so on a cdkd line only the
  *    RAW value mask `log.value(...)` can remove them.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vite-plus/test';
 
 const { mockSend, warnSpy, debugSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -65,6 +65,16 @@ import {
   isRetryableTransientError,
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
+import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
+
+// These cases drive create() directly, outside a withStackName scope, so the
+// stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
+beforeAll(() => {
+  allowUnscopedCreateTokensForTests(true);
+});
+afterAll(() => {
+  allowUnscopedCreateTokensForTests(false);
+});
 
 /** Long enough for the message-level substring arm. */
 const LONG = 'efs-secret-subnet-value';
@@ -113,7 +123,7 @@ function fakeEfs(handlers: Record<string, Handler | Handler[]>): void {
       return handler(command.input);
     }
     if (name === 'CreateFileSystemCommand') {
-      return { FileSystemId: 'fs-0123456789abcdef0', FileSystemArn: 'arn:fs' };
+      return { FileSystemId: 'fs-0123456789abcdef0', CreationTime: new Date(), FileSystemArn: 'arn:fs' };
     }
     if (name === 'DescribeFileSystemsCommand') {
       return { FileSystems: [{ LifeCycleState: 'available' }] };
