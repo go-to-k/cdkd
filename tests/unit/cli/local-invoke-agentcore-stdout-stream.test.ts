@@ -56,6 +56,8 @@ const mocks = vi.hoisted(() => ({
   invokeAgentCore: vi.fn(),
   invokeAgentCoreWs: vi.fn(),
   runAgentCoreWatchLoop: vi.fn(),
+  mcpInvokeOnce: vi.fn(),
+  a2aInvokeOnce: vi.fn(),
   stsSend: vi.fn(),
 }));
 
@@ -93,6 +95,16 @@ vi.mock('../../../src/local/agentcore-client.js', async (importOriginal) => {
     waitForAgentCorePing: mocks.waitForAgentCorePing,
     invokeAgentCore: mocks.invokeAgentCore,
   };
+});
+
+vi.mock('../../../src/local/agentcore-mcp-client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/local/agentcore-mcp-client.js')>();
+  return { ...actual, mcpInvokeOnce: mocks.mcpInvokeOnce };
+});
+
+vi.mock('../../../src/local/agentcore-a2a-client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/local/agentcore-a2a-client.js')>();
+  return { ...actual, a2aInvokeOnce: mocks.a2aInvokeOnce };
 });
 
 vi.mock('../../../src/local/agentcore-ws-client.js', async (importOriginal) => {
@@ -182,7 +194,7 @@ function makeStack(): StackInfo {
  * template, which is what makes the `Target: ...` status line the command
  * prints production prose rather than a literal invented here.
  */
-function makeAgentStack(): StackInfo {
+function makeAgentStack(protocol?: 'MCP' | 'A2A'): StackInfo {
   return {
     artifactId: 'AgentStack',
     stackName: 'AgentStack',
@@ -194,6 +206,7 @@ function makeAgentStack(): StackInfo {
           Properties: {
             AgentRuntimeArtifact: { ContainerConfiguration: { ContainerUri: AGENT_IMAGE } },
             EnvironmentVariables: {},
+            ...(protocol !== undefined && { ProtocolConfiguration: protocol }),
           },
         },
       },
@@ -522,6 +535,104 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       expect(seqAtRemove?.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
     }
   );
+
+  /**
+   * Issue #4480, every other arm that ends the container: each path that
+   * serves ONE request drains before it writes the result (so the late line
+   * precedes it on the terminal), and every path drains before `docker rm -f`
+   * — a `--watch` session at its teardown, and on a rebuild before it removes
+   * the OLD container.
+   */
+  describe.each([
+    // A `/ws` frame streams to stdout as it arrives; what follows the drain
+    // is `emitWsResult`'s terminator, the LAST stdout write.
+    { arm: '--ws', args: ['--ws'], protocol: undefined, beforePayload: undefined, lastOut: true },
+    { arm: 'MCP', args: [], protocol: 'MCP' as const, beforePayload: 'lane4480-mcp' },
+    { arm: 'A2A', args: [], protocol: 'A2A' as const, beforePayload: 'lane4480-a2a' },
+    { arm: '--watch (HTTP)', args: ['--watch'], protocol: undefined, beforePayload: undefined },
+    { arm: '--ws --watch', args: ['--ws', '--watch'], protocol: undefined, beforePayload: undefined },
+    {
+      arm: '--watch rebuild',
+      args: ['--watch'],
+      protocol: undefined,
+      beforePayload: undefined,
+      rebuild: true,
+    },
+  ])('the $arm arm', ({ args, protocol, beforePayload, lastOut, rebuild }) => {
+    it.skipIf(process.platform === 'win32')(
+      'relays the late log line before its result and before docker rm',
+      async () => {
+        const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
+          '../../../src/local/docker-runner.js'
+        );
+        mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
+        mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
+        mocks.synthesize.mockImplementation(async () => ({
+          stacks: [makeAgentStack(protocol)],
+          assemblyDir: 'cdk.out',
+        }));
+        const delivered = (): Promise<void> =>
+          waitForContainerOutput(() => (live ? live.out.join('') + live.err.join('') : ''));
+        mocks.invokeAgentCoreWs.mockImplementation(
+          async (_h: string, _p: number, _e: unknown, options: { onMessage: (t: string) => void }) => {
+            await delivered();
+            options.onMessage('{"token":"lane4480-ws"}');
+            return { frames: 1 };
+          }
+        );
+        mocks.mcpInvokeOnce.mockImplementation(async () => {
+          await delivered();
+          return { raw: '{"jsonrpc":"2.0","result":"lane4480-mcp"}', ok: true };
+        });
+        mocks.a2aInvokeOnce.mockImplementation(async () => {
+          await delivered();
+          return { raw: '{"jsonrpc":"2.0","result":"lane4480-a2a"}', ok: true };
+        });
+        mocks.invokeAgentCore.mockImplementation(async () => {
+          await delivered();
+          return { status: 200, contentType: 'application/json', raw: AGENT_PAYLOAD, streamed: false };
+        });
+        if (rebuild) {
+          mocks.runAgentCoreWatchLoop.mockImplementation(
+            async (loop: { rebuild: () => Promise<unknown> }) => {
+              await delivered();
+              await loop.rebuild();
+            }
+          );
+        }
+        const removals: string[][] = [];
+        mocks.removeContainer.mockImplementation(async () => {
+          removals.push(live ? [...live.seq] : []);
+        });
+        const fake = installFakeDockerLogs();
+        let error: unknown;
+        let seq: string[] = [];
+        try {
+          ({ error } = await runAgentCore(['AgentStack:EchoAgent', '--no-pull', ...args]));
+          seq = lastSeq;
+        } finally {
+          fake.restore();
+        }
+
+        expect(error).toBeUndefined();
+        const late = seq.findIndex(
+          (e) => e.startsWith('err:') && e.includes(CONTAINER_LATE_TOKEN)
+        );
+        expect(late).toBeGreaterThanOrEqual(0);
+        if (beforePayload !== undefined) {
+          const payload = seq.findIndex((e) => e.startsWith('out:') && e.includes(beforePayload));
+          expect(payload).toBeGreaterThan(late);
+        }
+        if (lastOut === true) {
+          const outs = seq.flatMap((e, i) => (e.startsWith('out:') ? [i] : []));
+          expect(outs[outs.length - 1]).toBeGreaterThan(late);
+        }
+        // The FIRST removal (on a rebuild, the old container's) already has it.
+        expect(removals.length).toBeGreaterThan(0);
+        expect(removals[0]!.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
+      }
+    );
+  });
 
   /** Issue #4480, the ^C arm: drain, then flush stderr, then `process.exit(130)`. */
   it.skipIf(process.platform === 'win32')(
