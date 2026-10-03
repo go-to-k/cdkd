@@ -765,7 +765,8 @@
         "replacement-rename-onto-holder",
         "rollback-replay-cc-generated-name",
         "scheduler-custom-group",
-        "sdk-ccapi-crossref"
+        "sdk-ccapi-crossref",
+        "sdk-to-cc-autoroute"
       ]
     },
     {
