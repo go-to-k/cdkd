@@ -5691,6 +5691,7 @@
         "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "retain-orphan-redeploy",
+        "rollback-command",
         "rollback-replay-effective-props",
         "s3-analytics-inventory",
         "s3-cloudfront",
@@ -5835,6 +5836,9 @@
         ],
         "retain-orphan-redeploy": [
           "literal"
+        ],
+        "rollback-command": [
+          "l2"
         ],
         "rollback-replay-effective-props": [
           "l1",
