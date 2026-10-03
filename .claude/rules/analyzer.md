@@ -37,7 +37,7 @@ the diff's DELETE path; an UNKNOWN condition is KEPT (absent-from-map is not
 graphlib graph. On top:
 
 - **Custom Resource edge** — an IAM policy on a Custom Resource's ServiceToken
-  Lambda role gets an edge to it, so the handler is not invoked before the
+  Lambda role gets an edge to it, so the handler does not run before the
   attachment returns.
 - **Lambda `VpcConfig` edge** (`lambda-vpc-deps.ts`) — subnets and SGs in
   `VpcConfig` get explicit edges to the Lambda, so the reversed delete traversal
