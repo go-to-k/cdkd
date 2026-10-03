@@ -6801,6 +6801,7 @@
           "l1"
         ],
         "secrets-dynamic-ref": [
+          "l1",
           "l2"
         ],
         "stale-attribute-heal": [

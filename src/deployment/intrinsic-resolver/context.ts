@@ -131,6 +131,43 @@ export function carriesDynamicReference(value: unknown): boolean {
   return false;
 }
 
+/**
+ * The dynamic-reference services the resolver RESOLVES on the deploy path. A
+ * token of any other service is left as written on BOTH paths (the resolver
+ * warns and substitutes nothing), so it is never a sign of a secret.
+ */
+const DEPLOY_RESOLVED_REFERENCE_SERVICES: ReadonlySet<string> = new Set([
+  'secretsmanager',
+  'ssm',
+  'ssm-secure',
+]);
+
+/**
+ * True when text RESOLVED by a `skipDynamicReferences` pass
+ * still carries a token of a service the deploy resolves (issue
+ * [#4056](https://github.com/go-to-k/cdkd/issues/4056)).
+ *
+ * Only a SECRET keeps its token through that pass: `secretsmanager` and
+ * `ssm-secure` by spelling, and a plain `ssm` one whose parameter the lookup
+ * finds to be a `SecureString`; a `String` / `StringList` parameter resolves
+ * to its value and leaves no token. So on RESOLVED text the token scan, not
+ * the `isSecretBearingReferenceString` spelling test, is what says "the deploy
+ * substitutes a secret here". The spelling test stays right for its other
+ * readers, which read RAW template or STORED text, where a plain `ssm` token
+ * says nothing about the parameter's type. Read by `outputs-diff.ts` (an
+ * export name) and `resolveBase64` (go-to-k/cdkd#2909), which must agree.
+ */
+export function keepsSecretReferenceToken(resolvedName: string): boolean {
+  // `inner.split(':')[0]`, the resolver's own reading of the service, with the
+  // closing braces sliced off so a colon-less `{{resolve:ssm-secure}}` reads
+  // `ssm-secure` there and here alike.
+  return dynamicReferenceTokens(resolvedName).some((token) =>
+    DEPLOY_RESOLVED_REFERENCE_SERVICES.has(
+      token.slice('{{resolve:'.length, -'}}'.length).split(':')[0] ?? ''
+    )
+  );
+}
+
 /** The nested-stack resource type, whose `Outputs.<Name>` attributes are re-resolved (issue #2055). */
 export const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
 /** Prefix `NestedStackProvider` records a child stack output under. */
