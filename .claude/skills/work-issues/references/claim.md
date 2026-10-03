@@ -58,10 +58,10 @@ Mandatory, BEFORE the first edit (the issue-level DISJOINT-FILE rule).
 that list**: beside the fix and its unit test, the integ fixture §8-c will
 extend (`grep -rl '<type's last segment>' tests/integration/*/lib`) and, when a
 provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
-every comment, doc or rule that STATES the changed invariant or names the issue
-(`grep -rn '<issue #>\|<key symbol>' src docs .claude/rules`, each run
-through §2's query) — a narrower list stops the lane mid-run to ask
-(go-to-k/cdkd#1160).
+every comment, doc or rule the fix makes FALSE — stating the old invariant or
+calling the issue open (`grep -rnw '<issue #>\|<key symbol>' src docs
+.claude/rules`, minus `docs/_generated`, each through §2's open-PR `files`
+query) — a narrower list stops the lane mid-run to ask (go-to-k/cdkd#1160).
 
 **Correct the classification lines in the same turn as the claim**, the first
 moment the run holds evidence: rewrite a legacy packed body to the four-line
@@ -72,8 +72,7 @@ never enters a body).
 `effort:<v>`, plus `--remove-label` for the one superseded — else §3's query
 picks between TWO), BEFORE the lane's PR exists, so the PR inherits them.
 
-**Claim at SHORTLIST time, not after the analysis** — retracting costs one
-comment, a collision costs a lane.
+**Claim at SHORTLIST time, not after the analysis.**
 
 **Then VERIFY the claim stuck** — posting is not winning:
 
