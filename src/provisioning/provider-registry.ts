@@ -1212,8 +1212,8 @@ export class ProviderRegistry {
             `${needsRecreate.join(', ')} ${one ? 'is' : 'are'} create-only, so ` +
               `removing the override does not apply ${one ? 'it' : 'them'} in place ` +
               `-- a create-only property can only be applied by recreating the ` +
-              `resource, and a deploy without the override that changes nothing ` +
-              `else about it refuses until that recreate is opted into.`
+              `resource, and a deploy without the override refuses unless something ` +
+              `else already forces a replacement or the recreate is opted into.`
           );
         }
         this.logger.warn(

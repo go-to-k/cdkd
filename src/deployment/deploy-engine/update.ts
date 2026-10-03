@@ -9,6 +9,11 @@ import {
 } from '../../provisioning/property-coverage.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../retryable-errors.js';
+import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
+import {
+  recordedProtectionEvidence,
+  recordedProtectionNote,
+} from '../../provisioning/recorded-protection.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { type PropertyChange, type ResourceChange, type ResourceState } from '../../types/state.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -276,7 +281,12 @@ export async function provisionUpdate(
         )
       : desiredForSkipCheck;
   // The allow set the diff narrowed by; a test double without the getter
-  // reads as the flag-less deploy, as `cdkd diff` does.
+  // reads as the flag-less deploy, as `cdkd diff` does. The diff decided
+  // "accepted" over its best-effort resolution, this over the full one: an
+  // UNRECOGNIZED key still behind an intrinsic there can answer differently
+  // here, and then the diff carries no replacement row for the #2790 refusal
+  // below to see. That needs a schema-unknown key behind an intrinsic on a
+  // type with a create-only drop.
   const allowedForRecord = allowedSilentDrops ?? new Set<string>();
   const currentPropsAsWritten =
     currentResource.provisionedBy === 'cc-api'
@@ -566,21 +576,35 @@ export async function provisionUpdate(
       .filter((pc) => pc.requiresReplacement)
       .map((pc) => pc.path);
     if (unwritten.length > 0 && replacing.every((path) => unwritten.includes(path))) {
-      throw markNonRetryable(
-        new CdkdError(
-          unwrittenCreateOnlyRefusal({
-            logicalId,
-            resourceType,
-            unwritten,
-            routeDriving: findActionableSilentDrops(
+      // Marked refused-before-applying: nothing was sent, so the journal
+      // must not record this resolved bag as an attempt a `--revert-failed`
+      // or a later create would act on.
+      throw markRefusedBeforeApplying(
+        markNonRetryable(
+          new CdkdError(
+            unwrittenCreateOnlyRefusal({
+              logicalId,
               resourceType,
-              desiredForSkipCheck,
-              allowedForRecord,
-              currentProps
-            ).map(({ property }) => property),
-            nested: this.options.parentStackInfo !== undefined,
-          }),
-          'CREATE_ONLY_DROP_NEEDS_REPLACEMENT'
+              unwritten,
+              routeDriving: findActionableSilentDrops(
+                resourceType,
+                desiredForSkipCheck,
+                allowedForRecord,
+                currentProps
+              ).map(({ property }) => property),
+              nested: this.options.parentStackInfo !== undefined,
+              // Issue #2610: the replacement's delete never clears a
+              // deletion protection, so the remedy says so where the record
+              // shows one -- as the stateful guard does.
+              protectionEvidence: recordedProtectionEvidence(
+                resourceType,
+                currentProps,
+                currentResource.observedProperties,
+                this.stackRegion
+              ),
+            }),
+            'CREATE_ONLY_DROP_NEEDS_REPLACEMENT'
+          )
         )
       );
     }
@@ -722,12 +746,19 @@ export async function provisionUpdate(
 /**
  * The text of the issue #2790 refusal. Exported for its unit test.
  *
+ * It states only what holds in every case it fires on: the record holds the
+ * key, the SDK provider never writes it, and this deploy routes the resource
+ * through Cloud Control. It does NOT claim an earlier `--prefer-sdk-route`
+ * deploy put the key there — a record written before that flag existed holds
+ * one too — nor that this deploy's flags omit it, since a sibling drop the
+ * flags do not cover routes the resource just the same.
+ *
  * `routeDriving` is every key that sends the resource to Cloud Control on this
- * deploy — the unwritten create-only ones among them, plus any other drop the
- * allow set does not cover. Keeping the resource on its SDK provider needs ALL
- * of them allow-listed, since the route is per resource, so the keep-dropping
- * remedy names the union. `nested` drops `--recreate-via-cc-api`, which cannot
- * address a resource inside a nested stack's child.
+ * deploy. Keeping the resource on its SDK provider needs ALL of them, and the
+ * unwritten ones, allow-listed, since the route is per resource, so the
+ * keep-dropping remedy names the union. `nested` drops `--recreate-via-cc-api`,
+ * which cannot address a resource inside a nested stack's child.
+ * `protectionEvidence` is `recordedProtectionEvidence`'s answer for the record.
  *
  * @internal
  */
@@ -737,8 +768,9 @@ export function unwrittenCreateOnlyRefusal(input: {
   unwritten: readonly string[];
   routeDriving: readonly string[];
   nested: boolean;
+  protectionEvidence?: string | undefined;
 }): string {
-  const { logicalId, resourceType, unwritten, routeDriving, nested } = input;
+  const { logicalId, resourceType, unwritten, routeDriving, nested, protectionEvidence } = input;
   const one = unwritten.length === 1;
   const list = unwritten.join(', ');
   const keep = [...new Set([...unwritten, ...routeDriving])]
@@ -748,14 +780,18 @@ export function unwrittenCreateOnlyRefusal(input: {
   const replaceFlags = nested
     ? '--replace'
     : `--recreate-via-cc-api ${logicalId} (or --replace, which covers every such replacement in the deploy)`;
+  const routed = [...routeDriving].sort((a, b) => a.localeCompare(b)).join(', ');
   return (
-    `${logicalId} (${resourceType}): ${list} ${one ? 'is' : 'are'} create-only and ` +
-    `${one ? 'was' : 'were'} never written to AWS — an earlier deploy kept this resource on ` +
-    `its SDK provider with --prefer-sdk-route, and that provider drops ` +
-    `${one ? 'it' : 'them'}. This deploy no longer accepts the drop, and applying a ` +
-    `create-only property means replacing the resource, which cdkd does not do on its own. ` +
-    `This resource was not changed. To replace it and apply ${list}, re-run with ${replaceFlags}; a ` +
-    `stateful resource also needs --force-stateful-recreation. To keep dropping ` +
-    `${one ? 'it' : 'them'}, re-run with --prefer-sdk-route ${keep}.`
+    `${logicalId} (${resourceType}): ${list} ${one ? 'is' : 'are'} create-only, and the ` +
+    `state record holds ${one ? 'it' : 'them'} although this type's SDK provider never ` +
+    `writes ${one ? 'it' : 'them'}, so AWS does not. This deploy routes the resource through ` +
+    `Cloud Control (--prefer-sdk-route does not cover ${routed}), and applying a create-only ` +
+    `property means replacing the resource, which cdkd does not do on its own. This ` +
+    `resource was not changed. To replace it and apply ${list}, re-run with ${replaceFlags}; a ` +
+    `stateful resource also needs --force-stateful-recreation.` +
+    (protectionEvidence !== undefined
+      ? ` ${recordedProtectionNote(protectionEvidence, nested ? '--replace' : '--recreate-via-cc-api or --replace')}`
+      : '') +
+    ` To keep dropping ${one ? 'it' : 'them'}, re-run with --prefer-sdk-route ${keep}.`
   );
 }

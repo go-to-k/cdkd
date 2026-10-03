@@ -48,7 +48,9 @@ The layer is decided per resource, per deploy, in this order:
    too: cdkd records only what the SDK provider sent, so dropping the flag makes
    the property a genuine addition and the auto-route delivers it — except for a
    create-only property, which cdkd keeps in the record because applying one to
-   a live resource needs a replacement
+   a live resource needs a replacement. Without the flag that deploy refuses
+   with `CREATE_ONLY_DROP_NEEDS_REPLACEMENT` until `--recreate-via-cc-api` or
+   `--replace` opts into the replacement
    ([the override](cli-deploy-safety.md#the-override) lists the exceptions).
    Measured on a live resource by
    [`tests/integration/sdk-to-cc-autoroute/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sdk-to-cc-autoroute/).

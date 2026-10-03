@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { unwrittenCreateOnlyRefusal } from '../../../src/deployment/deploy-engine/update.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 import { getPropertyCoverage } from '../../../src/provisioning/property-coverage.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { PropertyChange, ResourceChange } from '../../../src/types/state.js';
@@ -192,6 +193,8 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
     expect(err).not.toBeNull();
     expect(err!.cause?.code).toBe('CREATE_ONLY_DROP_NEEDS_REPLACEMENT');
     expect(isMarkedNonRetryable(err!.cause)).toBe(true);
+    // Nothing was sent, so the journal must not keep this bag as an attempt.
+    expect(isRefusedBeforeApplying(err, 'MySubnet')).toBe(true);
     expect(err!.cause?.message).toContain(`MySubnet (${TYPE}): ${CREATE_ONLY} is create-only`);
     expect(err!.cause?.message).toContain('--recreate-via-cc-api MySubnet');
     expect(callOrder).toEqual([]);
@@ -295,6 +298,61 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
     );
   });
 
+  it('names the deletion protection a replacement cannot clear (#2610)', async () => {
+    const recorded = {
+      Engine: 'aurora-mysql',
+      SnapshotIdentifier: 'snap-1',
+      DeletionProtection: true,
+    };
+    const change: ResourceChange = {
+      logicalId: 'MyCluster',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::RDS::DBCluster',
+      currentProperties: recorded,
+      desiredProperties: recorded,
+      propertyChanges: [
+        {
+          path: 'SnapshotIdentifier',
+          oldValue: undefined,
+          newValue: 'snap-1',
+          requiresReplacement: true,
+        },
+      ],
+    };
+    expect(getPropertyCoverage('AWS::RDS::DBCluster')?.createOnlyDrops.has('SnapshotIdentifier')).toBe(
+      true
+    );
+    const engine = makeEngine();
+    const err = await (
+      engine as unknown as {
+        provisionResource: (...args: unknown[]) => Promise<void>;
+      }
+    )
+      .provisionResource(
+        'MyCluster',
+        change,
+        {
+          MyCluster: {
+            physicalId: 'cluster-1',
+            resourceType: 'AWS::RDS::DBCluster',
+            properties: recorded,
+            attributes: {},
+            dependencies: [],
+            provisionedBy: 'sdk',
+          },
+        },
+        'MyStack',
+        { Resources: { MyCluster: { Type: 'AWS::RDS::DBCluster', Properties: recorded } } }
+      )
+      .then(
+        () => null,
+        (e: unknown) => e as Error & { cause?: Error & { code?: string } }
+      );
+    expect(err!.cause?.code).toBe('CREATE_ONLY_DROP_NEEDS_REPLACEMENT');
+    expect(err!.cause?.message).toContain('AWS refuses to delete the resource while that protection is on');
+    expect(callOrder).toEqual([]);
+  });
+
   it('inside a nested child, names only --replace', async () => {
     const err = await refusal(
       makeEngine({
@@ -310,13 +368,15 @@ describe('unwrittenCreateOnlyRefusal', () => {
   const base = {
     logicalId: 'Db',
     resourceType: 'AWS::RDS::DBInstance',
-    routeDriving: [] as string[],
+    routeDriving: ['DBName'] as string[],
     nested: false,
   };
 
   it('agrees in number with one property', () => {
     const msg = unwrittenCreateOnlyRefusal({ ...base, unwritten: ['DBName'] });
-    expect(msg).toContain('DBName is create-only and was never written to AWS');
+    expect(msg).toContain(
+      'DBName is create-only, and the state record holds it although this type\'s SDK provider never writes it'
+    );
     expect(msg).toContain('To keep dropping it,');
     expect(msg).toContain('--prefer-sdk-route AWS::RDS::DBInstance:DBName.');
   });
@@ -327,12 +387,33 @@ describe('unwrittenCreateOnlyRefusal', () => {
       unwritten: ['Timezone', 'DBName'],
       routeDriving: ['Timezone', 'DBName', 'BackupTarget'],
     });
-    expect(msg).toContain('Timezone, DBName are create-only and were never written to AWS');
+    expect(msg).toContain('Timezone, DBName are create-only, and the state record holds them');
+    expect(msg).toContain('--prefer-sdk-route does not cover BackupTarget, DBName, Timezone)');
     expect(msg).toContain('To keep dropping them,');
     expect(msg).toContain(
       '--prefer-sdk-route ' +
         'AWS::RDS::DBInstance:BackupTarget,AWS::RDS::DBInstance:DBName,AWS::RDS::DBInstance:Timezone.'
     );
+  });
+
+  it('never claims an earlier --prefer-sdk-route deploy put the key there', () => {
+    // A record written before that flag existed holds one too.
+    const msg = unwrittenCreateOnlyRefusal({ ...base, unwritten: ['DBName'] });
+    expect(msg).not.toContain('earlier deploy');
+    expect(msg).not.toContain('no longer accepts');
+  });
+
+  it('adds the protection note only with evidence', () => {
+    expect(unwrittenCreateOnlyRefusal({ ...base, unwritten: ['DBName'] })).not.toContain(
+      'protection is on'
+    );
+    expect(
+      unwrittenCreateOnlyRefusal({
+        ...base,
+        unwritten: ['DBName'],
+        protectionEvidence: 'the record shows DeletionProtection: true',
+      })
+    ).toContain('the record shows DeletionProtection: true. AWS refuses to delete');
   });
 
   it('names the stateful consent flag', () => {

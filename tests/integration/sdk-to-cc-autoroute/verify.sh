@@ -633,7 +633,14 @@ SUBNET_LAYER0=$(record_of "${SUBNET_LOGICAL_ID}" '.provisionedBy')
 # The PREMISE of the arm: the record keeps the create-only drop it never wrote.
 SUBNET_REC_AZ=$(record_of "${SUBNET_LOGICAL_ID}" '.properties.AvailabilityZoneId // "ABSENT"')
 [ "${SUBNET_REC_AZ}" = "${AZ_ID}" ] || { echo "FAIL: the record holds AvailabilityZoneId=${SUBNET_REC_AZ}, expected ${AZ_ID}; a create-only drop is no longer kept in the record and phase 9 tests nothing" >&2; exit 1; }
-echo "    OK: subnet ${SUBNET_P0} on the SDK route, record keeps AvailabilityZoneId"
+# Where EC2 put the SDK-created subnet. The SDK route drops the AZ id, so EC2
+# picks; when it happens to pick ${AZ_ID}, phase 10's AZ readback cannot tell
+# a written id from a coincidence, and says so rather than passing silently.
+SUBNET_P0_AZ=$(subnet_az_id "${SUBNET_P0}")
+case "${SUBNET_P0_AZ}" in
+  ""|None) echo "FAIL: could not read subnet ${SUBNET_P0}'s AZ id" >&2; exit 1 ;;
+esac
+echo "    OK: subnet ${SUBNET_P0} on the SDK route (in ${SUBNET_P0_AZ}), record keeps AvailabilityZoneId"
 
 echo "==> Phase 8: NEGATIVE CONTROL -- a flag-ful redeploy over that record does not replace"
 env CDKD_TEST_PHASE=subnettag CDKD_TEST_AZ_ID="${AZ_ID}" \
@@ -685,6 +692,9 @@ SUBNET_LAYER3=$(record_of "${SUBNET_LOGICAL_ID}" '.provisionedBy')
 [ "${SUBNET_LAYER3}" = "cc-api" ] || { echo "FAIL: the recreate did not land on Cloud Control (provisionedBy=${SUBNET_LAYER3})" >&2; exit 1; }
 LIVE_AZ=$(subnet_az_id "${SUBNET_P3}")
 [ "${LIVE_AZ}" = "${AZ_ID}" ] || { echo "FAIL: the recreated subnet is in ${LIVE_AZ}, expected ${AZ_ID}: AvailabilityZoneId did not reach AWS" >&2; exit 1; }
+if [ "${SUBNET_P0_AZ}" = "${AZ_ID}" ]; then
+  echo "    NOTE: EC2 placed the SDK-created subnet in ${AZ_ID} already, so this AZ readback does not discriminate on this run (phase 9's refusal still does)"
+fi
 assert_gone "the old subnet ${SUBNET_P0} survived the recreate" \
   aws ec2 describe-subnets --subnet-ids "${SUBNET_P0}" --region "${REGION}"
 echo "    OK: re-created on Cloud Control in ${AZ_ID}; the old subnet is gone"
