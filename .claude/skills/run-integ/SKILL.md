@@ -335,8 +335,7 @@ Which fixture to run is a coverage judgement, not a marker lookup.
 
   **Only five carry a `verify.sh`; from an agent session the other four cannot
   be run at all** (step 5's dispatch note). Runnable from a session: **`lambda`**
-  (the cheap default — ~100 s over a 9-resource SQS / IAM / Lambda / LayerVersion
-  / DynamoDB DAG), `drift-revert`, `drift-revert-vpc`, `remove-protection`,
+  (the cheap default), `drift-revert`, `drift-revert-vpc`, `remove-protection`,
   `export`. Re-derive the split with `ls tests/integration/<name>/verify.sh`;
   nothing compares the copies of this list, which `/pick-integ` and `/verify-pr`
   also carry.
@@ -396,7 +395,4 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   ending at a bare arm header is an unfenced fixture — re-run that command with
   stderr attached BEFORE concluding anything.
 
-- **A FAIL that passes on re-run is not a flake verdict (#4480)** — trace the
-  failing path first: re-run on `main`'s engine; an AWS call whose CloudTrail
-  `userAgent` / `sourceIPAddress` is `cloudformation.amazonaws.com` was made by
-  Cloud Control's handler, not cdkd's SDK client.
+- **A FAIL that passes on re-run is not a flake** until its path is traced (#4480).
