@@ -308,7 +308,7 @@ export interface DeployEngineOptions {
    * supplied, the engine emits one event per per-resource operation
    * (RESOURCE_STARTED / RESOURCE_SUCCEEDED / RESOURCE_FAILED) and per
    * rollback step (ROLLBACK_STARTED / ROLLBACK_RESOURCE_SUCCEEDED /
-   * ROLLBACK_RESOURCE_FAILED / ROLLBACK_FINISHED). The run-level
+   * ROLLBACK_RESOURCE_FAILED / ROLLBACK_RESOURCE_SKIPPED / ROLLBACK_FINISHED). The run-level
    * RUN_STARTED / RUN_FINISHED events are emitted by the OWNER (the
    * deploy CLI) which knows the command / cdkd version / terminal result
    * and `finalize()`s the recorder after the run reaches a terminal
