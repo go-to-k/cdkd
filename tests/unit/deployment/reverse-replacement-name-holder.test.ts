@@ -387,6 +387,30 @@ describe('reverseReplacementNewHoldsName — Route 53 record sets', () => {
 });
 
 describe('reverseReplacementNewHoldsName — types', () => {
+  it('a pipe is keyed by its create-only Name, the id its provider records (issue #4423)', () => {
+    const PIPE = 'AWS::Pipes::Pipe';
+    expect(reverseReplacementNameKeyKind(PIPE)).toBe('keyed');
+    expect(
+      ask({
+        oldResourceType: PIPE,
+        newResourceType: PIPE,
+        requested: { Name: 'p' },
+        recorded: { Name: 'p' },
+        physicalId: 'p',
+      })
+    ).toEqual({ holds: true });
+    const r = refusal(
+      ask({
+        oldResourceType: PIPE,
+        newResourceType: PIPE,
+        requested: { Name: 'p' },
+        recorded: { Name: 'other' },
+        physicalId: 'other',
+      })
+    );
+    expect(r.known).toBe(true);
+  });
+
   it('a Type change holds only between types sharing a name space', () => {
     expect(
       ask({

@@ -36,11 +36,11 @@ cache-streaming	2026-09-29T15:04:16Z	PASS	652	verify.sh	rc ok, orph clean (#4029
 cc-api-fallback	2026-10-03T04:28:43Z	PASS	47	verify.sh	rc ok, orph clean (#4283 PR #4449)
 cc-api-fallback-transitions	2026-10-03T04:27:13Z	PASS	102	verify.sh	rc ok, orph clean (#4283 PR #4449)
 cc-final-snapshot-handlers	2026-09-30T17:44:01Z	PASS	1223	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
-cc-getatt-readback	2026-10-03T05:54:59Z	PASS	125	verify.sh	rc ok, orph clean (#4497)
+cc-getatt-readback	2026-10-03T09:34:47Z	PASS	115	verify.sh	rc ok, orph clean (#4423)
 cc-protection-flip	2026-10-03T00:39:18Z	PASS	556	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 cc-protection-flip-eks	2026-10-03T01:13:56Z	PASS	2635	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 cc-to-sdk-reroute	2026-10-02T17:09:39Z	PASS	315	verify.sh	rc ok, orph clean; #4411 regression
-cc-write-only-create-only	2026-10-02T09:06:41Z	PASS	150	verify.sh	rc ok, orph clean (#4416 r2)
+cc-write-only-create-only	2026-10-03T09:34:47Z	PASS	160	verify.sh	rc ok, orph clean (#4423; cc-api flip to sdk, pre-fix probe red at sdk premise)
 ci-cd	2026-09-27T14:43:09Z	PASS	70	verify.sh	rc ok, orph clean (#3866)
 cloudfront-function-url	2026-10-01T10:13:53Z	PASS	261	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 7 deleted 0 errors, orph clean
 cloudtrail-trail	2026-10-02T01:44:21Z	PASS	181	verify.sh	PR #4378 removalDefaults; rc ok, orph clean
@@ -118,11 +118,11 @@ emr-cluster	2026-10-03T04:11:52Z	PASS	663	verify.sh	rc ok, orph clean (#4283 PR 
 emr-instance-configs	2026-10-02T07:20:09Z	PASS	968	verify.sh	PR #4391 (#2080 EMR create latch, orphan-report rename) @a7306c55f; rc ok, orph clean; fixture GetAtt InstanceGroupId (aws-cdk-lib 2.272 dropped attrId)
 emr-instance-fleets	2026-10-02T13:48:51Z	PASS	1408	verify.sh	#1160 PR #4432: phase 2b ResizeSpecifications removal warned + kept 25; pre-fix probe red at phase 2b; rc ok, orph clean
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-eventbridge	2026-10-03T04:25:15Z	PASS	87	verify.sh	rc ok, orph clean (#4283 PR #4449)
+eventbridge	2026-10-03T09:34:47Z	PASS	90	verify.sh	rc ok, orph clean (#4423)
 eventbridge-api-destination	2026-08-10T04:16:05Z	PASS	66	verify.sh	0810 staleness sweep b1; Connection/ApiDestination GetAtt, 5 del 0 err, 0 orph
 eventbridge-archive	2026-07-31T06:21:38Z	PASS	54	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 eventbridge-input-transformer	2026-08-10T04:16:05Z	PASS	53	verify.sh	0810 staleness sweep b1; post-#1396 ECS target sub-shape, 0 err, 0 orph
-eventbridge-pipes	2026-10-02T09:06:41Z	PASS	170	verify.sh	rc ok, orph clean (#4416 r2)
+eventbridge-pipes	2026-10-03T09:34:47Z	PASS	175	verify.sh	rc ok, orph clean (#4423)
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-03T04:26:17Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)

@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "generatedAt": "2026-09-04T22:38:29.272Z",
   "summary": {
-    "tier1Count": 134,
-    "tier2Count": 1469,
+    "tier1Count": 135,
+    "tier2Count": 1468,
     "tier3Count": 268,
     "totalCount": 1871
   },
@@ -113,6 +113,7 @@
     "AWS::Neptune::DBCluster",
     "AWS::Neptune::DBInstance",
     "AWS::Neptune::DBSubnetGroup",
+    "AWS::Pipes::Pipe",
     "AWS::RDS::DBCluster",
     "AWS::RDS::DBInstance",
     "AWS::RDS::DBProxy",
@@ -1209,7 +1210,6 @@
     "AWS::Personalize::Schema",
     "AWS::Personalize::Solution",
     "AWS::Pinpoint::InAppTemplate",
-    "AWS::Pipes::Pipe",
     "AWS::PricingPlanManager::Subscription",
     "AWS::Proton::EnvironmentAccountConnection",
     "AWS::Proton::EnvironmentTemplate",

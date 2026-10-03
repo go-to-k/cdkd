@@ -64,6 +64,8 @@ export const REVERSE_REPLACEMENT_NAME_KEYS: Readonly<Record<string, NameKey>> = 
   'AWS::KinesisFirehose::DeliveryStream': flat('DeliveryStreamName'),
   'AWS::KMS::Alias': flat('AliasName'),
   'AWS::Lambda::MicrovmImage': flat('Name'),
+  // The schema's create-only `Name` is the pipe's physical id (issue #4423).
+  'AWS::Pipes::Pipe': flat('Name'),
   'AWS::RDS::DBProxyTargetGroup': { name: [['TargetGroupName']], scope: [['DBProxyName']] },
   'AWS::S3Tables::TableBucket': flat('TableBucketName'),
   'AWS::S3Vectors::VectorBucket': flat('VectorBucketName'),

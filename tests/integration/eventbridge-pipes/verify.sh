@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd EventBridge Pipes (SQS->SNS, CC-API) integ.
+# verify.sh — cdkd EventBridge Pipes (SQS->SNS, SDK provider) integ.
 # Asserts the pipe reaches AWS (RUNNING) with the SQS source, then destroys
 # clean. Confirmed-clean /hunt-bugs pattern; regression guard.
 
@@ -76,8 +76,14 @@ echo "==> Pre-run cleanup"; cleanup
 echo "==> Deploy (base: BatchSize 1)"
 env -u CDKD_TEST_UPDATE -u CDKD_TEST_SOURCE_SWITCH node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-# Pipe creation settles async (CREATING -> RUNNING). Accept RUNNING or CREATING
-# as proof it reached AWS; assert the SQS source arn was wired.
+# The SDK provider's create waits for the pipe to settle (#4423), so the pipe
+# is RUNNING the moment cdkd returns: one read, no poll.
+read -r CREATED_STATE BASE_MODIFIED <<<"$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" \
+  --query '[CurrentState, LastModifiedTime]' --output text)"
+[ "${CREATED_STATE}" = "RUNNING" ] || { echo "FAIL: pipe is '${CREATED_STATE}' right after the base deploy, expected RUNNING (the create did not wait to settle)" >&2; exit 1; }
+[ -n "${BASE_MODIFIED}" ] && [ "${BASE_MODIFIED}" != "None" ] || { echo "FAIL: describe-pipe returned no LastModifiedTime after the base deploy" >&2; exit 1; }
+
+# Assert the SQS source arn was wired (the RUNNING check above already ran).
 STATE=""; SRCARN=""
 for _ in $(seq 1 24); do
   # The pipe can 404 briefly right after create (read-after-create lag);
@@ -119,7 +125,15 @@ fi
 BS=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" \
   --query 'SourceParameters.SqsQueueParameters.BatchSize' --output text)
 [ "${BS}" = "2" ] || { echo "FAIL: BatchSize after update is '${BS}', expected 2" >&2; exit 1; }
-echo "    OK: in-place UPDATE reached AWS (BatchSize=${BS})"
+# The update waits for the RUNNING pipe to settle AGAIN (#4423): a pre-update
+# RUNNING read must not end the wait, so the pipe has a newer LastModifiedTime
+# and is RUNNING when cdkd returns. Both ISO stamps come from the same API in
+# the same format, so they compare as strings.
+read -r UPDATED_STATE UPDATED_MODIFIED <<<"$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" \
+  --query '[CurrentState, LastModifiedTime]' --output text)"
+[ "${UPDATED_STATE}" = "RUNNING" ] || { echo "FAIL: pipe is '${UPDATED_STATE}' right after the UPDATE, expected RUNNING (the update did not wait to settle)" >&2; exit 1; }
+[[ "${UPDATED_MODIFIED}" > "${BASE_MODIFIED}" ]] || { echo "FAIL: LastModifiedTime did not advance across the UPDATE (${BASE_MODIFIED} -> ${UPDATED_MODIFIED})" >&2; exit 1; }
+echo "    OK: in-place UPDATE reached AWS (BatchSize=${BS}, RUNNING, LastModifiedTime ${BASE_MODIFIED} -> ${UPDATED_MODIFIED})"
 
 echo "==> Named-replacement collision (Source switch on the named pipe) — must FAIL without --replace"
 COLLIDE_LOG="$(mktemp)"

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 134,
-    "enriched": 47,
+    "classifiedCount": 135,
+    "enriched": 48,
     "noComputedAttr": 17,
     "unenrichedGap": 0,
     "sdkFallbackGap": 70,
@@ -2432,6 +2432,48 @@
       "gaps": []
     },
     {
+      "resourceType": "AWS::Pipes::Pipe",
+      "bucket": "enriched",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "CreationTime",
+        "CurrentState",
+        "LastModifiedTime",
+        "StateReason"
+      ],
+      "enrichedKeys": [
+        "Arn",
+        "CreationTime",
+        "CurrentState",
+        "LastModifiedTime",
+        "StateReason"
+      ],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "enriched"
+        },
+        {
+          "name": "CreationTime",
+          "status": "enriched"
+        },
+        {
+          "name": "CurrentState",
+          "status": "enriched"
+        },
+        {
+          "name": "LastModifiedTime",
+          "status": "enriched"
+        },
+        {
+          "name": "StateReason",
+          "status": "enriched"
+        }
+      ],
+      "gaps": []
+    },
+    {
       "resourceType": "AWS::RDS::DBCluster",
       "bucket": "sdk-fallback-gap",
       "sdkBacked": true,
@@ -3226,7 +3268,6 @@
     "AWS::Events::Connection",
     "AWS::Lambda::Version",
     "AWS::OpenSearchService::Domain",
-    "AWS::Pipes::Pipe",
     "AWS::Redshift::Cluster",
     "AWS::ResourceGroups::Group",
     "AWS::Route53::HealthCheck",

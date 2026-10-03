@@ -105,6 +105,7 @@
     "AWS::Neptune::DBCluster",
     "AWS::Neptune::DBInstance",
     "AWS::Neptune::DBSubnetGroup",
+    "AWS::Pipes::Pipe",
     "AWS::RDS::DBCluster",
     "AWS::RDS::DBInstance",
     "AWS::RDS::DBProxy",
@@ -5478,6 +5479,29 @@
       }
     },
     {
+      "resourceType": "AWS::Pipes::Pipe",
+      "integs": [
+        "cc-getatt-readback",
+        "cc-write-only-create-only",
+        "eventbridge",
+        "eventbridge-pipes"
+      ],
+      "signals": {
+        "cc-getatt-readback": [
+          "literal"
+        ],
+        "cc-write-only-create-only": [
+          "literal"
+        ],
+        "eventbridge": [
+          "literal"
+        ],
+        "eventbridge-pipes": [
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::RDS::DBCluster",
       "integs": [
         "cc-final-snapshot-handlers",
@@ -7142,7 +7166,6 @@
     "AWS::Logs::SubscriptionFilter",
     "AWS::NeptuneGraph::Graph",
     "AWS::OpenSearchService::Domain",
-    "AWS::Pipes::Pipe",
     "AWS::RDS::GlobalCluster",
     "AWS::Redshift::Cluster",
     "AWS::ResourceGroups::Group",

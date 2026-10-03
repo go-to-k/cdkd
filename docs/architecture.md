@@ -736,7 +736,6 @@ the patch would be dropped from the desired state on every UPDATE (issue #809;
 e.g. `AWS::ECS::Service.VolumeConfigurations`). The exception is an
 unchanged write-only property whose value holds a create-only path
 overlapping a write-only one (`AWS::Cognito::ManagedLoginBranding.ClientId`,
-a Kinesis-source `AWS::Pipes::Pipe`'s `SourceParameters`,
 `AWS::CodePipeline::CustomActionType.Settings`): Cloud Control refuses any
 patch bringing such a value in, even unchanged, so it stays on the
 previous side and sends no op (issue #4416). If `DescribeType` is

@@ -2554,6 +2554,36 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::Pipes::Pipe',
+    {
+      handled: new Set<string>([
+        'Description',
+        'DesiredState',
+        'Enrichment',
+        'EnrichmentParameters',
+        'KmsKeyIdentifier',
+        'LogConfiguration',
+        'Name',
+        'RoleArn',
+        'Source',
+        'SourceParameters',
+        'Tags',
+        'Target',
+        'TargetParameters',
+      ]),
+      silentDrop: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>([
+        'Arn',
+        'CreationTime',
+        'CurrentState',
+        'LastModifiedTime',
+        'StateReason',
+      ]),
+      ccRouteUnavailable: true,
+    },
+  ],
+  [
     'AWS::RDS::DBCluster',
     {
       handled: new Set<string>([

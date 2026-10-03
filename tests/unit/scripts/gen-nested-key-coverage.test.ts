@@ -4717,6 +4717,10 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       'AWS::Glue::Database': 0,
       'AWS::Glue::Trigger': 9,
       'AWS::Glue::SecurityConfiguration': 2,
+      // Key pass only (issue #4423): FALSE positives. Every Pipes blob reaches
+      // the SDK whole through a small converter that names a member or two,
+      // which the walk does not credit as a generic hand-off.
+      'AWS::Pipes::Pipe': 196,
       // 81 before issue #1520 (segment renames + widened reverse-map
       // exclusion, -> 50), 0 since issue #1540 (builder-behind-binding hop,
       // for-of taint hop, scoped + terminal renames) opted the target in —

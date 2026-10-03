@@ -288,7 +288,11 @@ describe('renderNameHeldElsewhere', () => {
  * `holds: true`.
  */
 describe('replacementOldHoldsSentName', () => {
-  const PIPE = 'AWS::Pipes::Pipe';
+  // A Cloud-Control-routed type with NO name key: its cases exercise the
+  // identity rule. Each asserts the premise first, so keying the type later
+  // fails them instead of leaving them vacuous. (`AWS::Pipes::Pipe` played
+  // this part until it gained a name key, issue #4423.)
+  const UNKEYED = 'AWS::S3::AccessPoint';
   const TG = 'AWS::ElasticLoadBalancingV2::TargetGroup';
   const TG_ARN = (name: string) =>
     `arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/${name}/0123456789abcdef`;
@@ -307,6 +311,24 @@ describe('replacementOldHoldsSentName', () => {
 
   it('holds when the old resource holds the name the create sent', () => {
     expect(holds({}).holds).toBe(true);
+  });
+
+  it('a pipe on its SDK provider is proven by its Name key (issue #4423)', () => {
+    const PIPE = 'AWS::Pipes::Pipe';
+    const pipe = (requested: string, recorded: string, physicalId: string) =>
+      holds({
+        createType: PIPE,
+        holderType: PIPE,
+        createdVia: 'sdk',
+        holderVia: 'sdk',
+        requested: { Name: requested },
+        recorded: { Name: recorded },
+        physicalId,
+      });
+    expect(pipe('my-pipe', 'my-pipe', 'my-pipe').holds).toBe(true);
+    const other = pipe('my-pipe', 'other-pipe', 'other-pipe');
+    expect(other.holds).toBe(false);
+    expect(other.holds === false && other.known).toBe(true);
   });
 
   it('speaks of the create and the resource being replaced, not the rollback', () => {
@@ -332,9 +354,10 @@ describe('replacementOldHoldsSentName', () => {
   });
 
   it('a type with no name key is proven only by the sent identifier EQUAL to the old physical id', () => {
+    expect(reverseReplacementNameKeyKind(UNKEYED)).toBe('unknown');
     const base = {
-      createType: PIPE,
-      holderType: PIPE,
+      createType: UNKEYED,
+      holderType: UNKEYED,
       createdVia: 'cc-api' as const,
       holderVia: 'cc-api' as const,
     };
@@ -356,11 +379,12 @@ describe('replacementOldHoldsSentName', () => {
   });
 
   it('the identity rule needs EVERY name-shaped property the create sent unchanged on the old record', () => {
+    expect(reverseReplacementNameKeyKind(UNKEYED)).toBe('unknown');
     // A rename (Name my-app -> my-app-v2) whose OTHER name-shaped property
     // still spells the old id: the collision on my-app-v2 is someone else's.
     const renamed = holds({
-      createType: PIPE,
-      holderType: PIPE,
+      createType: UNKEYED,
+      holderType: UNKEYED,
       createdVia: 'cc-api',
       holderVia: 'cc-api',
       requested: { Name: 'my-app-v2', RoleName: 'my-app' },
@@ -372,8 +396,8 @@ describe('replacementOldHoldsSentName', () => {
     // spells the old id is a change too.
     expect(
       holds({
-        createType: PIPE,
-        holderType: PIPE,
+        createType: UNKEYED,
+        holderType: UNKEYED,
         createdVia: 'cc-api',
         holderVia: 'cc-api',
         requested: { SourceName: 'old' },
@@ -384,8 +408,8 @@ describe('replacementOldHoldsSentName', () => {
     // A name AWS reports only in the read-back (never declared) is no change.
     expect(
       holds({
-        createType: PIPE,
-        holderType: PIPE,
+        createType: UNKEYED,
+        holderType: UNKEYED,
         createdVia: 'cc-api',
         holderVia: 'cc-api',
         requested: { Name: 'old' },
@@ -397,8 +421,8 @@ describe('replacementOldHoldsSentName', () => {
     // A record that does not say what the key held proves nothing either.
     expect(
       holds({
-        createType: PIPE,
-        holderType: PIPE,
+        createType: UNKEYED,
+        holderType: UNKEYED,
         createdVia: 'cc-api',
         holderVia: 'cc-api',
         requested: { Name: 'my-pipe' },
@@ -409,11 +433,12 @@ describe('replacementOldHoldsSentName', () => {
   });
 
   it('the identity rule holds only on the Cloud Control route, for the create and the holder', () => {
+    expect(reverseReplacementNameKeyKind(UNKEYED)).toBe('unknown');
     // An SDK provider's physical id need not be the primary identifier.
     const ask = (createdVia?: 'sdk' | 'cc-api', holderVia?: 'sdk' | 'cc-api') =>
       holds({
-        createType: PIPE,
-        holderType: PIPE,
+        createType: UNKEYED,
+        holderType: UNKEYED,
         requested: { Name: 'my-pipe' },
         recorded: { Name: 'my-pipe' },
         physicalId: 'my-pipe',
@@ -540,9 +565,10 @@ describe('replacementOldHoldsSentName', () => {
   });
 
   it('the identity rule is the deploy side only: the rollback still refuses an unkeyed type', () => {
+    expect(reverseReplacementNameKeyKind(UNKEYED)).toBe('unknown');
     const verdict = reverseReplacementNewHoldsName({
-      oldResourceType: PIPE,
-      newResourceType: PIPE,
+      oldResourceType: UNKEYED,
+      newResourceType: UNKEYED,
       requested: { Name: 'my-pipe' },
       recorded: {},
       observed: undefined,
@@ -552,8 +578,9 @@ describe('replacementOldHoldsSentName', () => {
   });
 
   it('never proves across a Type change by identity, nor a not-name-keyed type', () => {
+    expect(reverseReplacementNameKeyKind(UNKEYED)).toBe('unknown');
     expect(
-      holds({ createType: PIPE, holderType: 'AWS::SQS::Queue', requested: { Name: 'q' }, physicalId: 'q' }).holds
+      holds({ createType: UNKEYED, holderType: 'AWS::SQS::Queue', requested: { Name: 'q' }, physicalId: 'q' }).holds
     ).toBe(false);
     const NESTED = 'AWS::CloudFormation::Stack';
     // On Cloud Control both sides, with the identifier sent and recorded: only
@@ -653,12 +680,13 @@ describe('the parent review round of #3979 (helper)', () => {
   });
 
   it('the older-record hint is given only for that shape', () => {
-    const PIPE = 'AWS::Pipes::Pipe';
+    const UNKEYED = 'AWS::S3::AccessPoint';
+    expect(reverseReplacementNameKeyKind(UNKEYED)).toBe('unknown');
     const legacy = (verdict: ReturnType<typeof holds>) =>
       verdict.holds === false && verdict.diagnosis.includes('written by an older cdkd');
     const base = {
-      createType: PIPE,
-      holderType: PIPE,
+      createType: UNKEYED,
+      holderType: UNKEYED,
       requested: { Name: 'p' },
       recorded: { Name: 'p' },
       physicalId: 'p',
@@ -668,8 +696,8 @@ describe('the parent review round of #3979 (helper)', () => {
     expect(legacy(holds({ ...base, createdVia: 'cc-api', holderVia: 'sdk' }))).toBe(false);
     expect(legacy(holds({ ...base, createdVia: 'cc-api', requested: { Name: 'q' } }))).toBe(false);
     const rollback = reverseReplacementNewHoldsName({
-      oldResourceType: PIPE,
-      newResourceType: PIPE,
+      oldResourceType: UNKEYED,
+      newResourceType: UNKEYED,
       requested: { Name: 'p' },
       recorded: { Name: 'p' },
       observed: undefined,

@@ -263,6 +263,22 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
     },
   ],
   [
+    'AWS::Pipes::Pipe',
+    {
+      // CC UPDATE cannot change a mutable member of a stream / broker source's
+      // write-only `SourceParameters` (issue #4423, measured): every patch
+      // either re-adds the create-only `StartingPosition` (refused as a
+      // create-only change) or omits it (model validation fails). A record
+      // pinned to cc-api could never take such a change.
+      mode: 'cc-broken' as const,
+      physicalIdForm:
+        'both layers store the pipe Name: the schema primaryIdentifier is Name and ' +
+        'PipesPipeProvider.create records the Name it sent to CreatePipe',
+      issue: 'https://github.com/go-to-k/cdkd/issues/4423',
+      integFixture: 'cc-write-only-create-only',
+    },
+  ],
+  [
     'AWS::SNS::Topic',
     {
       // The first 'sdk-coverage' member (issue #2719). CC manages topics

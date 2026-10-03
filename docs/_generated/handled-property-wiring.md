@@ -14,11 +14,11 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 
 ## Summary
 
-- Provider classes classified: **85**
-- Declared properties: **1143** (**1141** with read evidence)
-- Fully wired classes: **83**
+- Provider classes classified: **86**
+- Declared properties: **1156** (**1154** with read evidence)
+- Fully wired classes: **84**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **37**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **38**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -70,6 +70,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `LambdaUrlProvider` (lambda-url-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `NeptuneProvider` (neptune-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `NestedStackProvider` (nested-stack-provider.ts) | `withoutSilentDropProperties(...) in recordWithPendingChildDeletes()` |
+| `PipesPipeProvider` (pipes-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `RDSDBProxyTargetGroupProvider` (rds-dbproxy-targetgroup-provider.ts) | `rest-destructure in withoutKey()` |
 | `RDSProvider` (rds-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `S3BucketProvider` (s3-bucket-provider.ts) | `computed key in applyAllSubConfigsForCreate()`, `computed key in applySubConfigDiffs()`, `computed key in canonicalizeItemList()`, `computed key in versioningOrLoggingRefusal()`, `hasCdkAutoDeleteTag(...) in delete()`, `hasObjectLock(...) in applySubConfigDiffs()`, `object spread in applyEffectiveOverrides()`, `object spread in canonicalizeItemList()`, `S3BucketProvider.applyEffectiveOverrides(...) in create()`, `S3BucketProvider.applyEffectiveOverrides(...) in update()`, `S3BucketProvider.versioningOrLoggingRefusal(...) in update()`, `this.maskedView(createMaskedLogSinks(this.logger, context?.maskSecrets)).create(...) in create()`, `this.maskedView(sinks).update(...) in update()`, `this.noWriteProbe().applySubConfigDiffs(...) in update()` |
@@ -145,6 +146,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `LogsLogGroupProvider` | logs-loggroup-provider.ts | wired | 9 | 9 |
 | `NeptuneProvider` | neptune-provider.ts | wired | 22 | 22 |
 | `NestedStackProvider` | nested-stack-provider.ts | allow-listed | 2 | 1 |
+| `PipesPipeProvider` | pipes-provider.ts | wired | 13 | 13 |
 | `RDSDBProxyEndpointProvider` | rds-dbproxy-endpoint-provider.ts | wired | 6 | 6 |
 | `RDSDBProxyProvider` | rds-dbproxy-provider.ts | wired | 10 | 10 |
 | `RDSDBProxyTargetGroupProvider` | rds-dbproxy-targetgroup-provider.ts | wired | 6 | 6 |

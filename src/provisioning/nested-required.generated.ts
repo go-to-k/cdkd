@@ -1149,6 +1149,55 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
   ['AWS::Neptune::DBInstance', new Map<string, readonly string[]>([['Tags', ['Key', 'Value']]])],
   ['AWS::Neptune::DBSubnetGroup', new Map<string, readonly string[]>([['Tags', ['Key', 'Value']]])],
   [
+    'AWS::Pipes::Pipe',
+    new Map<string, readonly string[]>([
+      ['SourceParameters.ActiveMQBrokerParameters', ['Credentials', 'QueueName']],
+      ['SourceParameters.DynamoDBStreamParameters', ['StartingPosition']],
+      ['SourceParameters.KinesisStreamParameters', ['StartingPosition']],
+      ['SourceParameters.ManagedStreamingKafkaParameters', ['TopicName']],
+      ['SourceParameters.RabbitMQBrokerParameters', ['Credentials', 'QueueName']],
+      ['SourceParameters.SelfManagedKafkaParameters', ['TopicName']],
+      ['TargetParameters.BatchJobParameters', ['JobDefinition', 'JobName']],
+      [
+        'TargetParameters.BatchJobParameters.ContainerOverrides.ResourceRequirements',
+        ['Type', 'Value'],
+      ],
+      ['TargetParameters.EcsTaskParameters', ['TaskDefinitionArn']],
+      ['TargetParameters.EcsTaskParameters.CapacityProviderStrategy', ['CapacityProvider']],
+      ['TargetParameters.EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration', ['Subnets']],
+      [
+        'TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.EnvironmentFiles',
+        ['Type', 'Value'],
+      ],
+      [
+        'TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides.ResourceRequirements',
+        ['Type', 'Value'],
+      ],
+      ['TargetParameters.EcsTaskParameters.Overrides.EphemeralStorage', ['SizeInGiB']],
+      ['TargetParameters.EcsTaskParameters.Tags', ['Key', 'Value']],
+      ['TargetParameters.KinesisStreamParameters', ['PartitionKey']],
+      ['TargetParameters.RedshiftDataParameters', ['Database', 'Sqls']],
+      ['TargetParameters.SageMakerPipelineParameters.PipelineParameterList', ['Name', 'Value']],
+      ['TargetParameters.TimestreamParameters', ['DimensionMappings', 'TimeValue', 'VersionValue']],
+      [
+        'TargetParameters.TimestreamParameters.DimensionMappings',
+        ['DimensionName', 'DimensionValue', 'DimensionValueType'],
+      ],
+      [
+        'TargetParameters.TimestreamParameters.MultiMeasureMappings',
+        ['MultiMeasureAttributeMappings', 'MultiMeasureName'],
+      ],
+      [
+        'TargetParameters.TimestreamParameters.MultiMeasureMappings.MultiMeasureAttributeMappings',
+        ['MeasureValue', 'MeasureValueType', 'MultiMeasureAttributeName'],
+      ],
+      [
+        'TargetParameters.TimestreamParameters.SingleMeasureMappings',
+        ['MeasureName', 'MeasureValue', 'MeasureValueType'],
+      ],
+    ]),
+  ],
+  [
     'AWS::RDS::DBCluster',
     new Map<string, readonly string[]>([
       ['AssociatedRoles', ['RoleArn']],

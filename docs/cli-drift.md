@@ -745,6 +745,7 @@ These SDK-provider types ship with a first-class read-back:
 | `AWS::Lambda` | `EventInvokeConfig`, `EventSourceMapping`, `Function`, `LayerVersion`, `MicrovmImage`, `Permission`, `Url` |
 | `AWS::Logs` | `LogGroup` |
 | `AWS::Neptune` | `DBCluster`, `DBInstance`, `DBSubnetGroup` |
+| `AWS::Pipes` | `Pipe` |
 | `AWS::RDS` | `DBCluster`, `DBInstance`, `DBProxy`, `DBProxyEndpoint`, `DBProxyTargetGroup`, `DBSubnetGroup` |
 | `AWS::Route53` | `HostedZone`, `RecordSet` |
 | `AWS::S3` | `Bucket`, `BucketPolicy` |

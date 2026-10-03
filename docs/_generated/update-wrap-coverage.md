@@ -12,8 +12,8 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 
 ## Summary
 
-- Provider classes with `update()`: **87**
-- Wrapped: **81**
+- Provider classes with `update()`: **88**
+- Wrapped: **82**
 - No AWS call in update(): **6**
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
@@ -92,6 +92,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `LogsLogGroupProvider` | `logs-loggroup-provider.ts` | wrapped |
 | `NeptuneProvider` | `neptune-provider.ts` | wrapped |
 | `NestedStackProvider` | `nested-stack-provider.ts` | no-aws |
+| `PipesPipeProvider` | `pipes-provider.ts` | wrapped |
 | `RDSDBProxyEndpointProvider` | `rds-dbproxy-endpoint-provider.ts` | wrapped |
 | `RDSDBProxyProvider` | `rds-dbproxy-provider.ts` | wrapped |
 | `RDSDBProxyTargetGroupProvider` | `rds-dbproxy-targetgroup-provider.ts` | wrapped |

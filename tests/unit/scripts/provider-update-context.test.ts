@@ -228,6 +228,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'LogsLogGroupProvider',
       'NeptuneProvider',
       'NestedStackProvider',
+      'PipesPipeProvider',
       'RDSDBProxyEndpointProvider',
       'RDSDBProxyProvider',
       'RDSDBProxyTargetGroupProvider',

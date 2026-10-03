@@ -9,6 +9,14 @@
 # the unchanged key ("createOnlyProperties [...] cannot be updated"). Asserts
 # all three land in place (same ids, new values readable from AWS), then
 # destroys clean.
+#
+# go-to-k/cdkd#4423: the pipe's UPDATE also changes the mutable
+# `KinesisStreamParameters.BatchSize` beside the create-only StartingPosition,
+# which Cloud Control cannot express at all, so the type gained an SDK
+# provider. Before the UPDATE the pipe's record is rewritten to
+# provisionedBy=cc-api -- what every pipe an earlier cdkd deployed carries --
+# after asserting Cloud Control addresses the pipe by the SAME id cdkd stored.
+# The UPDATE must then return the pipe to the SDK provider in place.
 
 set -euo pipefail
 
@@ -120,10 +128,17 @@ action_tag() {
   aws codepipeline list-tags-for-resource --resource-arn "${ACTION_ARN}" --region "${REGION}" \
     --query "tags[?key=='phase'].value | [0]" --output text
 }
-# Prints "<CreationTime> <Description> <StartingPosition>".
+# Prints "<CreationTime> <Description> <StartingPosition> <BatchSize>".
 pipe_desc() {
   aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" \
-    --query '[CreationTime, Description, SourceParameters.KinesisStreamParameters.StartingPosition]' --output text
+    --query '[CreationTime, Description, SourceParameters.KinesisStreamParameters.StartingPosition, SourceParameters.KinesisStreamParameters.BatchSize]' --output text
+}
+PIPE_TYPE="AWS::Pipes::Pipe"
+# Prints a jq path under the pipe's state record, or "" when absent.
+pipe_record() {
+  local state
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
+  echo "${state}" | jq -r --arg t "${PIPE_TYPE}" "[.resources | to_entries[] | select(.value.resourceType == \$t) | .value${1}] | first // \"\""
 }
 
 echo "==> Deploy (base: LIGHT / v1)"
@@ -133,14 +148,35 @@ B1=$(branding) || exit 1
 read -r BID1 MODE1 <<<"${B1}"
 [ "${MODE1}" = "LIGHT" ] || { echo "FAIL: base branding colorSchemeMode is '${MODE1}', expected LIGHT" >&2; exit 1; }
 P1=$(pipe_desc) || exit 1
-read -r PCT1 PDESC1 PSTART1 <<<"${P1}"
+read -r PCT1 PDESC1 PSTART1 PBATCH1 <<<"${P1}"
 [ "${PDESC1}" = "v1" ] || { echo "FAIL: base pipe Description is '${PDESC1}', expected v1" >&2; exit 1; }
 [ "${PSTART1}" = "LATEST" ] || { echo "FAIL: base pipe StartingPosition is '${PSTART1}', expected LATEST" >&2; exit 1; }
+[ "${PBATCH1}" = "10" ] || { echo "FAIL: base pipe BatchSize is '${PBATCH1}', expected 10" >&2; exit 1; }
 T1=$(action_tag) || exit 1
 [ "${T1}" = "v1" ] || { echo "FAIL: base custom action tag is '${T1}', expected v1" >&2; exit 1; }
-echo "    OK: base deployed (branding ${BID1} LIGHT; pipe v1 LATEST; custom action tag v1)"
+echo "    OK: base deployed (branding ${BID1} LIGHT; pipe v1 LATEST BatchSize 10; custom action tag v1)"
 
-echo "==> UPDATE (Settings LIGHT -> DARK, Description v1 -> v2, Tags v1 -> v2) — must land in place (#4416)"
+echo "==> Seed the pipe's record to provisionedBy=cc-api (#4423)"
+PIPE_ID=$(pipe_record .physicalId) || exit 1
+PIPE_LOGICAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg t "${PIPE_TYPE}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .key] | first // ""')
+[ -n "${PIPE_LOGICAL}" ] || { echo "FAIL: #4423 premise: no ${PIPE_TYPE} record in state" >&2; exit 1; }
+[ "${PIPE_ID}" = "${PIPE}" ] || { echo "FAIL: #4423 premise: pipe physicalId is '${PIPE_ID}', expected '${PIPE}'" >&2; exit 1; }
+PRE_LAYER=$(pipe_record .provisionedBy) || exit 1
+[ "${PRE_LAYER}" = "sdk" ] || { echo "FAIL: #4423 premise: a fresh pipe is provisionedBy '${PRE_LAYER}', expected sdk" >&2; exit 1; }
+# Parity, observed: Cloud Control reads the pipe by the id cdkd stored.
+CC_ID=$(aws cloudcontrol get-resource --type-name "${PIPE_TYPE}" --identifier "${PIPE_ID}" \
+  --region "${REGION}" --query 'ResourceDescription.Identifier' --output text)
+[ "${CC_ID}" = "${PIPE_ID}" ] || { echo "FAIL: #4423: Cloud Control's identifier '${CC_ID}' differs from cdkd's physicalId '${PIPE_ID}'" >&2; exit 1; }
+# Assignments, not argument substitutions, so a failed read or jq aborts here
+# under `set -e` instead of uploading an empty state file.
+SEED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+SEEDED=$(echo "${SEED_STATE}" | jq --arg t "${PIPE_TYPE}" '.resources |= with_entries(if .value.resourceType == $t then .value.provisionedBy = "cc-api" else . end)')
+printf '%s\n' "${SEEDED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+SEEDED_LAYER=$(pipe_record .provisionedBy) || exit 1
+[ "${SEEDED_LAYER}" = "cc-api" ] || { echo "FAIL: #4423: seeding the pipe record to cc-api did not stick (got '${SEEDED_LAYER}')" >&2; exit 1; }
+echo "    OK: Cloud Control addresses the pipe by cdkd's physicalId; record seeded to cc-api"
+
+echo "==> UPDATE (Settings LIGHT -> DARK, Description v1 -> v2, BatchSize 10 -> 5, Tags v1 -> v2) — must land in place (#4416, #4423)"
 UPDATE_LOG="$(mktemp)"
 set +e
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes > "${UPDATE_LOG}" 2>&1
@@ -158,24 +194,32 @@ read -r BID2 MODE2 <<<"${B2}"
 [ "${BID2}" = "${BID1}" ] || { echo "FAIL: branding was replaced (${BID1} -> ${BID2}), expected in place" >&2; exit 1; }
 [ "${MODE2}" = "DARK" ] || { echo "FAIL: branding colorSchemeMode after update is '${MODE2}', expected DARK" >&2; exit 1; }
 P2=$(pipe_desc) || exit 1
-read -r PCT2 PDESC2 PSTART2 <<<"${P2}"
+read -r PCT2 PDESC2 PSTART2 PBATCH2 <<<"${P2}"
 [ "${PCT2}" = "${PCT1}" ] || { echo "FAIL: pipe was replaced (CreationTime ${PCT1} -> ${PCT2}), expected in place" >&2; exit 1; }
 [ "${PDESC2}" = "v2" ] || { echo "FAIL: pipe Description after update is '${PDESC2}', expected v2" >&2; exit 1; }
 [ "${PSTART2}" = "LATEST" ] || { echo "FAIL: pipe StartingPosition after update is '${PSTART2}', expected LATEST" >&2; exit 1; }
+[ "${PBATCH2}" = "5" ] || { echo "FAIL: pipe BatchSize after update is '${PBATCH2}', expected 5 (#4423)" >&2; exit 1; }
+POST_LAYER=$(pipe_record .provisionedBy) || exit 1
+POST_ID=$(pipe_record .physicalId) || exit 1
+[ "${POST_LAYER}" = "sdk" ] || { echo "FAIL: #4423: the cc-api pipe record did not flip to sdk (got '${POST_LAYER}')" >&2; exit 1; }
+[ "${POST_ID}" = "${PIPE_ID}" ] || { echo "FAIL: #4423: the flip changed the physicalId (${PIPE_ID} -> ${POST_ID})" >&2; exit 1; }
+UPDATE_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${UPDATE_LOG}")"
+# Sentinel: a flip with no line means the wording drifted.
+if ! grep -qF "${PIPE_LOGICAL} (${PIPE_TYPE}): moving to the SDK provider" <<<"${UPDATE_PLAIN}"; then
+  echo "FAIL: #4423: the record flipped, but no 'moving to the SDK provider' line names ${PIPE_LOGICAL} -- the wording drifted" >&2
+  exit 1
+fi
 T2=$(action_tag) || exit 1
 [ "${T2}" = "v2" ] || { echo "FAIL: custom action tag after update is '${T2}', expected v2" >&2; exit 1; }
-echo "    OK: all updated in place (branding ${BID2} DARK; pipe v2, StartingPosition kept; custom action tag v2)"
+echo "    OK: all updated in place (branding ${BID2} DARK; pipe v2 BatchSize 5 on the SDK provider, StartingPosition kept; custom action tag v2)"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-# Pipe delete is async (DELETING -> gone).
-PGONE=""
-for _ in $(seq 1 36); do
-  if gone_probe aws pipes describe-pipe --name "${PIPE}" --region "${REGION}"; then PGONE=1; break; fi
-  sleep 5
-done
-[ -z "${PGONE}" ] && { echo "FAIL: pipe ${PIPE} still exists after destroy" >&2; exit 1; }
+# Pipe delete is async (DELETING -> gone), and the SDK provider's delete waits
+# for it (#4423): the pipe is already gone the moment destroy returns.
+assert_gone "pipe ${PIPE} still exists right after destroy (the delete did not wait for DELETING to end)" \
+  aws pipes describe-pipe --name "${PIPE}" --region "${REGION}"
 LEFT=$(pool_id) || exit 1
 [ -z "${LEFT}" ] || { echo "FAIL: user pool ${POOL_NAME} (${LEFT}) still exists after destroy" >&2; exit 1; }
 SGONE=""

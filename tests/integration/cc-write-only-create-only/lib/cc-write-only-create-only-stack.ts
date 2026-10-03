@@ -17,11 +17,16 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  *   create-only; the UPDATE changes only `Settings`.
  * - `AWS::Pipes::Pipe` `SourceParameters` is write-only and, for a Kinesis
  *   source, holds the create-only `KinesisStreamParameters.StartingPosition`;
- *   the UPDATE changes only `Description`.
+ *   the UPDATE changes `Description` and the mutable `BatchSize` beside it.
+ *   Cloud Control cannot express the `BatchSize` change at all, so the type
+ *   now has an SDK provider (go-to-k/cdkd#4423) and verify.sh seeds the
+ *   pipe's record to `provisionedBy: cc-api` before the UPDATE, the shape a
+ *   pipe deployed by an earlier cdkd has.
  * - `AWS::CodePipeline::CustomActionType` `Settings` / `ConfigurationProperties`
  *   are create-only and hold write-only leaves; the UPDATE changes only `Tags`.
  *
- * None of the three has an SDK provider, so all route through Cloud Control.
+ * The branding and the custom action have no SDK provider, so they route
+ * through Cloud Control.
  */
 export class CcWriteOnlyCreateOnlyStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -67,7 +72,9 @@ export class CcWriteOnlyCreateOnlyStack extends cdk.Stack {
       target: target.queueArn,
       desiredState: 'STOPPED',
       description: update ? 'v2' : 'v1',
-      sourceParameters: { kinesisStreamParameters: { startingPosition: 'LATEST', batchSize: 10 } },
+      sourceParameters: {
+        kinesisStreamParameters: { startingPosition: 'LATEST', batchSize: update ? 5 : 10 },
+      },
     });
 
     // A deleted custom action version can never be created again, so each run
