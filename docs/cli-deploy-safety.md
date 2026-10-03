@@ -1397,15 +1397,16 @@ on the order the replacement runs in:
 
 | Order | When a deploy uses it | Outcome while protection is on |
 | --- | --- | --- |
-| Delete first | `--recreate-via-*`, `--replace`'s retry after a name collision, and the update-failure fallback (`--replace` or the Cloud Control auto-fallback) | The deploy fails at the delete |
-| Create first | A property-driven replacement, and the delete-first paths above when the template also renames the resource | The deploy completes, warning that the old resource could not be deleted |
+| Delete first | `--recreate-via-*`, the update-failure fallback (`--replace` or the Cloud Control auto-fallback), and `--replace`'s retry after a name collision or a name-idempotent create | The deploy fails at the delete |
+| Create first | A property-driven replacement, and `--recreate-via-*` or the update-failure fallback when the template also renames the resource | The deploy completes, warning that the old resource could not be deleted |
 
 A create-first replacement does not stop: the old resource, and its data, stay
 in AWS, no longer tracked by cdkd, and you delete it yourself once protection is
 off. Under `UpdateReplacePolicy: Retain` neither row applies, because the old
 resource is never deleted — see the `Retain` case below.
 
-Turn protection off first, then re-run the deploy:
+So turn protection off before the deploy that replaces the resource — or, after
+a delete-first failure, turn it off and re-run:
 
 ```bash
 # CloudWatch Logs — the log group whose LogGroupClass you are changing
@@ -1443,9 +1444,10 @@ Two kinds of refusal name this dead end explicitly:
 The guard's note does not ask AWS: it reads the properties cdkd recorded and
 the AWS read-back it stored after its last write. Protection you enabled out of
 band after that read is in neither, so such a resource gets the guard's shorter
-message. The wall is there either way: it stands in front of every type in
+message. AWS refuses the delete either way, for every type in
 `--remove-protection`'s table whenever a deploy has to replace one, whether or
-not its refusal says so.
+not its refusal says so — a failed deploy or an untracked old resource, per the
+table above.
 
 `AWS::AutoScaling::AutoScalingGroup` is the one whose refusal is narrower than
 the type's protection setting, and deliberately: the group's three levels are
