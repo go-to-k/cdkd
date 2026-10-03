@@ -31,7 +31,7 @@ import {
   isOrdinaryDate,
 } from './redact-path.js';
 import { wholeStringLeavesOf } from './mask-only.js';
-import { identityKeyFor } from './positions.js';
+import { identityKeyFor } from './identity-keys.js';
 import {
   flattenEmbeddedNoEchoLeaves,
   recordedExpressionsOf,

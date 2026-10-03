@@ -10,13 +10,12 @@ import { spanNamesResolvableService } from './anchors.js';
 import { redactSecretsForState } from './redact-state.js';
 import {
   positionByEmbeddedSpan,
-  positionByCrossStackSource,
   positionByIntrinsicSkeleton,
-  positionByParameterPlaceholders,
   positionByIntrinsicFrame,
-  positionListByCrossStackSource,
-  identityKeyFor,
 } from './positions.js';
+import { positionByCrossStackSource } from './certified-positions.js';
+import { positionByParameterPlaceholders } from './placeholder-positions.js';
+import { positionListByCrossStackSource, identityKeyFor } from './identity-keys.js';
 import {
   carriesSecretMask,
   isKnownSecretExpression,
