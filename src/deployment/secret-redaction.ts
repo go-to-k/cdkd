@@ -124,7 +124,12 @@ export {
   WHOLE_DYNAMIC_REFERENCE_PATTERN,
   isSingleDynamicReferenceToken,
 } from './secret-redaction/rules.js';
-export { intrinsicSkeletonPattern, identityKeyFor } from './secret-redaction/positions.js';
+export {
+  intrinsicSkeletonPattern,
+} from './secret-redaction/positions.js';
+export {
+  identityKeyFor,
+} from './secret-redaction/identity-keys.js';
 export {
   pathCrossesDottedKey,
   isUncertifiedBaselineMaskPosition,

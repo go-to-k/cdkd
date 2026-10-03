@@ -20,12 +20,14 @@ import {
 import { redactSecretsForState } from './redact-state.js';
 import {
   plaintextIndexOf,
+  certifiedListForLeaf,
+  certifiedExpressionForLeaf,
+} from './certified-positions.js';
+import {
   intrinsicSkeletonSegments,
   UNKNOWN_PART,
   UNKNOWN_PART_PLACEHOLDER,
   singleSpanFrame,
-  certifiedListForLeaf,
-  certifiedExpressionForLeaf,
 } from './positions.js';
 import { dynamicReferenceSpans } from './redact-path.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES } from './anchors.js';
