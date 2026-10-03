@@ -132,8 +132,9 @@ privileged port and lets `--host-port <containerPort=hostPort>` pin the result.
 That credentials file lives in a temporary directory, is written mode `0600`,
 and is removed when the run ends. Two exits keep it: `--detach`, because the
 containers outlive cdkd with the file still mounted, and a second `^C` that
-lands before the containers are stopped, which exits before the file is
-removed. Both print the path so you can delete it once the containers are gone.
+lands before the file is removed (it is removed right after the containers are
+stopped, or, under `--keep-running`, once cdkd stops following their logs).
+Both print the path so you can delete it once the containers are gone.
 
 `--assume-task-role` beats the profile file, which beats the plain sidecar
 pass-through. Bare `--assume-task-role` resolves a flat-string `TaskRoleArn`
@@ -435,8 +436,9 @@ A normal run:
 
 `^C` runs the same teardown. A second `^C` exits `130` immediately, skipping
 the rest of the container cleanup. When `--profile <p>` was passed and the
-second `^C` lands before the containers are stopped (the credentials file is
-removed right after that, before the log drain), it also skips the removal of
+second `^C` lands before the credentials file is removed (right after the
+containers are stopped, or, under `--keep-running`, once cdkd stops following
+their logs; either way before the log drain), it also skips the removal of
 the credentials file mounted into the containers. The force-exit line then names
 that file's path so you can delete it once you have torn the containers down;
 it is mode `0600` and holds live credentials.
