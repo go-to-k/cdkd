@@ -4603,7 +4603,7 @@ export function findUnrepairedCrossStackReadNames(
  * TWO SITES IN THIS CALL GRAPH STILL SWALLOW IT, named rather than left to be
  * rediscovered (issue #2134 review round 2):
  *
- * - `evaluateConditions` (`intrinsic-function-resolver.ts`) warns and degrades
+ * - `evaluateConditions` (`intrinsic-resolver/params-conditions.ts`) warns and degrades
  *   the condition to `false`. Accepted for now: a condition evaluates to a
  *   boolean and carries no secret INTO state, and this file's own note above
  *   `resolveCrossStackReads` records why the conditions pass is deliberately

@@ -39,7 +39,7 @@
 #
 #   Issue #1957 fixed the RESOLVER half (each lookup is bound to its resolver's
 #   own region — `clientsForRegion` in
-#   src/deployment/intrinsic-function-resolver.ts). #1981 fixed the
+#   src/deployment/intrinsic-resolver/clients.ts). #1981 fixed the
 #   PROVISIONING half: each stack now deploys inside its own AWS scope
 #   (src/utils/stack-aws-scope.ts) and the deploy no longer touches the
 #   singleton or the environment per stack. The default-concurrency

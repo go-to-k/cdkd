@@ -3,6 +3,7 @@ description: cdkd analyzer layer (intrinsic resolution, dependency analysis, DAG
 paths:
   - 'src/analyzer/**'
   - 'src/deployment/intrinsic-resolver/ref-values.ts'
+  - 'src/deployment/intrinsic-resolver/refs.ts'
 ---
 
 # Analyzer
@@ -16,17 +17,17 @@ paths:
 `Ref` resolves to the CFn `Ref` value (`cfnRefValueFromPhysicalId` holds the
 exceptions; `refStateLookupFromResource` recovers a few from a STATE KEY). That
 lookup's `SECRET_MASK` skip is **OPT-IN**: without an `onMaskedValue` callback
-it returns the mask, since the fall-through emits a raw physical id (or, for
-`AWS::Glue::Table`, a first-`|` guess) no guard recognises; the Glue reader
-returns that mask itself rather than guess. Only `resolveRefValue` opts in, when
+it returns the mask: the fall-through emits a raw physical id (for
+`AWS::Glue::Table`, a first-`|` guess) no guard recognises, and the Glue reader
+returns the mask rather than guess. Only `resolveRefValue` (`refs.ts`) opts in, when
 `context.redactedAttributeReads` exists, so `deploy` refuses while `diff` /
 `scrub` / `import` are unchanged.
 
 ## `Condition:` exclusion
 
 `TemplateParser.filterResourcesByCondition` prunes `Condition: false` resources
-right after `evaluateConditions`, so validation, DAG build, diff and
-provisioning see the CFn-effective set. A pruned resource still in state takes
+right after `evaluateConditions`, so every later stage sees the CFn-effective
+set. A pruned resource still in state takes
 the diff's DELETE path; an UNKNOWN condition is KEPT (absent-from-map is not
 `=== false`).
 
@@ -36,8 +37,8 @@ the diff's DELETE path; an UNKNOWN condition is KEPT (absent-from-map is not
 graphlib graph. On top:
 
 - **Custom Resource edge** — an IAM policy on a Custom Resource's ServiceToken
-  Lambda role gets an edge to the Custom Resource, so the handler is not invoked
-  before the attachment returns.
+  Lambda role gets an edge to it, so the handler does not run before the
+  attachment returns.
 - **Lambda `VpcConfig` edge** (`lambda-vpc-deps.ts`) — subnets and SGs in
   `VpcConfig` get explicit edges to the Lambda, so the reversed delete traversal
   removes the Lambda first and the async ENI detach finishes before EC2 refuses.
@@ -50,4 +51,4 @@ graphlib graph. On top:
 - **CDK-defensive `DependsOn` relaxation, default ON**
   (`cdk-defensive-deps.ts`) — an allowlist of type pairs CDK adds defensively
   for VPC-Lambda egress; the deploy path passes `relaxCdkVpcDefensiveDeps: true`
-  and `--no-aggressive-vpc-parallel` opts out. ONLY allowlisted entries drop.
+  and `--no-aggressive-vpc-parallel` opts out. Only allowlisted pairs drop.
