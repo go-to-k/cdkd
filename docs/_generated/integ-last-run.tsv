@@ -286,7 +286,7 @@ rollback-replacement-retain	2026-10-02T19:54:07Z	PASS	65	verify.sh	rc ok, orph c
 rollback-replay-cc-generated-name	2026-10-02T13:26:58Z	PASS	155	verify.sh	rc ok, orph clean (#4436)
 rollback-replay-effective-props	2026-10-02T13:30:39Z	PASS	221	verify.sh	rc ok, orph clean (#4436)
 rollback-sqs-cooldown	2026-10-02T18:21:24Z	PASS	170	verify.sh	rc ok, orph clean (#4455)
-route53	2026-10-01T04:09:54Z	PASS	471	verify.sh	rc ok, orph clean; #4226 import-refusal display (9 del/0 err)
+route53	2026-10-03T04:27:16Z	PASS	451	verify.sh	rc ok, orph clean (#3890; pre-fix probe red at PipeRecord separator refusal)
 s3-analytics-inventory	2026-10-01T04:09:54Z	PASS	185	verify.sh	rc ok, orph clean; #4226 bucket policy provider (4 del/0 err)
 s3-asset-deploy	2026-09-24T22:46:12Z	PASS	57	verify.sh	rc ok, 0 orphans (#3663)
 s3-cloudfront	2026-10-02T23:58:36Z	PASS	255	verify.sh	rc ok, orph clean; #4428 OAI regression
