@@ -102,7 +102,7 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 
   **PUSH FIRST, then run the post-rebase suite while CI drains** — so its ledger
   test runs only after the push: re-run `vp run gen:all-matrices && vp run format`
-  and `vp run integ-ledger-normalize` after EVERY rebase; push once
+  (it ends in the ledger normalize) after EVERY rebase; push once
   `git status --porcelain` is empty (`docs/cli-flag-coverage.md` is outside `_generated/`).
 - **A body edit RE-RUNS four required checks** (`on: edited`), green or
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
