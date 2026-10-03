@@ -303,13 +303,23 @@ export async function executeDeployment(
           this.interruptCause ??= 'sibling-failure';
           // #1198: journal the failed op's pre-op state + attempted
           // properties so `cdkd rollback --revert-failed` can act on it.
+          //
+          // go-to-k/cdkd#4356: except a CREATE refused before anything was
+          // applied that recorded no physical id. There is nothing of this
+          // stack's to revert, and the record could only say "delete it
+          // manually" about the resource that refused it — another owner's.
+          const refused = isRefusedBeforeApplying(provisionError, logicalId);
+          const physicalId = newResources[logicalId]?.physicalId ?? previousState?.physicalId;
+          if (refused && change.changeType === 'CREATE' && physicalId === undefined) {
+            throw provisionError;
+          }
           failedOperations.push({
             logicalId,
             changeType: change.changeType as 'CREATE' | 'UPDATE',
             resourceType: change.resourceType,
             provisionedBy: newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy,
             ...(previousState && { previousState }),
-            physicalId: newResources[logicalId]?.physicalId ?? previousState?.physicalId,
+            physicalId,
             // go-to-k/cdkd#4355: a failed op whose attempted bag is
             // provably not this stack's resource (a refusal, or a write AWS
             // definitely rejected) journals no attempted bag. The bag is what a later deploy
@@ -317,7 +327,7 @@ export async function executeDeployment(
             // (`priorAttemptsInJournal`), and `--revert-failed` reverts an
             // UPDATE FROM it — both would then act on a resource the
             // refusal found belonging to someone else.
-            ...(!isRefusedBeforeApplying(provisionError, logicalId) && {
+            ...(!refused && {
               attemptedProperties: this.attemptedResolvedProps.get(logicalId),
             }),
           });
@@ -676,7 +686,7 @@ export async function executeDeployment(
     }
 
     // Set true when an automatic rollback replayed with zero per-op
-    // failures — gates the post-save journal deletion below.
+    // failures and zero skips — gates the post-save journal deletion below.
     let autoRollbackClean = false;
     // Resources this deploy's rollback left in AWS under `DeletionPolicy: Retain`
     // (issue #2934). Stays empty when no rollback ran, so the saves below
@@ -762,7 +772,21 @@ export async function executeDeployment(
         stackName,
         currentState
       );
-      autoRollbackClean = rollbackResult.failures === 0;
+      // go-to-k/cdkd#3338: a SKIPPED op was never reverted, so the segment
+      // recording it is kept, as for a failure: settling it would delete the
+      // only record of a resource the rollback left as the failed deploy did.
+      // A survivor warning (a retained new copy) is not a skip: its op WAS
+      // reverted, and its event names the survivor.
+      autoRollbackClean = rollbackResult.failures === 0 && rollbackResult.skipped === 0;
+      if (rollbackResult.failures === 0 && rollbackResult.skipped > 0) {
+        // No command named: a nested child's stack-less `cdkd rollback` would
+        // resolve to the top-level stack (go-to-k/cdkd#3864).
+        this.logger.warn(
+          `The automatic rollback could not revert ${rollbackResult.skipped} operation(s) ` +
+            `(see the warnings above; each is recorded as a ROLLBACK_RESOURCE_SKIPPED event). ` +
+            `The rollback journal keeps them.`
+        );
+      }
       // Hoisted out of this block because both saves below sit outside it
       // (issue #2934) — the post-rollback save and its ETag-mismatch retry —
       // and neither can see `rollbackResult`.

@@ -218,6 +218,13 @@ export async function performRollback(
 ): Promise<{
   failures: number;
   warnings: number;
+  /**
+   * go-to-k/cdkd#3338: the ops THIS replay declined and left unreverted. The
+   * caller keeps the journal segment when non-zero. A nested child's skips
+   * are not counted here: they already keep the child's own segments (its
+   * row is not settled).
+   */
+  skipped: number;
   orphaned: StackOrphanRecord[];
   /**
    * Issue #3754: the nested-stack rows whose child replay COMPLETED (no
@@ -250,6 +257,7 @@ export async function performRollback(
     // A child replay's skips surface on its row as a `partial` outcome,
     // which the executor does not count; the scope does.
     warnings: result.warnings + run.warnings,
+    skipped: result.skipped,
     orphaned: result.orphaned,
     settledNested: run.settled,
   };

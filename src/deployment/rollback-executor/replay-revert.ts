@@ -9,7 +9,11 @@ import {
 import { updatePartialMessage, updatePartialReason } from '../update-outcome.js';
 import { redactRollbackRecord } from './replay-secrets.js';
 import { deepEqual } from './plan.js';
-import { requireRestorableBaseline, replayPrefixScope } from './names.js';
+import {
+  requireRestorableBaseline,
+  replayPrefixScope,
+  ABSENT_BASELINE_SKIP_REASON,
+} from './names.js';
 import {
   safe,
   throwIfDeleteSkipped,
@@ -17,6 +21,7 @@ import {
   retainedSurvivorMessages,
   rollbackFinalSnapshotId,
   rerunRollbackPhrase,
+  recordRollbackSkip,
 } from './messages.js';
 import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.js';
 import { updateWithRollbackRetry, recordAfterRollbackUpdate } from './replay-retry.js';
@@ -200,7 +205,6 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     stackName,
     ctx,
     resolver,
-    result,
     inlinePolicyWriters,
     afterOp,
     isInterrupted,
@@ -211,7 +215,11 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
   } = s;
   if (!op.previousState) {
     logger.warn(`  Rollback: Cannot restore ${safe(op.logicalId)} — no previous state available`);
-    result.warnings++;
+    recordRollbackSkip(
+      s,
+      op,
+      'No previous state is recorded for it, so there is nothing to restore it to.'
+    );
     return;
   }
   // Bound before the retry closure below: the narrowing from the guard
@@ -222,7 +230,11 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     logger.warn(
       `  Rollback: Cannot restore ${safe(op.logicalId)} — resource not found in current state`
     );
-    result.warnings++;
+    recordRollbackSkip(
+      s,
+      op,
+      'The resource is not in the current state, so the rollback had nothing to restore.'
+    );
     return;
   }
   // Issue #3203, BEFORE the `Restoring ...` line below: announcing a
@@ -243,7 +255,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
       retry: `re-running ${rerunRollbackPhrase(ctx, '`cdkd rollback`')} retries this op`,
     })
   ) {
-    result.warnings++;
+    recordRollbackSkip(s, op, ABSENT_BASELINE_SKIP_REASON);
     return;
   }
   logger.info(

@@ -117,7 +117,7 @@ deploy attempted), and `--revert-failed` opts into acting on it:
 | UPDATE | Force-reverted to its pre-deploy properties. The journal records the *attempted* properties, so patch-based providers generate a real undo diff. |
 | UPDATE that changed the resource's `Type` | Skipped with a warning; it was a replacement in flight, and there is no in-place revert of one. |
 | CREATE that recorded a physical id | Deleted, honouring its `DeletionPolicy` — see [DeletionPolicy on a rolled-back CREATE](#deletionpolicy-on-a-rolled-back-create). |
-| CREATE that recorded no physical id | Skipped with a warning; there is nothing addressable to act on. |
+| CREATE that recorded no physical id | Skipped with a warning; there is nothing addressable to act on. A CREATE cdkd refused before anything was applied (another resource already holds its explicit name) is not journaled at all. |
 | DELETE | Nothing to do — the resource is still in place. |
 
 The action only engages when AWS actually provisioned the resource: it requires
@@ -137,7 +137,8 @@ the data.
 After a **clean automatic** rollback the journal is settled to a failed-only
 segment: the completed operations are already reverted, but the failed
 resource's record is kept, so `cdkd rollback --revert-failed` works in the
-default deploy flow too. A plain `cdkd rollback` on such a journal is a no-op
+default deploy flow too. An automatic rollback that failed or skipped an
+operation is not clean and keeps the full segment. A plain `cdkd rollback` on such a journal is a no-op
 replay that clears it; the next successful deploy also deletes it.
 
 ## Known limitations
@@ -320,7 +321,7 @@ almost certainly not what you want exported; roll back or re-deploy first.
 | --- | --- |
 | `0` | Fully clean. The journal is deleted. |
 | `1` | Hard error: no journal for the named stack, several journaled stacks and no stack argument, the lock held by another run, a journal written by a newer cdkd, credentials, and so on. |
-| `2` | Partial: one or more operations failed or were skipped with a warning, or the run was interrupted. The journal is kept so you can re-run. |
+| `2` | Partial: one or more operations failed, or the run was interrupted, and the journal is kept so you can re-run; or an operation was skipped with a warning, which a re-run would skip again, so its segment is cleared and the skip is recorded as a `ROLLBACK_RESOURCE_SKIPPED` event (`cdkd events`). |
 
 A bare `cdkd rollback` on an account where **no** stack has a journal is not an
 error: it prints "nothing to roll back" and exits `0`. Declining the confirmation

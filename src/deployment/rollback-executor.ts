@@ -84,6 +84,7 @@ import {
   prepareCreateRollbackFinalSnapshot,
   requireRestorableBaseline,
   replayPrefixScope,
+  ABSENT_BASELINE_SKIP_REASON,
 } from './rollback-executor/names.js';
 import {
   safe,
@@ -94,6 +95,7 @@ import {
   maskedFailureText,
   shownChangeType,
   maskedRollbackEventError,
+  recordRollbackSkip,
 } from './rollback-executor/messages.js';
 import {
   resolveReplayProps,
@@ -194,6 +196,7 @@ async function replayRollbackUnbound(
   const result: RollbackReplayResult = {
     failures: 0,
     warnings: 0,
+    skipped: 0,
     interrupted: false,
     orphaned: [],
   };
@@ -382,7 +385,11 @@ async function replaySingle(
         logger.warn(
           `  Rollback: Cannot restore deleted resource ${safe(op.logicalId)} (${safe(op.resourceType)}) — resource has already been deleted`
         );
-        result.warnings++;
+        recordRollbackSkip(
+          scope,
+          op,
+          'The failed deploy deleted this resource, and a rollback cannot re-create a deleted resource.'
+        );
         return;
       }
 
@@ -396,7 +403,11 @@ async function replaySingle(
           `  Rollback: Skipping ${safe(op.logicalId)} — its physical id changed since the failed deploy ` +
             `(replaced by a later attempt); manual attention may be required`
         );
-        result.warnings++;
+        recordRollbackSkip(
+          scope,
+          op,
+          'Its physical id changed since the failed deploy (replaced by a later attempt), so the rollback left it as it is; manual attention may be required.'
+        );
         return;
       }
 
@@ -404,7 +415,11 @@ async function replaySingle(
         logger.warn(
           `  Rollback: Cannot restore ${safe(op.logicalId)} — resource no longer in state, skipping`
         );
-        result.warnings++;
+        recordRollbackSkip(
+          scope,
+          op,
+          'The resource is no longer in state, so the rollback had nothing to restore.'
+        );
         return;
       }
 
@@ -519,6 +534,7 @@ async function replayFailedOperationsUnbound(
   const result: FailedOpReplayResult = {
     failures: 0,
     warnings: 0,
+    skipped: 0,
     interrupted: false,
     remainingFailedOps: [],
     orphaned: [],
@@ -556,6 +572,8 @@ async function replayFailedOperationsUnbound(
     // This iteration's masker (issue #4037), `replaySingle`'s twin.
     const opMasker = createOpMasker(logger, secrets);
     const mask = opMasker.mask;
+    // go-to-k/cdkd#3338: what a skip arm below records its event through.
+    const skipScope = { ctx, stackName, result, mask };
     // The route a CREATE arm resolved (issue #1366), so the shared catch's
     // ROLLBACK_RESOURCE_FAILED names the route the delete was going to take —
     // the one a Snapshot refusal is about. Undefined on the UPDATE arm.
@@ -576,7 +594,11 @@ async function replayFailedOperationsUnbound(
             `  Rollback: failed CREATE of ${safe(op.logicalId)} (${safe(op.resourceType)}) recorded no ` +
               `physical id — if it was partially created in AWS, delete it manually`
           );
-          result.warnings++;
+          recordRollbackSkip(
+            skipScope,
+            op,
+            'The failed CREATE recorded no physical id, so the rollback cannot address it; if it was partially created in AWS, delete it manually.'
+          );
           break;
         }
 
@@ -585,7 +607,11 @@ async function replayFailedOperationsUnbound(
             `  Rollback: cannot revert failed UPDATE of ${safe(op.logicalId)} — no previous state ` +
               `available, skipping`
           );
-          result.warnings++;
+          recordRollbackSkip(
+            skipScope,
+            op,
+            'No previous state is available for the failed UPDATE, so there is nothing to revert it to.'
+          );
           break;
         }
 
@@ -599,7 +625,13 @@ async function replayFailedOperationsUnbound(
               `which is a replacement, and its remote state is unknown. Inspect it with ` +
               `\`cdkd drift\` and re-converge with \`cdkd deploy\`. Skipping.`
           );
-          result.warnings++;
+          recordRollbackSkip(
+            skipScope,
+            op,
+            `The failed UPDATE was a Type change (${String(op.previousState?.resourceType)} -> ` +
+              `${String(op.resourceType)}), which is a replacement, and its remote state is unknown, ` +
+              `so it cannot be reverted in place.`
+          );
           break;
         }
 
@@ -791,7 +823,7 @@ async function replayFailedOperationsUnbound(
                 're-running `cdkd rollback --revert-failed` retries this op (a plain `cdkd rollback` replays only the COMPLETED ops and then pops the whole segment, discarding this record)',
             })
           ) {
-            result.warnings++;
+            recordRollbackSkip(skipScope, op, ABSENT_BASELINE_SKIP_REASON);
             break;
           }
           logger.info(

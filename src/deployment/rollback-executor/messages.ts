@@ -26,7 +26,11 @@ import {
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { createSecretMasker, SECRET_MASK, type RecordedSecretValues } from '../secret-redaction.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
-import { type RollbackExecutorContext } from './types.js';
+import {
+  type CompletedOperation,
+  type RollbackExecutorContext,
+  type RollbackReplayResult,
+} from './types.js';
 
 /**
  * Issue [#1762](https://github.com/go-to-k/cdkd/issues/1762): turn a
@@ -161,6 +165,41 @@ export function maskedRollbackEventError(error: unknown, mask: MaskerFn): Deploy
   // changed, so an event with nothing to mask keeps its extracted object.
   const message = mask(extracted.message);
   return message === extracted.message ? extracted : { ...extracted, message };
+}
+
+/**
+ * An op the replay DECLINED, left exactly as the failed deploy left it
+ * (go-to-k/cdkd#3338). Counts it in `warnings` and `skipped`, and records the
+ * durable `ROLLBACK_RESOURCE_SKIPPED` event: the warn line the arm prints is
+ * the only other trace, and a rollback runs during an already-failing deploy
+ * whose log is the least likely thing the user still has.
+ *
+ * `reason` is RAW prose (it is persisted, and `cdkd events` sanitizes on the
+ * way out — see {@link safe}), run through the op's `mask`. No `physicalId`:
+ * the arms disagree on whether the id they hold names a live resource, and an
+ * id here would point a cleanup pass at it.
+ */
+export function recordRollbackSkip(
+  scope: {
+    ctx: Pick<RollbackExecutorContext, 'recordEvent'>;
+    stackName: string;
+    result: Pick<RollbackReplayResult, 'warnings' | 'skipped'>;
+    mask: MaskerFn;
+  },
+  op: Pick<CompletedOperation, 'logicalId' | 'resourceType' | 'changeType' | 'provisionedBy'>,
+  reason: string
+): void {
+  scope.result.warnings++;
+  scope.result.skipped++;
+  scope.ctx.recordEvent?.({
+    eventType: 'ROLLBACK_RESOURCE_SKIPPED',
+    stackName: scope.stackName,
+    operation: op.changeType,
+    logicalId: op.logicalId,
+    resourceType: op.resourceType,
+    ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+    reason: scope.mask(reason),
+  });
 }
 
 /**

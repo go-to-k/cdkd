@@ -319,6 +319,52 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(journal.appendRollbackJournalSegment).not.toHaveBeenCalled();
   });
 
+  // go-to-k/cdkd#3338: a SKIPPED rollback op was never reverted, so the
+  // segment recording it must survive the automatic rollback, as a failed one
+  // does. D1 is deleted (a completed DELETE, which no rollback can undo), then
+  // D2's delete fails.
+  it('auto-rollback that SKIPS an op keeps the full segment and says so', async () => {
+    const changes = new Map<string, ResourceChange>([
+      ['D1', { logicalId: 'D1', changeType: 'DELETE', resourceType: 'AWS::S3::Bucket', propertyChanges: [] } as unknown as ResourceChange],
+      ['D2', { logicalId: 'D2', changeType: 'DELETE', resourceType: 'AWS::S3::Bucket', propertyChanges: [] } as unknown as ResourceChange],
+    ]);
+    const record = (id: string, dependencies: string[]): ResourceState => ({
+      physicalId: `phys-${id}`,
+      resourceType: 'AWS::S3::Bucket',
+      properties: {},
+      attributes: {},
+      dependencies,
+    });
+    const engine = buildEngine({
+      changes,
+      deps: {},
+      noRollback: false,
+      currentEtag: 'e0',
+      // D1 depends on D2, so D1 is deleted FIRST and completes before D2 fails.
+      currentResources: { D1: record('D1', ['D2']), D2: record('D2', []) },
+    });
+    const provider = (
+      engine as unknown as {
+        providerRegistry: { getProviderFor: () => { provider: { delete: ReturnType<typeof vi.fn> } } };
+      }
+    ).providerRegistry.getProviderFor().provider;
+    provider.delete.mockImplementation((logicalId: string) =>
+      logicalId === 'D2' ? Promise.reject(new Error('delete failed: D2')) : Promise.resolve(undefined)
+    );
+
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+    const started = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+    expect(started.reason).toBe('auto-rollback-started');
+    expect(started.operations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['D1']);
+    // Not settled: no pop, no failed-only re-record.
+    expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+    expect(journal.appendRollbackJournalSegment).toHaveBeenCalledOnce();
+    expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
+    const warns = (getLogger().warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(warns.some((m) => m.includes('could not revert 1 operation(s)'))).toBe(true);
+  });
+
   it('a pop failure during journal settling leaves the full segment in place (best-effort)', async () => {
     const changes = new Map([
       ['A', makeChange('A')],
@@ -429,10 +475,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(failed.attemptedProperties).toEqual({ p: 'new' });
   });
 
-  it.each([
-    ['CREATE', 'create'],
-    ['UPDATE', 'update'],
-] as const)(
+  it.each([['UPDATE', 'update']] as const)(
     'journals a %s refused as belonging to someone else WITHOUT its attempted bag (go-to-k/cdkd#4355)',
     async (changeType, method) => {
       // The bag is what the next deploy reads as "this stack attempted that
@@ -482,6 +525,62 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(seg.failedOperations[0]).not.toHaveProperty('attemptedProperties');
     }
   );
+
+  // go-to-k/cdkd#4356: a CREATE refused before anything was applied, with no
+  // physical id, left nothing of this stack's to revert. Journaled, its only
+  // effect was `--revert-failed` advising to delete the resource that refused
+  // it -- another owner's -- and the clean auto-rollback keeping a failed-only
+  // segment whose note says the failed resource "may be partially applied".
+  describe('a CREATE refused before anything was applied (go-to-k/cdkd#4356)', () => {
+    function refusedCreateEngine(noRollback: boolean, failure: Error) {
+      const changes = new Map([
+        ['A', makeChange('A')],
+        ['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange],
+      ]);
+      // B waits for A so A's create COMPLETES first: the segment then has a
+      // completed op, and the auto-rollback a clean replay to settle.
+      const engine = buildEngine({ changes, deps: { A: [], B: ['A'] }, noRollback, currentEtag: 'e0' });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockImplementation((logicalId: string) =>
+        logicalId === 'B'
+          ? Promise.reject(failure)
+          : Promise.resolve({ physicalId: `phys-${logicalId}`, attributes: {} })
+      );
+      return engine;
+    }
+
+    it('is not journaled as a failed op (--no-rollback)', async () => {
+      const engine = refusedCreateEngine(true, markRefusedBeforeApplying(new Error('B is not ours')));
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      expect(journal.appendRollbackJournalSegment).toHaveBeenCalledOnce();
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      expect(seg.operations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['A']);
+      expect(seg).not.toHaveProperty('failedOperations');
+    });
+
+    it('leaves a clean auto-rollback with no failed-only segment to keep', async () => {
+      const engine = refusedCreateEngine(false, markRefusedBeforeApplying(new Error('B is not ours')));
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      // Only the pre-rollback segment; the settle pops it and re-records none.
+      expect(journal.appendRollbackJournalSegment).toHaveBeenCalledOnce();
+      expect(journal.appendRollbackJournalSegment.mock.calls[0]![2]).not.toHaveProperty('failedOperations');
+      expect(journal.popRollbackJournalSegment).toHaveBeenCalledWith(stackName, 'us-east-1');
+      const info = (getLogger().info as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+      expect(info.some((m) => m.includes("pre-failure record was kept"))).toBe(false);
+    });
+
+    it('control: an UNMARKED failed CREATE is still journaled', async () => {
+      const engine = refusedCreateEngine(true, new Error('B failed mid-create'));
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      expect(seg.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
+      expect(seg.failedOperations[0].attemptedProperties).toEqual({ p: 'new' });
+    });
+  });
 
   it("keeps a nested-stack row's attempted bag when only a CHILD resource's error is marked (go-to-k/cdkd#4355)", async () => {
     // The parent AWS::CloudFormation::Stack row fails because a child resource

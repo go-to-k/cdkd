@@ -231,7 +231,9 @@ object is deleted on the next **successful deploy**, after a **clean
 automatic rollback** settles it to a failed-only segment instead of
 deleting it (`operations: []` plus the failed op records, `reason:
 auto-rollback-clean`) so `cdkd rollback --revert-failed` works in the
-default deploy flow too. A **nested stack** (`{Parent}~{Child}`) differs:
+default deploy flow too. An automatic rollback is clean only with no failed
+AND no skipped op: one that left an op unreverted (a `ROLLBACK_RESOURCE_SKIPPED`
+event) keeps the full segment. A **nested stack** (`{Parent}~{Child}`) differs:
 its successful deploy appends a `nested-pending-parent` segment instead of
 deleting the journal, and the journal is deleted when its **top-level** stack's
 deploy succeeds; the parent's rollback replays it to revert the child (see
