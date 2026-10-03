@@ -988,7 +988,9 @@ export async function updateInPlace(
         // literally this shape — "updated, but something the update
         // owned survives untracked" — so the row prints
         // `partial (<reason>)` instead of `updated`, the run summary
-        // counts it under "of which left an orphaned predecessor", and
+        // counts it under "of which left an orphaned predecessor" (inside
+        // a nested stack: "Left an orphaned predecessor in a nested
+        // stack", issue #1989), and
         // a `RESOURCE_SKIPPED` event lands in the durable store
         // carrying the SURVIVOR's physical id and routing layer, which
         // is the one datum a cleanup pass needs.

@@ -67,7 +67,11 @@ import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
-import { DeployEngine, type DeployEngineOptions } from '../../deployment/deploy-engine.js';
+import {
+  DeployEngine,
+  type DeployEngineOptions,
+  type DeployResult,
+} from '../../deployment/deploy-engine.js';
 import { WorkGraph } from '../../deployment/work-graph.js';
 import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -737,13 +741,10 @@ async function deployCommand(
     // Mirrors `totalSkipped` in src/cli/commands/destroy.ts, which has driven
     // destroy's exit 2 for the identical outcome since #1752.
     //
-    // Known blind spot (issue #1989): `NestedStackProvider.runChildDeploy`
-    // discards the child engine's `DeployResult`, so a nested CHILD's own
-    // skips never reach these counters and a deploy whose only unaddressed
-    // resources live inside a nested stack still exits 0. Pre-existing — the
-    // parent's summary rows under-report the same way — and NOT closed here:
-    // the fix needs a propagation channel through the provider boundary that
-    // `ResourceCreateResult` does not currently have.
+    // Nested stacks included (issue #1989): a top-level engine's
+    // `deleteSkipped` / `updatePartial` already carry every nested-stack
+    // descendant's own counts, so a resource left unaddressed at any depth
+    // reaches this counter and the exit code.
     let totalUnaddressed = 0;
     // Stacks that never ran: the user declined the prefix-migration gate, or an
     // interrupt landed before the stack started. Both unwind through
@@ -1153,7 +1154,13 @@ async function deployCommand(
         // partial IS an update that happened -- excluding it here while the
         // events store counted it made the two disagree by exactly the partial
         // count, with nothing on either side saying so.
-        const updatedTotal = deployResult.updated + deployResult.updatePartial;
+        //
+        // Issue #1989: `updatePartial` also carries nested-stack descendants'
+        // partials, which are NOT rows of this stack — `updated` counts only
+        // this stack's own rows. Only this stack's own partials join the
+        // total; a descendant's get their own row below.
+        const { ownUpdatePartial, nestedUpdatePartial } = splitUpdatePartial(deployResult);
+        const updatedTotal = deployResult.updated + ownUpdatePartial;
         logger.info(`  Updated: ${updatedTotal > 0 ? yellow(updatedTotal) : gray(updatedTotal)}`);
         logger.info(
           `  Deleted: ${deployResult.deleted > 0 ? red(deployResult.deleted) : gray(deployResult.deleted)}`
@@ -1168,12 +1175,19 @@ async function deployCommand(
         // as what SURVIVED rather than as "partial", because the row the user
         // is looking at was updated fine — the number counts resources the
         // update was supposed to retire and did not.
-        if (deployResult.updatePartial > 0) {
+        if (ownUpdatePartial > 0) {
           // Worded as a SUBSET of the line above ("of which"), because it is
           // one: the same resources are counted in both, and a reader adding
           // the two would otherwise double-count them.
+          logger.info(`    of which left an orphaned predecessor: ${yellow(ownUpdatePartial)}`);
+        }
+        // Issue #1989: NOT indented under `Updated:` — these are rows of a
+        // nested child or grandchild, so they are not part of that total. Each
+        // one's own warning and `partial (…)` row printed during the child's
+        // deploy, naming the survivor.
+        if (nestedUpdatePartial > 0) {
           logger.info(
-            `    of which left an orphaned predecessor: ${yellow(deployResult.updatePartial)}`
+            `  Left an orphaned predecessor in a nested stack: ${yellow(nestedUpdatePartial)}`
           );
         }
         // Issue #1960: the two rows above are the deploy-side twin of what
@@ -1268,7 +1282,9 @@ async function deployCommand(
             // `skipped` would make the durable record say `~0` for a run whose
             // own RESOURCE_SUCCEEDED events show an UPDATE, so it counts in
             // BOTH: `updated` for what happened, `skipped` for what did not.
-            updated: deployResult.updated + deployResult.updatePartial,
+            // This stack's own partials only (issue #1989), matching the
+            // console's `Updated:`; a descendant's still counts in `skipped`.
+            updated: updatedTotal,
             deleted: deployResult.deleted,
             // Issue #1762: the run-level counterpart of the summary row above.
             // `cdkd events` renders `RunCounts.skipped` as `⚠N`, and destroy
@@ -1477,4 +1493,22 @@ export function forceQuitReleaseCommand(): string {
     { hole: 'stackName' },
     { flag: '--stack-region', hole: 'region' },
   ]).command;
+}
+
+/**
+ * Splits `DeployResult.updatePartial` into this stack's own partial rows and
+ * the part nested-stack descendants reported (issue #1989), for the summary's
+ * `Updated:` total, which counts this stack's own rows only. The descendant
+ * figure is clamped into `[0, updatePartial]`, so the two always sum to
+ * `updatePartial` and the exit code's count is never re-derived from them.
+ * Exported for its test.
+ */
+export function splitUpdatePartial(
+  result: Pick<DeployResult, 'updatePartial' | 'nestedUpdatePartial'>
+): { ownUpdatePartial: number; nestedUpdatePartial: number } {
+  const nestedUpdatePartial = Math.min(
+    Math.max(result.nestedUpdatePartial ?? 0, 0),
+    result.updatePartial
+  );
+  return { ownUpdatePartial: result.updatePartial - nestedUpdatePartial, nestedUpdatePartial };
 }

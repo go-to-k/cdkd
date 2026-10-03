@@ -146,6 +146,12 @@ export interface ProvisionCounts {
    * resource is not the thing that survived.
    */
   updatePartial: number;
+  /**
+   * The part of `updatePartial` a nested-stack descendant reported (issue
+   * #1989), already included in `updatePartial`. Kept apart so the summary can
+   * tell this stack's own partial rows from a child's.
+   */
+  nestedUpdatePartial: number;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { stripVTControlCharacters } from 'node:util';
 import { DeployCancelledError } from '../../../src/utils/error-handler.js';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
@@ -164,7 +165,16 @@ vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
  * Set by each test before `runDeploy`.
  */
 const engineResults = vi.hoisted(
-  () => new Map<string, { deleteSkipped: number; updatePartial: number }>()
+  () =>
+    new Map<
+      string,
+      {
+        deleteSkipped: number;
+        updatePartial: number;
+        nestedUpdatePartial?: number;
+        updated?: number;
+      }
+    >()
 );
 
 /** Stack names whose deploy should throw, for the failure-precedence case. */
@@ -186,10 +196,13 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
       return {
         stackName,
         created: 1,
-        updated: 0,
+        updated: counts.updated ?? 0,
         deleted: 0,
         deleteSkipped: counts.deleteSkipped,
         updatePartial: counts.updatePartial,
+        ...(counts.nestedUpdatePartial !== undefined && {
+          nestedUpdatePartial: counts.nestedUpdatePartial,
+        }),
         unchanged: 0,
         durationMs: 10,
         outputs: {},
@@ -493,6 +506,99 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     expect(code).toBeUndefined();
     const printed = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(printed).toContain('Deployment completed successfully');
+  });
+
+  describe("a nested descendant's orphaned predecessor (issue #1989)", () => {
+    // `updatePartial` carries a descendant's partials, which are not rows of
+    // the deployed stack; `nestedUpdatePartial` says how many. The summary's
+    // `Updated:` total counts the stack's own rows only.
+    const summaryLines = (): string[] =>
+      infoSpy.mock.calls.map((c) => stripVTControlCharacters(String(c[0])));
+
+    it('keeps a descendant partial out of Updated: and prints it on its own row', async () => {
+      // One own clean update (the nested stack's row), one own partial, two
+      // partials inside the nested child.
+      engineResults.set('StackA', {
+        deleteSkipped: 0,
+        updated: 1,
+        updatePartial: 3,
+        nestedUpdatePartial: 2,
+      });
+      const code = await runDeploy(['--yes']);
+      // The exit code still counts all three.
+      expect(code).toBe(2);
+      const lines = summaryLines();
+      expect(lines).toContain('  Updated: 2');
+      expect(lines).toContain('    of which left an orphaned predecessor: 1');
+      expect(lines).toContain('  Left an orphaned predecessor in a nested stack: 2');
+      const message = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(message).toContain('3 resource(s) unaddressed');
+    });
+
+    it('records the same split in RunCounts: updated is own rows, skipped is all', async () => {
+      engineResults.set('StackA', {
+        deleteSkipped: 0,
+        updated: 1,
+        updatePartial: 3,
+        nestedUpdatePartial: 2,
+      });
+      await runDeploy(['--yes']);
+      const [, , result, counts] = runOutcomeSpy.mock.calls[0] ?? [];
+      expect(result).toBe('FAILED');
+      expect(counts).toMatchObject({ updated: 2, skipped: 3 });
+    });
+
+    it('prints no "of which" row when every partial is a descendant one', async () => {
+      engineResults.set('StackA', {
+        deleteSkipped: 0,
+        updated: 1,
+        updatePartial: 1,
+        nestedUpdatePartial: 1,
+      });
+      const code = await runDeploy(['--yes']);
+      expect(code).toBe(2);
+      const lines = summaryLines();
+      expect(lines).toContain('  Updated: 1');
+      expect(lines.some((l) => l.includes('of which left an orphaned predecessor'))).toBe(false);
+      expect(lines).toContain('  Left an orphaned predecessor in a nested stack: 1');
+    });
+
+    it('control: an own partial alone keeps the top-level summary unchanged', async () => {
+      // A result without the field (as a stack with no nested descendants
+      // reports it) reads the descendant count as 0.
+      engineResults.set('StackA', { deleteSkipped: 0, updated: 1, updatePartial: 1 });
+      await runDeploy(['--yes']);
+      const lines = summaryLines();
+      expect(lines).toContain('  Updated: 2');
+      expect(lines).toContain('    of which left an orphaned predecessor: 1');
+      expect(lines.some((l) => l.includes('in a nested stack'))).toBe(false);
+    });
+  });
+});
+
+describe('splitUpdatePartial (issue #1989)', () => {
+  it('splits own and descendant partials so they sum to updatePartial', async () => {
+    const { splitUpdatePartial } = await import('../../../src/cli/commands/deploy.js');
+    expect(splitUpdatePartial({ updatePartial: 3, nestedUpdatePartial: 2 })).toEqual({
+      ownUpdatePartial: 1,
+      nestedUpdatePartial: 2,
+    });
+    expect(splitUpdatePartial({ updatePartial: 2 })).toEqual({
+      ownUpdatePartial: 2,
+      nestedUpdatePartial: 0,
+    });
+  });
+
+  it('clamps an out-of-range descendant figure into [0, updatePartial]', async () => {
+    const { splitUpdatePartial } = await import('../../../src/cli/commands/deploy.js');
+    expect(splitUpdatePartial({ updatePartial: 1, nestedUpdatePartial: 5 })).toEqual({
+      ownUpdatePartial: 0,
+      nestedUpdatePartial: 1,
+    });
+    expect(splitUpdatePartial({ updatePartial: 1, nestedUpdatePartial: -1 })).toEqual({
+      ownUpdatePartial: 1,
+      nestedUpdatePartial: 0,
+    });
   });
 });
 

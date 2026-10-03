@@ -461,11 +461,18 @@ export interface DeployResult {
    * `updated` so a clean run and a run that orphaned a resource do not print
    * the same summary, and separate from `deleteSkipped` because the surviving
    * resource is not the row's own. Includes nested-stack descendants' counts,
-   * as `deleteSkipped` does (issue #1989), so a descendant's partial also
-   * raises the `Updated:` total `deploy.ts` prints as `updated + updatePartial`
-   * while `updated` stays this stack's own rows.
+   * as `deleteSkipped` does (issue #1989), so the exit code sees them;
+   * `nestedUpdatePartial` says how many of them are a descendant's.
    */
   updatePartial: number;
+  /**
+   * The part of `updatePartial` reported by nested-stack descendants (issue
+   * #1989) — a subset of it, never added to it. `deploy.ts` subtracts it from
+   * the `Updated:` total, which counts this stack's own rows, and prints it on
+   * its own row. Absent on results that never provisioned (the dry-run and
+   * no-change returns) and in older test doubles: read as 0.
+   */
+  nestedUpdatePartial?: number;
   /** Number of resources unchanged */
   unchanged: number;
   /** Total deployment time in milliseconds */

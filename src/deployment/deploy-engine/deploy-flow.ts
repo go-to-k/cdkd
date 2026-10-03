@@ -1127,6 +1127,7 @@ export async function doDeployWithPrefetch(
       deleted: actualCounts.deleted,
       deleteSkipped: actualCounts.deleteSkipped,
       updatePartial: actualCounts.updatePartial,
+      nestedUpdatePartial: actualCounts.nestedUpdatePartial,
       unchanged: unchangedCount,
       durationMs,
       outputs: this.buildDisplayOutputs(template, this.redactOutputs(newState.outputs ?? {})),
