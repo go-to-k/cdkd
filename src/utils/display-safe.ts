@@ -287,8 +287,8 @@ export function safeMsg(strings: TemplateStringsArray, ...values: unknown[]): st
  *
  * ADOPTION, not coverage — and the distinction is the whole reason this note
  * no longer counts sites. Other `slice`-based display truncations exist
- * (`src/local/websocket-server.ts`, `src/local/rest-v1-integrations.ts`,
- * several message caps in `src/deployment/intrinsic-resolver/*.ts`), and
+ * (`src/local/websocket-server.ts`, several message caps in
+ * `src/deployment/intrinsic-resolver/*.ts`), and
  * nothing here or in CI stops another being written. An earlier revision named
  * a remaining count; a count is exactly what goes stale unwatched, so what is
  * stated is the RULE and where it is owned.

@@ -391,8 +391,9 @@ export class LocalStartApiStack extends cdk.Stack {
     urlHandler.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
 
     // Streaming Function URL — exercises the RESPONSE_STREAM invoke mode
-    // path added in #467. cdkd's local server detects InvokeMode and
-    // routes the request through invokeRieStreaming(), parses the JSON
+    // path added in #467. The local server (cdk-local's, which cdkd runs)
+    // detects InvokeMode and routes the request through its
+    // invokeRieStreaming(), parses the JSON
     // prelude carrying status + headers, and pipes the body chunks to
     // the HTTP client with `Transfer-Encoding: chunked`. The handler
     // uses `awslambda.streamifyResponse` + `awslambda.HttpResponseStream`

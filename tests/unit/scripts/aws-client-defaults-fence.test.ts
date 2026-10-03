@@ -370,8 +370,8 @@ describe('SDK client construction critic', () => {
     });
 
     it('sees the `new mod.XClient()` form of a dynamic namespace import', () => {
-      // Six real sites in `httpv2-service-integration.ts` are written this way,
-      // and the construction is a property access rather than an identifier, so
+      // No real site is written this way today, so this case is the arm's only
+      // coverage. The construction is a property access rather than an identifier, so
       // it needs BOTH halves: the namespace binding and the `new ns.X` arm.
       const found = sites(
         `const mod = await import('@aws-sdk/client-sns');

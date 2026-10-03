@@ -572,7 +572,7 @@ export default defineConfig({
       // moved repeatedly; what a move leaves behind still compiles and still has
       // passing tests, so a fix landing in the orphan ships as a NO-OP with every
       // gate green (issue #2203 did exactly that). The rule is symbol-level, not
-      // module-level, because `vtl-engine.ts` HAS a live importer and still runs
+      // module-level, because a module can HAVE a live importer and still run
       // nothing. `cache: false` for the same reason the critics above carry it: a
       // green replayed from cache is a checker reporting "all reachable" without
       // having looked.

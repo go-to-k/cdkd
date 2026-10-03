@@ -578,21 +578,3 @@ async function verifyImageInLocalCache(imageUri: string): Promise<void> {
     );
   }
 }
-
-/**
- * Check whether a docker image is in the local registry. Pure boolean —
- * the caller decides what message to surface on miss.
- *
- * @no-live-caller nothing in `src/` calls this. The rest of this module is live; this one
- * helper is not, and the `docker-image-builder` reuse its doc used to claim never existed --
- * that file wraps cdk-local's `buildContainerImage` to re-brand the thrown error and never
- * probes the local image cache (issue #2228).
- */
-export async function isImageInLocalCache(imageRef: string): Promise<boolean> {
-  try {
-    await runDockerStreaming(['image', 'inspect', imageRef]);
-    return true;
-  } catch {
-    return false;
-  }
-}
