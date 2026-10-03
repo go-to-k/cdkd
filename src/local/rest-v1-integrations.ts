@@ -8,9 +8,10 @@
  * warning `local-start-api.ts` prints once per route at server boot.
  *
  * cdk-local's dispatch passes `Integration.Uri` to `fetch()` verbatim; nothing
- * blocks private, loopback or link-local destinations. {@link warnSsrfRiskyUri} surfaces a warn
- * when a Uri's hostname is a well-known internal address literal (IMDS,
- * loopback, link-local, RFC1918) so users see the risk in their logs. Blocking
+ * blocks private, loopback or link-local destinations. {@link warnSsrfRiskyUri}
+ * surfaces a warn when a Uri's hostname is a well-known internal address
+ * literal (IMDS, loopback, link-local, RFC1918) so users see the risk in their
+ * logs. Blocking
  * is deliberately not done — this is a developer-loop tool, not a security
  * boundary, and the source URI is the user's own CDK template.
  */
