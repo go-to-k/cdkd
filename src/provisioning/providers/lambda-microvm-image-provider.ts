@@ -32,7 +32,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 
@@ -465,13 +467,13 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
    * not the `GetMicrovmImage` response's `tags` field, whose population is not
    * guaranteed (the "type != populated" trap).
    *
-   * Returns `undefined` when the image is gone.
+   * Returns `RESOURCE_NOT_FOUND` when the image is gone.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let name: string | undefined;
     try {
       const resp = await this.client.send(
@@ -479,13 +481,20 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
       );
       name = resp.name;
     } catch (error) {
-      if (error instanceof ResourceNotFoundException) return undefined;
+      if (error instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw error;
     }
 
     const result: Record<string, unknown> = {};
     if (name !== undefined) result['Name'] = name;
-    const tagsResp = await this.client.send(new ListTagsCommand({ Resource: physicalId }));
+    let tagsResp;
+    try {
+      tagsResp = await this.client.send(new ListTagsCommand({ Resource: physicalId }));
+    } catch (error) {
+      // The image vanished between GetMicrovmImage and ListTags.
+      if (error instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
+      throw error;
+    }
     result['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
     return result;
   }

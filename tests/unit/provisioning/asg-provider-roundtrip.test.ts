@@ -72,7 +72,17 @@ import {
 } from '@aws-sdk/client-auto-scaling';
 import { ModifyInstanceAttributeCommand } from '@aws-sdk/client-ec2';
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import type { ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const RESOURCE_TYPE = 'AWS::AutoScaling::AutoScalingGroup';
 
@@ -770,7 +780,7 @@ describe('ASGProvider readCurrentState', () => {
       ],
     });
     const provider = new ASGProvider();
-    const state = await provider.readCurrentState('my-asg', 'MyAsg', RESOURCE_TYPE);
+    const state = bagOf(await provider.readCurrentState('my-asg', 'MyAsg', RESOURCE_TYPE));
     expect(state).toBeDefined();
     expect(state?.['VPCZoneIdentifier']).toEqual(['subnet-aaaa1111', 'subnet-bbbb2222']);
     expect(state?.['MinSize']).toBe(1);
@@ -831,7 +841,7 @@ describe('ASGProvider readCurrentState', () => {
       });
     });
     const provider = new ASGProvider();
-    const state = await provider.readCurrentState('my-asg', 'MyAsg', RESOURCE_TYPE);
+    const state = bagOf(await provider.readCurrentState('my-asg', 'MyAsg', RESOURCE_TYPE));
     expect(state).toBeDefined();
     expect(state?.['TargetGroupARNs']).toEqual(['arn:aws:elasticloadbalancing:tg-1']);
     expect(state?.['LoadBalancerNames']).toEqual(['classic-elb-name']);
@@ -843,7 +853,7 @@ describe('ASGProvider readCurrentState', () => {
     ]);
   });
 
-  it('returns undefined when AWS reports the group is gone', async () => {
+  it('keeps undefined for a ValidationError "not found" (message text proves nothing)', async () => {
     mockSend.mockImplementation(() => {
       const err = new Error('AutoScalingGroup name not found') as Error & { name: string };
       err.name = 'ValidationError';
@@ -852,6 +862,28 @@ describe('ASGProvider readCurrentState', () => {
     const provider = new ASGProvider();
     const result = await provider.readCurrentState('missing', 'M', RESOURCE_TYPE);
     expect(result).toBeUndefined();
+  });
+
+  it('returns RESOURCE_NOT_FOUND when DescribeAutoScalingGroups lists no group', async () => {
+    mockSend.mockImplementation((cmd: unknown) =>
+      Promise.resolve(cmd instanceof DescribeAutoScalingGroupsCommand ? { AutoScalingGroups: [] } : {})
+    );
+    const provider = new ASGProvider();
+    const result = await provider.readCurrentState('missing', 'M', RESOURCE_TYPE);
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('rethrows a non-not-found error from DescribeAutoScalingGroups', async () => {
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (!(cmd instanceof DescribeAutoScalingGroupsCommand)) return Promise.resolve({});
+      const err = new Error('User is not authorized') as Error & { name: string };
+      err.name = 'AccessDenied';
+      return Promise.reject(err);
+    });
+    const provider = new ASGProvider();
+    await expect(provider.readCurrentState('g', 'M', RESOURCE_TYPE)).rejects.toThrow(
+      'not authorized'
+    );
   });
 });
 

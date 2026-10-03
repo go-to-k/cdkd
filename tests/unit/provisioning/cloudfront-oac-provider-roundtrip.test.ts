@@ -28,6 +28,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { CloudFrontOACProvider } from '../../../src/provisioning/providers/cloudfront-oac-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const TYPE = 'AWS::CloudFront::OriginAccessControl';
 const OAC_ID = 'E1ABCDEF123456';
@@ -64,7 +73,7 @@ describe('CloudFrontOACProvider read-update round-trip', () => {
       },
     });
 
-    const snapshot = await provider.readCurrentState(OAC_ID, 'MyOac', TYPE);
+    const snapshot = bagOf(await provider.readCurrentState(OAC_ID, 'MyOac', TYPE));
     expect(snapshot).toBeDefined();
 
     // 2) update() with that snapshot as the desired properties (the
@@ -106,7 +115,7 @@ describe('CloudFrontOACProvider read-update round-trip', () => {
       },
     });
 
-    const snapshot = await provider.readCurrentState(OAC_ID, 'MyOac', TYPE);
+    const snapshot = bagOf(await provider.readCurrentState(OAC_ID, 'MyOac', TYPE));
 
     mockSend.mockResolvedValueOnce({ ETag: 'etag-abc', OriginAccessControl: { Id: OAC_ID } });
     mockSend.mockResolvedValueOnce({});

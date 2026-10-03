@@ -88,7 +88,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -3685,14 +3687,15 @@ export class AppSyncProvider implements ResourceProvider {
    *    string-level diff (which may report whitespace drift). Logged at
    *    debug.
    *
-   * Returns `undefined` when the parent resource is gone (`NotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when AWS reports the resource gone
+   * (`NotFoundException`, or an ApiKey no longer listed).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::AppSync::GraphQLApi':
         return this.readGraphQLApi(physicalId);
@@ -3733,14 +3736,14 @@ export class AppSyncProvider implements ResourceProvider {
   private async readGraphQLSchema(
     physicalId: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp;
     try {
       resp = await this.getClient().send(
         new GetIntrospectionSchemaCommand({ apiId: physicalId, format: 'SDL' })
       );
     } catch (err) {
-      if (err instanceof AppSyncNotFoundException) return undefined;
+      if (err instanceof AppSyncNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
 
@@ -3784,13 +3787,15 @@ export class AppSyncProvider implements ResourceProvider {
     };
   }
 
-  private async readGraphQLApi(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readGraphQLApi(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let api;
     try {
       const resp = await this.getClient().send(new GetGraphqlApiCommand({ apiId: physicalId }));
       api = resp.graphqlApi;
     } catch (err) {
-      if (err instanceof AppSyncNotFoundException) return undefined;
+      if (err instanceof AppSyncNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!api) return undefined;
@@ -3939,7 +3944,9 @@ export class AppSyncProvider implements ResourceProvider {
     return out;
   }
 
-  private async readDataSource(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readDataSource(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const [apiId, name] = physicalId.split('|');
     if (!apiId || !name) return undefined;
 
@@ -3948,7 +3955,7 @@ export class AppSyncProvider implements ResourceProvider {
       const resp = await this.getClient().send(new GetDataSourceCommand({ apiId, name }));
       ds = resp.dataSource;
     } catch (err) {
-      if (err instanceof AppSyncNotFoundException) return undefined;
+      if (err instanceof AppSyncNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!ds) return undefined;
@@ -4092,7 +4099,9 @@ export class AppSyncProvider implements ResourceProvider {
     return result;
   }
 
-  private async readResolver(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readResolver(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const parts = physicalId.split('|');
     if (parts.length < 3) return undefined;
     const [apiId, typeName, fieldName] = parts;
@@ -4105,7 +4114,7 @@ export class AppSyncProvider implements ResourceProvider {
       );
       resolver = resp.resolver;
     } catch (err) {
-      if (err instanceof AppSyncNotFoundException) return undefined;
+      if (err instanceof AppSyncNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!resolver) return undefined;
@@ -4192,7 +4201,9 @@ export class AppSyncProvider implements ResourceProvider {
     return result;
   }
 
-  private async readApiKey(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readApiKey(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const [apiId, apiKeyId] = physicalId.split('|');
     if (!apiId || !apiKeyId) return undefined;
 
@@ -4206,7 +4217,7 @@ export class AppSyncProvider implements ResourceProvider {
           new ListApiKeysCommand({ apiId, ...(nextToken && { nextToken }) })
         );
       } catch (err) {
-        if (err instanceof AppSyncNotFoundException) return undefined;
+        if (err instanceof AppSyncNotFoundException) return RESOURCE_NOT_FOUND;
         throw err;
       }
       for (const key of resp.apiKeys ?? []) {
@@ -4219,7 +4230,8 @@ export class AppSyncProvider implements ResourceProvider {
       }
       nextToken = resp.nextToken;
     } while (nextToken);
-    return undefined;
+    // Every page listed and the key is not among them: it was deleted.
+    return RESOURCE_NOT_FOUND;
   }
 
   /**

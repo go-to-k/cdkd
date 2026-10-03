@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   CreateTableCommand,
   DescribeContributorInsightsCommand,
@@ -159,6 +160,15 @@ beforeEach(() => {
   childLogger.child.mockReturnValue(childLogger);
   provider = new DynamoDBTableProvider();
 });
+
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('DynamoDBTableProvider per-index ContributorInsightsSpecification (issue #1782)', () => {
   describe('create()', () => {
@@ -430,8 +440,8 @@ describe('DynamoDBTableProvider per-index ContributorInsightsSpecification (issu
   });
 
   describe('readCurrentState()', () => {
-    const readBack = (desired: Record<string, unknown> | undefined) =>
-      provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE, desired);
+    const readBack = async (desired: Record<string, unknown> | undefined) =>
+      bagOf(await provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE, desired));
 
     function perIndexReads(): Array<string | undefined> {
       return findCalls(DescribeContributorInsightsCommand)

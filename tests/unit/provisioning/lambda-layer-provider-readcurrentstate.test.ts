@@ -29,6 +29,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { LambdaLayerVersionProvider } from '../../../src/provisioning/providers/lambda-layer-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('LambdaLayerVersionProvider.readCurrentState', () => {
   let provider: LambdaLayerVersionProvider;
@@ -62,14 +63,14 @@ describe('LambdaLayerVersionProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when layer version gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when layer version gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'gone', $metadata: {} })
     );
 
     const arn = 'arn:aws:lambda:us-east-1:123:layer:my-layer:5';
     const result = await provider.readCurrentState(arn, 'Logical', 'AWS::Lambda::LayerVersion');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('declares Content as a drift-unknown path so the comparator skips it', () => {

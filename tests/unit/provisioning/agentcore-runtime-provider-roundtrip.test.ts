@@ -78,7 +78,7 @@ describe('AgentCoreRuntimeProvider read-update round-trip', () => {
       networkConfiguration: { networkMode: 'PUBLIC' },
     });
 
-    const observed = await provider.readCurrentState(RUNTIME_ID, 'L', RESOURCE_TYPE);
+    const observed = (await provider.readCurrentState(RUNTIME_ID, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
 
     // Spot-check Description placeholder reached observed (truthy-gate
     // contract: '' must NOT be dropped on the read side).

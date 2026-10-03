@@ -23,7 +23,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -447,21 +449,21 @@ export class S3VectorsProvider implements ResourceProvider {
    * the camelCase SDK response back to the CFn property names —
    * `sseType` → `SseType`, `kmsKeyArn` → `KmsKeyArn`).
    *
-   * Returns `undefined` when the bucket is gone (`NotFoundException` /
+   * Returns `RESOURCE_NOT_FOUND` when the bucket is gone (`NotFoundException` /
    * `NoSuchVectorBucket`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp;
     try {
       resp = await this.getClient().send(
         new GetVectorBucketCommand({ vectorBucketName: physicalId })
       );
     } catch (err) {
-      if (this.isNotFoundError(err)) return undefined;
+      if (this.isNotFoundError(err)) return RESOURCE_NOT_FOUND;
       throw err;
     }
 

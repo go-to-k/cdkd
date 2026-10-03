@@ -13,6 +13,7 @@
  *   pass on its desired bag) sends the live local entry back unchanged.
  */
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { ResourceNotFoundException } from '@aws-sdk/client-dynamodb';
 
 const { localSend, remoteSend } = vi.hoisted(() => ({
   localSend: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const TYPE = 'AWS::DynamoDB::GlobalTable';
 const LOCAL_ARN = 'arn:aws:dynamodb:us-east-1:123456789012:table/table-1';
@@ -103,6 +105,7 @@ async function readReplicas(
   provider: DynamoDBGlobalTableProvider
 ): Promise<Array<Record<string, unknown>>> {
   const state = await provider.readCurrentState('table-1', 'GlobalTable', TYPE);
+  if (state === RESOURCE_NOT_FOUND) throw new Error('expected a read, got RESOURCE_NOT_FOUND');
   return state!['Replicas'] as Array<Record<string, unknown>>;
 }
 
@@ -382,5 +385,80 @@ describe('update() with a revert built from a legacy baseline (issue #3573)', ()
     });
 
     expect(untagsOn(localSend)).toEqual([{ ResourceArn: LOCAL_ARN, TagKeys: ['side'] }]);
+  });
+});
+
+describe('readCurrentState: a GlobalTable deleted outside cdkd (go-to-k/cdkd#4283)', () => {
+  const rnf = () => new ResourceNotFoundException({ message: 'gone', $metadata: {} });
+
+  beforeEach(() => {
+    localSend.mockReset();
+    remoteSend.mockReset();
+    remoteSend.mockImplementation(regionStub(undefined, REMOTE_TAGS));
+  });
+
+  it('returns RESOURCE_NOT_FOUND when DescribeTable answers ResourceNotFoundException', async () => {
+    localSend.mockRejectedValueOnce(rnf());
+
+    await expect(makeProvider().readCurrentState('table-1', 'GlobalTable', TYPE)).resolves.toBe(
+      RESOURCE_NOT_FOUND
+    );
+  });
+
+  it('returns RESOURCE_NOT_FOUND when the LOCAL replica vanishes before ListTagsOfResource', async () => {
+    const stub = regionStub([{ RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' }], LOCAL_TAGS);
+    localSend.mockImplementation((command: { constructor: { name: string } }) =>
+      command.constructor.name === 'ListTagsOfResourceCommand'
+        ? Promise.reject(rnf())
+        : stub(command)
+    );
+
+    await expect(makeProvider().readCurrentState('table-1', 'GlobalTable', TYPE)).resolves.toBe(
+      RESOURCE_NOT_FOUND
+    );
+  });
+
+  it('keeps reading when only a CROSS-region replica answers ResourceNotFoundException on its tags', async () => {
+    localSend.mockImplementation(
+      regionStub([{ RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' }], LOCAL_TAGS)
+    );
+    const stub = regionStub(undefined, REMOTE_TAGS);
+    remoteSend.mockImplementation((command: { constructor: { name: string } }) =>
+      command.constructor.name === 'ListTagsOfResourceCommand'
+        ? Promise.reject(rnf())
+        : stub(command)
+    );
+
+    const state = await makeProvider().readCurrentState('table-1', 'GlobalTable', TYPE);
+    expect(state).not.toBe(RESOURCE_NOT_FOUND);
+    expect(state).toBeDefined();
+  });
+
+  it('keeps undefined for a successful DescribeTable with no Table body', async () => {
+    localSend.mockResolvedValueOnce({});
+
+    await expect(
+      makeProvider().readCurrentState('table-1', 'GlobalTable', TYPE)
+    ).resolves.toBeUndefined();
+  });
+
+  it('rethrows a message-only "not found" under another error name (not the sentinel)', async () => {
+    const err = Object.assign(new Error('Requested resource not found'), {
+      name: 'ValidationException',
+    });
+    localSend.mockRejectedValueOnce(err);
+
+    await expect(makeProvider().readCurrentState('table-1', 'GlobalTable', TYPE)).rejects.toBe(
+      err
+    );
+  });
+
+  it('rethrows AccessDeniedException rather than reporting the table gone', async () => {
+    const err = Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' });
+    localSend.mockRejectedValueOnce(err);
+
+    await expect(makeProvider().readCurrentState('table-1', 'GlobalTable', TYPE)).rejects.toBe(
+      err
+    );
   });
 });

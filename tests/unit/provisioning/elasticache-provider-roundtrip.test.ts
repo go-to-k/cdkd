@@ -78,7 +78,7 @@ describe('ElastiCacheProvider read-update round-trip', () => {
     );
 
     expect(observed).toBeDefined();
-    expect(observed?.['Engine']).toBe('memcached');
+    expect((observed as Record<string, unknown> | undefined)?.['Engine']).toBe('memcached');
     // Class 1 gate: redis-only field absent on memcached snapshot.
     expect(observed).not.toHaveProperty('TransitEncryptionEnabled');
   });
@@ -104,8 +104,8 @@ describe('ElastiCacheProvider read-update round-trip', () => {
       'AWS::ElastiCache::CacheCluster'
     );
 
-    expect(observed?.['Engine']).toBe('redis');
-    expect(observed?.['TransitEncryptionEnabled']).toBe(true);
+    expect((observed as Record<string, unknown> | undefined)?.['Engine']).toBe('redis');
+    expect((observed as Record<string, unknown> | undefined)?.['TransitEncryptionEnabled']).toBe(true);
   });
 
   it('Class 2 — round-trip sanitizes empty VpcSecurityGroupIds before ModifyCacheCluster', async () => {

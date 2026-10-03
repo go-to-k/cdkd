@@ -35,7 +35,9 @@ import type {
   CreateContext,
   UpdateContext,
   SecretMasker,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
@@ -855,14 +857,14 @@ export class SNSTopicProvider implements ResourceProvider {
    * `addSubscription()`) has no inline list in state, so its subscriptions
    * are not surfaced here (they belong to sibling resources).
    *
-   * Returns `undefined` when the topic is gone (`NotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the topic is gone (`NotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let attrs: Record<string, string> | undefined;
     try {
       const resp = await this.snsClient.send(
@@ -870,7 +872,7 @@ export class SNSTopicProvider implements ResourceProvider {
       );
       attrs = resp.Attributes;
     } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
+      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!attrs) return undefined;
@@ -967,7 +969,7 @@ export class SNSTopicProvider implements ResourceProvider {
       const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
       result['Tags'] = tags;
     } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
+      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
 

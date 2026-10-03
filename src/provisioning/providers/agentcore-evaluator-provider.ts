@@ -53,7 +53,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 
 /**
  * The `EvaluatorConfig` subtree keys whose values are free-form JSON
@@ -368,21 +370,21 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
    * Issues `GetEvaluator` + `ListTagsForResource` and surfaces the keys
    * `create()` accepts, re-shaped to PascalCase (the free-form
    * `additionalModelRequestFields` document is passed through verbatim).
-   * Returns `undefined` when the evaluator is gone
+   * Returns `RESOURCE_NOT_FOUND` when the evaluator is gone
    * (`ResourceNotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp;
     try {
       resp = await this.client.send(
         new GetEvaluatorCommand({ evaluatorId: evaluatorIdFromArn(physicalId) })
       );
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
 

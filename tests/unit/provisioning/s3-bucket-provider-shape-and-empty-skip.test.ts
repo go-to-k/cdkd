@@ -741,7 +741,7 @@ describe('#1718 CREATE: an empty rules collection skips the Put and SAYS SO', ()
       }
       return Promise.resolve({});
     });
-    const awsCurrent = await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE);
+    const awsCurrent = (await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
 
     // The claim, asserted against the mapper's real output rather than restated.
     expect(awsCurrent?.['LifecycleConfiguration']).toEqual({ Rules: [] });

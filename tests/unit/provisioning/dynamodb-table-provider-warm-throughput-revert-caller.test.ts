@@ -49,6 +49,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     destroy: vi.fn(),
   })),
   setAwsClients: vi.fn(),
+  runWithStackAwsClients: (_clients: unknown, fn: () => unknown) => fn(),
   getAwsClients: () => ({
     dynamoDB: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
   }),

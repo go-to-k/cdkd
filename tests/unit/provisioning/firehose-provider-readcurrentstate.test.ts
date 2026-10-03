@@ -40,6 +40,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { FirehoseProvider } from '../../../src/provisioning/providers/firehose-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('FirehoseProvider.readCurrentState', () => {
   let provider: FirehoseProvider;
@@ -87,7 +88,7 @@ describe('FirehoseProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when stream is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when stream is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'gone', $metadata: {} })
     );
@@ -96,7 +97,19 @@ describe('FirehoseProvider.readCurrentState', () => {
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when ListTagsForDeliveryStream reports the stream gone', async () => {
+    mockSend
+      .mockResolvedValueOnce({ DeliveryStreamDescription: { DeliveryStreamName: 'mystream' } })
+      .mockRejectedValueOnce(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('surfaces Tags from ListTagsForDeliveryStream with aws:* filtered out', async () => {
@@ -109,11 +122,11 @@ describe('FirehoseProvider.readCurrentState', () => {
         ],
       });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -124,11 +137,11 @@ describe('FirehoseProvider.readCurrentState', () => {
         Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyStream/Resource' }],
       });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([]);
   });
 
@@ -160,11 +173,11 @@ describe('FirehoseProvider.readCurrentState', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
 
     // ExtendedS3 inner nested complex fields are now reverse-mapped (PR C).
     // EncryptionConfiguration is surfaced as the AWS-reported value (or
@@ -211,11 +224,11 @@ describe('FirehoseProvider.readCurrentState', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
 
     // EncryptionConfiguration / CloudWatchLoggingOptions placeholders
     // always emitted (even as {}) so the v3 baseline catches console-side
@@ -249,11 +262,11 @@ describe('FirehoseProvider.readCurrentState', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.['ExtendedS3DestinationConfiguration']).toEqual({
       BucketARN: 'arn:aws:s3:::modern',
@@ -292,11 +305,11 @@ describe('FirehoseProvider.readCurrentState', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.['ExtendedS3DestinationConfiguration']).toBeUndefined();
     expect(result?.['S3DestinationConfiguration']).toBeUndefined();
@@ -357,11 +370,11 @@ describe('FirehoseProvider.readCurrentState (S3 nested fields)', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     const ext = result?.['ExtendedS3DestinationConfiguration'] as Record<string, unknown>;
     expect(ext['ProcessingConfiguration']).toEqual({
       Enabled: true,
@@ -403,11 +416,11 @@ describe('FirehoseProvider.readCurrentState (S3 nested fields)', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     const ext = result?.['ExtendedS3DestinationConfiguration'] as Record<string, unknown>;
     expect(ext['S3BackupConfiguration']).toEqual({
       BucketARN: 'arn:aws:s3:::backup',
@@ -451,11 +464,11 @@ describe('FirehoseProvider.readCurrentState (S3 nested fields)', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     const ext = result?.['ExtendedS3DestinationConfiguration'] as Record<string, unknown>;
     expect(ext['DataFormatConversionConfiguration']).toEqual({
       Enabled: true,
@@ -495,11 +508,11 @@ describe('FirehoseProvider.readCurrentState (S3 nested fields)', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     const ext = result?.['ExtendedS3DestinationConfiguration'] as Record<string, unknown>;
     expect(ext['DynamicPartitioningConfiguration']).toEqual({
       Enabled: true,
@@ -528,11 +541,11 @@ describe('FirehoseProvider.readCurrentState (S3 nested fields)', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     const ext = result?.['ExtendedS3DestinationConfiguration'] as Record<string, unknown>;
     expect(ext['EncryptionConfiguration']).toEqual({
       KMSEncryptionConfig: {
@@ -571,11 +584,11 @@ describe('FirehoseProvider.readCurrentState (non-S3 destinations)', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.['ElasticsearchDestinationConfiguration']).toEqual({
       RoleARN: 'arn:aws:iam::1:role/firehose',
       DomainARN: 'arn:aws:es:us-east-1:1:domain/mydomain',
@@ -611,11 +624,11 @@ describe('FirehoseProvider.readCurrentState (non-S3 destinations)', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     const aoss = result?.['AmazonopensearchserviceDestinationConfiguration'] as Record<
       string,
       unknown
@@ -649,11 +662,11 @@ describe('FirehoseProvider.readCurrentState (non-S3 destinations)', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.['SplunkDestinationConfiguration']).toEqual({
       HECEndpoint: 'https://splunk.example.com:8088',
       HECEndpointType: 'Raw',
@@ -688,11 +701,11 @@ describe('FirehoseProvider.readCurrentState (non-S3 destinations)', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.['HttpEndpointDestinationConfiguration']).toEqual({
       RoleARN: 'arn:aws:iam::1:role/firehose',
       EndpointConfiguration: {
@@ -721,11 +734,11 @@ describe('FirehoseProvider.readCurrentState (non-S3 destinations)', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.['AmazonOpenSearchServerlessDestinationConfiguration']).toEqual({
       RoleARN: 'arn:aws:iam::1:role/firehose',
       CollectionEndpoint: 'https://collection.endpoint',
@@ -758,11 +771,11 @@ describe('FirehoseProvider.readCurrentState (DeliveryStreamEncryptionConfigurati
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.['DeliveryStreamEncryptionConfigurationInput']).toEqual({
       KeyARN: 'arn:aws:kms:us-east-1:1:key/abc',
       KeyType: 'CUSTOMER_MANAGED_CMK',
@@ -779,11 +792,11 @@ describe('FirehoseProvider.readCurrentState (DeliveryStreamEncryptionConfigurati
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'mystream',
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
-    );
+    )) as Record<string, unknown> | undefined;
     expect(result?.['DeliveryStreamEncryptionConfigurationInput']).toEqual({});
   });
 });

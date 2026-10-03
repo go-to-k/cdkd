@@ -54,6 +54,7 @@ import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
 } from '../../../../src/utils/error-handler.js';
+import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 
 const RESOURCE_TYPE = 'AWS::EMR::Cluster';
 const CLUSTER_ID = 'j-1A2B3C4D5E6F7';
@@ -893,7 +894,7 @@ describe('EMRClusterProvider readCurrentState (reverse-mapping)', () => {
     });
 
     const state = await newProvider().readCurrentState(CLUSTER_ID, 'MyCluster', RESOURCE_TYPE);
-    const instances = state!['Instances'] as Record<string, any>;
+    const instances = (state as Record<string, unknown>)['Instances'] as Record<string, any>;
 
     expect(instances['MasterInstanceGroup']).toMatchObject({
       InstanceType: 'm5.xlarge',
@@ -915,9 +916,9 @@ describe('EMRClusterProvider readCurrentState (reverse-mapping)', () => {
     expect(instances['EmrManagedMasterSecurityGroup']).toBe('sg-master');
     expect(instances['TerminationProtected']).toBe(true);
     // Top-level fields.
-    expect(state!['JobFlowRole']).toBe('EMR_EC2_DefaultRole');
+    expect((state as Record<string, unknown>)['JobFlowRole']).toBe('EMR_EC2_DefaultRole');
     // aws: tags stripped; user tags kept.
-    expect(state!['Tags']).toEqual([{ Key: 'env', Value: 'test' }]);
+    expect((state as Record<string, unknown>)['Tags']).toEqual([{ Key: 'env', Value: 'test' }]);
   });
 
   it('reverses a flat InstanceFleets array back into role-keyed CFn Instances', async () => {
@@ -936,7 +937,7 @@ describe('EMRClusterProvider readCurrentState (reverse-mapping)', () => {
     });
 
     const state = await newProvider().readCurrentState(CLUSTER_ID, 'MyCluster', RESOURCE_TYPE);
-    const instances = state!['Instances'] as Record<string, any>;
+    const instances = (state as Record<string, unknown>)['Instances'] as Record<string, any>;
 
     expect(instances['MasterInstanceFleet']).toMatchObject({ Name: 'M', TargetOnDemandCapacity: 1 });
     expect(instances['CoreInstanceFleet']).toMatchObject({ TargetSpotCapacity: 2 });
@@ -947,11 +948,21 @@ describe('EMRClusterProvider readCurrentState (reverse-mapping)', () => {
     expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(0);
   });
 
-  it('returns undefined when the cluster is gone (InvalidRequestException)', async () => {
+  it('keeps undefined for InvalidRequestException (EMR uses it for more than an unknown id)', async () => {
     routeSend({ DescribeClusterCommand: invalidRequest() });
     const state = await newProvider().readCurrentState(CLUSTER_ID, 'MyCluster', RESOURCE_TYPE);
     expect(state).toBeUndefined();
   });
+
+  it.each(['TERMINATED', 'TERMINATED_WITH_ERRORS'] as const)(
+    'returns RESOURCE_NOT_FOUND for a %s cluster',
+    async (terminal) => {
+      routeSend({ DescribeClusterCommand: clusterOf(terminal) });
+      const state = await newProvider().readCurrentState(CLUSTER_ID, 'MyCluster', RESOURCE_TYPE);
+      expect(state).toBe(RESOURCE_NOT_FOUND);
+      expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(0);
+    }
+  );
 
   it('getDriftUnknownPaths lists the create-only + lossy-reverse paths', () => {
     const paths = newProvider().getDriftUnknownPaths(RESOURCE_TYPE);

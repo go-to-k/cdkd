@@ -37,6 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('ApiGatewayProvider.readCurrentState', () => {
   let provider: ApiGatewayProvider;
@@ -90,7 +91,7 @@ describe('ApiGatewayProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when method is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when method is gone', async () => {
     mockSend.mockRejectedValueOnce(new NotFoundException({ message: 'gone', $metadata: {} }));
 
     const result = await provider.readCurrentState(
@@ -99,7 +100,7 @@ describe('ApiGatewayProvider.readCurrentState', () => {
       'AWS::ApiGateway::Method'
     );
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('returns Authorizer fields via GetAuthorizer using properties.RestApiId', async () => {
@@ -140,12 +141,12 @@ describe('ApiGatewayProvider.readCurrentState', () => {
       identitySource: 'method.request.header.Authorization',
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'auth-1',
       'AuthorizerLogical',
       'AWS::ApiGateway::Authorizer',
       { RestApiId: 'api-1' }
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result!['AuthType']).toBe('custom');
   });
@@ -304,12 +305,12 @@ describe('ApiGatewayProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
+    const result = (await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
       RestApiId: 'api-1',
       MethodSettings: [
         { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100, ThrottlingBurstLimit: 50 },
       ],
-    });
+    })) as Record<string, unknown> | undefined;
 
     expect(result?.['MethodSettings']).toEqual([
       { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100, ThrottlingBurstLimit: 50 },
@@ -326,12 +327,12 @@ describe('ApiGatewayProvider.readCurrentState', () => {
       deploymentId: 'dep-1',
     });
 
-    const result = await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
+    const result = (await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
       RestApiId: 'api-1',
       MethodSettings: [
         { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100 },
       ],
-    });
+    })) as Record<string, unknown> | undefined;
 
     expect(result?.['MethodSettings']).toEqual([{ ResourcePath: '/*', HttpMethod: '*' }]);
   });
@@ -343,9 +344,9 @@ describe('ApiGatewayProvider.readCurrentState', () => {
       methodSettings: { '*/*': { throttlingRateLimit: 100 } },
     });
 
-    const result = await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
+    const result = (await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
       RestApiId: 'api-1',
-    });
+    })) as Record<string, unknown> | undefined;
 
     expect(result?.['MethodSettings']).toBeUndefined();
   });
@@ -376,16 +377,29 @@ describe('ApiGatewayProvider.readCurrentState', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('returns undefined for sub-resources when AWS reports NotFound', async () => {
+  // go-to-k/cdkd#4283: a deleted sub-resource reads as gone, not "no read path".
+  it.each([
+    ['AWS::ApiGateway::Authorizer', 'auth-1'],
+    ['AWS::ApiGateway::Resource', 'res-1'],
+    ['AWS::ApiGateway::Deployment', 'dep-1'],
+    ['AWS::ApiGateway::Stage', 'prod'],
+  ])('returns RESOURCE_NOT_FOUND for %s when AWS reports NotFound', async (type, id) => {
     mockSend.mockRejectedValueOnce(new NotFoundException({ message: 'gone', $metadata: {} }));
 
-    const result = await provider.readCurrentState(
-      'auth-1',
-      'AuthorizerLogical',
-      'AWS::ApiGateway::Authorizer',
-      { RestApiId: 'api-1' }
+    const result = await provider.readCurrentState(id, 'Logical', type, { RestApiId: 'api-1' });
+
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('still rethrows a non-NotFound error for a sub-resource', async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
     );
 
-    expect(result).toBeUndefined();
+    await expect(
+      provider.readCurrentState('auth-1', 'AuthorizerLogical', 'AWS::ApiGateway::Authorizer', {
+        RestApiId: 'api-1',
+      })
+    ).rejects.toThrow('denied');
   });
 });

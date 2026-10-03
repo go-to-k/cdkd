@@ -27,7 +27,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { definedAttributes } from '../attribute-map.js';
 
 /**
@@ -438,13 +440,13 @@ export class EventBridgeBusProvider implements ResourceProvider {
    * `EventSourceName` is intentionally omitted: it is set at create time
    * only and not surfaced by `DescribeEventBus`.
    *
-   * Returns `undefined` when the bus is gone (`ResourceNotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the bus is gone (`ResourceNotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       const resp = await this.eventBridgeClient.send(
         new DescribeEventBusCommand({ Name: physicalId })
@@ -482,13 +484,13 @@ export class EventBridgeBusProvider implements ResourceProvider {
           const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
           result['Tags'] = tags;
         } catch (err) {
-          if (err instanceof ResourceNotFoundException) return undefined;
+          if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
           throw err;
         }
       }
       return result;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
   }

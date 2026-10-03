@@ -69,7 +69,9 @@ import type {
   CreateContext,
   UpdateContext,
   SecretMasker,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
@@ -3713,20 +3715,20 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * `{Key, Value}`), so we keep the map shape and just filter out CDK's
    * `aws:*` auto-tags. The result key is omitted when no user tags remain.
    *
-   * Returns `undefined` when the pool is gone (`ResourceNotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the pool is gone (`ResourceNotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     if (resourceType !== 'AWS::Cognito::UserPool') return undefined;
 
     let resp;
     try {
       resp = await this.getClient().send(new DescribeUserPoolCommand({ UserPoolId: physicalId }));
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     const pool = resp.UserPool;

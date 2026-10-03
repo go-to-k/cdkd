@@ -50,6 +50,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { GlueWorkflowProvider } from '../../../src/provisioning/providers/glue-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('GlueWorkflowProvider', () => {
   let provider: GlueWorkflowProvider;
@@ -209,14 +210,14 @@ describe('GlueWorkflowProvider', () => {
     });
   });
 
-  it('readCurrentState() returns undefined when workflow does not exist', async () => {
+  it('readCurrentState() returns RESOURCE_NOT_FOUND when workflow does not exist', async () => {
     const { EntityNotFoundException } = await import('@aws-sdk/client-glue');
     mockSend.mockRejectedValueOnce(
       new EntityNotFoundException({ message: 'not found', $metadata: {} })
     );
 
     const result = await provider.readCurrentState('missing', 'L', 'AWS::Glue::Workflow');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('readCurrentState() falls back to empty Tags array if GetTags fails', async () => {

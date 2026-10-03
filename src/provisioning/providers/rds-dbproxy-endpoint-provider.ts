@@ -32,7 +32,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
@@ -460,7 +462,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     return null;
   }
 
-  async readCurrentState(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  async readCurrentState(physicalId: string): Promise<Record<string, unknown> | ResourceNotFound> {
     const client = this.getClient();
     let ep: unknown;
     try {
@@ -468,10 +470,11 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
         new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId })
       );
       ep = describe.DBProxyEndpoints?.[0];
-      if (!ep) return undefined;
+      if (!ep) return RESOURCE_NOT_FOUND;
     } catch (error) {
+      // A gone parent proxy takes its endpoints with it.
       if (error instanceof DBProxyEndpointNotFoundFault || error instanceof DBProxyNotFoundFault) {
-        return undefined;
+        return RESOURCE_NOT_FOUND;
       }
       throw error;
     }

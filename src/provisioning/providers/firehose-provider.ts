@@ -45,7 +45,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
@@ -2055,13 +2057,13 @@ export class FirehoseProvider implements ResourceProvider {
    * with `aws:*` filtered out and always emitted as `[]` placeholder when
    * no user tags remain.
    *
-   * Returns `undefined` when the stream is gone (`ResourceNotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the stream is gone (`ResourceNotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let desc;
     try {
       const resp = await this.getClient().send(
@@ -2069,7 +2071,7 @@ export class FirehoseProvider implements ResourceProvider {
       );
       desc = resp.DeliveryStreamDescription;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!desc) return undefined;
@@ -2156,7 +2158,7 @@ export class FirehoseProvider implements ResourceProvider {
       );
       result['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       this.logger.debug(
         `Firehose ListTagsForDeliveryStream(${physicalId}) failed: ${describeAwsFailure(err).detail}`
       );

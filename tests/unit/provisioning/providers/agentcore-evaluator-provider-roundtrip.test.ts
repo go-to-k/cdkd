@@ -70,7 +70,7 @@ describe('AgentCoreEvaluatorProvider read-update round-trip', () => {
       })
       .mockResolvedValueOnce({ tags: {} });
 
-    const observed = await provider.readCurrentState(EVALUATOR_ARN, 'L', RESOURCE_TYPE);
+    const observed = (await provider.readCurrentState(EVALUATOR_ARN, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
 
     // Always-emit placeholder contract: absent description surfaces as ''.
     expect(observed?.['Description']).toBe('');
@@ -137,7 +137,7 @@ describe('AgentCoreEvaluatorProvider read-update round-trip', () => {
       })
       .mockResolvedValueOnce({ tags: {} });
 
-    const observed = await provider.readCurrentState(EVALUATOR_ARN, 'L', RESOURCE_TYPE);
+    const observed = (await provider.readCurrentState(EVALUATOR_ARN, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
 
     vi.clearAllMocks();
     mockSend.mockResolvedValueOnce({

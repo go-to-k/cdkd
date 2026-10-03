@@ -61,6 +61,15 @@ import {
   ASGProvider,
   foldMetricsCollection,
 } from '../../../src/provisioning/providers/asg-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const TYPE = 'AWS::AutoScaling::AutoScalingGroup';
 const MIN = 'GroupMinSize';
@@ -482,7 +491,7 @@ describe('ASGProvider.canonicalizeDriftProperties — MetricsCollection (#4013)'
       }
       return Promise.resolve({});
     });
-    const readback = (await provider.readCurrentState('my-asg', 'MyAsg', TYPE))!;
+    const readback = (bagOf(await provider.readCurrentState('my-asg', 'MyAsg', TYPE)))!;
     const baseline = {
       MetricsCollection: [
         { Granularity: '1Minute', Metrics: [MIN] },

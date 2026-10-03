@@ -124,7 +124,9 @@ import type {
   CreateContext,
   UpdateContext,
   SecretMasker,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { injectiveKey } from '../../state/record-keys.js';
 
@@ -5446,7 +5448,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       const resp = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
@@ -5868,7 +5870,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
       return result;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      // Also reached by the LOCAL replica's ListTagsOfResource RNF rethrow above.
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
   }

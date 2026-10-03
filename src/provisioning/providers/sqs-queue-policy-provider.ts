@@ -23,7 +23,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 
 /**
  * AWS SQS Queue Policy Provider
@@ -246,15 +248,15 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
    *   - `PolicyDocument` — fetched via `GetQueueAttributes` for
    *     `Policy`, JSON-parsed back to the object form cdkd state holds.
    *
-   * Returns `undefined` when the queue is gone (`QueueDoesNotExist`) or
-   * when no policy is currently attached (the `Policy` attribute is
+   * Returns `RESOURCE_NOT_FOUND` when the queue is gone (`QueueDoesNotExist`)
+   * or when no policy is currently attached (the `Policy` attribute is
    * absent / empty).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let policyAttr: string | undefined;
     try {
       const resp = await this.sqsClient.send(
@@ -266,15 +268,19 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       policyAttr = resp.Attributes?.['Policy'];
     } catch (err) {
       const e = err as { name?: string; message?: string };
-      if (
-        e.name === 'QueueDoesNotExist' ||
-        (typeof e.message === 'string' && e.message.includes('does not exist'))
-      ) {
-        return undefined;
+      // The error NAME only: SQS's cross-account denial also reads "does not
+      // exist or you do not have access to it" (go-to-k/cdkd#4283). The NAME
+      // carries the same ambiguity: SQS answers `QueueDoesNotExist` for a
+      // queue URL in an account the caller cannot see, so a cross-account
+      // policy read by the wrong principal also reads as deleted. cdkd
+      // records same-account queue URLs, where the name is unambiguous.
+      if (e.name === 'QueueDoesNotExist' || e.name === 'AWS.SimpleQueueService.NonExistentQueue') {
+        return RESOURCE_NOT_FOUND;
       }
       throw err;
     }
-    if (!policyAttr) return undefined;
+    // go-to-k/cdkd#4283: an empty Policy attribute is what deleting the QueuePolicy leaves.
+    if (!policyAttr) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {
       Queues: [physicalId],

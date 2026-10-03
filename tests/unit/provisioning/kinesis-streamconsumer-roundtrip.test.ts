@@ -44,6 +44,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { KinesisStreamConsumerProvider } from '../../../src/provisioning/providers/kinesis-streamconsumer-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 const STREAM_ARN = 'arn:aws:kinesis:us-east-1:123456789012:stream/mystream';
@@ -399,16 +400,16 @@ describe('KinesisStreamConsumerProvider', () => {
         })
         .mockResolvedValueOnce({ Tags: [] });
 
-      const result = await provider.readCurrentState(
+      const result = (await provider.readCurrentState(
         CONSUMER_ARN,
         'LogicalId',
         'AWS::Kinesis::StreamConsumer'
-      );
+      )) as Record<string, unknown> | undefined;
 
       expect(result?.['Tags']).toEqual([]);
     });
 
-    it('returns undefined on ResourceNotFoundException', async () => {
+    it('returns RESOURCE_NOT_FOUND on ResourceNotFoundException', async () => {
       const err = new ResourceNotFoundException({ message: 'gone', $metadata: {} });
       mockSend.mockRejectedValueOnce(err);
 
@@ -417,7 +418,22 @@ describe('KinesisStreamConsumerProvider', () => {
         'LogicalId',
         'AWS::Kinesis::StreamConsumer'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when ListTagsForResource reports the consumer gone', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          ConsumerDescription: { ConsumerName: CONSUMER_NAME, StreamARN: STREAM_ARN },
+        })
+        .mockRejectedValueOnce(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+
+      const result = await provider.readCurrentState(
+        CONSUMER_ARN,
+        'LogicalId',
+        'AWS::Kinesis::StreamConsumer'
+      );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
 
     it('returns undefined for unrelated resource types', async () => {

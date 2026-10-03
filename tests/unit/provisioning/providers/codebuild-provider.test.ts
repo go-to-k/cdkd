@@ -40,6 +40,15 @@ import {
   BatchGetProjectsCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-codebuild';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('CodeBuildProvider', () => {
   let provider: CodeBuildProvider;
@@ -437,11 +446,11 @@ describe('CodeBuildProvider', () => {
         projectsNotFound: [],
       });
 
-      const state = await provider.readCurrentState(
+      const state = bagOf(await provider.readCurrentState(
         'my-project',
         'MyProject',
         'AWS::CodeBuild::Project'
-      );
+      ));
 
       const source = state?.['Source'] as Record<string, unknown>;
       expect(source['SourceIdentifier']).toBe('primary');
@@ -479,11 +488,11 @@ describe('CodeBuildProvider', () => {
         projectsNotFound: [],
       });
 
-      const state = await provider.readCurrentState(
+      const state = bagOf(await provider.readCurrentState(
         'my-project',
         'MyProject',
         'AWS::CodeBuild::Project'
-      );
+      ));
 
       expect(state?.['Source']).not.toHaveProperty('GitSubmodulesConfig');
       expect(state?.['Source']).not.toHaveProperty('BuildStatusConfig');
@@ -520,11 +529,11 @@ describe('CodeBuildProvider', () => {
         projectsNotFound: [],
       });
 
-      const state = await provider.readCurrentState(
+      const state = bagOf(await provider.readCurrentState(
         'my-project',
         'MyProject',
         'AWS::CodeBuild::Project'
-      );
+      ));
 
       const secondary = (state?.['SecondarySources'] as Array<Record<string, unknown>>)[0]!;
       expect(secondary['SourceIdentifier']).toBe('lib');
@@ -558,11 +567,11 @@ describe('CodeBuildProvider', () => {
         projectsNotFound: [],
       });
 
-      const state = await provider.readCurrentState(
+      const state = bagOf(await provider.readCurrentState(
         'my-project',
         'MyProject',
         'AWS::CodeBuild::Project'
-      );
+      ));
 
       expect(state?.['Source']).not.toHaveProperty('Auth');
     });

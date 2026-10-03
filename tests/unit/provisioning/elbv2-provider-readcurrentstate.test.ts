@@ -5,6 +5,7 @@ import {
   DescribeCapacityReservationCommand,
   DescribeTagsCommand,
   DescribeTargetGroupsCommand,
+  DescribeTargetGroupAttributesCommand,
   DescribeTargetHealthCommand,
   DescribeListenersCommand,
   DescribeListenerAttributesCommand,
@@ -45,6 +46,16 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import type { ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('ELBv2Provider.readCurrentState', () => {
   let provider: ELBv2Provider;
@@ -82,11 +93,11 @@ describe('ELBv2Provider.readCurrentState', () => {
         })
         .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:lb', Tags: [] }] });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'arn:lb',
         'L',
         'AWS::ElasticLoadBalancingV2::LoadBalancer'
-      );
+      ));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeLoadBalancersCommand);
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeCapacityReservationCommand);
@@ -108,7 +119,7 @@ describe('ELBv2Provider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined when LB is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when LB is gone', async () => {
       mockSend.mockRejectedValueOnce(
         Object.assign(new Error('not found'), { name: 'LoadBalancerNotFoundException' })
       );
@@ -117,7 +128,7 @@ describe('ELBv2Provider.readCurrentState', () => {
         'L',
         'AWS::ElasticLoadBalancingV2::LoadBalancer'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -158,11 +169,11 @@ describe('ELBv2Provider.readCurrentState', () => {
         })
         .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:tg', Tags: [] }] });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'arn:tg',
         'L',
         'AWS::ElasticLoadBalancingV2::TargetGroup'
-      );
+      ));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeTargetGroupsCommand);
       expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(DescribeTargetHealthCommand);
@@ -200,11 +211,11 @@ describe('ELBv2Provider.readCurrentState', () => {
           .mockResolvedValueOnce({ Attributes: [] })
           .mockResolvedValueOnce(healthResponse)
           .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:tg', Tags: [] }] });
-        return provider.readCurrentState(
+        return bagOf(await provider.readCurrentState(
           'arn:tg',
           'L',
           'AWS::ElasticLoadBalancingV2::TargetGroup'
-        );
+        ));
       }
 
       it('EXCLUDES a draining target so a deregistration in flight is not frozen into the baseline', async () => {
@@ -284,11 +295,11 @@ describe('ELBv2Provider.readCurrentState', () => {
           })
           .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:tg', Tags: [] }] });
 
-        const result = await provider.readCurrentState(
+        const result = bagOf(await provider.readCurrentState(
           'arn:tg',
           'L',
           'AWS::ElasticLoadBalancingV2::TargetGroup'
-        );
+        ));
         expect(result?.['Targets']).toEqual([{ Id: 'i-0abc', Port: 8080 }]);
       });
 
@@ -313,11 +324,11 @@ describe('ELBv2Provider.readCurrentState', () => {
           })
           .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:tg', Tags: [] }] });
 
-        const result = await provider.readCurrentState(
+        const result = bagOf(await provider.readCurrentState(
           'arn:tg',
           'L',
           'AWS::ElasticLoadBalancingV2::TargetGroup'
-        );
+        ));
         expect(result?.['Targets']).toEqual([
           { Id: '10.0.1.10' },
           { Id: '10.0.1.11', Port: 9000 },
@@ -340,11 +351,11 @@ describe('ELBv2Provider.readCurrentState', () => {
           )
           .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:tg', Tags: [] }] });
 
-        const result = await provider.readCurrentState(
+        const result = bagOf(await provider.readCurrentState(
           'arn:tg',
           'L',
           'AWS::ElasticLoadBalancingV2::TargetGroup'
-        );
+        ));
         expect(result).toBeDefined();
         expect('Targets' in (result as Record<string, unknown>)).toBe(false);
       });
@@ -388,11 +399,11 @@ describe('ELBv2Provider.readCurrentState', () => {
         })
         .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:listener', Tags: [] }] });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'arn:listener',
         'L',
         'AWS::ElasticLoadBalancingV2::Listener'
-      );
+      ));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeListenersCommand);
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeListenerAttributesCommand);
@@ -432,11 +443,11 @@ describe('ELBv2Provider.readCurrentState', () => {
         .mockResolvedValueOnce({ Attributes: [] })
         .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:listener', Tags: [] }] });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'arn:listener',
         'L',
         'AWS::ElasticLoadBalancingV2::Listener'
-      );
+      ));
       expect(result).toMatchObject({
         AlpnPolicy: ['HTTP2Preferred'],
         MutualAuthentication: { Mode: 'verify', TrustStoreArn: 'arn:ts' },
@@ -464,11 +475,11 @@ describe('ELBv2Provider.readCurrentState', () => {
         })
         .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:listener', Tags: [] }] });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'arn:listener',
         'L',
         'AWS::ElasticLoadBalancingV2::Listener'
-      );
+      ));
       expect(result).toMatchObject({
         ListenerAttributes: [
           { Key: 'routing.http.response.server.enabled', Value: 'false' },
@@ -493,16 +504,16 @@ describe('ELBv2Provider.readCurrentState', () => {
         .mockRejectedValueOnce(new Error('AccessDenied'))
         .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:listener', Tags: [] }] });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'arn:listener',
         'L',
         'AWS::ElasticLoadBalancingV2::Listener'
-      );
+      ));
       expect(result).toBeDefined();
       expect(result).not.toHaveProperty('ListenerAttributes');
     });
 
-    it('returns undefined when listener is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when listener is gone', async () => {
       mockSend.mockRejectedValueOnce(
         Object.assign(new Error('not found'), { name: 'ListenerNotFoundException' })
       );
@@ -511,6 +522,205 @@ describe('ELBv2Provider.readCurrentState', () => {
         'L',
         'AWS::ElasticLoadBalancingV2::Listener'
       );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+  });
+
+  describe('gone vs no read path (go-to-k/cdkd#4283)', () => {
+    it('returns RESOURCE_NOT_FOUND when the target group is gone', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('One or more target groups not found'), {
+          name: 'TargetGroupNotFoundException',
+        })
+      );
+      const result = await provider.readCurrentState(
+        'arn:tg',
+        'L',
+        'AWS::ElasticLoadBalancingV2::TargetGroup'
+      );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it.each([
+      ['AWS::ElasticLoadBalancingV2::LoadBalancer', { LoadBalancers: [] }],
+      ['AWS::ElasticLoadBalancingV2::TargetGroup', { TargetGroups: [] }],
+      ['AWS::ElasticLoadBalancingV2::Listener', { Listeners: [] }],
+    ])('returns RESOURCE_NOT_FOUND for %s when the describe lists nothing', async (type, resp) => {
+      mockSend.mockResolvedValueOnce(resp);
+      const result = await provider.readCurrentState('arn:x', 'L', type);
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when the LB vanishes between the describe and the attribute read', async () => {
+      const notFound = Object.assign(new Error('not found'), {
+        name: 'LoadBalancerNotFoundException',
+      });
+      mockSend
+        .mockResolvedValueOnce({
+          LoadBalancers: [{ LoadBalancerArn: 'arn:lb', LoadBalancerName: 'lb' }],
+        })
+        .mockResolvedValueOnce({}) // DescribeCapacityReservation
+        .mockRejectedValueOnce(notFound); // DescribeLoadBalancerAttributes
+      const result = await provider.readCurrentState(
+        'arn:lb',
+        'L',
+        'AWS::ElasticLoadBalancingV2::LoadBalancer'
+      );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when the listener vanishes between the describe and the attribute read', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Listeners: [
+            {
+              ListenerArn: 'arn:listener',
+              LoadBalancerArn: 'arn:lb',
+              Port: 80,
+              Protocol: 'HTTP',
+              DefaultActions: [{ Type: 'forward', TargetGroupArn: 'arn:tg' }],
+            },
+          ],
+        })
+        .mockRejectedValueOnce(
+          Object.assign(new Error('Listener not found'), { name: 'ListenerNotFoundException' })
+        ); // DescribeListenerAttributes
+      const result = await provider.readCurrentState(
+        'arn:listener',
+        'L',
+        'AWS::ElasticLoadBalancingV2::Listener'
+      );
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeListenerAttributesCommand);
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('rethrows a non-not-found describe error instead of reporting the resource gone', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('User is not authorized'), { name: 'AccessDenied' })
+      );
+      await expect(
+        provider.readCurrentState('arn:lb', 'L', 'AWS::ElasticLoadBalancingV2::LoadBalancer')
+      ).rejects.toThrow('not authorized');
+    });
+
+    it('keeps undefined for a message-only "not found" (no ELBv2 not-found name)', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('Capacity reservation not found'), { name: 'ValidationError' })
+      );
+      const result = await provider.readCurrentState(
+        'arn:lb',
+        'L',
+        'AWS::ElasticLoadBalancingV2::LoadBalancer'
+      );
+      expect(result).toBeUndefined();
+    });
+
+    it.each([
+      'AWS::ElasticLoadBalancingV2::TargetGroup',
+      'AWS::ElasticLoadBalancingV2::Listener',
+    ])(
+      'keeps undefined for %s on a message-only "not found" under another fault name',
+      async (type) => {
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('Certificate not found'), {
+            name: 'CertificateNotFoundException',
+          })
+        );
+        const result = await provider.readCurrentState('arn:x', 'L', type);
+        expect(result).toBeUndefined();
+      }
+    );
+
+    it.each([
+      'AWS::ElasticLoadBalancingV2::TargetGroup',
+      'AWS::ElasticLoadBalancingV2::Listener',
+    ])('rethrows an AccessDenied describe error for %s rather than reporting it gone', async (type) => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('User is not authorized'), { name: 'AccessDenied' })
+      );
+      await expect(provider.readCurrentState('arn:x', 'L', type)).rejects.toThrow(
+        'not authorized'
+      );
+    });
+
+    const messageOnlyNotFound = () =>
+      Object.assign(new Error('Certificate not found'), {
+        name: 'CertificateNotFoundException',
+      });
+
+    it('keeps undefined when DescribeCapacityReservation fails with a message-only "not found"', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          LoadBalancers: [{ LoadBalancerArn: 'arn:lb', LoadBalancerName: 'lb' }],
+        })
+        .mockRejectedValueOnce(messageOnlyNotFound()); // DescribeCapacityReservation
+      const result = await provider.readCurrentState(
+        'arn:lb',
+        'L',
+        'AWS::ElasticLoadBalancingV2::LoadBalancer'
+      );
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeCapacityReservationCommand);
+      expect(result).toBeUndefined();
+    });
+
+    it('keeps undefined when DescribeLoadBalancerAttributes fails with a message-only "not found"', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          LoadBalancers: [{ LoadBalancerArn: 'arn:lb', LoadBalancerName: 'lb' }],
+        })
+        .mockResolvedValueOnce({}) // DescribeCapacityReservation
+        .mockRejectedValueOnce(messageOnlyNotFound()); // DescribeLoadBalancerAttributes
+      const result = await provider.readCurrentState(
+        'arn:lb',
+        'L',
+        'AWS::ElasticLoadBalancingV2::LoadBalancer'
+      );
+      expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(DescribeLoadBalancerAttributesCommand);
+      expect(result).toBeUndefined();
+    });
+
+    it('keeps undefined when DescribeTargetGroupAttributes fails with a message-only "not found"', async () => {
+      mockSend
+        .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupArn: 'arn:tg', TargetGroupName: 'tg' }] })
+        .mockRejectedValueOnce(messageOnlyNotFound()); // DescribeTargetGroupAttributes
+      const result = await provider.readCurrentState(
+        'arn:tg',
+        'L',
+        'AWS::ElasticLoadBalancingV2::TargetGroup'
+      );
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeTargetGroupAttributesCommand);
+      expect(result).toBeUndefined();
+    });
+
+    it('keeps undefined when DescribeListenerAttributes fails with a message-only "not found"', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Listeners: [
+            {
+              ListenerArn: 'arn:listener',
+              LoadBalancerArn: 'arn:lb',
+              Port: 80,
+              Protocol: 'HTTP',
+              DefaultActions: [{ Type: 'forward', TargetGroupArn: 'arn:tg' }],
+            },
+          ],
+        })
+        .mockRejectedValueOnce(messageOnlyNotFound()); // DescribeListenerAttributes
+      const result = await provider.readCurrentState(
+        'arn:listener',
+        'L',
+        'AWS::ElasticLoadBalancingV2::Listener'
+      );
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeListenerAttributesCommand);
+      expect(result).toBeUndefined();
+    });
+
+    it('keeps undefined for a type it has no read path for', async () => {
+      const result = bagOf(await provider.readCurrentState(
+        'arn:x',
+        'L',
+        'AWS::ElasticLoadBalancingV2::ListenerRule'
+      ));
       expect(result).toBeUndefined();
     });
   });
@@ -534,11 +744,11 @@ describe('ELBv2Provider.readCurrentState', () => {
         ],
       });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'arn:lb',
       'L',
       'AWS::ElasticLoadBalancingV2::LoadBalancer'
-    );
+    ));
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -558,11 +768,11 @@ describe('ELBv2Provider.readCurrentState', () => {
         ],
       });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'arn:lb',
       'L',
       'AWS::ElasticLoadBalancingV2::LoadBalancer'
-    );
+    ));
     expect(result?.Tags).toEqual([]);
   });
 
@@ -575,11 +785,11 @@ describe('ELBv2Provider.readCurrentState', () => {
       .mockResolvedValueOnce({ Attributes: [] })
       .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:lb', Tags: [] }] });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'arn:lb',
       'L',
       'AWS::ElasticLoadBalancingV2::LoadBalancer'
-    );
+    ));
     expect(result?.LoadBalancerAttributes).toEqual([]);
   });
 });

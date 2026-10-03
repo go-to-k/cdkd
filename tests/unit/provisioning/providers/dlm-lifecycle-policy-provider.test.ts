@@ -33,6 +33,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { DLMLifecyclePolicyProvider } from '../../../../src/provisioning/providers/dlm-lifecycle-policy-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 import {
   CreateLifecyclePolicyCommand,
   UpdateLifecyclePolicyCommand,
@@ -519,12 +520,12 @@ describe('DLMLifecyclePolicyProvider readCurrentState / drift', () => {
     expect(state).not.toHaveProperty('PolicyDetails');
   });
 
-  it('returns undefined when the policy is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when the policy is gone', async () => {
     routeSend({ GetLifecyclePolicyCommand: notFound() });
 
-    await expect(
-      provider.readCurrentState(POLICY_ID, 'MyPolicy', RESOURCE_TYPE)
-    ).resolves.toBeUndefined();
+    await expect(provider.readCurrentState(POLICY_ID, 'MyPolicy', RESOURCE_TYPE)).resolves.toBe(
+      RESOURCE_NOT_FOUND
+    );
   });
 
   it('returns undefined when the response carries no Policy', async () => {

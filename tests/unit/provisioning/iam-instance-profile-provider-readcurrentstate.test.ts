@@ -29,6 +29,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMInstanceProfileProvider } from '../../../src/provisioning/providers/iam-instance-profile-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('IAMInstanceProfileProvider.readCurrentState', () => {
   let provider: IAMInstanceProfileProvider;
@@ -65,7 +73,7 @@ describe('IAMInstanceProfileProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when profile does not exist', async () => {
+  it('returns RESOURCE_NOT_FOUND when profile does not exist', async () => {
     mockSend.mockRejectedValueOnce(
       new NoSuchEntityException({ message: 'gone', $metadata: {} })
     );
@@ -75,7 +83,7 @@ describe('IAMInstanceProfileProvider.readCurrentState', () => {
       'Logical',
       'AWS::IAM::InstanceProfile'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('emits empty Roles placeholder when none attached', async () => {
@@ -87,11 +95,11 @@ describe('IAMInstanceProfileProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'my-profile',
       'Logical',
       'AWS::IAM::InstanceProfile'
-    );
+    ));
     expect(result?.Roles).toEqual([]);
   });
 });

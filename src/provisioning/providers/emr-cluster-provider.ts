@@ -74,7 +74,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { commandHole } from '../../utils/pasteable-command.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -1419,17 +1421,21 @@ export class EMRClusterProvider implements ResourceProvider {
    * On the normal path the baseline is `observedProperties` (captured via this
    * same method), so observed == current and there is no phantom drift.
    *
-   * Returns `undefined` when the cluster is gone (`InvalidRequestException`)
-   * so the caller reports drift-unknown rather than throwing — mirrors the
-   * optional `import` method's incremental opt-in shape.
+   * Returns `RESOURCE_NOT_FOUND` for a `TERMINATED*` cluster (the state
+   * `delete` and `import` already read as gone). An `InvalidRequestException`
+   * stays `undefined` (drift-unknown): EMR uses it for more than an unknown id,
+   * so it is not evidence the cluster is gone.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const cluster = await this.describeClusterOrUndefined(physicalId);
     if (!cluster) return undefined;
+    if (cluster.Status?.State && TERMINAL_STATES.has(cluster.Status.State)) {
+      return RESOURCE_NOT_FOUND;
+    }
 
     let instanceGroups: InstanceGroup[] = [];
     let instanceFleets: InstanceFleet[] = [];

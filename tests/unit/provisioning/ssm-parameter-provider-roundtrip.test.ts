@@ -37,6 +37,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SSMParameterProvider } from '../../../src/provisioning/providers/ssm-parameter-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const PARAM_NAME = '/foo/bar';
 const RESOURCE_TYPE = 'AWS::SSM::Parameter';
@@ -142,7 +150,7 @@ describe('SSMParameterProvider read-update round-trip', () => {
       .mockResolvedValueOnce({ Parameters: [{ Name: PARAM_NAME }] })
       .mockResolvedValueOnce({ TagList: [] });
 
-    const observed = await provider.readCurrentState(PARAM_NAME, 'L', RESOURCE_TYPE);
+    const observed = bagOf(await provider.readCurrentState(PARAM_NAME, 'L', RESOURCE_TYPE));
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetParameterCommand);
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeParametersCommand);

@@ -50,7 +50,9 @@ import type {
   ResourceImportResult,
   CreateContext,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 
 /**
  * AWS SSM Parameter Provider
@@ -705,13 +707,13 @@ export class SSMParameterProvider implements ResourceProvider {
    * That's the correct conservative behavior — surfacing the discrepancy
    * is more useful than silently masking it.
    *
-   * Returns `undefined` when the parameter is gone (`ParameterNotFound`).
+   * Returns `RESOURCE_NOT_FOUND` when the parameter is gone (`ParameterNotFound`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let getResp: {
       Parameter?: { Type?: string; Value?: string; DataType?: string };
     };
@@ -720,7 +722,7 @@ export class SSMParameterProvider implements ResourceProvider {
         new GetParameterCommand({ Name: physicalId, WithDecryption: false })
       )) as unknown as typeof getResp;
     } catch (err) {
-      if (err instanceof ParameterNotFound) return undefined;
+      if (err instanceof ParameterNotFound) return RESOURCE_NOT_FOUND;
       throw err;
     }
     const param = getResp.Parameter;

@@ -130,7 +130,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -374,6 +376,19 @@ function deleteCatalogId(properties: Record<string, unknown> | undefined): Catal
     catalogId,
     declaredButUnusable: catalogId === undefined && raw != null && !isAccountIdPseudoParameter(raw),
   };
+}
+
+/**
+ * The readCurrentState answer for an `EntityNotFoundException` on a
+ * catalog-scoped read: `RESOURCE_NOT_FOUND`, except when a declared `CatalogId`
+ * was unusable and the read fell back to the default catalog — that NotFound
+ * proves nothing about the declared one (the delete's same discrimination), so
+ * it stays `undefined`.
+ */
+function notFoundInCatalog(
+  properties: Record<string, unknown> | undefined
+): ResourceNotFound | undefined {
+  return deleteCatalogId(properties).declaredButUnusable ? undefined : RESOURCE_NOT_FOUND;
 }
 
 /**
@@ -2711,7 +2726,9 @@ export class GlueProvider implements ResourceProvider {
    * ({@link withRecordedCatalogId}), so a `drift --revert` built from this
    * snapshot addresses the catalog it was read from.
    *
-   * Returns `undefined` when the resource is gone (`EntityNotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the resource is gone
+   * (`EntityNotFoundException`), unless the read fell back from an unusable
+   * recorded `CatalogId` ({@link notFoundInCatalog}).
    * Other Glue resource types (`Job`, `Crawler`, `Connection`, `Trigger`,
    * `Workflow`, `SecurityConfiguration`, etc.) are out of scope for v1 —
    * the provider's `create()` only handles Database/Table; CC API picks
@@ -2722,7 +2739,7 @@ export class GlueProvider implements ResourceProvider {
     _logicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     // `CatalogId` is threaded through the same way the pre-update readers do
     // it (issue #1461). On a cross-account / non-default Data Catalog, a
     // `GetTable` without it reads the ACCOUNT-DEFAULT catalog — so drift
@@ -2733,18 +2750,19 @@ export class GlueProvider implements ResourceProvider {
     // template value — an unresolved intrinsic OBJECT (which the cast would
     // hand to `GetTable` as if it were an id) or a YAML-numeric account id.
     const catalogId = catalogIdForApi(properties?.['CatalogId']);
+    let snapshot: Record<string, unknown> | ResourceNotFound | undefined;
     switch (resourceType) {
-      case 'AWS::Glue::Database': {
-        const snapshot = await this.readDatabase(physicalId, catalogId);
-        return snapshot && withRecordedCatalogId(snapshot, properties);
-      }
-      case 'AWS::Glue::Table': {
-        const snapshot = await this.readTable(physicalId, catalogId, properties);
-        return snapshot && withRecordedCatalogId(snapshot, properties);
-      }
+      case 'AWS::Glue::Database':
+        snapshot = await this.readDatabase(physicalId, catalogId);
+        break;
+      case 'AWS::Glue::Table':
+        snapshot = await this.readTable(physicalId, catalogId, properties);
+        break;
       default:
         return undefined;
     }
+    if (snapshot === RESOURCE_NOT_FOUND) return notFoundInCatalog(properties);
+    return snapshot && withRecordedCatalogId(snapshot, properties);
   }
 
   /**
@@ -2798,7 +2816,7 @@ export class GlueProvider implements ResourceProvider {
   private async readDatabase(
     physicalId: string,
     catalogId?: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let db;
     try {
       const resp = await this.getClient().send(
@@ -2809,7 +2827,7 @@ export class GlueProvider implements ResourceProvider {
       );
       db = resp.Database;
     } catch (err) {
-      if (err instanceof EntityNotFoundException) return undefined;
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!db) return undefined;
@@ -2866,7 +2884,7 @@ export class GlueProvider implements ResourceProvider {
     physicalId: string,
     catalogId?: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const decoded = decodeTableId(physicalId, properties);
     if (!decoded) return undefined;
     const { databaseName, tableName } = decoded;
@@ -2882,7 +2900,7 @@ export class GlueProvider implements ResourceProvider {
       );
       table = resp.Table;
     } catch (err) {
-      if (err instanceof EntityNotFoundException) return undefined;
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!table) return undefined;
@@ -3390,7 +3408,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let workflow;
     try {
       const resp = await this.getClient().send(
@@ -3398,7 +3416,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
       );
       workflow = resp.Workflow;
     } catch (err) {
-      if (err instanceof EntityNotFoundException) return undefined;
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!workflow) return undefined;
@@ -3695,7 +3713,7 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let cfg;
     try {
       const resp = await this.getClient().send(
@@ -3703,7 +3721,7 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
       );
       cfg = resp.SecurityConfiguration;
     } catch (err) {
-      if (err instanceof EntityNotFoundException) return undefined;
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!cfg) return undefined;
@@ -4373,13 +4391,13 @@ export class GlueJobProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let job;
     try {
       const resp = await this.getClient().send(new GetJobCommand({ JobName: physicalId }));
       job = resp.Job;
     } catch (err) {
-      if (err instanceof EntityNotFoundException) return undefined;
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!job) return undefined;
@@ -5045,13 +5063,13 @@ export class GlueCrawlerProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let crawler;
     try {
       const resp = await this.getClient().send(new GetCrawlerCommand({ Name: physicalId }));
       crawler = resp.Crawler;
     } catch (err) {
-      if (err instanceof EntityNotFoundException) return undefined;
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!crawler) return undefined;
@@ -5536,7 +5554,7 @@ export class GlueConnectionProvider implements ResourceProvider {
     _logicalId: string,
     _resourceType: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     // Shared guard, not a bare cast — same reasoning as the Database / Table
     // `readCurrentState` above (issue #1675).
     const catalogId = catalogIdForApi(properties?.['CatalogId']);
@@ -5550,7 +5568,7 @@ export class GlueConnectionProvider implements ResourceProvider {
       );
       conn = resp.Connection;
     } catch (err) {
-      if (err instanceof EntityNotFoundException) return undefined;
+      if (err instanceof EntityNotFoundException) return notFoundInCatalog(properties);
       throw err;
     }
     if (!conn) return undefined;
@@ -5995,13 +6013,13 @@ export class GlueTriggerProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let trig;
     try {
       const resp = await this.getClient().send(new GetTriggerCommand({ Name: physicalId }));
       trig = resp.Trigger;
     } catch (err) {
-      if (err instanceof EntityNotFoundException) return undefined;
+      if (err instanceof EntityNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!trig) return undefined;

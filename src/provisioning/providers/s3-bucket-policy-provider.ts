@@ -114,7 +114,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ReadCurrentStateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 
 /**
  * AWS S3 Bucket Policy Provider
@@ -331,7 +333,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    *   - `PolicyDocument` — JSON-parsed back to the object form cdkd state
    *     typically holds.
    *
-   * Returns `undefined` when the bucket is gone (`NoSuchBucket`) or when
+   * Returns `RESOURCE_NOT_FOUND` when the bucket is gone (`NoSuchBucket`) or when
    * no policy is currently attached (`NoSuchBucketPolicy`).
    */
   async readCurrentState(
@@ -340,16 +342,16 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     _resourceType: string,
     properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let policyJson: string | undefined;
     try {
       const resp = await this.s3Client.send(new GetBucketPolicyCommand({ Bucket: physicalId }));
       policyJson = resp.Policy;
     } catch (err) {
-      if (err instanceof NoSuchBucket) return undefined;
+      if (err instanceof NoSuchBucket) return RESOURCE_NOT_FOUND;
       // S3 throws `NoSuchBucketPolicy` (a 404) when no policy is attached.
       const e = err as { name?: string };
-      if (e.name === 'NoSuchBucketPolicy') return undefined;
+      if (e.name === 'NoSuchBucketPolicy') return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!policyJson) return undefined;

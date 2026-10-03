@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import { ConsoleLogger, getLogger, setLogger } from '../../../src/utils/logger.js';
 import { kickOffObservedCapture } from '../../../src/deployment/deploy-engine/observed-capture.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
-import type { ResourceProvider } from '../../../src/types/resource.js';
+import { RESOURCE_NOT_FOUND, type ResourceProvider } from '../../../src/types/resource.js';
 
 /**
  * go-to-k/cdkd#4362: the observed-state readback after a CREATE / UPDATE runs
@@ -89,5 +89,27 @@ describe('kickOffObservedCapture binds the resource secret bag (issue #4362)', (
   it('binds nothing when the caller passes no bag (the schema-upgrade refresh)', async () => {
     await capture('log');
     expect(printed()).toContain(`Reading queue ${SECRET}`);
+  });
+});
+
+describe('kickOffObservedCapture on a resource AWS reports gone (go-to-k/cdkd#4283)', () => {
+  it('resolves to no baseline, never the sentinel as a property bag', async () => {
+    const engine = fakeEngine();
+    const provider = {
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+      readCurrentState: vi.fn(async () => RESOURCE_NOT_FOUND),
+    } as unknown as ResourceProvider;
+    kickOffObservedCapture.call(
+      engine as never,
+      provider,
+      'Queue',
+      'q',
+      'AWS::SQS::Queue',
+      { QueueName: 'q' }
+    );
+
+    await expect(engine.observedCaptureTasks.get('Queue')).resolves.toBeUndefined();
   });
 });

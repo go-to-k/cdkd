@@ -30,7 +30,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { withRemovalDefaults } from '../update-removal.js';
@@ -739,14 +741,14 @@ export class ACMCertificateProvider implements ResourceProvider {
    *    cdkd state stores the request-time input, which can legitimately
    *    diverge from the observed state without indicating drift.
    *
-   * Returns `undefined` when the cert is gone (`ResourceNotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the cert is gone (`ResourceNotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string,
     _properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let cert;
     try {
       const resp = await this.acmClient.send(
@@ -754,7 +756,7 @@ export class ACMCertificateProvider implements ResourceProvider {
       );
       cert = resp.Certificate;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!cert) return undefined;

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const { mockSend, childLogger } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -50,6 +51,15 @@ const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
  * neither had been seen: on the ordinary path both comparison sides come from
  * the same `readCurrentState` call, so they already agree.
  */
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
+
 describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
   let provider: DynamoDBGlobalTableProvider;
 
@@ -397,7 +407,7 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
         WarmThroughput: { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000, Status: 'ACTIVE' },
       });
 
-      const observed = await provider.readCurrentState('table-1', 'GlobalTable', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState('table-1', 'GlobalTable', RESOURCE_TYPE));
 
       const indexes = observed!['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>;
       expect(indexes[0]!['WarmThroughput']).toEqual({
@@ -415,7 +425,7 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
         Projection: { ProjectionType: 'ALL' },
       });
 
-      const observed = await provider.readCurrentState('table-1', 'GlobalTable', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState('table-1', 'GlobalTable', RESOURCE_TYPE));
 
       const indexes = observed!['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>;
       expect(indexes[0]).not.toHaveProperty('WarmThroughput');
@@ -434,7 +444,7 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
         WarmThroughput: { Status: 'CREATING' },
       });
 
-      const observed = await provider.readCurrentState('table-1', 'GlobalTable', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState('table-1', 'GlobalTable', RESOURCE_TYPE));
 
       const indexes = observed!['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>;
       expect(indexes[0]).not.toHaveProperty('WarmThroughput');
@@ -451,7 +461,7 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
         WarmThroughput: { ReadUnitsPerSecond: 12000, Status: 'ACTIVE' },
       });
 
-      const observed = await provider.readCurrentState('table-1', 'GlobalTable', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState('table-1', 'GlobalTable', RESOURCE_TYPE));
 
       const indexes = observed!['GlobalSecondaryIndexes'] as Array<Record<string, unknown>>;
       expect(indexes[0]!['WarmThroughput']).toEqual({ ReadUnitsPerSecond: 12000 });

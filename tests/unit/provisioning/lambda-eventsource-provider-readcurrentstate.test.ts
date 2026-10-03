@@ -36,6 +36,15 @@ import {
   classifyEventSource,
   LambdaEventSourceMappingProvider,
 } from '../../../src/provisioning/providers/lambda-eventsource-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
   let provider: LambdaEventSourceMappingProvider;
@@ -95,12 +104,12 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: {} });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'abc-123',
       'Logical',
       'AWS::Lambda::EventSourceMapping',
       { FunctionName: 'my-fn' }
-    );
+    ));
 
     // State carried the bare name; the ARN tail matches; surface the
     // bare-name shape so the comparator sees no drift.
@@ -117,12 +126,12 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: {} });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'abc-123',
       'Logical',
       'AWS::Lambda::EventSourceMapping',
       { FunctionName: 'arn:aws:lambda:us-east-1:123:function:my-fn' }
-    );
+    ));
 
     expect(result?.['FunctionName']).toBe('arn:aws:lambda:us-east-1:123:function:my-fn');
   });
@@ -138,11 +147,11 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       Tags: { Foo: 'Bar', 'aws:cdk:path': 'MyStack/MyMapping' },
     });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'abc-123',
       'Logical',
       'AWS::Lambda::EventSourceMapping'
-    );
+    ));
     expect(result?.['Tags']).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -153,15 +162,15 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       State: 'Disabled',
     });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'abc-123',
       'Logical',
       'AWS::Lambda::EventSourceMapping'
-    );
+    ));
     expect(result?.['Enabled']).toBe(false);
   });
 
-  it('returns undefined when mapping gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when mapping gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'gone', $metadata: {} })
     );
@@ -171,7 +180,28 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       'Logical',
       'AWS::Lambda::EventSourceMapping'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when the mapping vanishes before ListTags', async () => {
+    mockSend.mockResolvedValueOnce({
+      UUID: 'abc-123',
+      FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn',
+      EventSourceArn: 'arn:aws:sqs:us-east-1:123:my-queue',
+      EventSourceMappingArn: 'arn:aws:lambda:us-east-1:123:event-source-mapping:abc-123',
+      State: 'Enabled',
+    });
+    mockSend.mockRejectedValueOnce(
+      new ResourceNotFoundException({ message: 'gone', $metadata: {} })
+    );
+
+    const result = await provider.readCurrentState(
+      'abc-123',
+      'Logical',
+      'AWS::Lambda::EventSourceMapping'
+    );
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsCommand);
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   describe('#609 backfill: 7 readback branches', () => {
@@ -189,11 +219,11 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: {} });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'abc-123',
         'L',
         'AWS::Lambda::EventSourceMapping'
-      );
+      ));
       expect(result?.['KmsKeyArn']).toBe('arn:aws:kms:us-east-1:123:key/abc');
       // SDK-cased key MUST NOT leak through.
       expect(result?.['KMSKeyArn']).toBeUndefined();
@@ -212,11 +242,11 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: {} });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'abc-123',
         'L',
         'AWS::Lambda::EventSourceMapping'
-      );
+      ));
       expect(result).toBeDefined();
       expect('KmsKeyArn' in (result ?? {})).toBe(false);
     });
@@ -237,11 +267,11 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: {} });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'abc-123',
         'L',
         'AWS::Lambda::EventSourceMapping'
-      );
+      ));
       expect(result?.['LoggingConfig']).toEqual(loggingConfig);
       expect(result?.['MetricsConfig']).toEqual(metricsConfig);
       expect(result?.['ProvisionedPollerConfig']).toEqual(provisionedPollerConfig);
@@ -265,11 +295,11 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: {} });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'abc-123',
         'L',
         'AWS::Lambda::EventSourceMapping'
-      );
+      ));
       expect(result?.['Queues']).toEqual(['q-a', 'q-b']);
       expect(result?.['Queues']).not.toBe(queues);
       expect(result?.['Topics']).toEqual(['t-a']);
@@ -290,11 +320,11 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: {} });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'abc-123',
         'L',
         'AWS::Lambda::EventSourceMapping'
-      );
+      ));
       expect(result?.['SelfManagedEventSource']).toEqual({
         Endpoints: { KafkaBootstrapServers: ['b:9092'] },
       });
@@ -322,11 +352,11 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: {} });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'abc-123',
         'L',
         'AWS::Lambda::EventSourceMapping'
-      );
+      ));
 
       expect(result?.['SelfManagedEventSource']).toEqual(templateBlob);
     });
@@ -348,11 +378,11 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: {} });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'abc-123',
         'L',
         'AWS::Lambda::EventSourceMapping'
-      );
+      ));
       expect(result?.['StartingPositionTimestamp']).toBe(epochSeconds);
     });
 
@@ -366,11 +396,11 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: {} });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'abc-123',
         'L',
         'AWS::Lambda::EventSourceMapping'
-      );
+      ));
       const r = result ?? {};
       for (const k of [
         'KmsKeyArn',
@@ -405,11 +435,11 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
         State: 'Enabled',
       });
       mockSend.mockResolvedValueOnce({ Tags: {} });
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'abc-123',
         'L',
         'AWS::Lambda::EventSourceMapping'
-      );
+      ));
       return result ?? {};
     }
 

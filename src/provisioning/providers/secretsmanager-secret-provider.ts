@@ -38,14 +38,16 @@ import {
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
-import type {
-  ResourceProvider,
-  ResourceCreateResult,
-  ResourceUpdateResult,
-  ResourceImportInput,
-  ResourceImportResult,
-  CreateContext,
-  UpdateContext,
+import {
+  RESOURCE_NOT_FOUND,
+  type ResourceProvider,
+  type ResourceCreateResult,
+  type ResourceUpdateResult,
+  type ResourceImportInput,
+  type ResourceImportResult,
+  type CreateContext,
+  type UpdateContext,
+  type ResourceNotFound,
 } from '../../types/resource.js';
 
 /**
@@ -1166,13 +1168,13 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    * round-trip). CDK's `aws:*` auto-tags are filtered out; the result key
    * is omitted entirely when AWS reports no user tags.
    *
-   * Returns `undefined` when the secret is gone (`ResourceNotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the secret is gone (`ResourceNotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       const resp = await this.smClient.send(new DescribeSecretCommand({ SecretId: physicalId }));
       const result: Record<string, unknown> = {};
@@ -1194,7 +1196,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       if (resp.Type !== undefined) result['Type'] = resp.Type;
       return result;
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
   }

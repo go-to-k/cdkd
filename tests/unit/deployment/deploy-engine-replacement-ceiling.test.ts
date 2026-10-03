@@ -13,6 +13,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import { getLogger } from '../../../src/utils/logger.js';
@@ -875,6 +876,17 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
       await deploy('d2');
 
       expectReplaced('not-readable');
+    });
+
+    it('reads a RESOURCE_NOT_FOUND readback as not-readable (go-to-k/cdkd#4283)', async () => {
+      provider.readCurrentState.mockResolvedValue(RESOURCE_NOT_FOUND);
+
+      const result = await makeEngine({
+        captureObservedState: false,
+      }).readReaderForFreshNoEchoCeiling('Reader', noEchoState().resources['Reader']!, new Map());
+
+      expect(provider.readCurrentState).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ failure: 'not-readable' });
     });
 
     it.each([

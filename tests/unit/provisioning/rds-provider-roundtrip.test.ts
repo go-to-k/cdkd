@@ -481,7 +481,7 @@ describe('RDSProvider read-update round-trip', () => {
       'AWS::RDS::DBCluster'
     );
 
-    expect(result?.ServerlessV2ScalingConfiguration).toEqual({
+    expect((result as Record<string, unknown> | undefined)?.ServerlessV2ScalingConfiguration).toEqual({
       MinCapacity: 0.5,
       MaxCapacity: 4,
     });

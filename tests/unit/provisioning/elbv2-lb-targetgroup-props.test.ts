@@ -60,6 +60,7 @@ import {
   capacityReservationDelays,
 } from '../../../src/provisioning/providers/elbv2-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const LB_TYPE = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
 const TG_TYPE = 'AWS::ElasticLoadBalancingV2::TargetGroup';
@@ -1253,7 +1254,7 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
     // intact, because emitting a wrong value there fires false drift on every
     // single run.
 
-    it('returns undefined when DescribeCapacityReservation reports the LB is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when DescribeCapacityReservation reports the LB is gone', async () => {
       mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
         switch (cmd.constructor.name) {
           case 'DescribeLoadBalancersCommand':
@@ -1268,7 +1269,7 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
         }
       });
 
-      expect(await provider.readCurrentState!(LB_ARN, 'MyNlb', LB_TYPE)).toBeUndefined();
+      expect(await provider.readCurrentState!(LB_ARN, 'MyNlb', LB_TYPE)).toBe(RESOURCE_NOT_FOUND);
     });
 
     it('leaves MinimumLoadBalancerCapacity absent when DescribeCapacityReservation is denied', async () => {
@@ -1303,7 +1304,7 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       });
     });
 
-    it('returns undefined when DescribeTargetGroupAttributes reports the TG is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when DescribeTargetGroupAttributes reports the TG is gone', async () => {
       mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
         switch (cmd.constructor.name) {
           case 'DescribeTargetGroupsCommand':
@@ -1318,7 +1319,7 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
         }
       });
 
-      expect(await provider.readCurrentState!(TG_ARN, 'MyTg', TG_TYPE)).toBeUndefined();
+      expect(await provider.readCurrentState!(TG_ARN, 'MyTg', TG_TYPE)).toBe(RESOURCE_NOT_FOUND);
     });
 
     it('leaves TargetGroupAttributes absent when DescribeTargetGroupAttributes is denied', async () => {

@@ -39,7 +39,9 @@ import type {
   ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 
 /**
@@ -1089,16 +1091,15 @@ export class IAMPolicyProvider implements ResourceProvider {
    *     has an inline policy of a given name; cdkd would need to walk the
    *     entire account. Out of scope for v1.
    *
-   * Returns `undefined` when the resolved target has no inline policy of
-   * that name (`NoSuchEntityException`) — signals "drift unknown" rather
-   * than firing a false positive.
+   * Returns `RESOURCE_NOT_FOUND` when the resolved target has no inline
+   * policy of that name (`NoSuchEntityException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     if (!properties) return undefined;
 
     const policyDocument = properties['PolicyDocument'];
@@ -1136,7 +1137,7 @@ export class IAMPolicyProvider implements ResourceProvider {
         return undefined;
       }
     } catch (err) {
-      if (err instanceof NoSuchEntityException) return undefined;
+      if (err instanceof NoSuchEntityException) return RESOURCE_NOT_FOUND;
       throw err;
     }
 

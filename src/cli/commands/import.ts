@@ -96,6 +96,7 @@ import type {
   ResourceImportResult,
   TemplateResource,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   exportNamesCarriedFrom,
@@ -3459,7 +3460,9 @@ export async function captureObservedForImportedResources(
           // the sibling lookup is complete.
           buildReadCurrentStateContext(stackState, logicalId)
         );
-        if (observed !== undefined) {
+        // A resource AWS reports gone (go-to-k/cdkd#4283) has no baseline to
+        // record: left without one, like an unimplemented read.
+        if (observed !== undefined && observed !== RESOURCE_NOT_FOUND) {
           // GHSA-p5qg-v9gv-hc7w (issue #2828), the `cdkd import` twin of the
           // `cdkd state refresh-observed` writer issue #1926 closed. The
           // readback is what AWS actually holds, so for a resource whose

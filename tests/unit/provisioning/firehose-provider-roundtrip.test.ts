@@ -75,7 +75,7 @@ describe('FirehoseProvider read-update round-trip', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const observed = await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE);
+    const observed = (await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
     expect(observed).toBeDefined();
     expect(observed).not.toHaveProperty('KinesisStreamSourceConfiguration');
     expect(observed?.DeliveryStreamType).toBe('DirectPut');
@@ -100,7 +100,7 @@ describe('FirehoseProvider read-update round-trip', () => {
       })
       .mockResolvedValueOnce({ Tags: [] });
 
-    const observed = await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE);
+    const observed = (await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
     expect(observed?.KinesisStreamSourceConfiguration).toEqual({
       KinesisStreamARN: 'arn:aws:kinesis:us-east-1:1:stream/src',
       RoleARN: 'arn:aws:iam::1:role/r',
@@ -121,7 +121,7 @@ describe('FirehoseProvider read-update round-trip', () => {
       })
       .mockRejectedValueOnce(new Error('throttled'));
 
-    const observed = await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE);
+    const observed = (await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
     expect(observed).toBeDefined();
     expect(observed?.Tags).toEqual([]);
   });

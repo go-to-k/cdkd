@@ -12,7 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { CloudFormationClient } from '@aws-sdk/client-cloudformation';
-import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { RESOURCE_NOT_FOUND, type CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 
@@ -1369,5 +1369,35 @@ describe('a REFUSED record a selective import PRESERVES ends with NO baseline (i
     );
     expect(state.resources['Res']!.observedProperties).toEqual(baseline);
     expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefused')).toBe(false);
+  });
+});
+
+describe('the imported-resource baseline capture on a resource AWS reports gone (go-to-k/cdkd#4283)', () => {
+  it('records no baseline, never the sentinel as a property bag', async () => {
+    const state: StackState = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      stackName: 'gone-stack',
+      region: 'us-east-1',
+      resources: {
+        Res: { physicalId: 'res-phys', resourceType: 'AWS::SQS::Queue', properties: {} },
+      },
+      outputs: {},
+      lastModified: 0,
+    };
+    const { ObservedBaselineRefusals } = await import('../../../src/cli/commands/import.js');
+    const registry = {
+      getProviderFor: () => ({
+        provider: { readCurrentState: async () => RESOURCE_NOT_FOUND },
+        provisionedBy: 'sdk',
+      }),
+    } as unknown as Parameters<typeof captureObservedForImportedResources>[1];
+    await captureObservedForImportedResources(
+      state,
+      registry,
+      getLogger(),
+      new ObservedBaselineRefusals(),
+      new Set(['Res'])
+    );
+    expect(Object.hasOwn(state.resources['Res']!, 'observedProperties')).toBe(false);
   });
 });

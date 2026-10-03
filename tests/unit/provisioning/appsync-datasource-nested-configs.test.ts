@@ -431,7 +431,7 @@ describe('AppSync DataSource nested config blobs (#1597)', () => {
         },
       });
 
-      const result = await provider.readCurrentState('api-1|httpDs', 'L', DATASOURCE_TYPE);
+      const result = (await provider.readCurrentState('api-1|httpDs', 'L', DATASOURCE_TYPE)) as Record<string, unknown> | undefined;
 
       expect(result?.['HttpConfig']).toEqual({
         Endpoint: 'https://states.us-east-1.amazonaws.com',
@@ -447,7 +447,7 @@ describe('AppSync DataSource nested config blobs (#1597)', () => {
         dataSource: { name: 'httpDs', type: 'HTTP', httpConfig: { endpoint: 'https://x.com' } },
       });
 
-      const result = await provider.readCurrentState('api-1|httpDs', 'L', DATASOURCE_TYPE);
+      const result = (await provider.readCurrentState('api-1|httpDs', 'L', DATASOURCE_TYPE)) as Record<string, unknown> | undefined;
 
       expect(result?.['HttpConfig']).toEqual({ Endpoint: 'https://x.com' });
     });
@@ -473,7 +473,7 @@ describe('AppSync DataSource nested config blobs (#1597)', () => {
         },
       });
 
-      const result = await provider.readCurrentState('api-1|ddbDs', 'L', DATASOURCE_TYPE);
+      const result = (await provider.readCurrentState('api-1|ddbDs', 'L', DATASOURCE_TYPE)) as Record<string, unknown> | undefined;
 
       expect(result?.['DynamoDBConfig']).toEqual({
         TableName: 't',
@@ -512,7 +512,7 @@ describe('AppSync DataSource nested config blobs (#1597)', () => {
       mockSend.mockResolvedValueOnce({
         dataSource: { name: 'ddbDs', type: 'AMAZON_DYNAMODB', dynamodbConfig: sent },
       });
-      const result = await provider.readCurrentState('api-1|ddbDs', 'L', DATASOURCE_TYPE);
+      const result = (await provider.readCurrentState('api-1|ddbDs', 'L', DATASOURCE_TYPE)) as Record<string, unknown> | undefined;
 
       expect(result?.['DynamoDBConfig']).toEqual(template);
     });
@@ -537,7 +537,7 @@ describe('AppSync DataSource nested config blobs (#1597)', () => {
         },
       });
 
-      const result = await provider.readCurrentState('api-1|ddbDs', 'L', DATASOURCE_TYPE);
+      const result = (await provider.readCurrentState('api-1|ddbDs', 'L', DATASOURCE_TYPE)) as Record<string, unknown> | undefined;
 
       expect(result?.['DynamoDBConfig']).toEqual({
         TableName: 't',
@@ -556,7 +556,7 @@ describe('AppSync DataSource nested config blobs (#1597)', () => {
         },
       });
 
-      const result = await provider.readCurrentState('api-1|ddbDs', 'L', DATASOURCE_TYPE);
+      const result = (await provider.readCurrentState('api-1|ddbDs', 'L', DATASOURCE_TYPE)) as Record<string, unknown> | undefined;
 
       expect(result?.['DynamoDBConfig']).toEqual({ TableName: 't', AwsRegion: 'us-east-1' });
     });

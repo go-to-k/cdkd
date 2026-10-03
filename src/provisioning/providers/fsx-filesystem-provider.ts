@@ -46,6 +46,7 @@ import { stackScopedCreateToken } from './idempotency-token.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -2001,26 +2002,30 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * `<Variant>Configuration` blocks take the Class 1 type-discriminator
    * carve-out — exactly the ONE block matching `FileSystemType` is emitted
    * (at most one is ever legal on AWS), never the other three.
-   * Returns `undefined` when the file system is gone.
+   * Returns `RESOURCE_NOT_FOUND` when the file system is gone.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     if (resourceType !== 'AWS::FSx::FileSystem') return undefined;
 
     let fs: FileSystem | undefined;
+    let listed: readonly FileSystem[] | undefined;
     try {
       const resp = await this.getClient().send(
         new DescribeFileSystemsCommand({ FileSystemIds: [physicalId] })
       );
+      listed = resp.FileSystems;
       fs = resp.FileSystems?.[0];
     } catch (err) {
-      if (err instanceof FileSystemNotFound) return undefined;
+      if (err instanceof FileSystemNotFound) return RESOURCE_NOT_FOUND;
       throw err;
     }
-    if (!fs) return undefined;
+    // An empty list for the requested id is AWS saying it is gone; an absent
+    // list (empty body) keeps `undefined`.
+    if (!fs) return listed?.length === 0 ? RESOURCE_NOT_FOUND : undefined;
 
     const result: Record<string, unknown> = {};
 

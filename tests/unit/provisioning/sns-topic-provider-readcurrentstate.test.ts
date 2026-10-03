@@ -34,6 +34,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:my-topic';
 
@@ -92,11 +93,19 @@ describe('SNSTopicProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when topic does not exist', async () => {
+  it('returns RESOURCE_NOT_FOUND when topic does not exist', async () => {
     mockSend.mockRejectedValueOnce(new NotFoundException({ message: 'gone', $metadata: {} }));
 
     const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when the topic disappears before ListTagsForResource', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: { DisplayName: 'X' } });
+    mockSend.mockRejectedValueOnce(new NotFoundException({ message: 'gone', $metadata: {} }));
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
@@ -108,7 +117,7 @@ describe('SNSTopicProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+    const result = (await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic')) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -125,9 +134,9 @@ describe('SNSTopicProvider.readCurrentState', () => {
       ],
     }); // ListSubscriptionsByTopic
 
-    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {
+    const result = (await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {
       Subscription: [{ Protocol: 'sqs', Endpoint: 'arn:aws:sqs:us-east-1:123456789012:q' }],
-    });
+    })) as Record<string, unknown> | undefined;
 
     expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListSubscriptionsByTopicCommand);
     expect(result?.Subscription).toEqual([
@@ -175,7 +184,7 @@ describe('SNSTopicProvider.readCurrentState', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+    const result = (await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic')) as Record<string, unknown> | undefined;
 
     // Entries sorted alphabetically by Protocol for stable positional
     // compare (HTTP before Lambda before SQS).
@@ -212,12 +221,12 @@ describe('SNSTopicProvider.readCurrentState', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {
+    const result = (await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {
       DeliveryStatusLogging: [
         { Protocol: 'lambda', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success' },
         { Protocol: 'sqs', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/sqs-success' },
       ],
-    });
+    })) as Record<string, unknown> | undefined;
 
     // Entries sorted by canonical PascalCase prefix (Lambda before SQS),
     // but each entry's `Protocol` field uses state's recorded case.
@@ -247,9 +256,9 @@ describe('SNSTopicProvider.readCurrentState', () => {
       SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/http-success',
       SuccessFeedbackSampleRate: '50',
     };
-    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {
+    const result = (await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {
       DeliveryStatusLogging: [recorded],
-    });
+    })) as Record<string, unknown> | undefined;
 
     expect(result?.['DeliveryStatusLogging']).toEqual([recorded]);
   });
@@ -266,11 +275,11 @@ describe('SNSTopicProvider.readCurrentState', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {
+    const result = (await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {
       DeliveryStatusLogging: [
         { Protocol: 'Lambda', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success' },
       ],
-    });
+    })) as Record<string, unknown> | undefined;
 
     expect(result?.['DeliveryStatusLogging']).toEqual([
       { Protocol: 'Lambda', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success' },
@@ -290,7 +299,7 @@ describe('SNSTopicProvider.readCurrentState', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+    const result = (await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic')) as Record<string, unknown> | undefined;
 
     expect(result?.['DeliveryStatusLogging']).toEqual([
       { Protocol: 'Lambda', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success' },
@@ -301,7 +310,7 @@ describe('SNSTopicProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({ Attributes: { TopicArn: TOPIC_ARN } });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+    const result = (await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic')) as Record<string, unknown> | undefined;
     expect(result?.['DeliveryStatusLogging']).toEqual([]);
   });
 
@@ -311,7 +320,7 @@ describe('SNSTopicProvider.readCurrentState', () => {
       Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyTopic/Resource' }],
     });
 
-    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+    const result = (await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic')) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([]);
   });
 
@@ -327,7 +336,7 @@ describe('SNSTopicProvider.readCurrentState', () => {
     // ListTagsForResource — no user tags.
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+    const result = (await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic')) as Record<string, unknown> | undefined;
 
     // FifoThroughputScope is intentionally absent for standard topics —
     // it's a FIFO-only attribute and emitting '' would have

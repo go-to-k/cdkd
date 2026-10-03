@@ -41,6 +41,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { LambdaMicrovmImageProvider } from '../../../src/provisioning/providers/lambda-microvm-image-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 import {
   PASTE_PAYLOADS,
   expectNoCommandBesideDisplay,
@@ -496,13 +505,28 @@ describe('LambdaMicrovmImageProvider', () => {
       mockSend.mockResolvedValueOnce({ name: 'my-image', state: 'CREATED' });
       mockSend.mockResolvedValueOnce({ Tags: { 'aws:cloudformation:stack': 'x', env: 'dev' } });
 
-      const state = await provider.readCurrentState(ARN, 'MyImage', TYPE);
+      const state = bagOf(await provider.readCurrentState(ARN, 'MyImage', TYPE));
       expect(state?.['Tags']).toEqual([{ Key: 'env', Value: 'dev' }]);
     });
 
-    it('returns undefined when the image is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when the image is gone', async () => {
       mockSend.mockRejectedValueOnce(notFound());
-      expect(await provider.readCurrentState(ARN, 'MyImage', TYPE)).toBeUndefined();
+      expect(await provider.readCurrentState(ARN, 'MyImage', TYPE)).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when the image vanishes before ListTags', async () => {
+      mockSend.mockResolvedValueOnce({ imageArn: ARN, name: 'my-image', state: 'CREATED' }); // Get
+      mockSend.mockRejectedValueOnce(notFound()); // ListTags
+      expect(await provider.readCurrentState(ARN, 'MyImage', TYPE)).toBe(RESOURCE_NOT_FOUND);
+      expect(callsOfType(ListTagsCommand)).toHaveLength(1);
+    });
+
+    it('rethrows a non-not-found ListTags failure (not reported as gone)', async () => {
+      mockSend.mockResolvedValueOnce({ imageArn: ARN, name: 'my-image', state: 'CREATED' }); // Get
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+      );
+      await expect(provider.readCurrentState(ARN, 'MyImage', TYPE)).rejects.toThrow('denied');
     });
 
     it('omits Name when GetMicrovmImage returns no name', async () => {

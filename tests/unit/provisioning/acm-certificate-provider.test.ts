@@ -58,6 +58,14 @@ import {
   FORGED_QUOTE,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const ARN = 'arn:aws:acm:us-east-1:123456789012:certificate/abc123';
 
@@ -1487,11 +1495,11 @@ describe('ACMCertificateProvider', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         ARN,
         'MyCert',
         'AWS::CertificateManager::Certificate'
-      );
+      ));
 
       expect(result).toBeDefined();
       expect(result!['DomainName']).toBe('example.com');
@@ -1503,13 +1511,13 @@ describe('ACMCertificateProvider', () => {
       expect(result!['Tags']).toEqual([{ Key: 'env', Value: 'prod' }]);
     });
 
-    it('returns undefined when the certificate is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when the certificate is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new ResourceNotFoundException({ $metadata: {}, message: 'gone' })
       );
       expect(
         await provider.readCurrentState(ARN, 'MyCert', 'AWS::CertificateManager::Certificate')
-      ).toBeUndefined();
+      ).toBe(RESOURCE_NOT_FOUND);
     });
 
     it('omits CT / Export from the snapshot when AWS Options is undefined', async () => {
@@ -1522,11 +1530,11 @@ describe('ACMCertificateProvider', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: [] });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         ARN,
         'MyCert',
         'AWS::CertificateManager::Certificate'
-      );
+      ));
 
       expect(result).toBeDefined();
       expect(result!['DomainName']).toBe('example.com');

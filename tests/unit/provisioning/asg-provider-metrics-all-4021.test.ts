@@ -60,6 +60,15 @@ import {
   ALL_GROUP_METRICS,
   ASGProvider,
 } from '../../../src/provisioning/providers/asg-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const TYPE = 'AWS::AutoScaling::AutoScalingGroup';
 
@@ -81,7 +90,7 @@ async function readbackFor(provider: ASGProvider, metrics: readonly string[]) {
     }
     return Promise.resolve({});
   });
-  return (await provider.readCurrentState('my-asg', 'MyAsg', TYPE))!;
+  return (bagOf(await provider.readCurrentState('my-asg', 'MyAsg', TYPE)))!;
 }
 
 /** What `cdkd drift` compares: the per-side pass on each bag, then the pair pass. */

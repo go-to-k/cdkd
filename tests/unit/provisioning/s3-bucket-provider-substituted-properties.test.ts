@@ -752,7 +752,7 @@ describe('round trip: effective record vs readCurrentState', () => {
       )
     );
 
-    const current = (await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE))!;
+    const current = (await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE)) as Record<string, unknown>;
 
     // The readback is the FLATTENED CFn shape the schema declares...
     expect(current['AnalyticsConfigurations']).toEqual([
@@ -802,7 +802,7 @@ describe('round trip: effective record vs readCurrentState', () => {
       )
     );
 
-    const current = (await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE))!;
+    const current = (await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE)) as Record<string, unknown>;
 
     // Recording the DECLARED bag (the pre-fix behavior) is what the fix
     // replaces, and it is still drift against the same readback — so the

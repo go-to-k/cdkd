@@ -30,7 +30,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 
 /**
@@ -699,13 +701,13 @@ export class IAMAccessKeyProvider implements ResourceProvider {
    *
    * Resolves the owning user via `GetAccessKeyLastUsed(AccessKeyId)`, then
    * finds the key's `Status` in `ListAccessKeys(UserName)`. Returns
-   * `undefined` when the key is gone.
+   * `RESOURCE_NOT_FOUND` when the key is gone.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let userName: string | undefined;
     try {
       const lastUsed = await this.iamClient.send(
@@ -713,7 +715,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       );
       userName = lastUsed.UserName;
     } catch (err) {
-      if (err instanceof NoSuchEntityException) return undefined;
+      if (err instanceof NoSuchEntityException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!userName) return undefined;
@@ -726,7 +728,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
           new ListAccessKeysCommand({ UserName: userName, ...(marker && { Marker: marker }) })
         );
       } catch (err) {
-        if (err instanceof NoSuchEntityException) return undefined;
+        if (err instanceof NoSuchEntityException) return RESOURCE_NOT_FOUND;
         throw err;
       }
       for (const key of page.AccessKeyMetadata ?? []) {
@@ -738,7 +740,8 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       }
       marker = page.IsTruncated ? page.Marker : undefined;
     } while (marker);
-    return undefined;
+    // The owner lists no such key: it is gone (go-to-k/cdkd#4283).
+    return RESOURCE_NOT_FOUND;
   }
 
   /**

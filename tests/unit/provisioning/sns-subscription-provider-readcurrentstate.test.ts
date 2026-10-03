@@ -32,6 +32,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SNSSubscriptionProvider } from '../../../src/provisioning/providers/sns-subscription-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const SUB_ARN =
   'arn:aws:sns:us-east-1:123456789012:my-topic:abcd-efgh';
@@ -121,11 +122,21 @@ describe('SNSSubscriptionProvider.readCurrentState', () => {
     expect(result).not.toHaveProperty('ReplayPolicy');
   });
 
-  it('returns undefined when subscription is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when subscription is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new NotFoundException({ message: 'gone', $metadata: {} })
     );
     const result = await provider.readCurrentState(SUB_ARN, 'L', 'AWS::SNS::Subscription');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('keeps returning undefined (not gone) for the PendingConfirmation placeholder', async () => {
+    const result = await provider.readCurrentState(
+      'PendingConfirmation',
+      'L',
+      'AWS::SNS::Subscription'
+    );
     expect(result).toBeUndefined();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

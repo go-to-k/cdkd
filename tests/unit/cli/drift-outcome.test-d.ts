@@ -26,7 +26,7 @@ import { matchOutcome, type DriftOutcome } from '../../../src/cli/commands/drift
 describe('DriftOutcome exhaustiveness (issue #2135)', () => {
   it('pins the variants, so a new one is a deliberate edit rather than a default', () => {
     expectTypeOf<DriftOutcome['kind']>().toEqualTypeOf<
-      'drifted' | 'clean' | 'notCompared' | 'unsupported' | 'skipped'
+      'drifted' | 'clean' | 'notCompared' | 'unsupported' | 'skipped' | 'deleted'
     >();
   });
 
@@ -40,6 +40,7 @@ describe('DriftOutcome exhaustiveness (issue #2135)', () => {
       clean: () => 'clean',
       unsupported: () => 'unsupported',
       skipped: () => 'skipped',
+      deleted: () => 'deleted',
     };
     void partial;
   });
@@ -51,6 +52,7 @@ describe('DriftOutcome exhaustiveness (issue #2135)', () => {
       notCompared: () => 'notCompared',
       unsupported: () => 'unsupported',
       skipped: () => 'skipped',
+      deleted: () => 'deleted',
     };
     void total;
   });
@@ -87,6 +89,7 @@ describe('DriftOutcome exhaustiveness (issue #2135)', () => {
         >(),
       unsupported: () => {},
       skipped: () => {},
+      deleted: (del) => expectTypeOf(del.logicalId).toEqualTypeOf<string>(),
     });
   });
 

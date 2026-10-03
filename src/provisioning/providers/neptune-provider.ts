@@ -31,7 +31,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -1272,7 +1274,7 @@ export class NeptuneProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::Neptune::DBInstance':
         return this.readCurrentStateDBInstance(physicalId);
@@ -1287,15 +1289,19 @@ export class NeptuneProvider implements ResourceProvider {
 
   private async readCurrentStateDBInstance(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let inst;
     try {
       inst = await this.describeDBInstance(physicalId);
     } catch (err) {
+      // go-to-k/cdkd#4283: only the fault NAME proves the resource is gone;
+      // the looser message match keeps its old "cannot tell" answer.
+      if ((err as { name?: unknown } | null)?.name === 'DBInstanceNotFoundFault')
+        return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err, 'DBInstanceNotFoundFault')) return undefined;
       throw err;
     }
-    if (!inst) return undefined;
+    if (!inst) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (inst.DBInstanceIdentifier !== undefined) {
@@ -1329,15 +1335,19 @@ export class NeptuneProvider implements ResourceProvider {
 
   private async readCurrentStateDBCluster(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let cluster;
     try {
       cluster = await this.describeDBCluster(physicalId);
     } catch (err) {
+      // go-to-k/cdkd#4283: only the fault NAME proves the resource is gone;
+      // the looser message match keeps its old "cannot tell" answer.
+      if ((err as { name?: unknown } | null)?.name === 'DBClusterNotFoundFault')
+        return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err, 'DBClusterNotFoundFault')) return undefined;
       throw err;
     }
-    if (!cluster) return undefined;
+    if (!cluster) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (cluster.DBClusterIdentifier !== undefined) {
@@ -1384,7 +1394,7 @@ export class NeptuneProvider implements ResourceProvider {
 
   private async readCurrentStateDBSubnetGroup(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp: {
       DBSubnetGroups?: Array<{
         DBSubnetGroupName?: string;
@@ -1398,11 +1408,15 @@ export class NeptuneProvider implements ResourceProvider {
         new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: physicalId })
       )) as unknown as typeof resp;
     } catch (err) {
+      // go-to-k/cdkd#4283: only the fault NAME proves the resource is gone;
+      // the looser message match keeps its old "cannot tell" answer.
+      if ((err as { name?: unknown } | null)?.name === 'DBSubnetGroupNotFoundFault')
+        return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err, 'DBSubnetGroupNotFoundFault')) return undefined;
       throw err;
     }
     const sg = resp.DBSubnetGroups?.[0];
-    if (!sg) return undefined;
+    if (!sg) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (sg.DBSubnetGroupName !== undefined) result['DBSubnetGroupName'] = sg.DBSubnetGroupName;

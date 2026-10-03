@@ -67,6 +67,7 @@ import {
   GlueConnectionProvider,
 } from '../../../../src/provisioning/providers/glue-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
+import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 import {
   PASTE_PAYLOADS,
   expectNoCommandBesideDisplay,
@@ -1587,11 +1588,11 @@ describe('Glue CatalogId move refusal (issue #3756)', () => {
     const literal = await provider.readCurrentState('mydb', 'MyDb', 'AWS::Glue::Database', {
       CatalogId: '222222222222',
     });
-    expect(literal?.['CatalogId']).toBe('222222222222');
+    expect((literal as Record<string, unknown> | undefined)?.['CatalogId']).toBe('222222222222');
     const connRead = await connectionProvider.readCurrentState('c', 'MyConn', 'AWS::Glue::Connection', {
       CatalogId: '222222222222',
     });
-    expect(connRead?.['CatalogId']).toBe('222222222222');
+    expect((connRead as Record<string, unknown> | undefined)?.['CatalogId']).toBe('222222222222');
     mockGlueSend.mockImplementation((command: unknown) =>
       Promise.resolve(
         command instanceof GetTableCommand
@@ -1605,7 +1606,7 @@ describe('Glue CatalogId move refusal (issue #3756)', () => {
       DatabaseName: 'mydb',
       CatalogId: '222222222222',
     });
-    expect(tableRead?.['CatalogId']).toBe('222222222222');
+    expect((tableRead as Record<string, unknown> | undefined)?.['CatalogId']).toBe('222222222222');
     const pseudo = await provider.readCurrentState('mydb', 'MyDb', 'AWS::Glue::Database', {
       CatalogId: { Ref: 'AWS::AccountId' },
     });
@@ -2157,6 +2158,61 @@ describe('Glue read-path CatalogId scoping (issue #1675)', () => {
     const input = mockGlueSend.mock.calls[0][0].input as Record<string, unknown>;
     expect(input).not.toHaveProperty('CatalogId');
     expect(input).toEqual({ Name: 'myconn' });
+  });
+
+  it('readCurrentState(Database) reports a NotFound as RESOURCE_NOT_FOUND when the catalog is usable', async () => {
+    mockGlueSend.mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+
+    const result = await provider.readCurrentState('mydb', 'MyDb', 'AWS::Glue::Database', {
+      CatalogId: '210987654321',
+    });
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('readCurrentState(Database) keeps a NotFound undefined after falling back from an unusable CatalogId', async () => {
+    mockGlueSend.mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+
+    const result = await provider.readCurrentState('mydb', 'MyDb', 'AWS::Glue::Database', {
+      CatalogId: { 'Fn::ImportValue': 'SharedCatalogId' },
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it('readCurrentState(Table) keeps a NotFound undefined after falling back from an unusable CatalogId', async () => {
+    mockGlueSend.mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+
+    const result = await provider.readCurrentState('mydb|my_table', 'MyTable', 'AWS::Glue::Table', {
+      CatalogId: { 'Fn::ImportValue': 'SharedCatalogId' },
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it('GlueConnectionProvider.readCurrentState: NotFound is RESOURCE_NOT_FOUND unless the CatalogId was unusable', async () => {
+    mockGlueSend
+      .mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }))
+      .mockRejectedValueOnce(new EntityNotFoundException({ message: 'nf', $metadata: {} }));
+
+    const plain = await connectionProvider.readCurrentState('myconn', 'MyConn', 'AWS::Glue::Connection', {
+      CatalogId: { Ref: 'AWS::AccountId' },
+    });
+    const unusable = await connectionProvider.readCurrentState(
+      'myconn',
+      'MyConn',
+      'AWS::Glue::Connection',
+      { CatalogId: { 'Fn::ImportValue': 'SharedCatalogId' } }
+    );
+    expect(plain).toBe(RESOURCE_NOT_FOUND);
+    expect(unusable).toBeUndefined();
+  });
+
+  it('readCurrentState(Database) rethrows AccessDenied rather than reporting it gone', async () => {
+    mockGlueSend.mockRejectedValueOnce(
+      Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' })
+    );
+
+    await expect(provider.readCurrentState('mydb', 'MyDb', 'AWS::Glue::Database')).rejects.toThrow(
+      'not authorized'
+    );
   });
 
   it('GlueConnectionProvider.import DROPS an unresolved CatalogId intrinsic', async () => {

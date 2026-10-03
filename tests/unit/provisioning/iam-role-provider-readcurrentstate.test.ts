@@ -36,6 +36,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('IAMRoleProvider.readCurrentState', () => {
   let provider: IAMRoleProvider;
@@ -107,13 +115,13 @@ describe('IAMRoleProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when role does not exist', async () => {
+  it('returns RESOURCE_NOT_FOUND when role does not exist', async () => {
     mockSend.mockRejectedValueOnce(
       new NoSuchEntityException({ message: 'gone', $metadata: {} })
     );
 
     const result = await provider.readCurrentState('my-role', 'Logical', 'AWS::IAM::Role');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('does not declare any drift-unknown paths (inline Policies are now read back via GetRolePolicy)', () => {
@@ -143,7 +151,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
     mockSend.mockResolvedValueOnce({ Tags: [], IsTruncated: false });
 
-    const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
+    const result = bagOf(await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role'));
     expect(result?.ManagedPolicyArns).toEqual([]);
   });
 
@@ -165,7 +173,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
       IsTruncated: false,
     });
 
-    const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
+    const result = bagOf(await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role'));
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -184,7 +192,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
       IsTruncated: false,
     });
 
-    const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
+    const result = bagOf(await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role'));
     expect(result?.Tags).toEqual([]);
   });
 
@@ -205,7 +213,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
     mockSend.mockResolvedValueOnce({ Tags: [], IsTruncated: false });
 
-    const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
+    const result = bagOf(await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role'));
     expect(result?.PermissionsBoundary).toBe('');
   });
 
@@ -256,7 +264,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
       return Promise.resolve({ Tags: [], IsTruncated: false });
     });
 
-    const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
+    const result = bagOf(await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role'));
 
     expect(result?.Policies).toEqual([
       { PolicyName: 'A', PolicyDocument: docA },
@@ -297,7 +305,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
       return Promise.resolve({ Tags: [], IsTruncated: false });
     });
 
-    const result = await provider.readCurrentState(
+    const result = bagOf(await provider.readCurrentState(
       'role',
       'Logical',
       'AWS::IAM::Role',
@@ -308,7 +316,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
           { PolicyName: 'A', PolicyDocument: docA },
         ],
       }
-    );
+    ));
 
     expect(result?.Policies).toEqual([
       { PolicyName: 'B', PolicyDocument: docB },
@@ -346,9 +354,9 @@ describe('IAMRoleProvider.readCurrentState', () => {
       return Promise.resolve({ Tags: [], IsTruncated: false });
     });
 
-    const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role', {
+    const result = bagOf(await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role', {
       Policies: [{ PolicyName: 'A', PolicyDocument: docA }],
-    });
+    }));
 
     // State has length 1; result has length 2 → drift fires on Policies.
     expect(result?.Policies).toEqual([
@@ -380,7 +388,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
     // ListRoleTags — no tags.
     mockSend.mockResolvedValueOnce({ Tags: [], IsTruncated: false });
 
-    const result = await provider.readCurrentState('r', 'Logical', 'AWS::IAM::Role');
+    const result = bagOf(await provider.readCurrentState('r', 'Logical', 'AWS::IAM::Role'));
 
     expect(Object.keys(result ?? {}).sort()).toEqual(
       [
@@ -436,7 +444,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
         'MyEcrTaskDefinitionExecutionRoleDefaultPolicy36563E38',
       ]);
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'CdkSampleStack-MyRole',
         'MyRole',
         'AWS::IAM::Role',
@@ -452,7 +460,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
             },
           },
         }
-      );
+      ));
 
       // The sibling-managed policy is filtered out; state.Policies = [] matches.
       expect(result?.Policies).toEqual([]);
@@ -463,7 +471,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
       // should pass through — it's NOT managed by a sibling.
       setupRoleReadMocks('MyRole', ['RealInlinePolicy']);
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'MyRole',
         'MyRole',
         'AWS::IAM::Role',
@@ -477,7 +485,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
             },
           },
         }
-      );
+      ));
 
       expect(result?.Policies).toEqual([
         { PolicyName: 'RealInlinePolicy', PolicyDocument: { Doc: 'RealInlinePolicy' } },
@@ -490,7 +498,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
       // add tail-appends so the array length mismatch surfaces drift.
       setupRoleReadMocks('MyRole', ['ManagedByPolicy', 'ConsoleAdded']);
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'MyRole',
         'MyRole',
         'AWS::IAM::Role',
@@ -503,7 +511,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
             },
           },
         }
-      );
+      ));
 
       // ConsoleAdded surfaces as the only inline policy → state.Policies = [] vs
       // aws = [{ConsoleAdded}] → drift fires (intended).
@@ -518,9 +526,9 @@ describe('IAMRoleProvider.readCurrentState', () => {
       // the filter must safely no-op. Same shape as the pre-#323 behavior.
       setupRoleReadMocks('MyRole', ['SomePolicy']);
 
-      const result = await provider.readCurrentState('MyRole', 'MyRole', 'AWS::IAM::Role', {
+      const result = bagOf(await provider.readCurrentState('MyRole', 'MyRole', 'AWS::IAM::Role', {
         Policies: [],
-      });
+      }));
       // No context → no filtering → AWS-only inline policy tail-appends.
       expect(result?.Policies).toEqual([
         { PolicyName: 'SomePolicy', PolicyDocument: { Doc: 'SomePolicy' } },

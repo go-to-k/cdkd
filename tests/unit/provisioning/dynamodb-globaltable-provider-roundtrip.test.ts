@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   CreateTableCommand,
   DeleteTableCommand,
@@ -125,6 +126,15 @@ function newRnf(message = 'not found'): ResourceNotFoundException {
     message,
     $metadata: {},
   });
+}
+
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
 }
 
 describe('DynamoDBGlobalTableProvider round-trip', () => {
@@ -2027,7 +2037,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       });
       queueReadCurrentStateTail();
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
 
       expect(observed).toBeDefined();
       expect(observed!['BillingMode']).toBe('PAY_PER_REQUEST');
@@ -2060,7 +2070,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         },
       });
       queueReadCurrentStateTail();
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       // Tags live INSIDE the local replica entry per the CFn
       // `AWS::DynamoDB::GlobalTable` schema (there is no top-level
       // `Tags` property on this type).
@@ -2082,7 +2092,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         Table: { TableArn: TABLE_ARN }, // no Replicas in response
       });
       queueReadCurrentStateTail({ localReplica: false });
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       const replicas = observed!['Replicas'] as Array<Record<string, unknown>>;
       expect(replicas).toHaveLength(1);
       expect(replicas[0]!['Region']).toBe('us-east-1');
@@ -2096,17 +2106,17 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         },
       });
       queueReadCurrentStateTail({ localReplica: false });
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['StreamSpecification']).toEqual({
         StreamEnabled: true,
         StreamViewType: 'NEW_AND_OLD_IMAGES',
       });
     });
 
-    it('returns undefined when DescribeTable hits ResourceNotFoundException', async () => {
+    it('returns RESOURCE_NOT_FOUND when DescribeTable hits ResourceNotFoundException', async () => {
       mockSend.mockRejectedValueOnce(newRnf());
       const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
-      expect(observed).toBeUndefined();
+      expect(observed).toBe(RESOURCE_NOT_FOUND);
     });
 
     // ─── Drift coverage gaps (Item B follow-up to PR #384) ─────────────
@@ -2120,7 +2130,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         },
       });
       queueReadCurrentStateTail({ localReplica: false });
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['SSESpecification']).toEqual({ SSEEnabled: true, SSEType: 'KMS' });
     });
 
@@ -2129,7 +2139,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         Table: { TableArn: TABLE_ARN, DeletionProtectionEnabled: true, Replicas: [] },
       });
       queueReadCurrentStateTail({ localReplica: false });
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['DeletionProtectionEnabled']).toBe(true);
     });
 
@@ -2149,7 +2159,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         }
         return Promise.resolve({});
       });
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['TimeToLiveSpecification']).toEqual({
         AttributeName: 'expiresAt',
         Enabled: true,
@@ -2166,7 +2176,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         TimeToLiveDescription: { TimeToLiveStatus: 'UPDATING', AttributeName: 'expiresAt' },
       });
       mockSend.mockResolvedValueOnce({ Tags: [] });
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed).not.toHaveProperty('TimeToLiveSpecification');
     });
 
@@ -2180,7 +2190,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         },
       });
       queueReadCurrentStateTail({ contributorInsightsStatus: 'ENABLED' });
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
       expect(replica!['ContributorInsightsSpecification']).toEqual({ Enabled: true });
     });
@@ -2190,7 +2200,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         Table: { TableArn: TABLE_ARN, Replicas: [{ RegionName: 'us-east-1' }] },
       });
       queueReadCurrentStateTail({ pitrStatus: 'ENABLED' });
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
       expect(replica!['PointInTimeRecoverySpecification']).toEqual({
         PointInTimeRecoveryEnabled: true,
@@ -2204,7 +2214,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       queueReadCurrentStateTail({
         kinesisStreamArn: 'arn:aws:kinesis:us-east-1:123:stream/my-stream',
       });
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
       expect(replica!['KinesisStreamSpecification']).toEqual({
         StreamArn: 'arn:aws:kinesis:us-east-1:123:stream/my-stream',
@@ -2267,7 +2277,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         return Promise.resolve({ Tags: [] });
       });
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       const replicas = observed!['Replicas'] as Array<Record<string, unknown>>;
       const replica = replicas.find((entry) => entry['Region'] === 'eu-west-1');
       expect(replica).toBeDefined();
@@ -2293,7 +2303,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         },
       });
       queueReadCurrentStateTail({ localReplica: false });
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['WriteOnDemandThroughputSettings']).toEqual({
         MaxWriteRequestUnits: 1500,
       });
@@ -2304,7 +2314,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         Table: { TableArn: TABLE_ARN, Replicas: [] },
       });
       queueReadCurrentStateTail({ localReplica: false });
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['WriteOnDemandThroughputSettings']).toEqual({});
     });
 
@@ -2320,7 +2330,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       queueReadCurrentStateTail({ localReplica: false });
       // mockAutoScalingSend defaults to ScalingPolicies: [] in beforeEach.
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
         WriteCapacityUnits: 7,
       });
@@ -2355,7 +2365,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         }
       );
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
         WriteCapacityAutoScalingSettings: {
           MinCapacity: 5,
@@ -2400,7 +2410,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         }
       );
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
         WriteCapacityAutoScalingSettings: {
           MinCapacity: 5,
@@ -2439,7 +2449,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         }
       );
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
         WriteCapacityUnits: 7,
       });
@@ -2471,7 +2481,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         }
       );
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
         WriteCapacityAutoScalingSettings: {
           MinCapacity: 10,
@@ -2507,7 +2517,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         }
       );
 
-      await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
 
       // Filtered to the WRITE dimension: the synthesized local replica adds
       // its own read-dimension probe, which is not what this test pins.
@@ -2580,7 +2590,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
 
       let observed: Record<string, unknown> | undefined;
       try {
-        observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+        observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       } finally {
         autoScalingCtor.mockImplementation(originalCtor!);
       }
@@ -2615,7 +2625,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       // Defaults to ScalingPolicies: [] for every call → no Min/Max
       // surfaced → null → key omitted.
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
       expect(replica!['Region']).toBe('us-east-1');
       expect(replica).not.toHaveProperty('ReadProvisionedThroughputSettings');
@@ -2634,7 +2644,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       // at all — autoscaling is meaningless without ProvisionedThroughput.
       mockAutoScalingSend.mockReset();
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
       expect(replica).not.toHaveProperty('ReadProvisionedThroughputSettings');
       // No autoscaling probe should have fired at all (table-level write
@@ -2674,7 +2684,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockAutoScalingSend.mockReset();
       mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [] });
 
-      await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
 
       // A regional autoscaling client must have been constructed for
       // eu-west-1 (per-replica read dimension lives in the replica's
@@ -2698,7 +2708,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         },
       });
       queueReadCurrentStateTail({ localReplica: false });
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({});
     });
 
@@ -2715,7 +2725,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockAutoScalingSend.mockReset();
       mockAutoScalingSend.mockRejectedValueOnce(new Error('permission denied on DescribeScalableTargets'));
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       // Lookup failure is treated as "no policy" — the flat-value
       // surface IS emitted (false-positive risk on scale is the
       // tradeoff vs hiding the actual capacity).
@@ -2743,7 +2753,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       });
       mockAutoScalingSend.mockRejectedValueOnce(new Error('throttle on DescribeScalingPolicies'));
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
         WriteCapacityUnits: 7,
       });
@@ -2787,9 +2797,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
 
       queueOne();
-      await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       queueOne();
-      await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
 
       const newCalls = ctorSpy.mock.calls.length - beforeCalls;
       // Regional client constructed at most ONCE for eu-west-1 across
@@ -2850,7 +2860,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         return Promise.resolve({ Tags: [] });
       });
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       const replicas = observed!['Replicas'] as Array<Record<string, unknown>>;
       const replica = replicas.find((entry) => entry['Region'] === 'eu-west-1');
       expect(replica!['ContributorInsightsSpecification']).toEqual({ Enabled: false });
@@ -3579,7 +3589,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: [] });
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
       // Pre-#402 the filter accepted only ACTIVE; an ENABLING destination
       // was dropped, surfacing as false-positive drift on a stack that
@@ -3614,7 +3624,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       });
       mockSend.mockResolvedValueOnce({ Tags: [] });
 
-      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
       // Production docstring: "pick the first ACTIVE destination" (CFn's
       // per-replica shape only carries one StreamArn).

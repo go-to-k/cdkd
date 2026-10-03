@@ -49,7 +49,9 @@ import type {
   CreateContext,
   UpdateContext,
   SecretMasker,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import {
   protectedReplacementAdvice,
@@ -1848,20 +1850,23 @@ export class ASGProvider implements ResourceProvider {
    * present on the primary `DescribeAutoScalingGroups` response, so no
    * extra call is needed).
    *
-   * Returns `undefined` when the group is gone.
+   * Returns `RESOURCE_NOT_FOUND` when the group is gone.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     // Fire the four reads in parallel. Sub-shape failures are best-effort
     // so a single permission gap does not break the whole drift read.
     const groupPromise = (async () => {
       try {
         return await this.describeGroup(physicalId);
       } catch (err) {
-        if (this.isNotFoundError(err)) return undefined;
+        // `null`, not the gone sentinel: this predicate is a generic
+        // `ValidationError` plus message text, which proves nothing
+        // (go-to-k/cdkd#4283). The empty describe list below is the answer.
+        if (this.isNotFoundError(err)) return null;
         throw err;
       }
     })();
@@ -1903,7 +1908,8 @@ export class ASGProvider implements ResourceProvider {
       notificationsPromise,
     ]);
 
-    if (!group) return undefined;
+    if (group === null) return undefined;
+    if (!group) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (group.AutoScalingGroupName !== undefined) {

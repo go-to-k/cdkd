@@ -30,6 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { CloudFrontOACProvider } from '../../../src/provisioning/providers/cloudfront-oac-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 const TYPE = 'AWS::CloudFront::OriginAccessControl';
 const OAC_ID = 'E1ABCDEF123456';
@@ -395,10 +396,22 @@ describe('CloudFrontOACProvider', () => {
       expect(state['OriginAccessControlConfig']!['Description']).toBe('');
     });
 
-    it('returns undefined when the OAC is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when the OAC is gone', async () => {
       mockSend.mockRejectedValueOnce(notFound());
 
-      await expect(provider.readCurrentState(OAC_ID, 'MyOac', TYPE)).resolves.toBeUndefined();
+      await expect(provider.readCurrentState(OAC_ID, 'MyOac', TYPE)).resolves.toBe(
+        RESOURCE_NOT_FOUND
+      );
+    });
+
+    it('rethrows a non-not-found error instead of reporting the OAC gone', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('User is not authorized'), { name: 'AccessDenied' })
+      );
+
+      await expect(provider.readCurrentState(OAC_ID, 'MyOac', TYPE)).rejects.toThrow(
+        'not authorized'
+      );
     });
 
     it('returns undefined for a foreign resource type without calling AWS', async () => {

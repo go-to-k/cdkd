@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { CreateTableCommand, UpdateTableCommand } from '@aws-sdk/client-dynamodb';
 
 /**
@@ -156,6 +157,15 @@ const withActiveCrossRegionReplica = (): void => {
     },
   });
 };
+
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('DynamoDB GlobalTable throughput cluster', () => {
   let provider: DynamoDBGlobalTableProvider;
@@ -1017,7 +1027,7 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
     it('strips the SDK-only members CFn has no concept of', async () => {
       describeWith(onDemandTable);
 
-      const state = await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE);
+      const state = bagOf(await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE));
 
       const gsi = (state?.['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]!;
       for (const sdkOnly of ['IndexArn', 'IndexStatus', 'ItemCount', 'IndexSizeBytes']) {
@@ -1028,7 +1038,7 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
     it('re-maps the on-demand halves to their CFn homes (write top-level, read on the replica)', async () => {
       describeWith(onDemandTable);
 
-      const state = await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE);
+      const state = bagOf(await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE));
 
       const gsi = (state?.['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]!;
       expect(gsi['WriteOnDemandThroughputSettings']).toEqual({ MaxWriteRequestUnits: 60 });
@@ -1049,7 +1059,7 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
     it('round-trips a CFn-shaped baseline with no diff, which is the whole point', async () => {
       describeWith(onDemandTable);
 
-      const state = await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE);
+      const state = bagOf(await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE));
 
       // The template side, as `cdk synth` would render this table.
       const templateGsi = {
@@ -1075,7 +1085,7 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
         ],
       });
 
-      const state = await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE);
+      const state = bagOf(await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE));
 
       const gsi = (state?.['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]!;
       expect(gsi['WriteProvisionedThroughputSettings']).toEqual({ WriteCapacityUnits: 2 });
@@ -1124,7 +1134,7 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
         ],
       });
 
-      const state = await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE);
+      const state = bagOf(await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE));
 
       const gsi = (state?.['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]!;
       expect(gsi['WriteProvisionedThroughputSettings']).toEqual({
@@ -1166,7 +1176,7 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
         ],
       });
 
-      const state = await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE);
+      const state = bagOf(await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE));
 
       const localReplica = (state?.['Replicas'] as Record<string, unknown>[]).find(
         (r) => r['Region'] === REGION
@@ -1193,7 +1203,7 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
       const { Replicas: _omitted, ...tableWithoutReplicas } = onDemandTable;
       describeWith(tableWithoutReplicas);
 
-      const state = await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE);
+      const state = bagOf(await provider.readCurrentState('od-table', 'OnDemand', RESOURCE_TYPE));
 
       const replicas = state?.['Replicas'] as Record<string, unknown>[];
       expect(replicas).toHaveLength(1);

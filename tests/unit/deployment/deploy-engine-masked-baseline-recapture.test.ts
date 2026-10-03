@@ -5,7 +5,7 @@ import {
   redactSecretsForState,
   STATE_SOURCED_BASELINE_RULES,
 } from '../../../src/deployment/secret-redaction.js';
-import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { RESOURCE_NOT_FOUND, type CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
 // No real AWS client: the create-only DescribeType prefetch reads the
@@ -298,6 +298,20 @@ describe('DeployEngine - deploy-start re-capture of a fail-closed-masked baselin
 
     expect(resolution.calls).toHaveLength(0);
     expect(mockProvider.readCurrentState).not.toHaveBeenCalled();
+  });
+
+  it('keeps the old baseline when AWS reports the resource gone (go-to-k/cdkd#4283)', async () => {
+    mockProvider.readCurrentState.mockResolvedValue(RESOURCE_NOT_FOUND);
+    mockStateBackend.getState.mockResolvedValue({
+      state: stateWith({ TaskDef: record() }),
+      etag: 'e',
+    });
+    await expect(makeEngine().deploy(stackName, template)).resolves.toBeDefined();
+
+    expect(mockProvider.readCurrentState).toHaveBeenCalledTimes(1);
+    // Nothing re-captured. The guard that keeps the sentinel from being walked
+    // as a readback bag is required by the type checker; this pins the outcome.
+    expect(mockStateBackend.saveState).not.toHaveBeenCalled();
   });
 
   it('keeps the old baseline, and the deploy succeeds, when the readback rejects', async () => {

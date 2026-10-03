@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 /**
  * Convenience: build a "feature not configured" error matching the AWS error
@@ -100,7 +101,7 @@ describe('S3BucketProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
+    const result = (await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(HeadBucketCommand);
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(GetBucketVersioningCommand);
@@ -135,12 +136,42 @@ describe('S3BucketProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when bucket does not exist', async () => {
+  it('returns RESOURCE_NOT_FOUND when the bucket does not exist (go-to-k/cdkd#4283)', async () => {
     mockSend.mockRejectedValueOnce(new NoSuchBucket({ message: 'gone', $metadata: {} }));
 
     const result = await provider.readCurrentState('missing', 'Logical', 'AWS::S3::Bucket');
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it("returns RESOURCE_NOT_FOUND on HeadBucket's bodiless 404 (NotFound)", async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('NotFound'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } })
+    );
+
+    const result = await provider.readCurrentState('missing', 'Logical', 'AWS::S3::Bucket');
+
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND on a bare HTTP 404 whose error name the SDK could not map', async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('Unknown'), { name: 'Unknown', $metadata: { httpStatusCode: 404 } })
+    );
+
+    const result = await provider.readCurrentState('missing', 'Logical', 'AWS::S3::Bucket');
+
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('rethrows a 403 HeadBucket rather than reporting the bucket gone', async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('Forbidden'), { name: 'Forbidden', $metadata: { httpStatusCode: 403 } })
+    );
+
+    await expect(
+      provider.readCurrentState('b', 'Logical', 'AWS::S3::Bucket')
+    ).rejects.toThrow('Forbidden');
   });
 
   it('emits placeholder per-feature keys when individual GetBucket* calls report "not configured"', async () => {
@@ -157,7 +188,7 @@ describe('S3BucketProvider.readCurrentState', () => {
     // GetBucketTagging — no tags
     mockSend.mockRejectedValueOnce(notConfigured('NoSuchTagSet'));
 
-    const result = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
+    const result = (await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
 
     expect(result).toMatchObject({
       BucketName: 'my-bucket',
@@ -202,7 +233,7 @@ describe('S3BucketProvider.readCurrentState', () => {
     // GetBucketTagging — no tag set
     mockSend.mockRejectedValueOnce(notConfigured('NoSuchTagSet'));
 
-    const result = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
+    const result = (await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
 
     expect(Object.keys(result ?? {}).sort()).toEqual(
       [
@@ -275,7 +306,7 @@ describe('S3BucketProvider.readCurrentState', () => {
       return Promise.resolve({});
     });
 
-    const result = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
+    const result = (await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
     const repl = result?.ReplicationConfiguration as { Rules: any[] };
     expect(repl.Rules[0].Filter).toEqual({
       And: {
@@ -315,13 +346,13 @@ describe('S3BucketProvider.readCurrentState', () => {
       return Promise.resolve({});
     });
 
-    const withHold = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
+    const withHold = (await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
     expect(
       (withHold?.ObjectLockConfiguration as { Rule: { DefaultRetention: unknown } }).Rule
         .DefaultRetention
     ).toEqual({ Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: { Days: 7 } });
 
-    const withoutHold = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
+    const withoutHold = (await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
     expect(
       (withoutHold?.ObjectLockConfiguration as { Rule: { DefaultRetention: object } }).Rule
         .DefaultRetention
@@ -348,7 +379,7 @@ describe('S3BucketProvider.readCurrentState', () => {
       return Promise.resolve({});
     });
 
-    const result = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
+    const result = (await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
     expect(
       (result?.ObjectLockConfiguration as { Rule: { DefaultRetention: unknown } }).Rule
         .DefaultRetention
@@ -384,12 +415,12 @@ describe('S3BucketProvider.readCurrentState', () => {
       return Promise.resolve({});
     });
 
-    const prefixResult = await provider.readCurrentState('b', 'L', 'AWS::S3::Bucket');
+    const prefixResult = (await provider.readCurrentState('b', 'L', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
     expect(
       (prefixResult?.ReplicationConfiguration as { Rules: any[] }).Rules[0].Filter
     ).toEqual({ Prefix: 'logs/' });
 
-    const tagResult = await provider.readCurrentState('b', 'L', 'AWS::S3::Bucket');
+    const tagResult = (await provider.readCurrentState('b', 'L', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
     expect((tagResult?.ReplicationConfiguration as { Rules: any[] }).Rules[0].Filter).toEqual({
       TagFilter: { Key: 'replicate', Value: 'yes' },
     });
@@ -428,7 +459,7 @@ describe('S3BucketProvider.readCurrentState', () => {
       }
       return Promise.resolve({});
     });
-    const result = await provider.readCurrentState('b', 'L', 'AWS::S3::Bucket');
+    const result = (await provider.readCurrentState('b', 'L', 'AWS::S3::Bucket')) as Record<string, unknown> | undefined;
     expect(result?.OwnershipControls).toEqual({ Rules: [] });
   });
 });

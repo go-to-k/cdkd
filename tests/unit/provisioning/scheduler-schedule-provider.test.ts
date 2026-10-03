@@ -50,6 +50,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SchedulerScheduleProvider } from '../../../src/provisioning/providers/scheduler-schedule-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 import { withStackName } from '../../../src/provisioning/resource-name.js';
 import {
   CLAUSE_BREAK_PAYLOAD,
@@ -656,18 +665,18 @@ describe('SchedulerScheduleProvider', () => {
         ScheduleExpression: 'rate(1 hour)',
       });
 
-      const state = await provider.readCurrentState('my-sched', 'Sched', TYPE, {});
+      const state = bagOf(await provider.readCurrentState('my-sched', 'Sched', TYPE, {}));
 
       expect(state).toBeDefined();
       expect('GroupName' in state!).toBe(false);
     });
 
-    it('returns undefined (drift unknown) when the schedule is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when the schedule is gone', async () => {
       mockSend.mockRejectedValueOnce(notFound());
 
       await expect(
         provider.readCurrentState('my-sched', 'Sched', TYPE, { ...BASE_PROPS })
-      ).resolves.toBeUndefined();
+      ).resolves.toBe(RESOURCE_NOT_FOUND);
     });
   });
 

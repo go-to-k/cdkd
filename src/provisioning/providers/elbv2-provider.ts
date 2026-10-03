@@ -82,7 +82,9 @@ import type {
   CreateContext,
   UpdateContext,
   SecretMasker,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
@@ -547,6 +549,19 @@ export function loadBalancerProtectionSite(
 }
 
 /**
+ * ELBv2's own not-found answer, by error NAME (go-to-k/cdkd#4283). The
+ * provider's looser message match keeps its old "cannot tell" answer.
+ */
+function isElbv2NotFoundName(error: unknown): boolean {
+  const name = (error as { name?: unknown } | null)?.name;
+  return (
+    name === 'LoadBalancerNotFoundException' ||
+    name === 'TargetGroupNotFoundException' ||
+    name === 'ListenerNotFoundException'
+  );
+}
+
+/**
  * AWS ELBv2 Provider
  *
  * Implements resource provisioning for ELBv2 resources:
@@ -565,6 +580,7 @@ export function loadBalancerProtectionSite(
  * createLoadBalancer waits for `active` (skippable with --no-wait) while the
  * other two do not.
  */
+
 export class ELBv2Provider implements ResourceProvider {
   private elbv2Client?: ElasticLoadBalancingV2Client;
   private readonly providerRegion = ambientRegion();
@@ -2839,14 +2855,14 @@ export class ELBv2Provider implements ResourceProvider {
    * Tags are surfaced via a follow-up `DescribeTags(ResourceArns=[arn])`
    * for all three types (the `physicalId` cdkd state holds is the ARN).
    * CDK's `aws:*` auto-tags are filtered out and the result key is omitted
-   * when AWS reports no user tags. Returns `undefined` when the resource
-   * is gone (`*NotFoundException`).
+   * when AWS reports no user tags. Returns `RESOURCE_NOT_FOUND` when the
+   * resource is gone (`*NotFoundException`), `undefined` for another type.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
         return this.readLoadBalancer(physicalId);
@@ -2859,7 +2875,9 @@ export class ELBv2Provider implements ResourceProvider {
     }
   }
 
-  private async readLoadBalancer(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readLoadBalancer(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let lb;
     try {
       const resp = await this.getClient().send(
@@ -2867,10 +2885,11 @@ export class ELBv2Provider implements ResourceProvider {
       );
       lb = resp.LoadBalancers?.[0];
     } catch (err) {
+      if (isElbv2NotFoundName(err)) return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err)) return undefined;
       throw err;
     }
-    if (!lb) return undefined;
+    if (!lb) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (lb.LoadBalancerName !== undefined) result['Name'] = lb.LoadBalancerName;
@@ -2907,6 +2926,7 @@ export class ELBv2Provider implements ResourceProvider {
         result['MinimumLoadBalancerCapacity'] = { CapacityUnits: units };
       }
     } catch (err) {
+      if (isElbv2NotFoundName(err)) return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err)) return undefined;
       // Permission errors etc — leave key absent rather than firing
       // false drift on every run.
@@ -2937,6 +2957,7 @@ export class ELBv2Provider implements ResourceProvider {
         .sort((a, b) => a.Key.localeCompare(b.Key));
       result['LoadBalancerAttributes'] = attrs;
     } catch (err) {
+      if (isElbv2NotFoundName(err)) return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err)) return undefined;
       // Permission errors etc — leave key absent rather than firing
       // false drift on every run.
@@ -2946,7 +2967,9 @@ export class ELBv2Provider implements ResourceProvider {
     return result;
   }
 
-  private async readTargetGroup(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readTargetGroup(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let tg;
     try {
       const resp = await this.getClient().send(
@@ -2954,10 +2977,11 @@ export class ELBv2Provider implements ResourceProvider {
       );
       tg = resp.TargetGroups?.[0];
     } catch (err) {
+      if (isElbv2NotFoundName(err)) return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err)) return undefined;
       throw err;
     }
-    if (!tg) return undefined;
+    if (!tg) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (tg.TargetGroupName !== undefined) result['Name'] = tg.TargetGroupName;
@@ -3006,6 +3030,7 @@ export class ELBv2Provider implements ResourceProvider {
         .sort((a, b) => a.Key.localeCompare(b.Key));
       result['TargetGroupAttributes'] = attrs;
     } catch (err) {
+      if (isElbv2NotFoundName(err)) return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err)) return undefined;
       // Permission errors etc — leave key absent rather than firing
       // false drift on every run.
@@ -3224,7 +3249,9 @@ export class ELBv2Provider implements ResourceProvider {
     return { baseline: { ...baseline, [bagKey]: kept }, aws };
   }
 
-  private async readListener(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readListener(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let listener;
     try {
       const resp = await this.getClient().send(
@@ -3232,10 +3259,11 @@ export class ELBv2Provider implements ResourceProvider {
       );
       listener = resp.Listeners?.[0];
     } catch (err) {
+      if (isElbv2NotFoundName(err)) return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err)) return undefined;
       throw err;
     }
-    if (!listener) return undefined;
+    if (!listener) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (listener.LoadBalancerArn !== undefined) {
@@ -3285,6 +3313,7 @@ export class ELBv2Provider implements ResourceProvider {
         .sort((a, b) => a.Key.localeCompare(b.Key));
       result['ListenerAttributes'] = attrs;
     } catch (err) {
+      if (isElbv2NotFoundName(err)) return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err)) return undefined;
       // Permission errors etc — leave key absent rather than firing
       // false drift on every run.

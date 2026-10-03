@@ -53,7 +53,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
@@ -2479,14 +2481,17 @@ export class Route53Provider implements ResourceProvider {
    *    Weight, Region, Failover, MultiValueAnswer, HealthCheckId,
    *    GeoLocation, GeoProximityLocation, CidrRoutingConfig, SetIdentifier.
    *
-   * Returns `undefined` when the parent zone is gone (`NoSuchHostedZone`).
+   * Returns `RESOURCE_NOT_FOUND` when the zone (or the parent zone of a
+   * record) is gone (`NoSuchHostedZone`); `undefined` for another type, a
+   * record whose zone cannot be resolved, or a record the bounded listing
+   * window does not show (cdkd's matcher, not AWS, missed it).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
         return this.readHostedZone(physicalId);
@@ -2497,12 +2502,14 @@ export class Route53Provider implements ResourceProvider {
     }
   }
 
-  private async readHostedZone(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readHostedZone(
+    physicalId: string
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp;
     try {
       resp = await this.getClient().send(new GetHostedZoneCommand({ Id: physicalId }));
     } catch (err) {
-      if (err instanceof Error && err.name === 'NoSuchHostedZone') return undefined;
+      if (err instanceof Error && err.name === 'NoSuchHostedZone') return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!resp.HostedZone) return undefined;
@@ -2591,7 +2598,7 @@ export class Route53Provider implements ResourceProvider {
   private async readRecordSet(
     physicalId: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const identity = await this.resolveRecordSetIdentity(physicalId, properties);
     if (!identity) return undefined;
     return this.readRecordSetAt(identity, properties);
@@ -2601,7 +2608,7 @@ export class Route53Provider implements ResourceProvider {
   private async readRecordSetAt(
     identity: { hostedZoneId: string; name: string; type: string },
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const { hostedZoneId, name, type } = identity;
     // Weighted / latency / failover / geo records share name + type and
     // differ only by SetIdentifier, so without it the read returns whichever
@@ -2643,7 +2650,7 @@ export class Route53Provider implements ResourceProvider {
         })
       );
     } catch (err) {
-      if (err instanceof Error && err.name === 'NoSuchHostedZone') return undefined;
+      if (err instanceof Error && err.name === 'NoSuchHostedZone') return RESOURCE_NOT_FOUND;
       throw err;
     }
 
@@ -2660,6 +2667,9 @@ export class Route53Provider implements ResourceProvider {
         r.Type === type &&
         (!matchSetIdentifier || r.SetIdentifier === setIdentifier)
     );
+    // A miss in this bounded window is cdkd's matcher failing to find the
+    // record (a name escape the query does not encode, a page boundary), not
+    // AWS saying it is gone: keep "cannot tell" (go-to-k/cdkd#4283).
     if (!recordSet) return undefined;
 
     const result: Record<string, unknown> = {
@@ -2968,13 +2978,13 @@ export class Route53Provider implements ResourceProvider {
     // by the RESOLVED identity rather than re-parsing the id, which with no bag
     // beside it would not trust a name carrying `|`.
     const compositeId = recordSetCompositeId(identity.hostedZoneId, identity.name, identity.type);
-    let observed: Record<string, unknown> | undefined;
+    let observed: Record<string, unknown> | ResourceNotFound | undefined;
     try {
       observed = await this.readRecordSetAt(identity);
     } catch (err) {
       return adoptVerbatim(`verification failed: ${describeAwsFailure(err).detail}`);
     }
-    if (!observed) {
+    if (!observed || observed === RESOURCE_NOT_FOUND) {
       return adoptVerbatim('the record was not found under the resolved hosted zone');
     }
 

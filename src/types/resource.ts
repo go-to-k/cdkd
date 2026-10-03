@@ -905,6 +905,29 @@ export type { DeleteContext } from '../provisioning/region-check.js';
 import type { DeleteContext } from '../provisioning/region-check.js';
 
 /**
+ * What `ResourceProvider.readCurrentState` returns when AWS reports the
+ * resource is NOT THERE — deleted outside cdkd (go-to-k/cdkd#4283).
+ *
+ * A sentinel rather than `undefined` because `undefined` already means "this
+ * provider has no read path for the type", which `cdkd drift` reports as an
+ * uncovered type and exits `0` for. A resource deleted out of band is the most
+ * important drift there is, so it must not share that spelling: `cdkd drift`
+ * maps this one to its `deleted` outcome (exit `1`).
+ *
+ * Return it only on AWS's own not-found answer (a not-found error NAME, an
+ * empty describe list, a terminal `DELETED` / `INACTIVE` status). Never on an
+ * access denied, a throttle, message text alone or any other failure: those
+ * throw (the caller reports the read as failed), or keep whatever `undefined`
+ * a provider already answered for them — never claim the resource is gone.
+ *
+ * Every caller must handle it before treating the result as a property bag.
+ */
+export const RESOURCE_NOT_FOUND: unique symbol = Symbol('cdkd.resourceNotFound');
+
+/** The type of {@link RESOURCE_NOT_FOUND}. */
+export type ResourceNotFound = typeof RESOURCE_NOT_FOUND;
+
+/**
  * Cross-resource context passed to `ResourceProvider.readCurrentState`
  * for providers that need to inspect sibling resources in the same
  * stack to decide what counts as drift.
@@ -1200,6 +1223,10 @@ export interface ResourceProvider {
    * resource. This mirrors the optional `import` method: providers add
    * support incrementally without forcing a sweep across the whole tree.
    *
+   * Returns {@link RESOURCE_NOT_FOUND} when AWS reports the resource does not
+   * exist, which `cdkd drift` reports as `deleted` (go-to-k/cdkd#4283) — never
+   * `undefined` for that case.
+   *
    * @param physicalId AWS physical id (e.g. bucket name, function arn)
    * @param logicalId  CloudFormation logical id (helps providers that need
    *                   to disambiguate)
@@ -1219,7 +1246,8 @@ export interface ResourceProvider {
    *                   via `Roles: [role]` / `Users: [u]` / `Groups: [g]`).
    *                   Most providers ignore it.
    * @returns AWS-current properties scoped to the provider's managed set,
-   *          or `undefined` when not implemented
+   *          {@link RESOURCE_NOT_FOUND} when the resource is gone, or
+   *          `undefined` when not implemented
    */
   readCurrentState?(
     physicalId: string,
@@ -1227,7 +1255,7 @@ export interface ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
-  ): Promise<Record<string, unknown> | undefined>;
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined>;
 
   /**
    * State property paths this provider deliberately cannot (or chooses

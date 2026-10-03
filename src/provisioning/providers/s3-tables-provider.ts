@@ -41,7 +41,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { commandHole } from '../../utils/pasteable-command.js';
@@ -780,20 +782,21 @@ export class S3TablesProvider implements ResourceProvider {
    *  - **AWS::S3Tables::Namespace**: parses `tableBucketARN|namespace`
    *    from physical id and surfaces `TableBucketARN` and `Namespace`
    *    (as a `string[]` with one entry, matching `create()`'s shape).
-   *    No GetNamespace call — the physical id IS the source of truth and
-   *    AWS surfaces no additional managed fields cdkd cares about.
+   *    The physical id IS the source of truth for both; `GetNamespace` is
+   *    called only to tell whether the namespace still exists
+   *    (go-to-k/cdkd#4283).
    *  - **AWS::S3Tables::Table**: parses `tableBucketARN|namespace|name`
    *    from physical id, calls `GetTable` to verify existence and recover
    *    `format`, surfaces `TableBucketARN`, `Namespace` (string), `Name`,
    *    `Format`.
    *
-   * Returns `undefined` when the resource is gone (`NotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the resource is gone (`NotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::S3Tables::TableBucket':
         return this.readTableBucketCurrentState(physicalId);
@@ -811,7 +814,7 @@ export class S3TablesProvider implements ResourceProvider {
 
   private async readTableBucketCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let bucket;
     try {
       const resp = await this.getClient().send(
@@ -819,7 +822,7 @@ export class S3TablesProvider implements ResourceProvider {
       );
       bucket = resp;
     } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
+      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
 
@@ -837,12 +840,22 @@ export class S3TablesProvider implements ResourceProvider {
     return result;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await -- structural; physical id is the source of truth
   private async readNamespaceCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const [tableBucketARN, namespaceName] = physicalId.split('|');
     if (!tableBucketARN || !namespaceName) return undefined;
+
+    // Existence only: a namespace deleted outside cdkd must read as gone, not
+    // as the physical id echoed back (go-to-k/cdkd#4283).
+    try {
+      await this.getClient().send(
+        new GetNamespaceCommand({ tableBucketARN, namespace: namespaceName })
+      );
+    } catch (err) {
+      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
+      throw err;
+    }
 
     // CDK 2.x's `s3tables.CfnNamespace` emits `Namespace` as a plain
     // string (not a singleton array as CFn docs / AWS SDK suggest); the
@@ -908,7 +921,7 @@ export class S3TablesProvider implements ResourceProvider {
 
   private async readTableCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     // `cdkd drift` has no per-resource try/catch, so a throttle or an
     // AccessDenied on ONE bare-ARN row would abort the whole stack's drift
     // run. Report drift-unknown for this resource instead — the same answer
@@ -923,7 +936,8 @@ export class S3TablesProvider implements ResourceProvider {
       );
       return undefined;
     }
-    if (resolved === 'not-found' || resolved === 'unparseable') return undefined;
+    if (resolved === 'not-found') return RESOURCE_NOT_FOUND;
+    if (resolved === 'unparseable') return undefined;
     const { tableBucketARN, namespace, name } = resolved;
 
     let resp;
@@ -936,7 +950,7 @@ export class S3TablesProvider implements ResourceProvider {
         })
       );
     } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
+      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
 

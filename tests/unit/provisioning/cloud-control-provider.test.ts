@@ -108,6 +108,7 @@ import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-o
 import { clearReadOnlyPropertiesCache } from '../../../src/provisioning/read-only-properties.js';
 import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('CloudControlProvider delete region verification', () => {
   let provider: CloudControlProvider;
@@ -511,14 +512,16 @@ describe('CloudControlProvider readCurrentState (drift detection)', () => {
     expect(mockCloudControlSend).toHaveBeenCalledTimes(1);
   });
 
-  it('returns undefined when the resource does not exist (drift unknown)', async () => {
+  it('returns RESOURCE_NOT_FOUND when the resource does not exist (go-to-k/cdkd#4283)', async () => {
     const err = new Error('not found') as Error & { name: string };
     err.name = 'ResourceNotFoundException';
     mockCloudControlSend.mockRejectedValueOnce(err);
 
     const result = await provider.readCurrentState('missing', 'MyBucket', 'AWS::S3::Bucket');
 
-    expect(result).toBeUndefined();
+    // The sentinel, NOT `undefined`: `undefined` means "no read path", which
+    // drift reports as an uncovered type and exits 0 for.
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('returns undefined when ResourceDescription has no Properties payload', async () => {

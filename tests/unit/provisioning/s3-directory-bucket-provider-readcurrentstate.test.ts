@@ -42,6 +42,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { S3DirectoryBucketProvider } from '../../../src/provisioning/providers/s3-directory-bucket-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('S3DirectoryBucketProvider.readCurrentState', () => {
   let provider: S3DirectoryBucketProvider;
@@ -70,7 +71,7 @@ describe('S3DirectoryBucketProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when bucket gone (NotFound)', async () => {
+  it('returns RESOURCE_NOT_FOUND when bucket gone (NotFound)', async () => {
     const err = new Error('not found');
     (err as { name?: string }).name = 'NotFound';
     mockS3Send.mockRejectedValueOnce(err);
@@ -80,6 +81,20 @@ describe('S3DirectoryBucketProvider.readCurrentState', () => {
       'Logical',
       'AWS::S3Express::DirectoryBucket'
     );
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('rethrows a non-not-found HeadBucket error instead of reporting the bucket gone', async () => {
+    const err = new Error('forbidden');
+    (err as { name?: string }).name = 'Forbidden';
+    mockS3Send.mockRejectedValueOnce(err);
+
+    await expect(
+      provider.readCurrentState(
+        'my-bucket--use1-az1--x-s3',
+        'Logical',
+        'AWS::S3Express::DirectoryBucket'
+      )
+    ).rejects.toThrow('forbidden');
   });
 });

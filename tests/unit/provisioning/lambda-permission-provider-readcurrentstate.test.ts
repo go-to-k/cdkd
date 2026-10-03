@@ -29,6 +29,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { LambdaPermissionProvider } from '../../../src/provisioning/providers/lambda-permission-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('LambdaPermissionProvider.readCurrentState', () => {
   let provider: LambdaPermissionProvider;
@@ -129,7 +130,7 @@ describe('LambdaPermissionProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when function policy not found', async () => {
+  it('returns RESOURCE_NOT_FOUND when function policy not found', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'gone', $metadata: {} })
     );
@@ -141,10 +142,23 @@ describe('LambdaPermissionProvider.readCurrentState', () => {
       { FunctionName: 'my-function' }
     );
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
-  it('returns undefined when matching Sid is missing from policy', async () => {
+  it('returns RESOURCE_NOT_FOUND when GetPolicy returns no policy document', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    const result = await provider.readCurrentState(
+      'MyPermission',
+      'PermissionLogical',
+      'AWS::Lambda::Permission',
+      { FunctionName: 'my-function' }
+    );
+
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when matching Sid is missing from policy', async () => {
     const policy = {
       Version: '2012-10-17',
       Statement: [{ Sid: 'OtherSid', Action: 'lambda:InvokeFunction', Principal: { AWS: '*' } }],
@@ -158,7 +172,7 @@ describe('LambdaPermissionProvider.readCurrentState', () => {
       { FunctionName: 'my-function' }
     );
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('returns undefined when FunctionName is missing from properties', async () => {

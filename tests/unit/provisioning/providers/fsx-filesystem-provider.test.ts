@@ -52,6 +52,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../../src/utils/error-handler.js';
 import { getLogger } from '../../../../src/utils/logger.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../../src/types/resource.js';
 import { prepareRemovalForUpdate } from '../../../../src/provisioning/update-removal.js';
 import {
   isMarkedNonRetryable,
@@ -166,6 +167,11 @@ const availableFs = (overrides: Record<string, unknown> = {}) => ({
   LustreConfiguration: { MountName: MOUNT_NAME, DeploymentType: 'SCRATCH_2' },
   ...overrides,
 });
+
+function bagOf(r: Record<string, unknown> | ResourceNotFound | undefined): Record<string, unknown> {
+  if (r === undefined || r === RESOURCE_NOT_FOUND) throw new Error('expected a property bag');
+  return r;
+}
 
 function notFound(): FileSystemNotFound {
   return new FileSystemNotFound({ message: 'File system does not exist.', $metadata: {} });
@@ -1180,7 +1186,7 @@ describe('FSxFileSystemProvider readCurrentState', () => {
       },
     });
 
-    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
 
     expect(state).toMatchObject({
       FileSystemType: 'LUSTRE',
@@ -1199,11 +1205,47 @@ describe('FSxFileSystemProvider readCurrentState', () => {
     expect((state?.['LustreConfiguration'] as Record<string, unknown>)['MountName']).toBeUndefined();
   });
 
-  it('returns undefined when the file system is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when the file system is gone', async () => {
     routeSend({ DescribeFileSystemsCommand: notFound() });
+    await expect(newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE)).resolves.toBe(
+      RESOURCE_NOT_FOUND
+    );
+  });
+
+  it('returns RESOURCE_NOT_FOUND on an empty FileSystems list for the id', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [] } });
+    await expect(newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE)).resolves.toBe(
+      RESOURCE_NOT_FOUND
+    );
+  });
+
+  it('keeps undefined when DescribeFileSystems answers with an empty body', async () => {
+    routeSend({ DescribeFileSystemsCommand: {} });
     await expect(
       newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE)
     ).resolves.toBeUndefined();
+  });
+
+  it('rethrows a message-only "not found" under a different name (no sentinel)', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: Object.assign(new Error('File system does not exist.'), {
+        name: 'BadRequest',
+      }),
+    });
+    await expect(newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE)).rejects.toThrow(
+      'does not exist'
+    );
+  });
+
+  it('rethrows AccessDenied (no sentinel)', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: Object.assign(new Error('denied'), {
+        name: 'AccessDeniedException',
+      }),
+    });
+    await expect(newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE)).rejects.toThrow(
+      'denied'
+    );
   });
 
   // ─── docs/provider-rules.md#readcurrentstate-for-drift-detection mandatory placeholder block ────
@@ -1238,7 +1280,7 @@ describe('FSxFileSystemProvider readCurrentState', () => {
         },
       });
 
-      const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+      const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
 
       // Step 3: the COMPLETE key list, not a subset.
       expect(Object.keys(state ?? {}).sort()).toEqual([...ALWAYS_EMITTED_KEYS, variantKey].sort());
@@ -1271,7 +1313,7 @@ describe('FSxFileSystemProvider readCurrentState', () => {
       },
     });
 
-    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
 
     expect(Object.keys(state ?? {}).sort()).toEqual(
       ALWAYS_EMITTED_KEYS.filter((k) => k !== 'FileSystemType').sort()
@@ -1297,7 +1339,7 @@ describe('FSxFileSystemProvider readCurrentState', () => {
       },
     });
 
-    const observed = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const observed = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
 
     // The property actually being protected, asserted directly rather than
     // inferred from a downstream symptom: the snapshot offers update() EXACTLY
@@ -1404,7 +1446,7 @@ describe('FSxFileSystemProvider readCurrentState', () => {
     });
 
     const provider = newProvider();
-    const state = await provider.readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const state = bagOf(await provider.readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
     const canonical = canonicalizeUnorderedArraysAtPaths(
       state,
       provider.getDriftUnorderedPaths(RESOURCE_TYPE)
@@ -1469,7 +1511,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
       },
     });
 
-    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
     const windows = state?.['WindowsConfiguration'] as Record<string, unknown>;
 
     expect(windows).toMatchObject({
@@ -1528,7 +1570,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
       },
     });
 
-    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
     const ontap = state?.['OntapConfiguration'] as Record<string, unknown>;
 
     expect(ontap).toEqual({
@@ -1570,7 +1612,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
       },
     });
 
-    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
     const openzfs = state?.['OpenZFSConfiguration'] as Record<string, unknown>;
 
     expect(openzfs).toEqual({
@@ -1606,7 +1648,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
     };
     routeSend({ DescribeFileSystemsCommand: { FileSystems: [observedFs] } });
 
-    const observed = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const observed = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
     expect(observed).toBeDefined();
 
     vi.clearAllMocks();
@@ -1651,7 +1693,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
       },
     });
 
-    const observed = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const observed = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
 
     vi.clearAllMocks();
     routeSend({
@@ -1701,7 +1743,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
       },
     });
 
-    const observed = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const observed = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
     expect(observed?.['WindowsConfiguration']).toBeDefined();
 
     vi.clearAllMocks();
@@ -1744,7 +1786,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
       },
     });
 
-    const observed = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const observed = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
     expect(observed?.['OpenZFSConfiguration']).toMatchObject({
       DiskIopsConfiguration: { Mode: 'AUTOMATIC' },
     });
@@ -1804,7 +1846,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
       },
     });
 
-    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
     expect(state?.['OntapConfiguration']).toEqual({});
     // The other three variant blocks stay ABSENT (Class 1 carve-out).
     expect(state).not.toHaveProperty('LustreConfiguration');
@@ -1825,7 +1867,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
       },
     });
 
-    const state = await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE);
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
     for (const key of Object.values(VARIANT_FILE_SYSTEM_TYPE_TO_KEY)) {
       expect(state).not.toHaveProperty(key);
     }

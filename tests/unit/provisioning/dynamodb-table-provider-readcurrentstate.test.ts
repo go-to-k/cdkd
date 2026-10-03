@@ -33,6 +33,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { DynamoDBTableProvider } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('DynamoDBTableProvider.readCurrentState', () => {
   let provider: DynamoDBTableProvider;
@@ -101,13 +102,71 @@ describe('DynamoDBTableProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when table is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when table is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'gone', $metadata: {} })
     );
 
     const result = await provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when the table disappears before ListTagsOfResource', async () => {
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        TableName: 'my-table',
+        TableArn: 'arn:aws:dynamodb:us-east-1:123:table/my-table',
+      },
+    });
+    mockSend.mockRejectedValueOnce(
+      new ResourceNotFoundException({ message: 'gone', $metadata: {} })
+    );
+
+    const result = await provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('rethrows a ListTagsOfResource failure under another error name (not the sentinel)', async () => {
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        TableName: 'my-table',
+        TableArn: 'arn:aws:dynamodb:us-east-1:123:table/my-table',
+      },
+    });
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('not allowed to list tags'), { name: 'AccessDeniedException' })
+    );
+
+    await expect(
+      provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table')
+    ).rejects.toThrow('not allowed to list tags');
+  });
+
+  it('keeps undefined for a successful DescribeTable with no Table body', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    const result = await provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table');
     expect(result).toBeUndefined();
+  });
+
+  it('rethrows a message-only "not found" under another error name (not the sentinel)', async () => {
+    const err = Object.assign(new Error('Requested resource not found'), {
+      name: 'ValidationException',
+    });
+    mockSend.mockRejectedValueOnce(err);
+
+    await expect(
+      provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table')
+    ).rejects.toBe(err);
+  });
+
+  it('rethrows AccessDeniedException rather than reporting the table gone', async () => {
+    const err = Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' });
+    mockSend.mockRejectedValueOnce(err);
+
+    await expect(
+      provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table')
+    ).rejects.toBe(err);
   });
 
   it('surfaces Tags from ListTagsOfResource with aws:* filtered out', async () => {
@@ -126,7 +185,7 @@ describe('DynamoDBTableProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table');
 
-    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+    expect((result as Record<string, unknown> | undefined)?.['Tags']).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
   it('omits Tags when ListTagsOfResource returns no user tags', async () => {
@@ -142,6 +201,6 @@ describe('DynamoDBTableProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table');
 
-    expect(result?.Tags).toEqual([]);
+    expect((result as Record<string, unknown> | undefined)?.['Tags']).toEqual([]);
   });
 });

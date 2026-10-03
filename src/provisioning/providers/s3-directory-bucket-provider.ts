@@ -37,7 +37,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -572,20 +574,20 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
    * snapshot and rely on the comparator's "key absent in state never
    * drifts" rule to no-op against state.
    *
-   * Returns `undefined` when the bucket is gone (`HeadBucket` returns
+   * Returns `RESOURCE_NOT_FOUND` when the bucket is gone (`HeadBucket` returns
    * `NotFound` / `NoSuchBucket`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       await this.s3Client.send(new HeadBucketCommand({ Bucket: physicalId }));
     } catch (err) {
       const e = err as { name?: string };
       if (e.name === 'NotFound' || e.name === 'NoSuchBucket' || e.name === 'BucketNotFound') {
-        return undefined;
+        return RESOURCE_NOT_FOUND;
       }
       throw err;
     }

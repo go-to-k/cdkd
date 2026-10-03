@@ -26,7 +26,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
@@ -545,7 +547,7 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const { functionName, qualifier } = this.parsePhysicalId(physicalId);
     let resp;
     try {
@@ -555,7 +557,7 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       if (qualifier !== '$LATEST') input.Qualifier = qualifier;
       resp = await this.lambdaClient.send(new GetFunctionEventInvokeConfigCommand(input));
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
 

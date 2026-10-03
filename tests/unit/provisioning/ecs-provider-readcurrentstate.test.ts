@@ -38,6 +38,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('ECSProvider.readCurrentState', () => {
   let provider: ECSProvider;
@@ -170,11 +171,11 @@ describe('ECSProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'arn:aws:ecs:us-east-1:123:service/my-cluster/my-svc',
       'SvcLogical',
       'AWS::ECS::Service'
-    );
+    )) as Record<string, unknown> | undefined;
 
     const cmd = mockSend.mock.calls[0]?.[0];
     expect(cmd).toBeInstanceOf(DescribeServicesCommand);
@@ -194,11 +195,11 @@ describe('ECSProvider.readCurrentState', () => {
       services: [{ serviceName: 'my-svc', desiredCount: 1, launchType: 'FARGATE' }],
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'arn:aws:ecs:us-east-1:123:service/my-svc',
       'SvcLogical',
       'AWS::ECS::Service'
-    );
+    )) as Record<string, unknown> | undefined;
 
     const cmd = mockSend.mock.calls[0]?.[0];
     expect(cmd).toBeInstanceOf(DescribeServicesCommand);
@@ -668,11 +669,11 @@ describe('ECSProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'arn:aws:ecs:us-east-1:123:task-definition/vol-td:1',
       'VolTd',
       'AWS::ECS::TaskDefinition'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.Volumes).toEqual([
       { Name: 'host-vol', Host: { SourcePath: '/ecs/data' } },
@@ -719,11 +720,11 @@ describe('ECSProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'arn:aws:ecs:us-east-1:123:task-definition/fi-td:1',
       'FiTd',
       'AWS::ECS::TaskDefinition'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.EnableFaultInjection).toBe(true);
   });
@@ -755,21 +756,132 @@ describe('ECSProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'arn:aws:ecs:us-east-1:123:task-definition/fi-false-td:1',
       'FiFalseTd',
       'AWS::ECS::TaskDefinition'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.EnableFaultInjection).toBe(false);
   });
 
-  it('returns undefined when cluster is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when cluster is gone (a MISSING failure)', async () => {
+    mockSend.mockResolvedValueOnce({ clusters: [], failures: [{ arn: 'gone', reason: 'MISSING' }] });
+
+    const result = await provider.readCurrentState('gone', 'ClusterLogical', 'AWS::ECS::Cluster');
+
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('keeps undefined for an empty clusters list with no failures (no answer)', async () => {
     mockSend.mockResolvedValueOnce({ clusters: [] });
 
     const result = await provider.readCurrentState('gone', 'ClusterLogical', 'AWS::ECS::Cluster');
 
     expect(result).toBeUndefined();
+  });
+
+  it('keeps undefined for a short-format service ARN the default cluster reports MISSING', async () => {
+    // The legacy ARN names no cluster, so the call asked the DEFAULT cluster;
+    // its MISSING says nothing about a service in a named cluster.
+    mockSend.mockResolvedValueOnce({
+      services: [],
+      failures: [{ arn: 'x', reason: 'MISSING' }],
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123456789012:service/my-svc',
+      'SvcLogical',
+      'AWS::ECS::Service'
+    );
+
+    expect(result).toBeUndefined();
+  });
+
+  it('keeps undefined for a short-format service ARN whose default-cluster call says ServiceNotFound', async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('Service not found'), { name: 'ServiceNotFoundException' })
+    );
+
+    const result = await provider.readCurrentState(
+      'arn:aws:ecs:us-east-1:123456789012:service/my-svc',
+      'SvcLogical',
+      'AWS::ECS::Service'
+    );
+
+    expect(result).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#4283: a deleted resource reads as gone, not as "no read path".
+  describe('not-found answers (go-to-k/cdkd#4283)', () => {
+    const svcArn = 'arn:aws:ecs:us-east-1:123:service/my-cluster/my-svc';
+    const tdArn = 'arn:aws:ecs:us-east-1:123:task-definition/my-td:1';
+    const named = (name: string, message: string): Error =>
+      Object.assign(new Error(message), { name });
+
+    it('Cluster: a MISSING failure is gone; another failure reason is not', async () => {
+      mockSend.mockResolvedValueOnce({ clusters: [], failures: [{ reason: 'MISSING' }] });
+      expect(await provider.readCurrentState('gone', 'C', 'AWS::ECS::Cluster')).toBe(
+        RESOURCE_NOT_FOUND
+      );
+
+      mockSend.mockResolvedValueOnce({ clusters: [], failures: [{ reason: 'INTERNAL' }] });
+      expect(await provider.readCurrentState('gone', 'C', 'AWS::ECS::Cluster')).toBeUndefined();
+    });
+
+    it('Cluster: ClusterNotFoundException is gone; AccessDenied is not', async () => {
+      mockSend.mockRejectedValueOnce(named('ClusterNotFoundException', 'Cluster not found.'));
+      expect(await provider.readCurrentState('gone', 'C', 'AWS::ECS::Cluster')).toBe(
+        RESOURCE_NOT_FOUND
+      );
+
+      mockSend.mockRejectedValueOnce(named('AccessDeniedException', 'denied'));
+      expect(await provider.readCurrentState('gone', 'C', 'AWS::ECS::Cluster')).toBeUndefined();
+    });
+
+    it('Service: empty list with MISSING failure is gone; another reason is not', async () => {
+      mockSend.mockResolvedValueOnce({ services: [], failures: [{ reason: 'MISSING' }] });
+      expect(await provider.readCurrentState(svcArn, 'S', 'AWS::ECS::Service')).toBe(
+        RESOURCE_NOT_FOUND
+      );
+
+      mockSend.mockResolvedValueOnce({ services: [], failures: [{ reason: 'INTERNAL' }] });
+      expect(await provider.readCurrentState(svcArn, 'S', 'AWS::ECS::Service')).toBeUndefined();
+    });
+
+    it.each(['ClusterNotFoundException', 'ServiceNotFoundException'])(
+      'Service: %s is gone',
+      async (name) => {
+        mockSend.mockRejectedValueOnce(named(name, 'not found'));
+        expect(await provider.readCurrentState(svcArn, 'S', 'AWS::ECS::Service')).toBe(
+          RESOURCE_NOT_FOUND
+        );
+      }
+    );
+
+    it('Service: AccessDenied is not gone', async () => {
+      mockSend.mockRejectedValueOnce(named('AccessDeniedException', 'denied'));
+      expect(await provider.readCurrentState(svcArn, 'S', 'AWS::ECS::Service')).toBeUndefined();
+    });
+
+    it('TaskDefinition: "Unable to describe task definition" is gone', async () => {
+      mockSend.mockRejectedValueOnce(
+        named('ClientException', 'Unable to describe task definition.')
+      );
+      expect(await provider.readCurrentState(tdArn, 'T', 'AWS::ECS::TaskDefinition')).toBe(
+        RESOURCE_NOT_FOUND
+      );
+    });
+
+    it.each([
+      ['ClientException', 'User is not authorized to perform ecs:DescribeTaskDefinition'],
+      ['AccessDeniedException', 'denied'],
+    ])('TaskDefinition: %s (%s) is not gone', async (name, message) => {
+      mockSend.mockRejectedValueOnce(named(name, message));
+      expect(
+        await provider.readCurrentState(tdArn, 'T', 'AWS::ECS::TaskDefinition')
+      ).toBeUndefined();
+    });
   });
 
   // go-to-k/cdkd#4272: ECS keeps LISTING a deleted resource for a while under a
@@ -794,9 +906,9 @@ describe('ECSProvider.readCurrentState', () => {
 
       expect(mockSend).toHaveBeenCalledTimes(1);
       if (present) {
-        expect(result?.ClusterName).toBe('my-cluster');
+        expect((result as Record<string, unknown>)?.ClusterName).toBe('my-cluster');
       } else {
-        expect(result).toBeUndefined();
+        expect(result).toBe(RESOURCE_NOT_FOUND);
       }
     });
 
@@ -818,9 +930,9 @@ describe('ECSProvider.readCurrentState', () => {
 
       expect(mockSend).toHaveBeenCalledTimes(1);
       if (present) {
-        expect(result?.ServiceName).toBe('my-svc');
+        expect((result as Record<string, unknown>)?.ServiceName).toBe('my-svc');
       } else {
-        expect(result).toBeUndefined();
+        expect(result).toBe(RESOURCE_NOT_FOUND);
       }
     });
 
@@ -840,9 +952,9 @@ describe('ECSProvider.readCurrentState', () => {
 
       expect(mockSend).toHaveBeenCalledTimes(1);
       if (present) {
-        expect(result?.Family).toBe('my-td');
+        expect((result as Record<string, unknown>)?.Family).toBe('my-td');
       } else {
-        expect(result).toBeUndefined();
+        expect(result).toBe(RESOURCE_NOT_FOUND);
       }
     });
 
@@ -885,11 +997,11 @@ describe('ECSProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'my-cluster',
       'ClusterLogical',
       'AWS::ECS::Cluster'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
@@ -904,11 +1016,11 @@ describe('ECSProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'my-cluster',
       'ClusterLogical',
       'AWS::ECS::Cluster'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.Tags).toEqual([]);
   });
@@ -925,11 +1037,11 @@ describe('ECSProvider.readCurrentState', () => {
       ],
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'my-cluster',
       'ClusterLogical',
       'AWS::ECS::Cluster'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.ServiceConnectDefaults).toEqual({
       Namespace: 'arn:aws:servicediscovery:us-east-1:0:namespace/ns-foo',

@@ -36,6 +36,7 @@ import {
   AgentCoreEvaluatorProvider,
   evaluatorIdFromArn,
 } from '../../../../src/provisioning/providers/agentcore-evaluator-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 
 const EVALUATOR_ID = 'my-evaluator-Ab12Cd34Ef';
 const EVALUATOR_ARN = `arn:aws:bedrock-agentcore:us-east-1:123456789012:evaluator/${EVALUATOR_ID}`;
@@ -632,14 +633,24 @@ describe('AgentCoreEvaluatorProvider', () => {
       ).toEqual({ top_k: 40, Custom_Field: 'verbatim' });
     });
 
-    it('should return undefined when the evaluator is gone', async () => {
+    it('should return RESOURCE_NOT_FOUND when the evaluator is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new ResourceNotFoundException({ $metadata: {}, message: 'not found' })
       );
 
       await expect(
         provider.readCurrentState(EVALUATOR_ARN, 'MyEvaluator', 'AWS::BedrockAgentCore::Evaluator')
-      ).resolves.toBeUndefined();
+      ).resolves.toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('should still rethrow a non-NotFound GetEvaluator error', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+      );
+
+      await expect(
+        provider.readCurrentState(EVALUATOR_ARN, 'MyEvaluator', 'AWS::BedrockAgentCore::Evaluator')
+      ).rejects.toThrow('denied');
     });
   });
 

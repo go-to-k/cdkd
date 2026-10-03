@@ -139,7 +139,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { pasteableAwsCommand, WITHHELD_AWS_COMMAND } from '../replacement-protection-advice.js';
 import { displayIdent, safeMsg } from '../../utils/display-safe.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
@@ -479,6 +481,11 @@ export function describedInstanceAttributes(
   });
 }
 
+/** EC2's own not-found answer: an error code of the `<Thing>.NotFound` shape. */
+function isEc2NotFoundCode(error: unknown): boolean {
+  const name = (error as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && name.endsWith('.NotFound');
+}
 export class EC2Provider implements ResourceProvider {
   private ec2Client: EC2Client;
   /** The standalone-ingress Authorize's client: one send per call (#4355). */
@@ -6211,15 +6218,17 @@ export class EC2Provider implements ResourceProvider {
    *    `properties` arg) to disambiguate among multiple AWS rules
    *    sharing the same `(group, protocol, ports)` tuple.
    *
-   * Returns `undefined` when the resource is gone (any `*NotFound` /
-   * `Invalid*` error from the EC2 SDK matches `isNotFoundError`).
+   * Returns `RESOURCE_NOT_FOUND` when the resource is gone (any `*NotFound` /
+   * `Invalid*` error from the EC2 SDK matches `isNotFoundError`, or the
+   * describe / parent walk no longer carries it); `undefined` for an
+   * unsupported type or an unparseable physicalId.
    */
   async readCurrentState(
     physicalId: string,
     logicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       switch (resourceType) {
         case 'AWS::EC2::VPC':
@@ -6257,6 +6266,10 @@ export class EC2Provider implements ResourceProvider {
           return undefined;
       }
     } catch (err) {
+      // go-to-k/cdkd#4283: only EC2's own `*.NotFound` code proves the
+      // resource is gone. The looser message match (`InvalidParameterValue`,
+      // "does not exist" text) keeps its old "cannot tell" answer.
+      if (isEc2NotFoundCode(err)) return RESOURCE_NOT_FOUND;
       if (this.isNotFoundError(err)) return undefined;
       throw err;
     }
@@ -6389,10 +6402,10 @@ export class EC2Provider implements ResourceProvider {
 
   private async readVpcCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
     const vpc = resp.Vpcs?.[0];
-    if (!vpc) return undefined;
+    if (!vpc) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (vpc.CidrBlock !== undefined) result['CidrBlock'] = vpc.CidrBlock;
@@ -6426,10 +6439,10 @@ export class EC2Provider implements ResourceProvider {
 
   private async readSubnetCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(new DescribeSubnetsCommand({ SubnetIds: [physicalId] }));
     const subnet = resp.Subnets?.[0];
-    if (!subnet) return undefined;
+    if (!subnet) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (subnet.VpcId !== undefined) result['VpcId'] = subnet.VpcId;
@@ -6446,12 +6459,12 @@ export class EC2Provider implements ResourceProvider {
 
   private async readInternetGatewayCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(
       new DescribeInternetGatewaysCommand({ InternetGatewayIds: [physicalId] })
     );
     const igw = resp.InternetGateways?.[0];
-    if (!igw) return undefined;
+    if (!igw) return RESOURCE_NOT_FOUND;
 
     // The provider only handles `Tags`, which is out of scope for v1 drift.
     // Return an empty object so the comparator marks the resource as
@@ -6461,12 +6474,12 @@ export class EC2Provider implements ResourceProvider {
 
   private async readNatGatewayCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(
       new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
     );
     const gw = resp.NatGateways?.find((g) => g.State !== 'deleted' && g.State !== 'deleting');
-    if (!gw) return undefined;
+    if (!gw) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (gw.SubnetId !== undefined) result['SubnetId'] = gw.SubnetId;
@@ -6483,12 +6496,12 @@ export class EC2Provider implements ResourceProvider {
 
   private async readRouteTableCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(
       new DescribeRouteTablesCommand({ RouteTableIds: [physicalId] })
     );
     const rt = resp.RouteTables?.[0];
-    if (!rt) return undefined;
+    if (!rt) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (rt.VpcId !== undefined) result['VpcId'] = rt.VpcId;
@@ -6498,12 +6511,12 @@ export class EC2Provider implements ResourceProvider {
   private async readSecurityGroupCurrentState(
     physicalId: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(
       new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
     );
     const sg = resp.SecurityGroups?.[0];
-    if (!sg) return undefined;
+    if (!sg) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (sg.GroupName !== undefined) result['GroupName'] = sg.GroupName;
@@ -6568,7 +6581,7 @@ export class EC2Provider implements ResourceProvider {
 
   private async readInstanceCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(
       new DescribeInstancesCommand({ InstanceIds: [physicalId] })
     );
@@ -6579,7 +6592,7 @@ export class EC2Provider implements ResourceProvider {
       instance.State?.Name === 'terminated' ||
       instance.State?.Name === 'shutting-down'
     ) {
-      return undefined;
+      return RESOURCE_NOT_FOUND;
     }
 
     const result: Record<string, unknown> = {};
@@ -6812,12 +6825,12 @@ export class EC2Provider implements ResourceProvider {
 
   private async readNetworkAclCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(
       new DescribeNetworkAclsCommand({ NetworkAclIds: [physicalId] })
     );
     const acl = resp.NetworkAcls?.[0];
-    if (!acl) return undefined;
+    if (!acl) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (acl.VpcId !== undefined) result['VpcId'] = acl.VpcId;
@@ -6829,13 +6842,13 @@ export class EC2Provider implements ResourceProvider {
    *
    * physicalId format: `<igwId>|<vpcId>` (cdkd `createVpcGatewayAttachment`).
    * AWS API: `DescribeInternetGateways(igwId)` → walk `Attachments[]` for
-   * the matching `VpcId`. Returns `undefined` when the IGW is gone OR is no
+   * the matching `VpcId`. Returns `RESOURCE_NOT_FOUND` when the IGW is gone OR is no
    * longer attached to the recorded VPC. Both fields are immutable on this
    * resource — drift signal is binary (exists / gone) plus VpcId mismatch.
    */
   private async readVpcGatewayAttachmentCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const [igwId, vpcId] = physicalId.split('|');
     if (!igwId || !vpcId) return undefined;
 
@@ -6843,9 +6856,9 @@ export class EC2Provider implements ResourceProvider {
       new DescribeInternetGatewaysCommand({ InternetGatewayIds: [igwId] })
     );
     const igw = resp.InternetGateways?.[0];
-    if (!igw) return undefined;
+    if (!igw) return RESOURCE_NOT_FOUND;
     const attached = igw.Attachments?.some((a) => a.VpcId === vpcId);
-    if (!attached) return undefined;
+    if (!attached) return RESOURCE_NOT_FOUND;
 
     return { InternetGatewayId: igwId, VpcId: vpcId };
   }
@@ -6857,7 +6870,7 @@ export class EC2Provider implements ResourceProvider {
    * v4 CIDR, a v6 CIDR, or a managed prefix list id (`pl-...`).
    * AWS API: `DescribeRouteTables(routeTableId)` → walk `Routes[]` for the
    * entry whose `DestinationCidrBlock`, `DestinationIpv6CidrBlock`, or
-   * `DestinationPrefixListId` matches the destination. Returns `undefined`
+   * `DestinationPrefixListId` matches the destination. Returns `RESOURCE_NOT_FOUND`
    * when the route table is gone or the route has been removed.
    *
    * Surfaces the target field (`GatewayId` / `NatGatewayId` / `InstanceId` /
@@ -6867,7 +6880,7 @@ export class EC2Provider implements ResourceProvider {
    */
   private async readRouteCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const [rtbId, destination] = physicalId.split('|');
     if (!rtbId || !destination) return undefined;
 
@@ -6875,14 +6888,14 @@ export class EC2Provider implements ResourceProvider {
       new DescribeRouteTablesCommand({ RouteTableIds: [rtbId] })
     );
     const rtb = resp.RouteTables?.[0];
-    if (!rtb) return undefined;
+    if (!rtb) return RESOURCE_NOT_FOUND;
     const route = rtb.Routes?.find(
       (r) =>
         r.DestinationCidrBlock === destination ||
         r.DestinationIpv6CidrBlock === destination ||
         r.DestinationPrefixListId === destination
     );
-    if (!route) return undefined;
+    if (!route) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = { RouteTableId: rtbId };
     if (route.DestinationCidrBlock !== undefined) {
@@ -6939,7 +6952,7 @@ export class EC2Provider implements ResourceProvider {
    *
    * physicalId format: `<rtbassoc-xxx>` (returned by `AssociateRouteTable`).
    * AWS API: `DescribeRouteTables` filtered by `association.route-table-association-id`,
-   * then walk `Associations[]` for the matching entry. Returns `undefined`
+   * then walk `Associations[]` for the matching entry. Returns `RESOURCE_NOT_FOUND`
    * when no route table carries the association id.
    *
    * Both `SubnetId` and `RouteTableId` are immutable on this resource —
@@ -6947,7 +6960,7 @@ export class EC2Provider implements ResourceProvider {
    */
   private async readSubnetRouteTableAssociationCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(
       new DescribeRouteTablesCommand({
         Filters: [{ Name: 'association.route-table-association-id', Values: [physicalId] }],
@@ -6962,7 +6975,7 @@ export class EC2Provider implements ResourceProvider {
         return result;
       }
     }
-    return undefined;
+    return RESOURCE_NOT_FOUND;
   }
 
   /**
@@ -6977,13 +6990,13 @@ export class EC2Provider implements ResourceProvider {
    * AWS API: `DescribeSecurityGroups(groupId)` → walk `IpPermissions[]`
    * filtered by protocol+ports → flatten via `flattenIpPermissions` →
    * find the entry matching state's full signature (CIDR / peer / prefix /
-   * description). Returns `undefined` when the parent SG is gone or no
+   * description). Returns `RESOURCE_NOT_FOUND` when the parent SG is gone or no
    * matching rule exists.
    */
   private async readSecurityGroupIngressCurrentState(
     physicalId: string,
     properties?: Record<string, unknown>
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const parts = physicalId.split('|');
     if (parts.length < 4) return undefined;
     const groupId = parts[0]!;
@@ -6995,7 +7008,7 @@ export class EC2Provider implements ResourceProvider {
       new DescribeSecurityGroupsCommand({ GroupIds: [groupId] })
     );
     const sg = resp.SecurityGroups?.[0];
-    if (!sg) return undefined;
+    if (!sg) return RESOURCE_NOT_FOUND;
 
     // Issue #1643: the physicalId's protocol segment is what cdkd SENT (a
     // template `IpProtocol: 6` is recorded as `'6'`, post-#1633), while AWS
@@ -7008,13 +7021,19 @@ export class EC2Provider implements ResourceProvider {
     // `sg-…|6|9443|9443` vs an AWS `IpPermissions[].IpProtocol` of `tcp`.
     // Canonicalizing BOTH sides is what makes the tuple comparable again.
     const wantedProtocol = sgProtocolKey(protocol);
+    // `-1` and absent are the same port bound on both sides: the physical id
+    // decodes `-1` to `undefined`, while AWS reports an ICMP rule's `-1`
+    // explicitly (`Port.icmpPing()` is 8 / -1, `Port.allIcmp()` -1 / -1).
+    // Comparing them raw read a live ICMP rule as gone (go-to-k/cdkd#4283).
+    const portBound = (port: number | undefined): number | undefined =>
+      port === -1 ? undefined : port;
     const candidates = (sg.IpPermissions ?? []).filter(
       (p) =>
         sgProtocolKey(p.IpProtocol) === wantedProtocol &&
-        (p.FromPort ?? undefined) === fromPort &&
-        (p.ToPort ?? undefined) === toPort
+        portBound(p.FromPort) === fromPort &&
+        portBound(p.ToPort) === toPort
     );
-    if (candidates.length === 0) return undefined;
+    if (candidates.length === 0) return RESOURCE_NOT_FOUND;
 
     const flat = flattenIpPermissions(candidates, 'ingress');
 
@@ -7030,9 +7049,11 @@ export class EC2Provider implements ResourceProvider {
         // level, unlike the inline-rule case).
         return { GroupId: groupId, ...match };
       }
-      // No exact match — return undefined so the comparator marks the
-      // resource as `gone` rather than fire false drift on a different
-      // rule that happens to share the (protocol, ports) tuple.
+      // No exact match — `undefined` ("cannot tell") rather than false drift on
+      // a different rule sharing the (protocol, ports) tuple, and NOT the
+      // gone sentinel: the whole-key compare also misses an ordinary
+      // same-account SG-to-SG rule, whose template omits the peer owner AWS
+      // always reports (see `securityGroupRuleMatchesCfnIngress`).
       return undefined;
     }
 
@@ -7046,7 +7067,7 @@ export class EC2Provider implements ResourceProvider {
    * `createNetworkAclEntry`).
    *
    * AWS API: `DescribeNetworkAcls(aclId)` → walk `Entries[]` for the entry
-   * matching `(RuleNumber, Egress)`. Returns `undefined` when the parent
+   * matching `(RuleNumber, Egress)`. Returns `RESOURCE_NOT_FOUND` when the parent
    * ACL is gone or the rule has been removed.
    *
    * Surfaces every user-controllable CFn property (`Protocol`, `RuleAction`,
@@ -7056,7 +7077,7 @@ export class EC2Provider implements ResourceProvider {
    */
   private async readNetworkAclEntryCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const parts = physicalId.split('|');
     if (parts.length < 3) return undefined;
     const aclId = parts[0]!;
@@ -7067,11 +7088,11 @@ export class EC2Provider implements ResourceProvider {
       new DescribeNetworkAclsCommand({ NetworkAclIds: [aclId] })
     );
     const acl = resp.NetworkAcls?.[0];
-    if (!acl) return undefined;
+    if (!acl) return RESOURCE_NOT_FOUND;
     const entry = acl.Entries?.find(
       (e) => e.RuleNumber === ruleNumber && (e.Egress ?? false) === egress
     );
-    if (!entry) return undefined;
+    if (!entry) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {
       NetworkAclId: aclId,
@@ -7117,7 +7138,7 @@ export class EC2Provider implements ResourceProvider {
    * `ReplaceNetworkAclAssociation`).
    *
    * AWS API: `DescribeNetworkAcls` filtered by `association.association-id`,
-   * then walk `Associations[]` for the matching entry. Returns `undefined`
+   * then walk `Associations[]` for the matching entry. Returns `RESOURCE_NOT_FOUND`
    * when no NACL carries the association id.
    *
    * Surfaces `NetworkAclId` + `SubnetId`. Drift signal: NetworkAclId
@@ -7125,7 +7146,7 @@ export class EC2Provider implements ResourceProvider {
    */
   private async readSubnetNetworkAclAssociationCurrentState(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(
       new DescribeNetworkAclsCommand({
         Filters: [{ Name: 'association.association-id', Values: [physicalId] }],
@@ -7140,7 +7161,7 @@ export class EC2Provider implements ResourceProvider {
         return result;
       }
     }
-    return undefined;
+    return RESOURCE_NOT_FOUND;
   }
 
   private async verifyExplicit(

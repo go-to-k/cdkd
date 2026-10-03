@@ -25,8 +25,10 @@ import type {
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
+  ResourceNotFound,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -476,18 +478,18 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
    * metric form) or `CompositeAlarms` (composite form). cdkd's provider
    * only handles the single-metric form, so we look at `MetricAlarms` only.
    *
-   * Returns `undefined` when the alarm is gone (no matching `MetricAlarms`).
+   * Returns `RESOURCE_NOT_FOUND` when the alarm is gone (no matching `MetricAlarms`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.cloudWatchClient.send(
       new DescribeAlarmsCommand({ AlarmNames: [physicalId], AlarmTypes: ['MetricAlarm'] })
     );
     const alarm = resp.MetricAlarms?.[0];
-    if (!alarm) return undefined;
+    if (!alarm) return RESOURCE_NOT_FOUND;
 
     // CloudWatch alarms are fully replaced by PutMetricAlarm on update,
     // so almost every field is mutable. Always emit placeholders so a

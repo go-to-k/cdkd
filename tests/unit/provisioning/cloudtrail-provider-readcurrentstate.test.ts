@@ -43,6 +43,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { CloudTrailProvider } from '../../../src/provisioning/providers/cloudtrail-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('CloudTrailProvider.readCurrentState', () => {
   let provider: CloudTrailProvider;
@@ -116,7 +117,7 @@ describe('CloudTrailProvider.readCurrentState', () => {
       .mockResolvedValueOnce({ InsightSelectors: [] })
       .mockResolvedValueOnce({ ResourceTagList: [] });
 
-    const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
+    const result = (await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail')) as Record<string, unknown> | undefined;
     expect(result?.InsightSelectors).toEqual([]);
   });
 
@@ -160,12 +161,21 @@ describe('CloudTrailProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when trail is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when trail is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new TrailNotFoundException({ message: 'gone', $metadata: {} })
     );
     const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('still rethrows a non-NotFound GetTrail error', async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+    );
+    await expect(
+      provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail')
+    ).rejects.toThrow('denied');
   });
 
   it('surfaces Tags from ListTags with aws:* filtered out', async () => {
@@ -188,7 +198,7 @@ describe('CloudTrailProvider.readCurrentState', () => {
         ],
       });
 
-    const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
+    const result = (await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail')) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
@@ -238,7 +248,7 @@ describe('CloudTrailProvider.readCurrentState', () => {
       .mockResolvedValueOnce({ InsightSelectors: [] })
       .mockResolvedValueOnce({ ResourceTagList: [] });
 
-    const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
+    const result = (await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail')) as Record<string, unknown> | undefined;
 
     expect(result?.['CloudWatchLogsLogGroupArn']).toBe(groupArn);
     expect(result?.['CloudWatchLogsRoleArn']).toBe(roleArn);
@@ -262,7 +272,7 @@ describe('CloudTrailProvider.readCurrentState', () => {
       .mockResolvedValueOnce({ InsightSelectors: [] })
       .mockResolvedValueOnce({ ResourceTagList: [] });
 
-    const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
+    const result = (await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail')) as Record<string, unknown> | undefined;
 
     expect(Object.keys(result ?? {})).toEqual(
       expect.arrayContaining(['CloudWatchLogsLogGroupArn', 'CloudWatchLogsRoleArn'])
@@ -316,7 +326,7 @@ describe('CloudTrailProvider.readCurrentState', () => {
         ],
       });
 
-    const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
+    const result = (await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail')) as Record<string, unknown> | undefined;
     expect(result?.Tags).toEqual([]);
   });
 });

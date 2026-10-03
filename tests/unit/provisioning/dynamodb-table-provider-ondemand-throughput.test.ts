@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   CreateTableCommand,
   DescribeTableCommand,
@@ -53,6 +54,15 @@ function findCalls<T>(ctor: new (...args: never[]) => T): T[] {
  * rides DIRECTLY on CreateTable / UpdateTable (not a separate
  * post-ACTIVE control-plane API).
  */
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
+
 describe('DynamoDBTableProvider OnDemandThroughput wiring', () => {
   let provider: DynamoDBTableProvider;
 
@@ -374,7 +384,7 @@ describe('DynamoDBTableProvider OnDemandThroughput wiring', () => {
       mockSend.mockResolvedValueOnce({ Tags: [] }); // ListTagsOfResource
       primeTtlPitrEmpty();
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeTableCommand);
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsOfResourceCommand);
@@ -396,7 +406,7 @@ describe('DynamoDBTableProvider OnDemandThroughput wiring', () => {
       mockSend.mockResolvedValueOnce({ Tags: [] });
       primeTtlPitrEmpty();
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE));
 
       expect(result).toBeDefined();
       expect(result).not.toHaveProperty('OnDemandThroughput');
@@ -414,7 +424,7 @@ describe('DynamoDBTableProvider OnDemandThroughput wiring', () => {
       mockSend.mockResolvedValueOnce({ Tags: [] });
       primeTtlPitrEmpty();
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+      const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE));
 
       expect(result?.OnDemandThroughput).toEqual({ MaxReadRequestUnits: 10 });
     });

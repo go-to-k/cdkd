@@ -34,6 +34,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { EventBridgeRuleProvider } from '../../../src/provisioning/providers/eventbridge-rule-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('EventBridgeRuleProvider.readCurrentState', () => {
   let provider: EventBridgeRuleProvider;
@@ -173,7 +174,7 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when rule is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when rule is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'not found', $metadata: {} })
     );
@@ -184,7 +185,7 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
       'AWS::Events::Rule'
     );
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
@@ -198,11 +199,11 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
         ],
       });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'arn:aws:events:us-east-1:123:rule/my-rule',
       'RuleLogical',
       'AWS::Events::Rule'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
@@ -215,11 +216,11 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
         Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRule/Resource' }],
       });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       'arn:aws:events:us-east-1:123:rule/my-rule',
       'RuleLogical',
       'AWS::Events::Rule'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result?.Tags).toEqual([]);
   });

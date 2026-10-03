@@ -55,6 +55,14 @@ import {
   FORGED_QUOTE,
   expectWithheld,
 } from './pasteable-aws-command-assert.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const ARN = 'arn:aws:iam::123456789012:policy/MyManagedPolicy';
 const POLICY_DOC = {
@@ -638,7 +646,7 @@ describe('IAMManagedPolicyProvider', () => {
         IsTruncated: false,
       });
 
-      const result = await provider.readCurrentState(ARN, 'MyManagedPolicy', 'AWS::IAM::ManagedPolicy');
+      const result = bagOf(await provider.readCurrentState(ARN, 'MyManagedPolicy', 'AWS::IAM::ManagedPolicy'));
 
       expect(result).toBeDefined();
       expect(result!['ManagedPolicyName']).toBe('MyManagedPolicy');
@@ -652,12 +660,12 @@ describe('IAMManagedPolicyProvider', () => {
       expect(result!['Tags']).toEqual([{ Key: 'env', Value: 'prod' }]);
     });
 
-    it('returns undefined when the policy is gone', async () => {
+    it('returns RESOURCE_NOT_FOUND when the policy is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new NoSuchEntityException({ $metadata: {}, message: 'gone' })
       );
       const result = await provider.readCurrentState(ARN, 'MyManagedPolicy', 'AWS::IAM::ManagedPolicy');
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 

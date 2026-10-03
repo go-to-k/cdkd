@@ -35,6 +35,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { WAFv2WebACLProvider } from '../../../src/provisioning/providers/wafv2-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const TEST_ARN = 'arn:aws:wafv2:us-east-1:123456789012:regional/webacl/my-acl/abc-123-def';
 const IPSET_ARN = 'arn:aws:wafv2:us-east-1:123456789012:regional/ipset/blocked/ip-1';
@@ -71,12 +79,12 @@ async function readBackRules(
   });
   mockSend.mockResolvedValueOnce({ TagInfoForResource: { TagList: [] } });
 
-  const state = await provider.readCurrentState(
+  const state = bagOf(await provider.readCurrentState(
     TEST_ARN,
     'MyWebACL',
     RESOURCE_TYPE,
     baselineProperties
-  );
+  ));
   return state!['Rules'] as Record<string, unknown>[];
 }
 

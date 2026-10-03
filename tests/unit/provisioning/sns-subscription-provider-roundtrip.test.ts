@@ -67,7 +67,7 @@ describe('SNSSubscriptionProvider read-update round-trip', () => {
         SubscriptionArn: SUB_ARN_OLD,
       },
     });
-    const observed = await provider.readCurrentState(SUB_ARN_OLD, 'L', RESOURCE_TYPE);
+    const observed = (await provider.readCurrentState(SUB_ARN_OLD, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
 
     // Pre-condition: observed has no protocol-only keys.
     expect(observed).toBeDefined();
@@ -174,7 +174,7 @@ describe('SNSSubscriptionProvider read-update round-trip', () => {
         SubscriptionArn: SUB_ARN_OLD,
       },
     });
-    const observed = await provider.readCurrentState(SUB_ARN_OLD, 'L', RESOURCE_TYPE);
+    const observed = (await provider.readCurrentState(SUB_ARN_OLD, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
     expect(observed).toEqual({
       TopicArn: TOPIC_ARN,
       Protocol: 'sqs',

@@ -36,7 +36,7 @@ import {
   buildLockContentionMessage,
   type LockRecoveryContext,
 } from '../../state/lock-contention-message.js';
-import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 import { updatePartialMessage, updatePartialReason } from '../../deployment/update-outcome.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
@@ -129,7 +129,12 @@ import {
   STATE_SOURCED_READBACK_RULES,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
-import type { ReadCurrentStateContext, ResourceProvider } from '../../types/resource.js';
+import {
+  RESOURCE_NOT_FOUND,
+  type ReadCurrentStateContext,
+  type ResourceNotFound,
+  type ResourceProvider,
+} from '../../types/resource.js';
 import type { ResourceState, StackState } from '../../types/state.js';
 
 /**
@@ -402,6 +407,18 @@ export type DriftOutcome =
     }
   | { kind: 'unsupported'; logicalId: string; resourceType: string }
   /**
+   * AWS reports the resource does NOT EXIST — it was deleted outside cdkd
+   * (go-to-k/cdkd#4283). The provider's read returned `RESOURCE_NOT_FOUND`.
+   *
+   * Its own member rather than `unsupported`, which it was folded into before:
+   * that one is a coverage limit and exits `0`, while a missing resource is the
+   * most important drift there is, so this one exits `1` like `drifted`. It
+   * carries no `awsProperties` — there is nothing to read — so `--accept` and
+   * `--revert` cannot act on it and REFUSE it by name: neither can recreate a
+   * resource (and nor does a deploy that leaves its template unchanged).
+   */
+  | { kind: 'deleted'; logicalId: string; resourceType: string }
+  /**
    * `skipped` is reserved for resource types where drift detection is not
    * conceptually applicable (currently: `Custom::*`). Unlike `unsupported`
    * (= "provider does not YET implement drift detection — user might want
@@ -630,6 +647,9 @@ function notComparedOutcomes(
       // `PARTIALLY compared` block stays about references.
       unsupported: () => [],
       skipped: () => [],
+      // AWS ANSWERED for a deleted resource — it said the resource is gone —
+      // so it was compared, and it is reported as drift (go-to-k/cdkd#4283).
+      deleted: () => [],
     })
   );
 }
@@ -672,6 +692,10 @@ function outcomeExitSignal(outcome: DriftOutcome): 'drifted' | 'incomplete' | 'n
     // argument as `unresolvedToken`, and both predate #2108 entirely.
     unsupported: () => 'none',
     skipped: () => 'none',
+    // go-to-k/cdkd#4283: a resource deleted outside cdkd is drift — the most
+    // important kind — and exits 1 like any other. It used to be folded into
+    // `unsupported` above, which is how a CI gate stayed green over it.
+    deleted: () => 'drifted',
   });
 }
 
@@ -877,6 +901,8 @@ function uncomparedTally(reports: StackDriftReport[]): Map<UncomparedReason, num
         notCompared: () => {},
         unsupported: () => bump('unsupported'),
         skipped: () => bump('skipped'),
+        // Compared — AWS answered that it is gone — so not an uncompared reason.
+        deleted: () => {},
       });
     }
   }
@@ -1046,6 +1072,11 @@ async function driftCommand(
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
+  // Filled by `stackRegionScope` below, destroyed with the command's clients.
+  const stackRegionScopes = new Map<
+    string,
+    { clients: AwsClients; registry: ProviderRegistry; ccApiFallback: CloudControlProvider }
+  >();
 
   try {
     const region = namedCliRegion(options.region) ?? 'us-east-1';
@@ -1059,14 +1090,35 @@ async function driftCommand(
     });
     await stateBackend.verifyBucketExists();
 
-    const providerRegistry = new ProviderRegistry();
-    registerAllProviders(providerRegistry);
-    providerRegistry.setCustomResourceResponseBucket(bucket);
-
-    // PR J: shared CC API fallback used when an SDK provider doesn't
-    // implement readCurrentState yet. Constructed once per command so we
-    // don't re-instantiate the underlying CloudControl client per stack.
-    const ccApiFallback = new CloudControlProvider();
+    // Per-STACK-region clients, providers and Cloud Control fallback for the
+    // detection READS (go-to-k/cdkd#4283). A provider takes its clients at
+    // construction (some lazily from the ambient scope), so the registry above
+    // asks the COMMAND's region about every stack. That used to read as
+    // "drift unknown"; now that a not-found readback is reported as DELETED, a
+    // stack in another region (`--stack-region`, `--all`) would report every
+    // live resource deleted. Same shape as `cdkd diff`'s `stackRegionScope`.
+    // `--revert`'s WRITES take the same per-region scope (see `runRevert`).
+    const stackRegionScope = (
+      scopeRegion: string
+    ): { clients: AwsClients; registry: ProviderRegistry; ccApiFallback: CloudControlProvider } => {
+      let scope = stackRegionScopes.get(scopeRegion);
+      if (scope === undefined) {
+        const clients = new AwsClients({
+          region: scopeRegion,
+          ...(options.profile && { profile: options.profile }),
+        });
+        scope = runWithStackAwsClients(clients, () => {
+          const registry = new ProviderRegistry();
+          registerAllProviders(registry);
+          registry.setCustomResourceResponseBucket(bucket);
+          // PR J: the CC API fallback for a type whose SDK provider has no
+          // `readCurrentState`, once per region rather than per stack.
+          return { clients, registry, ccApiFallback: new CloudControlProvider() };
+        });
+        stackRegionScopes.set(scopeRegion, scope);
+      }
+      return scope;
+    };
 
     // Issue #1515: one resolver (and one cache) per command, so a stack whose
     // resources reference the same role only pays a single `iam:GetRole`.
@@ -1141,18 +1193,22 @@ async function driftCommand(
             `\nMigrate with: ${migrate.command}`
         );
       }
-      const report = await runDriftForStack(
-        ref.stackName,
-        ref.region,
-        stateBackend,
-        providerRegistry,
-        ccApiFallback,
-        resolvePrincipalUniqueId,
-        // go-to-k/cdkd#3018: decided HERE, beside the flags, because it is the
-        // only place that knows whether this run can reach a `saveState`. The
-        // two flags are mutually exclusive (checked above), so either one alone
-        // makes the run write-capable.
-        options.accept || options.revert ? 'refuse' : 'repair'
+      const stackRegion = ref.region;
+      const scope = stackRegionScope(stackRegion);
+      const report = await runWithStackAwsClients(scope.clients, () =>
+        runDriftForStack(
+          ref.stackName,
+          stackRegion,
+          stateBackend,
+          scope.registry,
+          scope.ccApiFallback,
+          resolvePrincipalUniqueId,
+          // go-to-k/cdkd#3018: decided HERE, beside the flags, because it is the
+          // only place that knows whether this run can reach a `saveState`. The
+          // two flags are mutually exclusive (checked above), so either one alone
+          // makes the run write-capable.
+          options.accept || options.revert ? 'refuse' : 'repair'
+        )
       );
       reports.push(report);
     }
@@ -1192,17 +1248,46 @@ async function driftCommand(
 
     // Resolution path. Both flags share the prompt + lock + state-loaded
     // reports; the per-resource action differs.
-    if (!drifted) {
+    const mode = options.accept ? 'accept' : 'revert';
+    // go-to-k/cdkd#4283: a resource deleted outside cdkd exits detection 1, but
+    // neither flag can act on it. Refused by name FIRST, and the rest of the
+    // run proceeds on the resources it can act on.
+    const refusedDeleted = refuseDeletedForRemediation(reports, mode, logger);
+    const actionable = reports.some((r) =>
+      r.outcomes.some((o) =>
+        matchOutcome<boolean>(o, {
+          drifted: () => true,
+          clean: () => false,
+          notCompared: () => false,
+          unsupported: () => false,
+          skipped: () => false,
+          deleted: () => false,
+        })
+      )
+    );
+    if (!actionable) {
+      if (refusedDeleted > 0) {
+        if (anyIncomplete) {
+          // Its last line says a detection-only run exits 2; with a deleted
+          // resource in the stack it exits 1, so that line is replaced.
+          for (const line of incompleteRemediationMessage(reports, mode).slice(0, -1)) {
+            logger.info(line);
+          }
+          logger.info(
+            safeMsg`Re-run 'cdkd drift' without --${mode} to see which resources and why — ` +
+              `with a deleted resource in the stack, that run exits 1.`
+          );
+        }
+        if (!options.dryRun) throw deletedRefusalError(refusedDeleted, mode);
+        return;
+      }
       // Issue #2208: `No drift detected` is FALSE for a run that did not manage
       // to compare everything -- nothing drifted only because nothing was read.
       // The exit code stays `0` on this path by design; see
       // {@link incompleteRemediationMessage} for why the fix is the message and
       // not the code.
       if (anyIncomplete) {
-        for (const line of incompleteRemediationMessage(
-          reports,
-          options.accept ? 'accept' : 'revert'
-        )) {
+        for (const line of incompleteRemediationMessage(reports, mode)) {
           logger.info(line);
         }
         return;
@@ -1215,15 +1300,102 @@ async function driftCommand(
       return;
     }
 
+    // `false` is a declined prompt: nothing was attempted, so a deleted
+    // resource's refusal is not reported as a partial failure on top of it.
+    let outcome: false | void;
     if (options.accept) {
-      await runAccept(reports, stateBackend, stateConfig, awsClients, options);
+      outcome = await runAccept(reports, stateBackend, stateConfig, awsClients, options);
     } else {
-      await runRevert(reports, providerRegistry, stateBackend, stateConfig, awsClients, options);
+      try {
+        outcome = await runRevert(
+          reports,
+          stackRegionScope,
+          stateBackend,
+          stateConfig,
+          awsClients,
+          options
+        );
+      } catch (err) {
+        // `--revert`'s own partial failure ends the run before the deleted
+        // refusal below can; carry the deleted count into its message.
+        if (refusedDeleted > 0 && err instanceof PartialFailureError) {
+          throw new PartialFailureError(
+            `${err.message} ${deletedRefusalError(refusedDeleted, mode).message}`,
+            err
+          );
+        }
+        throw err;
+      }
+    }
+    if (refusedDeleted > 0 && !options.dryRun && outcome !== false) {
+      throw deletedRefusalError(refusedDeleted, mode);
     }
   } finally {
+    for (const { clients } of stackRegionScopes.values()) clients.destroy();
     awsClients.destroy();
   }
 }
+
+/**
+ * Warn, per resource, that `--accept` / `--revert` will not act on a resource
+ * AWS reports DELETED (go-to-k/cdkd#4283), and return how many were refused.
+ *
+ * Neither flag can do anything correct with one. `--revert` updates a resource
+ * in place, and there is no resource to update. `--accept` writes AWS-current
+ * values into state, and there are none; the only "acceptance" left would be
+ * dropping the record, which silently ERASES state on a command whose contract
+ * is to copy values into it (a later deploy would then recreate the resource
+ * as a CREATE). The message names the explicit route instead
+ * (`DELETED_RESOURCE_REMEDY`), and nothing is mutated for the resource.
+ */
+function refuseDeletedForRemediation(
+  reports: StackDriftReport[],
+  mode: 'accept' | 'revert',
+  logger: Logger
+): number {
+  let refused = 0;
+  for (const report of reports) {
+    for (const outcome of report.outcomes) {
+      if (outcome.kind !== 'deleted') continue;
+      refused += 1;
+      logger.warn(
+        safeMsg`  ! ${reportHeading(report)} ${reportResource(outcome)}: NOT ` +
+          (mode === 'revert'
+            ? `reverted — AWS reports this resource no longer exists (deleted outside cdkd), ` +
+              `and --revert updates a resource in place: it cannot recreate one.`
+            : `accepted — AWS reports this resource no longer exists (deleted outside cdkd), ` +
+              `so there is no AWS-current value to write to state.`) +
+          safeMsg` ${DELETED_RESOURCE_REMEDY}`
+      );
+    }
+  }
+  return refused;
+}
+
+/**
+ * The exit-`2` end of a remediation run that refused a deleted resource
+ * (go-to-k/cdkd#4283): the run did what it could, and at least one resource
+ * still differs from state — the same "finished, something not done" meaning
+ * `--revert`'s per-resource failures already carry.
+ */
+function deletedRefusalError(count: number, mode: 'accept' | 'revert'): PartialFailureError {
+  return new PartialFailureError(
+    `${count} resource(s) deleted outside cdkd were not ${mode === 'accept' ? 'accepted' : 'reverted'}; ` +
+      `each is named above.`
+  );
+}
+
+/**
+ * What to do about a resource deleted outside cdkd. NOT "run cdkd deploy": a
+ * deploy diffs the template against STATE, never AWS, so an unchanged
+ * template leaves the record as it is and recreates nothing.
+ */
+const DELETED_RESOURCE_REMEDY =
+  `First confirm it is really gone (in the AWS console or with the AWS CLI). A deploy that ` +
+  `does not change it will not recreate it: to recreate it, remove it from the CDK app and ` +
+  `deploy, then restore it and deploy again; if it is meant to be gone, the first of those ` +
+  `deploys is enough. Anything in the app that references it has to come out with it, and ` +
+  `that deploy DELETES those resources too.`;
 
 /**
  * Resolve the set of `(stackName, region)` pairs the command should
@@ -2807,22 +2979,12 @@ async function runDriftForStack(
     // not reintroduce a `setAwsClients` dance here to compensate for the
     // LOOKUP.
     //
-    // Scope note, because the paragraph above is easy to over-read: #1957
-    // fixed what this resolver READS. It did NOT fix what `--revert` WRITES.
-    // The `providerRegistry` handed to `runRevert` is built once from the
-    // ambient clients at the top of `runDrift`, so a cross-region
-    // `--all --revert` still issues its write through the CLI region's
-    // clients. That is the provisioning half of the same ambient-singleton
-    // problem, filed as issue
-    // [#1981](https://github.com/go-to-k/cdkd/issues/1981).
-    //
-    // Issue [#2301](https://github.com/go-to-k/cdkd/issues/2301) narrowed that
-    // sentence without closing #1981: this command now threads the state key's
-    // region as `UpdateContext.expectedRegion`, and a CLOUD-CONTROL-routed
-    // resource REFUSES rather than writing through the wrong region's client.
-    // SDK-routed resources still write where the ambient clients point, so a
-    // cross-region `--all --revert` is now MIXED — refusals for the CC half,
-    // the #1981 behaviour for the SDK half.
+    // Scope note: #1957 fixed what this resolver READS. What `--revert`
+    // WRITES is the provider registry's job: since go-to-k/cdkd#4283 each
+    // stack's reads AND writes run inside that stack's region scope
+    // (`stackRegionScope` in `driftCommand`, `runRevert`), and the state key's
+    // region also rides `UpdateContext.expectedRegion` (#2301), on which a
+    // Cloud-Control-routed write refuses a region mismatch.
     //
     // Issue [#2108](https://github.com/go-to-k/cdkd/issues/2108) is the third
     // scope note, and it is the one that made this a BAG of resolvers rather
@@ -3014,7 +3176,7 @@ async function runDriftForStack(
       // still degrades to `refused` / `unresolvedToken` -- an inner catch that
       // handles its error never reaches this one, so the causes cannot collide.
       try {
-        let aws: Record<string, unknown> | undefined;
+        let aws: Record<string, unknown> | ResourceNotFound | undefined;
         if (provider.readCurrentState) {
           aws = await provider.readCurrentState(
             resource.physicalId,
@@ -3046,7 +3208,23 @@ async function runDriftForStack(
             });
             continue;
           }
-          aws = stripCcApiAwsManagedFields(resource.resourceType, ccApiAws);
+          aws =
+            ccApiAws === RESOURCE_NOT_FOUND
+              ? ccApiAws
+              : stripCcApiAwsManagedFields(resource.resourceType, ccApiAws);
+        }
+
+        // go-to-k/cdkd#4283: AWS reports the resource is not there. Checked
+        // BEFORE the `undefined` arm, which means "no read path for the type"
+        // and is reported as an uncovered type that does not affect the exit
+        // code; a resource deleted out of band is drift, and exits 1.
+        if (aws === RESOURCE_NOT_FOUND) {
+          outcomes.push({
+            kind: 'deleted',
+            logicalId,
+            resourceType: resource.resourceType,
+          });
+          continue;
         }
 
         if (aws === undefined) {
@@ -3650,6 +3828,8 @@ export function warnIfPreV10BaselineGap(
         notCompared: (n) => [n.logicalId],
         unsupported: () => [],
         skipped: () => [],
+        // Nothing was read back, so no live value can surface.
+        deleted: () => [],
       })
     )
   );
@@ -3861,7 +4041,7 @@ async function runAccept(
   stateConfig: { bucket: string; prefix: string },
   awsClients: AwsClients,
   options: { yes?: boolean; dryRun?: boolean; json?: boolean; profile?: string | undefined }
-): Promise<void> {
+): Promise<false | void> {
   const logger = getLogger();
   // Issue #2230: stdout carries the `--json` payload, so this run's plan and
   // prompt go to stderr. The `logger.*` lines below need no such threading —
@@ -3893,7 +4073,7 @@ async function runAccept(
     );
     if (!ok) {
       logger.info('Aborted.');
-      return;
+      return false;
     }
   }
 
@@ -3917,6 +4097,10 @@ async function runAccept(
         notCompared: () => [],
         unsupported: () => [],
         skipped: () => [],
+        // Refused by name before this runs (`refuseDeletedForRemediation`,
+        // go-to-k/cdkd#4283): there is no AWS-current value for a resource
+        // AWS reports gone, and nothing here can recreate one.
+        deleted: () => [],
       })
     );
     if (driftedOutcomes.length === 0) {
@@ -5814,7 +5998,11 @@ function deepEqualUnordered(a: unknown, b: unknown): boolean {
  */
 async function runRevert(
   reports: StackDriftReport[],
-  providerRegistry: ProviderRegistry,
+  // go-to-k/cdkd#4283: each stack's WRITES go through its own region's clients
+  // and providers, as its detection reads do. Through the command's registry a
+  // stack in another region was updated in the wrong one, and an upsert there
+  // (`PutMetricAlarm`, `PutParameter`, `PutRule`) created an untracked twin.
+  regionScope: (region: string) => { clients: AwsClients; registry: ProviderRegistry },
   stateBackend: S3StateBackend,
   stateConfig: { bucket: string; prefix: string },
   awsClients: AwsClients,
@@ -5825,7 +6013,7 @@ async function runRevert(
     concurrency?: number;
     profile?: string | undefined;
   }
-): Promise<void> {
+): Promise<false | void> {
   const logger = getLogger();
   // Issue #2230: see the note in `runAccept`.
   const out = humanTextSink(options.json);
@@ -5852,7 +6040,7 @@ async function runRevert(
     );
     if (!ok) {
       logger.info('Aborted.');
-      return;
+      return false;
     }
   }
 
@@ -5884,179 +6072,168 @@ async function runRevert(
         notCompared: () => [],
         unsupported: () => [],
         skipped: () => [],
+        // Refused by name before this runs (`refuseDeletedForRemediation`,
+        // go-to-k/cdkd#4283): there is no AWS-current value for a resource
+        // AWS reports gone, and nothing here can recreate one.
+        deleted: () => [],
       })
     );
     if (driftedOutcomes.length === 0) {
       continue;
     }
-
-    // Check the boolean (issue #2161): a bare `acquireLock` returns `false` for
-    // a live foreign lock without throwing, so the discarded return let `drift
-    // --revert` issue `provider.update` against live AWS under a concurrent
-    // deploy and then release that deploy's lock. Throwing on `!acquired`
-    // aborts before any provider call.
-    const acquired = await lockManager.acquireLock(
-      report.stackName,
-      report.region,
-      owner,
-      'drift-revert'
-    );
-    if (!acquired) {
-      throw new Error(
-        await buildLockContentionMessage({
-          lockManager,
-          stackName: report.stackName,
-          region: report.region,
-          recovery: lockRecovery,
-        })
+    const scope = regionScope(report.region);
+    await runWithStackAwsClients(scope.clients, async () => {
+      // Check the boolean (issue #2161): a bare `acquireLock` returns `false` for
+      // a live foreign lock without throwing, so the discarded return let `drift
+      // --revert` issue `provider.update` against live AWS under a concurrent
+      // deploy and then release that deploy's lock. Throwing on `!acquired`
+      // aborts before any provider call.
+      const acquired = await lockManager.acquireLock(
+        report.stackName,
+        report.region,
+        owner,
+        'drift-revert'
       );
-    }
-    // Provider-reported narrowings, keyed by logical id (issue #1644).
-    // Collected inside the concurrent tasks and applied to state ONCE, under
-    // the same lock, after they all settle.
-    const narrowedByLogicalId = new Map<string, Record<string, unknown>>();
-    // Issue #1914: one resolver per stack, re-resolving the secret expressions
-    // the state baseline stores so the provider is handed the concrete value.
-    // Deliberately NOT the drift-detection run's map: that one is keyed
-    // plaintext -> expression (the redaction direction), and a revert needs the
-    // resolution direction, against AWS as it is NOW rather than as it was when
-    // the report was built.
-    //
-    // Issue [#2108](https://github.com/go-to-k/cdkd/issues/2108): a BAG of
-    // resolvers, one per region that must answer, because this is the arm that
-    // WRITES. `desiredProperties` goes straight to `provider.update`, so a
-    // reference re-resolved in the wrong region does not fail — it succeeds
-    // with a foreign credential and installs it on a live resource. Each
-    // reference is routed by `classifyReplaySecretRegion`, and a reference
-    // whose origin cannot be established is REFUSED before any update.
-    try {
-      const revertSecretResolvers = new DriftSecretResolvers(report.region);
-      // The foreign-region evidence for this stack, as the detection site read
-      // it — a nested child's ancestors included (go-to-k/cdkd#4213).
-      const revertProducerRegions = report.producerRegions;
-      const tasks = driftedOutcomes.map((outcome) => async () => {
-        const stateResource = report.state.resources[outcome.logicalId];
-        if (!stateResource) {
-          // Defensive: drift detection saw the resource in state earlier,
-          // but if something racey happened between read and now treat it
-          // as a per-resource failure rather than aborting the whole run.
-          totalFailed++;
-          logger.error(
-            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-              `resource missing from state; skipped.`
-          );
-          return;
-        }
-        // Schema v10+ (issue #2944), and the most consequential of the three
-        // refused-baseline sites because this one writes to AWS rather than to
-        // `state.json`. A marked record has no `observedProperties`, so
-        // `revertBaseline` below falls to `properties` — which after an import
-        // refusal can hold the WRONG-BRANCH LITERAL the refusal distrusted
-        // (`dev-placeholder` where AWS holds the secret the deployed branch
-        // resolved). Reverting would push that literal OVER the live secret.
-        //
-        // "A marked record has no baseline" is the COMMON shape, not an
-        // invariant: an import refusal now DROPS a baseline a selective merge
-        // preserved (issue #2872), but a record an older cdkd refused can
-        // still carry both. The refusal is right either way -- the marker
-        // says this record's `properties` are untrustworthy, and a preserved
-        // baseline beside them was captured by the run that already could not
-        // vouch for them.
-        //
-        // Issue #2855 closed the neighbouring shape — an unresolved intrinsic
-        // OBJECT in the same raw bag — and its guard cannot see this one: a
-        // wrong-branch literal is an ordinary STRING, indistinguishable from a
-        // value the user really deployed, which is the same reason no in-walk
-        // remedy exists for the read side. The marker is the only evidence, and
-        // this command has no template of its own to re-derive it from.
-        //
-        //
-        // SECOND LAYER since issue #2952. Detection now reports a marked record
-        // `notCompared`, so it never becomes `drifted` and never reaches this
-        // loop — this arm is unreachable BY CONSTRUCTION today. It is kept
-        // rather than deleted because a write path to AWS (and to `state.json`)
-        // should not depend on a detection decision staying where it is, and
-        // the cost of keeping it is one branch. What fences it is the detection
-        // case in `drift.test.ts`: if the gate there is removed, that case reds
-        // and this arm starts carrying the refusal again.
-        // Counted `totalUnresolvable` rather than `totalFailed`, matching the
-        // mask and intrinsic-object refusals: nothing was attempted at AWS.
-        if (stateResource.observedBaselineRefused === true) {
-          totalUnresolvable++;
-          logger.warn(
-            `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-              `NOT reverted — a 'cdkd import' run refused to capture this resource's ` +
-              `observed-properties baseline, so the only baseline available is its recorded ` +
-              `properties, which the refusal already found untrustworthy. Reverting from them ` +
-              `could overwrite a live value (a resolved secret among them) with a placeholder ` +
-              `the deployed stack never used. ` +
-              safeMsg`${
-                refusedBaselineRemedy(stateResource) ??
-                'Deploy a change to this resource to restore a baseline first.'
-              }`
-          );
-          return;
-        }
-        // Schema v7+ (#614): route the revert update through the
-        // state-recorded layer so a CC-managed resource is reverted via
-        // Cloud Control.
-        //
-        // NOT guarded, deliberately (issue #1914 review): a registry lookup
-        // that throws here cannot happen, because DETECTION performs the same
-        // lookup with the same inputs and routes a failure to an `unsupported`
-        // outcome — such a resource never becomes `drifted` and never reaches
-        // this loop. A catch here would be an arm no mutation can red, which is
-        // worse than none. The payload build below IS guarded, because that one
-        // is reachable: `readCurrentState` is provider-authored and its output
-        // is not vetted.
-        const provider: ResourceProvider = providerRegistry.getProviderFor({
-          resourceType: outcome.resourceType,
-          provisionedBy: stateResource.provisionedBy,
-        }).provider;
-        // The baseline drift was computed against — `observedProperties`
-        // when present, else `properties` — is the right "desired" value
-        // to push back to AWS. Using `properties` alone would push the
-        // last-deployed template intent and miss any AWS-side defaults
-        // we captured at deploy time but never wrote into the template.
-        //
-        // Issue #1914: RE-RESOLVED before it is handed to the provider. State
-        // stores a secret dynamic reference as its unresolved
-        // `{{resolve:...}}` expression (GHSA-p5qg-v9gv-hc7w), so the bag as
-        // read is not something AWS can be given — pushing it back set the
-        // live property to the literal token, corrupting whatever consumes it
-        // (a Lambda env var, a Cognito `client_secret`). This is the rollback
-        // replay's `resolveReplayProps` on the second synth-free write path.
-        // A bag with no dynamic reference resolves to itself by identity.
-        const secrets: RecordedSecretValues = new Map();
-        const revertBaseline = stateResource.observedProperties ?? stateResource.properties ?? {};
-        // No `secretPaths` here, deliberately: nothing on this path masks by
-        // position. What a revert PRINTS comes from `outcome.changes`, redacted
-        // once at detection, and what it WRITES is redacted by value + position
-        // against `revertBaseline` below.
-        const unresolvedTokens = new Set<string>();
-        const noteUnresolved = (tokens: string[]): void => {
-          for (const token of tokens) unresolvedTokens.add(token);
-        };
-        let desiredProperties: Record<string, unknown>;
-        try {
-          desiredProperties = await resolveStateSecretExpressions(
-            revertBaseline,
-            revertSecretResolvers,
-            secrets,
-            {
-              onUnresolved: noteUnresolved,
-              logicalId: outcome.logicalId,
-              consumerRegion: report.region,
-              producerRegions: revertProducerRegions,
-            }
-          );
-          // Mirrors the detection pass: `properties` are resolved into the same
-          // map so a secret the OBSERVED baseline never captured is still a key
-          // in it. Revert needs that for the narrowing write below, whose
-          // position source can only reach leaves the two bags share.
-          if (stateResource.observedProperties !== undefined) {
-            await resolveStateSecretExpressions(
-              stateResource.properties ?? {},
+      if (!acquired) {
+        throw new Error(
+          await buildLockContentionMessage({
+            lockManager,
+            stackName: report.stackName,
+            region: report.region,
+            recovery: lockRecovery,
+          })
+        );
+      }
+      // Provider-reported narrowings, keyed by logical id (issue #1644).
+      // Collected inside the concurrent tasks and applied to state ONCE, under
+      // the same lock, after they all settle.
+      const narrowedByLogicalId = new Map<string, Record<string, unknown>>();
+      // Issue #1914: one resolver per stack, re-resolving the secret expressions
+      // the state baseline stores so the provider is handed the concrete value.
+      // Deliberately NOT the drift-detection run's map: that one is keyed
+      // plaintext -> expression (the redaction direction), and a revert needs the
+      // resolution direction, against AWS as it is NOW rather than as it was when
+      // the report was built.
+      //
+      // Issue [#2108](https://github.com/go-to-k/cdkd/issues/2108): a BAG of
+      // resolvers, one per region that must answer, because this is the arm that
+      // WRITES. `desiredProperties` goes straight to `provider.update`, so a
+      // reference re-resolved in the wrong region does not fail — it succeeds
+      // with a foreign credential and installs it on a live resource. Each
+      // reference is routed by `classifyReplaySecretRegion`, and a reference
+      // whose origin cannot be established is REFUSED before any update.
+      try {
+        const revertSecretResolvers = new DriftSecretResolvers(report.region);
+        // The foreign-region evidence for this stack, as the detection site read
+        // it — a nested child's ancestors included (go-to-k/cdkd#4213).
+        const revertProducerRegions = report.producerRegions;
+        const tasks = driftedOutcomes.map((outcome) => async () => {
+          const stateResource = report.state.resources[outcome.logicalId];
+          if (!stateResource) {
+            // Defensive: drift detection saw the resource in state earlier,
+            // but if something racey happened between read and now treat it
+            // as a per-resource failure rather than aborting the whole run.
+            totalFailed++;
+            logger.error(
+              `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+                `resource missing from state; skipped.`
+            );
+            return;
+          }
+          // Schema v10+ (issue #2944), and the most consequential of the three
+          // refused-baseline sites because this one writes to AWS rather than to
+          // `state.json`. A marked record has no `observedProperties`, so
+          // `revertBaseline` below falls to `properties` — which after an import
+          // refusal can hold the WRONG-BRANCH LITERAL the refusal distrusted
+          // (`dev-placeholder` where AWS holds the secret the deployed branch
+          // resolved). Reverting would push that literal OVER the live secret.
+          //
+          // "A marked record has no baseline" is the COMMON shape, not an
+          // invariant: an import refusal now DROPS a baseline a selective merge
+          // preserved (issue #2872), but a record an older cdkd refused can
+          // still carry both. The refusal is right either way -- the marker
+          // says this record's `properties` are untrustworthy, and a preserved
+          // baseline beside them was captured by the run that already could not
+          // vouch for them.
+          //
+          // Issue #2855 closed the neighbouring shape — an unresolved intrinsic
+          // OBJECT in the same raw bag — and its guard cannot see this one: a
+          // wrong-branch literal is an ordinary STRING, indistinguishable from a
+          // value the user really deployed, which is the same reason no in-walk
+          // remedy exists for the read side. The marker is the only evidence, and
+          // this command has no template of its own to re-derive it from.
+          //
+          //
+          // SECOND LAYER since issue #2952. Detection now reports a marked record
+          // `notCompared`, so it never becomes `drifted` and never reaches this
+          // loop — this arm is unreachable BY CONSTRUCTION today. It is kept
+          // rather than deleted because a write path to AWS (and to `state.json`)
+          // should not depend on a detection decision staying where it is, and
+          // the cost of keeping it is one branch. What fences it is the detection
+          // case in `drift.test.ts`: if the gate there is removed, that case reds
+          // and this arm starts carrying the refusal again.
+          // Counted `totalUnresolvable` rather than `totalFailed`, matching the
+          // mask and intrinsic-object refusals: nothing was attempted at AWS.
+          if (stateResource.observedBaselineRefused === true) {
+            totalUnresolvable++;
+            logger.warn(
+              `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+                `NOT reverted — a 'cdkd import' run refused to capture this resource's ` +
+                `observed-properties baseline, so the only baseline available is its recorded ` +
+                `properties, which the refusal already found untrustworthy. Reverting from them ` +
+                `could overwrite a live value (a resolved secret among them) with a placeholder ` +
+                `the deployed stack never used. ` +
+                safeMsg`${
+                  refusedBaselineRemedy(stateResource) ??
+                  'Deploy a change to this resource to restore a baseline first.'
+                }`
+            );
+            return;
+          }
+          // Schema v7+ (#614): route the revert update through the
+          // state-recorded layer so a CC-managed resource is reverted via
+          // Cloud Control.
+          //
+          // NOT guarded, deliberately (issue #1914 review): a registry lookup
+          // that throws here cannot happen, because DETECTION performs the same
+          // lookup with the same inputs and routes a failure to an `unsupported`
+          // outcome — such a resource never becomes `drifted` and never reaches
+          // this loop. A catch here would be an arm no mutation can red, which is
+          // worse than none. The payload build below IS guarded, because that one
+          // is reachable: `readCurrentState` is provider-authored and its output
+          // is not vetted.
+          const provider: ResourceProvider = scope.registry.getProviderFor({
+            resourceType: outcome.resourceType,
+            provisionedBy: stateResource.provisionedBy,
+          }).provider;
+          // The baseline drift was computed against — `observedProperties`
+          // when present, else `properties` — is the right "desired" value
+          // to push back to AWS. Using `properties` alone would push the
+          // last-deployed template intent and miss any AWS-side defaults
+          // we captured at deploy time but never wrote into the template.
+          //
+          // Issue #1914: RE-RESOLVED before it is handed to the provider. State
+          // stores a secret dynamic reference as its unresolved
+          // `{{resolve:...}}` expression (GHSA-p5qg-v9gv-hc7w), so the bag as
+          // read is not something AWS can be given — pushing it back set the
+          // live property to the literal token, corrupting whatever consumes it
+          // (a Lambda env var, a Cognito `client_secret`). This is the rollback
+          // replay's `resolveReplayProps` on the second synth-free write path.
+          // A bag with no dynamic reference resolves to itself by identity.
+          const secrets: RecordedSecretValues = new Map();
+          const revertBaseline = stateResource.observedProperties ?? stateResource.properties ?? {};
+          // No `secretPaths` here, deliberately: nothing on this path masks by
+          // position. What a revert PRINTS comes from `outcome.changes`, redacted
+          // once at detection, and what it WRITES is redacted by value + position
+          // against `revertBaseline` below.
+          const unresolvedTokens = new Set<string>();
+          const noteUnresolved = (tokens: string[]): void => {
+            for (const token of tokens) unresolvedTokens.add(token);
+          };
+          let desiredProperties: Record<string, unknown>;
+          try {
+            desiredProperties = await resolveStateSecretExpressions(
+              revertBaseline,
               revertSecretResolvers,
               secrets,
               {
@@ -6066,716 +6243,736 @@ async function runRevert(
                 producerRegions: revertProducerRegions,
               }
             );
-          }
-        } catch (err) {
-          // Reported per-resource rather than aborting the run, and with its
-          // OWN message: 'AWS update failed' would be a lie — no update was
-          // attempted, the reference the state record names could not be read.
-          //
-          // Same split as the detection site (issue #2108): a region refusal is
-          // a decision, not a read failure, and calling it one sends the reader
-          // looking for an IAM problem that is not there.
-          totalUnresolvable++;
-          logger.error(
-            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-              (isDriftSecretRefusal(err)
-                ? `refused to re-resolve a dynamic reference this resource's state records — `
-                : `could not re-resolve the dynamic reference(s) this resource's state records — `) +
-              `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
-          );
-          return;
-        }
-        // Issue #1914 (minor): `buildRevertNewProperties` keys the overlay on
-        // each change's TOP-LEVEL segment, so a path whose first segment is
-        // itself the mask matches nothing in the desired bag and the subtree is
-        // silently not reverted — while the plan promised it and `--accept`'s
-        // refusal pointed the user here. Say it instead.
-        const unrevertablePaths = outcome.changes
-          .map((c) => c.path)
-          .filter((path) => (path.split('.', 1)[0] ?? '').includes(SECRET_MASK));
-        // Issue #2855: an unresolved intrinsic OBJECT (`{Fn::Join: ...}`,
-        // `{Ref: ...}`) in the send bag must never reach `provider.update`.
-        // Measured on both routes (see the helper's doc): no provider fails
-        // loudly — the SDK route puts the raw object into the wire call and
-        // the Cloud Control route serializes it into the patch, where a
-        // JSON-string property makes it schema-valid, i.e. silently
-        // accepted.
-        //
-        // Three scopings, each load-bearing:
-        //
-        // - GATED on `observedProperties === undefined` — the #2855
-        //   population by provenance (PR #2912 review). Intrinsic OBJECTS
-        //   reach a revert baseline only through the raw-`properties`
-        //   fallback (`cdkd import`'s warn path writes them there; #2842's
-        //   refusal is what routes the revert to that bag). An
-        //   `observedProperties` baseline is READBACK-derived — cdkd never
-        //   writes an intrinsic object into it — so there a single-key map
-        //   literally named `Ref` / `Fn::*` is a real AWS value (a Lambda
-        //   env var, a config map), and refusing on it would pin the
-        //   resource unrevertable FOREVER, the prescribed remedy re-recording
-        //   the same readback on every deploy. Stated residual (PR #2912
-        //   round 2): a HAND-EDITED `observedProperties` carrying a genuine
-        //   intrinsic ships silently under this gate — outside cdkd's write
-        //   contract (no cdkd writer puts an intrinsic object there), and
-        //   accepted as the cost of not pinning the readback population.
-        // - Scoped to the DRIFTED top-level keys, the only ones the baseline
-        //   sources into the send bag.
-        // - Reading `desiredProperties` — the BASELINE — rather than the
-        //   overlay output (PR #2912 review): `mergeUntemplatedValue`'s
-        //   key-merge FUSES a single-key intrinsic with a plain-record live
-        //   value (`{Ref:'X'}` against live `{A:1}` becomes
-        //   `{A:1, Ref:'X'}`) — multi-key, invisible to the single-key
-        //   predicate in the merged bag. The baseline scan has no such
-        //   dilution and no over-refusal: every overlay arm re-emits every
-        //   baseline path into the send bag (wholesale, key-merge, and both
-        //   tag-list merges), so a flagged leaf always reaches
-        //   `provider.update` in some shape.
-        //
-        // Positioned BEFORE the warnings below as well as before the
-        // preserve passes: a refused resource must not first be promised
-        // "left UNCHANGED by this revert" by the token warning (nothing is
-        // written at all), and no side effect (a registered mask-only
-        // needle) may outlive the refusal.
-        if (stateResource.observedProperties === undefined) {
-          const driftedTopLevelKeys = new Set<string>();
-          for (const change of outcome.changes) {
-            const topLevelKey = change.path.split('.', 1)[0];
-            if (topLevelKey) driftedTopLevelKeys.add(topLevelKey);
-          }
-          const intrinsicObjectPaths = collectUnresolvedIntrinsicObjectPaths(
-            desiredProperties,
-            driftedTopLevelKeys
-          );
-          if (intrinsicObjectPaths.length > 0) {
-            // `totalUnresolvable` rather than `totalFailed`, like the mask
-            // refusal below: no AWS call was attempted, and the cause is a
-            // value cdkd cannot produce — not an update that failed.
-            //
-            // The paths are property KEYS from the baseline, and a key can
-            // carry a secret (the same fact that makes `redactDriftChanges`
-            // mask `change.path`), so they go through `maskSecretsInText`
-            // like every other reader on this path.
-            totalUnresolvable++;
-            logger.error(
-              `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-                `refused to revert ` +
-                `${maskSecretsInText(intrinsicObjectPaths.join(', '), secrets)} — the recorded ` +
-                `baseline holds an unresolved CloudFormation intrinsic there (e.g. Fn::Join, ` +
-                `Ref), which cdkd cannot resolve outside a deploy; writing it would set the ` +
-                `live property to the raw intrinsic object instead of its value. Run ` +
-                `'cdkd deploy' for this stack — the deploy resolves the template and records ` +
-                `a resolvable baseline — then re-run the revert if drift remains.`
-            );
-            return;
-          }
-        }
-        if (unrevertablePaths.length > 0) {
-          logger.warn(
-            `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): cannot ` +
-              `revert ${maskSecretsInText(unrevertablePaths.join(', '), secrets)} — cdkd cannot ` +
-              `name the property, so it is left as AWS has it. ROTATE the secret that leaked ` +
-              `into the property name.`
-          );
-        }
-        if (unresolvedTokens.size > 0) {
-          // A warning, not a failure — failing would abandon every OTHER
-          // drifted property on the resource and exit 2. The wording claims
-          // neither that replaying the token is a no-op (true only for a record
-          // cdkd deployed, false where the position was adopted from elsewhere
-          // or edited out of band) NOR that the live value is
-          // always preserved: `preserveLiveValuesAtUnresolvedTokens` preserves
-          // it only where the property's WHOLE value is the token AND the
-          // position can be paired against the readback (issue #2893 — a list
-          // element by identity field or its list's corroborated frame), and
-          // declines for an embedded one and an unpairable one.
-          logger.warn(
-            // Deliberately worded so it cannot be confused with the
-            // DETECTION-side warning, which names the same tokens: a test that
-            // greps for the token alone is satisfied by either, so the two
-            // messages must differ in more than punctuation.
-            `  ! [revert] ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-              `cdkd cannot resolve ` +
-              `${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — a property ` +
-              `whose WHOLE value is one of these tokens is left UNCHANGED by this revert when ` +
-              `cdkd can pair its position against AWS's report (a list element by an identity ` +
-              `field, or by its list's own unchanged literal values). Where it cannot pair, and ` +
-              `where a token is EMBEDDED in a longer string, the token is written literally, ` +
-              `exactly as 'cdkd deploy' does, so a resolved value AWS holds there is ` +
-              `overwritten.`
-          );
-        }
-        // AWS-current values for non-drifted top-level keys + desired
-        // values for drifted top-level subtrees. See
-        // `buildRevertNewProperties` docstring for why we don't pass a
-        // drifted-only partial.
-        //
-        // Issue #1626 items 2 + 3: with NO observed-capture baseline the
-        // desired side is the raw TEMPLATE, so a path AWS reports and the
-        // template never declared is indistinguishable from one AWS authored
-        // itself. Merge those paths into the bag being SENT rather than
-        // overlaying the drifted subtree wholesale — a wholesale-replace
-        // provider (`PutBucketTagging` and every `Put*Configuration`) never
-        // consults the previous side, so this is the only side that can save
-        // them. With observed-capture present the baseline IS authoritative
-        // and the overlay is unchanged, so an out-of-band addition is still
-        // stripped. See `mergeUntemplatedValue`.
-        let newProperties: Record<string, unknown>;
-        try {
-          // Issue #3573: the desired bag IS the recorded baseline, so it gets
-          // the same pair pass detection compared through, against the raw
-          // readback the overlay takes as its previous side. A legacy record
-          // missing a member the readback now carries is completed from that
-          // readback; sent without it, `update()` would read the member as
-          // REMOVED. Identity for a provider without the hook.
-          if (provider.canonicalizeDriftPair) {
-            desiredProperties = (
-              await provider.canonicalizeDriftPair(
-                outcome.resourceType,
-                desiredProperties,
-                outcome.awsProperties,
-                stateResource.properties ?? {}
-              )
-            ).baseline;
-          }
-          const overlaid = buildRevertNewProperties(
-            outcome.changes,
-            desiredProperties,
-            outcome.awsProperties,
-            { preserveUntemplated: stateResource.observedProperties === undefined }
-          );
-          // Issue #3595: nothing is reverted at an uncertified-baseline
-          // position — AWS's own value goes back — and this runs FIRST, so the
-          // mask walk below never meets those masks. Identity when there are
-          // none.
-          const certifiedOverlay = overlayLiveAtUncertifiedPaths(
-            overlaid,
-            outcome.uncertifiedPaths,
-            outcome.awsProperties,
-            desiredProperties,
-            secrets,
-            new Set(outcome.changes.map((change) => change.path.split('.', 1)[0] ?? ''))
-          );
-          // Issue #1914: a token cdkd could not resolve must never be WRITTEN
-          // over whatever AWS holds — see the helper for why the "it is already
-          // there" premise holds only for a record cdkd deployed. Skipped
-          // entirely when nothing survived, so the ordinary revert is
-          // byte-identical.
-          const tokenPreserved =
-            unresolvedTokens.size > 0
-              ? preserveLiveValuesAtUnresolvedTokens(certifiedOverlay, outcome.awsProperties)
-              : certifiedOverlay;
-          // Issue #2274: a REDACTION MASK in the baseline must never be written
-          // to AWS either. Run UNCONDITIONALLY, unlike the token pass above:
-          // this hazard is decided by the send bag alone, and `unresolvedTokens`
-          // says nothing about it. The helper returns its input by identity when
-          // there is no mask, so an ordinary revert is unaffected.
-          //
-          // `certifiedOverlay` — the post-#3595-overlay, PRE-token bag — is the
-          // corroboration source. The live values that overlay copied in do not
-          // reopen the hole below: they sit only at paths `equalModuloMask`
-          // certified at detection, each replaced WHOLE, so no mask survives
-          // beneath one for the walk to pair against it. The PRE-token bag, and
-          // passing `tokenPreserved` there instead re-opens the round-4 #2884
-          // hole: the token pass copies live values in (by certified pairing
-          // since issue #2893, by index before it — the distinction does not
-          // matter here), so the post-token bag corroborates (and
-          // identity-pairs) leaves against the very `live` they were copied
-          // from. See the parameter's doc on `preserveLiveValuesAtMaskedLeaves`.
-          const maskPreserved = preserveLiveValuesAtMaskedLeaves(
-            tokenPreserved,
-            outcome.awsProperties,
-            secrets,
-            certifiedOverlay
-          );
-          if (maskPreserved.unpreservablePaths.length > 0) {
-            // REFUSE the resource rather than send the mask. `totalUnresolvable`
-            // rather than `totalFailed`, and the message is worded like the
-            // re-resolution refusal one arm down for the same reason: no AWS
-            // call was attempted, and the cause is a value cdkd cannot name —
-            // not an update that failed.
-            //
-            // The message names all THREE writers of a mask (issue #2881),
-            // because nothing in the record says which one wrote it (issue
-            // #2449's absent per-attribute flag):
-            //
-            // - a `NoEcho` custom-resource value (issue #2274), the only
-            //   writer when the message named it as THE cause;
-            // - the `Fn::Base64` encoding of a secret, which `resolveBase64`
-            //   registers as a mask-only needle (issues #2759 / #3119). No
-            //   custom resource is involved, so the nonce remedy does nothing;
-            // - a readback position the #2852 fail-closed walk could not
-            //   certify.
-            //
-            // The remedies differ by cause. A deploy that UPDATES this
-            // resource sends a Base64 encoding again (the recorded `***`
-            // differs from the resolved encoding, so the update carries it),
-            // which gives the next revert a live value to keep. For an
-            // uncertified position it need not send anything there — a
-            // normalised neighbouring literal equals `properties`, so an
-            // update patch omits it — and what it does is re-capture the
-            // baseline. A no-change deploy does neither: it runs no update,
-            // and its re-capture (`masked-baseline-recapture.ts`) refuses a
-            // resource that no longer reads back as its baseline, which one
-            // reaching this arm does not. None of the three clears the MASK
-            // for a NoEcho or Base64 value (see `acceptRefusalReason`), which
-            // is why the last sentence speaks of this refusal, not the mask.
-            // The first two write the mask into `properties` as well, so the
-            // sibling refusals reach that population too: `export.ts`'s
-            // blocker, `rollback-executor/replay-props.ts`'s `refuseMaskedReplayBaseline`
-            // and `deploy-engine/masking.ts`'s `refuseRedactedAttributeReads`
-            // name the `Fn::Base64` writer with a remedy of their own (issue
-            // #2881).
-            totalUnresolvable++;
-            logger.error(
-              `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-                `refused to revert ` +
-                `${maskSecretsInText(maskPreserved.unpreservablePaths.join(', '), secrets)} — the recorded ` +
-                `baseline holds only the redaction mask there, and AWS reports nothing to ` +
-                `preserve, so cdkd has no value it may write. Three causes leave such a mask, and ` +
-                `the record does not say which: a NoEcho custom-resource value (force that ` +
-                `custom resource to update — change one of its properties, e.g. a nonce — and ` +
-                `re-deploy, so its handler runs again and supplies the value); the Fn::Base64 ` +
-                `encoding of a secret value, which cdkd never records (deploy a change to this ` +
-                `resource, which sends it the encoded value again); or a readback position cdkd ` +
-                `could not certify when the baseline was captured (deploy a change to this ` +
-                `resource, so its baseline is re-captured). A re-deploy that leaves this resource ` +
-                `unchanged sends it nothing, so it resolves this refusal for none of them.`
-            );
-            return;
-          }
-          newProperties = maskPreserved.properties;
-        } catch (err) {
-          // Reachability note (issue #1914 review): this arm is narrower than
-          // it looks, and is kept only because it is cheap. A bag so malformed
-          // that `buildRevertNewProperties` cannot walk it — a self-referential
-          // `readCurrentState` result, say — throws in DETECTION first, where
-          // `calculateResourceDrift` walks the same bags, so the resource never
-          // reaches this loop. What is left for it to catch is a provider whose
-          // output the comparator tolerates and the merge does not. The
-          // detection-side equivalent is NOT per-resource and aborts the run;
-          // that is pre-existing and out of scope here.
-          totalFailed++;
-          logger.error(
-            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-              `could not build the revert payload — ` +
-              `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
-          );
-          return;
-        }
-        try {
-          const updateResult = await withRetry(
-            () =>
-              provider.update(
-                outcome.logicalId,
-                stateResource.physicalId,
-                outcome.resourceType,
-                newProperties,
-                outcome.awsProperties,
-                // The desired bag here is `observedProperties ?? properties`
-                // overlaid onto the AWS-current snapshot — an AWS READBACK, not
-                // a template (issue #1732). Several `readCurrentState`
-                // implementations spell "this feature is not set" as an EMPTY
-                // collection rather than an absent key, so without this flag a
-                // provider cannot tell "restore the unset state" (delete) from
-                // a template's condition-collapsed array (leave the live value
-                // alone), and picking either arm breaks the other caller.
-                //
-                // `maskSecrets` (issue #1932 item 3) is the THIRD caller of the
-                // provider masking contract, alongside `deploy-engine.ts` and
-                // `rollback-executor.ts`, and it is not optional here: the bag
-                // this call carries was re-resolved from state back to
-                // PLAINTEXT a few hundred lines up (`resolveStateSecretExpressions`,
-                // the counterpart of the rollback replay's `resolveReplayProps`),
-                // so it provably holds the concrete secret whenever the resource
-                // has one. Without it, a provider warning that names a
-                // mis-shaped property value — e.g. a state record holding
-                // `EnabledMfas: "{{resolve:secretsmanager:...}}"`, which
-                // re-resolves to a plaintext string and so is `not a list` —
-                // prints that plaintext on `cdkd drift --revert`.
-                //
-                // Bound to `secrets`, the SAME map `resolveStateSecretExpressions`
-                // resolved into and the retry logger below masks with, so the
-                // masker and that logger can never disagree about what this call
-                // considers secret.
-                //
-                // `expectedRegion` (issue #2301 item 1) is `report.region` --
-                // the region segment of the state key this report was built
-                // from, i.e. where the record says its resources live. It is
-                // NOT necessarily where the ambient clients point: this command
-                // installs its clients ONCE (the `setAwsClients` call at the top
-                // of `runDrift`) and then loops over stacks in whatever regions
-                // `listStacks()` returned, so a `--revert` for a stack outside
-                // the ambient region was previously issued against the ambient
-                // one -- a write addressed by a state-recorded physical id, in
-                // the wrong region, which is exactly the hazard the guard
-                // exists for. With this threaded, a Cloud-Control-routed
-                // resource in that position REFUSES instead. Same-region
-                // reverts, which is every ordinary run, are unaffected.
-                //
-                // `recordedAttributes` (issue #4051): the identity evidence of
-                // the record `stateResource.physicalId` came from.
+            // Mirrors the detection pass: `properties` are resolved into the same
+            // map so a secret the OBSERVED baseline never captured is still a key
+            // in it. Revert needs that for the narrowing write below, whose
+            // position source can only reach leaves the two bags share.
+            if (stateResource.observedProperties !== undefined) {
+              await resolveStateSecretExpressions(
+                stateResource.properties ?? {},
+                revertSecretResolvers,
+                secrets,
                 {
-                  desiredFromAwsReadback: true,
-                  maskSecrets: createSecretMasker(secrets),
-                  expectedRegion: report.region,
-                  recordedAttributes: stateResource.attributes,
-                  // Issue #1160: nothing reads as REMOVED here, so no
-                  // provider `removalDefaults` value is injected. Removal is
-                  // judged template-vs-template, and the previous side above
-                  // is an AWS readback, never a template declaration.
-                  removedProperties: new Set<string>(),
+                  onUnresolved: noteUnresolved,
+                  logicalId: outcome.logicalId,
+                  consumerRegion: report.region,
+                  producerRegions: revertProducerRegions,
                 }
-              ),
-            outcome.logicalId,
-            // Issue #1914: the retry logger echoes the failing call's AWS error
-            // verbatim, and this call's payload now carries RESOLVED secrets —
-            // an AWS validation error routinely quotes the offending property
-            // value. Same fence `deploy-engine.ts` puts on its own provider
-            // calls. No-op when the op resolved no secret.
-            // `warn` is threaded too (issue #2018): without it the
-            // give-up summary for an exhausted IAM-propagation retry is
-            // dropped on THIS path only, so `cdkd drift --revert` would keep
-            // the pre-fix behavior of rethrowing the raw AWS error with no
-            // sign that cdkd had retried for ~48s. It goes through the SAME
-            // mask as `debug` rather than straight to `logger.warn` -- the
-            // summary interpolates the AWS message verbatim, so an unmasked
-            // forward would defeat the #1914 fence at a HIGHER log level than
-            // the one that fence was written for.
-            //
-            // The object itself now comes from `masking-retry-logger.ts` — this
-            // was one of three byte-identical eager copies (issue #2038).
-            { logger: maskingRetryLogger(logger, secrets) }
-          );
-          totalSucceeded++;
-          // Issue #1819: the revert landed, but the provider may have left
-          // something behind (a replacement whose old resource survives). The
-          // revert still counts as succeeded — the resource IS at the desired
-          // state — so this annotates the line rather than failing it; dropping
-          // the reason would put `drift --revert` back where the deploy path
-          // was before the channel existed.
-          const revertPartial = updatePartialReason(updateResult);
-          if (revertPartial !== undefined) {
-            logger.warn(
-              `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, ` +
-                `${maskSecretsInText(updatePartialMessage(revertPartial), secrets)}`
-            );
-          } else {
-            logger.info(
-              `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted.`
-            );
-          }
-          // Issue #1644: keep whatever the provider says it ACTUALLY delivered,
-          // so a narrowing does not re-surface as drift on the next run.
-          //
-          // AFTER the success accounting, and in its OWN try: the AWS update
-          // has already landed, so a throw in here (a provider handing back a
-          // cyclic / non-comparable bag) must not be caught by the outer
-          // handler and re-reported as `AWS update failed`, flipping a
-          // succeeded revert to exit 2.
-          try {
-            if (updateResult?.effectiveProperties) {
-              const delta = collectNarrowedTopLevelKeys(
-                newProperties,
-                updateResult.effectiveProperties
               );
-              if (Object.keys(delta).length > 0) {
-                // Issue #1914: the delta is the provider's echo of a bag we
-                // just resolved secrets INTO, and it is persisted below — so
-                // this is a state-write surface, and fixing the revert without
-                // it would have moved the disclosure rather than closed it.
-                //
-                // RESIDUAL, stated here because this is where it lands: cdkd
-                // cannot mask a value for a reference it never RESOLVED. For an
-                // unresolvable one (a spelling cdkd resolves for nobody —
-                // `ssm-secure` until issue #2482) the provider can echo its own
-                // readback in `effectiveProperties`, and this write persists
-                // that echo — with no map entry to match and, on a MIXED leaf,
-                // no single token on the source side to position against
-                // either. It is not created by this command's own bags (the
-                // report masks by PATH, and the payload declines to copy a live
-                // value into a mixed leaf), and before this pass existed the
-                // delta was persisted with no redaction at all. Masking by SPAN
-                // is issue #2102 (#1935 fixed the SPLICE for a leaf the
-                // scan can match; this echo has no map entry to match).
-                //
-                // Positioned against `revertBaseline` — the SAME bag
-                // `desiredProperties` was resolved from — and not against
-                // `properties`, which is a different bag whenever an observed
-                // capture exists.
-                //
-                // `STATE_SOURCED_READBACK_RULES`, NOT the `STATE_DERIVED_RULES`
-                // that `redactRollbackRecord` uses on its own echo. Both grant
-                // `trustAnyExpression`, which is right here for the same reason
-                // it is right there: a persisted record holds no PUBLIC
-                // expression, so any `{{resolve:...}}` leaf in the source is by
-                // construction a secret. They differ on ARRAY descent, and the
-                // rollback's justification for it does not carry over. There
-                // the whole bag descends from resolving the journaled one, so
-                // the two have identical structure; here `collectNarrowedTopLevelKeys`
-                // derives the delta from `newProperties`, which is
-                // `buildRevertNewProperties`'s merge of the AWS-CURRENT
-                // snapshot with the resolved desired subtrees — so a top-level
-                // key that did not drift comes from AWS and may be reordered.
-                // BLIND positional descent over an equal-length,
-                // differently-ordered array would write a sibling's expression
-                // onto the wrong element: the #1904 wrong-reference class, on a
-                // write path. Those leaves fall to the value scan instead,
-                // which the `properties`-side map completion above keeps
-                // complete.
-                //
-                // BLIND is load-bearing, and this paragraph used to omit it.
-                // `descendArrays: false` refuses to pair by INDEX ALONE; it is
-                // not a claim that cdkd never walks a readback array by index,
-                // which has been false since the anchor pass for issue #2012.
-                // This very constant selects that pass —
-                // `isReadbackProjectedFromState` is exactly
-                // `trustAnyExpression && !descendArrays && sourceIsSameGeneration`,
-                // which `STATE_SOURCED_READBACK_RULES` satisfies — so the two
-                // `redactSecretsForState` calls in this file that pass a SOURCE
-                // (`--accept`'s new baseline and this one) run
-                // `refuseUncertifiedReadbackPositions` after the path pass, and
-                // its unkeyed-array arm DOES pair element i with element i.
-                // What licenses that is `unkeyedArrayPairsByAnchors`: the index
-                // counts match, every position whose SOURCE subtree carries no
-                // dynamic reference is deep-equal on both sides, every
-                // reference-bearing element carries a distinguishing anchor of
-                // its own (or, being a bare reference leaf with no interior,
-                // leans on the array's literal frame), and no two
-                // reference-bearing elements share an order-insensitive anchor
-                // signature. AWS's own unrewritten values are the evidence, so
-                // the ORDER objection above is ANSWERED rather than assumed
-                // away — a different argument from this flag's, not a
-                // relaxation of it. Where the corroboration fails the array is
-                // returned untouched BY THAT PASS and keeps whatever the path
-                // pass left it, i.e. the value scan named above — with one
-                // further qualifier, since `secrets` at this site is often
-                // EMPTY (see the note below): on an empty map
-                // `deriveReadbackNeedles` learns needles from the positions the
-                // pass DID certify and `preferPositionDecisions` merges them
-                // over the refused array, so "untouched" is true of the
-                // position pass and not of the whole call. The sibling copies
-                // of this rationale in `secret-redaction.ts` were corrected in
-                // the #2012 lane; see `unkeyedArrayPairsByAnchors` for the two
-                // measured shapes behind the last two conditions — a
-                // `{Name:'db'} / {Name:''}` pair for the per-element evidence
-                // rule, and `AWS::AmazonMQ::Broker.Users` for the pairwise
-                // distinguishability one. Only the second is AmazonMQ.
-                // (Until issue #2482 `preserveLiveValuesAtUnresolvedTokens`
-                // was a second source, registering every live value it copied
-                // in over an `ssm-secure` survivor; a survivor is no longer a
-                // secret, so the value it copies needs no entry.) Since issue
-                // #1944 the path pass DOES reach a KEY-IDENTIFIABLE array
-                // element — an ECS `ContainerDefinitions[].Environment[]`, the
-                // shape this advisory keeps landing in, is keyed by `Name` at
-                // both levels — so the value scan is what covers the arrays
-                // that carry no such key, which reach neither pass and would
-                // land in `state.json` as plaintext without it.
-                narrowedByLogicalId.set(
-                  outcome.logicalId,
-                  // Since issue #1926 this rules constant ALSO runs the
-                  // module's readback refusal, which substitutes a MIXED source
-                  // leaf (a reference embedded in surrounding text) over the
-                  // value this payload was about to persist. That is the right
-                  // default here for the same reason it is elsewhere — the
-                  // alternative is persisting a decrypted secret — but note
-                  // this site has no equivalent of the `--accept` arm's
-                  // post-write re-check above, so a leaf that a PUBLIC
-                  // reference reached through `cdkd import`'s warn path is
-                  // corrected silently rather than warned about. That case is
-                  // NOT narrow here: the decline for an unrecorded plain `ssm:`
-                  // token only holds with a POPULATED map, and `secrets` at this
-                  // site stays empty for a resource carrying no secret
-                  // reference -- which is the common shape. With an empty map
-                  // the source expression silently wins (issue #2036).
-                  //
-                  // THE RULES CONSTANT FOLLOWS THE DESTINATION, as at the
-                  // `--accept` site (issue #2939 — the sibling question that
-                  // issue asked to be answered rather than assumed). A VALUE
-                  // from this delta is persisted ONLY into `observedProperties`
-                  // (the write loop below records a value against an observed
-                  // baseline and never into `properties`, which takes drops
-                  // alone), so wherever a redacted value lands it lands in a
-                  // drift baseline — the fail-closed constant's one
-                  // destination. The mask costs the same here as it does for
-                  // `cdkd import` / `refresh-observed`: a masked position
-                  // reports as drift, `--accept` refuses it and `--revert`
-                  // preserves the live value there, until a deploy rewrites the
-                  // baseline. The alternative at an uncertifiable position is
-                  // persisting the provider's echo of a DECRYPTED value. The
-                  // merge provenance of this bag (AWS-current non-drifted keys,
-                  // resolved desired subtrees) changes how OFTEN a position is
-                  // uncertifiable — a reordered echo of a non-drifted key —
-                  // never what a mask costs, and the refusal masks only where
-                  // the source spells a reference, so a reordered literal list
-                  // is untouched. On the `properties` arm the redacted values
-                  // are discarded by the loop below, so the non-failing
-                  // constant there changes nothing and is kept for symmetry
-                  // with `--accept`.
-                  keepBaselineAtUncertifiedPaths(
-                    redactSecretsForState(
-                      delta,
-                      secrets,
-                      revertBaseline,
-                      stateResource.observedProperties !== undefined
-                        ? STATE_SOURCED_BASELINE_RULES
-                        : STATE_SOURCED_READBACK_RULES
-                    ),
-                    outcome.uncertifiedPaths,
-                    revertBaseline
-                  )
-                );
-              }
             }
-          } catch (captureErr) {
-            logger.warn(
-              `  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but ` +
-                `the provider's reported effective properties could not be read — ` +
-                `${maskSecretsInText(captureErr instanceof Error ? captureErr.message : String(captureErr), secrets)}`
-            );
-          }
-        } catch (err) {
-          // Distinguish "the AWS update failed" from "this resource type
-          // does not support in-place update at all". The latter cannot be
-          // fixed by retrying; the user has to redeploy with --replace.
-          if (err instanceof ResourceUpdateNotSupportedError) {
-            totalUnsupported++;
-            logger.warn(
-              `  ⊘ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): could not revert — ${maskSecretsInText(err.message, secrets)}`
+          } catch (err) {
+            // Reported per-resource rather than aborting the run, and with its
+            // OWN message: 'AWS update failed' would be a lie — no update was
+            // attempted, the reference the state record names could not be read.
+            //
+            // Same split as the detection site (issue #2108): a region refusal is
+            // a decision, not a read failure, and calling it one sends the reader
+            // looking for an IAM problem that is not there.
+            totalUnresolvable++;
+            logger.error(
+              `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+                (isDriftSecretRefusal(err)
+                  ? `refused to re-resolve a dynamic reference this resource's state records — `
+                  : `could not re-resolve the dynamic reference(s) this resource's state records — `) +
+                `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
             );
             return;
           }
-          totalFailed++;
-          // Masked (issue #1914): this is the error from a call whose payload
-          // carried resolved secrets, and AWS quotes the offending value.
-          const msg = maskSecretsInText(err instanceof Error ? err.message : String(err), secrets);
-          logger.error(
-            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): AWS update failed — ${msg}`
-          );
-        }
-      });
-
-      await runWithConcurrency(tasks, concurrency);
-
-      // Persist the provider-reported narrowings (issue #1644), still under
-      // the stack lock. Written to the SAME field the drift comparator uses as
-      // its baseline — `observedProperties` when the resource has one, else
-      // `properties` — exactly as `--accept` does, so the next `cdkd drift`
-      // compares AWS against what the provider said it delivered. `properties`
-      // is left alone when an observed capture exists: it is the user's
-      // last-deployed TEMPLATE intent, and a narrowing is an AWS-side fact,
-      // not a template edit.
-      if (narrowedByLogicalId.size > 0) {
-        const resources: Record<string, ResourceState> = { ...report.state.resources };
-        let recordedCount = 0;
-        for (const [logicalId, delta] of narrowedByLogicalId) {
-          const existing = resources[logicalId];
-          if (!existing) continue;
-          const hasObserved = existing.observedProperties !== undefined;
-          const baselineSource = hasObserved ? existing.observedProperties : existing.properties;
-          const newBaseline = JSON.parse(JSON.stringify(baselineSource ?? {})) as Record<
-            string,
-            unknown
-          >;
-          let changed = false;
-          for (const [key, value] of Object.entries(delta)) {
-            // ONLY a key the baseline already declares may move. The bag sent
-            // to `update()` starts as the AWS-CURRENT snapshot, so it carries
-            // keys the baseline never had (an out-of-band tag, an AWS-computed
-            // field); a provider that echoes one back in a changed shape would
-            // otherwise INSERT it into state — `--revert` behaving like
-            // `--accept`, the thing the per-key delta exists to prevent.
-            if (!hasOwnKey(newBaseline, key)) continue;
-            if (value === undefined) {
-              delete newBaseline[key];
-              changed = true;
-              continue;
+          // Issue #1914 (minor): `buildRevertNewProperties` keys the overlay on
+          // each change's TOP-LEVEL segment, so a path whose first segment is
+          // itself the mask matches nothing in the desired bag and the subtree is
+          // silently not reverted — while the plan promised it and `--accept`'s
+          // refusal pointed the user here. Say it instead.
+          const unrevertablePaths = outcome.changes
+            .map((c) => c.path)
+            .filter((path) => (path.split('.', 1)[0] ?? '').includes(SECRET_MASK));
+          // Issue #2855: an unresolved intrinsic OBJECT (`{Fn::Join: ...}`,
+          // `{Ref: ...}`) in the send bag must never reach `provider.update`.
+          // Measured on both routes (see the helper's doc): no provider fails
+          // loudly — the SDK route puts the raw object into the wire call and
+          // the Cloud Control route serializes it into the patch, where a
+          // JSON-string property makes it schema-valid, i.e. silently
+          // accepted.
+          //
+          // Three scopings, each load-bearing:
+          //
+          // - GATED on `observedProperties === undefined` — the #2855
+          //   population by provenance (PR #2912 review). Intrinsic OBJECTS
+          //   reach a revert baseline only through the raw-`properties`
+          //   fallback (`cdkd import`'s warn path writes them there; #2842's
+          //   refusal is what routes the revert to that bag). An
+          //   `observedProperties` baseline is READBACK-derived — cdkd never
+          //   writes an intrinsic object into it — so there a single-key map
+          //   literally named `Ref` / `Fn::*` is a real AWS value (a Lambda
+          //   env var, a config map), and refusing on it would pin the
+          //   resource unrevertable FOREVER, the prescribed remedy re-recording
+          //   the same readback on every deploy. Stated residual (PR #2912
+          //   round 2): a HAND-EDITED `observedProperties` carrying a genuine
+          //   intrinsic ships silently under this gate — outside cdkd's write
+          //   contract (no cdkd writer puts an intrinsic object there), and
+          //   accepted as the cost of not pinning the readback population.
+          // - Scoped to the DRIFTED top-level keys, the only ones the baseline
+          //   sources into the send bag.
+          // - Reading `desiredProperties` — the BASELINE — rather than the
+          //   overlay output (PR #2912 review): `mergeUntemplatedValue`'s
+          //   key-merge FUSES a single-key intrinsic with a plain-record live
+          //   value (`{Ref:'X'}` against live `{A:1}` becomes
+          //   `{A:1, Ref:'X'}`) — multi-key, invisible to the single-key
+          //   predicate in the merged bag. The baseline scan has no such
+          //   dilution and no over-refusal: every overlay arm re-emits every
+          //   baseline path into the send bag (wholesale, key-merge, and both
+          //   tag-list merges), so a flagged leaf always reaches
+          //   `provider.update` in some shape.
+          //
+          // Positioned BEFORE the warnings below as well as before the
+          // preserve passes: a refused resource must not first be promised
+          // "left UNCHANGED by this revert" by the token warning (nothing is
+          // written at all), and no side effect (a registered mask-only
+          // needle) may outlive the refusal.
+          if (stateResource.observedProperties === undefined) {
+            const driftedTopLevelKeys = new Set<string>();
+            for (const change of outcome.changes) {
+              const topLevelKey = change.path.split('.', 1)[0];
+              if (topLevelKey) driftedTopLevelKeys.add(topLevelKey);
             }
-            // A VALUE is recorded only against an `observedProperties`
-            // baseline. Without one the baseline is the raw TEMPLATE, and
-            // `buildRevertNewProperties` ran in `preserveUntemplated` mode —
-            // so the value that was sent deliberately carries every AWS-
-            // authored path the template never declared. Writing it into
-            // `properties` would make the DESIRED baseline describe AWS-side
-            // values and silently disable the #1160 absent-field removal
-            // derivation, which reads that side (`.claude/rules/providers.md`:
-            // what you return is what you SENT, AWS-side defaults belong in
-            // `observedProperties`). A DROP is still safe there — it removes,
-            // never imports — so the loop this fix exists to break still
-            // closes for the shape that actually produces it.
-            if (!hasObserved) continue;
-            defineOwnKey(newBaseline, key, value);
-            changed = true;
+            const intrinsicObjectPaths = collectUnresolvedIntrinsicObjectPaths(
+              desiredProperties,
+              driftedTopLevelKeys
+            );
+            if (intrinsicObjectPaths.length > 0) {
+              // `totalUnresolvable` rather than `totalFailed`, like the mask
+              // refusal below: no AWS call was attempted, and the cause is a
+              // value cdkd cannot produce — not an update that failed.
+              //
+              // The paths are property KEYS from the baseline, and a key can
+              // carry a secret (the same fact that makes `redactDriftChanges`
+              // mask `change.path`), so they go through `maskSecretsInText`
+              // like every other reader on this path.
+              totalUnresolvable++;
+              logger.error(
+                `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+                  `refused to revert ` +
+                  `${maskSecretsInText(intrinsicObjectPaths.join(', '), secrets)} — the recorded ` +
+                  `baseline holds an unresolved CloudFormation intrinsic there (e.g. Fn::Join, ` +
+                  `Ref), which cdkd cannot resolve outside a deploy; writing it would set the ` +
+                  `live property to the raw intrinsic object instead of its value. Run ` +
+                  `'cdkd deploy' for this stack — the deploy resolves the template and records ` +
+                  `a resolvable baseline — then re-run the revert if drift remains.`
+              );
+              return;
+            }
           }
-          if (!changed) continue;
-          recordedCount++;
-          resources[logicalId] = hasObserved
-            ? { ...existing, observedProperties: newBaseline }
-            : { ...existing, properties: newBaseline };
-        }
+          if (unrevertablePaths.length > 0) {
+            logger.warn(
+              `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): cannot ` +
+                `revert ${maskSecretsInText(unrevertablePaths.join(', '), secrets)} — cdkd cannot ` +
+                `name the property, so it is left as AWS has it. ROTATE the secret that leaked ` +
+                `into the property name.`
+            );
+          }
+          if (unresolvedTokens.size > 0) {
+            // A warning, not a failure — failing would abandon every OTHER
+            // drifted property on the resource and exit 2. The wording claims
+            // neither that replaying the token is a no-op (true only for a record
+            // cdkd deployed, false where the position was adopted from elsewhere
+            // or edited out of band) NOR that the live value is
+            // always preserved: `preserveLiveValuesAtUnresolvedTokens` preserves
+            // it only where the property's WHOLE value is the token AND the
+            // position can be paired against the readback (issue #2893 — a list
+            // element by identity field or its list's corroborated frame), and
+            // declines for an embedded one and an unpairable one.
+            logger.warn(
+              // Deliberately worded so it cannot be confused with the
+              // DETECTION-side warning, which names the same tokens: a test that
+              // greps for the token alone is satisfied by either, so the two
+              // messages must differ in more than punctuation.
+              `  ! [revert] ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+                `cdkd cannot resolve ` +
+                `${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — a property ` +
+                `whose WHOLE value is one of these tokens is left UNCHANGED by this revert when ` +
+                `cdkd can pair its position against AWS's report (a list element by an identity ` +
+                `field, or by its list's own unchanged literal values). Where it cannot pair, and ` +
+                `where a token is EMBEDDED in a longer string, the token is written literally, ` +
+                `exactly as 'cdkd deploy' does, so a resolved value AWS holds there is ` +
+                `overwritten.`
+            );
+          }
+          // AWS-current values for non-drifted top-level keys + desired
+          // values for drifted top-level subtrees. See
+          // `buildRevertNewProperties` docstring for why we don't pass a
+          // drifted-only partial.
+          //
+          // Issue #1626 items 2 + 3: with NO observed-capture baseline the
+          // desired side is the raw TEMPLATE, so a path AWS reports and the
+          // template never declared is indistinguishable from one AWS authored
+          // itself. Merge those paths into the bag being SENT rather than
+          // overlaying the drifted subtree wholesale — a wholesale-replace
+          // provider (`PutBucketTagging` and every `Put*Configuration`) never
+          // consults the previous side, so this is the only side that can save
+          // them. With observed-capture present the baseline IS authoritative
+          // and the overlay is unchanged, so an out-of-band addition is still
+          // stripped. See `mergeUntemplatedValue`.
+          let newProperties: Record<string, unknown>;
+          try {
+            // Issue #3573: the desired bag IS the recorded baseline, so it gets
+            // the same pair pass detection compared through, against the raw
+            // readback the overlay takes as its previous side. A legacy record
+            // missing a member the readback now carries is completed from that
+            // readback; sent without it, `update()` would read the member as
+            // REMOVED. Identity for a provider without the hook.
+            if (provider.canonicalizeDriftPair) {
+              desiredProperties = (
+                await provider.canonicalizeDriftPair(
+                  outcome.resourceType,
+                  desiredProperties,
+                  outcome.awsProperties,
+                  stateResource.properties ?? {}
+                )
+              ).baseline;
+            }
+            const overlaid = buildRevertNewProperties(
+              outcome.changes,
+              desiredProperties,
+              outcome.awsProperties,
+              { preserveUntemplated: stateResource.observedProperties === undefined }
+            );
+            // Issue #3595: nothing is reverted at an uncertified-baseline
+            // position — AWS's own value goes back — and this runs FIRST, so the
+            // mask walk below never meets those masks. Identity when there are
+            // none.
+            const certifiedOverlay = overlayLiveAtUncertifiedPaths(
+              overlaid,
+              outcome.uncertifiedPaths,
+              outcome.awsProperties,
+              desiredProperties,
+              secrets,
+              new Set(outcome.changes.map((change) => change.path.split('.', 1)[0] ?? ''))
+            );
+            // Issue #1914: a token cdkd could not resolve must never be WRITTEN
+            // over whatever AWS holds — see the helper for why the "it is already
+            // there" premise holds only for a record cdkd deployed. Skipped
+            // entirely when nothing survived, so the ordinary revert is
+            // byte-identical.
+            const tokenPreserved =
+              unresolvedTokens.size > 0
+                ? preserveLiveValuesAtUnresolvedTokens(certifiedOverlay, outcome.awsProperties)
+                : certifiedOverlay;
+            // Issue #2274: a REDACTION MASK in the baseline must never be written
+            // to AWS either. Run UNCONDITIONALLY, unlike the token pass above:
+            // this hazard is decided by the send bag alone, and `unresolvedTokens`
+            // says nothing about it. The helper returns its input by identity when
+            // there is no mask, so an ordinary revert is unaffected.
+            //
+            // `certifiedOverlay` — the post-#3595-overlay, PRE-token bag — is the
+            // corroboration source. The live values that overlay copied in do not
+            // reopen the hole below: they sit only at paths `equalModuloMask`
+            // certified at detection, each replaced WHOLE, so no mask survives
+            // beneath one for the walk to pair against it. The PRE-token bag, and
+            // passing `tokenPreserved` there instead re-opens the round-4 #2884
+            // hole: the token pass copies live values in (by certified pairing
+            // since issue #2893, by index before it — the distinction does not
+            // matter here), so the post-token bag corroborates (and
+            // identity-pairs) leaves against the very `live` they were copied
+            // from. See the parameter's doc on `preserveLiveValuesAtMaskedLeaves`.
+            const maskPreserved = preserveLiveValuesAtMaskedLeaves(
+              tokenPreserved,
+              outcome.awsProperties,
+              secrets,
+              certifiedOverlay
+            );
+            if (maskPreserved.unpreservablePaths.length > 0) {
+              // REFUSE the resource rather than send the mask. `totalUnresolvable`
+              // rather than `totalFailed`, and the message is worded like the
+              // re-resolution refusal one arm down for the same reason: no AWS
+              // call was attempted, and the cause is a value cdkd cannot name —
+              // not an update that failed.
+              //
+              // The message names all THREE writers of a mask (issue #2881),
+              // because nothing in the record says which one wrote it (issue
+              // #2449's absent per-attribute flag):
+              //
+              // - a `NoEcho` custom-resource value (issue #2274), the only
+              //   writer when the message named it as THE cause;
+              // - the `Fn::Base64` encoding of a secret, which `resolveBase64`
+              //   registers as a mask-only needle (issues #2759 / #3119). No
+              //   custom resource is involved, so the nonce remedy does nothing;
+              // - a readback position the #2852 fail-closed walk could not
+              //   certify.
+              //
+              // The remedies differ by cause. A deploy that UPDATES this
+              // resource sends a Base64 encoding again (the recorded `***`
+              // differs from the resolved encoding, so the update carries it),
+              // which gives the next revert a live value to keep. For an
+              // uncertified position it need not send anything there — a
+              // normalised neighbouring literal equals `properties`, so an
+              // update patch omits it — and what it does is re-capture the
+              // baseline. A no-change deploy does neither: it runs no update,
+              // and its re-capture (`masked-baseline-recapture.ts`) refuses a
+              // resource that no longer reads back as its baseline, which one
+              // reaching this arm does not. None of the three clears the MASK
+              // for a NoEcho or Base64 value (see `acceptRefusalReason`), which
+              // is why the last sentence speaks of this refusal, not the mask.
+              // The first two write the mask into `properties` as well, so the
+              // sibling refusals reach that population too: `export.ts`'s
+              // blocker, `rollback-executor/replay-props.ts`'s `refuseMaskedReplayBaseline`
+              // and `deploy-engine/masking.ts`'s `refuseRedactedAttributeReads`
+              // name the `Fn::Base64` writer with a remedy of their own (issue
+              // #2881).
+              totalUnresolvable++;
+              logger.error(
+                `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+                  `refused to revert ` +
+                  `${maskSecretsInText(maskPreserved.unpreservablePaths.join(', '), secrets)} — the recorded ` +
+                  `baseline holds only the redaction mask there, and AWS reports nothing to ` +
+                  `preserve, so cdkd has no value it may write. Three causes leave such a mask, and ` +
+                  `the record does not say which: a NoEcho custom-resource value (force that ` +
+                  `custom resource to update — change one of its properties, e.g. a nonce — and ` +
+                  `re-deploy, so its handler runs again and supplies the value); the Fn::Base64 ` +
+                  `encoding of a secret value, which cdkd never records (deploy a change to this ` +
+                  `resource, which sends it the encoded value again); or a readback position cdkd ` +
+                  `could not certify when the baseline was captured (deploy a change to this ` +
+                  `resource, so its baseline is re-captured). A re-deploy that leaves this resource ` +
+                  `unchanged sends it nothing, so it resolves this refusal for none of them.`
+              );
+              return;
+            }
+            newProperties = maskPreserved.properties;
+          } catch (err) {
+            // Reachability note (issue #1914 review): this arm is narrower than
+            // it looks, and is kept only because it is cheap. A bag so malformed
+            // that `buildRevertNewProperties` cannot walk it — a self-referential
+            // `readCurrentState` result, say — throws in DETECTION first, where
+            // `calculateResourceDrift` walks the same bags, so the resource never
+            // reaches this loop. What is left for it to catch is a provider whose
+            // output the comparator tolerates and the merge does not. The
+            // detection-side equivalent is NOT per-resource and aborts the run;
+            // that is pre-existing and out of scope here.
+            totalFailed++;
+            logger.error(
+              `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+                `could not build the revert payload — ` +
+                `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+            );
+            return;
+          }
+          try {
+            const updateResult = await withRetry(
+              () =>
+                provider.update(
+                  outcome.logicalId,
+                  stateResource.physicalId,
+                  outcome.resourceType,
+                  newProperties,
+                  outcome.awsProperties,
+                  // The desired bag here is `observedProperties ?? properties`
+                  // overlaid onto the AWS-current snapshot — an AWS READBACK, not
+                  // a template (issue #1732). Several `readCurrentState`
+                  // implementations spell "this feature is not set" as an EMPTY
+                  // collection rather than an absent key, so without this flag a
+                  // provider cannot tell "restore the unset state" (delete) from
+                  // a template's condition-collapsed array (leave the live value
+                  // alone), and picking either arm breaks the other caller.
+                  //
+                  // `maskSecrets` (issue #1932 item 3) is the THIRD caller of the
+                  // provider masking contract, alongside `deploy-engine.ts` and
+                  // `rollback-executor.ts`, and it is not optional here: the bag
+                  // this call carries was re-resolved from state back to
+                  // PLAINTEXT a few hundred lines up (`resolveStateSecretExpressions`,
+                  // the counterpart of the rollback replay's `resolveReplayProps`),
+                  // so it provably holds the concrete secret whenever the resource
+                  // has one. Without it, a provider warning that names a
+                  // mis-shaped property value — e.g. a state record holding
+                  // `EnabledMfas: "{{resolve:secretsmanager:...}}"`, which
+                  // re-resolves to a plaintext string and so is `not a list` —
+                  // prints that plaintext on `cdkd drift --revert`.
+                  //
+                  // Bound to `secrets`, the SAME map `resolveStateSecretExpressions`
+                  // resolved into and the retry logger below masks with, so the
+                  // masker and that logger can never disagree about what this call
+                  // considers secret.
+                  //
+                  // `expectedRegion` (issue #2301 item 1) is `report.region` --
+                  // the region segment of the state key this report was built
+                  // from, i.e. where the record says its resources live. It is
+                  // NOT necessarily where the ambient clients point: this command
+                  // installs its clients ONCE (the `setAwsClients` call at the top
+                  // of `runDrift`) and then loops over stacks in whatever regions
+                  // `listStacks()` returned, so a `--revert` for a stack outside
+                  // the ambient region was previously issued against the ambient
+                  // one -- a write addressed by a state-recorded physical id, in
+                  // the wrong region, which is exactly the hazard the guard
+                  // exists for. With this threaded, a Cloud-Control-routed
+                  // resource in that position REFUSES instead. Same-region
+                  // reverts, which is every ordinary run, are unaffected.
+                  //
+                  // `recordedAttributes` (issue #4051): the identity evidence of
+                  // the record `stateResource.physicalId` came from.
+                  {
+                    desiredFromAwsReadback: true,
+                    maskSecrets: createSecretMasker(secrets),
+                    expectedRegion: report.region,
+                    recordedAttributes: stateResource.attributes,
+                    // Issue #1160: nothing reads as REMOVED here, so no
+                    // provider `removalDefaults` value is injected. Removal is
+                    // judged template-vs-template, and the previous side above
+                    // is an AWS readback, never a template declaration.
+                    removedProperties: new Set<string>(),
+                  }
+                ),
+              outcome.logicalId,
+              // Issue #1914: the retry logger echoes the failing call's AWS error
+              // verbatim, and this call's payload now carries RESOLVED secrets —
+              // an AWS validation error routinely quotes the offending property
+              // value. Same fence `deploy-engine.ts` puts on its own provider
+              // calls. No-op when the op resolved no secret.
+              // `warn` is threaded too (issue #2018): without it the
+              // give-up summary for an exhausted IAM-propagation retry is
+              // dropped on THIS path only, so `cdkd drift --revert` would keep
+              // the pre-fix behavior of rethrowing the raw AWS error with no
+              // sign that cdkd had retried for ~48s. It goes through the SAME
+              // mask as `debug` rather than straight to `logger.warn` -- the
+              // summary interpolates the AWS message verbatim, so an unmasked
+              // forward would defeat the #1914 fence at a HIGHER log level than
+              // the one that fence was written for.
+              //
+              // The object itself now comes from `masking-retry-logger.ts` — this
+              // was one of three byte-identical eager copies (issue #2038).
+              { logger: maskingRetryLogger(logger, secrets) }
+            );
+            totalSucceeded++;
+            // Issue #1819: the revert landed, but the provider may have left
+            // something behind (a replacement whose old resource survives). The
+            // revert still counts as succeeded — the resource IS at the desired
+            // state — so this annotates the line rather than failing it; dropping
+            // the reason would put `drift --revert` back where the deploy path
+            // was before the channel existed.
+            const revertPartial = updatePartialReason(updateResult);
+            if (revertPartial !== undefined) {
+              logger.warn(
+                `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, ` +
+                  `${maskSecretsInText(updatePartialMessage(revertPartial), secrets)}`
+              );
+            } else {
+              logger.info(
+                `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted.`
+              );
+            }
+            // Issue #1644: keep whatever the provider says it ACTUALLY delivered,
+            // so a narrowing does not re-surface as drift on the next run.
+            //
+            // AFTER the success accounting, and in its OWN try: the AWS update
+            // has already landed, so a throw in here (a provider handing back a
+            // cyclic / non-comparable bag) must not be caught by the outer
+            // handler and re-reported as `AWS update failed`, flipping a
+            // succeeded revert to exit 2.
+            try {
+              if (updateResult?.effectiveProperties) {
+                const delta = collectNarrowedTopLevelKeys(
+                  newProperties,
+                  updateResult.effectiveProperties
+                );
+                if (Object.keys(delta).length > 0) {
+                  // Issue #1914: the delta is the provider's echo of a bag we
+                  // just resolved secrets INTO, and it is persisted below — so
+                  // this is a state-write surface, and fixing the revert without
+                  // it would have moved the disclosure rather than closed it.
+                  //
+                  // RESIDUAL, stated here because this is where it lands: cdkd
+                  // cannot mask a value for a reference it never RESOLVED. For an
+                  // unresolvable one (a spelling cdkd resolves for nobody —
+                  // `ssm-secure` until issue #2482) the provider can echo its own
+                  // readback in `effectiveProperties`, and this write persists
+                  // that echo — with no map entry to match and, on a MIXED leaf,
+                  // no single token on the source side to position against
+                  // either. It is not created by this command's own bags (the
+                  // report masks by PATH, and the payload declines to copy a live
+                  // value into a mixed leaf), and before this pass existed the
+                  // delta was persisted with no redaction at all. Masking by SPAN
+                  // is issue #2102 (#1935 fixed the SPLICE for a leaf the
+                  // scan can match; this echo has no map entry to match).
+                  //
+                  // Positioned against `revertBaseline` — the SAME bag
+                  // `desiredProperties` was resolved from — and not against
+                  // `properties`, which is a different bag whenever an observed
+                  // capture exists.
+                  //
+                  // `STATE_SOURCED_READBACK_RULES`, NOT the `STATE_DERIVED_RULES`
+                  // that `redactRollbackRecord` uses on its own echo. Both grant
+                  // `trustAnyExpression`, which is right here for the same reason
+                  // it is right there: a persisted record holds no PUBLIC
+                  // expression, so any `{{resolve:...}}` leaf in the source is by
+                  // construction a secret. They differ on ARRAY descent, and the
+                  // rollback's justification for it does not carry over. There
+                  // the whole bag descends from resolving the journaled one, so
+                  // the two have identical structure; here `collectNarrowedTopLevelKeys`
+                  // derives the delta from `newProperties`, which is
+                  // `buildRevertNewProperties`'s merge of the AWS-CURRENT
+                  // snapshot with the resolved desired subtrees — so a top-level
+                  // key that did not drift comes from AWS and may be reordered.
+                  // BLIND positional descent over an equal-length,
+                  // differently-ordered array would write a sibling's expression
+                  // onto the wrong element: the #1904 wrong-reference class, on a
+                  // write path. Those leaves fall to the value scan instead,
+                  // which the `properties`-side map completion above keeps
+                  // complete.
+                  //
+                  // BLIND is load-bearing, and this paragraph used to omit it.
+                  // `descendArrays: false` refuses to pair by INDEX ALONE; it is
+                  // not a claim that cdkd never walks a readback array by index,
+                  // which has been false since the anchor pass for issue #2012.
+                  // This very constant selects that pass —
+                  // `isReadbackProjectedFromState` is exactly
+                  // `trustAnyExpression && !descendArrays && sourceIsSameGeneration`,
+                  // which `STATE_SOURCED_READBACK_RULES` satisfies — so the two
+                  // `redactSecretsForState` calls in this file that pass a SOURCE
+                  // (`--accept`'s new baseline and this one) run
+                  // `refuseUncertifiedReadbackPositions` after the path pass, and
+                  // its unkeyed-array arm DOES pair element i with element i.
+                  // What licenses that is `unkeyedArrayPairsByAnchors`: the index
+                  // counts match, every position whose SOURCE subtree carries no
+                  // dynamic reference is deep-equal on both sides, every
+                  // reference-bearing element carries a distinguishing anchor of
+                  // its own (or, being a bare reference leaf with no interior,
+                  // leans on the array's literal frame), and no two
+                  // reference-bearing elements share an order-insensitive anchor
+                  // signature. AWS's own unrewritten values are the evidence, so
+                  // the ORDER objection above is ANSWERED rather than assumed
+                  // away — a different argument from this flag's, not a
+                  // relaxation of it. Where the corroboration fails the array is
+                  // returned untouched BY THAT PASS and keeps whatever the path
+                  // pass left it, i.e. the value scan named above — with one
+                  // further qualifier, since `secrets` at this site is often
+                  // EMPTY (see the note below): on an empty map
+                  // `deriveReadbackNeedles` learns needles from the positions the
+                  // pass DID certify and `preferPositionDecisions` merges them
+                  // over the refused array, so "untouched" is true of the
+                  // position pass and not of the whole call. The sibling copies
+                  // of this rationale in `secret-redaction.ts` were corrected in
+                  // the #2012 lane; see `unkeyedArrayPairsByAnchors` for the two
+                  // measured shapes behind the last two conditions — a
+                  // `{Name:'db'} / {Name:''}` pair for the per-element evidence
+                  // rule, and `AWS::AmazonMQ::Broker.Users` for the pairwise
+                  // distinguishability one. Only the second is AmazonMQ.
+                  // (Until issue #2482 `preserveLiveValuesAtUnresolvedTokens`
+                  // was a second source, registering every live value it copied
+                  // in over an `ssm-secure` survivor; a survivor is no longer a
+                  // secret, so the value it copies needs no entry.) Since issue
+                  // #1944 the path pass DOES reach a KEY-IDENTIFIABLE array
+                  // element — an ECS `ContainerDefinitions[].Environment[]`, the
+                  // shape this advisory keeps landing in, is keyed by `Name` at
+                  // both levels — so the value scan is what covers the arrays
+                  // that carry no such key, which reach neither pass and would
+                  // land in `state.json` as plaintext without it.
+                  narrowedByLogicalId.set(
+                    outcome.logicalId,
+                    // Since issue #1926 this rules constant ALSO runs the
+                    // module's readback refusal, which substitutes a MIXED source
+                    // leaf (a reference embedded in surrounding text) over the
+                    // value this payload was about to persist. That is the right
+                    // default here for the same reason it is elsewhere — the
+                    // alternative is persisting a decrypted secret — but note
+                    // this site has no equivalent of the `--accept` arm's
+                    // post-write re-check above, so a leaf that a PUBLIC
+                    // reference reached through `cdkd import`'s warn path is
+                    // corrected silently rather than warned about. That case is
+                    // NOT narrow here: the decline for an unrecorded plain `ssm:`
+                    // token only holds with a POPULATED map, and `secrets` at this
+                    // site stays empty for a resource carrying no secret
+                    // reference -- which is the common shape. With an empty map
+                    // the source expression silently wins (issue #2036).
+                    //
+                    // THE RULES CONSTANT FOLLOWS THE DESTINATION, as at the
+                    // `--accept` site (issue #2939 — the sibling question that
+                    // issue asked to be answered rather than assumed). A VALUE
+                    // from this delta is persisted ONLY into `observedProperties`
+                    // (the write loop below records a value against an observed
+                    // baseline and never into `properties`, which takes drops
+                    // alone), so wherever a redacted value lands it lands in a
+                    // drift baseline — the fail-closed constant's one
+                    // destination. The mask costs the same here as it does for
+                    // `cdkd import` / `refresh-observed`: a masked position
+                    // reports as drift, `--accept` refuses it and `--revert`
+                    // preserves the live value there, until a deploy rewrites the
+                    // baseline. The alternative at an uncertifiable position is
+                    // persisting the provider's echo of a DECRYPTED value. The
+                    // merge provenance of this bag (AWS-current non-drifted keys,
+                    // resolved desired subtrees) changes how OFTEN a position is
+                    // uncertifiable — a reordered echo of a non-drifted key —
+                    // never what a mask costs, and the refusal masks only where
+                    // the source spells a reference, so a reordered literal list
+                    // is untouched. On the `properties` arm the redacted values
+                    // are discarded by the loop below, so the non-failing
+                    // constant there changes nothing and is kept for symmetry
+                    // with `--accept`.
+                    keepBaselineAtUncertifiedPaths(
+                      redactSecretsForState(
+                        delta,
+                        secrets,
+                        revertBaseline,
+                        stateResource.observedProperties !== undefined
+                          ? STATE_SOURCED_BASELINE_RULES
+                          : STATE_SOURCED_READBACK_RULES
+                      ),
+                      outcome.uncertifiedPaths,
+                      revertBaseline
+                    )
+                  );
+                }
+              }
+            } catch (captureErr) {
+              logger.warn(
+                `  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but ` +
+                  `the provider's reported effective properties could not be read — ` +
+                  `${maskSecretsInText(captureErr instanceof Error ? captureErr.message : String(captureErr), secrets)}`
+              );
+            }
+          } catch (err) {
+            // Distinguish "the AWS update failed" from "this resource type
+            // does not support in-place update at all". The latter cannot be
+            // fixed by retrying; the user has to redeploy with --replace.
+            if (err instanceof ResourceUpdateNotSupportedError) {
+              totalUnsupported++;
+              logger.warn(
+                `  ⊘ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): could not revert — ${maskSecretsInText(err.message, secrets)}`
+              );
+              return;
+            }
+            totalFailed++;
+            // Masked (issue #1914): this is the error from a call whose payload
+            // carried resolved secrets, and AWS quotes the offending value.
+            const msg = maskSecretsInText(
+              err instanceof Error ? err.message : String(err),
+              secrets
+            );
+            logger.error(
+              `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): AWS update failed — ${msg}`
+            );
+          }
+        });
 
-        if (recordedCount === 0) {
-          // Every reported narrowing was on a key state does not track, or was
-          // a value on a template-only baseline — nothing to persist.
-          continue;
-        }
+        await runWithConcurrency(tasks, concurrency);
 
-        // `skippedOutputs` (issue #2740) is dropped here for the same reason
-        // `--accept` drops it above: every writer that rebuilds state OUTSIDE
-        // a deploy drops it, without a per-writer argument about whether this
-        // one can repair an output. Three such arguments were written for this
-        // field; two were shown wrong, and whether a deletion here can make an
-        // output resolve (by exposing an attribute of the same name, or by
-        // removing a hit the lookup already falls through past) was not
-        // settled — so this arm drops on the rule, not on a verdict.
-        const { skippedOutputs: _droppedByRevert, ...carriedState } = report.state;
-        const newState: StackState = {
-          ...carriedState,
-          resources,
-          lastModified: Date.now(),
-        };
-        const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {
-          expectedEtag: report.etag,
-        };
-        if (report.migrationPending) {
-          saveOptions.migrateLegacy = true;
+        // Persist the provider-reported narrowings (issue #1644), still under
+        // the stack lock. Written to the SAME field the drift comparator uses as
+        // its baseline — `observedProperties` when the resource has one, else
+        // `properties` — exactly as `--accept` does, so the next `cdkd drift`
+        // compares AWS against what the provider said it delivered. `properties`
+        // is left alone when an observed capture exists: it is the user's
+        // last-deployed TEMPLATE intent, and a narrowing is an AWS-side fact,
+        // not a template edit.
+        if (narrowedByLogicalId.size > 0) {
+          const resources: Record<string, ResourceState> = { ...report.state.resources };
+          let recordedCount = 0;
+          for (const [logicalId, delta] of narrowedByLogicalId) {
+            const existing = resources[logicalId];
+            if (!existing) continue;
+            const hasObserved = existing.observedProperties !== undefined;
+            const baselineSource = hasObserved ? existing.observedProperties : existing.properties;
+            const newBaseline = JSON.parse(JSON.stringify(baselineSource ?? {})) as Record<
+              string,
+              unknown
+            >;
+            let changed = false;
+            for (const [key, value] of Object.entries(delta)) {
+              // ONLY a key the baseline already declares may move. The bag sent
+              // to `update()` starts as the AWS-CURRENT snapshot, so it carries
+              // keys the baseline never had (an out-of-band tag, an AWS-computed
+              // field); a provider that echoes one back in a changed shape would
+              // otherwise INSERT it into state — `--revert` behaving like
+              // `--accept`, the thing the per-key delta exists to prevent.
+              if (!hasOwnKey(newBaseline, key)) continue;
+              if (value === undefined) {
+                delete newBaseline[key];
+                changed = true;
+                continue;
+              }
+              // A VALUE is recorded only against an `observedProperties`
+              // baseline. Without one the baseline is the raw TEMPLATE, and
+              // `buildRevertNewProperties` ran in `preserveUntemplated` mode —
+              // so the value that was sent deliberately carries every AWS-
+              // authored path the template never declared. Writing it into
+              // `properties` would make the DESIRED baseline describe AWS-side
+              // values and silently disable the #1160 absent-field removal
+              // derivation, which reads that side (`.claude/rules/providers.md`:
+              // what you return is what you SENT, AWS-side defaults belong in
+              // `observedProperties`). A DROP is still safe there — it removes,
+              // never imports — so the loop this fix exists to break still
+              // closes for the shape that actually produces it.
+              if (!hasObserved) continue;
+              defineOwnKey(newBaseline, key, value);
+              changed = true;
+            }
+            if (!changed) continue;
+            recordedCount++;
+            resources[logicalId] = hasObserved
+              ? { ...existing, observedProperties: newBaseline }
+              : { ...existing, properties: newBaseline };
+          }
+
+          if (recordedCount === 0) {
+            // Every reported narrowing was on a key state does not track, or was
+            // a value on a template-only baseline — nothing to persist.
+            return;
+          }
+
+          // `skippedOutputs` (issue #2740) is dropped here for the same reason
+          // `--accept` drops it above: every writer that rebuilds state OUTSIDE
+          // a deploy drops it, without a per-writer argument about whether this
+          // one can repair an output. Three such arguments were written for this
+          // field; two were shown wrong, and whether a deletion here can make an
+          // output resolve (by exposing an attribute of the same name, or by
+          // removing a hit the lookup already falls through past) was not
+          // settled — so this arm drops on the rule, not on a verdict.
+          const { skippedOutputs: _droppedByRevert, ...carriedState } = report.state;
+          const newState: StackState = {
+            ...carriedState,
+            resources,
+            lastModified: Date.now(),
+          };
+          const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {
+            expectedEtag: report.etag,
+          };
+          if (report.migrationPending) {
+            saveOptions.migrateLegacy = true;
+          }
+          // BEST-EFFORT, unlike `--accept`'s write. There the state write IS the
+          // operation; here AWS has ALREADY been reverted and this is a secondary
+          // convergence step, so a failure must not abort the command — under
+          // `--all` a throw here would skip every later stack's revert entirely,
+          // which is a regression against the pre-#1644 behavior of not writing
+          // at all. The cost of the warn path is only that the narrowing
+          // re-surfaces on the next `cdkd drift`, i.e. exactly the pre-fix state.
+          try {
+            await stateBackend.saveState(report.stackName, report.region, newState, saveOptions);
+            logger.info(
+              `✓ State updated for ${report.stackName} (${report.region}): recorded the value the ` +
+                `provider actually applied on ${recordedCount} resource(s).`
+            );
+          } catch (err) {
+            // Same treatment as site 2, and the same gate. The untrusted value in
+            // this block is the STATE-WRITE error message -- the provider update
+            // already succeeded; this is `saveState` failing after it.
+            const revertAgain = revertCommandLine(report.stackName, report.region);
+            logger.warn(
+              `Reverted ${report.stackName} (${report.region}), but could not record the value the ` +
+                `provider actually applied: ${err instanceof Error ? err.message : String(err)}. ` +
+                `The next 'cdkd drift' will report the same difference — ` +
+                (revertAgain === undefined
+                  ? `re-run 'cdkd drift --revert' for this stack once the state write can succeed.`
+                  : `re-run the command below once the state write can succeed.` +
+                    `\nRevert with: ${revertAgain}`)
+            );
+          }
         }
-        // BEST-EFFORT, unlike `--accept`'s write. There the state write IS the
-        // operation; here AWS has ALREADY been reverted and this is a secondary
-        // convergence step, so a failure must not abort the command — under
-        // `--all` a throw here would skip every later stack's revert entirely,
-        // which is a regression against the pre-#1644 behavior of not writing
-        // at all. The cost of the warn path is only that the narrowing
-        // re-surfaces on the next `cdkd drift`, i.e. exactly the pre-fix state.
-        try {
-          await stateBackend.saveState(report.stackName, report.region, newState, saveOptions);
-          logger.info(
-            `✓ State updated for ${report.stackName} (${report.region}): recorded the value the ` +
-              `provider actually applied on ${recordedCount} resource(s).`
-          );
-        } catch (err) {
-          // Same treatment as site 2, and the same gate. The untrusted value in
-          // this block is the STATE-WRITE error message -- the provider update
-          // already succeeded; this is `saveState` failing after it.
-          const revertAgain = revertCommandLine(report.stackName, report.region);
+      } finally {
+        await lockManager.releaseLock(report.stackName, report.region).catch((err) => {
           logger.warn(
-            `Reverted ${report.stackName} (${report.region}), but could not record the value the ` +
-              `provider actually applied: ${err instanceof Error ? err.message : String(err)}. ` +
-              `The next 'cdkd drift' will report the same difference — ` +
-              (revertAgain === undefined
-                ? `re-run 'cdkd drift --revert' for this stack once the state write can succeed.`
-                : `re-run the command below once the state write can succeed.` +
-                  `\nRevert with: ${revertAgain}`)
+            `Failed to release lock for ${report.stackName} (${report.region}): ` +
+              (err instanceof Error ? err.message : String(err))
           );
-        }
+        });
       }
-    } finally {
-      await lockManager.releaseLock(report.stackName, report.region).catch((err) => {
-        logger.warn(
-          `Failed to release lock for ${report.stackName} (${report.region}): ` +
-            (err instanceof Error ? err.message : String(err))
-        );
-      });
-    }
+    });
   }
 
   const summaryParts = [`${totalSucceeded} reverted`];
@@ -6916,6 +7113,10 @@ export function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink)
         notCompared: () => [],
         unsupported: () => [],
         skipped: () => [],
+        // Refused by name before this runs (`refuseDeletedForRemediation`,
+        // go-to-k/cdkd#4283): there is no AWS-current value for a resource
+        // AWS reports gone, and nothing here can recreate one.
+        deleted: () => [],
       })
     );
     if (drifted.length === 0) continue;
@@ -7053,6 +7254,10 @@ export function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink)
         notCompared: () => [],
         unsupported: () => [],
         skipped: () => [],
+        // Refused by name before this runs (`refuseDeletedForRemediation`,
+        // go-to-k/cdkd#4283): there is no AWS-current value for a resource
+        // AWS reports gone, and nothing here can recreate one.
+        deleted: () => [],
       })
     );
     if (drifted.length === 0) continue;
@@ -7335,6 +7540,12 @@ interface StackDriftJson {
    * `false` by construction here; see the note above the interface.
    */
   clean: Array<{ logicalId: string; type: string; referencesUnresolved: false }>;
+  /**
+   * Resources AWS reports do NOT EXIST — deleted outside cdkd
+   * (go-to-k/cdkd#4283). Drift: a non-empty array is what exits detection `1`
+   * alongside `drifted`. Never in `notSupported`, where they used to land.
+   */
+  deleted: Array<{ logicalId: string; type: string }>;
   notSupported: Array<{ logicalId: string; type: string }>;
   /**
    * Stack-level advisories, verbatim (issue
@@ -7388,6 +7599,7 @@ function writeJsonReport(reports: StackDriftReport[]): void {
   const payload: StackDriftJson[] = reports.map((r) => {
     const drifted: StackDriftJson['drifted'] = [];
     const clean: StackDriftJson['clean'] = [];
+    const deleted: StackDriftJson['deleted'] = [];
     const notSupported: StackDriftJson['notSupported'] = [];
     const skipped: StackDriftJson['skipped'] = [];
     // Issue #2135: ONE exhaustive pass instead of four `kind` filters, so a new
@@ -7417,6 +7629,9 @@ function writeJsonReport(reports: StackDriftReport[]): void {
         skipped: (sk) => {
           skipped.push({ logicalId: sk.logicalId, type: sk.resourceType });
         },
+        deleted: (del) => {
+          deleted.push({ logicalId: del.logicalId, type: del.resourceType });
+        },
       });
     }
     const notCompared: StackDriftJson['notCompared'] = notComparedOutcomes(r).map(
@@ -7440,6 +7655,7 @@ function writeJsonReport(reports: StackDriftReport[]): void {
       // Omitted when empty — see the field's doc.
       ...(r.warnings.length > 0 && { warnings: r.warnings }),
       drifted,
+      deleted,
       clean,
       notSupported,
       skipped,
@@ -7657,6 +7873,7 @@ export function reportPlanValue(value: unknown): string {
 export function writeHumanReport(reports: StackDriftReport[]): void {
   for (const report of reports) {
     const drifted: DriftedOutcome[] = [];
+    const deleted: Array<Extract<DriftOutcome, { kind: 'deleted' }>> = [];
     const unsupported: Array<Extract<DriftOutcome, { kind: 'unsupported' }>> = [];
     // Issue #323: `skipped` (currently only `Custom::*`) is intentionally
     // NOT counted as "checked" — drift on Custom Resources is not
@@ -7723,6 +7940,12 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
         notCompared: () => {
           inspectedCount += 1;
         },
+        // go-to-k/cdkd#4283: read, and AWS answered that it is gone — drift,
+        // reported in the drift block below rather than as `drift unknown`.
+        deleted: (del) => {
+          deleted.push(del);
+          inspectedCount += 1;
+        },
       });
     }
     const inspected = inspectedCount;
@@ -7740,7 +7963,7 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
     const notCompared = notComparedOutcomes(report);
     const checked = inspected - notCompared.length;
 
-    if (drifted.length === 0) {
+    if (drifted.length === 0 && deleted.length === 0) {
       // The glyph follows THIS REPORT's question — "was everything actually
       // compared" — and NOT the exit code, which asks the narrower "did cdkd
       // refuse anything" (issue #2108). The two differ for a stack whose only
@@ -7822,10 +8045,19 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
         );
       }
     } else {
-      const word = drifted.length === 1 ? 'resource' : 'resources';
+      const driftCount = drifted.length + deleted.length;
+      const word = driftCount === 1 ? 'resource' : 'resources';
       process.stdout.write(
-        `\n⚠ ${reportHeading(report)}: drift detected on ${drifted.length} ${word}\n\n`
+        `\n⚠ ${reportHeading(report)}: drift detected on ${driftCount} ${word}\n\n`
       );
+      // go-to-k/cdkd#4283: a resource deleted outside cdkd has no property
+      // changes to list — the whole resource is the change. Its own `-` glyph
+      // and wording, never the `drift unknown` block it used to fall into.
+      for (const o of deleted) {
+        process.stdout.write(
+          `  - ${reportResource(o)} — DELETED outside cdkd: AWS reports it does not exist.\n\n`
+        );
+      }
       for (const o of drifted) {
         process.stdout.write(`  ~ ${reportResource(o)}\n`);
         for (const change of o.changes) {

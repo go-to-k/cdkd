@@ -38,7 +38,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
@@ -831,19 +833,19 @@ export class CloudTrailProvider implements ResourceProvider {
    * always emitted (`[]` when AWS reports none) so a console-side ADD
    * is detectable on the v3 observedProperties baseline.
    *
-   * Returns `undefined` when the trail is gone (`TrailNotFoundException`).
+   * Returns `RESOURCE_NOT_FOUND` when the trail is gone (`TrailNotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let trail;
     try {
       const resp = await this.getClient().send(new GetTrailCommand({ Name: physicalId }));
       trail = resp.Trail;
     } catch (err) {
-      if (err instanceof TrailNotFoundException) return undefined;
+      if (err instanceof TrailNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!trail) return undefined;

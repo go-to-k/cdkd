@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 import {
   CreateTableCommand,
   DescribeTableCommand,
@@ -84,6 +85,15 @@ const commandSent = (Command: new (input: never) => unknown): boolean =>
 
 const countOfCommand = (Command: new (input: never) => unknown): number =>
   mockSend.mock.calls.filter((call) => call[0] instanceof Command).length;
+
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('DynamoDBTableProvider backfill (#609)', () => {
   let provider: DynamoDBTableProvider;
@@ -974,13 +984,13 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       const doc = { Version: '2012-10-17', Statement: [{ Effect: 'Allow' }] };
       wireReadbacks({ policy: JSON.stringify(doc) });
 
-      const state = await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table');
+      const state = bagOf(await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table'));
       expect(state?.['ResourcePolicy']).toEqual({ PolicyDocument: doc });
     });
 
     it('omits ResourcePolicy when no policy is attached', async () => {
       wireReadbacks({});
-      const state = await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table');
+      const state = bagOf(await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table'));
       expect(state).not.toHaveProperty('ResourcePolicy');
     });
 
@@ -996,7 +1006,7 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
         ],
       });
 
-      const state = await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table');
+      const state = bagOf(await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table'));
       expect(state?.['KinesisStreamSpecification']).toEqual({
         StreamArn: 'arn:active',
         ApproximateCreationDateTimePrecision: 'MILLISECOND',
@@ -1005,13 +1015,13 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
 
     it('omits KinesisStreamSpecification when no ACTIVE destination exists', async () => {
       wireReadbacks({ kinesis: [{ StreamArn: 'arn:x', DestinationStatus: 'DISABLED' }] });
-      const state = await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table');
+      const state = bagOf(await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table'));
       expect(state).not.toHaveProperty('KinesisStreamSpecification');
     });
 
     it('surfaces ContributorInsightsSpecification with Mode when ENABLED', async () => {
       wireReadbacks({ ciStatus: 'ENABLED', ciMode: 'THROTTLED_KEYS' });
-      const state = await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table');
+      const state = bagOf(await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table'));
       expect(state?.['ContributorInsightsSpecification']).toEqual({
         Enabled: true,
         Mode: 'THROTTLED_KEYS',
@@ -1020,13 +1030,13 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
 
     it('surfaces ContributorInsightsSpecification without Mode when DISABLED', async () => {
       wireReadbacks({ ciStatus: 'DISABLED', ciMode: 'THROTTLED_KEYS' });
-      const state = await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table');
+      const state = bagOf(await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table'));
       expect(state?.['ContributorInsightsSpecification']).toEqual({ Enabled: false });
     });
 
     it('omits ContributorInsightsSpecification while ENABLING (transient)', async () => {
       wireReadbacks({ ciStatus: 'ENABLING' });
-      const state = await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table');
+      const state = bagOf(await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table'));
       expect(state).not.toHaveProperty('ContributorInsightsSpecification');
     });
   });

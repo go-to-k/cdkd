@@ -104,14 +104,16 @@ import {
   refuseMalformedDesiredTags,
   type CfnTagEntry,
 } from '../tag-list.js';
-import type {
-  ResourceProvider,
-  ResourceCreateResult,
-  ResourceUpdateResult,
-  ResourceImportInput,
-  ResourceImportResult,
-  CreateContext,
-  UpdateContext,
+import {
+  RESOURCE_NOT_FOUND,
+  type ResourceProvider,
+  type ResourceCreateResult,
+  type ResourceUpdateResult,
+  type ResourceImportInput,
+  type ResourceImportResult,
+  type CreateContext,
+  type UpdateContext,
+  type ResourceNotFound,
 } from '../../types/resource.js';
 
 /**
@@ -7248,8 +7250,10 @@ export class S3BucketProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
-    // Fast existence check. Treat NotFound / NoSuchBucket as "drift unknown".
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    // Fast existence check. NotFound / NoSuchBucket (a HEAD's 404 carries no
+    // body, so the status is its only answer) is the bucket deleted outside
+    // cdkd (go-to-k/cdkd#4283).
     try {
       await this.s3Client.send(new HeadBucketCommand({ Bucket: physicalId }));
     } catch (err) {
@@ -7260,7 +7264,7 @@ export class S3BucketProvider implements ResourceProvider {
         e.name === 'NoSuchBucket' ||
         e.$metadata?.httpStatusCode === 404
       ) {
-        return undefined;
+        return RESOURCE_NOT_FOUND;
       }
       throw err;
     }

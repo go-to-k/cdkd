@@ -44,6 +44,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { NeptuneProvider } from '../../../src/provisioning/providers/neptune-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -425,7 +426,7 @@ describe('NeptuneProvider', () => {
       });
     });
 
-    it('returns undefined when DBInstance is gone (DBInstanceNotFoundFault)', async () => {
+    it('returns RESOURCE_NOT_FOUND when DBInstance is gone (DBInstanceNotFoundFault)', async () => {
       const err = new Error('not found') as Error & { name: string };
       err.name = 'DBInstanceNotFoundFault';
       mockSend.mockRejectedValueOnce(err);
@@ -435,7 +436,68 @@ describe('NeptuneProvider', () => {
         'I',
         'AWS::Neptune::DBInstance'
       );
-      expect(state).toBeUndefined();
+      expect(state).toBe(RESOURCE_NOT_FOUND);
     });
+
+    it('returns RESOURCE_NOT_FOUND when DBCluster is gone (DBClusterNotFoundFault)', async () => {
+      const err = new Error('not found') as Error & { name: string };
+      err.name = 'DBClusterNotFoundFault';
+      mockSend.mockRejectedValueOnce(err);
+      const provider = new NeptuneProvider();
+      const state = await provider.readCurrentState!('my-cluster', 'X', 'AWS::Neptune::DBCluster');
+      expect(state).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when DBSubnetGroup is gone (DBSubnetGroupNotFoundFault)', async () => {
+      const err = new Error('not found') as Error & { name: string };
+      err.name = 'DBSubnetGroupNotFoundFault';
+      mockSend.mockRejectedValueOnce(err);
+      const provider = new NeptuneProvider();
+      const state = await provider.readCurrentState!('my-sg', 'X', 'AWS::Neptune::DBSubnetGroup');
+      expect(state).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it.each([
+      ['AWS::Neptune::DBInstance', { DBInstances: [] }],
+      ['AWS::Neptune::DBCluster', { DBClusters: [] }],
+      ['AWS::Neptune::DBSubnetGroup', { DBSubnetGroups: [] }],
+    ])('returns RESOURCE_NOT_FOUND for %s when the describe lists nothing', async (type, resp) => {
+      mockSend.mockResolvedValueOnce(resp);
+      const provider = new NeptuneProvider();
+      const state = await provider.readCurrentState!('gone', 'X', type);
+      expect(state).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    // go-to-k/cdkd#4283: only the exact fault NAME proves the resource is gone.
+    const READ_TYPES = [
+      'AWS::Neptune::DBInstance',
+      'AWS::Neptune::DBCluster',
+      'AWS::Neptune::DBSubnetGroup',
+    ];
+
+    it.each(READ_TYPES)(
+      'keeps undefined for %s on a message-only "not found" under another fault name',
+      async (type) => {
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('DBParameterGroup default.x not found'), {
+            name: 'DBParameterGroupNotFoundFault',
+          })
+        );
+        const state = await new NeptuneProvider().readCurrentState!('x', 'X', type);
+        expect(state).toBeUndefined();
+      }
+    );
+
+    it.each(READ_TYPES)(
+      'rethrows an AccessDenied describe error for %s rather than reporting it gone',
+      async (type) => {
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('User is not authorized'), { name: 'AccessDenied' })
+        );
+        await expect(new NeptuneProvider().readCurrentState!('x', 'X', type)).rejects.toThrow(
+          'User is not authorized'
+        );
+      }
+    );
   });
 });

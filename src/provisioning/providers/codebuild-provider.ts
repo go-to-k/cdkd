@@ -32,7 +32,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -611,14 +613,14 @@ export class CodeBuildProvider implements ResourceProvider {
    * uses lower-case `key`/`value` shape; `normalizeAwsTagsToCfn` re-shapes
    * to CFn `[{Key, Value}]`). CDK's `aws:*` auto-tags are filtered out
    * and the result key is omitted when AWS reports no user tags. Returns
-   * `undefined` when the project is gone (`projects` array empty /
+   * `RESOURCE_NOT_FOUND` when the project is gone (`projects` array empty /
    * `projectsNotFound` set).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let project;
     try {
       const resp = await this.getClient().send(
@@ -626,10 +628,11 @@ export class CodeBuildProvider implements ResourceProvider {
       );
       project = resp.projects?.[0];
     } catch (err) {
-      if (err instanceof ResourceNotFoundException) return undefined;
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
-    if (!project) return undefined;
+    // BatchGetProjects reports a missing project as an empty `projects` list.
+    if (!project) return RESOURCE_NOT_FOUND;
 
     // CodeBuild projects are mutable via UpdateProject. Top-level keys are
     // surfaced two ways: keys AWS always returns (Description / ServiceRole /

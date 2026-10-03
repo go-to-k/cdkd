@@ -411,11 +411,11 @@ describe('ECSProvider read-update round-trip', () => {
       ],
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       SERVICE_PHYSICAL_ID,
       'L',
       'AWS::ECS::Service'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result).not.toBeUndefined();
     expect(Object.keys(result!)).not.toContain('PlacementStrategy');
@@ -443,11 +443,11 @@ describe('ECSProvider read-update round-trip', () => {
       ],
     });
 
-    const result = await provider.readCurrentState(
+    const result = (await provider.readCurrentState(
       SERVICE_PHYSICAL_ID,
       'L',
       'AWS::ECS::Service'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(result).not.toBeUndefined();
     // issue #1167: readCurrentState reverse-maps SDK camelCase -> CFn PascalCase

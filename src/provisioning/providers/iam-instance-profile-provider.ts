@@ -37,7 +37,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 
 /**
  * AWS IAM InstanceProfile Provider
@@ -461,13 +463,13 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
    * the inline `Role[]` (each carrying `{RoleName, Arn, ...}`) back to the
    * `string[]` of role names that CFn / cdkd state holds.
    *
-   * Returns `undefined` when the profile is gone (`NoSuchEntityException`).
+   * Returns `RESOURCE_NOT_FOUND` when the profile is gone (`NoSuchEntityException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let profile;
     try {
       const resp = await this.iamClient.send(
@@ -475,7 +477,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       );
       profile = resp.InstanceProfile;
     } catch (err) {
-      if (err instanceof NoSuchEntityException) return undefined;
+      if (err instanceof NoSuchEntityException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!profile) return undefined;

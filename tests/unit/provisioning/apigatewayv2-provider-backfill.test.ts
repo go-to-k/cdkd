@@ -204,7 +204,7 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
       Version: 'v3',
     });
 
-    const observed = await provider.readCurrentState(API_ID, 'ApiLogical', 'AWS::ApiGatewayV2::Api');
+    const observed = (await provider.readCurrentState(API_ID, 'ApiLogical', 'AWS::ApiGatewayV2::Api')) as Record<string, unknown> | undefined;
 
     expect(observed!['DisableExecuteApiEndpoint']).toBe(true);
     expect(observed!['Version']).toBe('v3');
@@ -218,7 +218,7 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
       DisableExecuteApiEndpoint: false,
     });
 
-    const observed = await provider.readCurrentState(API_ID, 'ApiLogical', 'AWS::ApiGatewayV2::Api');
+    const observed = (await provider.readCurrentState(API_ID, 'ApiLogical', 'AWS::ApiGatewayV2::Api')) as Record<string, unknown> | undefined;
 
     expect(observed!).toHaveProperty('DisableExecuteApiEndpoint');
     expect(observed!['DisableExecuteApiEndpoint']).toBe(false);
@@ -244,7 +244,7 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
       ProtocolType: 'WEBSOCKET',
       ApiKeySelectionExpression: '$request.header.x-api-key',
     });
-    const ws = await provider.readCurrentState(API_ID, 'ApiLogical', 'AWS::ApiGatewayV2::Api');
+    const ws = (await provider.readCurrentState(API_ID, 'ApiLogical', 'AWS::ApiGatewayV2::Api')) as Record<string, unknown> | undefined;
     expect(ws!['ApiKeySelectionExpression']).toBe('$request.header.x-api-key');
 
     mockSend.mockResolvedValueOnce({
@@ -306,7 +306,7 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
       ProtocolType: 'HTTP',
       IpAddressType: 'dualstack',
     });
-    const withIp = await provider.readCurrentState(API_ID, 'ApiLogical', 'AWS::ApiGatewayV2::Api');
+    const withIp = (await provider.readCurrentState(API_ID, 'ApiLogical', 'AWS::ApiGatewayV2::Api')) as Record<string, unknown> | undefined;
     expect(withIp!['IpAddressType']).toBe('dualstack');
 
     mockSend.mockResolvedValueOnce({
@@ -395,12 +395,12 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
       StageVariables: { env: 'prod' },
       DefaultRouteSettings: { DetailedMetricsEnabled: true },
     });
-    const withVars = await provider.readCurrentState(
+    const withVars = (await provider.readCurrentState(
       '$default',
       'StageLogical',
       'AWS::ApiGatewayV2::Stage',
       { ApiId: API_ID }
-    );
+    )) as Record<string, unknown> | undefined;
     expect(withVars!['StageVariables']).toEqual({ env: 'prod' });
     expect(withVars!['DefaultRouteSettings']).toEqual({ DetailedMetricsEnabled: true });
 
@@ -492,12 +492,12 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
       RequestParameters: { 'append:header.x-from': "'cdkd'" },
       Description: 'a description',
     });
-    const withFields = await provider.readCurrentState(
+    const withFields = (await provider.readCurrentState(
       'int-1',
       'IntLogical',
       'AWS::ApiGatewayV2::Integration',
       { ApiId: API_ID }
-    );
+    )) as Record<string, unknown> | undefined;
     expect(withFields!['TimeoutInMillis']).toBe(15000);
     expect(withFields!['RequestParameters']).toEqual({ 'append:header.x-from': "'cdkd'" });
     expect(withFields!['Description']).toBe('a description');
@@ -611,12 +611,12 @@ describe('ApiGatewayV2Provider #609 backfill', () => {
       AuthorizationType: 'NONE',
       OperationName: 'GetPets',
     });
-    const withName = await provider.readCurrentState(
+    const withName = (await provider.readCurrentState(
       'route-1',
       'RouteLogical',
       'AWS::ApiGatewayV2::Route',
       { ApiId: API_ID }
-    );
+    )) as Record<string, unknown> | undefined;
     expect(withName!['OperationName']).toBe('GetPets');
 
     mockSend.mockResolvedValueOnce({

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   DescribeTableCommand,
   ListTagsOfResourceCommand,
@@ -59,6 +60,15 @@ const TABLE_ARN = 'arn:aws:dynamodb:us-east-1:123:table/my-table';
  *     Stream — see `dynamodb-table-provider.ts` readCurrentState
  *     comments for the per-field rationale).
  */
+
+/** A readCurrentState result that must be a read (or `undefined`), never the gone sentinel. */
+function bagOf(
+  r: Record<string, unknown> | typeof RESOURCE_NOT_FOUND | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
+
 describe('DynamoDBTableProvider read-update round-trip', () => {
   let provider: DynamoDBTableProvider;
 
@@ -119,7 +129,7 @@ describe('DynamoDBTableProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table');
+    const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table'));
 
     expect(result).toBeDefined();
     expect(result).not.toHaveProperty('GlobalSecondaryIndexes');
@@ -141,7 +151,7 @@ describe('DynamoDBTableProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table');
+    const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table'));
 
     expect(result).toBeDefined();
     expect(result).not.toHaveProperty('SSESpecification');
@@ -161,7 +171,7 @@ describe('DynamoDBTableProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table');
+    const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table'));
 
     expect(result).toBeDefined();
     expect(result).not.toHaveProperty('SSESpecification');
@@ -182,7 +192,7 @@ describe('DynamoDBTableProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table');
+    const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table'));
 
     expect(result).toBeDefined();
     expect(result).not.toHaveProperty('StreamSpecification');
@@ -200,7 +210,7 @@ describe('DynamoDBTableProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table');
+    const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table'));
 
     expect(result?.StreamSpecification).toEqual({
       StreamEnabled: true,
@@ -222,7 +232,7 @@ describe('DynamoDBTableProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table');
+    const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table'));
 
     expect(result?.SSESpecification).toEqual({
       SSEEnabled: true,
@@ -241,7 +251,7 @@ describe('DynamoDBTableProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table');
+    const result = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table'));
 
     expect(result?.GlobalSecondaryIndexes).toEqual([{ IndexName: 'gsi1' }]);
     expect(result).not.toHaveProperty('LocalSecondaryIndexes');
@@ -262,7 +272,7 @@ describe('DynamoDBTableProvider read-update round-trip', () => {
     });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const observed = await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table');
+    const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'L', 'AWS::DynamoDB::Table'));
     expect(observed).toBeDefined();
 
     // Reset the mock and prime DescribeTable for the update() flow.

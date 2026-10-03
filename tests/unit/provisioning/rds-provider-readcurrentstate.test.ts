@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('RDSProvider.readCurrentState', () => {
   let provider: RDSProvider;
@@ -345,14 +346,97 @@ describe('RDSProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined for not-found instance', async () => {
+  it('returns RESOURCE_NOT_FOUND for not-found instance', async () => {
     const err = new Error('DBInstance not found');
     (err as { name?: string }).name = 'DBInstanceNotFoundFault';
     mockSend.mockRejectedValueOnce(err);
 
     const result = await provider.readCurrentState('gone', 'InstanceLogical', 'AWS::RDS::DBInstance');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when DescribeDBInstances lists no instance', async () => {
+    mockSend.mockResolvedValueOnce({ DBInstances: [] });
+
+    const result = await provider.readCurrentState('gone', 'InstanceLogical', 'AWS::RDS::DBInstance');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND for a not-found cluster', async () => {
+    const err = new Error('DBCluster gone');
+    (err as { name?: string }).name = 'DBClusterNotFoundFault';
+    mockSend.mockRejectedValueOnce(err);
+
+    const result = await provider.readCurrentState('gone', 'ClusterLogical', 'AWS::RDS::DBCluster');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND for a not-found subnet group', async () => {
+    const err = new Error('DBSubnetGroup gone');
+    (err as { name?: string }).name = 'DBSubnetGroupNotFoundFault';
+    mockSend.mockRejectedValueOnce(err);
+
+    const result = await provider.readCurrentState('gone', 'SgLogical', 'AWS::RDS::DBSubnetGroup');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when DescribeDBClusters lists no cluster', async () => {
+    mockSend.mockResolvedValueOnce({ DBClusters: [] });
+
+    const result = await provider.readCurrentState('gone', 'ClusterLogical', 'AWS::RDS::DBCluster');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('returns RESOURCE_NOT_FOUND when DescribeDBSubnetGroups lists no group', async () => {
+    mockSend.mockResolvedValueOnce({ DBSubnetGroups: [] });
+
+    const result = await provider.readCurrentState('gone', 'SgLogical', 'AWS::RDS::DBSubnetGroup');
+    expect(result).toBe(RESOURCE_NOT_FOUND);
+  });
+
+  it('rethrows an AccessDenied describe error rather than reporting the instance gone', async () => {
+    const err = new Error('User is not authorized');
+    (err as { name?: string }).name = 'AccessDenied';
+    mockSend.mockRejectedValueOnce(err);
+
+    await expect(
+      provider.readCurrentState('x', 'InstanceLogical', 'AWS::RDS::DBInstance')
+    ).rejects.toThrow('User is not authorized');
+  });
+
+  it('keeps undefined for a message-only "not found" under another fault name (go-to-k/cdkd#4283)', async () => {
+    const err = new Error('DBParameterGroup default.x not found');
+    (err as { name?: string }).name = 'DBParameterGroupNotFoundFault';
+    mockSend.mockRejectedValueOnce(err);
+
+    const result = await provider.readCurrentState('x', 'InstanceLogical', 'AWS::RDS::DBInstance');
     expect(result).toBeUndefined();
   });
+
+  it.each(['AWS::RDS::DBCluster', 'AWS::RDS::DBSubnetGroup'])(
+    'keeps undefined for %s on a message-only "not found" under another fault name (go-to-k/cdkd#4283)',
+    async (type) => {
+      const err = new Error('DBParameterGroup default.x not found');
+      (err as { name?: string }).name = 'DBParameterGroupNotFoundFault';
+      mockSend.mockRejectedValueOnce(err);
+
+      const result = await provider.readCurrentState('x', 'Logical', type);
+      expect(result).toBeUndefined();
+    }
+  );
+
+  it.each(['AWS::RDS::DBCluster', 'AWS::RDS::DBSubnetGroup'])(
+    'rethrows an AccessDenied describe error for %s rather than reporting it gone',
+    async (type) => {
+      const err = new Error('User is not authorized');
+      (err as { name?: string }).name = 'AccessDenied';
+      mockSend.mockRejectedValueOnce(err);
+
+      await expect(provider.readCurrentState('x', 'Logical', type)).rejects.toThrow(
+        'User is not authorized'
+      );
+    }
+  );
 
   it('surfaces DBInstance Tags from ListTagsForResource with aws:* filtered out', async () => {
     mockSend
@@ -378,7 +462,7 @@ describe('RDSProvider.readCurrentState', () => {
     );
 
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
-    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+    expect((result as Record<string, unknown> | undefined)?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
   it('omits Tags when ListTagsForResource returns no user tags', async () => {
@@ -401,6 +485,6 @@ describe('RDSProvider.readCurrentState', () => {
       'AWS::RDS::DBInstance'
     );
 
-    expect(result?.Tags).toEqual([]);
+    expect((result as Record<string, unknown> | undefined)?.Tags).toEqual([]);
   });
 });

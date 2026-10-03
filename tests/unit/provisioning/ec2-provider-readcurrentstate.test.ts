@@ -39,6 +39,16 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import type { ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('EC2Provider.readCurrentState', () => {
   let provider: EC2Provider;
@@ -56,7 +66,7 @@ describe('EC2Provider.readCurrentState', () => {
       mockSend.mockResolvedValueOnce({ EnableDnsHostnames: { Value: true } });
       mockSend.mockResolvedValueOnce({ EnableDnsSupport: { Value: true } });
 
-      const result = await provider.readCurrentState('vpc-1', 'Logical', 'AWS::EC2::VPC');
+      const result = bagOf(await provider.readCurrentState('vpc-1', 'Logical', 'AWS::EC2::VPC'));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeVpcsCommand);
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeVpcAttributeCommand);
@@ -69,13 +79,13 @@ describe('EC2Provider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined when VPC not found', async () => {
+    it('returns RESOURCE_NOT_FOUND when VPC not found', async () => {
       const err = new Error('not found');
       (err as { name?: string }).name = 'InvalidVpcID.NotFound';
       mockSend.mockRejectedValueOnce(err);
 
       const result = await provider.readCurrentState('vpc-x', 'Logical', 'AWS::EC2::VPC');
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -93,7 +103,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState('subnet-1', 'Logical', 'AWS::EC2::Subnet');
+      const result = bagOf(await provider.readCurrentState('subnet-1', 'Logical', 'AWS::EC2::Subnet'));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeSubnetsCommand);
       expect(result).toEqual({
@@ -111,24 +121,24 @@ describe('EC2Provider.readCurrentState', () => {
         InternetGateways: [{ InternetGatewayId: 'igw-1' }],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'igw-1',
         'Logical',
         'AWS::EC2::InternetGateway'
-      );
+      ));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeInternetGatewaysCommand);
       expect(result).toEqual({});
     });
 
-    it('returns undefined when IGW not found', async () => {
+    it('returns RESOURCE_NOT_FOUND when IGW not found', async () => {
       mockSend.mockResolvedValueOnce({ InternetGateways: [] });
       const result = await provider.readCurrentState(
         'igw-x',
         'Logical',
         'AWS::EC2::InternetGateway'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -148,11 +158,11 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'nat-1',
         'Logical',
         'AWS::EC2::NatGateway'
-      );
+      ));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeNatGatewaysCommand);
       expect(result).toEqual({
@@ -170,11 +180,11 @@ describe('EC2Provider.readCurrentState', () => {
         RouteTables: [{ RouteTableId: 'rtb-1', VpcId: 'vpc-1' }],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'rtb-1',
         'Logical',
         'AWS::EC2::RouteTable'
-      );
+      ));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeRouteTablesCommand);
       expect(result).toEqual({ VpcId: 'vpc-1' });
@@ -203,7 +213,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState('sg-1', 'Logical', 'AWS::EC2::SecurityGroup');
+      const result = bagOf(await provider.readCurrentState('sg-1', 'Logical', 'AWS::EC2::SecurityGroup'));
 
       // `normalizeAwsTagsToCfn` emits Key-sorted output. Order is not
       // load-bearing for the comparator either way — `canonicalizeTagListsDeep`
@@ -229,7 +239,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState('sg-1', 'Logical', 'AWS::EC2::SecurityGroup');
+      const result = bagOf(await provider.readCurrentState('sg-1', 'Logical', 'AWS::EC2::SecurityGroup'));
 
       expect(result?.['Tags']).toEqual([{ Key: 'Zone', Value: 'z1' }]);
     });
@@ -239,7 +249,7 @@ describe('EC2Provider.readCurrentState', () => {
         SecurityGroups: [{ GroupId: 'sg-1', Description: 'web tier' }],
       });
 
-      const result = await provider.readCurrentState('sg-1', 'Logical', 'AWS::EC2::SecurityGroup');
+      const result = bagOf(await provider.readCurrentState('sg-1', 'Logical', 'AWS::EC2::SecurityGroup'));
 
       expect(result).not.toHaveProperty('Tags');
     });
@@ -256,11 +266,11 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1',
         'Logical',
         'AWS::EC2::SecurityGroup'
-      );
+      ));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeSecurityGroupsCommand);
       // SecurityGroupIngress / SecurityGroupEgress always emitted (even
@@ -307,11 +317,11 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1',
         'Logical',
         'AWS::EC2::SecurityGroup'
-      );
+      ));
 
       expect(result?.['SecurityGroupIngress']).toEqual([
         { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '10.0.0.0/8', Description: 'office' },
@@ -347,11 +357,11 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1',
         'Logical',
         'AWS::EC2::SecurityGroup'
-      );
+      ));
 
       expect(result?.['SecurityGroupIngress']).toEqual([
         {
@@ -399,7 +409,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1',
         'Logical',
         'AWS::EC2::SecurityGroup',
@@ -409,7 +419,7 @@ describe('EC2Provider.readCurrentState', () => {
             { IpProtocol: 'tcp', FromPort: 5432, ToPort: 5432, DestinationSecurityGroupId: 'sg-db' },
           ],
         }
-      );
+      ));
 
       expect(result?.['SecurityGroupEgress']).toEqual([
         // state-templated rule is reconciled to position 0
@@ -446,11 +456,11 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1',
         'Logical',
         'AWS::EC2::SecurityGroup'
-      );
+      ));
 
       // Default egress filtered out — emit empty array placeholder so
       // observedProperties still has the key for future drift detection.
@@ -473,12 +483,12 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1',
         'Logical',
         'AWS::EC2::SecurityGroup',
         { SecurityGroupEgress: [{ IpProtocol: '-1', CidrIp: '0.0.0.0/0' }] }
-      );
+      ));
 
       // State templated egress — even if the rule shape matches the
       // AWS-default tuple, surface it as-is. The filter only fires on
@@ -505,7 +515,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1',
         'Logical',
         'AWS::EC2::SecurityGroup',
@@ -516,7 +526,7 @@ describe('EC2Provider.readCurrentState', () => {
             { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '0.0.0.0/0' },
           ],
         }
-      );
+      ));
 
       expect(result?.['SecurityGroupIngress']).toEqual([
         { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '0.0.0.0/0' },
@@ -540,7 +550,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1',
         'Logical',
         'AWS::EC2::SecurityGroup',
@@ -549,7 +559,7 @@ describe('EC2Provider.readCurrentState', () => {
             { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '0.0.0.0/0' },
           ],
         }
-      );
+      ));
 
       // State has 1 rule (port 80), AWS has 2. Reconciled output: state
       // rule first (matched), then unmatched AWS rule (port 22). The
@@ -580,11 +590,11 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1',
         'Logical',
         'AWS::EC2::SecurityGroup'
-      );
+      ));
 
       expect(result?.['SecurityGroupIngress']).toEqual([
         { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '0.0.0.0/0' },
@@ -617,7 +627,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeInstancesCommand);
       // SecurityGroupIds / BlockDeviceMappings / Tags / Monitoring always
@@ -634,7 +644,7 @@ describe('EC2Provider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined for terminated instance', async () => {
+    it('returns RESOURCE_NOT_FOUND for terminated instance', async () => {
       mockSend.mockResolvedValueOnce({
         Reservations: [
           {
@@ -646,7 +656,7 @@ describe('EC2Provider.readCurrentState', () => {
       });
 
       const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
 
     it('surfaces SecurityGroupIds sorted (stable positional compare against template order)', async () => {
@@ -670,7 +680,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
       expect(result?.['SecurityGroupIds']).toEqual(['sg-a', 'sg-m', 'sg-z']);
     });
 
@@ -697,7 +707,7 @@ describe('EC2Provider.readCurrentState', () => {
           ],
         });
 
-        const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+        const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
         expect(result?.['Monitoring']).toBe(expected);
       }
     });
@@ -720,7 +730,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
       expect(result?.['SourceDestCheck']).toBe(false);
       expect(result?.['PrivateIpAddress']).toBe('10.0.1.42');
       expect(result?.['Tenancy']).toBe('dedicated');
@@ -774,7 +784,7 @@ describe('EC2Provider.readCurrentState', () => {
           ],
         });
 
-      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
 
       expect(result?.['BlockDeviceMappings']).toEqual([
         {
@@ -824,7 +834,7 @@ describe('EC2Provider.readCurrentState', () => {
         })
         .mockRejectedValueOnce(new Error('UnauthorizedOperation: ec2:DescribeVolumes'));
 
-      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
 
       // Volume-side fields absent — the partial shape (DeleteOnTermination
       // only) is still surfaced. Better than nothing for users without
@@ -855,7 +865,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
       expect(result?.['Tags']).toEqual([{ Key: 'Name', Value: 'web-1' }]);
     });
 
@@ -877,7 +887,7 @@ describe('EC2Provider.readCurrentState', () => {
         })
         .mockResolvedValueOnce({ DisableApiTermination: { Value: true } });
 
-      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
       expect(result?.['DisableApiTermination']).toBe(true);
     });
 
@@ -897,7 +907,7 @@ describe('EC2Provider.readCurrentState', () => {
         })
         .mockRejectedValueOnce(new Error('UnauthorizedOperation: ec2:DescribeInstanceAttribute'));
 
-      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
       expect(result?.['DisableApiTermination']).toBeUndefined();
     });
 
@@ -910,7 +920,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
       expect(result?.['EbsOptimized']).toBe(true);
     });
 
@@ -936,7 +946,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
       expect(result?.['MetadataOptions']).toEqual({
         HttpTokens: 'required',
         HttpEndpoint: 'enabled',
@@ -958,7 +968,7 @@ describe('EC2Provider.readCurrentState', () => {
           InstanceCreditSpecifications: [{ InstanceId: 'i-1', CpuCredits: 'unlimited' }],
         });
 
-      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
       expect(result?.['CreditSpecification']).toEqual({ CPUCredits: 'unlimited' });
     });
 
@@ -970,7 +980,7 @@ describe('EC2Provider.readCurrentState', () => {
         .mockRejectedValueOnce(new Error('skip disableApiTermination'))
         .mockRejectedValueOnce(new Error('not a burstable instance'));
 
-      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
       expect(result?.['CreditSpecification']).toBeUndefined();
     });
   });
@@ -981,11 +991,11 @@ describe('EC2Provider.readCurrentState', () => {
         NetworkAcls: [{ NetworkAclId: 'acl-1', VpcId: 'vpc-1' }],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'acl-1',
         'Logical',
         'AWS::EC2::NetworkAcl'
-      );
+      ));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeNetworkAclsCommand);
       expect(result).toEqual({ VpcId: 'vpc-1' });
@@ -1003,17 +1013,17 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'igw-1|vpc-1',
         'Logical',
         'AWS::EC2::VPCGatewayAttachment'
-      );
+      ));
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeInternetGatewaysCommand);
       expect(result).toEqual({ InternetGatewayId: 'igw-1', VpcId: 'vpc-1' });
     });
 
-    it('returns undefined when IGW is no longer attached to the recorded VPC', async () => {
+    it('returns RESOURCE_NOT_FOUND when IGW is no longer attached to the recorded VPC', async () => {
       mockSend.mockResolvedValueOnce({
         InternetGateways: [
           {
@@ -1028,7 +1038,7 @@ describe('EC2Provider.readCurrentState', () => {
         'Logical',
         'AWS::EC2::VPCGatewayAttachment'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -1054,11 +1064,11 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'rtb-1|0.0.0.0/0',
         'Logical',
         'AWS::EC2::Route'
-      );
+      ));
       expect(result).toEqual({
         RouteTableId: 'rtb-1',
         DestinationCidrBlock: '0.0.0.0/0',
@@ -1081,11 +1091,11 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'rtb-1|::/0',
         'Logical',
         'AWS::EC2::Route'
-      );
+      ));
       expect(result).toEqual({
         RouteTableId: 'rtb-1',
         DestinationIpv6CidrBlock: '::/0',
@@ -1093,7 +1103,7 @@ describe('EC2Provider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined when route has been removed', async () => {
+    it('returns RESOURCE_NOT_FOUND when route has been removed', async () => {
       mockSend.mockResolvedValueOnce({
         RouteTables: [{ RouteTableId: 'rtb-1', Routes: [] }],
       });
@@ -1102,7 +1112,7 @@ describe('EC2Provider.readCurrentState', () => {
         'Logical',
         'AWS::EC2::Route'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -1124,22 +1134,22 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'rtbassoc-1',
         'Logical',
         'AWS::EC2::SubnetRouteTableAssociation'
-      );
+      ));
       expect(result).toEqual({ SubnetId: 'subnet-1', RouteTableId: 'rtb-1' });
     });
 
-    it('returns undefined when no route table has the association', async () => {
+    it('returns RESOURCE_NOT_FOUND when no route table has the association', async () => {
       mockSend.mockResolvedValueOnce({ RouteTables: [] });
       const result = await provider.readCurrentState(
         'rtbassoc-missing',
         'Logical',
         'AWS::EC2::SubnetRouteTableAssociation'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -1165,7 +1175,7 @@ describe('EC2Provider.readCurrentState', () => {
       });
 
       // State has the second rule (192.168.x).
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1|tcp|80|80',
         'Logical',
         'AWS::EC2::SecurityGroupIngress',
@@ -1176,7 +1186,7 @@ describe('EC2Provider.readCurrentState', () => {
           ToPort: 80,
           CidrIp: '192.168.0.0/16',
         }
-      );
+      ));
       expect(result).toEqual({
         GroupId: 'sg-1',
         IpProtocol: 'tcp',
@@ -1209,7 +1219,7 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1|6|9443|9443',
         'Logical',
         'AWS::EC2::SecurityGroupIngress',
@@ -1221,7 +1231,7 @@ describe('EC2Provider.readCurrentState', () => {
           CidrIp: '10.0.9.0/24',
           Description: 'numeric-protocol-6',
         }
-      );
+      ));
       // AWS's spelling is returned verbatim; collapsing it against the
       // recorded '6' is the drift comparator's job (drift-protocol-normalize).
       expect(result).toEqual({
@@ -1252,16 +1262,16 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1|-1|-1|-1',
         'Logical',
         'AWS::EC2::SecurityGroupIngress',
         { GroupId: 'sg-1', IpProtocol: '-1', CidrIp: '10.0.0.0/8' }
-      );
+      ));
       expect(result).toEqual({ GroupId: 'sg-1', CidrIp: '10.0.0.0/8' });
     });
 
-    it('still returns undefined when a numeric protocol genuinely has no matching rule (#1643)', async () => {
+    it('still returns RESOURCE_NOT_FOUND when a numeric protocol genuinely has no matching rule (#1643)', async () => {
       // The canonicalization must not turn the lookup into a wildcard: udp (17)
       // must not match the tcp rule.
       mockSend.mockResolvedValueOnce({
@@ -1286,7 +1296,7 @@ describe('EC2Provider.readCurrentState', () => {
         'AWS::EC2::SecurityGroupIngress',
         { GroupId: 'sg-1', IpProtocol: '17', FromPort: 9443, ToPort: 9443, CidrIp: '10.0.9.0/24' }
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
 
     it('returns the first candidate when state passes no properties (best-effort, unique tuple)', async () => {
@@ -1306,11 +1316,11 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'sg-1|tcp|22|22',
         'Logical',
         'AWS::EC2::SecurityGroupIngress'
-      );
+      ));
       expect(result).toEqual({
         GroupId: 'sg-1',
         IpProtocol: 'tcp',
@@ -1320,7 +1330,7 @@ describe('EC2Provider.readCurrentState', () => {
       });
     });
 
-    it('returns undefined when state signature does not match any AWS rule (rule was removed)', async () => {
+    it('keeps undefined when the state signature matches no AWS rule sharing the tuple (cannot tell it is gone)', async () => {
       mockSend.mockResolvedValueOnce({
         SecurityGroups: [
           {
@@ -1354,6 +1364,67 @@ describe('EC2Provider.readCurrentState', () => {
       );
       expect(result).toBeUndefined();
     });
+
+    it.each([
+      ['an ICMP echo rule (8 / -1)', 'sg-1|icmp|8|-1', 8, -1],
+      ['an all-ICMP rule (-1 / -1)', 'sg-1|icmp|-1|-1', -1, -1],
+    ])('does not report %s as gone: AWS reports -1 explicitly', async (_label, id, from, to) => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            IpPermissions: [
+              { IpProtocol: 'icmp', FromPort: from, ToPort: to, IpRanges: [{ CidrIp: '10.0.0.0/8' }] },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(id, 'Logical', 'AWS::EC2::SecurityGroupIngress', {
+        GroupId: 'sg-1',
+        IpProtocol: 'icmp',
+        FromPort: from,
+        ToPort: to,
+        CidrIp: '10.0.0.0/8',
+      });
+      expect(result).not.toBe(RESOURCE_NOT_FOUND);
+      expect(result).toBeDefined();
+    });
+
+    it('does not report a live same-account SG-to-SG rule as gone (template omits the peer owner)', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-db',
+            IpPermissions: [
+              {
+                IpProtocol: 'tcp',
+                FromPort: 5432,
+                ToPort: 5432,
+                UserIdGroupPairs: [
+                  { GroupId: 'sg-app', UserId: '111122223333', Description: 'from sg-app:5432' },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-db|tcp|5432|5432',
+        'Logical',
+        'AWS::EC2::SecurityGroupIngress',
+        {
+          GroupId: 'sg-db',
+          IpProtocol: 'tcp',
+          FromPort: 5432,
+          ToPort: 5432,
+          SourceSecurityGroupId: 'sg-app',
+          Description: 'from sg-app:5432',
+        }
+      );
+      expect(result).not.toBe(RESOURCE_NOT_FOUND);
+    });
   });
 
   describe('AWS::EC2::NetworkAclEntry', () => {
@@ -1383,11 +1454,11 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'acl-1|100|false',
         'Logical',
         'AWS::EC2::NetworkAclEntry'
-      );
+      ));
       expect(result).toEqual({
         NetworkAclId: 'acl-1',
         RuleNumber: 100,
@@ -1418,11 +1489,11 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'acl-1|110|true',
         'Logical',
         'AWS::EC2::NetworkAclEntry'
-      );
+      ));
       // CFn-canonical name is `Icmp`; AWS API uses `IcmpTypeCode`. Both
       // emitted so drift works for state files written by either name.
       expect(result?.['Icmp']).toEqual({ Type: 8, Code: -1 });
@@ -1430,7 +1501,7 @@ describe('EC2Provider.readCurrentState', () => {
       expect(result?.['Protocol']).toBe(1);
     });
 
-    it('returns undefined when entry has been removed', async () => {
+    it('returns RESOURCE_NOT_FOUND when entry has been removed', async () => {
       mockSend.mockResolvedValueOnce({
         NetworkAcls: [{ NetworkAclId: 'acl-1', Entries: [] }],
       });
@@ -1439,7 +1510,7 @@ describe('EC2Provider.readCurrentState', () => {
         'Logical',
         'AWS::EC2::NetworkAclEntry'
       );
-      expect(result).toBeUndefined();
+      expect(result).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -1460,21 +1531,89 @@ describe('EC2Provider.readCurrentState', () => {
         ],
       });
 
-      const result = await provider.readCurrentState(
+      const result = bagOf(await provider.readCurrentState(
         'aclassoc-1',
         'Logical',
         'AWS::EC2::SubnetNetworkAclAssociation'
-      );
+      ));
       expect(result).toEqual({ NetworkAclId: 'acl-2', SubnetId: 'subnet-1' });
     });
 
-    it('returns undefined when no NACL has the association id', async () => {
+    it('returns RESOURCE_NOT_FOUND when no NACL has the association id', async () => {
       mockSend.mockResolvedValueOnce({ NetworkAcls: [] });
       const result = await provider.readCurrentState(
         'aclassoc-missing',
         'Logical',
         'AWS::EC2::SubnetNetworkAclAssociation'
       );
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+  });
+
+  describe('gone vs no read path (go-to-k/cdkd#4283)', () => {
+    it.each([
+      ['AWS::EC2::Subnet', 'subnet-x', { Subnets: [] }],
+      ['AWS::EC2::RouteTable', 'rtb-x', { RouteTables: [] }],
+      ['AWS::EC2::SecurityGroup', 'sg-x', { SecurityGroups: [] }],
+      ['AWS::EC2::NetworkAcl', 'acl-x', { NetworkAcls: [] }],
+      ['AWS::EC2::NatGateway', 'nat-x', { NatGateways: [{ NatGatewayId: 'nat-x', State: 'deleted' }] }],
+      ['AWS::EC2::VPCGatewayAttachment', 'igw-x|vpc-x', { InternetGateways: [] }],
+      ['AWS::EC2::Route', 'rtb-x|10.0.0.0/16', { RouteTables: [] }],
+      ['AWS::EC2::SecurityGroupIngress', 'sg-x|tcp|80|80', { SecurityGroups: [] }],
+      ['AWS::EC2::NetworkAclEntry', 'acl-x|100|false', { NetworkAcls: [] }],
+      ['AWS::EC2::VPC', 'vpc-x', { Vpcs: [] }],
+    ])('returns RESOURCE_NOT_FOUND for %s when the describe no longer carries it', async (type, id, resp) => {
+      mockSend.mockResolvedValueOnce(resp);
+      const result = await provider.readCurrentState(id, 'Logical', type);
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND for a shutting-down instance', async () => {
+      mockSend.mockResolvedValueOnce({
+        Reservations: [{ Instances: [{ InstanceId: 'i-1', State: { Name: 'shutting-down' } }] }],
+      });
+      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when the describe rejects with a *.NotFound error', async () => {
+      const err = new Error('The subnet ID does not exist');
+      err.name = 'InvalidSubnetID.NotFound';
+      mockSend.mockRejectedValueOnce(err);
+      const result = await provider.readCurrentState('subnet-x', 'Logical', 'AWS::EC2::Subnet');
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('keeps undefined for InvalidParameterValue (not an EC2 *.NotFound code)', async () => {
+      const err = new Error('InvalidParameterValue: bad filter');
+      err.name = 'InvalidParameterValue';
+      mockSend.mockRejectedValueOnce(err);
+      const result = await provider.readCurrentState('subnet-x', 'Logical', 'AWS::EC2::Subnet');
+      expect(result).toBeUndefined();
+    });
+
+    it('rethrows a non-not-found error instead of reporting the resource gone', async () => {
+      const err = new Error('You are not authorized to perform this operation.');
+      err.name = 'UnauthorizedOperation';
+      mockSend.mockRejectedValueOnce(err);
+      await expect(
+        provider.readCurrentState('subnet-x', 'Logical', 'AWS::EC2::Subnet')
+      ).rejects.toThrow('not authorized');
+    });
+
+    it.each([
+      ['AWS::EC2::VPCGatewayAttachment', 'igw-only'],
+      ['AWS::EC2::Route', 'rtb-only'],
+      ['AWS::EC2::SecurityGroupIngress', 'sg-x|tcp'],
+      ['AWS::EC2::NetworkAclEntry', 'acl-x|100'],
+    ])('keeps undefined for an unparseable %s physicalId (no AWS answer)', async (type, id) => {
+      const result = bagOf(await provider.readCurrentState(id, 'Logical', type));
+      expect(result).toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('keeps undefined for an unsupported type', async () => {
+      const result = bagOf(await provider.readCurrentState('x', 'Logical', 'AWS::EC2::EIP'));
       expect(result).toBeUndefined();
     });
   });

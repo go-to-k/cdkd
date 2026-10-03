@@ -31,6 +31,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { LambdaFunctionProvider } from '../../../src/provisioning/providers/lambda-function-provider.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 describe('LambdaFunctionProvider.readCurrentState', () => {
   let provider: LambdaFunctionProvider;
@@ -102,14 +111,14 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
     });
   });
 
-  it('returns undefined when function is gone', async () => {
+  it('returns RESOURCE_NOT_FOUND when function is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'not found', $metadata: {} })
     );
 
     const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
 
-    expect(result).toBeUndefined();
+    expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('emits VpcConfig placeholder with empty arrays when GetFunction returns no VPC (non-VPC function)', async () => {
@@ -123,7 +132,7 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+    const result = bagOf(await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function'));
 
     expect(result?.VpcConfig).toEqual({
       SubnetIds: [],
@@ -147,7 +156,7 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+    const result = bagOf(await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function'));
 
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
@@ -163,7 +172,7 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
       Tags: { 'aws:cdk:path': 'MyStack/MyFunction/Resource' },
     });
 
-    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+    const result = bagOf(await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function'));
 
     expect(result?.Tags).toEqual([]);
   });
@@ -190,7 +199,7 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
       Tags: undefined,
     });
 
-    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+    const result = bagOf(await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function'));
 
     expect(Object.keys(result ?? {}).sort()).toEqual(
       [
@@ -248,7 +257,7 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+    const result = bagOf(await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function'));
 
     expect(result?.PackageType).toBe('Image');
     expect(result?.Code).toEqual({
@@ -324,7 +333,7 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+    const result = bagOf(await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function'));
 
     expect(result?.DeadLetterConfig).toEqual({ TargetArn: 'arn:aws:sqs:us-east-1:123:dlq' });
     // GetFunction returns KMSKeyArn; cdkd surfaces it under the CFn name KmsKeyArn.
@@ -360,7 +369,7 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+    const result = bagOf(await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function'));
 
     expect(result?.LoggingConfig).toEqual({ LogFormat: 'Text', LogGroup: '/aws/lambda/fn' });
   });
@@ -381,7 +390,7 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
       },
     });
 
-    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+    const result = bagOf(await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function'));
 
     expect(result?.ImageConfig).toEqual({
       EntryPoint: ['/lambda-entrypoint.sh'],

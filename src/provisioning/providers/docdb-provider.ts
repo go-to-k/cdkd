@@ -23,7 +23,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -958,13 +960,14 @@ export class DocDBProvider implements ResourceProvider {
    * return them in the Describe responses). `Tags` are surfaced via a
    * follow-up `ListTagsForResource(ResourceName=arn)` call.
    *
-   * Returns `undefined` when the resource is gone (`*NotFoundFault`).
+   * Returns `RESOURCE_NOT_FOUND` when the resource is gone (`*NotFoundFault`
+   * or an empty describe list), `undefined` for a type with no read path.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::DocDB::DBInstance':
         return this.readCurrentStateDBInstance(physicalId);
@@ -977,15 +980,19 @@ export class DocDBProvider implements ResourceProvider {
 
   private async readCurrentStateDBInstance(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let inst;
     try {
       inst = await this.describeDBInstance(physicalId);
     } catch (err) {
+      // go-to-k/cdkd#4283: only the fault NAME proves the resource is gone;
+      // the looser message match keeps its old "cannot tell" answer.
+      if ((err as { name?: unknown } | null)?.name === 'DBInstanceNotFoundFault')
+        return RESOURCE_NOT_FOUND;
       if (isDocDBNotFoundError(err, 'DBInstanceNotFoundFault')) return undefined;
       throw err;
     }
-    if (!inst) return undefined;
+    if (!inst) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (inst.DBInstanceIdentifier !== undefined) {
@@ -1009,15 +1016,19 @@ export class DocDBProvider implements ResourceProvider {
 
   private async readCurrentStateDBCluster(
     physicalId: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let cluster;
     try {
       cluster = await this.describeDBCluster(physicalId);
     } catch (err) {
+      // go-to-k/cdkd#4283: only the fault NAME proves the resource is gone;
+      // the looser message match keeps its old "cannot tell" answer.
+      if ((err as { name?: unknown } | null)?.name === 'DBClusterNotFoundFault')
+        return RESOURCE_NOT_FOUND;
       if (isDocDBNotFoundError(err, 'DBClusterNotFoundFault')) return undefined;
       throw err;
     }
-    if (!cluster) return undefined;
+    if (!cluster) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
     if (cluster.DBClusterIdentifier !== undefined) {

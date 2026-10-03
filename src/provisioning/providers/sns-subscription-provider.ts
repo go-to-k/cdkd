@@ -21,7 +21,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 
 /**
  * The "old subscription was not deleted" reason the THROWN-delete arm of
@@ -532,15 +534,16 @@ export class SNSSubscriptionProvider implements ResourceProvider {
    * already-typed values. `TopicArn`, `Protocol`, `Endpoint` pass through
    * as strings.
    *
-   * Returns `undefined` when the subscription is gone (`NotFoundException`),
-   * including the special "PendingConfirmation" case where the
-   * `SubscriptionArn` has not yet been confirmed and `Attributes` is null.
+   * Returns `RESOURCE_NOT_FOUND` when the subscription is gone
+   * (`NotFoundException`), and `undefined` for the special
+   * "PendingConfirmation" case where the `SubscriptionArn` has not yet been
+   * confirmed and `Attributes` is null.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     // The literal "PendingConfirmation" placeholder (issue #1301 — e.g. state
     // adopted via `cdkd import --resource <id>=PendingConfirmation`) is not a
     // real ARN; GetSubscriptionAttributes would throw InvalidParameterException
@@ -557,7 +560,7 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       );
       attributes = resp.Attributes;
     } catch (err) {
-      if (err instanceof NotFoundException) return undefined;
+      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
     }
     if (!attributes) return undefined;

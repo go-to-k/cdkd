@@ -78,6 +78,15 @@ import {
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const TYPE = 'AWS::AutoScaling::AutoScalingGroup';
 const TG_A = 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/issue3948-a/0123abcd';
@@ -1089,7 +1098,7 @@ describe('ASGProvider readCurrentState output passes the #3948 list reads', () =
       }
     });
     const provider = new ASGProvider();
-    const readback = await provider.readCurrentState('my-asg', 'MyAsg', TYPE);
+    const readback = bagOf(await provider.readCurrentState('my-asg', 'MyAsg', TYPE));
     expect(readback).toBeDefined();
     for (const kind of Object.keys(VALID)) {
       expect((readback?.[kind] as unknown[]).length, kind).toBeGreaterThan(0);

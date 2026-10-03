@@ -78,11 +78,11 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       Tags: { Foo: 'Bar' },
     });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       API_ID,
       'ApiLogical',
       'AWS::ApiGatewayV2::Api'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(observed).toBeDefined();
     expect(observed!['CorsConfiguration']).toEqual({ AllowOrigins: ['*'] });
@@ -98,11 +98,11 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       RouteSelectionExpression: '$request.body.action',
     });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       API_ID,
       'ApiLogical',
       'AWS::ApiGatewayV2::Api'
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(observed).toBeDefined();
     expect(observed!).not.toHaveProperty('CorsConfiguration');
@@ -118,12 +118,12 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       JwtConfiguration: { Audience: ['client-id'], Issuer: 'https://issuer.example.com' },
     });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       'auth-jwt',
       'AuthorizerLogical',
       'AWS::ApiGatewayV2::Authorizer',
       { ApiId: API_ID }
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(observed).toBeDefined();
     expect(observed!['JwtConfiguration']).toEqual({
@@ -144,12 +144,12 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       AuthorizerPayloadFormatVersion: '2.0',
     });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       'auth-req',
       'AuthorizerLogical',
       'AWS::ApiGatewayV2::Authorizer',
       { ApiId: API_ID }
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(observed).toBeDefined();
     expect(observed!['AuthorizerUri']).toBe(
@@ -165,12 +165,12 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       IntegrationType: 'MOCK',
     });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       'int-mock',
       'IntegrationLogical',
       'AWS::ApiGatewayV2::Integration',
       { ApiId: API_ID }
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(observed).toBeDefined();
     expect(observed!).not.toHaveProperty('IntegrationUri');
@@ -186,12 +186,12 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       PayloadFormatVersion: '2.0',
     });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       'int-lambda',
       'IntegrationLogical',
       'AWS::ApiGatewayV2::Integration',
       { ApiId: API_ID }
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(observed).toBeDefined();
     expect(observed!['IntegrationUri']).toBe('arn:aws:lambda:us-east-1:123:function:my-fn');
@@ -204,12 +204,12 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       Target: 'integrations/int-1',
     });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       'route-none',
       'RouteLogical',
       'AWS::ApiGatewayV2::Route',
       { ApiId: API_ID }
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(observed).toBeDefined();
     expect(observed!['AuthorizationType']).toBe('NONE');
@@ -227,12 +227,12 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       AuthorizationScopes: ['scope-a', 'scope-b'],
     });
 
-    const observed = await provider.readCurrentState(
+    const observed = (await provider.readCurrentState(
       'route-jwt',
       'RouteLogical',
       'AWS::ApiGatewayV2::Route',
       { ApiId: API_ID }
-    );
+    )) as Record<string, unknown> | undefined;
 
     expect(observed).toBeDefined();
     expect(observed!['AuthorizationType']).toBe('JWT');

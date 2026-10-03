@@ -26,7 +26,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -521,13 +523,13 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
    * service (GetLifecyclePolicy does not return them at the top level), so
    * they are excluded for the same reason.
    *
-   * Returns `undefined` when the policy is gone (ResourceNotFoundException).
+   * Returns `RESOURCE_NOT_FOUND` when the policy is gone (ResourceNotFoundException).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       const response = await this.getClient().send(
         new GetLifecyclePolicyCommand({ PolicyId: physicalId })
@@ -544,9 +546,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         Tags: normalizeAwsTagsToCfn(policy.Tags),
       };
     } catch (error) {
-      if (error instanceof ResourceNotFoundException) {
-        return undefined; // drift unknown — resource gone
-      }
+      if (error instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw error;
     }
   }

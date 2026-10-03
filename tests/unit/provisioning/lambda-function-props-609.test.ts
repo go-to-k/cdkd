@@ -52,6 +52,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { LambdaFunctionProvider } from '../../../src/provisioning/providers/lambda-function-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+
+/** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
+function bagOf(
+  r: Record<string, unknown> | ResourceNotFound | undefined
+): Record<string, unknown> | undefined {
+  expect(r).not.toBe(RESOURCE_NOT_FOUND);
+  return r as Record<string, unknown> | undefined;
+}
 
 const BASE_PROPS = {
   FunctionName: 'fn',
@@ -616,7 +625,7 @@ describe('AWS::Lambda::Function #609 property backfill', () => {
         },
       });
 
-      const state = await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function');
+      const state = bagOf(await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function'));
 
       expect(state?.['DurableConfig']).toEqual({
         ExecutionTimeout: 7200,
@@ -635,7 +644,7 @@ describe('AWS::Lambda::Function #609 property backfill', () => {
         codeSigning: { CodeSigningConfigArn: 'arn:csc:1' },
       });
 
-      const state = await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function');
+      const state = bagOf(await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function'));
 
       expect(sentOfType(GetRuntimeManagementConfigCommand)).toHaveLength(1);
       expect(sentOfType(GetFunctionCodeSigningConfigCommand)).toHaveLength(1);
@@ -676,7 +685,7 @@ describe('AWS::Lambda::Function #609 property backfill', () => {
       let state: Record<string, unknown> | undefined;
       let sent: unknown[] = [];
       try {
-        state = await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function');
+        state = bagOf(await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function'));
       } finally {
         sent = mockSend.mock.calls.map((call) => call[0]);
         mockSend.mockReset();
@@ -718,7 +727,7 @@ describe('AWS::Lambda::Function #609 property backfill', () => {
         }),
       });
 
-      const state = await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function');
+      const state = bagOf(await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function'));
 
       expect(state).toBeDefined();
       expect(state).not.toHaveProperty('CodeSigningConfigArn');
@@ -731,7 +740,7 @@ describe('AWS::Lambda::Function #609 property backfill', () => {
         runtimeManagement: new Error('AccessDenied'),
       });
 
-      const state = await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function');
+      const state = bagOf(await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function'));
 
       expect(state?.['FunctionName']).toBe('fn');
       expect(state).not.toHaveProperty('RuntimeManagementConfig');
@@ -746,7 +755,7 @@ describe('AWS::Lambda::Function #609 property backfill', () => {
         codeSigning: new Error('AccessDeniedException: not authorized'),
       });
 
-      const state = await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function');
+      const state = bagOf(await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function'));
 
       expect(state?.['FunctionName']).toBe('fn');
       expect(state).not.toHaveProperty('CodeSigningConfigArn');
