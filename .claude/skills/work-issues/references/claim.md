@@ -2,8 +2,8 @@
 
 ## 4. CLAIM the chosen issues BEFORE editing
 
-When lanes run as SUBAGENTS (the default for stages 5-8), the PARENT posts every
-claim, and its `<ref>` names the branch or worktree the lane agent will create.
+With SUBAGENT lanes (the default for stages 5-8) the PARENT posts every claim;
+its `<ref>` names the branch or worktree the lane agent will create.
 
 **IN-PLACE runs name the tree they are STANDING IN**: the `<ref>` is the branch
 §5 will create plus the opening report's `LANE_TREE`, never
@@ -24,7 +24,7 @@ it and say so here; I will stand down."
 
 When the run ends before reaching one — or a lane never becomes RUNNABLE because
 an open PR holds what its fix needs (triage.md §2: a peer's files, a fork's
-hunks) — **stand it down rather than leave the claim standing**: say it is
+hunks) — **stand it down**: say it is
 unclaimed, carry the four classification fields, and **when the blocker is
 EXTERNAL name the query that clears it**, passing it **via `--body-file`** (that
 query is BACKTICKED; `--body "..."` would execute it).
@@ -61,12 +61,13 @@ provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
 every comment, doc or rule the fix makes FALSE — stating the old invariant or
 calling the issue open (`grep -rnw '<issue digits>\|<key symbol>' src docs
 .claude/rules`, minus `docs/_generated`, each through §2's open-PR `files`
-query) — a narrower list stops the lane mid-run to ask (go-to-k/cdkd#1160).
+query); a NEW SDK provider adds every file the provider-addition fences reach
+(`providers.md`'s list; `gh pr view 4457 --json files` minus its fixture)
+— a narrower list stops the lane mid-run to ask (go-to-k/cdkd#1160).
 
-**Correct the classification lines in the same turn as the claim**, the first
-moment the run holds evidence: rewrite a legacy packed body to the four-line
-shape (§3), fill a missing `Severity`, fix what the evidence contradicts (`Notes`
-never enters a body).
+**Correct the classification lines in the same turn as the claim**: rewrite a
+legacy packed body to the four-line shape (§3), fill a missing `Severity`, fix
+what the evidence contradicts (`Notes` never enters a body).
 
 **Carry `--add-label` on that same `gh issue edit`** (`severity:<v>`,
 `effort:<v>`, plus `--remove-label` for the one superseded — else §3's query
@@ -82,20 +83,19 @@ gh issue view <n> --json comments \
 ```
 
 **Tie-break: the EARLIEST `createdAt` wins.** If a rival's claim predates yours,
-post a stand-down naming the winning branch and pick a different issue — without
-asking. Escalate when timestamps cannot settle it (go-to-k/cdkd#1446).
+stand down naming the winning branch and pick another issue, unasked. Escalate
+when timestamps cannot settle it (go-to-k/cdkd#1446).
 
 **A QUEUED comment IS a claim, and its `createdAt` is what the tie-break reads.**
 Re-read the thread to the END before publishing a precedence account, and never
 infer absence from a missing branch: a signal shows LIFE only (§9), and a claim
 has no TTL, so one you believe dead goes to arbitration.
 
-**The tie-break only works if the LOSER re-reads, and nothing makes it.**
-Re-read the claims before you PUSH; if yours is later, stand down even with
-code written.
+**Nothing makes the tie-break's LOSER re-read**: re-read the claims before you
+PUSH; if yours is later, stand down even with code written.
 
-**Claim what you FILE, too — filing is not claiming**, since a self-filed
-deferral is invisible to every ownership probe. For one THIS run means to pick up
+**Claim what you FILE, too — filing is not claiming**: a self-filed
+deferral is invisible to ownership probes. For one THIS run means to pick up
 (`Session-fit: now`), claim it in the turn you file it, naming the LANE, not your
 current branch, which §9 deletes. One handed off (`next`) gets NO claim until a
 later run takes it.
