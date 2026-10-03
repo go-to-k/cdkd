@@ -67,6 +67,28 @@ export class RollbackReplayStack extends cdk.Stack {
     // attached to the VPC.
     route.addDependency(attachment);
 
+    // ── The rollback REVERT-arm subject (go-to-k/cdkd#4434) ───────────────
+    //
+    // Every subject above takes the reverse-REPLACEMENT arm; this one takes the
+    // plain `revert` UPDATE arm. Its `Description` follows `ROUTE_DEST`, and
+    // `Description` is not create-only, so phase 3 UPDATES the rule in place —
+    // which `EC2Provider` does by revoking and re-authorizing it, minting a new
+    // `sgr-` id — and the rollback's revert does the same again. The
+    // post-rollback record must hold the id of the rule that is live THEN, not
+    // the phase-1 one the revert revoked.
+    const ingressSg = new ec2.CfnSecurityGroup(this, 'RevertSg', {
+      vpcId: vpc.ref,
+      groupDescription: 'cdkd rollback-replay revert-arm subject',
+    });
+    const ingress = new ec2.CfnSecurityGroupIngress(this, 'RevertIngress', {
+      groupId: ingressSg.attrGroupId,
+      ipProtocol: 'tcp',
+      fromPort: 443,
+      toPort: 443,
+      cidrIp: '10.90.0.0/16',
+      description: `cdkd revert-arm subject for ${destination}`,
+    });
+
     // ── The per-PROVIDER replay-CREATE subjects ────────────────────────────
     //
     // The route above proves the ENGINE honours a returned
@@ -290,6 +312,8 @@ export class RollbackReplayStack extends cdk.Stack {
       failing.addDependency(gsiOmitTable);
       failing.addDependency(streamTable);
       failing.addDependency(bucket);
+      // The ingress UPDATE must have COMPLETED, or there is nothing to revert.
+      failing.addDependency(ingress);
       if (crossRegionTable) failing.addDependency(crossRegionTable);
     }
   }

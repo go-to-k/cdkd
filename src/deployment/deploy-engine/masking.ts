@@ -25,10 +25,9 @@ import {
   maskSecretsInText,
   mergeResolvedPairs,
   recordLogOnlyParameterValue,
-  recordMaskOnlyValuesIn,
+  recordNoEchoAttributeValues,
   recordRecoverableMaskedOutput,
   redactSecretsForState,
-  wholeStringLeavesOf,
 } from '../secret-redaction.js';
 
 declare module '../deploy-engine.js' {
@@ -410,22 +409,11 @@ export function registerNoEchoAttributes(
   secrets: RecordedSecretValues,
   ownProperties?: Record<string, unknown>
 ): void {
-  const attributes = result.attributes;
-  if (attributes === undefined) return;
-  const excluded = ownProperties === undefined ? undefined : wholeStringLeavesOf(ownProperties);
-  if (result.noEchoAttributes === true) {
-    this.noEchoAttributeResources.set(logicalId, true);
-    recordMaskOnlyValuesIn(attributes, secrets, excluded);
-    return;
-  }
-  // The PER-ATTRIBUTE arm. Filtered against the bag actually returned, so a
-  // name the provider declared but did not deliver registers nothing — the
-  // declaration is evidence about a VALUE, and with no value there is no
-  // needle to record.
-  const names = (result.noEchoAttributeNames ?? []).filter((name) => name in attributes);
-  if (names.length === 0) return;
-  this.noEchoAttributeResources.set(logicalId, new Set(names));
-  for (const name of names) recordMaskOnlyValuesIn(attributes[name], secrets, excluded);
+  // The needles are the shared half (`recordNoEchoAttributeValues`, which the
+  // rollback executor's record rebuilds call too, go-to-k/cdkd#4434); what is
+  // the ENGINE's alone is remembering the declaration for dependents.
+  const declared = recordNoEchoAttributeValues(result, secrets, ownProperties);
+  if (declared !== undefined) this.noEchoAttributeResources.set(logicalId, declared);
 }
 
 /**

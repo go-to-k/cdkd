@@ -1020,8 +1020,10 @@ export async function rollbackCommand(
         // it. Like `import`, this writer can ADD an attribute key: the
         // replacement / re-adopt arm rebuilds a record with
         // `attributes: createResult.attributes ?? {}`
-        // (`rollback-executor.ts`), and a fresh create can return a fuller set
-        // than the record the old state held — the same "a provider now builds
+        // (`rollback-executor/replay-reverse-replacement.ts`), the two UPDATE
+        // arms take the attributes `update()` returned
+        // (`recordAfterRollbackUpdate`, go-to-k/cdkd#4434), and either can
+        // return a fuller set than the record the old state held — the same "a provider now builds
         // an attribute an output reads" shape the module doc lists as a blind
         // spot. Every resource then reports NO_CHANGE against the reverted
         // template, so the diff's change map cannot un-bind and the digest is

@@ -305,6 +305,51 @@ export function wholeStringLeavesOf(value: unknown): Set<string> {
 }
 
 /**
+ * Register the values of a provider result's `NoEcho`-declared attributes as
+ * MASK-ONLY needles in `secrets` (issue #2274), so the record built from that
+ * result stores `***` there — and return the declaration that registered
+ * anything: `true` for the whole bag, the declared names actually returned,
+ * or `undefined` when nothing was registered.
+ *
+ * The shared half of every writer that persists a provider's `attributes`: the
+ * deploy engine's `registerNoEchoAttributes` (which also remembers the returned
+ * declaration so a dependent's `Fn::GetAtt` is masked too), and the rollback
+ * executor's record rebuilds (go-to-k/cdkd#4434), which persist the attributes
+ * a replayed `create()` / `update()` returned — a custom resource answering
+ * `NoEcho: true` would otherwise land in `state.json` in the clear.
+ *
+ * `ownProperties` is the resource's own RESOLVED property bag; its whole string
+ * leaves are excluded, so a handler echoing its inputs into `Data` cannot mask
+ * cdkd's own `ServiceToken` back at it (go-to-k/cdkd#3938).
+ *
+ * The per-name arm counts only names the returned bag OWNS: a declaration is
+ * evidence about a VALUE, and with no value there is no needle to record.
+ */
+export function recordNoEchoAttributeValues(
+  result: {
+    attributes?: Record<string, unknown> | undefined;
+    noEchoAttributes?: boolean | undefined;
+    noEchoAttributeNames?: readonly string[] | undefined;
+  },
+  secrets: RecordedSecretValues,
+  ownProperties?: Record<string, unknown>
+): true | Set<string> | undefined {
+  const attributes = result.attributes;
+  if (attributes === undefined) return undefined;
+  const excluded = ownProperties === undefined ? undefined : wholeStringLeavesOf(ownProperties);
+  if (result.noEchoAttributes === true) {
+    recordMaskOnlyValuesIn(attributes, secrets, excluded);
+    return true;
+  }
+  const names = (result.noEchoAttributeNames ?? []).filter((name) =>
+    Object.hasOwn(attributes, name)
+  );
+  if (names.length === 0) return undefined;
+  for (const name of names) recordMaskOnlyValuesIn(attributes[name], secrets, excluded);
+  return new Set(names);
+}
+
+/**
  * Does `value` carry {@link SECRET_MASK} as a WHOLE string leaf?
  *
  * The recognition test every consumer of a REDACTED baseline shares (issue

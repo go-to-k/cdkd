@@ -190,10 +190,11 @@ GTX_NAME_V2="cdkd-rbreplay-gtx-${GT_RUN_ID}-v2"
 # 1 reads it back LIVE, so the phase-4 "withdrawn" assertions cannot pass over
 # an override that never existed.
 XR_INDEX_MAX_READ=13
-# `cdkd drift` counts every resource; the arm adds one.
-EXPECTED_DRIFT_RESOURCES=9
+# `cdkd drift` counts every resource; the arm adds one. The #4434 revert-arm
+# subject is two of them (the security group and its ingress rule).
+EXPECTED_DRIFT_RESOURCES=11
 if [ "${MULTI_REGION}" = "1" ]; then
-  EXPECTED_DRIFT_RESOURCES=10
+  EXPECTED_DRIFT_RESOURCES=12
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -326,6 +327,17 @@ cleanup() {
     aws ec2 delete-internet-gateway --internet-gateway-id "${igw}" >/dev/null 2>&1
   done
 
+  # The revert-arm security group (go-to-k/cdkd#4434) BEFORE the VPC, which
+  # cannot be deleted while it holds one. Deleting a group removes its rules.
+  local sg_ids
+  sg_ids="$(aws ec2 describe-security-groups \
+    --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
+    --query 'SecurityGroups[].GroupId' --output text 2>/dev/null)"
+  for sg in ${sg_ids}; do
+    echo "[verify] cleanup: deleting leftover security group ${sg}"
+    aws ec2 delete-security-group --group-id "${sg}" >/dev/null 2>&1
+  done
+
   vpc_ids="$(aws ec2 describe-vpcs \
     --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
     --query 'Vpcs[].VpcId' --output text 2>/dev/null)"
@@ -403,6 +415,50 @@ if [ "${TAGGED_VPC}" != "${STATE_VPC}" ]; then
   echo "      '${STATE_VPC}' -- the sweep would target the wrong resource." >&2
   exit 1
 fi
+
+# --- go-to-k/cdkd#4434: the revert-arm subject ------------------------------
+# The rule's recorded `sgr-` id must match the one live rule on its group NOW,
+# so phase 4's "record == live" is a comparison between two real ids and its
+# "differs from phase 1" half is a real change.
+INGRESS_LOGICAL_ID="$(jq -r '.resources | to_entries[]
+  | select(.value.resourceType == "AWS::EC2::SecurityGroupIngress") | .key' "${WORK_DIR}/state-v1.json" | head -1)"
+INGRESS_SG_ID="$(jq -r '.resources | to_entries[]
+  | select(.value.resourceType == "AWS::EC2::SecurityGroup") | .value.physicalId' "${WORK_DIR}/state-v1.json" | head -1)"
+INGRESS_V1_ID="$(jq -r --arg id "${INGRESS_LOGICAL_ID}" \
+  '.resources[$id].attributes.Id // "MISSING"' "${WORK_DIR}/state-v1.json")"
+# Every INGRESS rule id the group holds, sorted and space-joined: exactly one
+# is expected (the group's default rule is an EGRESS one).
+live_ingress_rule_ids() {
+  aws ec2 describe-security-group-rules \
+    --filters "Name=group-id,Values=${INGRESS_SG_ID}" \
+    --query 'sort(SecurityGroupRules[?IsEgress==`false`].SecurityGroupRuleId) | join(` `, @)' \
+    --output text
+}
+case "${INGRESS_V1_ID}" in
+  sgr-*) ;;
+  *)
+    echo "FAIL: phase 1: ${INGRESS_LOGICAL_ID:-<no SecurityGroupIngress in state>} records" >&2
+    echo "      attributes.Id='${INGRESS_V1_ID}', expected an sgr- rule id (group '${INGRESS_SG_ID}')." >&2
+    exit 1
+    ;;
+esac
+INGRESS_V1_LIVE="$(live_ingress_rule_ids)"
+if [ "${INGRESS_V1_LIVE}" != "${INGRESS_V1_ID}" ]; then
+  echo "FAIL: phase 1: ${INGRESS_SG_ID} holds ingress rule(s) '${INGRESS_V1_LIVE}'," >&2
+  echo "      expected exactly the recorded '${INGRESS_V1_ID}'." >&2
+  exit 1
+fi
+# Phase 6 and the cleanup trap find the group by the fixture tag, so the tag
+# must match it, for the reason given for the VPC above.
+TAGGED_SG="$(aws ec2 describe-security-groups \
+  --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
+  --query 'SecurityGroups[].GroupId' --output text)"
+if [ "${TAGGED_SG}" != "${INGRESS_SG_ID}" ]; then
+  echo "FAIL: phase 1: the fixture tag matched security group(s) '${TAGGED_SG}'," >&2
+  echo "      but state records '${INGRESS_SG_ID}'." >&2
+  exit 1
+fi
+echo "[verify] phase 1: revert-arm ingress ${INGRESS_LOGICAL_ID} = ${INGRESS_V1_ID}"
 # Select each table by its EXACT recorded physicalId, never by `head -1` over
 # the type: both resources are AWS::DynamoDB::GlobalTable, so a positional pick
 # resolves to whichever the state file happens to list first and silently swaps
@@ -794,6 +850,14 @@ do
   fi
 done
 echo "[verify] phase 3: OK (reverse-replacement arm + all five replay-CREATE downgrades observed)"
+# go-to-k/cdkd#4434: the ingress took the plain REVERT arm (an in-place UPDATE),
+# not a reverse-replacement, or phase 4's ingress half asserts on nothing.
+if ! grep -qF "Rollback: ${INGRESS_LOGICAL_ID} restored successfully" "${WORK_DIR}/deploy-v2.log"; then
+  echo "FAIL: phase 3: ${INGRESS_LOGICAL_ID} was not reverted by the rollback's UPDATE arm," >&2
+  echo "      so phase 4 cannot test the revert's recorded rule id (#4434). Lines:" >&2
+  grep -aF "${INGRESS_LOGICAL_ID}" "${WORK_DIR}/deploy-v2.log" | tail -20 >&2
+  exit 1
+fi
 
 # --------------------------------------------------------------------------
 # Phase 4 — THE POINT: the post-rollback record holds the SUBSTITUTED bag.
@@ -821,6 +885,39 @@ if [ "${POST_IPV6}" != "ABSENT" ]; then
   exit 1
 fi
 echo "[verify] phase 4: OK (DestinationCidrBlock=${POST_DEST}, DestinationIpv6CidrBlock absent)"
+
+# --- go-to-k/cdkd#4434: the revert arm records the rule id that is LIVE -----
+# Phase 3 re-authorized the rule twice (the update, then the revert), so the
+# phase-1 id is revoked. Before the fix the record kept it.
+INGRESS_POST_ID="$(jq -r --arg id "${INGRESS_LOGICAL_ID}" \
+  '.resources[$id].attributes.Id // "MISSING"' "${WORK_DIR}/state-rolled-back.json")"
+INGRESS_POST_DESC="$(jq -r --arg id "${INGRESS_LOGICAL_ID}" \
+  '.resources[$id].properties.Description // "MISSING"' "${WORK_DIR}/state-rolled-back.json")"
+INGRESS_POST_LIVE="$(live_ingress_rule_ids)"
+if [ "${INGRESS_POST_DESC}" != "cdkd revert-arm subject for ${DEST_V1}" ]; then
+  echo "FAIL: phase 4: the rollback did not restore ${INGRESS_LOGICAL_ID}'s v1 Description" >&2
+  echo "      (record holds '${INGRESS_POST_DESC}')." >&2
+  exit 1
+fi
+if [ "${INGRESS_POST_LIVE}" = "${INGRESS_V1_ID}" ]; then
+  echo "FAIL: phase 4: ${INGRESS_SG_ID} still holds the phase-1 rule ${INGRESS_V1_ID}, so the" >&2
+  echo "      update and its revert never re-authorized it and the #4434 check is vacuous." >&2
+  exit 1
+fi
+case "${INGRESS_POST_LIVE}" in
+  *" "*|""|None)
+    echo "FAIL: phase 4: ${INGRESS_SG_ID} holds ingress rule(s) '${INGRESS_POST_LIVE}', expected exactly one." >&2
+    exit 1
+    ;;
+esac
+if [ "${INGRESS_POST_ID}" != "${INGRESS_POST_LIVE}" ]; then
+  echo "FAIL: phase 4: issue #4434 REGRESSION -- ${INGRESS_LOGICAL_ID} records" >&2
+  echo "      attributes.Id='${INGRESS_POST_ID}' but the live rule is '${INGRESS_POST_LIVE}'" >&2
+  echo "      (phase 1 recorded '${INGRESS_V1_ID}'). The rollback's revert kept the" >&2
+  echo "      restored record's attributes instead of the ones update() returned." >&2
+  exit 1
+fi
+echo "[verify] phase 4: OK (${INGRESS_LOGICAL_ID} records the live rule ${INGRESS_POST_ID})"
 
 # --- the GlobalTable half (issues #1724 / #1726) ---------------------------
 #
@@ -1214,6 +1311,14 @@ IGW_LEFT="$(aws ec2 describe-internet-gateways \
   --query 'InternetGateways[].InternetGatewayId' --output text)"
 if [ -n "${IGW_LEFT}" ] && [ "${IGW_LEFT}" != "None" ]; then
   echo "FAIL: phase 6: internet gateway orphan(s) survived destroy: ${IGW_LEFT}" >&2
+  exit 1
+fi
+
+SG_LEFT="$(aws ec2 describe-security-groups \
+  --filters "Name=tag:${FIXTURE_TAG_KEY},Values=${FIXTURE_TAG_VALUE}" \
+  --query 'SecurityGroups[].GroupId' --output text)"
+if [ -n "${SG_LEFT}" ] && [ "${SG_LEFT}" != "None" ]; then
+  echo "FAIL: phase 6: security group orphan(s) survived destroy: ${SG_LEFT}" >&2
   exit 1
 fi
 

@@ -40,7 +40,7 @@ export async function updateWithRollbackRetry(
   secrets: RecordedSecretValues,
   /** The op's masker ({@link createOpMasker}) for the retry lines. */
   mask: MaskerFn
-): Promise<ResourceUpdateResult> {
+): Promise<ResourceUpdateResult | undefined> {
   // Issue #1160, for BOTH revert arms: each hands over two state records, so
   // the removal is template-vs-template on either. Once per op, outside the
   // retry loop, exactly as the deploy's in-place update does it.
@@ -56,11 +56,14 @@ export async function updateWithRollbackRetry(
   ];
   // An injected reset is sent, never recorded: the record keeps the template.
   // The warning follows a SUCCESSFUL revert only, as on the deploy side.
-  const recorded = (result: ResourceUpdateResult): ResourceUpdateResult => {
+  // A provider resolving `undefined` (an untyped double, a provider that answers
+  // nothing) passes through: the revert landed, and `recordAfterRollbackUpdate`
+  // keeps the restored record for it rather than failing a recovery path.
+  const recorded = (result: ResourceUpdateResult | undefined): ResourceUpdateResult | undefined => {
     if (removal.unhandled.length > 0) {
       logger.warn(mask(removalWarning(logicalId, resourceType, removal.unhandled, 'rollback')));
     }
-    return withoutInjectedRemovals(result, removal.injected);
+    return result === undefined ? undefined : withoutInjectedRemovals(result, removal.injected);
   };
   if (provider.disableOuterRetry) {
     // Single-shot — the provider handles transient errors internally, and an
@@ -236,20 +239,71 @@ export async function createWithRollbackRetry(
  * The bag handed to `update()` on both arms IS `restored.properties`, so a
  * returned `effectiveProperties` is its complete replacement — no per-key
  * delta is needed here (unlike `drift --revert`, which sends a merged bag).
- * Everything else on the record — physical id, attributes, dependencies,
- * policies — is the restored resource's and must survive untouched.
+ *
+ * `attributes` take the provider's returned ones (go-to-k/cdkd#4434): an
+ * `update()` that re-creates under the same physical id mints new ones — an
+ * `AWS::EC2::SecurityGroupIngress` revokes and re-authorizes, so AWS hands
+ * back a new `sgr-` rule id — and keeping the restored record's would leave a
+ * revoked id for `cdkd export` and a later `Fn::GetAtt` to read. How they
+ * combine with the restored record's follows the update's own answer:
+ *
+ * - none returned: the restored record's attributes stand, as before —
+ *   unless the update replaced under a CHANGED physical id, where they describe
+ *   the resource it removed and are dropped (the deploy engine's update path
+ *   likewise carries old attributes only for a resource that was not
+ *   replaced). A `wasReplaced` answer under the SAME id keeps them: the S3
+ *   bucket provider answers that way having replaced nothing;
+ * - `wasReplaced: true`: the returned set REPLACES them, as on the deploy
+ *   engine's update path — they describe a resource the update removed, so a
+ *   key the new set lacks must not survive from it;
+ * - in place: merged key-wise, the returned value winning. Nothing was removed,
+ *   and the restored record is the very generation this update put back, so a
+ *   key the provider did not report is still that resource's.
+ *
+ * The physical id follows the same answer: a `wasReplaced` result carrying a
+ * non-empty `physicalId` is recorded under THAT id, as the deploy engine
+ * records an update's — a provider that replaced on the way back (a custom
+ * resource whose Update handler returned a new `PhysicalResourceId`, an
+ * update-time re-create minting a new ARN) left the restored id naming a
+ * resource it removed. An in-place answer keeps the restored id.
+ *
+ * Everything else on the record — dependencies, policies — is the restored
+ * resource's and must survive untouched. A `NoEcho` declaration on the result
+ * is the CALLER's to register (`recordNoEchoAttributeValues`) before the
+ * record is redacted: this function only builds it.
  */
 export function recordAfterRollbackUpdate(
   restored: ResourceState,
   result: ResourceUpdateResult | undefined
 ): ResourceState {
+  // The optional `result` mirrors the same tolerance `drift.ts`'s capture
+  // applies — a provider that resolves `undefined` must not crash a recovery
+  // path.
+  if (result === undefined) return restored;
+  const returned = result.attributes;
+  const replacedId =
+    result.wasReplaced && typeof result.physicalId === 'string' && result.physicalId !== ''
+      ? result.physicalId
+      : undefined;
+  if (!result.effectiveProperties && returned === undefined && replacedId === undefined) {
+    return restored;
+  }
   // Copied, not aliased: the record outlives the call and a provider is free to
-  // keep mutating the object it handed back. The optional `result` mirrors the
-  // same tolerance `drift.ts`'s capture applies — a provider that resolves
-  // `undefined` must not crash a recovery path.
-  return result?.effectiveProperties
-    ? { ...restored, properties: { ...result.effectiveProperties } }
-    : restored;
+  // keep mutating the object it handed back. ONE level deep, as the
+  // `effectiveProperties` copy is: nested values stay shared with the
+  // provider's object.
+  const idChanged = replacedId !== undefined && replacedId !== restored.physicalId;
+  // Absent rather than `{}`, the deploy engine's shape for a replaced resource
+  // that reported no attributes.
+  const { attributes: _removedResourceAttributes, ...withoutAttributes } = restored;
+  return {
+    ...(returned === undefined && idChanged ? withoutAttributes : restored),
+    ...(replacedId !== undefined && { physicalId: replacedId }),
+    ...(result.effectiveProperties && { properties: { ...result.effectiveProperties } }),
+    ...(returned !== undefined && {
+      attributes: result.wasReplaced ? { ...returned } : { ...restored.attributes, ...returned },
+    }),
+  };
 }
 
 /**

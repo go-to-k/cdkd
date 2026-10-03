@@ -60,6 +60,19 @@ Issue [#1706](https://github.com/go-to-k/cdkd/issues/1706) adds two of them:
 Phase 4 is what fails against a pre-#1682 binary: the record would still carry
 the key the provider warned it was dropping and never sent to AWS.
 
+## The revert-arm subject (issue #4434)
+
+`RevertIngress` (`AWS::EC2::SecurityGroupIngress`) is the one subject that
+takes the plain `revert` UPDATE arm instead of the reverse-replacement one: its
+`Description` follows `ROUTE_DEST` and is not create-only, so phase 3 updates
+it in place, which `EC2Provider` does by revoking and re-authorizing the rule,
+and the rollback's revert does it again. Phase 1 records the rule's `sgr-` id
+and proves it is the group's one live ingress rule; phase 3 asserts the
+`restored successfully` line; phase 4 asserts the record's `attributes.Id`
+equals the rule live AFTER the rollback and differs from phase 1's. Before
+the fix the revert kept the restored record's attributes, so the record still
+named the revoked phase-1 rule.
+
 ## Opt-in cross-region arm (issue #1741, second instance)
 
 `CDKD_INTEG_MULTI_REGION=1` adds a fourth `AWS::DynamoDB::GlobalTable` whose
