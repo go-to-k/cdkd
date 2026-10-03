@@ -2762,11 +2762,13 @@ cdkd rollback MyStack --stack-region us-west-2
 The prompt refuses a non-interactive stdin rather than hanging, so CI needs one
 of the confirmation flags.
 
-- **Exit `2`** means the rollback was partial — one or more ops failed
-  best-effort or were skipped with a warning (e.g. a resource whose physical
-  id changed after a later fix-forward attempt, or an unrecoverable DELETE).
-  The rollback journal is **kept** so you can re-run `cdkd rollback` — replay
-  is idempotent (already-reverted resources are skipped).
+- **Exit `2`** means the rollback was partial. When one or more ops failed
+  best-effort, the rollback journal is **kept** so you can re-run `cdkd
+  rollback` — replay is idempotent (already-reverted resources are skipped).
+  An op skipped with a warning (e.g. a resource whose physical id changed
+  after a later fix-forward attempt, or an unrecoverable DELETE) would be
+  skipped again by a re-run, so its segment is cleared and the skip is
+  recorded as a `ROLLBACK_RESOURCE_SKIPPED` event (`cdkd events`).
 - Use `--orphan <logicalId>` (repeatable) to leave a specific resource alone
   during the revert (mirrors `cdk rollback --orphan`).
 - **Secret dynamic references need live access at rollback time.** A resource

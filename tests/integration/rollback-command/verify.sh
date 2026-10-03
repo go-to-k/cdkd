@@ -601,8 +601,13 @@ if ! SKIP_JOURNAL="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - 2>/dev/nu
   echo "         (the pre-#3338 path settled it; with no failed op it would be gone entirely)"
   exit 1
 fi
-SKIP_SEG_REASON="$(printf '%s' "${SKIP_JOURNAL}" | jq -r '.segments[-1].reason')"
-SKIP_SEG_OPS="$(printf '%s' "${SKIP_JOURNAL}" | jq -c '[.segments[-1].operations[] | select(.logicalId == "SkipDoomed") | .changeType]')"
+# Each capture is guarded: under `set -e` a failed substitution would end the
+# script with no FAIL line naming what broke.
+if ! SKIP_SEG_REASON="$(printf '%s' "${SKIP_JOURNAL}" | jq -r '.segments[-1].reason')" \
+  || ! SKIP_SEG_OPS="$(printf '%s' "${SKIP_JOURNAL}" | jq -c '[(.segments[-1].operations // [])[] | select(.logicalId == "SkipDoomed") | .changeType]')"; then
+  echo "[verify] FAIL: could not parse the rollback journal s3://${STATE_BUCKET}/${JOURNAL_KEY}"
+  exit 1
+fi
 if [ "${SKIP_SEG_REASON}" != "auto-rollback-started" ] || [ "${SKIP_SEG_OPS}" != '["DELETE"]' ]; then
   echo "[verify] FAIL: the newest journal segment is reason=${SKIP_SEG_REASON} ops(SkipDoomed)=${SKIP_SEG_OPS};"
   echo "         expected the full auto-rollback-started segment naming SkipDoomed's DELETE. A settled"
@@ -614,14 +619,20 @@ fi
 echo "[verify]   ok: journal kept the auto-rollback-started segment with SkipDoomed's DELETE"
 
 echo "[verify] step S2b: assert the failed deploy's run recorded ROLLBACK_RESOURCE_SKIPPED for SkipDoomed"
-SKIP_RUNS_JSON="$(${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --format json 2>/dev/null)"
-SKIP_RUN_ID="$(printf '%s' "${SKIP_RUNS_JSON}" | jq -r '.runs[0].runId')"
-SKIP_RUN_CMD="$(printf '%s' "${SKIP_RUNS_JSON}" | jq -r '.runs[0].command')"
+if ! SKIP_RUNS_JSON="$(${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --format json)" \
+  || ! SKIP_RUN_ID="$(printf '%s' "${SKIP_RUNS_JSON}" | jq -r '.runs[0].runId')" \
+  || ! SKIP_RUN_CMD="$(printf '%s' "${SKIP_RUNS_JSON}" | jq -r '.runs[0].command')"; then
+  echo "[verify] FAIL: could not read the run listing from 'cdkd events ${STACK} --format json'"
+  exit 1
+fi
 if [ "${SKIP_RUN_CMD}" != "deploy" ] || [ -z "${SKIP_RUN_ID}" ] || [ "${SKIP_RUN_ID}" = "null" ]; then
   echo "[verify] FAIL: newest run is not the failed deploy (command=${SKIP_RUN_CMD} runId=${SKIP_RUN_ID})"
   exit 1
 fi
-SKIP_EVENTS_JSON="$(${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --run "${SKIP_RUN_ID}" --format json 2>/dev/null)"
+if ! SKIP_EVENTS_JSON="$(${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --run "${SKIP_RUN_ID}" --format json)"; then
+  echo "[verify] FAIL: could not read run ${SKIP_RUN_ID}'s events"
+  exit 1
+fi
 # Guard against a vacuous read: the run must have reached its rollback at all.
 if ! printf '%s' "${SKIP_EVENTS_JSON}" | jq -e '[.[] | select(.eventType == "ROLLBACK_FINISHED")] | length == 1' >/dev/null; then
   echo "[verify] FAIL: run ${SKIP_RUN_ID} has no single ROLLBACK_FINISHED — the automatic rollback did not run"
@@ -649,14 +660,17 @@ if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNA
   echo "[verify] FAIL: rollback journal still present after the rollback replayed the skipped op"
   exit 1
 fi
-S3_RUNS_JSON="$(${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --format json 2>/dev/null)"
-S3_RUN_ID="$(printf '%s' "${S3_RUNS_JSON}" | jq -r '.runs[0].runId')"
-S3_RUN_CMD="$(printf '%s' "${S3_RUNS_JSON}" | jq -r '.runs[0].command')"
+if ! S3_RUNS_JSON="$(${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --format json)" \
+  || ! S3_RUN_ID="$(printf '%s' "${S3_RUNS_JSON}" | jq -r '.runs[0].runId')" \
+  || ! S3_RUN_CMD="$(printf '%s' "${S3_RUNS_JSON}" | jq -r '.runs[0].command')"; then
+  echo "[verify] FAIL: could not read the run listing after the rollback"
+  exit 1
+fi
 if [ "${S3_RUN_CMD}" != "rollback" ]; then
   echo "[verify] FAIL: newest run is not the rollback (command=${S3_RUN_CMD})"
   exit 1
 fi
-if ! ${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --run "${S3_RUN_ID}" --format json 2>/dev/null \
+if ! ${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --run "${S3_RUN_ID}" --format json \
   | jq -e '[.[] | select(.eventType == "ROLLBACK_RESOURCE_SKIPPED" and .logicalId == "SkipDoomed")] | length == 1' >/dev/null; then
   echo "[verify] FAIL: the rollback run ${S3_RUN_ID} has no ROLLBACK_RESOURCE_SKIPPED for SkipDoomed"
   exit 1

@@ -29,6 +29,7 @@ import {
 } from '../../types/state.js';
 import { cyan, red } from '../../utils/colors.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { DagExecutor } from '../dag-executor.js';
 import { withSharedDrainBudget } from '../drain-budget.js';
 import type { SettledNestedRows } from '../nested-child-journal.js';
@@ -779,12 +780,25 @@ export async function executeDeployment(
       // reverted, and its event names the survivor.
       autoRollbackClean = rollbackResult.failures === 0 && rollbackResult.skipped === 0;
       if (rollbackResult.failures === 0 && rollbackResult.skipped > 0) {
-        // No command named: a nested child's stack-less `cdkd rollback` would
-        // resolve to the top-level stack (go-to-k/cdkd#3864).
+        // The kept segment also keeps the failed op's record, which the next
+        // deploy's generic note (a plain `cdkd rollback`, which discards it)
+        // no longer points at, so name `--revert-failed` here. Not for a
+        // nested child: its stack-less `cdkd rollback` would resolve to the
+        // top-level stack (go-to-k/cdkd#3864).
+        const revertFailedHint =
+          this.options.parentStackInfo === undefined &&
+          failedOperations.some((op) => op.changeType !== 'DELETE')
+            ? `\nThe record of the operation that failed is kept too. Revert both with: ` +
+              pasteableCommand('cdkd rollback', [
+                { value: stackName, hole: 'stack' },
+                { literal: '--revert-failed' },
+              ]).command
+            : '';
         this.logger.warn(
           safeMsg`The automatic rollback could not revert ${rollbackResult.skipped} operation(s) ` +
             `(see the warnings above; each is recorded as a ROLLBACK_RESOURCE_SKIPPED event). ` +
-            `The rollback journal keeps them.`
+            `The rollback journal keeps them.` +
+            revertFailedHint
         );
       }
       // Hoisted out of this block because both saves below sit outside it

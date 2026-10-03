@@ -137,9 +137,10 @@ the data.
 After a **clean automatic** rollback the journal is settled to a failed-only
 segment: the completed operations are already reverted, but the failed
 resource's record is kept, so `cdkd rollback --revert-failed` works in the
-default deploy flow too. An automatic rollback that failed or skipped an
-operation is not clean and keeps the full segment. A plain `cdkd rollback` on such a journal is a no-op
-replay that clears it; the next successful deploy also deletes it.
+default deploy flow too. A plain `cdkd rollback` on such a journal is a no-op
+replay that clears it; the next successful deploy also deletes it. An
+automatic rollback that failed or skipped an operation is not clean and keeps
+the full segment instead.
 
 ## Known limitations
 

@@ -389,4 +389,26 @@ describe('a reverse-replacement whose re-create adopted the live new resource', 
     expect(succeeded[0]!.reason).toContain('NOT fully reversed');
     expect(succeeded[0]).not.toHaveProperty('physicalId');
   });
+
+  it('masks that reason with the op masker', async () => {
+    const create = vi.fn().mockResolvedValue({ physicalId: 'phys-new', attributes: {} });
+    const { ctx, events } = makeCtx({ create, delete: vi.fn() });
+    const needle = 'name-idempotent), so the replacement';
+    const needles: RecordedSecretValues = new Map();
+    recordLogOnlyValue(needles, needle);
+    ctx.logOnlyNeedlesFor = () => needles;
+    const op: CompletedOperation = {
+      logicalId: 'R',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      provisionedBy: 'sdk',
+      physicalId: 'phys-new',
+      previousState: res({ physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } }),
+    };
+    const state = { R: res({ physicalId: 'phys-new', properties: { QueueName: 'q', a: 2 } }) };
+    await replayRollback([op], state, 'S', ctx);
+    const reason = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED')!.reason!;
+    expect(reason).toContain('NOT fully reversed');
+    expect(reason).not.toContain(needle);
+  });
 });

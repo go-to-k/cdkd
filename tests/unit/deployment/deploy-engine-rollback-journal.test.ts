@@ -363,6 +363,53 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
     const warns = (getLogger().warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     expect(warns.some((m) => m.includes('could not revert 1 operation(s)'))).toBe(true);
+    // The failed op is a DELETE: nothing for `--revert-failed` to act on.
+    expect(warns.some((m) => m.includes('--revert-failed'))).toBe(false);
+  });
+
+  it('auto-rollback that SKIPS an op names --revert-failed when a CREATE / UPDATE failed', async () => {
+    // A's UPDATE completes over a record with no `properties` bag, so its
+    // revert is skipped (issue #3203); B's CREATE fails, and its record is in
+    // the kept segment, which the next deploy's generic note no longer names.
+    const aChange = {
+      logicalId: 'A',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::S3::Bucket',
+      desiredProperties: { p: 'new' },
+      currentProperties: {},
+      propertyChanges: [{ path: 'p', requiresReplacement: false }],
+    } as unknown as ResourceChange;
+    const prevA = {
+      physicalId: 'phys-A',
+      resourceType: 'AWS::S3::Bucket',
+      attributes: {},
+      dependencies: [],
+    } as unknown as ResourceState;
+    const engine = buildEngine({
+      changes: new Map([
+        ['A', aChange],
+        ['B', makeChange('B')],
+      ]),
+      deps: { A: [], B: ['A'] },
+      failOn: new Set(['B']),
+      noRollback: false,
+      currentEtag: 'e0',
+      currentResources: { A: prevA },
+    });
+    const provider = (
+      engine as unknown as {
+        providerRegistry: { getProviderFor: () => { provider: { update: ReturnType<typeof vi.fn> } } };
+      }
+    ).providerRegistry.getProviderFor().provider;
+    provider.update.mockResolvedValue({ physicalId: 'phys-A', wasReplaced: false });
+
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+    expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+    const warns = (getLogger().warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    const line = warns.find((m) => m.includes('could not revert 1 operation(s)'));
+    expect(line).toBeDefined();
+    expect(line).toContain(`cdkd rollback ${stackName} --revert-failed`);
   });
 
   it('a pop failure during journal settling leaves the full segment in place (best-effort)', async () => {
@@ -607,6 +654,36 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
       expect(seg.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
       expect(seg.failedOperations[0].physicalId).toBeUndefined();
+    });
+
+    it('control: a refused CREATE that carries a physical id is still journaled', async () => {
+      // A CREATE over a record state already holds (a re-create under the
+      // same id) names a resource; dropping its record could lose it.
+      const prevB: ResourceState = {
+        physicalId: 'phys-B-old',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { p: 'old' },
+        attributes: {},
+        dependencies: [],
+      };
+      const engine = buildEngine({
+        changes: new Map([['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange]]),
+        deps: { B: [] },
+        noRollback: true,
+        currentEtag: 'e0',
+        currentResources: { B: prevB },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockRejectedValue(markRefusedBeforeApplying(new Error('B is not ours')));
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      expect(seg.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
+      expect(seg.failedOperations[0].physicalId).toBe('phys-B-old');
+      expect(seg.failedOperations[0]).not.toHaveProperty('attemptedProperties');
     });
 
     it('control: an UNMARKED failed CREATE is still journaled', async () => {
