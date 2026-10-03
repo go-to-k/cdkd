@@ -45,6 +45,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
+import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -1663,6 +1664,149 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
       'Fn::Sub'
     ];
     expect(sub[1].V).toEqual({ 'Fn::GetAtt': ['Base', 'Value'] });
+  });
+});
+
+// go-to-k/cdkd#4471. `resolveBestEffort` resolves one TOP-LEVEL key at a
+// time, so a condition-false `Fn::If` selecting `AWS::NoValue` reaches it as
+// the bare `AWS_NO_VALUE` symbol — the resolver drops such a key only while
+// resolving the ENCLOSING object. The REAL resolver is used so the symbol is
+// the one production returns, not a stand-in.
+describe('DiffCalculator - a top-level Fn::If selecting AWS::NoValue (issue #4471)', () => {
+  const noValueTemplate = (tier: unknown): CloudFormationTemplate => ({
+    Conditions: { Off: { 'Fn::Equals': ['a', 'b'] }, On: { 'Fn::Equals': ['a', 'a'] } },
+    Resources: {
+      Param: {
+        Type: 'AWS::SSM::Parameter',
+        Properties: { Type: 'String', Value: 'v', Tier: tier },
+      },
+    },
+  });
+  const stateWith = (properties: Record<string, unknown>): StackState => {
+    const state = baseState();
+    state.resources['Param'] = {
+      physicalId: 'param',
+      resourceType: 'AWS::SSM::Parameter',
+      properties,
+      attributes: {},
+    };
+    return state;
+  };
+  const realResolver = (state: StackState, template: CloudFormationTemplate) => {
+    const resolver = new IntrinsicFunctionResolver();
+    return (value: unknown) =>
+      resolver.resolve(value, {
+        template,
+        resources: state.resources,
+        conditions: { Off: false, On: true },
+      });
+  };
+
+  it('diffs NO_CHANGE when the key is absent from state (the omitted property stays omitted)', async () => {
+    const state = stateWith({ Type: 'String', Value: 'v' });
+    const template = noValueTemplate({ 'Fn::If': ['Off', 'Advanced', { Ref: 'AWS::NoValue' }] });
+
+    const changes = await new DiffCalculator().calculateDiff(state, template, realResolver(state, template));
+
+    expect(changes.get('Param')?.changeType).toBe('NO_CHANGE');
+    expect(changes.get('Param')?.propertyChanges ?? []).toEqual([]);
+  });
+
+  it('a bare top-level {Ref: AWS::NoValue} is omitted the same way', async () => {
+    const state = stateWith({ Type: 'String', Value: 'v' });
+    const template = noValueTemplate({ Ref: 'AWS::NoValue' });
+
+    const changes = await new DiffCalculator().calculateDiff(state, template, realResolver(state, template));
+
+    expect(changes.get('Param')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('still reports the REMOVAL when state holds the key the NoValue branch now omits', async () => {
+    // The flip (premium -> basic): the property was set last deploy and the
+    // condition now omits it. Omitting the key must read as a removal, not
+    // hide the change.
+    const state = stateWith({ Type: 'String', Value: 'v', Tier: 'Advanced' });
+    const template = noValueTemplate({ 'Fn::If': ['Off', 'Advanced', { Ref: 'AWS::NoValue' }] });
+
+    const changes = await new DiffCalculator().calculateDiff(state, template, realResolver(state, template));
+
+    const change = changes.get('Param');
+    expect(change?.changeType).toBe('UPDATE');
+    const tier = change?.propertyChanges?.find((p) => p.path === 'Tier');
+    expect(tier).toBeDefined();
+    expect(tier?.oldValue).toBe('Advanced');
+    expect(tier?.newValue).toBeUndefined();
+  });
+
+  it('a condition-TRUE branch still diffs as an ordinary value (negative control)', async () => {
+    const state = stateWith({ Type: 'String', Value: 'v' });
+    const template = noValueTemplate({ 'Fn::If': ['On', 'Advanced', { Ref: 'AWS::NoValue' }] });
+
+    const changes = await new DiffCalculator().calculateDiff(state, template, realResolver(state, template));
+
+    const change = changes.get('Param');
+    expect(change?.changeType).toBe('UPDATE');
+    expect(change?.propertyChanges?.find((p) => p.path === 'Tier')?.newValue).toBe('Advanced');
+  });
+
+  // The omitted key also feeds the REPLACEMENT predicates, which read
+  // presence: `durableConfigPresenceToggled` compares `(old == null) !==
+  // (new == null)`, and the bare symbol is not `== null`. Both directions
+  // flipped with the fix.
+  describe('AWS::Lambda::Function DurableConfig presence toggle', () => {
+    const durableTemplate: CloudFormationTemplate = {
+      Conditions: { Off: { 'Fn::Equals': ['a', 'b'] } },
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            FunctionName: 'fn',
+            DurableConfig: {
+              'Fn::If': ['Off', { ExecutionTimeout: 3600 }, { Ref: 'AWS::NoValue' }],
+            },
+          },
+        },
+      },
+    };
+    const lambdaState = (properties: Record<string, unknown>): StackState => {
+      const state = baseState();
+      state.resources['Fn'] = {
+        physicalId: 'fn',
+        resourceType: 'AWS::Lambda::Function',
+        properties,
+        attributes: {},
+      };
+      return state;
+    };
+
+    it('REPLACES when state has DurableConfig and the NoValue branch now omits it (was an in-place UPDATE that kept the live config)', async () => {
+      const state = lambdaState({ FunctionName: 'fn', DurableConfig: { ExecutionTimeout: 3600 } });
+
+      const changes = await new DiffCalculator().calculateDiff(
+        state,
+        durableTemplate,
+        realResolver(state, durableTemplate)
+      );
+
+      const change = changes.get('Fn');
+      expect(change?.changeType).toBe('UPDATE');
+      const durable = change?.propertyChanges?.find((p) => p.path === 'DurableConfig');
+      expect(durable?.newValue).toBeUndefined();
+      expect(durable?.requiresReplacement).toBe(true);
+    });
+
+    it('is NO_CHANGE when state has no DurableConfig and the NoValue branch omits it (was a spurious replacement)', async () => {
+      const state = lambdaState({ FunctionName: 'fn' });
+
+      const changes = await new DiffCalculator().calculateDiff(
+        state,
+        durableTemplate,
+        realResolver(state, durableTemplate)
+      );
+
+      expect(changes.get('Fn')?.changeType).toBe('NO_CHANGE');
+      expect(changes.get('Fn')?.propertyChanges ?? []).toEqual([]);
+    });
   });
 });
 
