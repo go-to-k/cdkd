@@ -59,7 +59,7 @@ that list**: beside the fix and its unit test, the integ fixture §8-c will
 extend (`grep -rl '<type's last segment>' tests/integration/*/lib`) and, when a
 provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
 every comment, doc or rule the fix makes FALSE — stating the old invariant or
-calling the issue open (`grep -rnw '<issue #>\|<key symbol>' src docs
+calling the issue open (`grep -rnw '<issue digits>\|<key symbol>' src docs
 .claude/rules`, minus `docs/_generated`, each through §2's open-PR `files`
 query) — a narrower list stops the lane mid-run to ask (go-to-k/cdkd#1160).
 
