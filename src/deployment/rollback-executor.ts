@@ -84,7 +84,7 @@ import {
   prepareCreateRollbackFinalSnapshot,
   requireRestorableBaseline,
   replayPrefixScope,
-  ABSENT_BASELINE_SKIP_REASON,
+  ABSENT_BASELINE_SKIP_CAUSE,
 } from './rollback-executor/names.js';
 import {
   safe,
@@ -823,7 +823,7 @@ async function replayFailedOperationsUnbound(
                 're-running `cdkd rollback --revert-failed` retries this op (a plain `cdkd rollback` replays only the COMPLETED ops and then pops the whole segment, discarding this record)',
             })
           ) {
-            recordRollbackSkip(skipScope, op, ABSENT_BASELINE_SKIP_REASON);
+            recordRollbackSkip(skipScope, op, ABSENT_BASELINE_SKIP_CAUSE);
             break;
           }
           logger.info(

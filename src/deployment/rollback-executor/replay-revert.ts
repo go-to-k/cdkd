@@ -12,7 +12,7 @@ import { deepEqual } from './plan.js';
 import {
   requireRestorableBaseline,
   replayPrefixScope,
-  ABSENT_BASELINE_SKIP_REASON,
+  ABSENT_BASELINE_SKIP_CAUSE,
 } from './names.js';
 import {
   safe,
@@ -255,7 +255,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
       retry: `re-running ${rerunRollbackPhrase(ctx, '`cdkd rollback`')} retries this op`,
     })
   ) {
-    recordRollbackSkip(s, op, ABSENT_BASELINE_SKIP_REASON);
+    recordRollbackSkip(s, op, ABSENT_BASELINE_SKIP_CAUSE);
     return;
   }
   logger.info(

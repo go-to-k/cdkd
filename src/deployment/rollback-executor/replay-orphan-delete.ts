@@ -171,17 +171,8 @@ export async function replayOrphanRetain(s: ReplayOpScope): Promise<void> {
 
 /** `replaySingle`'s 'delete' / 'delete-with-final-snapshot' arm (#4426). */
 export async function replayDelete(s: ReplayOpScope): Promise<void> {
-  const {
-    op,
-    stateResources,
-    stackName,
-    ctx,
-    inlinePolicyWriters,
-    afterOp,
-    action,
-    logger,
-    mask,
-  } = s;
+  const { op, stateResources, stackName, ctx, inlinePolicyWriters, afterOp, action, logger, mask } =
+    s;
   if (!op.physicalId) {
     logger.warn(`  Rollback: Cannot delete ${safe(op.logicalId)} — no physical ID recorded`);
     recordRollbackSkip(
