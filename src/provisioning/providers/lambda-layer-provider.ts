@@ -33,7 +33,6 @@ import {
   type MaskedLogSinks,
 } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
-import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import {
   AmbiguousCreateLatch,
@@ -137,9 +136,7 @@ function layerNameSegment(value: string): string | undefined {
  */
 export class LambdaLayerVersionProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
-  private createClient: LambdaClient | undefined;
-  /** The shared client's region, for the create client built beside it. */
-  private readonly providerRegion: string | undefined;
+  private createClient: Promise<LambdaClient> | undefined;
   private logger = getLogger().child('LambdaLayerVersionProvider');
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -158,24 +155,27 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.lambdaClient = awsClients.lambda;
-    this.providerRegion = awsClients.configuredRegion ?? ambientRegion();
   }
 
   /**
    * The client `PublishLayerVersion` goes through: SDK retries on, except a
    * 5xx (`withoutServerErrorRetries`, issue #2080). Separate so every other
    * call -- and every other provider sharing `getAwsClients().lambda` -- keeps
-   * the full SDK retry.
+   * the full SDK retry. Built in the shared client's REGION (read from it, as
+   * `config.region()` resolves it), so the create cannot land in another
+   * region than the calls around it. The PROMISE is cached, so two creates on
+   * a cold provider build one client; a rejected region read is not cached,
+   * so the next create retries it.
    */
-  private getCreateClient(): LambdaClient {
-    if (!this.createClient) {
-      this.createClient = withoutServerErrorRetries(
-        new LambdaClient({
-          ...ambientClientDefaults(),
-          ...(this.providerRegion ? { region: this.providerRegion } : {}),
-        })
-      );
-    }
+  private getCreateClient(): Promise<LambdaClient> {
+    this.createClient ??= this.lambdaClient.config.region().then(
+      (region) =>
+        withoutServerErrorRetries(new LambdaClient({ ...ambientClientDefaults(), region })),
+      (error: unknown) => {
+        this.createClient = undefined;
+        throw error;
+      }
+    );
     return this.createClient;
   }
 
@@ -283,10 +283,11 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
       if (orphanWindow !== undefined) {
         await this.reportPossibleLayerOrphans(logicalId, orphanWindow, log, layerName);
       }
+      const createClient = await this.getCreateClient();
       const attemptStartMs = Date.now();
       let response: PublishLayerVersionCommandOutput;
       try {
-        response = await this.getCreateClient().send(
+        response = await createClient.send(
           new PublishLayerVersionCommand({
             LayerName: layerName,
             Content: contentInput,

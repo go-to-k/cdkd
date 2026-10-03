@@ -38,7 +38,6 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
-import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import {
   AmbiguousCreateLatch,
@@ -389,9 +388,7 @@ const KINDS_WITH_STREAM_NUMERICS: ReadonlySet<EventSourceKind> = new Set(['kines
  */
 export class LambdaEventSourceMappingProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
-  private createClient: LambdaClient | undefined;
-  /** The shared client's region, for the create client built beside it. */
-  private readonly providerRegion: string | undefined;
+  private createClient: Promise<LambdaClient> | undefined;
   private logger = getLogger().child('LambdaEventSourceMappingProvider');
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -439,24 +436,27 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.lambdaClient = awsClients.lambda;
-    this.providerRegion = awsClients.configuredRegion ?? ambientRegion();
   }
 
   /**
    * The client `CreateEventSourceMapping` goes through: SDK retries on, except
    * a 5xx (`withoutServerErrorRetries`, issue #2080). Separate so every other
    * call -- and every other provider sharing `getAwsClients().lambda` -- keeps
-   * the full SDK retry.
+   * the full SDK retry. Built in the shared client's REGION (read from it, as
+   * `config.region()` resolves it), so the create cannot land in another
+   * region than the calls around it. The PROMISE is cached, so two creates on
+   * a cold provider build one client; a rejected region read is not cached,
+   * so the next create retries it.
    */
-  private getCreateClient(): LambdaClient {
-    if (!this.createClient) {
-      this.createClient = withoutServerErrorRetries(
-        new LambdaClient({
-          ...ambientClientDefaults(),
-          ...(this.providerRegion ? { region: this.providerRegion } : {}),
-        })
-      );
-    }
+  private getCreateClient(): Promise<LambdaClient> {
+    this.createClient ??= this.lambdaClient.config.region().then(
+      (region) =>
+        withoutServerErrorRetries(new LambdaClient({ ...ambientClientDefaults(), region })),
+      (error: unknown) => {
+        this.createClient = undefined;
+        throw error;
+      }
+    );
     return this.createClient;
   }
 
@@ -651,12 +651,19 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       // Detection only -- see `orphan-report.ts`.
       const orphanWindow = createEventSourceMappingLatch.take(logicalId);
       if (orphanWindow !== undefined) {
-        await this.reportPossibleMappingOrphans(logicalId, orphanWindow, log, params);
+        await this.reportPossibleMappingOrphans(
+          logicalId,
+          orphanWindow,
+          log,
+          functionName,
+          params.EventSourceArn
+        );
       }
+      const createClient = await this.getCreateClient();
       const attemptStartMs = Date.now();
       let response: import('@aws-sdk/client-lambda').CreateEventSourceMappingCommandOutput;
       try {
-        response = await this.getCreateClient().send(new CreateEventSourceMappingCommand(params));
+        response = await createClient.send(new CreateEventSourceMappingCommand(params));
       } catch (error) {
         createEventSourceMappingLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
         throw error;
@@ -718,12 +725,11 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     logicalId: string,
     window: AmbiguousCreateWindow,
     log: MaskedLogSinks,
-    params: import('@aws-sdk/client-lambda').CreateEventSourceMappingCommandInput
+    functionName: string,
+    sourceArn: string | undefined
   ): Promise<void> {
     const aws = pasteableAwsCommand(log.mask);
     const regionArg = await orphanCommandRegionArg(this.lambdaClient, aws);
-    const functionName = params.FunctionName!;
-    const sourceArn = params.EventSourceArn;
     await reportPossibleOrphans(logicalId, window, log, {
       action: 'CreateEventSourceMapping',
       service: 'Lambda',

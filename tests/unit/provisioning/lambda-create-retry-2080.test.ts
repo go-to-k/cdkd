@@ -33,11 +33,11 @@ const { mockSend, warnSpy, debugSpy, sentVia, baseStrategy, ctorArgs, regionFail
         'retry-token',
       recordSuccess: (_token: unknown) => undefined,
     },
-    /** What the mocked `getAwsClients()` reports as its configured region. */
-    clients: { configuredRegion: undefined as string | undefined },
+    /** The region the shared `getAwsClients().lambda` client resolves. */
+    clients: { sharedRegion: 'eu-west-3' },
   }));
 
-/** A client double whose sends are attributed to its own config. */
+/** A client double whose sends are attributed to its own config; `region` may be read lazily. */
 const fakeClient = (region: unknown) => {
   const config = {
     region: () => {
@@ -45,7 +45,7 @@ const fakeClient = (region: unknown) => {
         regionFails.remaining--;
         return Promise.reject(new Error('Region is missing'));
       }
-      return Promise.resolve(region ?? 'us-east-1');
+      return Promise.resolve((typeof region === 'function' ? region() : region) ?? 'us-east-1');
     },
     retryStrategy: async (): Promise<unknown> => baseStrategy,
   };
@@ -69,20 +69,12 @@ vi.mock('@aws-sdk/client-lambda', async (importOriginal) => {
   };
 });
 
-vi.mock('../../../src/utils/aws-clients.js', () => {
-  let shared: ReturnType<typeof fakeClient> | undefined;
-  return {
-    getAwsClients: () => ({
-      get lambda() {
-        shared ??= fakeClient('eu-west-3');
-        return shared;
-      },
-      get configuredRegion() {
-        return clients.configuredRegion;
-      },
-    }),
-  };
-});
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    // Read lazily, so a test can move the shared client to another region.
+    lambda: fakeClient(() => clients.sharedRegion),
+  }),
+}));
 
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
@@ -324,7 +316,7 @@ describe('Lambda tokenless create retry safety (issue #2080, detection only)', (
     sentVia.length = 0;
     ctorArgs.length = 0;
     regionFails.remaining = 0;
-    clients.configuredRegion = undefined;
+    clients.sharedRegion = 'eu-west-3';
     // Not the SDK's fallback, so a client built without the stack region is told apart.
     savedRegion = process.env['AWS_REGION'];
     process.env['AWS_REGION'] = 'eu-west-3';
@@ -602,10 +594,19 @@ describe('Lambda tokenless create retry safety (issue #2080, detection only)', (
 
     it('a region that cannot be read drops the --region flag rather than the command', async () => {
       aws.loseNextCreateResponse = transient500();
-      regionFails.remaining = 1;
+      // Fail the region read AFTER the first publish: the create client is
+      // built by then, so the read that fails is the report's.
+      mockSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'PublishLayerVersionCommand' && regionFails.remaining === 0) {
+          regionFails.remaining = 1;
+          mockSend.mockImplementation(aws.send);
+        }
+        return aws.send(command as never);
+      });
 
       await createWithRetry(LAYER, LAYER_PROPS);
 
+      expect(regionFails.remaining).toBe(0);
       expect(reportFor('PublishLayerVersion')!).toContain(
         'aws lambda get-layer-version --layer-name shared-libs --version-number 1.'
       );
@@ -841,13 +842,13 @@ describe('Lambda tokenless create retry safety (issue #2080, detection only)', (
   it.each([
     ['CreateEventSourceMappingCommand', ESM, KAFKA_PROPS],
     ['PublishLayerVersionCommand', LAYER, LAYER_PROPS],
-  ] as const)('builds the %s client in the ambient region, once', async (create, type, props) => {
+  ] as const)("builds the %s client once, in the shared client's region", async (create, type, props) => {
     const provider = type === ESM ? esm : layer;
-    await provider.create('A', type, props);
-    await provider.create('B', type, props);
+    await Promise.all([provider.create('A', type, props), provider.create('B', type, props)]);
 
     const createConfig = sentVia.find(([name]) => name === create)![1];
     expect(await createConfig.region()).toBe('eu-west-3');
+    // Two concurrent creates on a cold provider build ONE create client.
     expect(ctorArgs.map((o) => o.region)).toEqual(['eu-west-3']);
   });
 
@@ -855,16 +856,35 @@ describe('Lambda tokenless create retry safety (issue #2080, detection only)', (
     ['CreateEventSourceMappingCommand', ESM, KAFKA_PROPS],
     ['PublishLayerVersionCommand', LAYER, LAYER_PROPS],
   ] as const)(
-    'builds the %s client in the shared clients’ configured region over the environment',
+    "builds the %s client in the shared client's region, not the ambient one",
     async (create, type, props) => {
-      clients.configuredRegion = 'ap-south-2';
-      const provider =
-        type === ESM ? new LambdaEventSourceMappingProvider() : new LambdaLayerVersionProvider();
+      // The shared client resolves a region the environment does not name
+      // (AWS_REGION is eu-west-3): the create must follow the shared client.
+      clients.sharedRegion = 'ap-south-2';
 
-      await provider.create('A', type, props);
+      await (type === ESM ? esm : layer).create('A', type, props);
 
       const createConfig = sentVia.find(([name]) => name === create)![1];
       expect(await createConfig.region()).toBe('ap-south-2');
+      expect(ctorArgs.map((o) => o.region)).toEqual(['ap-south-2']);
+    }
+  );
+
+  it.each([
+    ['CreateEventSourceMappingCommand', ESM, KAFKA_PROPS],
+    ['PublishLayerVersionCommand', LAYER, LAYER_PROPS],
+  ] as const)(
+    'a rejected region read is not cached: the next %s create builds the client',
+    async (create, type, props) => {
+      const provider = type === ESM ? esm : layer;
+      regionFails.remaining = 1;
+
+      await expect(provider.create('A', type, props)).rejects.toThrow('Region is missing');
+      expect(sentVia.some(([name]) => name === create)).toBe(false);
+
+      await provider.create('B', type, props);
+      expect(sentVia.filter(([name]) => name === create)).toHaveLength(1);
+      expect(ctorArgs).toHaveLength(1);
     }
   );
 });
