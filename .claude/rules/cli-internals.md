@@ -57,9 +57,9 @@ RECORD SET versus a formatted human VIEW: `state resources` / `state show` /
 `state info` keep their `--json` gate, while `state list --long` / `--tree` are
 views swept along by a reservation taken before the mode is known. `cdkd deploy`
 and the long-running `local start-*` servers deliberately keep human stdout. On
-the two `local invoke*` commands the reservation covers cdkd's logger only —
-`streamLogs`' container pipe and cdk-local's separate logger still reach stdout,
-so their payload is the LAST stdout line, not the whole stream. Contract in
+the two `local invoke*` commands the reservation covers cdkd's logger and the
+container's log pipe; cdk-local's separate logger still reaches stdout, so their
+payload is the LAST stdout line, not the whole stream. Contract in
 `docs/cli-reference.md`, "Output streams: when stdout is a payload".
 
 ## Concurrency and per-resource deadlines
