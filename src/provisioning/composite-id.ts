@@ -29,12 +29,9 @@ import { maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
  * pair (or warn-and-skips, reporting success while the real resource stays
  * alive and billing), and `cdkd drift` reads back `undefined` forever.
  *
- * Where AWS itself accepts such a segment (the `AWS::Route53::RecordSet`
- * record name, #3890) and CloudFormation manages the resource fine, the
- * limitation is cdkd's own, so the honest answer is to REFUSE at deploy time
- * with a message that says so, rather than to record an id that silently names
- * something else — unless every reader of the type can place the segments,
- * as below.
+ * So the answer is to REFUSE at deploy time rather than to record an id that
+ * silently names something else — unless every reader of the type can place
+ * the segments, as below.
  *
  * ## A type whose readers anchor does not pack through here
  *
@@ -52,10 +49,14 @@ import { maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
  * anchor rather than guess) and the `Ref` resolver. So `createTable` builds
  * the id directly and refuses neither segment; nothing here guards it.
  *
+ * `AWS::Route53::RecordSet` is the other (issue #3890): Route 53 accepts `|`
+ * in a record name, and every reader of `<hostedZoneId>|<name>|<type>` takes
+ * the name between the first and the last `|` only when it matches the
+ * recorded `Name` and the last segment the recorded `Type`.
+ *
  * The per-type audit (2026-09-28, issue #1672) found no other type whose
- * AWS-accepted segment values can contain `|`, apart from
- * `AWS::Route53::RecordSet`'s record name — tracked in issue #3890. For every
- * other type the refusal below never blocks a valid template.
+ * AWS-accepted segment values can contain `|`, so the refusal below never
+ * blocks a valid template.
  *
  * ## Two entry points, mirroring `config-shape.ts`
  *
@@ -102,29 +103,11 @@ import { maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
  * where `cdkd destroy` then reported success over a live record. When adopting
  * this guard for a new type, audit its DECODE sites in the same change and make
  * each one cross-check the parsed segments against something it can verify them
- * with (Route 53 uses the template's own `Name` / `Type`).
+ * with (Route 53 uses the recorded `Name` / `Type`).
  */
 
 /** The character every composite physicalId in this codebase joins segments with. */
 export const COMPOSITE_ID_SEPARATOR = '|';
-
-/**
- * The sentence naming the open parity issue, for each type whose refused
- * value the AWS API admits — where the refusal is a cdkd limitation rather
- * than a value no deploy could use. The per-type audit behind this list is
- * issue #1672 (comment 5857791844, amended for the Glue database name, which
- * #3892 then lifted: `AWS::Glue::Table` no longer refuses at all). It
- * covers cdkd's SDK packers only; a type absent from it gets a NEUTRAL
- * sentence (`parityClause`), since `cc-import-identifier.ts` also calls the
- * refusal for arbitrary Cloud Control types nobody audited.
- */
-const PARITY_GAP: ReadonlyMap<string, string> = new Map([
-  [
-    'AWS::Route53::RecordSet',
-    `Route 53's domain-name format admits '|' in a record name (per its docs), and cdkd ` +
-      `does not support it yet: tracked in https://github.com/go-to-k/cdkd/issues/3890.`,
-  ],
-]);
 
 /**
  * One segment of a composite physicalId.
@@ -195,6 +178,33 @@ export interface CompositeIdOptions {
   // `| undefined` explicitly: the repo runs `exactOptionalPropertyTypes`, and
   // every caller passes `context?.maskSecrets`, which is optional at its source.
   readonly maskSecrets?: MaskerFn | undefined;
+}
+
+/**
+ * Canonicalize a name for the QUERY side of a Route 53 list call.
+ *
+ * `Route53Provider`'s `normalizeRecordName` is the COMPARE-side canonicalizer, and the two
+ * are deliberately NOT the same function. Route 53 orders both hosted zones
+ * and record sets by reversed labels of the name it STORES — lower-cased and
+ * escape-ENCODED — and a `DNSName` / `StartRecordName` start key in any other
+ * spelling positions the window somewhere else entirely. So the query side
+ * must move TOWARD AWS's spelling (lower-case, encode `*`), where the compare
+ * side moves AWS's answer toward the template's (decode escapes).
+ *
+ * Decoding here would be actively wrong: `*.example.com` sorts at `*` (0x2A)
+ * while AWS stores `\052.example.com` and sorts it at `\` (0x5C), so every
+ * name whose first label begins with `-` / `+` / a digit / an upper-case
+ * letter falls BETWEEN them — with a bounded page, the wildcard record we
+ * asked for is skipped straight past.
+ *
+ * Shared with the `Ref` resolver (`recordSetRefFromPhysicalId`), whose anchor
+ * must compare a record name exactly as the provider's decode sites do.
+ */
+export function canonicalizeRoute53QueryName(name: string): string {
+  // `|` is stored as `\174` (issue #3890), and sorts at 0x7C unencoded — past
+  // every `\`-escaped sibling, the record asked for included.
+  const lowered = name.toLowerCase().replaceAll('*', '\\052').replaceAll('|', '\\174');
+  return lowered.endsWith('.') ? lowered : `${lowered}.`;
 }
 
 /**
@@ -320,20 +330,9 @@ export function compositeIdSeparatorRefusal(
     `as the separator in this type's physical id (${idShape(segments)}). Recording it would ` +
     `produce an id that decodes back to a DIFFERENT resource, so a later cdkd destroy / drift / ` +
     `update would target the wrong one — or silently skip it while the real resource stays ` +
-    `alive. ${parityClause(resourceType)} Change the named value so it does not contain ` +
+    `alive. cdkd cannot record a value containing '${COMPOSITE_ID_SEPARATOR}' in this position. ` +
+    `Change the named value so it does not contain ` +
     `'${COMPOSITE_ID_SEPARATOR}', or manage the resource outside cdkd.`
-  );
-}
-
-/**
- * The parity sentence for this type, or a neutral one where nobody audited it.
- * `resourceType` is matched EXACTLY against cdkd literals, so template text
- * cannot select a sentence or inject one.
- */
-function parityClause(resourceType: string): string {
-  return (
-    PARITY_GAP.get(resourceType) ??
-    `cdkd cannot record a value containing '${COMPOSITE_ID_SEPARATOR}' in this position.`
   );
 }
 

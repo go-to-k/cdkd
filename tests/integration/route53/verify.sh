@@ -32,6 +32,11 @@
 # CNAME back to an A in a deploy that fails, and asserts the rollback
 # restores the CNAME.
 #
+# Issue #3890: a record whose NAME contains `|` (Route 53 accepts it; cdkd's
+# physical id joins with `|`) deploys, records `<zoneId>|<name>|A`, resolves
+# `Ref` to the whole name, reads back clean through `cdkd drift`, updates in
+# place in Phase 2.7a, and is deleted before the zone in Phase 3.
+#
 # Also asserts the destroy path cleans up (the hosted zone delete requires
 # every non-default record gone first; the cdkd destroy DAG handles order).
 #
@@ -103,6 +108,8 @@ cleanup() {
   # unlinked on every path the arm itself takes, but a signal anywhere between
   # their `mktemp`s and the last unlink strands them.
   rm -f "${IMPORT_MAP:-}" "${IMPORT_STDERR:-}" "${IMPORT_STDOUT:-}" 2>/dev/null || true
+  rm -f "${PIPE_DRIFT_JSON:-}" 2>/dev/null || true
+  rm -f "${DESTROY_LOG:-}" 2>/dev/null || true
   # `set +eu` so an early-exit (e.g. STATE_BUCKET unset) does not abort
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.
@@ -360,6 +367,65 @@ if [ "${CIDR_REF}" != "${EXPECTED_CIDR_NAME}" ] &&
   exit 1
 fi
 echo "    OK: Ref to the RecordSet resolved to the record name (${CIDR_REF})"
+
+# --- Assertion: a record whose NAME contains `|` deploys (issue #3890) ----
+# Route 53 accepts `|` in a record name and stores it as `\174`; cdkd joins
+# its physical id with `|`, and pre-fix REFUSED this record at deploy time, so
+# Phase 1 itself failed. Checked here: the recorded id keeps the whole name
+# between the zone and the type, `Ref` is the whole name, the record is live
+# under Route 53's escaped spelling, and drift reads it back (its list start
+# key must use that spelling) and finds it clean.
+PIPE_NAME="sep|pipe.cdkd-test-${ACCOUNT_ID}.internal"
+PIPE_AWS_NAME='sep\174pipe.cdkd-test-'"${ACCOUNT_ID}"'.internal.'
+PIPE_ID_RE='^[^|]+\|sep\|pipe\.cdkd-test-'"${ACCOUNT_ID}"'\.internal\|A$'
+assert_pipe_record() { # usage: assert_pipe_record <state json> <expected TTL> <phase label>
+  local pipe_id pipe_ref pipe_records pipe_count pipe_ttl
+  pipe_id=$(printf '%s' "$1" | jq -r '.resources.PipeRecord.physicalId // empty')
+  if ! printf '%s' "${pipe_id}" | grep -qE "${PIPE_ID_RE}"; then
+    echo "FAIL ($3): PipeRecord's recorded id is not <zoneId>|${PIPE_NAME}|A (issue #3890)" >&2
+    echo "  got: ${pipe_id:-<absent>}" >&2
+    exit 1
+  fi
+  pipe_ref=$(printf '%s' "$1" | jq -r '.outputs.PipeRecordRef // empty')
+  if [ "${pipe_ref}" != "${PIPE_NAME}" ]; then
+    echo "FAIL ($3): Ref to PipeRecord is not the whole record name (issue #3890)" >&2
+    echo "  got:      ${pipe_ref:-<absent>}" >&2
+    echo "  expected: ${PIPE_NAME}" >&2
+    exit 1
+  fi
+  pipe_records=$(aws route53 list-resource-record-sets --hosted-zone-id "${ZONE_ID}" \
+    --region "${REGION}" --output json) || return 1
+  pipe_count=$(printf '%s' "${pipe_records}" | jq --arg n "${PIPE_AWS_NAME}" \
+    '[.ResourceRecordSets[] | select(.Name == $n and .Type == "A")] | length')
+  pipe_ttl=$(printf '%s' "${pipe_records}" | jq -r --arg n "${PIPE_AWS_NAME}" \
+    '[.ResourceRecordSets[] | select(.Name == $n and .Type == "A") | .TTL] | first // empty')
+  if [ "${pipe_count}" != "1" ] || [ "${pipe_ttl}" != "$2" ]; then
+    echo "FAIL ($3): expected ONE live A record ${PIPE_AWS_NAME} with TTL $2 (found ${pipe_count}, TTL '${pipe_ttl}')" >&2
+    printf '%s' "${pipe_records}" | jq -c '.ResourceRecordSets[] | {Name, Type, TTL}' >&2
+    exit 1
+  fi
+  echo "    OK ($3): PipeRecord recorded as ${pipe_id}, Ref '${pipe_ref}', live with TTL ${pipe_ttl}"
+}
+assert_pipe_record "${STATE}" 300 "Phase 1"
+
+PIPE_DRIFT_JSON=$(mktemp)
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json >"${PIPE_DRIFT_JSON}" 2>/dev/null
+PIPE_DRIFT_RC=$?
+set -e
+PIPE_DRIFT_BUCKET=$(jq -r '[.. | objects | to_entries[]
+  | select((.value | type) == "array") | .key as $bucket
+  | .value[]? | objects | select(.logicalId == "PipeRecord") | $bucket] | join(",")' \
+  "${PIPE_DRIFT_JSON}" 2>/dev/null || true)
+if [ "${PIPE_DRIFT_BUCKET}" != "clean" ]; then
+  echo "FAIL: cdkd drift did not report PipeRecord clean (bucket '${PIPE_DRIFT_BUCKET}', rc=${PIPE_DRIFT_RC}) -- a read that misses the record lands it in another bucket (issue #3890):" >&2
+  cat "${PIPE_DRIFT_JSON}" >&2
+  rm -f "${PIPE_DRIFT_JSON}"
+  exit 1
+fi
+rm -f "${PIPE_DRIFT_JSON}"
+echo "    OK: cdkd drift read PipeRecord back and reported it clean"
 
 # --- Assertion: GeoProximityLocation reached AWS ----------------------
 # list-resource-record-sets returns every record; find the geoproximity
@@ -941,6 +1007,15 @@ expect_records "${NAME_RENAMED_RECORDS}" "swap.${ZONE_NAME}" A "" 1 "the swap A 
 expect_records "${NAME_RENAMED_RECORDS}" "geo.${ZONE_NAME}" A "${SET_IDENTIFIER}" 1 "the geo record changed before its own phase"
 echo "    OK: the Name rename replaced the old record (no leftover)"
 
+# Issue #3890: the same redeploy raises PipeRecord's TTL 300 -> 600, an
+# in-place UPDATE of a record whose name contains `|` -- one record, new TTL.
+PIPE_UPDATE_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${PIPE_UPDATE_STATE}" ]; then
+  echo "FAIL: could not read state after the Phase 2.7a redeploy" >&2
+  exit 1
+fi
+assert_pipe_record "${PIPE_UPDATE_STATE}" 600 "Phase 2.7a update"
+
 echo "==> Phase 2.7b: RENAME redeploy (SetIdentifier + Type A -> CNAME, #3741)"
 CDKD_TEST_RENAME=name,swap node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -1005,10 +1080,42 @@ echo "    OK: state tracks the renamed records (${A_RECORD_ID}, ${SWAP_RECORD_ID
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
+# Issue #3890: PipeRecord's DELETE carries the name with a literal `|`, which
+# Route 53 must match against the record it stores as `\174`. If it did not,
+# the provider's "already deleted" arm would report success over a live record
+# and the zone delete would then fail as not empty. Capture the run so that
+# failure, or any skip/warning about PipeRecord, names the record.
+DESTROY_LOG=$(mktemp)
+set +e
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --force
+  --force 2>&1 | tee "${DESTROY_LOG}"
+DESTROY_RC=${PIPESTATUS[0]}
+set -e
+if [ "${DESTROY_RC}" -ne 0 ]; then
+  if PIPE_LEFT_JSON=$(aws route53 list-resource-record-sets --hosted-zone-id "${ZONE_ID}" \
+    --region "${REGION}" --output json 2>&1); then
+    PIPE_LEFT=$(printf '%s' "${PIPE_LEFT_JSON}" | jq --arg n "${PIPE_AWS_NAME}" \
+      '[.ResourceRecordSets[] | select(.Name == $n)] | length')
+    if [ "${PIPE_LEFT}" != "0" ]; then
+      echo "FAIL: destroy exited ${DESTROY_RC} and PipeRecord ${PIPE_AWS_NAME} is still live -- its DELETE did not match the stored record (issue #3890)" >&2
+      rm -f "${DESTROY_LOG}"
+      exit 1
+    fi
+  fi
+  echo "FAIL: destroy exited ${DESTROY_RC}" >&2
+  rm -f "${DESTROY_LOG}"
+  exit 1
+fi
+if grep -iE 'PipeRecord' "${DESTROY_LOG}" | grep -qiE 'skip|warn|already deleted|not found'; then
+  echo "FAIL: destroy reported PipeRecord as skipped or already gone instead of deleting it (issue #3890):" >&2
+  grep -i 'PipeRecord' "${DESTROY_LOG}" >&2
+  rm -f "${DESTROY_LOG}"
+  exit 1
+fi
+rm -f "${DESTROY_LOG}"
+echo "    OK: destroy deleted PipeRecord with no skip or already-gone report"
 
 # The hosted zone delete only succeeds once every non-default (non-NS/SOA)
 # record is gone — cdkd's destroy DAG handles that order. Route53 record /
@@ -1037,4 +1144,4 @@ fi
 echo "    OK: query-logging log group is gone"
 
 echo ""
-echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + #3741 record renames + clean destroy)"
+echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + #3741 record renames + #3890 '|' in a record name + clean destroy)"

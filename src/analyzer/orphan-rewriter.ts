@@ -376,7 +376,8 @@ class AttributeFetcher {
     // one cannot arrive HERE: `onMaskedValue` fires only from inside
     // `cfnRefValueFromPhysicalId`'s recovery branches, and every one of them
     // is gated on an exact literal (`=== 'AWS::S3Tables::Table'`,
-    // `=== 'AWS::Glue::Table'`, `=== 'AWS::Backup::BackupSelection'`,
+    // `=== 'AWS::Glue::Table'`, `=== 'AWS::Route53::RecordSet'`,
+    // `=== 'AWS::Backup::BackupSelection'`,
     // `=== 'AWS::CodeCommit::Repository'`, or a `REF_RETURNS_ARN_FROM_STATE`
     // Map lookup), so by construction this
     // value is one of a handful of cdkd literals. Kept because it costs

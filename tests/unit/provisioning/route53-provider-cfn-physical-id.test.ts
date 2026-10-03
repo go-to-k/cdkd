@@ -78,6 +78,18 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
         hostedZoneId: 'Z1',
         name: 'record.example.com.',
         type: 'A',
+        nameCarriesSeparator: false,
+      });
+    });
+
+    it('places a name containing the separator between the first and last one, as a candidate', () => {
+      // Issue #3890: the zone id and the type never carry `|`, the name may.
+      // The flag is what makes every caller anchor it before trusting it.
+      expect(parseRecordSetCompositeId('Z1|a|b|c.example.com.|A')).toEqual({
+        hostedZoneId: 'Z1',
+        name: 'a|b|c.example.com.',
+        type: 'A',
+        nameCarriesSeparator: true,
       });
     });
 
@@ -85,10 +97,11 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       expect(parseRecordSetCompositeId('record.example.com')).toBeUndefined();
     });
 
-    it('rejects wrong-arity and blank-segment ids', () => {
+    it('rejects short and blank-segment ids', () => {
       expect(parseRecordSetCompositeId('Z1|record.example.com.')).toBeUndefined();
-      expect(parseRecordSetCompositeId('Z1|record.example.com.|A|extra')).toBeUndefined();
       expect(parseRecordSetCompositeId('Z1||A')).toBeUndefined();
+      expect(parseRecordSetCompositeId('|a|b.example.com.|A')).toBeUndefined();
+      expect(parseRecordSetCompositeId('Z1|a|b.example.com.|')).toBeUndefined();
     });
   });
 

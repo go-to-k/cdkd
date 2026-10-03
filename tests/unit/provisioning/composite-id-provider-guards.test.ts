@@ -906,34 +906,36 @@ describe('AWS::Lambda::EventInvokeConfig composite id guard', () => {
   });
 });
 
-describe('AWS::Route53::RecordSet composite id guard', () => {
+describe('AWS::Route53::RecordSet composite id', () => {
   const RECORD_TYPE = 'AWS::Route53::RecordSet';
+  const PIPE_ID = 'Z1D633PJN98FT9|a|b.example.com.|A';
+  const sentCommand = (index: number) =>
+    mockRoute53Send.mock.calls[index]?.[0] as {
+      constructor: { name: string };
+      input: Record<string, unknown> & {
+        HostedZoneId?: string;
+        StartRecordName?: string;
+        ChangeBatch?: { Changes?: { ResourceRecordSet?: { Name?: string } }[] };
+      };
+    };
 
-  it('refuses a record Name containing the separator, before ChangeResourceRecordSets runs', async () => {
+  // Issue #3890: Route 53 accepts `|` in a record name, so cdkd records it
+  // instead of refusing it. Every reader anchors the name on `Name` / `Type`.
+  it('creates a record whose Name contains the separator and records the id', async () => {
+    mockRoute53Send.mockResolvedValueOnce({});
     const provider = new Route53Provider();
-    await expect(
-      provider.create('MyRecord', RECORD_TYPE, {
-        HostedZoneId: 'Z1D633PJN98FT9',
-        Name: 'a|b.example.com.',
-        Type: 'A',
-        TTL: '300',
-        ResourceRecords: ['1.2.3.4'],
-      })
-    ).rejects.toThrow(/recordName 'a\|b\.example\.com\.'/);
-    expect(mockRoute53Send).not.toHaveBeenCalled();
-  });
-
-  it('names the id shape the record set actually uses', async () => {
-    // The message renders the shape from the segment names, so a wrong name
-    // here would tell the user to inspect a composite this type never packs.
-    const provider = new Route53Provider();
-    await expect(
-      provider.create('MyRecord', RECORD_TYPE, {
-        HostedZoneId: 'Z1D633PJN98FT9',
-        Name: 'a|b.example.com.',
-        Type: 'A',
-      })
-    ).rejects.toThrow(/<hostedZoneId>\|<recordName>\|<recordType>/);
+    const result = await provider.create('MyRecord', RECORD_TYPE, {
+      HostedZoneId: 'Z1D633PJN98FT9',
+      Name: 'a|b.example.com.',
+      Type: 'A',
+      TTL: '300',
+      ResourceRecords: ['1.2.3.4'],
+    });
+    expect(result.physicalId).toBe(PIPE_ID);
+    expect(sentCommand(0).input.ChangeBatch?.Changes?.[0]?.ResourceRecordSet?.Name).toBe(
+      'a|b.example.com.'
+    );
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
   });
 
   it('still records a clean composite id', async () => {
@@ -949,66 +951,32 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
     expect(result.physicalId).toBe('Z1D633PJN98FT9|www.example.com.|A');
   });
 
-  it('downgrades to a warning on a state replay', async () => {
-    // The reverse-replacement rollback arm: a record an older binary recorded
-    // under the ambiguous id must still be restorable, and no template edit
-    // can repair a value that comes from a cdkd state record.
-    mockRoute53Send.mockResolvedValueOnce({});
-    const provider = new Route53Provider();
-    const result = await provider.create(
-      'MyRecord',
-      RECORD_TYPE,
-      {
-        HostedZoneId: 'Z1D633PJN98FT9',
-        Name: 'a|b.example.com.',
-        Type: 'A',
-        TTL: '300',
-        ResourceRecords: ['1.2.3.4'],
-      },
-      REPLAY
-    );
-    expect(result.physicalId).toBe('Z1D633PJN98FT9|a|b.example.com.|A');
-    expect(mockLoggerWarn).toHaveBeenCalledWith(
-      expect.stringContaining("recordName 'a|b.example.com.'")
-    );
-  });
-
-  it('warns and packs on a template-path update whose record ALREADY carries the id', async () => {
-    // Issue #3728 keeps this warning on the template path when the recorded
-    // record already has the separator in its name: an older binary wrote it
-    // under the ambiguous id, and the only template edit is renaming the DNS
-    // record — a different record, not a repair — so refusing would make it
-    // un-updatable and un-revertable. The UPSERT still goes out, so the id is
-    // ANNOUNCED rather than silent. Mutating this callback away to a bare
-    // `undefined` makes this case throw.
+  it('updates a record whose Name already contains the separator, with no warning', async () => {
     mockRoute53Send.mockResolvedValueOnce({});
     const provider = new Route53Provider();
     const result = await provider.update(
       'MyRecord',
-      'Z1D633PJN98FT9|a|b.example.com.|A',
+      PIPE_ID,
       RECORD_TYPE,
       {
         HostedZoneId: 'Z1D633PJN98FT9',
         Name: 'a|b.example.com.',
         Type: 'A',
-        TTL: '300',
+        TTL: '600',
         ResourceRecords: ['1.2.3.4'],
       },
-      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'a|b.example.com.', Type: 'A' }
+      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'a|b.example.com.', Type: 'A', TTL: '300' }
     );
-    expect(result.physicalId).toBe('Z1D633PJN98FT9|a|b.example.com.|A');
-    expect(mockLoggerWarn).toHaveBeenCalledWith(
-      expect.stringContaining("recordName 'a|b.example.com.'")
-    );
+    expect(result.physicalId).toBe(PIPE_ID);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
     expect(mockRoute53Send).toHaveBeenCalledTimes(1);
   });
 
-  // Issue #3728: a template-path update that INTRODUCES the separator (a
-  // rename; `Name` is mutable in place) is refused before the UPSERT, exactly
-  // as the create path refuses the same name. The two state-borne callers
-  // keep the warning.
-  const renameIntoSeparator = (provider: Route53Provider, context?: Record<string, unknown>) =>
-    provider.update(
+  it('a template rename INTO the separator is applied, not refused', async () => {
+    // A rename looks the old record up first, then writes (issue #3741).
+    mockRoute53Send.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+    const provider = new Route53Provider();
+    const result = await provider.update(
       'MyRecord',
       'Z1D633PJN98FT9|www.example.com.|A',
       RECORD_TYPE,
@@ -1019,93 +987,11 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
         TTL: '300',
         ResourceRecords: ['1.2.3.4'],
       },
-      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'www.example.com.', Type: 'A' },
-      context
+      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'www.example.com.', Type: 'A' }
     );
-
-  it.each([
-    ['no context', undefined],
-    ['both flags false', { replayingState: false, desiredFromAwsReadback: false }],
-  ])(
-    'REFUSES a template-path update (%s) that renames the record INTO the separator',
-    async (_label, context) => {
-      const provider = new Route53Provider();
-      const error = await renameIntoSeparator(provider, context).catch((e: unknown) => e);
-
-      expect(error).toBeInstanceOf(ProvisioningError);
-      expect((error as Error).message).toContain("recordName 'a|b.example.com.'");
-      // Nothing reached Route 53: the refusal sits before the UPSERT.
-      expect(mockRoute53Send).not.toHaveBeenCalled();
-      expect(mockLoggerWarn).not.toHaveBeenCalled();
-    }
-  );
-
-  it.each([
-    // A rename looks the old record up first, then writes (issue #3741) ...
-    ['a rollback revert arm (replayingState)', { replayingState: true }, 2],
-    // ... except on drift --revert, which never renames: one UPSERT.
-    ['cdkd drift --revert (desiredFromAwsReadback)', { desiredFromAwsReadback: true }, 1],
-  ])('warns and packs the same rename on %s', async (_label, context, sends) => {
-    for (let i = 0; i < sends; i++) mockRoute53Send.mockResolvedValueOnce({});
-    const provider = new Route53Provider();
-    const result = await renameIntoSeparator(provider, context);
-
-    expect(result.physicalId).toBe('Z1D633PJN98FT9|a|b.example.com.|A');
-    expect(mockLoggerWarn).toHaveBeenCalledWith(
-      expect.stringContaining("recordName 'a|b.example.com.'")
-    );
-    expect(mockRoute53Send).toHaveBeenCalledTimes(sends);
-  });
-
-  it('REFUSES a template-path update that changes the TYPE into the separator', async () => {
-    const provider = new Route53Provider();
-    await expect(
-      provider.update(
-        'MyRecord',
-        'Z1D633PJN98FT9|www.example.com.|A',
-        RECORD_TYPE,
-        { HostedZoneId: 'Z1D633PJN98FT9', Name: 'www.example.com.', Type: 'A|X' },
-        { HostedZoneId: 'Z1D633PJN98FT9', Name: 'www.example.com.', Type: 'A' }
-      )
-    ).rejects.toThrow(/recordType 'A\|X'/);
-    expect(mockRoute53Send).not.toHaveBeenCalled();
-  });
-
-  // Each of these keeps the warning on the TEMPLATE path: the recorded record
-  // already has (or may have) this id, so refusing would strand it.
-  it.each([
-    [
-      'the hosted-zone segment (createOnly: an update never changes it)',
-      { HostedZoneId: 'Z1|2', Name: 'www.example.com.', Type: 'A' },
-      { HostedZoneId: 'Z1|2', Name: 'www.example.com.', Type: 'A' },
-    ],
-    [
-      'a trailing-dot / case-only respelling of the recorded name',
-      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'A|B.example.com', Type: 'A' },
-      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'a|b.example.com.', Type: 'A' },
-    ],
-    [
-      'a recorded name REDACTED to its dynamic reference',
-      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'a|b.example.com.', Type: 'A' },
-      {
-        HostedZoneId: 'Z1D633PJN98FT9',
-        Name: '{{resolve:secretsmanager:dns:SecretString:name}}',
-        Type: 'A',
-      },
-    ],
-    [
-      'a record with no recorded Name to compare',
-      { HostedZoneId: 'Z1D633PJN98FT9', Name: 'a|b.example.com.', Type: 'A' },
-      { HostedZoneId: 'Z1D633PJN98FT9', Type: 'A' },
-    ],
-  ])('warns rather than refusing for %s', async (_label, desired, recorded) => {
-    mockRoute53Send.mockResolvedValueOnce({});
-    const provider = new Route53Provider();
-    await provider.update('MyRecord', 'Z|recorded|A', RECORD_TYPE, desired, recorded);
-    expect(mockLoggerWarn).toHaveBeenCalledWith(
-      expect.stringContaining("contains '|'")
-    );
-    expect(mockRoute53Send).toHaveBeenCalledTimes(1);
+    expect(result.physicalId).toBe(PIPE_ID);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+    expect(mockRoute53Send).toHaveBeenCalledTimes(2);
   });
 
   it('update still records a clean composite id', async () => {
@@ -1127,21 +1013,93 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
     expect(result.physicalId).toBe('Z1D633PJN98FT9|www.example.com.|A');
   });
 
-  it('refuses a template-path create even when a replay context says NOT replaying', async () => {
-    // `context?.replayingState === true` must be an EXACT test: mutating it to
-    // `context != null` makes an explicitly non-replaying context downgrade,
-    // and every other case here passes either no context or a replaying one,
-    // so nothing else in the suite would notice.
+  it('delete decodes an ANCHORED id whose name contains the separator, with no zone lookup', async () => {
+    mockRoute53Send.mockResolvedValue({});
     const provider = new Route53Provider();
-    await expect(
-      provider.create(
-        'MyRecord',
-        RECORD_TYPE,
-        { HostedZoneId: 'Z1D633PJN98FT9', Name: 'a|b.example.com.', Type: 'A' },
-        { replayingState: false }
-      )
-    ).rejects.toThrow(ProvisioningError);
+    await provider.delete('MyRecord', PIPE_ID, RECORD_TYPE, {
+      HostedZoneId: 'ZSHOULDNOTBEUSED',
+      Name: 'A|B.example.com',
+      Type: 'A',
+      TTL: '300',
+      ResourceRecords: ['1.2.3.4'],
+    });
+    // Sourced from the id, not from the properties: the composite path ran.
+    expect(sentCommand(0).input.HostedZoneId).toBe('Z1D633PJN98FT9');
+  });
+
+  // An id longer than three segments is only a CANDIDATE split; without both
+  // anchors the delete addresses the record from the recorded properties.
+  it.each([
+    ['the recorded Type disagrees', { Name: 'a|b.example.com.', Type: 'CNAME' }],
+    ['the recorded Name disagrees', { Name: 'other.example.com.', Type: 'A' }],
+    ['the recorded Name is an unresolved intrinsic', { Name: { Ref: 'P' }, Type: 'A' }],
+    ['the recorded Type is an unresolved intrinsic', { Name: 'a|b.example.com.', Type: { Ref: 'P' } }],
+    ['the recorded Name is empty', { Name: '', Type: 'A' }],
+  ])('delete does not trust the candidate split when %s', async (_label, recorded) => {
+    mockRoute53Send.mockResolvedValue({});
+    const provider = new Route53Provider();
+    await provider.delete('MyRecord', PIPE_ID, RECORD_TYPE, {
+      HostedZoneId: 'ZFROMPROPERTIES',
+      ...recorded,
+      TTL: '300',
+      ResourceRecords: ['1.2.3.4'],
+    });
+    expect(sentCommand(0).input.HostedZoneId).toBe('ZFROMPROPERTIES');
+  });
+
+  it("CloudFormation's scalar id with three pipes is never decoded as a composite", async () => {
+    // The record name itself, recorded beside the same `Name`: the middle of
+    // a longer id is strictly shorter than the id, so the Name anchor fails.
+    mockRoute53Send.mockResolvedValue({});
+    const provider = new Route53Provider();
+    await provider.delete('MyRecord', 'a|b|c|A', RECORD_TYPE, {
+      HostedZoneId: 'Z1D633PJN98FT9',
+      Name: 'a|b|c|A',
+      Type: 'A',
+      TTL: '300',
+      ResourceRecords: ['1.2.3.4'],
+    });
+    expect(sentCommand(0).input.HostedZoneId).toBe('Z1D633PJN98FT9');
+  });
+
+  it('a read with no recorded bag never trusts a name containing the separator', async () => {
+    // Nothing to anchor the candidate split on, so nothing is read.
+    const provider = new Route53Provider();
+    await expect(provider.readCurrentState(PIPE_ID, 'MyRecord', RECORD_TYPE)).resolves.toBeUndefined();
     expect(mockRoute53Send).not.toHaveBeenCalled();
+  });
+
+  it('a read whose bag does not anchor the candidate resolves the record from the bag', async () => {
+    // The recorded Type disagrees with the id's last segment, so the read
+    // takes the zone, Name and Type from the recorded properties.
+    mockRoute53Send.mockResolvedValueOnce({ ResourceRecordSets: [] });
+    const provider = new Route53Provider();
+    await provider.readCurrentState(PIPE_ID, 'MyRecord', RECORD_TYPE, {
+      HostedZoneId: 'ZFROMPROPERTIES',
+      Name: 'a|b.example.com.',
+      Type: 'CNAME',
+    });
+    expect(sentCommand(0).input.HostedZoneId).toBe('ZFROMPROPERTIES');
+    expect(sentCommand(0).input.StartRecordType).toBe('CNAME');
+  });
+
+  it('drift reads the record by its escaped name and reports it under the template spelling', async () => {
+    // Route 53 stores and returns `|` as `\174`; the list start key must use
+    // that spelling, or the record sorts before the window and is missed.
+    mockRoute53Send.mockResolvedValueOnce({
+      ResourceRecordSets: [
+        { Name: 'a\\174b.example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '1.2.3.4' }] },
+      ],
+    });
+    const provider = new Route53Provider();
+    const observed = await provider.readCurrentState(PIPE_ID, 'MyRecord', RECORD_TYPE, {
+      HostedZoneId: 'Z1D633PJN98FT9',
+      Name: 'a|b.example.com.',
+      Type: 'A',
+    });
+    expect(sentCommand(0).input.HostedZoneId).toBe('Z1D633PJN98FT9');
+    expect(sentCommand(0).input.StartRecordName).toBe('a\\174b.example.com.');
+    expect(observed).toMatchObject({ Name: 'a|b.example.com.', Type: 'A', TTL: 300 });
   });
 
   it('a record NAME that merely LOOKS like a composite is not decoded as one', async () => {
@@ -1292,35 +1250,13 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
     expect(changes).toHaveLength(0);
   });
 
-  it('import warns and adopts a look-alike verbatim instead of freezing the mis-decode', async () => {
-    const provider = new Route53Provider();
-    const result = await provider.import({
-      logicalId: 'MyRecord',
-      resourceType: RECORD_TYPE,
-      stackName: 'TestStack',
-      region: 'us-east-1',
-      knownPhysicalId: 'a|b|c.example.com.',
-      properties: {
-        HostedZoneId: 'Z1D633PJN98FT9',
-        Name: 'a|b|c.example.com.',
-        Type: 'A',
-      },
+  it("import canonicalizes CloudFormation's scalar id for a name containing the separator", async () => {
+    // Before issue #3890 this adopted the scalar verbatim, refusing to pack it.
+    mockRoute53Send.mockResolvedValueOnce({
+      ResourceRecordSets: [
+        { Name: 'a\\174b.example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '1.2.3.4' }] },
+      ],
     });
-
-    expect(result).toEqual({ physicalId: 'a|b|c.example.com.', attributes: {} });
-    // The DISCRIMINATOR against the pre-fix path, which adopted the same string
-    // silently: the id is now recognized as ambiguous and said so.
-    expect(mockLoggerWarn).toHaveBeenCalledWith(
-      expect.stringContaining('would pack an ambiguous id')
-    );
-    expect(mockRoute53Send).not.toHaveBeenCalled();
-  });
-
-  it('import adopts the override verbatim rather than freezing an ambiguous composite', async () => {
-    // An `import()` neither throws nor adopts an id it knows to be ambiguous:
-    // the verbatim form decodes to nothing, so delete / drift fall back to the
-    // template properties, where the packed composite would have written a
-    // mis-arity id into state that nothing can parse.
     const provider = new Route53Provider();
     const result = await provider.import({
       logicalId: 'MyRecord',
@@ -1334,15 +1270,119 @@ describe('AWS::Route53::RecordSet composite id guard', () => {
         Type: 'A',
       },
     });
-    expect(result).toEqual({ physicalId: 'a|b.example.com.', attributes: {} });
-    // ONE warning, carrying the reason — not the raw refusal sentence, whose
-    // "rename the resource" remedy does not apply to an import that succeeds.
-    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
-    expect(mockLoggerWarn).toHaveBeenCalledWith(
-      expect.stringContaining('would pack an ambiguous id')
-    );
-    // The refusal short-circuits BEFORE the `ListResourceRecordSets`
-    // verification read, so no AWS call is made on this path.
+    expect(result).toEqual({ physicalId: PIPE_ID, attributes: {} });
+    expect(sentCommand(0).input.StartRecordName).toBe('a\\174b.example.com.');
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('import canonicalizes a three-part look-alike to the composite, never the mis-decode', async () => {
+    mockRoute53Send.mockResolvedValueOnce({
+      ResourceRecordSets: [
+        { Name: 'a\\174b\\174c.example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '1.2.3.4' }] },
+      ],
+    });
+    const provider = new Route53Provider();
+    const result = await provider.import({
+      logicalId: 'MyRecord',
+      resourceType: RECORD_TYPE,
+      stackName: 'TestStack',
+      region: 'us-east-1',
+      knownPhysicalId: 'a|b|c.example.com.',
+      properties: {
+        HostedZoneId: 'Z1D633PJN98FT9',
+        Name: 'a|b|c.example.com.',
+        Type: 'A',
+      },
+    });
+    // Zone 'a' / name 'b' / type 'c.example.com.' is what the bare parse said.
+    expect(result).toEqual({ physicalId: 'Z1D633PJN98FT9|a|b|c.example.com.|A', attributes: {} });
+    expect(sentCommand(0).input.HostedZoneId).toBe('Z1D633PJN98FT9');
+  });
+
+  it.each([
+    ['an unresolved intrinsic', { 'Fn::Join': ['', ['a|b.', 'example.com.']] }],
+    ['a parameter Ref', { Ref: 'RecordNameParam' }],
+  ])(
+    'import keeps the verbatim id when the template Name is %s and the record name contains the separator',
+    async (_label, templateName) => {
+      // The composite would carry a `|` name no later read can anchor on the
+      // recorded Name, so drift would read nothing; the scalar falls back to
+      // the properties instead.
+      const provider = new Route53Provider();
+      const result = await provider.import({
+        logicalId: 'MyRecord',
+        resourceType: RECORD_TYPE,
+        stackName: 'TestStack',
+        region: 'us-east-1',
+        knownPhysicalId: 'a|b.example.com.',
+        properties: { HostedZoneId: 'Z1D633PJN98FT9', Name: templateName, Type: 'A' },
+      });
+      expect(result).toEqual({ physicalId: 'a|b.example.com.', attributes: {} });
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringContaining('not a plain string to anchor it on')
+      );
+      expect(mockRoute53Send).not.toHaveBeenCalled();
+    }
+  );
+
+  it('a weighted record whose Name and SetIdentifier both contain the separator is read and deleted', async () => {
+    // SetIdentifier is not part of the id, and Route 53 stores it as given,
+    // so it goes out raw in both the read's start key and the DELETE.
+    const recorded = {
+      HostedZoneId: 'ZSHOULDNOTBEUSED',
+      Name: 'a|b.example.com.',
+      Type: 'A',
+      SetIdentifier: 'x|y',
+      Weight: 10,
+      TTL: '300',
+      ResourceRecords: ['1.2.3.4'],
+    };
+    mockRoute53Send.mockResolvedValueOnce({
+      ResourceRecordSets: [
+        {
+          Name: 'a\\174b.example.com.',
+          Type: 'A',
+          SetIdentifier: 'x|y',
+          Weight: 10,
+          TTL: 300,
+          ResourceRecords: [{ Value: '1.2.3.4' }],
+        },
+      ],
+    });
+    const provider = new Route53Provider();
+    const observed = await provider.readCurrentState(PIPE_ID, 'MyRecord', RECORD_TYPE, recorded);
+    expect(sentCommand(0).input.HostedZoneId).toBe('Z1D633PJN98FT9');
+    expect(sentCommand(0).input.StartRecordName).toBe('a\\174b.example.com.');
+    expect(sentCommand(0).input['StartRecordIdentifier']).toBe('x|y');
+    expect(observed).toMatchObject({ Name: 'a|b.example.com.', Type: 'A' });
+
+    mockRoute53Send.mockReset();
+    mockRoute53Send.mockResolvedValue({});
+    await provider.delete('MyRecord', PIPE_ID, RECORD_TYPE, recorded);
+    const change = mockRoute53Send.mock.calls
+      .map((c) => c[0] as { constructor: { name: string }; input: Record<string, unknown> })
+      .find((c) => c.constructor.name === 'ChangeResourceRecordSetsCommand');
+    expect(change?.input['HostedZoneId']).toBe('Z1D633PJN98FT9');
+    const deleted = (
+      change?.input['ChangeBatch'] as {
+        Changes: { Action: string; ResourceRecordSet: { Name?: string; SetIdentifier?: string } }[];
+      }
+    ).Changes[0];
+    expect(deleted?.Action).toBe('DELETE');
+    expect(deleted?.ResourceRecordSet).toMatchObject({ Name: 'a|b.example.com.', SetIdentifier: 'x|y' });
+  });
+
+  it('import accepts an anchored composite override whose name contains the separator', async () => {
+    const provider = new Route53Provider();
+    const result = await provider.import({
+      logicalId: 'MyRecord',
+      resourceType: RECORD_TYPE,
+      stackName: 'TestStack',
+      region: 'us-east-1',
+      knownPhysicalId: PIPE_ID,
+      properties: { HostedZoneId: 'Z1D633PJN98FT9', Name: 'a|b.example.com.', Type: 'A' },
+    });
+    expect(result).toEqual({ physicalId: PIPE_ID, attributes: {} });
     expect(mockRoute53Send).not.toHaveBeenCalled();
   });
 });

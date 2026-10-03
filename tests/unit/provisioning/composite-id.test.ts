@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vite-plus/test';
 
 import {
   COMPOSITE_ID_SEPARATOR,
+  canonicalizeRoute53QueryName,
   compositeIdSeparatorRefusal,
   packCompositeId,
   segmentAfterAnchor,
@@ -132,17 +133,16 @@ describe('composite-id', () => {
       expect(message).not.toContain("databaseName 'mydb'");
     });
 
-    // The parity clause is per TYPE: only a type whose refused value AWS
-    // accepts names a tracking issue. #1672 is closed, so no message may send a
-    // user there.
-    it.each([['AWS::Route53::RecordSet', 'issues/3890']])('names the open parity issue for %s', (resourceType, issue) => {
-      const message = compositeIdSeparatorRefusal(resourceType, 'R', [
+    // No refusal names a tracking issue: the last one, #3890, was lifted when
+    // `AWS::Route53::RecordSet` stopped packing through this helper, and #1672
+    // is closed.
+    it('names no parity issue for AWS::Route53::RecordSet', () => {
+      const message = compositeIdSeparatorRefusal('AWS::Route53::RecordSet', 'R', [
         { name: 'a', value: 'x|y' },
         { name: 'b', value: 'z' },
       ]);
-      expect(message).toContain(issue);
-      expect(message).toContain('does not support it yet');
-      expect(message).not.toContain('issues/1672');
+      expect(message).toContain("cdkd cannot record a value containing '|' in this position.");
+      expect(message).not.toContain('github.com');
     });
 
     // `cc-import-identifier.ts` calls the refusal for arbitrary Cloud Control
@@ -263,6 +263,29 @@ describe('composite-id', () => {
       // can never describe the refusal differently.
       expect(thrown).toBe(refusal);
     });
+  });
+
+  // Issue #3890: the query-side spelling of a Route 53 name, shared by the
+  // provider's anchor and the `Ref` anchor. Route 53 stores `*` as `\052` and
+  // `|` as `\174`, lower-cased and fully qualified.
+  describe('canonicalizeRoute53QueryName', () => {
+    it.each([
+      ['a|b.example.com', 'a\\174b.example.com.'],
+      ['*.example.com.', '\\052.example.com.'],
+      ['WWW.Example.COM', 'www.example.com.'],
+      ['www.example.com.', 'www.example.com.'],
+      ['*.A|B.example.com', '\\052.a\\174b.example.com.'],
+    ])('canonicalizes %s to %s', (input, expected) => {
+      expect(canonicalizeRoute53QueryName(input)).toBe(expected);
+    });
+
+    it.each([['a|b.example.com'], ['*.example.com'], ['www.example.com.']])(
+      'is idempotent on its own output for %s',
+      (input) => {
+        const once = canonicalizeRoute53QueryName(input);
+        expect(canonicalizeRoute53QueryName(once)).toBe(once);
+      }
+    );
   });
 
   describe('segmentAfterAnchor', () => {
