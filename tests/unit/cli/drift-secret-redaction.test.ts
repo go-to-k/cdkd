@@ -98,17 +98,9 @@ const PUBLIC_SSM_VALUE = 'cdkd-known-ssm-value';
 // different values — the shape a position source has to keep apart.
 const mockSecretsManagerSend = vi.hoisted(() =>
   vi.fn(async (command: { input?: { SecretId?: string } }) =>
-    {
-      // Issue #2102: a reference whose lookup FAILS, for a resource whose
-      // earlier leaf already resolved — the shape whose needle the detection
-      // catch's clear would otherwise discard.
-      if (command?.input?.SecretId === 'cdkd-missing-secret') {
-        throw new Error('ResourceNotFoundException: Secrets Manager cannot find the secret');
-      }
-      return command?.input?.SecretId === 'cdkd-other-secret'
-        ? { SecretString: JSON.stringify({ password: 'cdkd-other-pw-777' }) }
-        : { SecretString: JSON.stringify({ password: 'cdkd-known-pw-123' }) };
-    }
+    command?.input?.SecretId === 'cdkd-other-secret'
+      ? { SecretString: JSON.stringify({ password: 'cdkd-other-pw-777' }) }
+      : { SecretString: JSON.stringify({ password: 'cdkd-known-pw-123' }) }
   )
 );
 const mockSsmSend = vi.hoisted(() =>
@@ -2411,10 +2403,52 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(JSON.stringify(sent)).not.toContain(ROTATED_AWAY);
   });
 
+  it('--revert copies nothing when a survivor span overlaps a resolved secret spelling the same token (issue #2102)', async () => {
+    // The secret's plaintext CONTAINS the look-alike token, so the send leaf
+    // holds that token twice and only one occurrence is a survivor. Treating
+    // both as wildcards would copy AWS's bytes from INSIDE the secret's
+    // position into the payload — whatever AWS holds there, unmasked.
+    mockSecretsManagerSend.mockImplementation(async () => ({
+      SecretString: JSON.stringify({ password: `x${UNSUPPORTED_EXPR}y` }),
+    }));
+    const stateDb = `${SECRET_EXPR}-${UNSUPPORTED_EXPR}`;
+    const update = vi.fn().mockResolvedValue({ physicalId: 'td' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Task: {
+          physicalId: 'td',
+          resourceType: 'AWS::ECS::TaskDefinition',
+          properties: { Env: { DB: stateDb, LEVEL: 'info' } },
+          observedProperties: { Env: { DB: stateDb, LEVEL: 'info' } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Env: { DB: 'xINSIDE-THE-SECRETy-live', LEVEL: 'debug' },
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
+    expect(sent.Env['DB']).toBe(`x${UNSUPPORTED_EXPR}y-${UNSUPPORTED_EXPR}`);
+    expect(JSON.stringify(sent)).not.toContain('INSIDE-THE-SECRET');
+  });
+
   it('masks a needle the failed-resolution clear discarded in the readFailed warning (issue #2102)', async () => {
     // The first leaf resolves and records its plaintext; the second lookup
     // fails, so the catch clears the map. A later comparison failure whose
     // text carries that plaintext must still be masked.
+    mockSecretsManagerSend.mockImplementation(async (command: { input?: { SecretId?: string } }) => {
+      if (command?.input?.SecretId === 'cdkd-missing-secret') {
+        throw new Error('ResourceNotFoundException: Secrets Manager cannot find the secret');
+      }
+      return { SecretString: JSON.stringify({ password: SECRET_PLAINTEXT }) };
+    });
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(
       makeState({
@@ -2448,6 +2482,11 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     const said = [warnSpy, errorSpy, infoSpy, debugSpy]
       .flatMap((spy) => spy.mock.calls.map((c) => String(c[0])))
       .join('\n');
+    // The resolution really FAILED after the first leaf resolved (else the
+    // map would still hold the needle and this case would prove nothing)...
+    expect(mockSecretsManagerSend).toHaveBeenCalledTimes(2);
+    expect(said).toContain('could not resolve the dynamic reference');
+    // ...and the comparison failure really printed its masked text.
     expect(said).toContain('could not be compared');
     expect(said).toContain('comparison failed near');
     expect(said).not.toContain(SECRET_PLAINTEXT);
