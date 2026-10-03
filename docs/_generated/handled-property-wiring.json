@@ -6718,6 +6718,7 @@
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
             "revokeMatchingLiveRule",
+            "survivingIngressHolder",
             "update",
             "updateSecurityGroupIngress"
           ]
@@ -6922,6 +6923,7 @@
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
             "revokeMatchingLiveRule",
+            "survivingIngressHolder",
             "update",
             "updateSecurityGroupIngress"
           ]
@@ -7500,6 +7502,7 @@
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
             "revokeMatchingLiveRule",
+            "survivingIngressHolder",
             "update",
             "updateSecurityGroupIngress"
           ]
@@ -7600,6 +7603,9 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "Array.isArray(...) in isPlainRecord()",
+        "computed key in comparableIngressIdentity()",
+        "computed key in ingressRuleIdentity()",
         "computed key in narrowRouteDestinations()",
         "object spread in canonicalizeSgInlineRuleProtocols()",
         "object spread in createSecurityGroupIngress()",

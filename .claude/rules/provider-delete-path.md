@@ -21,7 +21,7 @@ A delete bag CAN carry plaintext and `delete()` has no masker: thread one before
 
 ## Outcomes
 
-Returning normally means THE RESOURCE IS GONE. An arm that issued no AWS call, or whose call failed, must not: the runner would print a deleted row, DROP the state record and exit 0. A lenient `catch` is that defect through a throw, since `undefined` reads as DELETED.
+Returning normally means THE RESOURCE IS GONE. An arm that issued no AWS call, or whose call failed, must not: the runner would print a deleted row, DROP the state record and exit 0. A lenient `catch` is that defect through a throw, since `undefined` reads as DELETED. The one exception is a resource ANOTHER record of the stack still holds and outlives the operation with (a shared `SecurityGroupIngress` rule, [#4492](https://github.com/go-to-k/cdkd/issues/4492)): dropping this record is the delete, so it returns normally without a call.
 
 - `{ outcome: 'skipped', reason }` (`compositeIdSkipResult()`, `composite-id.ts`) — the premise is "NOT destroyed", never "no AWS call was issued". The runner warns, counts `skippedCount`, emits `RESOURCE_SKIPPED`, KEEPS the record and exits 2 (a deploy too, unless `--allow-unaddressed`); never skip when the resource is known gone.
 - `{ outcome: 'partial', reason }` on `ResourceUpdateResult` — a create-then-delete replacement whose delete did not land; the engine records the survivor.
