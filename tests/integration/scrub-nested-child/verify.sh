@@ -11,6 +11,13 @@
 #
 # Phases:
 #   1. deploy with the current binary; the child record holds the EXPRESSION.
+#   1b. issue #4479: the child's `IsLive4479` condition reads `Stage`, fed the
+#      secret's `stage` key, and the deploy took its TRUE branch in two `Fn::If`
+#      slots and recorded that verdict. `cdkd diff --recursive --fail` must exit
+#      0 on the unchanged tree (the pre-fix binary took FALSE and exited 1). It
+#      must exit 1 with `CDKD_4479_EDIT=literal` (the condition's literal
+#      changed) and with `CDKD_4479_EDIT=swap` (the property's branches
+#      swapped).
 #   2. SEED the pre-#1903 shape out of band: rewrite the child's state.json so
 #      the SSM parameter's `Value` and the `PwOut` output hold the plaintext.
 #      ALSO seed the PARENT row's `Outputs.ApiOut` attribute -- the mirror of
@@ -110,6 +117,11 @@ CHILD_PREFIX="$(s3_stack_prefix "${CHILD_STACK}" "${REGION}")"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+# What the secret's `stage` key holds: the literal lib/ compares `Stage` to, so
+# the deploy takes the TRUE branch of every `Fn::If` on `IsLive4479` (#4479).
+STAGE_VALUE_4479="cdkd-4479-stage-live"
+export STAGE_VALUE_4479
 
 # Out-of-band secret, named as lib/scrub-nested-child-stack.ts names it.
 SECRET_NAME="cdkd-scrub-nested-child-${ACCOUNT_ID}"
@@ -278,7 +290,7 @@ assert_gone_eventually 60 "leftover secret ${SECRET_NAME} from an earlier run" \
 echo "==> Creating the secret out of band"
 # From a file, not argv, so the value never appears in the process list.
 SECRET_FILE="${WORK_DIR}/secret.json"
-( umask 077 && jq -n '{password: env.PW_VALUE, api: env.API_VALUE}' > "${SECRET_FILE}" )
+( umask 077 && jq -n '{password: env.PW_VALUE, api: env.API_VALUE, stage: env.STAGE_VALUE_4479}' > "${SECRET_FILE}" )
 aws secretsmanager create-secret --name "${SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" \
   --region "${REGION}" >/dev/null
@@ -330,6 +342,64 @@ if [ "${LIVE}" != "${PW_VALUE}" ]; then
   exit 1
 fi
 echo "    OK: child record holds the expression; the live parameter holds the secret"
+
+# --- Phase 1b: an Fn::If on a secret-fed condition diffs clean (#4479) --------
+echo "==> Phase 1b: cdkd diff --recursive --fail over a secret-fed condition (#4479)"
+# Premise: the deploy, which evaluates against the real secret, took the TRUE
+# branch in both slots, so a FALSE-branch diff would differ from state.
+if [ "$(jq -r '.resources.PwParam.properties.Description' "${WORK_DIR}/child-deployed.json")" != "scrub-nested-child live" ] \
+  || [ "$(jq -r '.outputs.Size4479' "${WORK_DIR}/child-deployed.json")" != "big-4479" ]; then
+  echo "FAIL: premise: the deploy did not take the TRUE branch of IsLive4479 in both slots" >&2
+  exit 1
+fi
+run_cdkd diff-clean diff "${STACK}" --recursive --fail --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+DIFF_CLEAN_RC=${CDKD_RC}
+DIFF_CLEAN_OUT="$(cat "${WORK_DIR}/diff-clean.txt")"
+assert_no_plaintext_in "phase 1b diff output" "${DIFF_CLEAN_OUT}"
+if [ "${DIFF_CLEAN_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd diff --recursive --fail' exited ${DIFF_CLEAN_RC} on the unchanged tree (an Fn::If on IsLive4479 took the FALSE branch?)" >&2
+  printf '%s\n' "${DIFF_CLEAN_OUT}" | tail -40 >&2
+  exit 1
+fi
+# The record the clean diff reused, checked AFTER the diff so a binary that
+# records nothing fails at the exit-0 assertion above, the discriminator. The
+# clean diff itself proves the fingerprint was taken over the expression: the
+# diff only ever holds the expression, so no other input could match.
+if [ "$(jq -r '.conditionVerdicts.IsLive4479.verdict' "${WORK_DIR}/child-deployed.json")" != "true" ] \
+  || ! jq -e '.conditionVerdicts.IsLive4479.fingerprint | test("^sha256:[0-9a-f]{64}$")' \
+    "${WORK_DIR}/child-deployed.json" >/dev/null; then
+  echo "FAIL: the child record carries no recorded TRUE verdict for IsLive4479" >&2
+  exit 1
+fi
+# Two edits the next deploy WOULD apply must still be reported: a recorded
+# verdict is reused only while the condition's fingerprint is unchanged, and
+# every slot is compared against the true verdict.
+#  - literal: the condition now compares against another literal, so the
+#    deploy (the secret unchanged) flips to FALSE in both slots;
+#  - swap: the property's two branches swapped, so the deploy writes the
+#    other one.
+for edit in literal swap; do
+  CDKD_4479_EDIT="${edit}" run_cdkd "diff-${edit}" diff "${STACK}" --recursive --fail \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+  edit_rc=${CDKD_RC}
+  edit_out="$(cat "${WORK_DIR}/diff-${edit}.txt")"
+  assert_no_plaintext_in "phase 1b ${edit} diff output" "${edit_out}"
+  if [ "${edit_rc}" -ne 1 ] \
+    || ! printf '%s\n' "${edit_out}" | grep -qF 'scrub-nested-child other'; then
+    echo "FAIL: 'cdkd diff --recursive --fail' with CDKD_4479_EDIT=${edit} exited ${edit_rc} or did not show the Description moving to 'scrub-nested-child other'" >&2
+    printf '%s\n' "${edit_out}" | tail -40 >&2
+    exit 1
+  fi
+done
+if ! grep -qF 'small-4479' "${WORK_DIR}/diff-literal.txt"; then
+  echo "FAIL: the literal edit did not report the Size4479 output moving to its FALSE branch" >&2
+  exit 1
+fi
+if grep -qF 'small-4479' "${WORK_DIR}/diff-swap.txt"; then
+  echo "FAIL: the swap diff took the FALSE branch of the Size4479 output" >&2
+  exit 1
+fi
+echo "    OK: unchanged tree diffs clean; a condition edit and a branch swap are reported"
 
 # --- Phase 2: seed the pre-#1903 child record ---------------------------------
 echo "==> Phase 2: seeding the child record as a pre-#1903 binary wrote it"

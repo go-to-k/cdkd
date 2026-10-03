@@ -469,8 +469,43 @@ export interface StackState {
    */
   orphans?: StackOrphanRecord[];
 
+  /**
+   * The verdict the last deploy computed for each condition `cdkd diff` reads
+   * but cannot evaluate, because its closure reaches a parameter fed a secret
+   * `{{resolve:...}}` reference (go-to-k/cdkd#4479). Keyed by condition name.
+   *
+   * Each entry carries a FINGERPRINT of the condition's definitions (its own
+   * and every `{Condition: X}` it reaches) and of the parameter inputs they
+   * read, a secret-fed one as its expression. The diff reuses a verdict only
+   * when the fingerprint it recomputes is equal; otherwise an `Fn::If` on the
+   * condition takes its FALSE branch, as before. Writer, reader and the
+   * fingerprint's exact input: `src/deployment/condition-verdicts.ts`.
+   *
+   * Additive, so NO schema bump (the `skippedOutputs` / `orphans` precedent):
+   * an older binary ignores it, and its fresh-built deploy saves drop it,
+   * which only returns the diff to the FALSE branch. A writer that carries the
+   * loaded record forward (rollback, drift, scrub, orphan rewrite) may carry
+   * it too: none of them changes a definition or an input the fingerprint
+   * covers. Read through `readRecordedConditionVerdicts`, which tolerates any
+   * malformed shape.
+   *
+   * Written only by a deploy's FINAL save and its no-change save. Its
+   * per-resource, rollback and output-failure saves rebuild state without it,
+   * so a failed or interrupted deploy leaves NO record: the next diff falls
+   * back to the FALSE branch, never to a stale verdict.
+   */
+  conditionVerdicts?: Record<string, RecordedConditionVerdict>;
+
   /** Last modification timestamp (Unix milliseconds) */
   lastModified: number;
+}
+
+/** One entry of {@link StackState.conditionVerdicts} (go-to-k/cdkd#4479). */
+export interface RecordedConditionVerdict {
+  /** The verdict the deploy computed against the real parameter values. */
+  verdict: boolean;
+  /** `sha256:<hex>` over the condition's definitions and parameter inputs. */
+  fingerprint: string;
 }
 
 /**

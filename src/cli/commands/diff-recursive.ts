@@ -59,6 +59,7 @@ import {
 } from '../../deployment/outputs-export-alias.js';
 import { bindingSkippedOutputs } from '../../analyzer/skipped-outputs.js';
 import {
+  DYNAMIC_REFERENCE_TOKEN_SCAN,
   SECRET_MASK,
   createUnionSecretMasker,
   hasMaskableValues,
@@ -85,6 +86,12 @@ import {
   templateResourceTypes,
 } from '../../provisioning/create-only-properties.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
+import {
+  conditionFingerprint,
+  conditionInputsFrom,
+  parentSuppliedValues,
+  readRecordedConditionVerdicts,
+} from '../../deployment/condition-verdicts.js';
 import {
   findNestedStackTypeChanges,
   type NestedStackTypeChange,
@@ -771,6 +778,14 @@ export interface StackDiffResult {
    */
   resolvedParameters: Record<string, unknown> | undefined;
   conditions: Record<string, boolean> | undefined;
+  /**
+   * What this node knows for certain (go-to-k/cdkd#4479): the parameters whose
+   * bound value the next deploy binds too, and the conditions whose verdict
+   * comes from those alone. A nested child's row is classified against it
+   * (`rowValueTrusted`), so a child's recorded verdict is never matched on an
+   * input this node only guessed.
+   */
+  trust: NodeTrust;
 }
 
 /**
@@ -1173,6 +1188,14 @@ export async function computeStackDiff(
      * record and resolves it. Omitted, no provider read is issued.
      */
     attributeHealer?: StaleAttributeHealer;
+    /**
+     * Input parameters the parent row names but whose value could not be
+     * resolved for this diff (go-to-k/cdkd#4479). This node binds its own
+     * `Default` for each, which serves the comparison, but the deploy binds
+     * whatever the parent resolves then, so a recorded verdict's fingerprint
+     * never reads one.
+     */
+    parentUnresolvedParameters?: ReadonlySet<string>;
   } = {}
 ): Promise<StackDiffResult> {
   const {
@@ -1182,6 +1205,7 @@ export async function computeStackDiff(
     inheritSecretBearingTemplate,
     inheritedSecrets,
     attributeHealer,
+    parentUnresolvedParameters,
   } = options;
   // The parent's printing corpus (go-to-k/cdkd#4049), as the `inheritedSecrets`
   // of every resolver pass this node runs: parameter binding, condition
@@ -1347,19 +1371,111 @@ export async function computeStackDiff(
   //    rather than pruned": with `conditions` undefined `resolveIf` takes the
   //    FALSE branch for EVERY `Fn::If`, so a condition-true property on a
   //    condition that reads no parameter at all diffed as a perpetual
-  //    spurious UPDATE and `--fail` exited 1. An `Fn::If` on an UNKNOWN
-  //    condition still takes FALSE, as it always did: the resolver has no
-  //    "unknown" verdict, and inferring one is out of this fix's scope.
+  //    spurious UPDATE and `--fail` exited 1.
+  //
+  //    An UNKNOWN condition takes the verdict the last deploy RECORDED for it
+  //    (go-to-k/cdkd#4479), but only when the fingerprint of its definitions
+  //    and parameter inputs, recomputed here, equals the recorded one: the
+  //    deploy then computes that same verdict, so it drives `Fn::If` and
+  //    pruning exactly as a known one does. No record, a different
+  //    fingerprint, or an unbound parameter in its closure keeps it unknown,
+  //    so an `Fn::If` on it takes FALSE and it never prunes.
   let effectiveTemplate = template;
   let conditions: Record<string, boolean> | undefined;
   const unknownConditions = unknownConditionNames(
     template,
     new Set([...unboundParameterNames, ...tokenParameterNames])
   );
+  // go-to-k/cdkd#4479: the parameters whose bound value the next deploy binds
+  // too. DEFAULT DENY: a secret-fed token; a value the parent row supplied
+  // that its own classification trusted (`rowValueTrusted`; any other row key
+  // arrives in `parentUnresolvedParameters`); or a `Default` the parent did
+  // not override, unless the type is resolved live from SSM. An UNBOUND
+  // parameter, or one bound to its `Default` because the row value was not
+  // trusted, is not: its deploy-time value may differ.
+  //
+  // Also never: a value carrying a needle of the inherited NoEcho corpus. The
+  // deploy promotes every reader of such a parameter (`freshParameters`,
+  // go-to-k/cdkd#3717) whatever this diff shows, so a reader's NO_CHANGE here
+  // is no evidence. Read outside every `{{resolve:...}}` span, as the
+  // deploy's `carriesFreshNoEchoValue` reads it.
+  const inheritedNeedles =
+    inheritedSecrets === undefined
+      ? []
+      : [...printingCorpusOf(inheritedSecrets).keys()].filter(
+          (needle) => needle.length > 0 && !isSingleDynamicReferenceToken(needle)
+        );
+  const carriesInheritedNoEcho = (value: unknown): boolean => {
+    if (typeof value === 'string') {
+      const outside = value.replace(DYNAMIC_REFERENCE_TOKEN_SCAN, '');
+      return inheritedNeedles.some((needle) => outside.includes(needle));
+    }
+    if (Array.isArray(value)) return value.some(carriesInheritedNoEcho);
+    return false;
+  };
+  const trustedParameters = new Set<string>();
+  for (const [name, definition] of Object.entries(declaredParameters)) {
+    if (unboundParameterNames.has(name) || parentUnresolvedParameters?.has(name)) continue;
+    // Before the supplied branch, so an SSM-typed parameter is never trusted:
+    // its Default is a live read, and a supplied value is withheld too rather
+    // than split into cases.
+    const declaredType = (definition as { Type?: unknown } | undefined)?.Type;
+    if (
+      typeof declaredType === 'string' &&
+      declaredType.startsWith('AWS::SSM::Parameter::Value<')
+    ) {
+      continue;
+    }
+    if (parameters !== undefined && Object.hasOwn(parameters, name)) {
+      if (!carriesInheritedNoEcho(parameters[name])) trustedParameters.add(name);
+      continue;
+    }
+    trustedParameters.add(name);
+  }
+  // Each unknown condition whose recorded fingerprint matches. A secret-fed
+  // parameter's input is its `{{resolve:...}}` token as this diff received it
+  // (the expression the deploy redacted the value back to); a parameter that
+  // is not trusted has no input, so a condition reaching one never matches.
+  const recordedVerdicts = nullPrototypeRecord<boolean>();
+  const recorded = readRecordedConditionVerdicts(currentState);
+  const recordedTokens = nullPrototypeRecord<string>();
+  const unusableTokens = new Set<string>();
+  for (const name of tokenParameterNames) {
+    const token = (parameters ?? {})[name];
+    if (typeof token === 'string') recordedTokens[name] = token;
+    else unusableTokens.add(name);
+  }
+  const inputOf = conditionInputsFrom({
+    tokens: recordedTokens,
+    bound: templateParameters,
+    // A name the resolver serves from a state RESOURCE first (`Ref` checks
+    // resources before parameters) is no parameter input, as on the deploy.
+    unavailable: new Set([
+      ...Object.keys(declaredParameters).filter((name) => !trustedParameters.has(name)),
+      ...unusableTokens,
+      ...Object.keys(currentState.resources ?? {}),
+      // A plain value the parent supplied, withheld exactly as the deploy
+      // withholds it, so both fingerprints read the same inputs.
+      ...parentSuppliedValues(template, parameters, tokenParameterNames),
+    ]),
+  });
+  const mismatchedRecords: string[] = [];
+  for (const name of unknownConditions) {
+    if (!Object.hasOwn(recorded, name)) continue;
+    const fingerprinted = conditionFingerprint(template, name, inputOf);
+    if (fingerprinted !== undefined && fingerprinted.fingerprint === recorded[name]!.fingerprint) {
+      recordedVerdicts[name] = recorded[name]!.verdict;
+    } else {
+      mismatchedRecords.push(name);
+    }
+  }
   // Whether EVERY parameter bound and EVERY condition has a verdict — what
   // `conditions !== undefined` meant before go-to-k/cdkd#4470. The Outputs merge
   // below still needs all of it.
   let everyConditionKnown = false;
+  // go-to-k/cdkd#4479: the verdicts a nested child's row may branch on; see
+  // `trustedConditionNames`. Empty when evaluation failed.
+  let trustedConditions: ReadonlySet<string> = new Set();
   try {
     // A known condition never references an unknown one (the closure is
     // transitive), so the narrowed map is self-contained.
@@ -1372,7 +1488,7 @@ export async function computeStackDiff(
               Object.entries(template.Conditions).filter(([name]) => !unknownConditions.has(name))
             ),
           };
-    conditions = await intrinsicResolver.evaluateConditions({
+    const evaluated = await intrinsicResolver.evaluateConditions({
       template: knownTemplate,
       resources: currentState.resources,
       stateBackend,
@@ -1384,6 +1500,12 @@ export async function computeStackDiff(
       ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
       ...(attributeHealer && { attributeHealer }),
     });
+    // The recorded verdicts join the evaluated ones in the SAME bag: a known
+    // condition never references an unknown one, so neither can contradict
+    // the other.
+    for (const [name, verdict] of Object.entries(recordedVerdicts)) evaluated[name] = verdict;
+    conditions = evaluated;
+    trustedConditions = trustedConditionNames(template, evaluated, trustedParameters);
     effectiveTemplate = new TemplateParser().filterResourcesByCondition(template, conditions);
     everyConditionKnown = unboundParameterNames.size === 0 && unknownConditions.size === 0;
   } catch (error) {
@@ -1391,10 +1513,21 @@ export async function computeStackDiff(
       `Diff condition evaluation for stack ${displayStackName(stackName)} skipped: ${error instanceof Error ? error.message : String(error)}`
     );
   }
-  if (unknownConditions.size > 0) {
-    const names = [...unknownConditions].map((name) => displayIdent(name)).join(', ');
+  if (mismatchedRecords.length > 0) {
+    // The FALSE fallback can HIDE a change as well as show a phantom one: a
+    // condition edited since a deploy that recorded FALSE may now be TRUE.
+    // Named so a clean result over such a condition is not read as proof.
+    logger.warn(
+      safeMsg`Stack ${displayStackName(stackName)}: condition(s) ${mismatchedRecords.map((name) => displayIdent(name)).join(', ')} read a secret-fed parameter and changed since the last deploy, or one of their inputs did. This diff cannot tell which branch the next deploy takes, and shows each Fn::If on them as its FALSE branch.`
+    );
+  }
+  const stillUnknown = [...unknownConditions].filter(
+    (name) => !Object.hasOwn(recordedVerdicts, name)
+  );
+  if (stillUnknown.length > 0) {
+    const names = stillUnknown.map((name) => displayIdent(name)).join(', ');
     logger.debug(
-      safeMsg`Stack ${displayStackName(stackName)}: condition(s) ${names} depend on a parameter this diff cannot bind or read; resources gated on them are not pruned, and an Fn::If on them still takes its FALSE branch`
+      safeMsg`Stack ${displayStackName(stackName)}: condition(s) ${names} depend on a parameter this diff cannot bind or read and have no matching recorded verdict; resources gated on them are not pruned, and an Fn::If on them takes its FALSE branch`
     );
   }
 
@@ -2021,6 +2154,18 @@ export async function computeStackDiff(
     printingSecrets,
     resolvedParameters: mergedParameters,
     conditions,
+    trust: {
+      parameters: trustedParameters,
+      conditions: trustedConditions,
+      resources: trustedResourceNames(
+        effectiveTemplate,
+        stateForDiff,
+        changes,
+        trustedParameters,
+        trustedConditions,
+        conditions
+      ),
+    },
   };
 }
 
@@ -2056,6 +2201,282 @@ function isScalarList(value: unknown): value is Array<string | number | boolean>
         typeof element === 'string' || typeof element === 'number' || typeof element === 'boolean'
     )
   );
+}
+
+/**
+ * The conditions of `bag` whose verdict comes from trusted inputs only
+ * (go-to-k/cdkd#4479): every `Ref` / `${Name}` in the closure (its own
+ * definition and every `{Condition: X}` it reaches) names a trusted parameter
+ * or a stable pseudo parameter, and every condition it reaches has a verdict.
+ * A cycle is never trusted.
+ */
+function trustedConditionNames(
+  template: CloudFormationTemplate,
+  bag: Record<string, boolean>,
+  trustedParameters: ReadonlySet<string>
+): Set<string> {
+  const definitions = (template.Conditions ?? {}) as Record<string, unknown>;
+  const parser = new TemplateParser();
+  const memo = new Map<string, boolean>();
+  const trusted = (name: string, visiting: Set<string>): boolean => {
+    const known = memo.get(name);
+    if (known !== undefined) return known;
+    if (visiting.has(name) || !Object.hasOwn(bag, name) || !Object.hasOwn(definitions, name)) {
+      return false;
+    }
+    visiting.add(name);
+    const definition = definitions[name];
+    const refs = new Set<string>();
+    collectRefTargets(definition, refs);
+    for (const ref of parser.extractReferences(definition)) refs.add(ref);
+    const chained = new Set<string>();
+    collectConditionTargets(definition, chained);
+    const verdict =
+      [...refs].every((ref) => trustedParameters.has(ref) || STABLE_PSEUDO_PARAMETERS.has(ref)) &&
+      [...chained].every((next) => trusted(next, visiting));
+    visiting.delete(name);
+    memo.set(name, verdict);
+    return verdict;
+  };
+  const names = new Set<string>();
+  for (const name of Object.keys(bag)) if (trusted(name, new Set())) names.add(name);
+  return names;
+}
+
+/**
+ * Pseudo parameters whose value a deploy of the same stack cannot change
+ * (go-to-k/cdkd#4479). Any other pseudo parameter is not trusted.
+ */
+const STABLE_PSEUDO_PARAMETERS: ReadonlySet<string> = new Set([
+  'AWS::Region',
+  'AWS::AccountId',
+  'AWS::Partition',
+  'AWS::StackName',
+  'AWS::URLSuffix',
+]);
+
+/**
+ * What one node knows for certain, for classifying the rows it hands its
+ * nested children (go-to-k/cdkd#4479). See {@link StackDiffResult.trust}.
+ */
+export interface NodeTrust {
+  /** Parameters whose bound value the next deploy binds too. */
+  parameters: ReadonlySet<string>;
+  /** Conditions with a verdict computed (or reused) from trusted inputs only. */
+  conditions: ReadonlySet<string>;
+  /**
+   * Resources whose physical id and recorded attributes the next deploy keeps:
+   * their change is `NO_CHANGE` AND everything their entry reads is trusted
+   * ({@link trustedResourceNames}). A `NO_CHANGE` computed from a guessed
+   * input is no evidence.
+   */
+  resources: ReadonlySet<string>;
+}
+
+/**
+ * The one DEFAULT-DENY classifier behind a node's trust (go-to-k/cdkd#4479).
+ * A value is trusted only when every leaf it reads is
+ * - a literal (a string carrying a public `{{resolve:ssm:...}}` excluded: the
+ *   diff resolves that live);
+ * - a stable pseudo parameter ({@link STABLE_PSEUDO_PARAMETERS}) or
+ *   `AWS::NoValue`;
+ * - a parameter in `parameters`;
+ * - the CHOSEN branch of an `Fn::If`, or a `{Condition: X}`, on a condition in
+ *   `conditions`;
+ * - a `Ref` / `Fn::GetAtt` / `${X}` / `${X.Attr}` the `resourceLeaf`
+ *   callback trusts;
+ * combined only through `Fn::Join` / `Fn::Select` / `Fn::Split` / `Fn::Sub`
+ * / `Fn::Base64` / `Fn::FindInMap`, and (when `plainObjects`) plain
+ * containers. Anything else (an unknown intrinsic, a cross-stack read, a
+ * structure this cannot classify) is not trusted.
+ */
+function makeTrustClassifier(options: {
+  parameters: ReadonlySet<string>;
+  conditions: ReadonlySet<string>;
+  bag: Record<string, boolean> | undefined;
+  resourceLeaf: (logicalId: string, attribute: string | undefined) => boolean;
+  plainObjects: boolean;
+}): (value: unknown) => boolean {
+  const { parameters, conditions, bag, resourceLeaf, plainObjects } = options;
+  const conditionTrusted = (name: unknown): name is string =>
+    typeof name === 'string' &&
+    conditions.has(name) &&
+    bag !== undefined &&
+    Object.hasOwn(bag, name);
+  const nameTrusted = (name: string, locals: ReadonlySet<string>): boolean => {
+    if (locals.has(name)) return true;
+    if (STABLE_PSEUDO_PARAMETERS.has(name) || name === 'AWS::NoValue') return true;
+    if (parameters.has(name)) return true;
+    const dot = name.indexOf('.');
+    if (dot > 0) return resourceLeaf(name.slice(0, dot), name.slice(dot + 1));
+    return resourceLeaf(name, undefined);
+  };
+  const literalTrusted = (text: string): boolean => !text.includes('{{resolve:ssm:');
+  const subTrusted = (template: unknown, locals: ReadonlySet<string>): boolean => {
+    if (typeof template !== 'string' || !literalTrusted(template)) return false;
+    for (const match of template.matchAll(/\$\{([^}]*)\}/g)) {
+      const name = match[1]!;
+      if (name.startsWith('!')) continue;
+      if (!nameTrusted(name.trim(), locals)) return false;
+    }
+    return true;
+  };
+  const walk = (node: unknown): boolean => {
+    if (typeof node === 'string') return literalTrusted(node);
+    if (typeof node === 'number' || typeof node === 'boolean' || node === null) return true;
+    if (Array.isArray(node)) return node.every(walk);
+    if (typeof node !== 'object') return false;
+    const keys = Object.keys(node);
+    const key = keys[0];
+    const intrinsic =
+      keys.length === 1 &&
+      key !== undefined &&
+      (key === 'Ref' || key === 'Condition' || key.startsWith('Fn::'));
+    if (!intrinsic) {
+      return plainObjects && Object.values(node as Record<string, unknown>).every(walk);
+    }
+    const operand = (node as Record<string, unknown>)[key];
+    switch (key) {
+      case 'Ref':
+        return typeof operand === 'string' && nameTrusted(operand, new Set());
+      case 'Condition':
+        return conditionTrusted(operand);
+      case 'Fn::GetAtt': {
+        const [logicalId, attribute] = Array.isArray(operand)
+          ? operand
+          : typeof operand === 'string'
+            ? [operand.slice(0, operand.indexOf('.')), operand.slice(operand.indexOf('.') + 1)]
+            : [];
+        return (
+          typeof logicalId === 'string' &&
+          typeof attribute === 'string' &&
+          logicalId.length > 0 &&
+          resourceLeaf(logicalId, attribute)
+        );
+      }
+      case 'Fn::If': {
+        if (!Array.isArray(operand) || operand.length !== 3) return false;
+        const [condition, whenTrue, whenFalse] = operand as [unknown, unknown, unknown];
+        if (!conditionTrusted(condition)) return false;
+        return walk(bag![condition] ? whenTrue : whenFalse);
+      }
+      case 'Fn::Sub': {
+        if (typeof operand === 'string') return subTrusted(operand, new Set());
+        if (!Array.isArray(operand) || operand.length !== 2) return false;
+        const [template, variables] = operand as [unknown, unknown];
+        if (!variables || typeof variables !== 'object' || Array.isArray(variables)) return false;
+        if (!Object.values(variables).every(walk)) return false;
+        return subTrusted(template, new Set(Object.keys(variables)));
+      }
+      case 'Fn::Join':
+      case 'Fn::Select':
+      case 'Fn::Split':
+      case 'Fn::Base64':
+      case 'Fn::FindInMap':
+        return walk(operand);
+      default:
+        return false;
+    }
+  };
+  return walk;
+}
+
+/**
+ * A resource LEAF: a trusted resource's physical id, or an attribute its
+ * record HOLDS. A nested stack's attributes are excluded: its outputs can
+ * move with no change to its row.
+ */
+function trustedResourceLeaf(
+  trustedResources: ReadonlySet<string>,
+  state: StackState
+): (logicalId: string, attribute: string | undefined) => boolean {
+  return (logicalId, attribute) => {
+    if (!trustedResources.has(logicalId)) return false;
+    const record = Object.hasOwn(state.resources, logicalId)
+      ? state.resources[logicalId]
+      : undefined;
+    if (!record) return false;
+    if (attribute === undefined) {
+      return typeof record.physicalId === 'string' && record.physicalId.length > 0;
+    }
+    if (record.resourceType === NESTED_STACK_RESOURCE_TYPE) return false;
+    return record.attributes !== undefined && Object.hasOwn(record.attributes, attribute);
+  };
+}
+
+/**
+ * The resources of this node the next deploy leaves as they are recorded
+ * (go-to-k/cdkd#4479): `NO_CHANGE` here, AND every leaf of the entry that
+ * change was computed from (`Properties`, `Condition`, `DeletionPolicy`,
+ * `UpdateReplacePolicy`) trusted, a resource leaf only through a resource
+ * already in the set. A `NO_CHANGE` computed over a guessed binding is no
+ * evidence. A LEAST fixpoint, so a reference cycle is never trusted.
+ */
+function trustedResourceNames(
+  template: CloudFormationTemplate,
+  state: StackState,
+  changes: ReadonlyMap<string, ResourceChange>,
+  parameters: ReadonlySet<string>,
+  conditions: ReadonlySet<string>,
+  bag: Record<string, boolean> | undefined
+): Set<string> {
+  const trusted = new Set<string>();
+  const entries = Object.entries((template.Resources ?? {}) as Record<string, unknown>).filter(
+    ([logicalId, entry]) =>
+      changes.get(logicalId)?.changeType === 'NO_CHANGE' &&
+      Object.hasOwn(state.resources, logicalId) &&
+      entry !== null &&
+      typeof entry === 'object'
+  );
+  const classify = makeTrustClassifier({
+    parameters,
+    conditions,
+    bag,
+    resourceLeaf: trustedResourceLeaf(trusted, state),
+    plainObjects: true,
+  });
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [logicalId, entry] of entries) {
+      if (trusted.has(logicalId)) continue;
+      const record = entry as Record<string, unknown>;
+      const read = [
+        record['Condition'] === undefined ? undefined : { Condition: record['Condition'] },
+        record['Properties'],
+        record['DeletionPolicy'],
+        record['UpdateReplacePolicy'],
+      ];
+      if (read.every((part) => part === undefined || classify(part))) {
+        trusted.add(logicalId);
+        grew = true;
+      }
+    }
+  }
+  return trusted;
+}
+
+/**
+ * Whether a nested-stack row value is one this diff KNOWS the next deploy
+ * passes (go-to-k/cdkd#4479): {@link makeTrustClassifier} over the parent
+ * node's trust, a resource leaf only through `trust.resources`. A row value is
+ * a scalar or an intrinsic, so a plain object is not trusted. The child's
+ * recorded-verdict fingerprint never reads an untrusted key; the comparison
+ * binding is unaffected.
+ */
+function rowValueTrusted(
+  value: unknown,
+  parentState: StackState,
+  parentConditions: Record<string, boolean> | undefined,
+  trust: NodeTrust
+): boolean {
+  return makeTrustClassifier({
+    parameters: trust.parameters,
+    conditions: trust.conditions,
+    bag: parentConditions,
+    resourceLeaf: trustedResourceLeaf(trust.resources, parentState),
+    plainObjects: false,
+  })(value);
 }
 
 /**
@@ -2114,7 +2535,17 @@ async function resolveChildStackParameters(
   // The parent node's read-only healer (issue go-to-k/cdkd#3456): the deploy
   // resolves this row's `Parameters` on a parent-engine context, which carries
   // the parent's healer.
-  attributeHealer?: StaleAttributeHealer
+  attributeHealer?: StaleAttributeHealer,
+  /**
+   * Filled with every row key whose value THREW here (go-to-k/cdkd#4479). The
+   * child binds its own `Default` for such a key, which is right for the
+   * comparison but no evidence of what the deploy binds, so the child's
+   * recorded-verdict fingerprint must not read it. An `AWS::NoValue` key is
+   * not one: the deploy binds the `Default` there too.
+   */
+  unresolvedKeys?: Set<string>,
+  /** What the parent node knows for certain; see {@link rowValueTrusted}. */
+  trust?: NodeTrust
 ): Promise<Record<string, unknown>> {
   const rawParams = parentStackRow.Properties?.['Parameters'];
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
@@ -2123,6 +2554,13 @@ async function resolveChildStackParameters(
   const resolver = new IntrinsicFunctionResolver(region, { cfnFallback: cfnFallback ?? true });
   const resolved: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(rawParams as Record<string, unknown>)) {
+    // go-to-k/cdkd#4479: only a value this diff KNOWS the deploy passes may
+    // feed the child's recorded-verdict fingerprint (default deny, see
+    // `rowValueTrusted`). Marked before resolving, because an `AWS::NoValue`
+    // is skipped below either way.
+    if (trust === undefined || !rowValueTrusted(value, parentState, parentConditions, trust)) {
+      unresolvedKeys?.add(name);
+    }
     try {
       const resolvedValue = await resolver.resolve(value, {
         template: parentTemplate,
@@ -2161,6 +2599,7 @@ async function resolveChildStackParameters(
     } catch {
       // Unresolvable (e.g. references a not-yet-deployed resource): omit it so
       // the child diff falls back to the intrinsic-vs-resolved comparison.
+      unresolvedKeys?.add(name);
     }
   }
   return resolved;
@@ -2255,6 +2694,11 @@ export async function buildDiffTree(args: {
    */
   parameters?: Record<string, unknown>;
   /**
+   * The input parameters the parent row names but could not resolve for this
+   * diff (go-to-k/cdkd#4479); see `computeStackDiff`'s option of this name.
+   */
+  parentUnresolvedParameters?: ReadonlySet<string>;
+  /**
    * Per-type property normalization shared with the deploy engine (issue
    * #1591). Threaded through the whole tree so a nested child's preview
    * narrows exactly like its apply.
@@ -2348,6 +2792,7 @@ export async function buildDiffTree(args: {
     diffCalculator,
     parentHasSecretReference,
     parameters,
+    parentUnresolvedParameters,
     canonicalizeProperties,
     assetRedirect,
     cfnFallback,
@@ -2407,6 +2852,7 @@ export async function buildDiffTree(args: {
       diffCalculator,
       {
         ...(parameters && { parameters }),
+        ...(parentUnresolvedParameters && { parentUnresolvedParameters }),
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
@@ -2432,6 +2878,7 @@ export async function buildDiffTree(args: {
     printingSecrets,
     resolvedParameters,
     conditions,
+    trust,
   } = stackDiff;
   // The SAME state the diff read. `collectCcApiRoutes` reads `provisionedBy`
   // off each record for the sticky-Cloud-Control annotation, and an adopted
@@ -2553,6 +3000,7 @@ export async function buildDiffTree(args: {
     // `Ref` / `Fn::GetAtt` to a resource this node just adopted resolves on
     // the deploy path and would drop here, swallowed by the best-effort catch,
     // leaving the child preview degraded for a reason nothing prints.
+    const childUnresolvedParameters = new Set<string>();
     const childParameters = await resolveChildStackParameters(
       resource,
       effectiveTemplate,
@@ -2564,7 +3012,9 @@ export async function buildDiffTree(args: {
       conditions,
       cfnFallback,
       printingSecrets,
-      attributeHealer
+      attributeHealer,
+      childUnresolvedParameters,
+      trust
     );
     node.children.push(
       await buildDiffTree({
@@ -2577,6 +3027,7 @@ export async function buildDiffTree(args: {
         stateBackend,
         diffCalculator,
         parameters: childParameters,
+        parentUnresolvedParameters: childUnresolvedParameters,
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(assetRedirect && { assetRedirect }),
         ...(cfnFallback !== undefined && { cfnFallback }),
