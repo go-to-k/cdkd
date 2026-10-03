@@ -25,12 +25,7 @@ import {
 import { nullPrototypeRecord } from '../utils/own-keys.js';
 import { CdkdError, SynthesisError } from '../utils/error-handler.js';
 import { collectStackMessages, type StackMessage } from './stack-messages.js';
-import {
-  failedStageNote,
-  renderStagePath,
-  stageScopedError,
-  type FailedStage,
-} from './failed-stages.js';
+import { renderStagePath, stageLoadError, stageScopedError } from './failed-stages.js';
 
 /**
  * Stack information extracted from cloud assembly
@@ -134,20 +129,12 @@ export interface StackInfo {
 }
 
 /**
- * Everything one assembly read yields: the stacks, plus the Stages that could
- * not be read at all (issue
- * [#3482](https://github.com/go-to-k/cdkd/issues/3482)). A caller that only
- * wants the stacks uses `getAllStacks`.
+ * Everything one assembly read yields: the stacks of the assembly and of every
+ * Stage under it. A caller that only wants the stacks uses `getAllStacks`.
  */
 export interface AssemblyContents {
-  /** Stacks from this assembly and every Stage under it that loaded. */
+  /** Stacks from this assembly and every Stage under it. */
   stacks: StackInfo[];
-
-  /**
-   * Stages whose own `manifest.json` could not be read, in traversal order and
-   * at any depth. Empty on every healthy assembly.
-   */
-  failedStages: FailedStage[];
 }
 
 /**
@@ -195,13 +182,10 @@ function manifestReadFailureText(error: unknown): string {
  * reason, guards the twin refusals in `src/cli/commands/diff-recursive.ts`
  * (go-to-k/cdkd#3243).
  *
- * ONE value leaves this class UNSANITIZED: a failed Stage's path
- * ([#3482](https://github.com/go-to-k/cdkd/issues/3482)), which is a match key
- * as well as the subject of a sentence. `failed-stages.ts` renders it at each
- * display site with `displayIdent` — it is an IDENTIFIER interpolated into
- * prose rather than free-form text quoted as a value, so the denylist's
- * tolerance of quotes and spaces is a spoof surface there. See
- * `FailedStage.stagePath`.
+ * ONE value is rendered differently: a Stage's path, which
+ * `failed-stages.ts` renders with `displayIdent` -- it is an IDENTIFIER
+ * interpolated into prose rather than free-form text quoted as a value, so the
+ * denylist's tolerance of quotes and spaces is a spoof surface there.
  */
 export class AssemblyReader {
   private logger = getLogger().child('AssemblyReader');
@@ -226,31 +210,22 @@ export class AssemblyReader {
   }
 
   /**
-   * Read an assembly: all its stacks (recursing into nested assemblies /
-   * Stages) plus the Stages that could not be read at all.
-   *
-   * Only ONE failure is tolerated while walking a Stage — the read of the
-   * Stage's own `manifest.json`, which is the legitimate "this Stage
-   * references a directory that was never synthesized" case. Every REFUSAL
-   * raised while reading a Stage's contents propagates out of the recursion
-   * exactly as it does at the top level (issue
-   * [#3482](https://github.com/go-to-k/cdkd/issues/3482)).
+   * Read an assembly: all its stacks, recursing into nested assemblies /
+   * Stages. Nothing is tolerated while walking a Stage: a Stage whose own
+   * `manifest.json` cannot be read is fatal, as an unreadable top-level
+   * manifest is, and so is every refusal raised while reading its contents
+   * (issue [#3507](https://github.com/go-to-k/cdkd/issues/3507)).
    */
   readAssembly(
     assemblyDir: string,
     manifest: AssemblyManifest,
     assetOutdir: string = assemblyDir
   ): AssemblyContents {
-    const failedStages: FailedStage[] = [];
-    const stacks = this.collectStacks(assemblyDir, manifest, assetOutdir, failedStages);
-    return { stacks, failedStages };
+    return { stacks: this.collectStacks(assemblyDir, manifest, assetOutdir) };
   }
 
   /**
    * Get all stacks from assembly (recursively traverses nested assemblies / Stages)
-   *
-   * Discards the failed-Stage records `readAssembly` returns; a caller that
-   * reports on a selection failure wants that method instead.
    */
   getAllStacks(
     assemblyDir: string,
@@ -266,16 +241,11 @@ export class AssemblyReader {
     return this.readAssembly(assemblyDir, manifest, assetOutdir).stacks;
   }
 
-  /**
-   * The recursive half of `readAssembly`. `failedStages` is the accumulator
-   * shared by every level, so a Stage that fails three levels down is still
-   * reported to the top-level caller.
-   */
+  /** The recursive half of `readAssembly`. */
   private collectStacks(
     assemblyDir: string,
     manifest: AssemblyManifest,
-    assetOutdir: string,
-    failedStages: FailedStage[]
+    assetOutdir: string
   ): StackInfo[] {
     if (!manifest.artifacts) {
       this.logger.warn('No artifacts found in manifest');
@@ -304,7 +274,7 @@ export class AssemblyReader {
           | { directoryName?: string; displayName?: unknown }
           | undefined;
         if (props?.directoryName) {
-          // Containment BEFORE the tolerant read, and a THROW (issue
+          // Containment BEFORE the manifest read, and a THROW (issue
           // go-to-k/cdkd#3489). A nested assembly whose `directoryName` escapes
           // would otherwise be swallowed into a warning that silently drops
           // every stack under the Stage.
@@ -324,31 +294,17 @@ export class AssemblyReader {
           const nestedDir = resolved.path;
           // CDK writes the Stage's construct path as the nested assembly's
           // `properties.displayName`; the artifact id is the fallback.
-          //
-          // RAW, deliberately: this value is a MATCH KEY as well as the
-          // subject of a message, and `failed-stages.ts` renders it at each
-          // display site instead. Sanitizing it here made the stored form
-          // disagree with the user's pattern. See `FailedStage.stagePath`.
+          // Kept RAW and rendered at each display site by `failed-stages.ts`.
           const stagePath =
             typeof props.displayName === 'string' && props.displayName.length > 0
               ? props.displayName
               : artifactId;
 
-          // THE SCOPE OF THIS `try` IS THE CLASSIFIER (issue
-          // go-to-k/cdkd#3482). Exactly one failure is tolerated — the read of
-          // the Stage's OWN manifest.json — because a Stage referencing a
-          // directory that was never synthesized must not abort a run
-          // targeting unrelated top-level stacks. Everything else raised while
-          // reading a Stage is a deliberate REFUSAL (`buildAssetManifestMap`'s
-          // escaping asset manifest, `extractStackInfo`'s missing / escaping
-          // `templateFile`, its unreadable template, its absolute
-          // `Metadata['aws:asset:path']` tripwire, a deeper Stage's escaping
-          // `directoryName`), and a refusal that is fatal at the top level must
-          // be fatal here too — otherwise a hardened check degrades to advice
-          // the moment the same stack sits inside a Stage. So the recursive
-          // call sits OUTSIDE the try rather than being classified by error
-          // type or message: a wider try is what downgraded them before.
-          //
+          // A Stage whose own manifest cannot be read is FATAL, like an
+          // unreadable top-level manifest and like the AWS CDK CLI, which loads
+          // every nested assembly before selecting a stack (issue
+          // go-to-k/cdkd#3507). It was tolerated once (#3482), and the Stage's
+          // stacks then silently left every selection over the app.
           let nestedManifest: AssemblyManifest;
           try {
             nestedManifest = this.readManifest(nestedDir);
@@ -368,25 +324,17 @@ export class AssemblyReader {
             const reason =
               `${manifestReadFailureText(error)} reading ` +
               `${renderStagePath(props.directoryName)}/manifest.json`;
-            this.logger.warn(`Failed to read nested assembly: ${reason}`);
-            // Recorded so stack SELECTION can name this Stage instead of
-            // answering "not found" for a stack that may well exist under it.
-            failedStages.push({ stagePath, reason });
-            continue;
+            throw stageLoadError(stagePath, reason);
           }
 
           // `assetOutdir` unchanged: a Stage's assets live in the APP's
-          // outdir, never in the Stage's own directory. `failedStages` is
-          // threaded through so a Stage failing at any depth reaches the
-          // top-level caller.
+          // outdir, never in the Stage's own directory.
           //
           // This catch RE-THROWS, always — it adds the Stage's name to a
-          // refusal whose text names only the stack, and is not a second
-          // tolerance point.
+          // refusal whose text names only the stack, and is not a tolerance
+          // point.
           try {
-            stacks.push(
-              ...this.collectStacks(nestedDir, nestedManifest, assetOutdir, failedStages)
-            );
+            stacks.push(...this.collectStacks(nestedDir, nestedManifest, assetOutdir));
           } catch (error) {
             throw stageScopedError(stagePath, error);
           }
@@ -402,15 +350,14 @@ export class AssemblyReader {
    * Get a specific stack by name
    */
   getStack(assemblyDir: string, manifest: AssemblyManifest, stackName: string): StackInfo {
-    const { stacks, failedStages } = this.readAssembly(assemblyDir, manifest);
+    const { stacks } = this.readAssembly(assemblyDir, manifest);
     const stack = stacks.find((s) => s.stackName === stackName);
 
     if (!stack) {
       throw new SynthesisError(
         `Stack ${displayStackName(stackName)} not found in assembly. ` +
           // `Available: ` with nothing after it says less than the plain
-          // sentence, and an empty assembly is exactly what a failed Stage
-          // produces. Same choice as `renderNoStackMatch`.
+          // sentence. Same choice as `renderNoStackMatch`.
           // `displayIdent`, matching `describeStack` in
           // `src/cli/stack-matcher.ts`, which renders the same value into the
           // same clause for every other command. The two used to disagree --
@@ -423,10 +370,7 @@ export class AssemblyReader {
             ? `Available: ${stacks
                 .map((s) => displayIdent(s.stackName, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }))
                 .join(', ')}`
-            : 'The assembly has no stacks') +
-          // "not found" is a lie while a Stage failed to load: its stacks were
-          // dropped from `stacks` above (issue go-to-k/cdkd#3482).
-          failedStageNote([stackName], failedStages)
+            : 'The assembly has no stacks')
       );
     }
 

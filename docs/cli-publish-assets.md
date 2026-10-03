@@ -49,11 +49,9 @@ The concurrency defaults are the same as `cdkd deploy`'s; see
   argument containing `/` is matched against the CDK display path, one without it
   against the physical CloudFormation name. `*` wildcards work in both forms.
 - With no argument, `publish-assets` covers the single stack when the app
-  defines only one; with more than one it lists them and exits `1`. When a CDK
-  Stage failed to load it is refused, since the one stack that synthesized is
-  not known to be the app's only stack.
-- `--all` covers every stack in the app. When a CDK Stage failed to load,
-  `--all` is refused rather than publishing only the stacks that did synthesize
+  defines only one; with more than one it lists them and exits `1`.
+- `--all` covers every stack in the app.
+- A CDK Stage that failed to load stops the run whatever was selected
   ([the failed-Stage note](cli-deploy-safety.md#a-pre-synthesized-assembly-is-trusted-input)).
 - Each selected stack's asset manifest is fed into the same work graph `deploy`
   uses, with stack concurrency set to zero so no stack-deploy work runs.

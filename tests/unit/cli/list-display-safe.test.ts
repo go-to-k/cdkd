@@ -102,7 +102,6 @@ function primeStacks(stacks: StackInfo[]): void {
     stacks,
     manifest: {},
     assemblyDir: '/tmp/cdk.out',
-    failedStages: [],
   });
 }
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { DeployCancelledError } from '../../../src/utils/error-handler.js';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
 
 /**
  * Issue [#1960](https://github.com/go-to-k/cdkd/issues/1960) — `cdkd deploy`
@@ -199,15 +200,15 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
 }));
 
 const synthStacks = vi.hoisted(() => ({ value: [] as unknown[] }));
-/** Stages the synthesis reported as unreadable (go-to-k/cdkd#3482). */
-const synthFailedStages = vi.hoisted(() => ({ value: [] as unknown[] }));
+/** An error synthesis raises, e.g. a Stage that failed to load (go-to-k/cdkd#3507). */
+const synthError = vi.hoisted(() => ({ value: undefined as Error | undefined }));
 
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
   Synthesizer: vi.fn().mockImplementation(() => ({
-    synthesize: vi.fn(async () => ({
-      stacks: synthStacks.value,
-      failedStages: synthFailedStages.value,
-    })),
+    synthesize: vi.fn(async () => {
+      if (synthError.value) throw synthError.value;
+      return { stacks: synthStacks.value };
+    }),
     expandMacrosForStacks: vi.fn(async () => undefined),
   })),
   synthesisStatusMessage: vi.fn((_app: string, msg: string) => msg),
@@ -261,7 +262,7 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     failingStacks.clear();
     cancelledStacks.clear();
     synthStacks.value = [makeStack('StackA')];
-    synthFailedStages.value = [];
+    synthError.value = undefined;
     errorSpy.mockClear();
     warnSpy.mockClear();
     infoSpy.mockClear();
@@ -596,20 +597,11 @@ describe('deploy hands the RAW region spelling to the marker resolver (issue #20
   });
 });
 
-/**
- * Issue go-to-k/cdkd#3482: a Stage that failed to load dropped every stack
- * under it from the assembly listing, so `cdkd deploy 'MyStage/MyStack'`
- * answered "no stacks matching" — a different problem than the one that
- * occurred. `renderNoStackMatch` takes the synthesis result as a REQUIRED
- * argument, so a site that forgets it no longer compiles; what this covers is
- * that the deploy command reaches that renderer at all, with the result its
- * own synthesis produced.
- */
-describe('deploy names a Stage that failed to load (issue #3482)', () => {
+describe('deploy fails on a Stage that failed to load (issue #3507)', () => {
   beforeEach(() => {
     engineResults.clear();
     synthStacks.value = [makeStack('TopStack')];
-    synthFailedStages.value = [];
+    synthError.value = undefined;
     errorSpy.mockClear();
     process.env['CDKD_NO_LIVE'] = '1';
   });
@@ -623,103 +615,36 @@ describe('deploy names a Stage that failed to load (issue #3482)', () => {
     return errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
   }
 
-  it('reports the failed Stage instead of a bare no-match', async () => {
-    synthFailedStages.value = [
-      { stagePath: 'MyStage', reason: 'ENOENT: no such file or directory' },
-    ];
+  it('fails with the synthesis error for every selection, before any stack reaches the engine', async () => {
+    // A Stage whose manifest cannot be read is fatal at synthesis, as in the
+    // AWS CDK CLI, so no selection -- --all, none, a wildcard or an exact
+    // name -- acts on the stacks that did load.
+    for (const argv of [['--all'], [], ['Top*'], ['TopStack']]) {
+      errorSpy.mockClear();
+      vi.mocked(DeployEngine).mockClear();
+      synthError.value = stageLoadError('MyStage', 'ENOENT reading assembly-MyStage/manifest.json');
 
+      const code = await runDeploy([...argv, '--yes']);
+
+      expect(code, argv.join(' ')).toBe(1);
+      expect(reported()).toContain('Stage MyStage failed to load: ENOENT reading assembly-MyStage/manifest.json');
+      expect(vi.mocked(DeployEngine)).not.toHaveBeenCalled();
+    }
+  });
+
+  it('reports a pattern that matched nothing with the stacks the app has', async () => {
     const code = await runDeploy(['MyStage/Api', '--yes']);
-
-    expect(code).toBe(1);
-    expect(reported()).toContain('No stacks matching MyStage/Api found in assembly');
-    expect(reported()).toContain("Stage MyStage failed to load");
-  });
-
-  it('names the failed Stage with NO pattern, where the branch chain answered "Multiple stacks found: ."', async () => {
-    // The headline case of the issue: an app whose only stacks live in an
-    // unsynthesized Stage, run with no arguments. Zero stacks reached the
-    // multiple-stacks arm, which printed an empty list and never called the
-    // renderer at all.
-    synthStacks.value = [];
-    synthFailedStages.value = [
-      { stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' },
-    ];
-
-    const code = await runDeploy(['--yes']);
-
-    expect(code).toBe(1);
-    expect(reported()).not.toContain('Multiple stacks found');
-    expect(reported()).toContain('No stacks found in assembly');
-    expect(reported()).toContain('Stage MyStage failed to load');
-  });
-
-  it('leaves the no-match message untouched when every Stage loaded', async () => {
-    const code = await runDeploy(['MyStage/Api', '--yes']);
-
-    expect(code).toBe(1);
-    expect(reported()).toContain('No stacks matching MyStage/Api found in assembly');
-    expect(reported()).not.toContain('failed to load');
-  });
-
-  // Issue go-to-k/cdkd#3507: `--all` with a surviving stack next to a failed
-  // Stage deployed the survivor and exited 0, the Stage's warning the only
-  // signal. Refused before any stack reaches the engine.
-  it('refuses --all when a Stage failed to load, naming it and the survivors', async () => {
-    synthFailedStages.value = [
-      { stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' },
-    ];
-
-    const code = await runDeploy(['--all', '--yes']);
-
-    expect(code).toBe(1);
-    expect(reported()).toContain('--all would deploy only part of this app; refusing.');
-    expect(reported()).toContain('Synthesized: TopStack');
-    expect(reported()).toContain('Stage MyStage failed to load');
-    expect(vi.mocked(DeployEngine)).not.toHaveBeenCalled();
-  });
-
-  it('still deploys every stack with --all when every Stage loaded', async () => {
-    const code = await runDeploy(['--all', '--yes']);
-
-    expect(code).toBeUndefined();
-    expect(reported()).not.toContain('refusing');
-    expect(vi.mocked(DeployEngine)).toHaveBeenCalled();
-  });
-
-  // Issue go-to-k/cdkd#3507: a bare `cdkd deploy` auto-selected the one stack
-  // that synthesized beside a failed Stage, as if the app held only that stack.
-  it('refuses the single-stack auto-pick when a Stage failed to load', async () => {
-    synthFailedStages.value = [
-      { stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' },
-    ];
-
-    const code = await runDeploy(['--yes']);
 
     expect(code).toBe(1);
     expect(reported()).toContain(
-      'With no stack named, cdkd would deploy only part of this app; refusing. ' +
-        'Synthesized: TopStack. Stage MyStage failed to load'
+      'No stacks matching MyStage/Api found in assembly. Available: TopStack'
     );
-    expect(vi.mocked(DeployEngine)).not.toHaveBeenCalled();
   });
 
-  it('still deploys a NAMED survivor beside a failed Stage', async () => {
-    synthFailedStages.value = [
-      { stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' },
-    ];
-
-    const code = await runDeploy(['TopStack', '--yes']);
-
-    expect(code).toBeUndefined();
-    expect(reported()).not.toContain('refusing');
-    expect(vi.mocked(DeployEngine)).toHaveBeenCalled();
-  });
-
-  it('still auto-picks the single stack when every Stage loaded', async () => {
-    const code = await runDeploy(['--yes']);
-
-    expect(code).toBeUndefined();
-    expect(reported()).not.toContain('refusing');
-    expect(vi.mocked(DeployEngine)).toHaveBeenCalled();
+  it('control: --all and the single-stack auto-pick deploy when synthesis succeeds', async () => {
+    vi.mocked(DeployEngine).mockClear();
+    expect(await runDeploy(['--all', '--yes'])).toBeUndefined();
+    expect(await runDeploy(['--yes'])).toBeUndefined();
+    expect(vi.mocked(DeployEngine)).toHaveBeenCalledTimes(2);
   });
 });

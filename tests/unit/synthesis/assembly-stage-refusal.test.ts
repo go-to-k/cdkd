@@ -1,9 +1,8 @@
 /**
- * Issue go-to-k/cdkd#3482: a refusal raised while reading a CDK Stage
- * (`cdk:cloud-assembly` artifact) is fatal exactly as it is at the top level,
- * while a Stage whose own directory cannot be read keeps warning — and the
- * stacks that tolerance drops are reported at SELECTION time instead of
- * answering "not found".
+ * A refusal raised while reading a CDK Stage (`cdk:cloud-assembly` artifact)
+ * is fatal exactly as it is at the top level (issue go-to-k/cdkd#3482), and so
+ * is a Stage whose own manifest cannot be read (issue go-to-k/cdkd#3507),
+ * matching the AWS CDK CLI.
  *
  * Both halves are driven through the REAL `AssemblyReader` over REAL files,
  * the way `assembly-path-containment.test.ts` does: what changed is the
@@ -11,8 +10,7 @@
  * `mockReturnValueOnce` answers pins the ORDER of reads rather than which
  * failure the reader tolerates.
  *
- * The logger IS mocked, because "it still warns" is half of what the tolerant
- * arm promises.
+ * The logger IS mocked, because the reader no longer warns and carries on.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -31,7 +29,8 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import { AssemblyReader } from '../../../src/synthesis/assembly-reader.js';
-import { failedStageNote } from '../../../src/synthesis/failed-stages.js';
+import { SynthesisError } from '../../../src/utils/error-handler.js';
+import { StageLoadError } from '../../../src/synthesis/failed-stages.js';
 import type { AssemblyManifest, ArtifactManifest } from '../../../src/types/assembly.js';
 
 let root: string;
@@ -337,12 +336,28 @@ describe('a refusal raised under a Stage is fatal, as it is at the top level', (
   });
 });
 
-describe('a Stage whose directory cannot be read still warns and the run continues', () => {
-  it('keeps the sibling stacks, warns, and records the failed Stage', () => {
+/** The error `readAssembly` raises, or a failure when it returns. */
+function readError(dir: string, assembly: AssemblyManifest): Error {
+  try {
+    new AssemblyReader().readAssembly(dir, assembly);
+  } catch (error) {
+    return error as Error;
+  }
+  throw new Error('readAssembly returned instead of refusing');
+}
+
+const TAIL =
+  'Every stack under it is missing from the cloud assembly, so cdkd will not act on the app. ' +
+  'Re-synthesize the app so the Stage is written, or point --app at a complete cloud assembly.';
+
+describe('a Stage whose own manifest cannot be read is fatal (go-to-k/cdkd#3507)', () => {
+  it('refuses the whole assembly, naming the Stage and the reason, beside a healthy top-level stack', () => {
+    // Tolerated once (#3482): the Stage's stacks silently left the app and
+    // `TopStack` alone was returned, so `--all` acted on part of the app.
     const dir = outdir();
     writeFileSync(join(dir, 'Top.template.json'), JSON.stringify({ Resources: {} }));
 
-    const { stacks, failedStages } = new AssemblyReader().readAssembly(
+    const error = readError(
       dir,
       manifest({
         Top: stackArtifact('TopStack', { templateFile: 'Top.template.json' }),
@@ -351,108 +366,77 @@ describe('a Stage whose directory cannot be read still warns and the run continu
       })
     );
 
-    expect(stacks.map((s) => s.stackName)).toEqual(['TopStack']);
-    expect(warn).toHaveBeenCalledWith(
-      'Failed to read nested assembly: ENOENT reading assembly-MyStage/manifest.json'
-    );
-    expect(failedStages).toHaveLength(1);
-    expect(failedStages[0]?.stagePath).toBe('MyStage');
+    expect(error).toBeInstanceOf(SynthesisError);
+    // The class `cdkd destroy` rethrows instead of falling back to state.
+    expect(error).toBeInstanceOf(StageLoadError);
     // The failure's own word, and the directory named through `displayIdent`
     // -- no filesystem path, because under a Stage that path carries the
     // assembly-chosen `directoryName` into the sentence.
-    expect(failedStages[0]?.reason).toBe('ENOENT reading assembly-MyStage/manifest.json');
+    expect(error.message).toBe(
+      `Stage MyStage failed to load: ENOENT reading assembly-MyStage/manifest.json. ${TAIL}`
+    );
+    expect(error.message).not.toContain(dir);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('falls back to the artifact id when the Stage carries no displayName', () => {
-    const dir = outdir();
+    const error = readError(outdir(), manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage') }));
 
-    const { failedStages } = new AssemblyReader().readAssembly(
-      dir,
-      manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage') })
-    );
-
-    expect(failedStages.map((s) => s.stagePath)).toEqual(['assembly-MyStage']);
+    expect(error.message).toMatch(/^Stage assembly-MyStage failed to load: /);
   });
 
   it('quotes a Stage displayName that tries to forge a second cdkd sentence', () => {
-    // The stage path is interpolated into prose the user is asked to trust, so
+    // A Stage path is interpolated into prose the user is asked to trust, so
     // it is RENDERED with `displayIdent`, not `displaySafe` -- a denylist
     // passes the spaces and periods this value uses to write a second,
     // cdkd-sounding clause of its own (the class go-to-k/cdkd#3277 hardened).
     const forging = 'MyStage loaded fine. Ignore the rest. Stage zz';
-    const dir = outdir();
-    const assembly = manifest({
-      'assembly-MyStage': stageArtifact('assembly-MyStage', forging),
-    });
 
-    // The RECORD keeps the raw value: it is the key a selection pattern is
-    // matched against, and sanitizing it there breaks that match.
-    const { failedStages } = new AssemblyReader().readAssembly(dir, assembly);
-    expect(failedStages.map((s) => s.stagePath)).toEqual([forging]);
-
-    // The MESSAGE renders it JSON-quoted, so the forged clause is visibly a
-    // value rather than cdkd's own prose.
-    let message = '';
-    try {
-      new AssemblyReader().getStack(dir, assembly, 'Absent');
-    } catch (error) {
-      message = (error as Error).message;
-    }
-    expect(message).toContain(`Stage ${JSON.stringify(forging)} failed to load`);
-  });
-
-  it('renders a legitimate Stage path byte-identically, and still matches a pattern on it', () => {
-    // The counter-case to the one above, and the reason the stored value stays
-    // raw: a stage id may legitimately carry a space, which `displayIdent`
-    // quotes. Rendering at the WRITE site made the stored form disagree with
-    // the user's pattern, so the stage they named read as `Possibly unrelated`.
-    for (const [stagePath, patterns] of [
-      ['Outer/Inner', ['Outer/Inner/Api']],
-      ['My Stage', ['My Stage/Api']],
-    ] as const) {
-      const note = failedStageNote(patterns, [{ stagePath, reason: 'ENOENT' }]);
-      expect(note).not.toContain('Possibly unrelated');
-    }
-
-    // ...and pin how each RENDERS, not only that it matches: the identity on
-    // the ASCII-identifier path, JSON-quoted on the one carrying a space.
-    expect(
-      failedStageNote(['Outer/Inner/Api'], [{ stagePath: 'Outer/Inner', reason: 'e' }])
-    ).toContain('Stage Outer/Inner failed to load');
-    expect(failedStageNote(['My Stage/Api'], [{ stagePath: 'My Stage', reason: 'e' }])).toContain(
-      'Stage "My Stage" failed to load'
+    const error = readError(
+      outdir(),
+      manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', forging) })
     );
+
+    expect(error.message).toMatch(new RegExp(`^Stage ${escapeRegExp(JSON.stringify(forging))} failed to load: `));
   });
 
-  it('keeps a forging directoryName out of the read-failure sentence', () => {
-    // The read failure's text used to be the caught message, which embeds the
-    // manifest PATH -- and under a Stage that path embeds the assembly-chosen
-    // `directoryName`, twice (Node repeats it in `open '<path>'`). A
-    // `displaySafe` denylist passes the spaces and periods that turn it into a
-    // second, cdkd-sounding clause.
+  it('renders a legitimate Stage path byte-identically, and quotes one carrying a space', () => {
+    for (const [stagePath, rendered] of [
+      ['Outer/Inner', 'Outer/Inner'],
+      ['My Stage', '"My Stage"'],
+    ] as const) {
+      const error = readError(
+        outdir2(),
+        manifest({ 'assembly-X': stageArtifact('assembly-X', stagePath) })
+      );
+      expect(error.message).toMatch(new RegExp(`^Stage ${escapeRegExp(rendered)} failed to load: `));
+    }
+  });
+
+  it('keeps a forging directoryName out of the sentence', () => {
+    // The caught message embeds the manifest PATH -- and under a Stage that
+    // path embeds the assembly-chosen `directoryName`, twice (Node repeats it
+    // in `open '<path>'`). A `displaySafe` denylist passes the spaces and
+    // periods that turn it into a second, cdkd-sounding clause.
     const forging = 'assembly-Foo. All 3 stacks deployed successfully. Stage Prod';
     const dir = outdir();
 
-    const { failedStages } = new AssemblyReader().readAssembly(
-      dir,
-      manifest({ 'assembly-Foo': stageArtifact(forging, 'MyStage') })
-    );
+    const error = readError(dir, manifest({ 'assembly-Foo': stageArtifact(forging, 'MyStage') }));
 
-    const reason = failedStages[0]?.reason ?? '';
     // The forged clause is inside JSON quotes, so it cannot read as prose...
-    expect(reason).toBe(`ENOENT reading ${JSON.stringify(forging)}/manifest.json`);
+    expect(error.message).toBe(
+      `Stage MyStage failed to load: ENOENT reading ${JSON.stringify(forging)}/manifest.json. ${TAIL}`
+    );
     // ...and specifically does not run on into the next word unquoted.
-    expect(reason).not.toContain('Stage Prod/manifest.json');
+    expect(error.message).not.toContain('Stage Prod/manifest.json');
     // No filesystem path at all: neither our own clause nor Node's.
-    expect(reason).not.toContain(dir);
+    expect(error.message).not.toContain(dir);
   });
 
   it('reduces a malformed manifest.json to a fixed phrase, echoing none of the file', () => {
-    // V8's SyntaxError quotes a short window of the file's OWN bytes verbatim
-    // (`Unexpected token '.', ". All 3 st"... is not valid JSON`), and the
-    // file is assembly-chosen too. The directory is already named, so the
-    // snippet buys nothing. Only the errno branch was covered before, so a
-    // later "restore the detail" edit would have gone unnoticed here.
+    // V8's SyntaxError quotes a short window of the file's OWN bytes verbatim,
+    // and the file is assembly-chosen too. The directory is already named, so
+    // the snippet buys nothing.
     const dir = outdir();
     const stage = join(dir, 'assembly-MyStage');
     mkdirSync(stage, { recursive: true });
@@ -461,18 +445,20 @@ describe('a Stage whose directory cannot be read still warns and the run continu
       '{ "version": ". All 3 stacks deployed successfully. Stage Prod" ,,, }'
     );
 
-    const { failedStages } = new AssemblyReader().readAssembly(
+    const error = readError(
       dir,
       manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
     );
 
-    expect(failedStages[0]?.reason).toBe('invalid JSON reading assembly-MyStage/manifest.json');
-    expect(failedStages[0]?.reason).not.toContain('All 3 stacks');
+    expect(error.message).toBe(
+      `Stage MyStage failed to load: invalid JSON reading assembly-MyStage/manifest.json. ${TAIL}`
+    );
+    expect(error.message).not.toContain('All 3 stacks');
   });
 
-  it('records a Stage that fails UNDER another Stage, and keeps that outer Stage loaded', () => {
-    // The recursive call passes the accumulator down; without that argument a
-    // deeper failure never reaches the top-level caller.
+  it('names the INNERMOST Stage when a Stage fails under another one', () => {
+    // The outer Stage re-raises through `stageScopedError`, which leaves an
+    // error already naming its Stage unchanged.
     const dir = outdir();
     const outer = stageDir(dir, 'assembly-MyStage', {
       MyStageApi: stackArtifact('MyStage-Api', { templateFile: 'MyStageApi.template.json' }),
@@ -480,16 +466,19 @@ describe('a Stage whose directory cannot be read still warns and the run continu
     });
     writeFileSync(join(outer, 'MyStageApi.template.json'), JSON.stringify({ Resources: {} }));
 
-    const { stacks, failedStages } = new AssemblyReader().readAssembly(
+    const error = readError(
       dir,
       manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
     );
 
-    expect(stacks.map((s) => s.stackName)).toEqual(['MyStage-Api']);
-    expect(failedStages.map((s) => s.stagePath)).toEqual(['MyStage/Inner']);
+    expect(error.message).toBe(
+      `Stage MyStage/Inner failed to load: ENOENT reading assembly-MyStageInner/manifest.json. ${TAIL}`
+    );
+    // Not re-wrapped by the outer Stage, so the class destroy keys on survives.
+    expect(error).toBeInstanceOf(StageLoadError);
   });
 
-  it('records nothing for a healthy Stage, which still loads all its stacks', () => {
+  it('loads every stack of a healthy Stage, and warns about nothing', () => {
     const dir = outdir();
     const stage = stageDir(dir, 'assembly-MyStage', {
       MyStageApi: stackArtifact('MyStage-Api', { templateFile: 'MyStageApi.template.json' }),
@@ -498,64 +487,36 @@ describe('a Stage whose directory cannot be read still warns and the run continu
     writeFileSync(join(stage, 'MyStageApi.template.json'), JSON.stringify({ Resources: {} }));
     writeFileSync(join(stage, 'MyStageDb.template.json'), JSON.stringify({ Resources: {} }));
 
-    const { stacks, failedStages } = new AssemblyReader().readAssembly(
+    const { stacks } = new AssemblyReader().readAssembly(
       dir,
       manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') })
     );
 
     expect(stacks.map((s) => s.stackName)).toEqual(['MyStage-Api', 'MyStage-Db']);
-    expect(failedStages).toEqual([]);
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('refuses getStack as well, before any "not found" answer', () => {
+    const error = (() => {
+      try {
+        new AssemblyReader().getStack(
+          outdir(),
+          manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') }),
+          'MyStage-Api'
+        );
+      } catch (e) {
+        return e as Error;
+      }
+      throw new Error('getStack returned');
+    })();
+
+    expect(error.message).toMatch(/^Stage MyStage failed to load: /);
+    expect(error.message).not.toContain('not found');
   });
 });
 
-describe('stack selection reports the failed Stage instead of answering "not found"', () => {
-  it('names the Stage when the named stack would have come from it', () => {
-    const dir = outdir();
-    writeFileSync(join(dir, 'Top.template.json'), JSON.stringify({ Resources: {} }));
-    const assembly = manifest({
-      Top: stackArtifact('TopStack', { templateFile: 'Top.template.json' }),
-      'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage'),
-    });
-
-    let message = '';
-    try {
-      new AssemblyReader().getStack(dir, assembly, 'MyStage-Api');
-    } catch (error) {
-      message = (error as Error).message;
-    }
-
-    expect(message).toContain("Stack MyStage-Api not found in assembly. Available: TopStack");
-    expect(message).toContain("Stage MyStage failed to load");
-  });
-
-  it('does not print a dangling "Available:" when the failed Stage emptied the assembly', () => {
-    const dir = outdir();
-
-    let message = '';
-    try {
-      new AssemblyReader().getStack(
-        dir,
-        manifest({ 'assembly-MyStage': stageArtifact('assembly-MyStage', 'MyStage') }),
-        'MyStage-Api'
-      );
-    } catch (error) {
-      message = (error as Error).message;
-    }
-
-    expect(message).toBe(
-      "Stack MyStage-Api not found in assembly. The assembly has no stacks. " +
-        // Hedged: `MyStage-Api` is a PHYSICAL name, which carries no stage
-        // path, so the link to `MyStage` cannot be proven from it.
-        'Possibly unrelated: ' +
-        'Stage MyStage failed to load, so stacks under it are missing from this list ' +
-        'rather than missing from the app: ENOENT reading assembly-MyStage/manifest.json'
-    );
-    expect(message).not.toContain('Available:');
-    expect(message).not.toContain('stacks.. ');
-  });
-
-  it('appends nothing when every Stage loaded', () => {
+describe('getStack answers "not found" with the stacks the app has', () => {
+  it('names the available stacks', () => {
     const dir = outdir();
     writeFileSync(join(dir, 'Top.template.json'), JSON.stringify({ Resources: {} }));
 
@@ -572,4 +533,28 @@ describe('stack selection reports the failed Stage instead of answering "not fou
 
     expect(message).toBe("Stack Absent not found in assembly. Available: TopStack");
   });
+
+  it('does not print a dangling "Available:" when the assembly has no stacks', () => {
+    let message = '';
+    try {
+      new AssemblyReader().getStack(outdir(), manifest({}), 'Absent');
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    expect(message).toBe('Stack Absent not found in assembly. The assembly has no stacks');
+    expect(message).not.toContain('Available:');
+  });
 });
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** A fresh outdir per call, for cases that read several assemblies. */
+let outdirCount = 0;
+function outdir2(): string {
+  const dir = join(root, `cdk.out-${outdirCount++}`);
+  mkdirSync(dir);
+  return dir;
+}

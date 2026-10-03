@@ -108,6 +108,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import { createPublishAssetsCommand } from '../../../src/cli/commands/publish-assets.js';
 import { PartialFailureError } from '../../../src/utils/error-handler.js';
+import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
 
 /**
  * Helper to build a StackInfo with sane defaults.
@@ -210,25 +211,6 @@ describe('cdkd publish-assets', () => {
       expect(mockSynthesize).not.toHaveBeenCalled();
     });
 
-    // Issue go-to-k/cdkd#3482: the WIRING half. A Stage that failed to load
-    // dropped every stack under it, so the bare "no stacks matching" names the
-    // wrong problem; the command must read `failedStages` off the synthesis
-    // result. Deleting that argument leaves the renderer's own tests green.
-    it('names a failed Stage in the no-matching-stacks refusal', async () => {
-      mockSynthesize.mockResolvedValue({
-        stacks: [makeStack({ stackName: 'TopStack' })],
-        manifest: {},
-        assemblyDir: '/tmp/cdk.out',
-        failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT: no such file or directory' }],
-      });
-
-      await runCmd(['MyStage/Api']);
-
-      const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(reported).toContain('No stacks matching MyStage/Api found in assembly');
-      expect(reported).toContain("Stage MyStage failed to load");
-    });
-
     it('renders the stack name display-safe on the NORMAL-RUN progress line', async () => {
       // `Publishing assets for stack: ...` is `logger.info` at default
       // verbosity, so it prints while a SUCCESSFUL publish streams -- the one
@@ -239,7 +221,6 @@ describe('cdkd publish-assets', () => {
         stacks: [makeStack({ stackName: hostile })],
         manifest: {},
         assemblyDir: '/tmp/cdk.out',
-        failedStages: [],
       });
 
       await runCmd(['--all']);
@@ -257,92 +238,35 @@ describe('cdkd publish-assets', () => {
       expect(withoutColour).toContain('"StackA [2K Published 3 assets. 0 errors."');
     });
 
-    it('names the failed Stage with NO pattern, where the branch chain answered "Multiple stacks found: ."', async () => {
-      mockSynthesize.mockResolvedValue({
-        stacks: [],
-        manifest: {},
-        assemblyDir: '/tmp/cdk.out',
-        failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
-      });
+    // Issue go-to-k/cdkd#3507: a Stage that failed to load fails synthesis, as
+    // in the AWS CDK CLI, so no selection publishes the stacks that loaded.
+    it('fails with the synthesis error for every selection, before publishing anything', async () => {
+      for (const argv of [['--all'], [], ['Top*'], ['TopStack']]) {
+        mockLoggerError.mockReset();
+        mockLoggerInfo.mockReset();
+        mockSynthesize.mockRejectedValue(
+          stageLoadError('MyStage', 'ENOENT reading assembly-MyStage/manifest.json')
+        );
 
-      await runCmd([]);
+        const { exitCode } = await runCmd(argv);
 
-      const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(reported).not.toContain('Multiple stacks found');
-      expect(reported).toContain('No stacks found in assembly');
-      expect(reported).toContain('Stage MyStage failed to load');
+        expect(exitCode, argv.join(' ')).toBe(1);
+        const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(reported).toContain(
+          'Stage MyStage failed to load: ENOENT reading assembly-MyStage/manifest.json'
+        );
+        const published = mockLoggerInfo.mock.calls
+          .map((c) => String(c[0]))
+          .filter((l) => l.includes('Publishing assets for stack:'));
+        expect(published).toEqual([]);
+      }
     });
 
-    // Issue go-to-k/cdkd#3507: `--all` with surviving stacks next to a failed
-    // Stage published the survivors' assets and exited 0. The every-Stage-loaded
-    // `--all` arm is the display-safe case above, which reaches the publish line.
-    it('refuses --all when a Stage failed to load, before publishing anything', async () => {
+    it('still auto-picks the single stack when synthesis succeeds', async () => {
       mockSynthesize.mockResolvedValue({
         stacks: [makeStack({ stackName: 'TopStack' })],
         manifest: {},
         assemblyDir: '/tmp/cdk.out',
-        failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
-      });
-
-      const { exitCode } = await runCmd(['--all']);
-
-      expect(exitCode).toBe(1);
-      const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(reported).toContain('--all would publish assets for only part of this app; refusing.');
-      expect(reported).toContain('Synthesized: TopStack');
-      expect(reported).toContain('Stage MyStage failed to load');
-      const published = mockLoggerInfo.mock.calls
-        .map((c) => String(c[0]))
-        .filter((l) => l.includes('Publishing assets for stack:'));
-      expect(published).toEqual([]);
-    });
-
-    // Issue go-to-k/cdkd#3507: a bare `cdkd publish-assets` auto-selected the
-    // one survivor as if the app held only that stack.
-    it('refuses the single-stack auto-pick when a Stage failed to load', async () => {
-      mockSynthesize.mockResolvedValue({
-        stacks: [makeStack({ stackName: 'TopStack' })],
-        manifest: {},
-        assemblyDir: '/tmp/cdk.out',
-        failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
-      });
-
-      const { exitCode } = await runCmd([]);
-
-      expect(exitCode).toBe(1);
-      const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(reported).toContain(
-        'With no stack named, cdkd would publish assets for only part of this app; refusing. ' +
-          'Synthesized: TopStack. Stage MyStage failed to load'
-      );
-      const published = mockLoggerInfo.mock.calls
-        .map((c) => String(c[0]))
-        .filter((l) => l.includes('Publishing assets for stack:'));
-      expect(published).toEqual([]);
-    });
-
-    it('still publishes a NAMED survivor beside a failed Stage', async () => {
-      mockSynthesize.mockResolvedValue({
-        stacks: [makeStack({ stackName: 'TopStack' })],
-        manifest: {},
-        assemblyDir: '/tmp/cdk.out',
-        failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
-      });
-
-      await runCmd(['TopStack']);
-
-      const published = mockLoggerInfo.mock.calls
-        .map((c) => String(c[0]))
-        .filter((l) => l.includes('Publishing assets for stack:'));
-      expect(published.length).toBe(1);
-    });
-
-    it('still auto-picks the single stack when every Stage loaded', async () => {
-      mockSynthesize.mockResolvedValue({
-        stacks: [makeStack({ stackName: 'TopStack' })],
-        manifest: {},
-        assemblyDir: '/tmp/cdk.out',
-        failedStages: [],
       });
 
       await runCmd([]);
@@ -353,19 +277,19 @@ describe('cdkd publish-assets', () => {
       expect(published.length).toBe(1);
     });
 
-    it('leaves the no-matching-stacks refusal untouched when every Stage loaded', async () => {
+    it('reports a pattern that matched nothing with the stacks the app has', async () => {
       mockSynthesize.mockResolvedValue({
         stacks: [makeStack({ stackName: 'TopStack' })],
         manifest: {},
         assemblyDir: '/tmp/cdk.out',
-        failedStages: [],
       });
 
       await runCmd(['MyStage/Api']);
 
       const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(reported).toContain('No stacks matching MyStage/Api found in assembly');
-      expect(reported).not.toContain('failed to load');
+      expect(reported).toContain(
+        'No stacks matching MyStage/Api found in assembly. Available: TopStack'
+      );
     });
 
     it('forwards --asset-publish-concurrency and --image-build-concurrency to WorkGraph', async () => {

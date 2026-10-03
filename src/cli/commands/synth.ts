@@ -201,7 +201,7 @@ export async function synthCommand(
   // synthesis here would diverge from `cdk` in a way nothing would report.
   const selected = stackPatterns.length > 0 ? matchStacks(allStacks, stackPatterns) : allStacks;
   if (selected.length === 0) {
-    throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
+    throw new Error(renderNoStackMatch(stackPatterns, allStacks));
   }
   const stacks = selected;
 

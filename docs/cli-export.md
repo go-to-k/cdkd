@@ -25,7 +25,7 @@ cdkd export                                      # auto-detected for single-stac
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[stack]` | — | Stack to export. Auto-detected when the app defines a single stack — not when a CDK Stage failed to load, since the one stack that synthesized is not known to be the only one. |
+| `[stack]` | — | Stack to export. Auto-detected when the app defines a single stack. |
 | `--cfn-stack-name <name>` | the cdkd stack name | Name of the destination CloudFormation stack. |
 | `--cfn-child-stack-name <pair...>` | `~` replaced by `-` | Per-nested-child destination name, `'<cdkdName>=<cfnName>'`. Repeatable. |
 | `--template <path>` | — | Pre-rendered CloudFormation template (JSON or YAML, format auto-detected). Skips synth. |

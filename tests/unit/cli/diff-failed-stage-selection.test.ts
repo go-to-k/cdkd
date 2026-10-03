@@ -1,13 +1,8 @@
 /**
- * `cdkd diff`'s half of issue go-to-k/cdkd#3482: a Stage that failed to load
- * dropped every stack under it, so selection answered "no stacks matching" —
- * a different problem than the one that occurred.
- *
- * `diff` was the one replaced call site with no wiring test. The renderer's
- * own tests say nothing about whether this command reaches it with the
- * synthesis result its own synthesis produced, and the argument being required
- * only fences the SHAPE — a stale or empty list typechecks. So this drives the
- * REAL commander command and reads the message the user would be shown.
+ * `cdkd diff` and a CDK Stage that failed to load (issue go-to-k/cdkd#3507):
+ * synthesis fails, as in the AWS CDK CLI, so no selection diffs the stacks
+ * that did load. Drives the REAL commander command and reads the message the
+ * user would be shown.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
@@ -65,6 +60,7 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
 }));
 
 import { createDiffCommand } from '../../../src/cli/commands/diff.js';
+import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
 
 /** Drive the real command and return what the user was told. */
 let lastExitCode: number | undefined;
@@ -95,149 +91,60 @@ function makeStack(stackName: string) {
   };
 }
 
-describe('cdkd diff names a Stage that failed to load (issue #3482)', () => {
-  beforeEach(() => {
-    mockSynthesize.mockReset();
-    mockLoggerError.mockReset();
-  });
-
-  it('names the failed Stage when the pattern targets one', async () => {
-    mockSynthesize.mockResolvedValue({
-      stacks: [makeStack('TopStack')],
-      manifest: {},
-      assemblyDir: '/tmp/cdk.out',
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
-    });
-
-    const reported = await runDiff(['MyStage/Api']);
-
-    expect(reported).toContain('No stacks matching MyStage/Api found in assembly');
-    expect(reported).toContain('Stage MyStage failed to load');
-  });
-
-  it('leaves the message untouched when every Stage loaded', async () => {
-    mockSynthesize.mockResolvedValue({
-      stacks: [makeStack('TopStack')],
-      manifest: {},
-      assemblyDir: '/tmp/cdk.out',
-      failedStages: [],
-    });
-
-    const reported = await runDiff(['MyStage/Api']);
-
-    expect(reported).toContain('No stacks matching MyStage/Api found in assembly');
-    expect(reported).not.toContain('failed to load');
-  });
-
-  it('names the failed Stage with NO pattern, where the branch chain used to answer "Multiple stacks found: ."', async () => {
-    // The headline case: an app whose only stacks live in an unsynthesized
-    // Stage, run with no arguments. Zero stacks fell through to the
-    // multiple-stacks arm, which printed an empty list and never reached the
-    // renderer at all.
-    mockSynthesize.mockResolvedValue({
-      stacks: [],
-      manifest: {},
-      assemblyDir: '/tmp/cdk.out',
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
-    });
-
-    const reported = await runDiff([]);
-
-    expect(reported).not.toContain('Multiple stacks found');
-    expect(reported).toContain('No stacks found in assembly');
-    expect(reported).toContain('Stage MyStage failed to load');
-  });
-});
-
-describe('cdkd diff --all refuses a partial app when a Stage failed to load (issue #3507)', () => {
+describe('cdkd diff fails on a Stage that failed to load (issue #3507)', () => {
   beforeEach(() => {
     mockSynthesize.mockReset();
     mockLoggerError.mockReset();
     mockExpandMacros.mockClear();
   });
 
-  it('refuses --all with surviving stacks, naming the Stage and the survivors', async () => {
-    mockSynthesize.mockResolvedValue({
-      stacks: [makeStack('TopStack')],
-      manifest: {},
-      assemblyDir: '/tmp/cdk.out',
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
-    });
-
-    const reported = await runDiff(['--all']);
-
-    expect(reported).toContain('--all would diff only part of this app; refusing.');
-    expect(reported).toContain('Synthesized: TopStack');
-    expect(reported).toContain('Stage MyStage failed to load');
-    // Refused, not merely logged: nothing was selected for diffing.
-    expect(mockExpandMacros).not.toHaveBeenCalled();
-  });
-
-  it('still selects every stack with --all when every Stage loaded', async () => {
-    mockSynthesize.mockResolvedValue({
-      stacks: [makeStack('TopStack')],
-      manifest: {},
-      assemblyDir: '/tmp/cdk.out',
-      failedStages: [],
-    });
-
-    const reported = await runDiff(['--all']);
-
-    expect(reported).not.toContain('refusing');
-    expect(mockExpandMacros).toHaveBeenCalledWith(
-      [expect.objectContaining({ stackName: 'TopStack' })],
-      expect.anything()
+  it('fails with the synthesis error for every selection, before anything is diffed', async () => {
+    // Each selection spelled as its own literal call, so the commander-parse
+    // convention fence can count its operands.
+    const expectFatal = (reported: string, label: string): void => {
+      expect(lastExitCode, label).toBe(1);
+      expect(reported, label).toContain(
+        'Stage MyStage failed to load: ENOENT reading assembly-MyStage/manifest.json'
+      );
+      expect(mockExpandMacros, label).not.toHaveBeenCalled();
+      mockLoggerError.mockReset();
+    };
+    mockSynthesize.mockRejectedValue(
+      stageLoadError('MyStage', 'ENOENT reading assembly-MyStage/manifest.json')
     );
+
+    expectFatal(await runDiff(['--all']), '--all');
+    expectFatal(await runDiff([]), 'bare');
+    expectFatal(await runDiff(['Top*']), 'wildcard');
+    expectFatal(await runDiff(['TopStack']), 'exact');
   });
 
-  // A bare `cdkd diff` auto-selected the one survivor as if the app held only
-  // that stack.
-  it('refuses the single-stack auto-pick when a Stage failed to load', async () => {
+  it('reports a pattern that matched nothing with the stacks the app has', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [makeStack('TopStack')],
       manifest: {},
       assemblyDir: '/tmp/cdk.out',
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
     });
 
-    const reported = await runDiff([]);
+    const reported = await runDiff(['MyStage/Api']);
 
     expect(lastExitCode).toBe(1);
     expect(reported).toContain(
-      'With no stack named, cdkd would diff only part of this app; refusing. ' +
-        'Synthesized: TopStack. Stage MyStage failed to load'
+      'No stacks matching MyStage/Api found in assembly. Available: TopStack'
     );
-    expect(mockExpandMacros).not.toHaveBeenCalled();
   });
 
-  it('still diffs a NAMED survivor beside a failed Stage', async () => {
+  it('control: --all and the single-stack auto-pick diff when synthesis succeeds', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [makeStack('TopStack')],
       manifest: {},
       assemblyDir: '/tmp/cdk.out',
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
     });
 
-    const reported = await runDiff(['TopStack']);
+    await runDiff(['--all']);
+    await runDiff([]);
 
-    expect(reported).not.toContain('refusing');
-    expect(mockExpandMacros).toHaveBeenCalledWith(
-      [expect.objectContaining({ stackName: 'TopStack' })],
-      expect.anything()
-    );
-  });
-
-  it('still auto-picks the single stack when every Stage loaded', async () => {
-    mockSynthesize.mockResolvedValue({
-      stacks: [makeStack('TopStack')],
-      manifest: {},
-      assemblyDir: '/tmp/cdk.out',
-      failedStages: [],
-    });
-
-    const reported = await runDiff([]);
-
-    expect(reported).not.toContain('refusing');
+    expect(mockExpandMacros).toHaveBeenCalledTimes(2);
     expect(mockExpandMacros).toHaveBeenCalledWith(
       [expect.objectContaining({ stackName: 'TopStack' })],
       expect.anything()

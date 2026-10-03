@@ -23,15 +23,11 @@ vi.mock('../../../src/synthesis/app-executor.js', () => ({
 vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
   AssemblyReader: vi.fn().mockImplementation(() => ({
     readManifest: mockReadManifest,
-    // `Synthesizer` reads through `readAssembly`, which returns the stacks AND
-    // the Stages that failed to load (issue go-to-k/cdkd#3482). These tests
-    // stage only the stack list, so the mock wraps it in that record shape.
+    // `Synthesizer` reads through `readAssembly`, which returns the stacks in
+    // a record, so the mock wraps the staged list in that shape.
     // `getAllStacks` is deliberately NOT stubbed: a production call to it would
     // fail loudly here rather than pass silently.
-    readAssembly: (...args: unknown[]) => ({
-      stacks: mockAssemblyStacks(...args),
-      failedStages: [],
-    }),
+    readAssembly: (...args: unknown[]) => ({ stacks: mockAssemblyStacks(...args) }),
   })),
 }));
 

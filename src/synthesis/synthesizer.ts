@@ -3,7 +3,6 @@ import { resolve } from 'node:path';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { AppExecutor } from './app-executor.js';
 import { AssemblyReader, type StackInfo } from './assembly-reader.js';
-import type { FailedStage } from './failed-stages.js';
 import { ContextStore } from './context-store.js';
 import { ContextProviderRegistry } from './context-providers/index.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
@@ -138,21 +137,12 @@ export interface SynthesisResult {
   /** Assembly directory (absolute path) */
   assemblyDir: string;
 
-  /** All stacks in the assembly */
-  stacks: StackInfo[];
-
   /**
-   * Stages (`cdk:cloud-assembly` artifacts) whose own manifest could not be
-   * read, at any depth. Their stacks are ABSENT from `stacks`, so a caller
-   * reporting that a named stack was not found must say so — see
-   * `failedStageNote` (issue
-   * [#3482](https://github.com/go-to-k/cdkd/issues/3482)).
-   *
-   * REQUIRED, not optional: `renderNoStackMatch` takes this field as a
-   * required member so that a call site cannot quietly hand it an ad-hoc `{}`
-   * and lose the report. An assembly with no failed Stage carries `[]`.
+   * All stacks in the assembly, every Stage's included: a Stage whose own
+   * manifest cannot be read fails synthesis instead of being dropped (issue
+   * [#3507](https://github.com/go-to-k/cdkd/issues/3507)).
    */
-  failedStages: FailedStage[];
+  stacks: StackInfo[];
 }
 
 /**
@@ -187,7 +177,7 @@ export class Synthesizer {
     if (isPreSynthesizedAssembly(options.app)) {
       this.logger.debug(`Using pre-synthesized cloud assembly at ${appPath}`);
       const manifest = this.assemblyReader.readManifest(appPath);
-      const { stacks, failedStages } = this.assemblyReader.readAssembly(appPath, manifest);
+      const { stacks } = this.assemblyReader.readAssembly(appPath, manifest);
       // The pre-synth branch may still hit the macro-expander when an
       // assembly built elsewhere contains a `Transform` block.
       // Region + accountId resolution (the STS hop for the default
@@ -198,7 +188,7 @@ export class Synthesizer {
         await this.expandMacrosForStacks(stacks, options);
       }
       this.logger.debug(`Loaded ${stacks.length} stack(s) from pre-synthesized assembly`);
-      return { manifest, assemblyDir: appPath, stacks, failedStages };
+      return { manifest, assemblyDir: appPath, stacks };
     }
 
     const outputDir = resolve(options.output || 'cdk.out');
@@ -292,7 +282,7 @@ export class Synthesizer {
         // docs/design/463-cfn-macros.md. Selection-aware callers set
         // `deferMacroExpansion` and expand after stack selection
         // instead (issue #1150).
-        const { stacks, failedStages } = this.assemblyReader.readAssembly(outputDir, manifest);
+        const { stacks } = this.assemblyReader.readAssembly(outputDir, manifest);
         if (!options.deferMacroExpansion) {
           await this.expandMacrosForStacks(stacks, options, {
             region: explicitRegion,
@@ -301,7 +291,7 @@ export class Synthesizer {
         }
         this.logger.debug(`Synthesis complete: ${stacks.length} stack(s)`);
 
-        return { manifest, assemblyDir: outputDir, stacks, failedStages };
+        return { manifest, assemblyDir: outputDir, stacks };
       }
 
       // Missing context detected

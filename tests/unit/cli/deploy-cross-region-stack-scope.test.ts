@@ -205,7 +205,7 @@ const synthStacks = vi.hoisted(() => ({ value: [] as unknown[] }));
 
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
   Synthesizer: vi.fn().mockImplementation(() => ({
-    synthesize: vi.fn(async () => ({ stacks: synthStacks.value, failedStages: [] })),
+    synthesize: vi.fn(async () => ({ stacks: synthStacks.value })),
     expandMacrosForStacks: vi.fn(async () => undefined),
   })),
   synthesisStatusMessage: vi.fn((_app: string, msg: string) => msg),

@@ -4,8 +4,9 @@ import {
   stackMatchesPattern,
   describeStack,
   renderNoStackMatch,
-  renderAllWithFailedStages,
-  renderAutoPickWithFailedStages,
+  renderNotInAppWarning,
+  renderUnmatchedPatternsWarning,
+  unmatchedPatterns,
 } from '../../../src/cli/stack-matcher.js';
 import { PATHOLOGICAL_PATTERN, withoutRegExp } from '../_without-regexp.js';
 
@@ -183,9 +184,7 @@ describe('describeStack renders assembly-chosen names as identifiers', () => {
   it('carries the quoting into the Available clause', () => {
     const forging = 'TopStack. All 3 stacks deployed successfully';
 
-    const message = renderNoStackMatch(['Absent'], [{ stackName: forging }], {
-      failedStages: [],
-    });
+    const message = renderNoStackMatch(['Absent'], [{ stackName: forging }]);
 
     expect(message).toBe(
       `No stacks matching Absent found in assembly. Available: ${JSON.stringify(forging)}`
@@ -195,7 +194,7 @@ describe('describeStack renders assembly-chosen names as identifiers', () => {
 
 describe('renderNoStackMatch', () => {
   it('lists the available stacks in the parens form the patterns accept', () => {
-    expect(renderNoStackMatch(['Absent'], stacks, { failedStages: [] })).toBe(
+    expect(renderNoStackMatch(['Absent'], stacks)).toBe(
       'No stacks matching Absent found in assembly. Available: TopStack, ' +
         'MyStage-Api (MyStage/Api), MyStage-Db (MyStage/Db), ' +
         'OtherStage-Api (OtherStage/Api)'
@@ -203,121 +202,61 @@ describe('renderNoStackMatch', () => {
   });
 
   it('says only that the assembly is empty when no pattern was given', () => {
-    expect(renderNoStackMatch([], [], { failedStages: [] })).toBe(
+    expect(renderNoStackMatch([], [])).toBe(
       'No stacks found in assembly'
     );
   });
 
-  // Issue go-to-k/cdkd#3482: the whole reason the synthesis result is a
-  // REQUIRED argument rather than an optional extra.
-  it('appends the failed Stage a pattern targets', () => {
-    const message = renderNoStackMatch(['MyStage/Api'], [stacks[0]!], {
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT' }],
-    });
-
-    expect(message).toContain('No stacks matching MyStage/Api found in assembly');
-    expect(message).toContain('Stage MyStage failed to load');
-  });
-
   it('keeps the PATTERN when the assembly is empty, and drops only the stack list', () => {
-    // `Available: ` with nothing after it says less than the plain clause --
-    // but the pattern must survive, because with a non-ASCII Stage path it is
-    // the only thing in the message that identifies what the user asked for.
-    const message = renderNoStackMatch(['MyStage/Api'], [], {
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT' }],
-    });
-
-    expect(message).toContain('No stacks matching MyStage/Api found in assembly.');
-    expect(message).toContain('The assembly has no stacks');
-    expect(message).not.toContain('Available:');
-    // No hedge: the pattern names that stage.
-    expect(message).not.toContain('Possibly unrelated');
-  });
-
-  it('keeps the pattern on an empty assembly with NO failed Stage too', () => {
-    // The clause must not depend on whether a Stage failed -- only the
-    // appended sentence does.
-    expect(renderNoStackMatch(['MyStage/Api'], [], { failedStages: [] })).toBe(
+    // `Available: ` with nothing after it says less than the plain clause.
+    expect(renderNoStackMatch(['MyStage/Api'], [])).toBe(
       'No stacks matching MyStage/Api found in assembly. The assembly has no stacks'
     );
   });
 
-  it('does not hedge when NO pattern was given, since every failed Stage is the answer', () => {
-    const message = renderNoStackMatch([], [], {
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT' }],
-    });
-
-    expect(message).toBe(
-      'No stacks found in assembly. Stage MyStage failed to load, so stacks under it are ' +
-        'missing from this list rather than missing from the app: ENOENT'
-    );
-  });
 });
 
-// Issue go-to-k/cdkd#3507: `--all` beside a Stage that failed to load.
-describe('renderAllWithFailedStages', () => {
-  it('returns undefined when every Stage loaded, so --all proceeds', () => {
-    expect(renderAllWithFailedStages('deploy', stacks, { failedStages: [] })).toBeUndefined();
-    expect(renderAllWithFailedStages('deploy', stacks, { failedStages: undefined })).toBeUndefined();
+// Issue go-to-k/cdkd#3507: only `cdkd destroy` reports these, as the AWS CDK
+// CLI's destroy does.
+describe('unmatchedPatterns / renderUnmatchedPatternsWarning', () => {
+  it('lists the patterns that matched no stack, in argument order', () => {
+    expect(unmatchedPatterns(stacks, ['TopStack', 'Nope', 'MyStage/*', 'Gone*'])).toEqual([
+      'Nope',
+      'Gone*',
+    ]);
+    expect(unmatchedPatterns(stacks, ['TopStack'])).toEqual([]);
+    // Deduplicated, so a repeated typo is named once.
+    expect(unmatchedPatterns(stacks, ['Typo', 'Typo'])).toEqual(['Typo']);
   });
 
-  it('names the verb, the survivors in pattern form, every failed Stage unhedged, and the way through', () => {
-    const message = renderAllWithFailedStages('destroy', [stacks[0]!, stacks[1]!], {
-      failedStages: [
-        { stagePath: 'Prod', reason: 'ENOENT reading assembly-Prod/manifest.json' },
-        { stagePath: 'Outer/Inner', reason: 'EACCES reading assembly-Outer-Inner/manifest.json' },
-      ],
-    });
-
-    expect(message).toBe(
-      '--all would destroy only part of this app; refusing. ' +
-        'Synthesized: TopStack, MyStage-Api (MyStage/Api). ' +
-        'Stage Prod failed to load, so stacks under it are missing from this list rather than ' +
-        'missing from the app: ENOENT reading assembly-Prod/manifest.json ' +
-        'Stage Outer/Inner failed to load, so stacks under it are missing from this list rather ' +
-        'than missing from the app: EACCES reading assembly-Outer-Inner/manifest.json. ' +
-        'Fix each Stage that failed to load so it synthesizes, or name the stacks to destroy explicitly.'
+  it('words a name that is in state but not a stack of this app on its own', () => {
+    expect(renderNotInAppWarning(['P~C'])).toBe(
+      'P~C is in state but is not a stack of this app and was skipped. ' +
+        'A nested stack is destroyed with its parent; ' +
+        "another app's stack, with that app or by name through cdkd state destroy."
+    );
+    expect(renderNotInAppWarning(['A', 'B'])).toMatch(
+      /^A, B are in state but are not stacks of this app and were skipped\. /
     );
   });
 
-  it('quotes a forging Stage path and stack name rather than letting them read as cdkd clauses', () => {
-    const forgingStage = 'Prod. All stacks deployed successfully';
-    const forgingStack = 'TopStack. Nothing was skipped';
-
-    const message = renderAllWithFailedStages('deploy', [{ stackName: forgingStack }], {
-      failedStages: [{ stagePath: forgingStage, reason: 'ENOENT' }],
-    });
-
-    expect(message).toContain(`Synthesized: ${JSON.stringify(forgingStack)}.`);
-    expect(message).toContain(`Stage ${JSON.stringify(forgingStage)} failed to load`);
-  });
-});
-
-// Issue go-to-k/cdkd#3507: the single-stack auto-pick beside a Stage that
-// failed to load -- the one survivor is not known to be the app's only stack.
-describe('renderAutoPickWithFailedStages', () => {
-  it('returns undefined when every Stage loaded, so the auto-pick proceeds', () => {
-    expect(renderAutoPickWithFailedStages('deploy', [stacks[0]!], { failedStages: [] })).toBeUndefined();
-    expect(
-      renderAutoPickWithFailedStages('deploy', [stacks[0]!], { failedStages: undefined })
-    ).toBeUndefined();
+  it('warns with the patterns and where they were looked for', () => {
+    expect(renderUnmatchedPatternsWarning(['Nope'], 'in state')).toBe(
+      'Nope matched no stack in state and was skipped.'
+    );
+    expect(renderUnmatchedPatternsWarning(['A', 'B'], 'in state')).toBe(
+      'A, B matched no stack in state and were skipped.'
+    );
+    // A pattern holding the list separator is quoted, so it cannot read as two.
+    expect(renderUnmatchedPatternsWarning(['A,B', 'C'], 'in state')).toBe(
+      '"A,B", C matched no stack in state and were skipped.'
+    );
   });
 
-  it('words the refusal as the --all one, with the bare command as the selector', () => {
-    const failedStages = [{ stagePath: 'Prod', reason: 'ENOENT reading assembly-Prod/manifest.json' }];
+  it('renders a forging pattern as a quoted value on one line', () => {
+    const warning = renderUnmatchedPatternsWarning(['x\n[INFO] All clean'], 'in state');
 
-    const message = renderAutoPickWithFailedStages('deploy', [stacks[0]!], { failedStages });
-
-    expect(message).toBe(
-      'With no stack named, cdkd would deploy only part of this app; refusing. ' +
-        'Synthesized: TopStack. ' +
-        'Stage Prod failed to load, so stacks under it are missing from this list rather than ' +
-        'missing from the app: ENOENT reading assembly-Prod/manifest.json. ' +
-        'Fix each Stage that failed to load so it synthesizes, or name the stacks to deploy explicitly.'
-    );
-    // Same sentence after the selector as the --all refusal.
-    expect(message!.replace('With no stack named, cdkd', '--all')).toBe(
-      renderAllWithFailedStages('deploy', [stacks[0]!], { failedStages })
-    );
+    expect(warning).not.toContain('\n');
+    expect(warning).toMatch(/^"/);
   });
 });

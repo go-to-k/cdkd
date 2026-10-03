@@ -1301,46 +1301,26 @@ follow is refused as well. That is far beyond any CDK-generated assembly; in
 practice it takes symlinked directories, which give one template file many
 paths.
 
-**A refusal raised while reading a `Stage` stops the command, as the same
-refusal does at the top level.** Reading a Stage stays tolerant in exactly one
-place: when the Stage's own `manifest.json` cannot be read at all — the Stage
-was never synthesized — cdkd warns, continues, and the stacks under that Stage
-are simply not in the assembly. Because those stacks then cannot be selected,
-naming one afterwards reports the Stage rather than answering "no stacks
-matching":
+**A `Stage` whose own `manifest.json` cannot be read stops every command**,
+as the AWS CDK CLI does — the Stage was never synthesized, or its directory is
+gone:
 
 ```
-No stacks matching MyStage/Api found in assembly. Available: TopStack. Stage
-MyStage failed to load, so stacks under it are missing from this list rather
-than missing from the app: ENOENT reading assembly-MyStage/manifest.json
+Stage MyStage failed to load: ENOENT reading assembly-MyStage/manifest.json.
+Every stack under it is missing from the cloud assembly, so cdkd will not act
+on the app. Re-synthesize the app so the Stage is written, or point --app at a
+complete cloud assembly.
 ```
 
-The same sentence is appended when the app has no other stacks to list, and
-when you run with no stack argument at all — the case where every stack in the
-app lives under the Stage that failed. `cdkd scrub`, `cdkd import` and `cdkd export` print the same message.
-`cdkd destroy` appends it to its own
-empty-selection messages, to its `Could not determine which stacks belong to
-this app` refusal, and to the refusal of `--all` or a wildcard pattern over an
-app that synthesized no stacks.
-
-A pattern without a `/` matches the physical stack name, which carries no stage
-path, so the sentence is then prefixed `Possibly unrelated:` rather than
-claimed as the explanation.
-
-`--all` is refused whenever a Stage failed to load, even when other stacks did
-synthesize, in `cdkd deploy`, `cdkd destroy`, `cdkd diff`,
-`cdkd publish-assets` and `cdkd scrub`: it targets every stack in the app, so
-acting on the survivors and exiting 0 would report a partial run as a whole
-one. The refusal lists the stacks that did synthesize and names the Stage; name
-the stacks you want explicitly, or fix the Stage.
-
-The same applies with NO stack named, where a command auto-selects the app's
-only stack (`cdkd deploy`, `destroy`, `diff`, `publish-assets`, `scrub`,
-`import` and `export`): when a Stage failed to load, the one stack that
-synthesized is not known to be the app's only stack, so the command refuses
-with the same message, led by `With no stack named` instead of `--all`.
-`cdkd orphan` always names its stack in the construct path; a path under a
-Stage that failed to load is refused with the Stage named.
+This holds whatever is selected — `--all`, no stack, a wildcard, or an exact
+stack name, including one outside the Stage — and for `cdkd destroy` too,
+which otherwise falls back to state when an app cannot be synthesized at all.
+To reach a deployed stack by name without the app, use
+`cdkd state destroy '<stack>'`. Earlier releases tolerated the Stage and acted
+on the stacks that did load, so a run over the app could exit `0` having never
+looked at the Stage's stacks. `cdkd scrub` treats it as a refusal and exits
+`2` (`SCRUB_STAGE_LOAD_FAILED`), never `--fail`'s `1`, which means plaintext
+was found.
 
 Every other refusal under a Stage — an escaping or absent `templateFile`, an
 unreadable template, an escaping asset manifest, an absolute `aws:asset:path` —

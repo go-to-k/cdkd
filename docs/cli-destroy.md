@@ -56,25 +56,28 @@ against the display path, one without it against the physical name. Wildcards
 work in both forms (`cdkd destroy 'MyStage/*'`). Display-path matching needs
 synthesis to succeed, because a state record only carries physical names — so
 `cdkd state destroy`, which never synthesizes, matches physical names only.
-When the app defines a single stack, no name is needed — unless a CDK Stage
-failed to load, in which case the one stack that synthesized is not known to be
-the only one and `destroy` refuses until you name it.
+When the app defines a single stack, no name is needed.
 
 `--all` targets every stack in the current CDK app. Whenever more than one stack
 is selected — by `--all` or by naming several — they are ordered so that a
 consumer stack is destroyed before the producers it reads from. When the app
-synthesizes but yields no stacks, for example because every stack sits under a
-Stage that failed to load, `--all` and any wildcard pattern (`'*'`, `'Cdkd*'`)
-are refused: neither falls back to every stack in the state bucket. They are
+synthesizes but yields no stacks, `--all` and any wildcard pattern (`'*'`,
+`'Cdkd*'`) are refused: neither falls back to every stack in the state bucket. They are
 refused the same way when there is no synthesized app at all — synthesis failed,
 or no app is configured (`--app`, `CDKD_APP` or `cdk.json`) — because the state
 bucket can hold the stacks of every app sharing it; after a failed synthesis
 the synthesis error is printed beneath the refusal as its `Caused by:` line. In
 either case an exact physical stack name still resolves from state without a
-working app, and so does `cdkd state destroy '<stack>'`. When some stacks
-synthesize but a Stage failed to load, `--all` is refused too, because it would
-destroy the rest of the app and leave the Stage's stacks running; name the
-stacks to destroy explicitly.
+working app, and so does `cdkd state destroy '<stack>'`. A CDK Stage that
+failed to load is different: the app is there but incomplete, so `destroy`
+stops with that error whatever was selected, an exact name included, as the
+AWS CDK CLI does; the error names `cdkd state destroy '<stack>'`, which still
+needs no app
+([the failed-Stage note](cli-deploy-safety.md#a-pre-synthesized-assembly-is-trusted-input)).
+Each name that matches nothing is reported with a warning, as in the AWS CDK
+CLI. A name that IS in state but is not a stack of this app (a nested child,
+or another app's stack sharing the bucket), named beside ones that matched, is
+reported with its own warning and skipped.
 
 A nested-stack **child** cannot be destroyed directly: `cdkd destroy '<child>'`
 is refused, because the parent's `AWS::CloudFormation::Stack` row would then

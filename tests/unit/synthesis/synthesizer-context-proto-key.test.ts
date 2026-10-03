@@ -41,7 +41,7 @@ vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
             },
           ],
     }),
-    readAssembly: () => ({ stacks: [], failedStages: [] }),
+    readAssembly: () => ({ stacks: [] }),
   })),
 }));
 
