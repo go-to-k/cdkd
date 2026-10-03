@@ -22,7 +22,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { displaySafe } from '../../utils/display-safe.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import {
@@ -33,6 +33,7 @@ import {
   withErrorHandling,
 } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
+import { StageLoadError } from '../../synthesis/failed-stages.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
 import { startRunRecorder, recordRunFailed } from './deployment-events-run.js';
@@ -52,11 +53,11 @@ import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import {
   matchStacks,
   describeStack,
-  renderAllWithFailedStages,
-  renderAutoPickWithFailedStages,
+  renderNotInAppWarning,
+  renderUnmatchedPatternsWarning,
+  unmatchedPatterns,
   type StackLike,
 } from '../stack-matcher.js';
-import { failedStageNote, type FailedStage } from '../../synthesis/failed-stages.js';
 import { runDestroyForStack } from './destroy-runner.js';
 import {
   inferCrossStackStackDeps,
@@ -335,10 +336,6 @@ async function destroyCommand(
     // reverse-edge sort below). Only populated when synth succeeds; on the
     // state-only fallback path we have no templates and skip the inference.
     let synthScanStacks: CrossStackScanStack[] = [];
-    // Stays empty when synth fails: a Stage that failed to load says nothing
-    // about a stack found in STATE, so only a synthesized app can have lost a
-    // stack to one (#3507).
-    let failedStages: readonly FailedStage[] = [];
     let synthesized = false;
     // Why synth failed, carried to the refusals below as their `cause` so the
     // operator sees what to fix. Unset when synth succeeded or no app is
@@ -378,9 +375,27 @@ async function destroyCommand(
           stackName: s.stackName,
           template: s.template,
         }));
-        failedStages = result.failedStages;
         synthesized = true;
       } catch (error) {
+        // A CDK Stage that failed to load is FATAL, as in the AWS CDK CLI and
+        // every other cdkd command: the app is there but incomplete, so even
+        // an exact name does not fall back to state (#3507). `cdkd state
+        // destroy` needs no app and stays the way to reach a stack by name, so
+        // the error names it.
+        if (error instanceof StageLoadError) {
+          const named = new StageLoadError(
+            `${error.message} To destroy a deployed stack without the app: ` +
+              `cdkd state destroy ${commandHole('stack')}.`
+          );
+          // Keep the reader's frames under the new header, so `--verbose`
+          // points at where the Stage failed, not at this re-raise.
+          if (typeof error.stack === 'string') {
+            const headerLines = `${error.name}: ${error.message}`.split('\n').length;
+            const frames = error.stack.split('\n').slice(headerLines).join('\n');
+            if (frames.length > 0) named.stack = `${named.name}: ${named.message}\n${frames}`;
+          }
+          throw named;
+        }
         synthError = error instanceof Error ? error : new Error(String(error));
         logger.debug('Could not synthesize app, falling back to state-based stack list');
       }
@@ -400,12 +415,10 @@ async function destroyCommand(
         ? '--all'
         : wildcardPatterns.map((p) => displaySafe(p)).join(', ');
       if (synthesized) {
-        // The app synthesized NO stacks -- every stack under a Stage that
-        // failed to load, say (#3507).
+        // The app synthesized NO stacks.
         throw new Error(
           `${selector} selects among the stacks this app synthesizes, and it synthesized none; ` +
-            'refusing to fall back to every stack in state' +
-            (failedStageNote(options.all ? [] : wildcardPatterns, failedStages) || '.')
+            'refusing to fall back to every stack in state.'
         );
       }
       // No synthesized app -- synth failed, or no app is configured -- so there
@@ -425,22 +438,6 @@ async function destroyCommand(
         'DESTROY_NO_APP_SCOPE',
         synthError
       );
-    }
-
-    // A Stage that failed to load dropped its stacks from `appStacks`, so
-    // `--all` would destroy the rest of the app and leave the Stage's stacks
-    // running, exiting 0 (#3507). Refused before the bucket is listed.
-    if (options.all) {
-      const partial = renderAllWithFailedStages('destroy', appStacks, { failedStages });
-      if (partial !== undefined) throw new Error(partial);
-    } else if (stackPatterns.length === 0 && appStacks.length > 0) {
-      // The same with NO stack named: the bare run auto-selects from the stacks
-      // that synthesized, and a failed Stage's stacks are not among them, so
-      // the one candidate is not known to be the only one -- and "no candidate
-      // in state" would end the run with exit 0 over part of the app (#3507).
-      // Refused before the bucket is listed, as `--all` is.
-      const partial = renderAutoPickWithFailedStages('destroy', appStacks, { failedStages });
-      if (partial !== undefined) throw new Error(partial);
     }
 
     // Determine candidate stacks. State only carries physical names + regions
@@ -476,8 +473,7 @@ async function destroyCommand(
       // refused above in every one of those cases, so it is never offered here.
       throw new CdkdError(
         'Could not determine which stacks belong to this app. ' +
-          'Specify stack names explicitly, or ensure --app / cdk.json is configured' +
-          (failedStageNote([], failedStages) || '.'),
+          'Specify stack names explicitly, or ensure --app / cdk.json is configured.',
         'DESTROY_NO_STACK_SELECTED',
         synthError
       );
@@ -539,13 +535,31 @@ async function destroyCommand(
     } else if (stackPatterns.length > 0) {
       // Explicit stack names or wildcards
       stackNames = matchStacks(candidateStacks, stackPatterns).map((s) => s.stackName);
+      // Every pattern that matched nothing is warned about, as the AWS CDK
+      // CLI's destroy does (one warning per pattern, whether or not another
+      // matched), rather than dropped silently: a typo must not pass for a
+      // stack that was destroyed (#3507).
+      //
+      // An exact name that IS a state record but not one of this app's stacks
+      // (a nested child, or another app's stack sharing the bucket) gets its
+      // own sentence -- "no stack in state" would be false. When NOTHING
+      // matched, the by-name special case below handles it instead (a nested
+      // child is refused there), so it is not warned about twice.
+      const stateNames = new Set(allStateRefs.map((r) => r.stackName));
+      const unmatched = unmatchedPatterns(candidateStacks, stackPatterns);
+      const inStateOnly = unmatched.filter((p) => stateNames.has(p));
+      const absent = unmatched.filter((p) => !stateNames.has(p));
+      if (absent.length > 0) {
+        logger.warn(renderUnmatchedPatternsWarning(absent, 'in state'));
+      }
+      if (stackNames.length > 0 && inStateOnly.length > 0) {
+        logger.warn(renderNotInAppWarning(inStateOnly));
+      }
     } else if (candidateStacks.length === 1) {
       // Single stack: auto-select (CDK CLI compatible). A Stage that failed
-      // to load was refused above, before the bucket was listed (#3507).
+      // to load never gets here: synthesis failed on it above (#3507).
       stackNames = candidateStacks.map((s) => s.stackName);
     } else if (candidateStacks.length === 0) {
-      // No failed-Stage note: with a Stage that failed to load, a bare run is
-      // refused before the bucket is listed (#3507), so none can reach here.
       logger.info('No stacks found in state');
       return;
     } else {
@@ -567,6 +581,10 @@ async function destroyCommand(
       // (they aren't a clear "destroy this specific child" intent).
       if (stackPatterns.length > 0) {
         const allStateNamesSet = new Set(allStateRefs.map((r) => r.stackName));
+        // In state but not this app's, and not a nested child refused below
+        // (another app's stack sharing the bucket): named rather than
+        // answered with a bare "No matching stacks found in state" (#3507).
+        const notInApp: string[] = [];
         for (const pattern of stackPatterns) {
           if (pattern.includes('*') || pattern.includes('?') || pattern.includes('/')) continue;
           if (!allStateNamesSet.has(pattern)) continue;
@@ -588,6 +606,8 @@ async function destroyCommand(
             );
             logger.error(`  ✗ ${err.message}`);
             totalErrors++;
+          } else if (appStacks.length > 0 && !notInApp.includes(pattern)) {
+            notInApp.push(pattern);
           }
         }
         if (totalErrors > 0) {
@@ -596,10 +616,9 @@ async function destroyCommand(
               `inspect 'cdkd state show <stack>' and re-run 'cdkd destroy' to retry.`
           );
         }
+        if (notInApp.length > 0) logger.warn(renderNotInAppWarning(notInApp));
       }
-      logger.info(
-        safeMsg`No matching stacks found in state${failedStageNote(stackPatterns, failedStages)}`
-      );
+      logger.info('No matching stacks found in state');
       return;
     }
 

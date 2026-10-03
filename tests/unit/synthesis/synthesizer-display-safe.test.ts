@@ -49,10 +49,7 @@ vi.mock('../../../src/synthesis/app-executor.js', () => ({
 vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
   AssemblyReader: vi.fn().mockImplementation(() => ({
     readManifest: mockReadManifest,
-    readAssembly: (...args: unknown[]) => ({
-      stacks: mockAssemblyStacks(...args),
-      failedStages: [],
-    }),
+    readAssembly: (...args: unknown[]) => ({ stacks: mockAssemblyStacks(...args) }),
   })),
 }));
 

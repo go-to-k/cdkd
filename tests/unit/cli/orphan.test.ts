@@ -102,6 +102,7 @@ vi.mock('node:readline/promises', () => ({
 }));
 
 import { createOrphanCommand } from '../../../src/cli/commands/orphan.js';
+import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
 
 function captureStdout(): { output: string[]; restore: () => void } {
   const output: string[] = [];
@@ -1682,52 +1683,31 @@ describe('cdkd orphan: a construct path under a CDK Stage (go-to-k/cdkd#3943)', 
     );
     expect(mockGetState).not.toHaveBeenCalled();
   });
-  // A path under a Stage that failed to load names a stack the app has but did
-  // not synthesize, so the Stage is named rather than left to read as a typo
-  // (go-to-k/cdkd#3507).
-  it('names a Stage that failed to load when the path starts with it', async () => {
-    mockSynthesize.mockResolvedValue({
-      stacks: [stageStack('Top', 'Top')],
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
-    });
+  // A Stage that failed to load fails synthesis (go-to-k/cdkd#3507), before
+  // any construct path is resolved or state read.
+  it('fails with the synthesis error when a Stage failed to load', async () => {
+    mockSynthesize.mockRejectedValue(
+      stageLoadError('MyStage', 'ENOENT reading assembly-MyStage/manifest.json')
+    );
 
-    await expect(runOrphan(['MyStage/Api/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow(
+    await expect(runOrphan(['Top/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow(
       'process.exit-mock'
     );
-    expect(reported()).toBe(
-      "Error: Construct path 'MyStage/Api/Bucket' does not start with the path of any stack " +
-        'in the synthesized app. Available: Top. Stage MyStage failed to load, so stacks under ' +
-        'it are missing from this list rather than missing from the app: ENOENT reading assembly-MyStage'
+    expect(reported()).toContain(
+      'Stage MyStage failed to load: ENOENT reading assembly-MyStage/manifest.json'
     );
     expect(mockGetState).not.toHaveBeenCalled();
   });
 
-  it('hedges the Stage when the path does not start with it', async () => {
-    mockSynthesize.mockResolvedValue({
-      stacks: [stageStack('Top', 'Top')],
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
-    });
-
-    await expect(runOrphan(['Nope/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow(
-      'process.exit-mock'
-    );
-    expect(reported()).toContain('Available: Top. Possibly unrelated: Stage MyStage failed to load');
-  });
-
-  it('says the assembly has no stacks, not "Available: .", when every stack sat under the Stage', async () => {
-    mockSynthesize.mockResolvedValue({
-      stacks: [],
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }],
-    });
+  it('says the assembly has no stacks, not "Available: .", when it synthesized none', async () => {
+    mockSynthesize.mockResolvedValue({ stacks: [] });
 
     await expect(runOrphan(['MyStage/Api/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow(
       'process.exit-mock'
     );
     expect(reported()).toBe(
       "Error: Construct path 'MyStage/Api/Bucket' does not start with the path of any stack " +
-        'in the synthesized app. The assembly has no stacks. Stage MyStage failed to load, so ' +
-        'stacks under it are missing from this list rather than missing from the app: ' +
-        'ENOENT reading assembly-MyStage'
+        'in the synthesized app. The assembly has no stacks'
     );
   });
 });

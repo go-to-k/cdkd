@@ -364,10 +364,9 @@ export const IDENT_MAX_CODE_POINTS = 255;
  *    all (`plainOrDescribed`, go-to-k/cdkd#3760). What the cap still does is
  *    bound the PAYLOAD.
  *
- * Its second GRAMMAR (it already has several call sites) is a failed Stage's
- * path
- * ([#3482](https://github.com/go-to-k/cdkd/issues/3482),
- * `src/synthesis/failed-stages.ts`), a different grammar reusing this cap
+ * Its second GRAMMAR (it already has several call sites) is a Stage's path
+ * (`renderStagePath` in `src/synthesis/failed-stages.ts`), a different
+ * grammar reusing this cap
  * deliberately: a hierarchical construct path nests without a fixed bound in
  * the same way, and both need "a legitimate value is longer than 255". Named
  * here rather than given its own constant so a retune for one is a decision

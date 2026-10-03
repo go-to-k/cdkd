@@ -230,7 +230,7 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
       for (const line of everyLoggedLine()) expect(line).not.toMatch(FORGING);
     });
 
-    it('sanitizes the nested-assembly directory name it warns about', () => {
+    it('sanitizes the nested-assembly directory name in its refusal', () => {
       const manifest: AssemblyManifest = {
         version: '38.0.0',
         artifacts: {
@@ -244,10 +244,19 @@ describe('AssemblyReader renders assembly-controlled values display-safe (#3277)
         throw new Error(HOSTILE.readError.raw);
       });
 
-      expect(reader.getAllStacks('/tmp/cdk.out', manifest)).toEqual([]);
+      // A Stage whose manifest cannot be read is fatal (go-to-k/cdkd#3507).
+      let message = '';
+      try {
+        reader.getAllStacks('/tmp/cdk.out', manifest);
+      } catch (error) {
+        message = (error as Error).message;
+      }
 
-      const warned = loggerSpies.warn.mock.calls.map((call) => String(call[0]));
-      expect(warned.some((line) => line.includes(HOSTILE.directory.clean))).toBe(true);
+      expect(message).toMatch(/^Stage Stage failed to load: unreadable reading "stage dir"\/manifest.json\. /);
+      expect(message).not.toContain(HOSTILE.directory.raw);
+      expect(message).not.toMatch(FORGING);
+      // The caught message is not carried: its text embeds the path.
+      expect(message).not.toContain('fake cdkd line');
       for (const line of everyLoggedLine()) expect(line).not.toMatch(FORGING);
     });
 

@@ -379,7 +379,7 @@ describe('AssemblyReader', () => {
       expect(stacks.map((s) => s.stackName).sort()).toEqual(['NestedStack', 'TopStack']);
     });
 
-    it('should handle nested assembly read failure gracefully', () => {
+    it('refuses an assembly whose nested Stage cannot be read (go-to-k/cdkd#3507)', () => {
       const topManifest: AssemblyManifest = {
         version: '38.0.0',
         artifacts: {
@@ -396,9 +396,9 @@ describe('AssemblyReader', () => {
         throw new Error('ENOENT: no such file or directory');
       });
 
-      const stacks = reader.getAllStacks('/tmp/cdk.out', topManifest);
-
-      expect(stacks).toHaveLength(0);
+      expect(() => reader.getAllStacks('/tmp/cdk.out', topManifest)).toThrow(
+        /^Stage assembly-BadStage failed to load: /
+      );
     });
 
     it('should use artifactId as stackName when stackName property is missing', () => {

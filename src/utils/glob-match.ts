@@ -2,13 +2,12 @@
  * Whether `subject` matches the glob `pattern`, where `*` matches any run of
  * characters (the empty run included) and EVERY other character is literal.
  *
- * The one answer to "what does a stack-selection pattern mean", shared by
- * `stackMatchesPattern` (`src/cli/stack-matcher.ts`) and the failed-Stage
- * attribution in `src/synthesis/failed-stages.ts`, so the two cannot disagree
+ * The one answer to "what does a stack-selection pattern mean", used by
+ * `stackMatchesPattern` (`src/cli/stack-matcher.ts`)
  * ([#3508](https://github.com/go-to-k/cdkd/issues/3508)). An import-free LEAF,
- * so both layers may import it.
+ * so any layer may import it.
  *
- * **Never a RegExp.** Both sites used to expand `*` into `.*` and compile the
+ * **Never a RegExp.** Its callers used to expand `*` into `.*` and compile the
  * result, which had two defects: a pattern with several `*` separated by
  * literals backtracked EXPONENTIALLY in the length of the subject (a stack
  * name or Stage path from the Cloud Assembly), and the other characters were

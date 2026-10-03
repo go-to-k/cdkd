@@ -84,13 +84,7 @@ import {
   resolveUseCdkBootstrapAssets,
   warnDeprecatedNoPrefixCliFlag,
 } from '../config-loader.js';
-import {
-  matchStacks,
-  describeStack,
-  renderAllWithFailedStages,
-  renderAutoPickWithFailedStages,
-  renderNoStackMatch,
-} from '../stack-matcher.js';
+import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
@@ -410,26 +404,16 @@ async function deployCommand(
 
     if (allStacks.length === 0) {
       // Reached before the branch chain below: with zero stacks and no
-      // pattern, the `else` arm would answer `Multiple stacks found: .` --
-      // and zero stacks is exactly what an app whose only stacks live in an
-      // unsynthesized Stage produces (issue go-to-k/cdkd#3482).
-      throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
+      // pattern, the `else` arm would answer `Multiple stacks found: .`.
+      throw new Error(renderNoStackMatch(stackPatterns, allStacks));
     }
 
     if (options.all) {
-      // A Stage that failed to load dropped its stacks from `allStacks`, so
-      // `--all` would deploy part of the app and exit 0 (#3507).
-      const partial = renderAllWithFailedStages('deploy', allStacks, result);
-      if (partial !== undefined) throw new Error(partial);
       targetStacks = allStacks;
     } else if (stackPatterns.length > 0) {
       targetStacks = matchStacks(allStacks, stackPatterns);
     } else if (allStacks.length === 1) {
-      // Single stack: auto-select -- unless a Stage that failed to load may
-      // hold the rest of the app, so auto-selecting would act on part of it
-      // (#3507).
-      const partial = renderAutoPickWithFailedStages('deploy', allStacks, result);
-      if (partial !== undefined) throw new Error(partial);
+      // Single stack: auto-select
       targetStacks = allStacks;
     } else {
       throw new Error(
@@ -439,7 +423,7 @@ async function deployCommand(
     }
 
     if (targetStacks.length === 0) {
-      throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
+      throw new Error(renderNoStackMatch(stackPatterns, allStacks));
     }
 
     // Cross-stack ordering edges that CDK's manifest dependency graph

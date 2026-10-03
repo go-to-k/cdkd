@@ -37,7 +37,7 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   untruncated and unquoted; an IDENTIFIER interpolated into prose takes
   `displayIdent`, because there the denylist's tolerance of quotes, spaces and
   C1 bytes lets a crafted value write a cdkd-sounding clause or erase the line
-  with `ESC [ 2 K`. Today that second class is a failed Stage's path and the
+  with `ESC [ 2 K`. Today that second class is a Stage's path and the
   stack names listed after `Available:`
   ([#3482](https://github.com/go-to-k/cdkd/issues/3482)); `describeStack` in
   `src/cli/stack-matcher.ts` applies the same rule to the same values for every
@@ -52,30 +52,26 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   ([layout-utils.md](layout-utils.md),
   [#3489](https://github.com/go-to-k/cdkd/issues/3489)) BEFORE the read, keeping
   its own refusal distinct from the absolute-path tripwire beside it.
-- **failed-stages.ts** - `FailedStage`, `failedStageNote` (the sentence a
-  selection failure appends), `renderStagePath` and `stageScopedError` (the
-  re-raise that names the Stage, marked so only the innermost one is named).
-  `FailedStage.stagePath` is stored RAW because it is a MATCH KEY as well as a
-  subject — rendering it at the write site made the stored form disagree with
-  the user's pattern — and every display site renders it through
-  `renderStagePath` (`displayIdent`, capped at `STACK_REF_MAX_CODE_POINTS` so
-  a deep path is not cut), never `displaySafe`: it is interpolated into prose,
-  where a denylist's tolerance of quotes and spaces is a spoof surface.
-- **Exactly ONE failure is tolerated while reading a Stage**
-  (`cdk:cloud-assembly`): the read of that Stage's own `manifest.json`, which is
-  the Stage-was-never-synthesized case. It warns, drops the Stage's stacks and
-  records a `FailedStage` whose reason is BUILT here — an errno `code`,
-  `invalid JSON` or `unreadable`, plus the rendered directory — never the
-  caught text, which embeds a path carrying the assembly-chosen
-  `directoryName` twice, nor a `JSON.parse` snippet, which echoes the file's
-  own bytes. Every other refusal
-  raised under a Stage propagates, re-raised with the INNERMOST Stage named
-  ([#3482](https://github.com/go-to-k/cdkd/issues/3482)) — a hardened check must
-  not degrade to advice because the stack sits inside a Stage. **The SCOPE of
-  the `try` is the classifier**; do not widen it, and do not replace it with a
-  test on the error's type or message. `readAssembly` returns those records and
-  `renderNoStackMatch` (`src/cli/stack-matcher.ts`) and `destroy` report them, so a selection
-  failure names the Stage instead of answering "not found".
+- **failed-stages.ts** - `stageLoadError` / `StageLoadError` (a Stage whose own
+  manifest cannot be read), `renderStagePath` and `stageScopedError` (the
+  re-raise that names the Stage, marked so only the innermost one is named). A
+  Stage path is rendered through `renderStagePath` (`displayIdent`, capped at
+  `STACK_REF_MAX_CODE_POINTS` so a deep path is not cut), never `displaySafe`:
+  it is interpolated into prose, where a denylist's tolerance of quotes and
+  spaces is a spoof surface.
+- **Nothing is tolerated while reading a Stage** (`cdk:cloud-assembly`). A
+  Stage whose own `manifest.json` cannot be read throws `stageLoadError`, FATAL
+  for every command as in the AWS CDK CLI
+  ([#3507](https://github.com/go-to-k/cdkd/issues/3507)): tolerating it once
+  (#3482) let `--all`, bare and wildcard runs act on the stacks that loaded and
+  exit 0. Its reason is BUILT here — an errno `code`, `invalid JSON` or
+  `unreadable`, plus the rendered directory — never the caught text, which
+  embeds a path carrying the assembly-chosen `directoryName` twice, nor a
+  `JSON.parse` snippet, which echoes the file's own bytes. Every refusal raised
+  under a Stage propagates, re-raised with the INNERMOST Stage named.
+  `destroy` rethrows a `StageLoadError` instead of taking its synth-failure
+  state fallback (#3839), and `scrub` maps it to a refusal (exit 2,
+  `SCRUB_STAGE_LOAD_FAILED`), never `--fail`'s exit 1.
 - **synthesizer.ts** orchestrates the context-provider loop, then routes any
   template `containsMacro` flags through `macro-expander.ts` BEFORE the analyzer
   / provisioner pipeline. The pass is SELECTION-AWARE: `deferMacroExpansion`

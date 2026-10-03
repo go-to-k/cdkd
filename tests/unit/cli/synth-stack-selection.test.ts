@@ -44,6 +44,7 @@ vi.mock('../../../src/cli/config-loader.js', async (importOriginal) => {
 });
 
 import { createSynthCommand } from '../../../src/cli/commands/synth.js';
+import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
 import { releaseStdoutForPayload } from '../../../src/utils/logger.js';
 
 const templateFor = (name: string) =>
@@ -213,26 +214,13 @@ describe('synth stack selection (issue #3550)', () => {
     expect(stdout).not.toContain(HINT);
   });
 
-  it('reaches renderNoStackMatch with THIS synthesis result, not an empty one', async () => {
-    // go-to-k/cdkd#3482's shape: a Stage that failed to load drops every stack
-    // under it, and selection then answers "no stacks matching" -- a different
-    // problem than the one that occurred. The argument being required fences
-    // only the SHAPE; `{ failedStages: [] }` typechecks just as well. `diff`
-    // has this case for the same reason (`diff-failed-stage-selection.test.ts`).
-    mockSynthesize.mockResolvedValue({
-      stacks: [],
-      assemblyDir: '/tmp/cdk.out',
-      // `{ stagePath, reason }` -- read off `src/synthesis/failed-stages.ts`.
-      // Inventing plausible member names is how the annotation fixture above
-      // failed too; both times the red named the fixture, not the behaviour.
-      failedStages: [{ stagePath: 'MyStage', reason: 'stage blew up' }],
-    });
-    const { stderr } = await runSynth(['MyStage/Api']);
-    // The REASON, not the stage path. Asserting on `'MyStage'` passed with
-    // `{ failedStages: [] }` substituted at the call site -- `renderNoStackMatch`
-    // echoes the user's own pattern back, so the assertion was satisfied by
-    // the input rather than by the threading. Probed.
-    expect(stderr).toContain('stage blew up');
+  it('fails with the synthesis error when a Stage failed to load (go-to-k/cdkd#3507)', async () => {
+    mockSynthesize.mockRejectedValue(stageLoadError('MyStage', 'stage blew up'));
+
+    const { stdout, stderr } = await runSynth(['MyStage/Api']);
+
+    expect(stderr).toContain('Stage MyStage failed to load: stage blew up');
+    expect(stdout).toBe('');
   });
 
   it('refuses a pattern matching nothing, naming what IS available', async () => {

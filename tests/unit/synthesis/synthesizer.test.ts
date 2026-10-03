@@ -4,8 +4,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 const mockExecute = vi.fn();
 const mockReadManifest = vi.fn();
 const mockAssemblyStacks = vi.fn();
-/** Stages `readAssembly` reports as unreadable; reset per test. */
-let stagedFailedStages: { stagePath: string; reason: string }[] = [];
 const mockContextStoreLoad = vi.fn();
 const mockContextStoreSave = vi.fn();
 
@@ -20,15 +18,10 @@ vi.mock('../../../src/synthesis/app-executor.js', () => ({
 vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
   AssemblyReader: vi.fn().mockImplementation(() => ({
     readManifest: mockReadManifest,
-    // `Synthesizer` reads through `readAssembly`, which returns the stacks AND
-    // the Stages that failed to load (issue go-to-k/cdkd#3482). These tests
-    // stage only the stack list, so the mock wraps it in that record shape.
-    // `getAllStacks` is deliberately NOT stubbed: a production call to it would
-    // fail loudly here rather than pass silently.
-    readAssembly: (...args: unknown[]) => ({
-      stacks: mockAssemblyStacks(...args),
-      failedStages: stagedFailedStages,
-    }),
+    // `Synthesizer` reads through `readAssembly`, which returns the stacks in
+    // a record. `getAllStacks` is deliberately NOT stubbed: a production call
+    // to it would fail loudly here rather than pass silently.
+    readAssembly: (...args: unknown[]) => ({ stacks: mockAssemblyStacks(...args) }),
   })),
 }));
 
@@ -90,6 +83,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import { Synthesizer } from '../../../src/synthesis/synthesizer.js';
+import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
 
 describe('Synthesizer', () => {
   let synthesizer: Synthesizer;
@@ -101,7 +95,6 @@ describe('Synthesizer', () => {
     // Default: no missing context, return empty stacks
     mockReadManifest.mockReturnValue({ version: '38.0.0', artifacts: {} });
     mockAssemblyStacks.mockReturnValue([]);
-    stagedFailedStages = [];
     mockExecute.mockResolvedValue(undefined);
     mockContextStoreLoad.mockReturnValue({});
     mockLoadCdkJson.mockReturnValue(null);
@@ -227,28 +220,29 @@ describe('Synthesizer', () => {
       expect(result.assemblyDir).toMatch(/cdk\.out$/);
     });
 
-    // Issue go-to-k/cdkd#3482: the Stages that failed to load must reach the
-    // CLI, which is the only layer that can say a named stack belonged to one.
-    // Both `synthesize` return paths carry them.
-    it('carries failed Stages out of the pre-synthesized assembly path', async () => {
+    // Issue go-to-k/cdkd#3507: a Stage that failed to load is fatal. The
+    // reader raises it, and neither `synthesize` path swallows it.
+    it('propagates a Stage load failure out of the pre-synthesized assembly path', async () => {
       mockExistsSync.mockReturnValue(true);
       mockStatSync.mockReturnValue({ isDirectory: () => true });
       mockReadManifest.mockReturnValue({ version: '38.0.0', artifacts: {} });
-      mockAssemblyStacks.mockReturnValue([]);
-      stagedFailedStages = [{ stagePath: 'MyStage', reason: 'ENOENT' }];
+      const failure = stageLoadError('MyStage', 'ENOENT');
+      mockAssemblyStacks.mockImplementation(() => {
+        throw failure;
+      });
 
-      const result = await synthesizer.synthesize({ app: 'cdk.out' });
-
-      expect(result.failedStages).toEqual([{ stagePath: 'MyStage', reason: 'ENOENT' }]);
+      // The SAME error, not a re-wrap: `cdkd destroy` keys on its class.
+      await expect(synthesizer.synthesize({ app: 'cdk.out' })).rejects.toBe(failure);
     });
 
-    it('carries failed Stages out of the synthesis path', async () => {
-      stagedFailedStages = [{ stagePath: 'MyStage', reason: 'ENOENT' }];
+    it('propagates a Stage load failure out of the synthesis path', async () => {
+      const failure = stageLoadError('MyStage', 'ENOENT');
+      mockAssemblyStacks.mockImplementation(() => {
+        throw failure;
+      });
 
-      const result = await synthesizer.synthesize({ app: 'node app.ts' });
-
+      await expect(synthesizer.synthesize({ app: 'node app.ts' })).rejects.toBe(failure);
       expect(mockExecute).toHaveBeenCalled();
-      expect(result.failedStages).toEqual([{ stagePath: 'MyStage', reason: 'ENOENT' }]);
     });
 
     it('should pass through pre-synthesized assembly even when manifest reports missing context (CDK CLI parity)', async () => {

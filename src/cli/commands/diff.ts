@@ -34,13 +34,7 @@ import {
   resolveStateBucketWithDefault,
   resolveUseCdkBootstrapAssets,
 } from '../config-loader.js';
-import {
-  matchStacks,
-  describeStack,
-  renderAllWithFailedStages,
-  renderAutoPickWithFailedStages,
-  renderNoStackMatch,
-} from '../stack-matcher.js';
+import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
@@ -227,25 +221,15 @@ async function diffCommand(
 
     if (allStacks.length === 0) {
       // Reached before the branch chain below: with zero stacks and no
-      // pattern, the `else` arm would answer `Multiple stacks found: .` --
-      // and zero stacks is exactly what an app whose only stacks live in an
-      // unsynthesized Stage produces (issue go-to-k/cdkd#3482).
-      throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
+      // pattern, the `else` arm would answer `Multiple stacks found: .`.
+      throw new Error(renderNoStackMatch(stackPatterns, allStacks));
     }
 
     if (options.all) {
-      // A Stage that failed to load dropped its stacks from `allStacks`, so
-      // `--all` would report on part of the app as if it were all of it (#3507).
-      const partial = renderAllWithFailedStages('diff', allStacks, result);
-      if (partial !== undefined) throw new Error(partial);
       targetStacks = allStacks;
     } else if (stackPatterns.length > 0) {
       targetStacks = matchStacks(allStacks, stackPatterns);
     } else if (allStacks.length === 1) {
-      // No stack named and one survived: a Stage that failed to load may hold
-      // the rest of the app, so auto-selecting would act on part of it (#3507).
-      const partial = renderAutoPickWithFailedStages('diff', allStacks, result);
-      if (partial !== undefined) throw new Error(partial);
       targetStacks = allStacks;
     } else {
       throw new Error(
@@ -255,7 +239,7 @@ async function diffCommand(
     }
 
     if (targetStacks.length === 0) {
-      throw new Error(renderNoStackMatch(stackPatterns, allStacks, result));
+      throw new Error(renderNoStackMatch(stackPatterns, allStacks));
     }
 
     // Issue #1150: macro expansion was deferred at synthesize() time —

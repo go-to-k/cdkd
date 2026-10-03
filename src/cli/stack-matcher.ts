@@ -19,7 +19,6 @@
  * fields is returned only once.
  */
 import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
-import { failedStageNote, type FailedStage } from '../synthesis/failed-stages.js';
 import { globMatches } from '../utils/glob-match.js';
 
 export interface StackLike {
@@ -86,108 +85,82 @@ export function describeStack(stack: StackLike): string {
 
 /**
  * The message a command raises when SELECTION came back empty — shared by
- * `deploy`, `diff`, `list` and `publish-assets`, which all built the identical
- * string by hand, and by `scrub`, `import` and `export`, which built their own
- * ([#3507](https://github.com/go-to-k/cdkd/issues/3507)).
+ * `deploy`, `diff`, `list`, `publish-assets`, `scrub`, `import`, `export` and
+ * `synth`, so each names the patterns it tried and the stacks the app has.
  *
- * `assembly` is required AND so is its `failedStages` member, which is the
- * point: a Stage that failed to load dropped every stack under it from
- * `available`, so "no stacks matching" names the wrong problem unless the
- * failure is reported with it (issue
- * [#3482](https://github.com/go-to-k/cdkd/issues/3482)). A REQUIRED member,
- * not an optional one — `{ failedStages?: ... }` accepts `{}`, so it fences
- * the argument while leaving the content unfenced, which is the wiring hole
- * this signature exists to close. `SynthesisResult.failedStages` is required
- * for the same reason, so passing the result satisfies it and an ad-hoc `{}`
- * does not.
- *
- * What it does NOT fence: a caller passing a STALE or empty list. That is
- * behaviour, not shape, and it is covered by a wiring test per command.
+ * A CDK Stage that failed to load never reaches here: it fails synthesis for
+ * every command ([#3507](https://github.com/go-to-k/cdkd/issues/3507)), so
+ * `available` is the whole app.
  */
 export function renderNoStackMatch(
   patterns: readonly string[],
-  available: readonly StackLike[],
-  assembly: { failedStages: readonly FailedStage[] | undefined }
+  available: readonly StackLike[]
 ): string {
-  // The PATTERN is kept whatever the assembly holds: dropping it left a user
-  // who named a stack under a non-ASCII Stage with a message naming neither
-  // their pattern nor the stage. Only the second clause varies, so an empty
-  // assembly never prints `Available: ` with nothing after it.
-  const head =
-    patterns.length > 0
-      ? `No stacks matching ${patterns.join(', ')} found in assembly. ` +
+  // Only the second clause varies, so an empty assembly never prints
+  // `Available: ` with nothing after it.
+  return patterns.length > 0
+    ? `No stacks matching ${patterns.join(', ')} found in assembly. ` +
         (available.length > 0
           ? `Available: ${available.map(describeStack).join(', ')}`
           : 'The assembly has no stacks')
-      : 'No stacks found in assembly';
-  return head + failedStageNote(patterns, assembly.failedStages);
+    : 'No stacks found in assembly';
 }
 
 /**
- * The refusal `--all` raises when a CDK Stage failed to load, or `undefined`
- * when none did — shared by `deploy`, `destroy`, `diff`, `publish-assets` and
- * `scrub`
- * ([#3507](https://github.com/go-to-k/cdkd/issues/3507)).
- *
- * Reading a Stage stays tolerant so a run targeting OTHER stacks is not
- * aborted ([#3482](https://github.com/go-to-k/cdkd/issues/3482)). `--all` is
- * not such a run: it targets every stack in the app, the failed Stage's
- * included, so proceeding would act on a silently smaller set and exit 0 —
- * a deploy, diff, publish or scrub reporting success over stacks it never
- * examined, or a destroy leaving the Stage's stacks running. Naming the
- * surviving stacks (or a pattern) is the way through, because that selection is
- * the user's.
- *
- * `available` is non-empty at every call site: a zero-stack app is refused
- * earlier by each command with its own message.
+ * The patterns that matched no stack, which `matchStacks` drops silently.
+ * Only `cdkd destroy` reports them, as the AWS CDK CLI's destroy does, whether
+ * or not another pattern matched; `deploy`, `diff` and the rest stay silent on a
+ * partly-unmatched selection and fail only on an EMPTY union, which is CDK's
+ * `PATTERN_MUST_MATCH` ([#3507](https://github.com/go-to-k/cdkd/issues/3507)).
  */
-export function renderAllWithFailedStages(
-  verb: string,
-  available: readonly StackLike[],
-  assembly: { failedStages: readonly FailedStage[] | undefined }
-): string | undefined {
-  return renderPartialAppRefusal('--all', verb, available, assembly);
+export function unmatchedPatterns(
+  stacks: readonly StackLike[],
+  patterns: readonly string[]
+): string[] {
+  // Deduplicated, so `cdkd destroy Typo Typo` names `Typo` once.
+  return [...new Set(patterns)].filter((p) => !stacks.some((s) => stackMatchesPattern(s, p)));
 }
 
 /**
- * The refusal a command raises INSTEAD of auto-selecting the only stack that
- * synthesized when no stack was named and a CDK Stage failed to load, or
- * `undefined` when none did — shared by every command with a single-stack
- * auto-pick ([#3507](https://github.com/go-to-k/cdkd/issues/3507)).
- *
- * The auto-pick exists because a one-stack app leaves nothing to choose. A
- * Stage that failed to load makes that premise unknowable: its stacks are
- * missing from `available`, so "one stack synthesized" no longer means "the
- * app has one stack". The same sentence as the `--all` refusal, because the
- * run would act on part of the app as if it were all of it.
+ * The warning for {@link unmatchedPatterns}. `where` names the set searched
+ * (`in state`). Patterns are the user's own argv, rendered as identifiers so a
+ * value carrying the list separator cannot read as two.
  */
-export function renderAutoPickWithFailedStages(
-  verb: string,
-  available: readonly StackLike[],
-  assembly: { failedStages: readonly FailedStage[] | undefined }
-): string | undefined {
-  return renderPartialAppRefusal('With no stack named, cdkd', verb, available, assembly);
+export function renderUnmatchedPatternsWarning(
+  unmatched: readonly string[],
+  where: string
+): string {
+  const verb = unmatched.length === 1 ? 'was' : 'were';
+  return `${renderPatternList(unmatched)} matched no stack ${where} and ${verb} skipped.`;
 }
 
-function renderPartialAppRefusal(
-  selector: string,
-  verb: string,
-  available: readonly StackLike[],
-  assembly: { failedStages: readonly FailedStage[] | undefined }
-): string | undefined {
-  const note = failedStageNote([], assembly.failedStages);
-  if (note === '') return undefined;
+/**
+ * The warning for an exact name that IS a state record but not a stack of the
+ * synthesized app -- a nested child, or another app's stack sharing the state
+ * bucket. "Matched no stack in state" would be false for it.
+ */
+export function renderNotInAppWarning(names: readonly string[]): string {
+  const one = names.length === 1;
   return (
-    `${selector} would ${verb} only part of this app; refusing. ` +
-    `Synthesized: ${available.map(describeStack).join(', ')}${note}. ` +
-    `Fix each Stage that failed to load so it synthesizes, or name the stacks to ${verb} explicitly.`
+    `${renderPatternList(names)} ${one ? 'is' : 'are'} in state but ${one ? 'is not a stack' : 'are not stacks'} ` +
+    `of this app and ${one ? 'was' : 'were'} skipped. A nested stack is destroyed with its parent; ` +
+    `another app's stack, with that app or by name through cdkd state destroy.`
   );
 }
 
 /**
+ * User-supplied patterns, rendered as identifiers so a value carrying the list
+ * separator cannot read as two.
+ */
+function renderPatternList(patterns: readonly string[]): string {
+  return patterns
+    .map((p) => displayIdent(p, { maxCodePoints: STACK_REF_MAX_CODE_POINTS, listMember: true }))
+    .join(', ');
+}
+
+/**
  * `*` matches any run of characters and every other character is literal —
- * `globMatches` owns that rule for this matcher and for the failed-Stage
- * attribution alike ([#3508](https://github.com/go-to-k/cdkd/issues/3508)).
+ * `globMatches` owns that rule ([#3508](https://github.com/go-to-k/cdkd/issues/3508)).
  */
 export function stackMatchesPattern(stack: StackLike, pattern: string): boolean {
   const target = pattern.includes('/') ? (stack.displayName ?? stack.stackName) : stack.stackName;

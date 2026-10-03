@@ -42,6 +42,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { StageLoadError } from '../../synthesis/failed-stages.js';
 import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
@@ -50,13 +51,7 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
-import {
-  matchStacks,
-  describeStack,
-  renderAllWithFailedStages,
-  renderAutoPickWithFailedStages,
-  renderNoStackMatch,
-} from '../stack-matcher.js';
+import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import {
   IntrinsicFunctionResolver,
   carriesDynamicReference,
@@ -1038,48 +1033,33 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     stateBucket,
     deferMacroExpansion: true,
   };
-  const result = await synthesizer.synthesize(synthOptions);
+  // A CDK Stage that failed to load leaves the app partly unreadable, so the
+  // run DECLINES TO LOOK: a refusal (exit 2), never a plain error, whose exit 1
+  // is `--fail`'s "plaintext found -- rotate the secret" (#3507).
+  let result: Awaited<ReturnType<typeof synthesizer.synthesize>>;
+  try {
+    result = await synthesizer.synthesize(synthOptions);
+  } catch (error) {
+    if (error instanceof StageLoadError) {
+      throw new ScrubRefusalError(error.message, 'SCRUB_STAGE_LOAD_FAILED');
+    }
+    throw error;
+  }
   const allStacks = result.stacks;
 
   const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
   if (allStacks.length === 0) {
     // Reached before the branch chain below, as in `deploy`: with zero stacks
     // and no pattern the `else` arm would answer `Multiple stacks found: .`,
-    // and `--all` would answer `No stacks matched.` -- zero stacks being
-    // exactly what an app whose only stacks live in a Stage that failed to
-    // load produces (issue go-to-k/cdkd#3507).
-    const message = renderNoStackMatch(stackPatterns, allStacks, result);
-    // `--all` or NO stack named beside a failed Stage is the partial-app
-    // refusal below with no survivors: exit 2 like it, never 1, which `--fail`
-    // reserves for "plaintext found". A pattern that matched nothing stays a
-    // plain selection error.
-    if (result.failedStages.length > 0) {
-      if (options.all) throw new ScrubRefusalError(message, 'SCRUB_ALL_PARTIAL_APP');
-      if (stackPatterns.length === 0) {
-        throw new ScrubRefusalError(message, 'SCRUB_AUTO_PICK_PARTIAL_APP');
-      }
-    }
-    throw new Error(message);
+    // and `--all` would answer `No stacks matched.`.
+    throw new Error(renderNoStackMatch(stackPatterns, allStacks));
   }
   let targetStacks: StackInfo[];
   if (options.all) {
-    // A Stage that failed to load dropped its stacks from `allStacks`, so
-    // `--all` would scrub part of the app and report it clean (#3507). A
-    // REFUSAL (exit 2), not a plain error (exit 1): `--fail` reserves 1 for
-    // "plaintext found", and this run declined to look at the Stage's stacks.
-    const partial = renderAllWithFailedStages('scrub', allStacks, result);
-    if (partial !== undefined) throw new ScrubRefusalError(partial, 'SCRUB_ALL_PARTIAL_APP');
     targetStacks = allStacks;
   } else if (stackPatterns.length > 0) {
     targetStacks = matchStacks(allStacks, stackPatterns);
   } else if (allStacks.length === 1) {
-    // No stack named and one survived: a Stage that failed to load may hold
-    // the rest of the app, so auto-selecting would report part of it clean
-    // (#3507). Exit 2 like the `--all` refusal above.
-    const partial = renderAutoPickWithFailedStages('scrub', allStacks, result);
-    if (partial !== undefined) {
-      throw new ScrubRefusalError(partial, 'SCRUB_AUTO_PICK_PARTIAL_APP');
-    }
     targetStacks = allStacks;
   } else {
     throw new Error(
@@ -1088,15 +1068,14 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     );
   }
   if (targetStacks.length === 0) {
-    // The shared renderer names the patterns, the available stacks and a
-    // Stage that failed to load (issue go-to-k/cdkd#3507). A pattern spelling
-    // a nested child's state name (`<parent>~<Child>`) earns one more line:
-    // a child is not a synth stack, and it is scrubbed with its parent
-    // (go-to-k/cdkd#2252).
+    // The shared renderer names the patterns and the available stacks. A
+    // pattern spelling a nested child's state name (`<parent>~<Child>`) earns
+    // one more line: a child is not a synth stack, and it is scrubbed with its
+    // parent (go-to-k/cdkd#2252).
     const nestedSpellings = stackPatterns.filter((p) => p.includes('~'));
     const nestedHint =
       nestedSpellings.length > 0 ? ` ${nestedStackPatternHint(nestedSpellings)}` : '';
-    throw new Error(`${renderNoStackMatch(stackPatterns, allStacks, result)}${nestedHint}`);
+    throw new Error(`${renderNoStackMatch(stackPatterns, allStacks)}${nestedHint}`);
   }
   // The same hint when OTHER patterns matched (review of go-to-k/cdkd#3958):
   // `matchStacks` drops a pattern that matches nothing, so `Parent~Child

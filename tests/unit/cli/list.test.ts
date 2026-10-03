@@ -33,6 +33,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 import { createListCommand } from '../../../src/cli/commands/list.js';
+import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
 
 /**
  * Helper to build a StackInfo with sane defaults.
@@ -296,41 +297,30 @@ describe('cdkd list', () => {
     // command's exception bubbles back as the sentinel error.
     expect(error).toBeDefined();
     expect(error?.message).toBe('__process.exit__');
-    // No Stage failed, so the message stays exactly as it was.
     expect(reportedError()).toContain('No stacks matching DoesNotExist found in assembly');
-    expect(reportedError()).not.toContain('failed to load');
   });
 
-  // Issue go-to-k/cdkd#3482: a Stage that failed to load dropped every stack
-  // under it, so "no stacks matching" names the wrong problem on its own. The
-  // command must read `failedStages` off the synthesis result and say so —
-  // which is the WIRING, invisible to a test of the renderer alone.
-  it('names the failed Stage when the pattern targets one', async () => {
-    mockSynthesize.mockResolvedValue({
-      stacks: [makeStack({ stackName: 'TopStack' })],
-      manifest: {},
-      assemblyDir: '/tmp/cdk.out',
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT: no such file or directory' }],
-    });
+  // Issue go-to-k/cdkd#3507: a Stage that failed to load fails synthesis, as
+  // in the AWS CDK CLI, instead of listing the stacks that did load.
+  it('fails with the synthesis error when a Stage failed to load', async () => {
+    mockSynthesize.mockRejectedValue(
+      stageLoadError('MyStage', 'ENOENT reading assembly-MyStage/manifest.json')
+    );
 
-    await runList(['MyStage/Api']);
+    const { error } = await runList([]);
 
-    expect(reportedError()).toContain("Stage MyStage failed to load");
-    expect(reportedError()).toContain('ENOENT: no such file or directory');
+    expect(error?.message).toBe('__process.exit__');
+    expect(reportedError()).toContain(
+      'Stage MyStage failed to load: ENOENT reading assembly-MyStage/manifest.json'
+    );
   });
 
-  it('names the failed Stage when the app has no loadable stacks left', async () => {
-    mockSynthesize.mockResolvedValue({
-      stacks: [],
-      manifest: {},
-      assemblyDir: '/tmp/cdk.out',
-      failedStages: [{ stagePath: 'MyStage', reason: 'ENOENT' }],
-    });
+  it('names an empty app when no pattern was given', async () => {
+    mockSynthesize.mockResolvedValue({ stacks: [], manifest: {}, assemblyDir: '/tmp/cdk.out' });
 
     await runList([]);
 
     expect(reportedError()).toContain('No stacks found in assembly');
-    expect(reportedError()).toContain("Stage MyStage failed to load");
   });
 
   it('errors when --app cannot be resolved', async () => {

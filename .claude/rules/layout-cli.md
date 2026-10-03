@@ -37,17 +37,17 @@ Index of every area: [code-layout.md](code-layout.md).
   destroy / list / synth; routes a pattern by whether it contains `/` (display
   path) or not (physical name) and returns a deduplicated union.
   `renderNoStackMatch` owns the empty-selection message for deploy / diff /
-  list / publish-assets / scrub / import / export / synth and
-  takes the `SynthesisResult` as a REQUIRED argument, so a Stage that failed to
-  load is named rather than reported as "no stacks matching"
-  ([#3482](https://github.com/go-to-k/cdkd/issues/3482)); `destroy` words its own
-  state-selection messages but appends `failedStageNote` to them ([#3507](https://github.com/go-to-k/cdkd/issues/3507)).
-  Each of the first seven also throws it on a ZERO-stack assembly BEFORE its
-  branch chain, which otherwise answers `Multiple stacks found: .`.
-  `renderAllWithFailedStages` is the `--all` refusal when a Stage failed beside
-  surviving stacks (deploy / destroy / diff / publish-assets / scrub);
-  `renderAutoPickWithFailedStages` is the same sentence for the single-stack
-  auto-pick (those five plus import / export).
+  list / publish-assets / scrub / import / export / synth. Each of the first
+  seven also throws it on a ZERO-stack assembly BEFORE its branch chain, which
+  otherwise answers `Multiple stacks found: .`. A Stage that failed to load
+  never reaches selection: synthesis fails for every command, as in the AWS CDK
+  CLI, so do NOT add selection-time tolerance or refusals for it
+  ([#3507](https://github.com/go-to-k/cdkd/issues/3507)). A partly-unmatched
+  selection stays silent except in `destroy`, which warns per unmatched
+  pattern (`renderUnmatchedPatternsWarning`) — both CDK parity — and, for a
+  name in state that is not a stack of this app, with `renderNotInAppWarning`
+  whenever something else matched (the by-name nested-child refusal runs only
+  when nothing did, so a filter there would drop the name silently).
   **`synth` reaches the same message by a different route and has no branch
   chain to sit before** ([#3550](https://github.com/go-to-k/cdkd/issues/3550)):
   its selection is unconditional, so a zero-stack assembly and a pattern

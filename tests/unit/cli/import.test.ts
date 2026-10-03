@@ -232,6 +232,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
 });
 
 import { createImportCommand } from '../../../src/cli/commands/import.js';
+import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile.js';
@@ -6181,16 +6182,11 @@ describe('cdkd import --help text (issue #1664)', () => {
   });
 });
 
-describe('cdkd import: selection names a Stage that failed to load (go-to-k/cdkd#3507)', () => {
-  // A stack under a Stage whose manifest could not be read is dropped from the
-  // synthesized app, so naming it answered `Stack '<arg>' not found in
-  // synthesized app` -- and an app whose only stacks sit under such a Stage
-  // answered `Multiple stacks found: .`. Both now go through the shared
-  // `renderNoStackMatch`, which is called REAL here: this is a wiring test.
-  const failedStages = [{ stagePath: 'MyStage', reason: 'ENOENT reading assembly-MyStage' }];
-  const note =
-    'Stage MyStage failed to load, so stacks under it are missing from this list ' +
-    'rather than missing from the app: ENOENT reading assembly-MyStage';
+describe('cdkd import: stack selection (go-to-k/cdkd#3507)', () => {
+  // A CDK Stage that failed to load fails synthesis, so import never selects
+  // among the stacks that did load. A selection that matches nothing goes
+  // through the shared `renderNoStackMatch`, which is called REAL here: this
+  // is a wiring test.
   let exitSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -6223,65 +6219,31 @@ describe('cdkd import: selection names a Stage that failed to load (go-to-k/cdkd
 
   const errorText = (): string => errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
   const synthesized = (
-    stacks: ReturnType<typeof stackInfo>[],
-    stages: typeof failedStages
-  ): { stacks: ReturnType<typeof stackInfo>[]; failedStages: typeof failedStages } => ({
-    stacks,
-    failedStages: stages,
-  });
+    stacks: ReturnType<typeof stackInfo>[]
+  ): { stacks: ReturnType<typeof stackInfo>[] } => ({ stacks });
   const other = (): ReturnType<typeof stackInfo> => stackInfo('Other', template({}));
 
-  it('names the Stage a display-path argument targets, with the available stacks', async () => {
-    mockSynthesize.mockResolvedValue(synthesized([other()], failedStages));
+  it('fails with the synthesis error when a Stage failed to load, before any state read', async () => {
+    for (const args of [['import'], ['import', 'Other']]) {
+      errorSpy.mockClear();
+      mockSynthesize.mockRejectedValue(
+        stageLoadError('MyStage', 'ENOENT reading assembly-MyStage/manifest.json')
+      );
 
-    await expect(runImport(['import', 'MyStage/MyStack'])).rejects.toThrow('process.exit-mock');
+      await expect(runImport(args)).rejects.toThrow('process.exit-mock');
 
-    expect(errorText()).toContain(
-      `No stacks matching MyStage/MyStack found in assembly. Available: Other. ${note}`
-    );
-    expectNoStateTouched();
+      expect(exitSpy, args.join(' ')).toHaveBeenCalledWith(1);
+      expect(errorText()).toContain(
+        'Stage MyStage failed to load: ENOENT reading assembly-MyStage/manifest.json'
+      );
+      const infoText = infoSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+      expect(infoText).not.toContain('Target stack:');
+      expectNoStateTouched();
+    }
   });
 
-  it('hedges the Stage for a physical-name argument, which carries no Stage path', async () => {
-    mockSynthesize.mockResolvedValue(synthesized([other()], failedStages));
-
-    await expect(runImport(['import', 'MyStage-MyStack'])).rejects.toThrow('process.exit-mock');
-
-    expect(errorText()).toContain(
-      `No stacks matching MyStage-MyStack found in assembly. Available: Other. ` +
-        `Possibly unrelated: ${note}`
-    );
-  });
-
-  // A bare `cdkd import` auto-selected the one survivor as if the app held
-  // only that stack (go-to-k/cdkd#3507).
-  it('refuses the single-stack auto-pick when a Stage failed to load', async () => {
-    mockSynthesize.mockResolvedValue(synthesized([other()], failedStages));
-
-    await expect(runImport(['import'])).rejects.toThrow('process.exit-mock');
-
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(errorText()).toContain(
-      'With no stack named, cdkd would import resources into only part of this app; refusing. ' +
-        `Synthesized: Other. ${note}`
-    );
-    const infoText = infoSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
-    expect(infoText).not.toContain('Target stack:');
-    expectNoStateTouched();
-  });
-
-  it('control: a NAMED survivor beside a failed Stage is still selected', async () => {
-    mockSynthesize.mockResolvedValue(synthesized([other()], failedStages));
-
-    await runImport(['import', 'Other']).catch(() => undefined);
-
-    expect(errorText()).not.toContain('refusing');
-    const infoText = infoSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
-    expect(infoText).toContain('Target stack: Other');
-  });
-
-  it('control: the single-stack auto-pick selects the stack when every Stage loaded', async () => {
-    mockSynthesize.mockResolvedValue(synthesized([other()], []));
+  it('control: the single-stack auto-pick selects the stack', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([other()]));
 
     await runImport(['import']).catch(() => undefined);
 
@@ -6290,34 +6252,33 @@ describe('cdkd import: selection names a Stage that failed to load (go-to-k/cdkd
     expect(infoText).toContain('Target stack: Other');
   });
 
-  it('names the argument and the available stacks when no Stage failed', async () => {
-    mockSynthesize.mockResolvedValue(synthesized([other()], []));
+  it('names the argument and the available stacks when nothing matched', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([other()]));
 
     await expect(runImport(['import', 'Nope'])).rejects.toThrow('process.exit-mock');
 
     expect(errorText()).toContain('No stacks matching Nope found in assembly. Available: Other');
-    expect(errorText()).not.toContain('failed to load');
     expect(errorText()).not.toContain('is not a wildcard');
   });
 
-  it('refuses a zero-stack app with the Stage named, with and without an argument', async () => {
-    mockSynthesize.mockResolvedValue(synthesized([], failedStages));
+  it('refuses a zero-stack app before the selection chain, with and without an argument', async () => {
+    mockSynthesize.mockResolvedValue(synthesized([]));
 
     await expect(runImport(['import'])).rejects.toThrow('process.exit-mock');
-    expect(errorText()).toContain(`No stacks found in assembly. ${note}`);
+    expect(errorText()).toContain('No stacks found in assembly');
     expect(errorText()).not.toContain('Multiple stacks found');
 
     errorSpy.mockClear();
     await expect(runImport(['import', 'MyStage/MyStack'])).rejects.toThrow('process.exit-mock');
     expect(errorText()).toContain(
-      `No stacks matching MyStage/MyStack found in assembly. The assembly has no stacks. ${note}`
+      'No stacks matching MyStage/MyStack found in assembly. The assembly has no stacks'
     );
     expectNoStateTouched();
   });
 
   it('says import matches exactly when the argument looks like a wildcard', async () => {
     mockSynthesize.mockResolvedValue(
-      synthesized([{ ...stackInfo('MyStage-Api', template({})), displayName: 'MyStage/Api' }], [])
+      synthesized([{ ...stackInfo('MyStage-Api', template({})), displayName: 'MyStage/Api' }])
     );
 
     await expect(runImport(['import', 'MyStage/*'])).rejects.toThrow('process.exit-mock');
@@ -6332,9 +6293,7 @@ describe('cdkd import: selection names a Stage that failed to load (go-to-k/cdkd
   it('lists every stack with its display path when several remain and none was named', async () => {
     mockSynthesize.mockResolvedValue(
       synthesized(
-        [other(), { ...stackInfo('MyStage-Api', template({})), displayName: 'MyStage/Api' }],
-        []
-      )
+        [other(), { ...stackInfo('MyStage-Api', template({})), displayName: 'MyStage/Api' }])
     );
 
     await expect(runImport(['import'])).rejects.toThrow('process.exit-mock');
@@ -6346,7 +6305,7 @@ describe('cdkd import: selection names a Stage that failed to load (go-to-k/cdkd
   });
 
   it('control: an argument naming a surviving stack proceeds past selection', async () => {
-    mockSynthesize.mockResolvedValue(synthesized([other()], failedStages));
+    mockSynthesize.mockResolvedValue(synthesized([other()]));
 
     await runImport(['import', 'Other', '--yes']).catch(() => undefined);
 
