@@ -795,7 +795,7 @@ export async function executeDeployment(
           failedOperations.some((op) => op.changeType !== 'DELETE')
         ) {
           this.logger.warn(
-            safeMsg`The record of the operation that failed is kept too. Revert both with: ${
+            safeMsg`The record of the operation that failed is kept too. Revert it with: ${
               pasteableCommand('cdkd rollback', [
                 { value: stackName, hole: 'stack' },
                 { literal: '--revert-failed' },

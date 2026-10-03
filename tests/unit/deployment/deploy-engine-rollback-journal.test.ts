@@ -367,7 +367,10 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(warns.some((m) => m.includes('--revert-failed'))).toBe(false);
   });
 
-  it('auto-rollback that SKIPS an op names --revert-failed when a CREATE / UPDATE failed', async () => {
+  it.each([
+    ['a top-level stack names it', false],
+    ['a nested child names no command (go-to-k/cdkd#3864)', true],
+  ] as const)('auto-rollback that SKIPS an op with a failed CREATE / UPDATE: %s', async (_label, nested) => {
     // A's UPDATE completes over a record with no `properties` bag, so its
     // revert is skipped (issue #3203); B's CREATE fails, and its record is in
     // the kept segment, which the next deploy's generic note no longer names.
@@ -402,14 +405,27 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       }
     ).providerRegistry.getProviderFor().provider;
     provider.update.mockResolvedValue({ physicalId: 'phys-A', wasReplaced: false });
+    if (nested) {
+      // A nested child's stack-less `cdkd rollback` resolves to the top-level
+      // stack, so the hint must not name one.
+      (engine as unknown as { options: Record<string, unknown> }).options['parentStackInfo'] = {
+        parentStack: 'Parent',
+        parentLogicalId: 'Child',
+        parentRegion: 'us-east-1',
+      };
+    }
 
     await expect(engine.deploy(stackName, template)).rejects.toThrow();
 
     expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
     const warns = (getLogger().warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     expect(warns.some((m) => m.includes('could not revert 1 operation(s)'))).toBe(true);
-    const hint = warns.find((m) => m.includes('Revert both with:'));
-    expect(hint).toContain(`cdkd rollback ${stackName} --revert-failed`);
+    const hint = warns.find((m) => m.includes('--revert-failed'));
+    if (nested) {
+      expect(hint).toBeUndefined();
+    } else {
+      expect(hint).toContain(`Revert it with: cdkd rollback ${stackName} --revert-failed`);
+    }
   });
 
   it('a pop failure during journal settling leaves the full segment in place (best-effort)', async () => {
