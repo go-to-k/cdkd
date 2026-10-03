@@ -810,7 +810,9 @@ describe('DeployEngine - a failed deploy forgets the children it never restored 
     const warned = (getLogger().warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     expect(warned.some((line) => line.includes('--recreate-via-cc-api Policy'))).toBe(false);
     expect(warned.some((line) => line.includes('--recreate-via-sdk-provider Policy'))).toBe(false);
-    expect(warned.some((line) => line.includes('Its write may still be on Role'))).toBe(true);
+    expect(
+      warned.some((line) => line.includes('Its write may still be on Role (fixed-role)'))
+    ).toBe(true);
   });
 
   it('forgets an SDK EventInvokeConfig whose re-create threw: its type is cc-broken', async () => {
@@ -916,8 +918,8 @@ describe('DeployEngine - a failed deploy forgets the children it never restored 
       warned.some(
         (line) =>
           line.includes('Filter (AWS::Logs::MetricFilter)') &&
-          line.includes('Its write may still be on Group') &&
-          line.includes('remove it from Group by hand')
+          line.includes('Its write may still be on Group (/fixed/group)') &&
+          line.includes('remove it from that resource by hand')
       )
     ).toBe(true);
   });

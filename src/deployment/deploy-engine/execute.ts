@@ -465,8 +465,18 @@ export async function executeDeployment(
       }
       // An attempted write forgotten for lack of a recovery flag may still be
       // live on the parent, and once its record is gone nothing removes it.
+      // The parent is named with its physical id too: that is what a hand
+      // removal in AWS has to look up.
+      const parentPhysicalId = newResources[lost.parent]?.physicalId;
+      const parentShown =
+        parentPhysicalId !== undefined && parentPhysicalId !== ''
+          ? safeMsg`${lost.parent} (${parentPhysicalId})`
+          : safeMsg`${lost.parent}`;
       const mayStillBeLive = attempted.has(lost.logicalId)
-        ? safeMsg` Its write may still be on ${lost.parent}: if ${lost.logicalId} is removed from the template before the next deploy, remove it from ${lost.parent} by hand.`
+        ? safeMsg` Its write may still be on `.concat(
+            parentShown,
+            safeMsg`: if ${lost.logicalId} is removed from the template before the next deploy, remove it from that resource by hand.`
+          )
         : '';
       if (lost.action === 'forget' && mayStillBeLive !== '') {
         Reflect.deleteProperty(newResources, lost.logicalId);
