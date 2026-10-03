@@ -485,6 +485,22 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
     expect(parseRollbackJournal(body(segment), 'P~C').segments[0]).toMatchObject(segment);
   });
 
+  // go-to-k/cdkd#4402: the ids a removed newer segment superseded.
+  it('round-trips supersededLogicalIds', () => {
+    expect(
+      parseRollbackJournal(body({ supersededLogicalIds: ['Rule', 'Other'] }), 'S').segments[0]
+    ).toMatchObject({ supersededLogicalIds: ['Rule', 'Other'] });
+  });
+
+  it.each([
+    ['a string', 'Rule'],
+    ['an array holding a non-string', ['Rule', 7]],
+  ])('refuses supersededLogicalIds as %s, which would silently supersede nothing', (_what, value) => {
+    expect(() => parseRollbackJournal(body({ supersededLogicalIds: value }), 'S')).toThrow(
+      /segments\[0\]\.supersededLogicalIds must be an array of strings when present/
+    );
+  });
+
   it('refuses a non-string runId, which a nested revert selects segments by', () => {
     expect(() => parseRollbackJournal(body({ runId: 7 }), 'P~C')).toThrow(
       /segments\[0\]\.runId must be a string when present \(got number\)/

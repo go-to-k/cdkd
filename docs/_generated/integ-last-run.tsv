@@ -317,7 +317,7 @@ serverless-api	2026-10-02T07:20:09Z	PASS	61	verify.sh	PR #4391 (#2080 EMR create
 servicediscovery	2026-10-01T08:27:27Z	PASS	120	verify.sh	PR #4309 (#4299 FAILED-operation retry stamp) at 6a885047f; rc ok, 3 deleted 0 errors, orph clean
 servicediscovery-namespaces	2026-10-02T01:44:21Z	PASS	130	verify.sh	PR #4378 removalDefaults; rc ok, orph clean
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)
-sg-circular-dependency	2026-10-02T15:20:59Z	PASS	306	verify.sh	rc ok, orph clean; #4355 phase 1e refuse/update/ADOPT arms
+sg-circular-dependency	2026-10-03T00:37:25Z	PASS	401	verify.sh	rc ok, orph clean; #4402 superseded journal evidence, POP arm
 sns-event-source	2026-09-27T12:27:25Z	PASS	70	verify.sh	rc ok, orph clean (#3861)
 sns-inline-subscription	2026-09-25T19:22:55Z	PASS	55	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 sns-pending-subscription	2026-09-17T17:36:20Z	PASS	163	verify.sh	issue 3329 gate pair: confirms Subscribe with ReturnSubscriptionArn=true returns a REAL ARN even for a pending-confirmation subscription (the premise the create-path shape gate rests on); delete-path pending skip fired, destroy 2 deleted 0 errors, 0 orphans

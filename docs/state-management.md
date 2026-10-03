@@ -148,9 +148,18 @@ carries the op(s) that **FAILED** mid-deploy (`failedOperations[]` — pre-op
 state + attempted properties; an additive field, no `journalVersion` bump)
 so `cdkd rollback --revert-failed` can optionally revert them too. The one
 place a deploy acts on the journal's contents while provisioning is an `AWS::EC2::SecurityGroupIngress` create that
-AWS rejects as a duplicate: it adopts the existing rule only when a segment shows
-the same logical id attempted the same rule (and no later completed DELETE of
-the id superseded it), and refuses otherwise. A failed op refused because the
+AWS rejects as a duplicate: it adopts the existing rule only when a segment holds
+a FAILED attempt of the same logical id at the same rule that no later completed
+op of the id superseded, and refuses otherwise. A completed op is never that
+evidence: the failed deploy recorded its resource in state, so a later create of
+the id means the resource was reverted, destroyed or replaced. Neither is a failed
+CREATE that carries a physical id, nor a failed replacement UPDATE whose physical
+id differs from its previous record's: both were recorded in state too. Removing a segment
+(a clean rollback's settle, `cdkd rollback`, a nested child's settled or
+orphaned segments, or a successful deploy whose journal delete failed) leaves the
+ids of its completed ops on the nearest older
+segment (`supersededLogicalIds`, additive, no `journalVersion` bump), so the
+attempt a reverted adoption consumed does not count again. A failed op refused because the
 resource it met belongs to someone else, or whose write AWS provably did not
 apply (one send answered with a 4xx or a throttle), is recorded WITHOUT its
 attempted properties, so it is never read back as an attempt; any other

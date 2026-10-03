@@ -117,6 +117,17 @@ export interface RollbackJournalSegment {
    * holds only the reads of the deploy being undone. ADDITIVE, no bump.
    */
   previousCrossStackReads?: Pick<StackState, 'imports' | 'outputReads'>;
+  /**
+   * go-to-k/cdkd#4402: logical ids whose failed attempts — in this segment and
+   * every older one — a NEWER segment superseded before it was removed. The
+   * removed segment's completed ops were what told `priorAttemptsInJournal`
+   * those earlier attempts were resolved (they recorded the resource, whether
+   * or not the removal followed their revert); the backend carries their ids
+   * here, onto the nearest older remaining segment, so a removed adoption does
+   * not resurrect the attempt it adopted. Read at the END of this segment.
+   * ADDITIVE, no `journalVersion` bump: an older binary ignores it.
+   */
+  supersededLogicalIds?: string[];
 }
 
 /** On-disk shape of `rollback-journal.json`. */
@@ -396,6 +407,18 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
       }
       seg['failedOperations'].forEach((op: unknown, i) =>
         refuseMalformedOperation(shownStack, `segments[${s}].failedOperations[${i}]`, op)
+      );
+    }
+    // go-to-k/cdkd#4402: read as a set of logical ids; a malformed one would
+    // silently supersede nothing, so it is refused like the fields above.
+    if (
+      seg['supersededLogicalIds'] !== undefined &&
+      (!Array.isArray(seg['supersededLogicalIds']) ||
+        !seg['supersededLogicalIds'].every((id: unknown) => typeof id === 'string'))
+    ) {
+      refuseMalformed(
+        shownStack,
+        `segments[${s}].supersededLogicalIds must be an array of strings when present.`
       );
     }
     // Issue #3754: `runId` is what a nested revert SELECTS segments by, so a

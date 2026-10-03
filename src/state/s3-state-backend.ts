@@ -1179,7 +1179,8 @@ export class S3StateBackend {
       await this.deleteRollbackJournal(stackName, region);
       return 0;
     }
-    journal.segments.pop();
+    const popped = journal.segments.pop()!;
+    carrySupersededIds(popped, journal.segments[journal.segments.length - 1]);
     if (journal.segments.length === 0) {
       await this.deleteRollbackJournal(stackName, region);
       return 0;
@@ -1189,6 +1190,28 @@ export class S3StateBackend {
       JSON.stringify(journal, null, 2)
     );
     return journal.segments.length;
+  }
+
+  /**
+   * go-to-k/cdkd#4402: record `logicalIds` as superseded on the journal's
+   * newest segment — for a removal that could not delete the journal (a
+   * successful deploy whose delete failed): its completed ops supersede every
+   * older failed attempt of their ids. No journal or no ids: nothing written.
+   */
+  async markRollbackJournalSuperseded(
+    stackName: string,
+    region: string,
+    logicalIds: readonly string[]
+  ): Promise<void> {
+    if (logicalIds.length === 0) return;
+    const journal = await this.loadRollbackJournal(stackName, region);
+    const newest = journal?.segments[journal.segments.length - 1];
+    if (!journal || !newest) return;
+    addSupersededIds(newest, logicalIds);
+    await this.putRawObject(
+      this.getRollbackJournalKey(stackName, region),
+      JSON.stringify(journal, null, 2)
+    );
   }
 
   /**
@@ -1205,7 +1228,11 @@ export class S3StateBackend {
   ): Promise<number> {
     const journal = await this.loadRollbackJournal(stackName, region);
     if (!journal) return 0;
-    const kept = journal.segments.filter((segment) => !drop(segment));
+    const kept: RollbackJournalSegment[] = [];
+    for (const segment of journal.segments) {
+      if (!drop(segment)) kept.push(segment);
+      else carrySupersededIds(segment, kept[kept.length - 1]);
+    }
     const removed = journal.segments.length - kept.length;
     if (removed === 0) return 0;
     if (kept.length === 0) {
@@ -1253,9 +1280,13 @@ export class S3StateBackend {
    * threw would leave every readable version behind with no warning at all,
    * the same partial-failure gap `cdkd gc` closed with its `finally`.
    */
-  async deleteRollbackJournal(stackName: string, region: string): Promise<void> {
+  async deleteRollbackJournal(stackName: string, region: string): Promise<boolean> {
     await this.ensureClientForBucket();
     const key = this.getRollbackJournalKey(stackName, region);
+    // go-to-k/cdkd#4402: REPORTED, never thrown — `false` when the journal may
+    // survive (a DeleteObject failure other than not-found), so a caller that
+    // removes a segment by deleting the whole journal can keep its supersede.
+    let gone = true;
     try {
       await this.s3Client.send(
         new DeleteObjectCommand({
@@ -1271,6 +1302,7 @@ export class S3StateBackend {
       // noncurrent versions of the key survive (on a versioned bucket a prior
       // delete leaves a marker as current and every body still readable).
       if (!isNoSuchKey(error) && (error as { name?: string }).name !== 'NotFound') {
+        gone = false;
         this.logger.warn(
           `Failed to delete rollback journal for ${this.stackRef(stackName, region)}: ${errorDetail(error)}`
         );
@@ -1284,6 +1316,7 @@ export class S3StateBackend {
       objectDescription:
         'the rollback journal, whose `failedOperations[].attemptedProperties` records the properties of the failed write verbatim',
     });
+    return gone;
   }
 
   /**
@@ -1751,4 +1784,32 @@ function isNoSuchKey(error: unknown): boolean {
   if (error instanceof NoSuchKey) return true;
   const name = (error as { name?: string } | null)?.name;
   return name === 'NoSuchKey';
+}
+
+/**
+ * go-to-k/cdkd#4402: record, on `older` (the nearest older segment that stays),
+ * the logical ids whose earlier failed attempts `removed` superseded — its
+ * completed ops' ids and any it carried itself. A completed op supersedes the
+ * earlier attempts of its id because it RECORDED the resource, whether or not
+ * the removal follows its revert (a clean rollback's settle, `cdkd rollback`,
+ * a settled nested segment) or not (an orphaned nested segment discarded);
+ * without this, removing it — a reverted adoption above all — would let the
+ * attempt it superseded count as evidence again (`priorAttemptsInJournal`).
+ * No older segment: nothing to supersede.
+ */
+function carrySupersededIds(
+  removed: RollbackJournalSegment,
+  older: RollbackJournalSegment | undefined
+): void {
+  if (older === undefined) return;
+  addSupersededIds(older, [
+    ...removed.operations.map((op) => op.logicalId),
+    ...(removed.supersededLogicalIds ?? []),
+  ]);
+}
+
+/** Union `ids` into `segment.supersededLogicalIds`; writes nothing for none. */
+function addSupersededIds(segment: RollbackJournalSegment, ids: readonly string[]): void {
+  const merged = new Set([...(segment.supersededLogicalIds ?? []), ...ids]);
+  if (merged.size > 0) segment.supersededLogicalIds = [...merged];
 }
