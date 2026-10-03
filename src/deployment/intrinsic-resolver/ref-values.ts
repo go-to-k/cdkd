@@ -1,7 +1,12 @@
 import { displayIdent } from '../../utils/display-safe.js';
-import { carriesSecretMask } from '../secret-redaction.js';
+import { SECRET_MASK, carriesSecretMask } from '../secret-redaction.js';
+import { isDynamicReferenceString } from '../secret-redaction/rules.js';
 import { parseWebACLArn } from '../../provisioning/providers/wafv2-provider.js';
-import { COMPOSITE_ID_SEPARATOR, segmentAfterAnchor } from '../../provisioning/composite-id.js';
+import {
+  COMPOSITE_ID_SEPARATOR,
+  canonicalizeRoute53QueryName,
+  segmentAfterAnchor,
+} from '../../provisioning/composite-id.js';
 
 /**
  * Special symbol to represent AWS::NoValue
@@ -256,12 +261,11 @@ export const REF_RETURNS_NAME_FROM_ARN = new Map<string, string>([
  *
  * Value: `arity` is the EXACT segment count the extraction is valid for and
  * `index` the 0-based segment to return. Requiring the exact arity rather than
- * a minimum is what keeps this safe on a mis-arity'd id: cdkd's own
- * `parseRecordSetCompositeId` also demands exactly three parts, so a record
- * whose name contained a `|` is already rejected everywhere else, and returning
- * a confidently-wrong middle segment here would be worse than passing the raw
- * id through. Anything that does not match falls through to the raw physical id,
- * the same graceful degradation the `stateLookup` recoveries use.
+ * a minimum keeps a mis-arity'd id from yielding a confidently-wrong segment.
+ * A record name may itself contain `|` (issue #3890), which makes the id
+ * longer than three segments; {@link recordSetRefFromPhysicalId} places that
+ * name on the recorded `Name` / `Type`, and only an id it cannot anchor falls
+ * through to the raw physical id.
  *
  * Same maintenance rules as the two Sets: docs-verified `Ref` semantics per
  * type, a whole-service-family audit before adding one, and a pinning unit test
@@ -346,6 +350,15 @@ export interface RefStateLookupOptions {
    * bags (issue #3892). A caller WITH a bag already skips masks; unchanged.
    */
   readonly preferCleanValue?: boolean;
+  /**
+   * Treat a value carrying a `{{resolve:...}}` dynamic reference as REDACTED,
+   * exactly like {@link SECRET_MASK}: a caller with a bag gets it reported, a
+   * caller without one gets {@link SECRET_MASK} back. `redactSecretsForState`
+   * records such a template value as its EXPRESSION, which is neither a mask
+   * nor the value AWS holds. Only {@link recordSetRefFromPhysicalId} passes
+   * it, for the `Name` / `Type` anchors (issue #3890).
+   */
+  readonly dynamicReferenceIsRedacted?: boolean;
 }
 
 /**
@@ -458,14 +471,17 @@ export function refStateLookupFromResource(
         // `RefStateLookup`, not template text.
         const value = source[key];
         if (typeof value === 'string' && value.length > 0) {
-          if (carriesSecretMask(value)) {
+          const dynamicReference =
+            options?.dynamicReferenceIsRedacted === true && isDynamicReferenceString(value);
+          if (carriesSecretMask(value) || dynamicReference) {
             // THE OPT-IN, and it is the whole safety argument of this arm.
             // A caller that passed no `onMaskedValue` gets `main`'s behaviour
             // byte for byte: the mask is RETURNED, four readers recognise it,
             // and this function has changed nothing for them.
             if (onMaskedValue === undefined) {
-              if (options?.preferCleanValue !== true) return value;
-              deferredMask ??= value;
+              const served = dynamicReference ? SECRET_MASK : value;
+              if (options?.preferCleanValue !== true) return served;
+              deferredMask ??= served;
               continue;
             }
             masked ??= { key, notify: onMaskedValue };
@@ -539,6 +555,60 @@ export function glueTableRefFromPhysicalId(
     if (tableName !== undefined) return tableName;
   }
   return physicalId.substring(firstPipe + 1);
+}
+
+/**
+ * The `Ref` value of an `AWS::Route53::RecordSet` — its record name — from a
+ * `<hostedZoneId>|<name>|<type>` physical id whose NAME contains `|` (issue
+ * #3890), or `undefined` for every other id (which the caller resolves as
+ * before: a three-part id through {@link REF_RETURNS_SEGMENT_AT_INDEX} without
+ * reading state, anything else passed through raw).
+ *
+ * Route 53 accepts `|` in a record name, so the id is longer than three
+ * segments. The hosted zone id (AWS-minted) and the type (an enum) never carry
+ * one, so the name is everything between the first and the last `|` — but
+ * only when the id ANCHORS on its record the way `Route53Provider`'s decode
+ * sites require (`parseRecordSetCompositeId` + `compositeAgreesWithTemplate`):
+ * the last segment equals the recorded `Type`, and the middle equals the
+ * recorded `Name` (case- and trailing-dot-insensitive). An id that does not is
+ * CloudFormation's own physicalId, the record name itself, which `cdkd import`
+ * can keep verbatim (`importRecordSet`'s `adoptVerbatim`) — and passing that
+ * through raw IS its `Ref`. The `Name` match is what tells the two apart: the
+ * middle of a longer id is strictly shorter than the id.
+ *
+ * A MASKED anchor follows the Glue rule ({@link glueTableRefFromPhysicalId}):
+ * a caller with a redaction bag gets the redacted read reported, one without
+ * gets the mask back — never the raw id, which its readers would not catch.
+ * An anchor recorded as a `{{resolve:...}}` expression is treated the same way.
+ */
+export function recordSetRefFromPhysicalId(
+  physicalId: string,
+  stateLookup?: RefStateLookup
+): string | undefined {
+  const firstPipe = physicalId.indexOf(COMPOSITE_ID_SEPARATOR);
+  const lastPipe = physicalId.lastIndexOf(COMPOSITE_ID_SEPARATOR);
+  if (firstPipe <= 0 || lastPipe === firstPipe) return undefined;
+  const name = physicalId.slice(firstPipe + 1, lastPipe);
+  // A three-part id never reads state: the segment map answers it.
+  if (!name.includes(COMPOSITE_ID_SEPARATOR) || !stateLookup) return undefined;
+  // `Type` first, and `Name` only once it agrees: an id whose type does not
+  // match is the scalar whatever its `Name`, so a masked `Name` beside it is
+  // never reported as a read this `Ref` needed.
+  // A `{{resolve:...}}` anchor is redacted too: it never equals the id's
+  // segment, and passing the raw id through would hand a consumer the
+  // composite instead of the record name.
+  const anchorOptions = { dynamicReferenceIsRedacted: true } as const;
+  const recordedType = stateLookup(['Type'], anchorOptions);
+  if (recordedType !== undefined && carriesSecretMask(recordedType)) return recordedType;
+  if (recordedType === undefined || physicalId.slice(lastPipe + 1) !== recordedType) {
+    return undefined;
+  }
+  const recordedName = stateLookup(['Name'], anchorOptions);
+  if (recordedName !== undefined && carriesSecretMask(recordedName)) return recordedName;
+  if (recordedName === undefined) return undefined;
+  return canonicalizeRoute53QueryName(name) === canonicalizeRoute53QueryName(recordedName)
+    ? name
+    : undefined;
 }
 
 /**
@@ -676,6 +746,14 @@ export function cfnRefValueFromPhysicalId(
     const pipeIdx = physicalId.indexOf('|');
     if (pipeIdx >= 0) {
       return physicalId.substring(0, pipeIdx);
+    }
+  }
+  // AWS::Route53::RecordSet with a record name containing `|` (issue #3890) —
+  // see the helper; a three-part id takes the segment map below.
+  if (resourceType === 'AWS::Route53::RecordSet') {
+    const recordName = recordSetRefFromPhysicalId(physicalId, stateLookup);
+    if (recordName !== undefined) {
+      return recordName;
     }
   }
   const segmentSpec = REF_RETURNS_SEGMENT_AT_INDEX.get(resourceType);

@@ -19,6 +19,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  *   Output persists a JSON array whose element count is observable (#1873)
  * - HostedZoneTags + QueryLoggingConfig REMOVAL resets (#1160 route53 batch)
  * - RecordSet renames (Name / Type / SetIdentifier) under CDKD_TEST_RENAME (#3741)
+ * - A RecordSet whose name contains `|`, its `Ref`, and an in-place update (#3890)
  *
  * The REMOVAL phase (gated on CDKD_TEST_REMOVAL, issue #1160 route53 batch)
  * drops the `Dropped` hosted-zone tag and the whole `QueryLoggingConfig`
@@ -206,6 +207,18 @@ export class Route53Stack extends cdk.Stack {
     });
     cidrRecord.addDependency(cidrCollection);
 
+    // Issue #3890: Route 53 accepts `|` in a record name (it stores it as
+    // `\174`), and cdkd uses `|` to join its `<zoneId>|<name>|<type>` physical
+    // id. Pre-fix the deploy REFUSED this record. The TTL changes under the
+    // `name` rename mode, so Phase 2.7a also updates it in place.
+    const pipeRecord = new route53.CfnRecordSet(this, 'PipeRecord', {
+      hostedZoneId: zone.hostedZoneId,
+      name: `sep|pipe.cdkd-test-${this.account}.internal`,
+      type: 'A',
+      ttl: renameName ? '600' : '300',
+      resourceRecords: ['198.51.100.9'],
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'HostedZoneId', {
       value: zone.hostedZoneId,
@@ -260,6 +273,13 @@ export class Route53Stack extends cdk.Stack {
     new cdk.CfnOutput(this, 'CidrRecordRef', {
       value: cidrRecord.ref,
       description: 'Ref of the CIDR RecordSet — must be the record NAME, not the composite id',
+    });
+
+    // Issue #3890: the `Ref` of a record whose name carries `|` is that whole
+    // name, not a segment of the longer id.
+    new cdk.CfnOutput(this, 'PipeRecordRef', {
+      value: pipeRecord.ref,
+      description: 'Ref of the RecordSet whose name contains | — must be the whole record NAME',
     });
 
     cdk.Tags.of(this).add('Project', 'cdkd');

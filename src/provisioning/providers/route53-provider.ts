@@ -42,9 +42,8 @@ import { readConfigString } from '../config-shape.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import {
   COMPOSITE_ID_SEPARATOR,
-  compositeIdSeparatorRefusal,
+  canonicalizeRoute53QueryName as canonicalizeQueryName,
   logicalIdShown,
-  packCompositeId,
 } from '../composite-id.js';
 import type {
   ResourceProvider,
@@ -53,7 +52,6 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
-  CreateContext,
   UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -103,29 +101,45 @@ class HostedZoneNameNotFoundError extends ProvisioningError {
   }
 }
 
-/** Segment count of cdkd's `AWS::Route53::RecordSet` composite physicalId. */
-const RECORD_SET_COMPOSITE_SEGMENTS = 3;
-
 /**
  * Parse cdkd's composite record-set physicalId `<hostedZoneId>|<Name>|<Type>`.
  *
- * Returns `undefined` for anything else — most importantly CloudFormation's
- * OWN physicalId for this type, which is the record name alone (`Ref` on an
- * `AWS::Route53::RecordSet` returns the domain name). That scalar CAN contain
- * `|`: Route 53 accepts one in a record name, while cdkd still refuses to
- * create such a record (#3890), and `importRecordSet` cross-checks a
- * three-part override against the template. `cdkd import` stored that scalar
- * verbatim before issue #1658, so state files in the wild carry BOTH shapes
- * and every consumer has to know which one it is holding.
+ * The record NAME may itself contain `|` (issue #3890): Route 53's domain-name
+ * format admits it, and CloudFormation manages such a record. The hosted zone
+ * id (AWS-minted) and the type (an enum) never do, so the name is everything
+ * between the FIRST and the LAST separator. A three-part id is read exactly as
+ * before; a longer one is only a CANDIDATE, flagged `nameCarriesSeparator`,
+ * and every caller must anchor it on the recorded `Name` and `Type`
+ * (`compositeAgreesWithTemplate`) before trusting it.
+ *
+ * Returns `undefined` for anything with fewer than three non-empty parts. The
+ * anchor is what tells the composite apart from CloudFormation's OWN
+ * physicalId for this type, the record name alone (`Ref` on an
+ * `AWS::Route53::RecordSet` returns the domain name): `cdkd import` stored
+ * that scalar verbatim before issue #1658, so state files in the wild carry
+ * BOTH shapes, and the scalar can contain `|` too.
  */
 export function parseRecordSetCompositeId(
   physicalId: string
-): { hostedZoneId: string; name: string; type: string } | undefined {
-  const parts = physicalId.split('|');
-  if (parts.length !== RECORD_SET_COMPOSITE_SEGMENTS) return undefined;
-  const [hostedZoneId, name, type] = parts as [string, string, string];
+): { hostedZoneId: string; name: string; type: string; nameCarriesSeparator: boolean } | undefined {
+  const firstPipe = physicalId.indexOf(COMPOSITE_ID_SEPARATOR);
+  const lastPipe = physicalId.lastIndexOf(COMPOSITE_ID_SEPARATOR);
+  if (firstPipe < 0 || lastPipe === firstPipe) return undefined;
+  const hostedZoneId = physicalId.slice(0, firstPipe);
+  const name = physicalId.slice(firstPipe + 1, lastPipe);
+  const type = physicalId.slice(lastPipe + 1);
   if (!hostedZoneId || !name || !type) return undefined;
-  return { hostedZoneId, name, type };
+  return {
+    hostedZoneId,
+    name,
+    type,
+    nameCarriesSeparator: name.includes(COMPOSITE_ID_SEPARATOR),
+  };
+}
+
+/** The one spelling of the `<hostedZoneId>|<Name>|<Type>` join. */
+function recordSetCompositeId(hostedZoneId: unknown, name: unknown, type: unknown): string {
+  return [hostedZoneId, name, type].map(String).join(COMPOSITE_ID_SEPARATOR);
 }
 
 /**
@@ -307,28 +321,6 @@ export function recordIdentityChanged(
 }
 
 /**
- * Canonicalize a name for the QUERY side of a Route 53 list call.
- *
- * `normalizeRecordName` above is the COMPARE-side canonicalizer, and the two
- * are deliberately NOT the same function. Route 53 orders both hosted zones
- * and record sets by reversed labels of the name it STORES — lower-cased and
- * escape-ENCODED — and a `DNSName` / `StartRecordName` start key in any other
- * spelling positions the window somewhere else entirely. So the query side
- * must move TOWARD AWS's spelling (lower-case, encode `*`), where the compare
- * side moves AWS's answer toward the template's (decode escapes).
- *
- * Decoding here would be actively wrong: `*.example.com` sorts at `*` (0x2A)
- * while AWS stores `\052.example.com` and sorts it at `\` (0x5C), so every
- * name whose first label begins with `-` / `+` / a digit / an upper-case
- * letter falls BETWEEN them — with a bounded page, the wildcard record we
- * asked for is skipped straight past.
- */
-function canonicalizeQueryName(name: string): string {
-  const lowered = name.toLowerCase().replaceAll('*', '\\052');
-  return lowered.endsWith('.') ? lowered : `${lowered}.`;
-}
-
-/**
  * A template's `HostedZoneName` as the refusals ending in a `--resource`
  * remedy print it: inside cdkd's `"..."` when plain, described otherwise
  * (go-to-k/cdkd#4226). A shell expands `$( )` inside double quotes, so a name
@@ -408,14 +400,13 @@ export class Route53Provider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>,
-    context?: CreateContext
+    properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
         return this.createHostedZone(logicalId, resourceType, properties);
       case 'AWS::Route53::RecordSet':
-        return this.createRecordSet(logicalId, resourceType, properties, context);
+        return this.createRecordSet(logicalId, resourceType, properties);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -1153,8 +1144,7 @@ export class Route53Provider implements ResourceProvider {
   private async createRecordSet(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>,
-    context?: CreateContext
+    properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Route 53 record set ${logicalId}`);
 
@@ -1163,38 +1153,11 @@ export class Route53Provider implements ResourceProvider {
     const recordName = properties['Name'] as string;
     const recordType = properties['Type'] as string;
 
-    // Refuse a `|` in any segment BEFORE `ChangeResourceRecordSets` runs
-    // (issue #1711, the route53 half of the #1672 sweep). `recordName` is
-    // `properties['Name']` — the only TEMPLATE-chosen segment of this type's
-    // composite, where `hostedZoneId` and `recordType` are AWS-generated / a
-    // fixed enum. The blast radius is milder than the Glue sibling's because
-    // `parseRecordSetCompositeId` demands EXACTLY three parts, so a four-part
-    // id is REJECTED rather than mis-decoded into a different record — but the
-    // deploy still records an id nothing can decode, which is what this guard
-    // stops. Computed before the call so a refusal cannot orphan a record AWS
-    // has already written.
-    const compositeId = packCompositeId(
-      resourceType,
-      logicalId,
-      [
-        { name: 'hostedZoneId', value: hostedZoneId },
-        { name: 'recordName', value: recordName },
-        { name: 'recordType', value: recordType },
-      ],
-      // A reverse-replacement rollback creates from a STATE record, so the
-      // refusal downgrades to a warning — no template edit can repair a value
-      // an older binary already recorded.
-      {
-        // Issue #2176: the refusal QUOTES the offending segment value, on the
-        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
-        // goes through unconditionally -- it is absent on the paths that have no
-        // context, where it degrades to identity.
-        maskSecrets: context?.maskSecrets,
-        ...(context?.replayingState === true && {
-          onRefusal: (message: string) => this.logger.warn(message),
-        }),
-      }
-    );
+    // Built directly rather than through `packCompositeId`, which would refuse
+    // a record name carrying `|` (issue #3890): every reader of this id places
+    // the name between the first and the last separator and anchors it on the
+    // recorded `Name` / `Type` (`parseRecordSetCompositeId`).
+    const compositeId = recordSetCompositeId(hostedZoneId, recordName, recordType);
 
     try {
       const resourceRecordSet = this.buildResourceRecordSet(properties);
@@ -1258,68 +1221,10 @@ export class Route53Provider implements ResourceProvider {
     const recordName = properties['Name'] as string;
     const recordType = properties['Type'] as string;
 
-    // The same guard as the create path, split PER SEGMENT on whether THIS
-    // update introduced the separator (issue #3728; the warning itself dates
-    // from issue #1711).
-    //
-    // - REFUSED: a template-path update whose `Name` or `Type` carries the
-    //   separator and DIFFERS from the recorded value. Both are mutable in
-    //   place (the type's only createOnly properties are `HostedZoneId` /
-    //   `HostedZoneName`), so the UPSERT below writes a record under the new,
-    //   ambiguous id — exactly what the create path refuses, reached through a
-    //   rename instead of a create, and fixed by the same template edit.
-    // - WARNED, as before: a segment the recorded resource ALREADY carries (an
-    //   older binary wrote the record under the ambiguous id before the create
-    //   path refused it), and every segment on the two state-borne paths (the
-    //   rollback executor's revert arms set `replayingState`, `cdkd drift
-    //   --revert` sets `desiredFromAwsReadback`). None of those is fixable
-    //   from the template: the only edit is renaming the DNS record, which
-    //   serves a different name rather than repairing this one, and refusing
-    //   would make the existing record un-updatable and un-revertable. The
-    //   hosted-zone segment is always in this group — its properties are
-    //   createOnly, so an update never changes it.
-    //
-    // Placed before the UPSERT and outside the `try`, so the refusal is not
-    // re-wrapped as "Failed to update record set".
-    const stateBorneDesired =
-      context?.replayingState === true || context?.desiredFromAwsReadback === true;
-    const recordedSegmentValues: Readonly<Record<string, unknown>> = {
-      recordName: previousProperties['Name'],
-      recordType: previousProperties['Type'],
-    };
-    const segments = [
-      { name: 'hostedZoneId', value: hostedZoneId },
-      { name: 'recordName', value: recordName },
-      { name: 'recordType', value: recordType },
-    ];
-    // "Differs" is judged the way Route 53 identifies a record — trailing dot
-    // and letter case do not make a different name — and FAILS TOWARD THE
-    // WARNING whenever the recorded side cannot be compared: absent, not a
-    // string, or a redacted dynamic reference (`redactSecretsForState` writes
-    // `{{resolve:...}}` into the record where the desired side holds the
-    // plaintext), since refusing there would strand a record whose name
-    // never changed. The hosted-zone segment has no recorded entry here at
-    // all (its properties are createOnly), so it always reads as not
-    // comparable and keeps the warning.
-    const sameRecordedSegment = (value: unknown, recorded: unknown): boolean => {
-      if (typeof recorded !== 'string' || recorded.includes('{{resolve:')) return true;
-      const normalize = (text: string): string => text.replace(/\.$/, '').toLowerCase();
-      return normalize(String(value)) === normalize(recorded);
-    };
-    const introducesSeparator =
-      !stateBorneDesired &&
-      segments.some(
-        (segment) =>
-          String(segment.value).includes(COMPOSITE_ID_SEPARATOR) &&
-          !sameRecordedSegment(segment.value, recordedSegmentValues[segment.name])
-      );
-    const compositeId = packCompositeId(resourceType, logicalId, segments, {
-      ...(!introducesSeparator && {
-        onRefusal: (message: string) => this.logger.warn(message),
-      }),
-      // Issue #2176 -- see the sibling create site.
-      maskSecrets: context?.maskSecrets,
-    });
+    // Re-built from the new `Name` / `Type`, which the engine records beside
+    // it, so the id always anchors on its own record (issue #3890; see the
+    // create site).
+    const compositeId = recordSetCompositeId(hostedZoneId, recordName, recordType);
 
     // Issue #3741: Route 53 keys a record on name + type + SetIdentifier, so a
     // change to any of the three is a DIFFERENT record, and the UPSERT below
@@ -2513,8 +2418,15 @@ export class Route53Provider implements ResourceProvider {
     // is not proof of a composite, and a record NAME carrying two pipes decodes
     // to a different zone here just as it does there. Without `properties`
     // there is nothing to check against, so the pre-#1711 behavior stands.
+    // A name carrying `|` (issue #3890) is only a candidate split, so with no
+    // bag to anchor it on it is never trusted.
     const composite = parseRecordSetCompositeId(physicalId);
-    if (composite && (!properties || this.compositeAgreesWithTemplate(composite, properties))) {
+    if (
+      composite &&
+      (properties
+        ? this.compositeAgreesWithTemplate(composite, properties)
+        : !composite.nameCarriesSeparator)
+    ) {
       return composite;
     }
     if (!properties) return undefined;
@@ -2682,6 +2594,14 @@ export class Route53Provider implements ResourceProvider {
   ): Promise<Record<string, unknown> | undefined> {
     const identity = await this.resolveRecordSetIdentity(physicalId, properties);
     if (!identity) return undefined;
+    return this.readRecordSetAt(identity, properties);
+  }
+
+  /** {@link readRecordSet} for an identity already resolved. */
+  private async readRecordSetAt(
+    identity: { hostedZoneId: string; name: string; type: string },
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
     const { hostedZoneId, name, type } = identity;
     // Weighted / latency / failover / geo records share name + type and
     // differ only by SetIdentifier, so without it the read returns whichever
@@ -2862,7 +2782,7 @@ export class Route53Provider implements ResourceProvider {
    * `importRecordSet`'s early accept, `resolveRecordSetIdentity`, and
    * `deleteRecordSet` — because `parseRecordSetCompositeId` asks only for three
    * NON-EMPTY segments, which a record NAME carrying two pipes satisfies
-   * (issue #1711).
+   * (issue #1711), and places a name carrying `|` only as a candidate (#3890).
    *
    * Each check is applied only when the template side is a usable string, so an
    * unresolved intrinsic or an absent field leaves the pre-#1711 behavior
@@ -2893,11 +2813,28 @@ export class Route53Provider implements ResourceProvider {
    *
    * Note two of the three callers pass a STATE-borne bag rather than a template
    * one; the reachability argument above is what covers them.
+   *
+   * **A name carrying `|` is the exception to "usable only" (issue #3890).**
+   * Such a parse is only the first-and-last-separator CANDIDATE, so it is
+   * accepted only when BOTH `Name` and `Type` are usable strings and agree.
+   * The `Name` match is what makes that sound: the middle of a longer id is
+   * strictly shorter than the id, so CloudFormation's scalar physicalId (the
+   * record name itself, recorded beside the same `Name`) can never pass, and
+   * neither can an id whose zone or type segment held a stray `|`. An
+   * unanchored candidate falls through to the identity resolution from the
+   * recorded properties, which never reads the id's segments.
    */
   private compositeAgreesWithTemplate(
-    parsed: { hostedZoneId: string; name: string; type: string },
+    parsed: { hostedZoneId: string; name: string; type: string; nameCarriesSeparator: boolean },
     properties: Record<string, unknown>
   ): boolean {
+    const usable = (value: unknown): boolean => typeof value === 'string' && value !== '';
+    if (
+      parsed.nameCarriesSeparator &&
+      !(usable(properties['Type']) && usable(properties['Name']))
+    ) {
+      return false;
+    }
     const templateType = properties['Type'];
     if (typeof templateType === 'string' && templateType && parsed.type !== templateType) {
       return false;
@@ -2963,7 +2900,7 @@ export class Route53Provider implements ResourceProvider {
     if (!known) return null;
     // The early accept has to be CROSS-CHECKED against the template, or it
     // becomes the mis-decode this whole guard exists to prevent (issue #1711,
-    // found in review). `parseRecordSetCompositeId` only asks for exactly three
+    // found in review). `parseRecordSetCompositeId` only asks for three
     // non-empty segments — so a record NAME carrying two pipes,
     // `a|b|c.example.com.`, which is precisely the CloudFormation physicalId
     // `--migrate-from-cloudformation` pre-populates from
@@ -3007,47 +2944,33 @@ export class Route53Provider implements ResourceProvider {
       );
     }
 
-    // An `import()` neither throws nor adopts an id it knows to be ambiguous
-    // (issue #1711) — it takes this method's own escape hatch instead. The
-    // verbatim id decodes to nothing, so `delete` / `drift` fall back to
-    // resolving the record from the template properties, where the canonical
-    // composite would have frozen a mis-arity id into state that nothing can
-    // parse. Reachable: `identity.name` is the record name, and Route 53
-    // accepts a `|` in one, written either as the character or as the `\174`
-    // escape (its API returns the escape either way; "DNS domain name
-    // format", Route 53 Developer Guide). Lifting this refusal is #3890.
-    const segments = [
-      { name: 'hostedZoneId', value: identity.hostedZoneId },
-      { name: 'recordName', value: identity.name },
-      { name: 'recordType', value: identity.type },
-    ];
-    const importRefusal = compositeIdSeparatorRefusal(
-      input.resourceType,
-      input.logicalId,
-      segments
-    );
-    if (importRefusal !== undefined) {
-      // ONE warning, not two: `adoptVerbatim` already explains the consequence,
-      // so the refusal is folded into its reason the way the EC2 EIP import arm
-      // folds its own (`ec2-provider.ts`). The raw sentence is deliberately NOT
-      // emitted here — it prescribes "rename the resource, or manage it outside
-      // cdkd" and asserts the id "decodes back to a DIFFERENT resource", and
-      // neither is true on this path: nothing is refused, the verbatim id
-      // decodes to NOTHING, and the import succeeds.
+    // A composite whose name carries `|` is decoded only by anchoring that name
+    // on the recorded `Name`, so it is minted only when the template `Name` is
+    // a usable string. Otherwise `identity.name` IS the verbatim id (an
+    // unresolved intrinsic leaves nothing else to name the record by), every
+    // later read would reject the candidate, and drift would read nothing --
+    // so keep that id, as before issue #3890.
+    const templateName = input.properties['Name'];
+    if (
+      identity.name.includes(COMPOSITE_ID_SEPARATOR) &&
+      !(typeof templateName === 'string' && templateName !== '')
+    ) {
       return adoptVerbatim(
-        `the resolved hosted zone + Name + Type would pack an ambiguous id — ` +
-          `a segment contains '${COMPOSITE_ID_SEPARATOR}', which cdkd uses as this type's ` +
-          `physical-id separator`
+        `the record name contains '${COMPOSITE_ID_SEPARATOR}' and the template Name is not a ` +
+          `plain string to anchor it on`
       );
     }
 
-    // Cannot throw — the predicate above is the same check `packCompositeId`
-    // makes — but it stays the single spelling of the join so this site cannot
-    // drift from the create / update ones.
-    const compositeId = packCompositeId(input.resourceType, input.logicalId, segments);
+    // A record name carrying `|` packs like any other (issue #3890): Route 53
+    // accepts one, written either as the character or as the `\174` escape
+    // ("DNS domain name format", Route 53 Developer Guide), and every reader
+    // anchors the name on the recorded `Name` / `Type`. The verification reads
+    // by the RESOLVED identity rather than re-parsing the id, which with no bag
+    // beside it would not trust a name carrying `|`.
+    const compositeId = recordSetCompositeId(identity.hostedZoneId, identity.name, identity.type);
     let observed: Record<string, unknown> | undefined;
     try {
-      observed = await this.readRecordSet(compositeId);
+      observed = await this.readRecordSetAt(identity);
     } catch (err) {
       return adoptVerbatim(`verification failed: ${describeAwsFailure(err).detail}`);
     }

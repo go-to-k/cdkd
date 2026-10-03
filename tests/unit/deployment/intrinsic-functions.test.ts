@@ -4,7 +4,9 @@ import {
   type ResolverContext,
   resetAccountInfoCache,
   cfnRefValueFromPhysicalId,
+  refStateLookupFromResource,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
@@ -4747,9 +4749,9 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
   // than confidently returning a wrong middle segment. Exercised through the
   // pure function because `cdkd orphan`'s rewriter shares it with the resolver.
   it.each([
-    // A mis-arity'd id (a record name containing `|`) — rejected everywhere
-    // else in cdkd, so returning `parts[1]` here would be a confident wrong
-    // answer rather than a recovery.
+    // A longer id with NO state to anchor it on: it may be CloudFormation's
+    // scalar (the record name itself), so `parts[1]` would be a confident
+    // wrong answer. With state it is placed instead (issue #3890, below).
     ['Z1D633PJN98FT9|a|b|A'],
     // A pipe-free id: no compound to extract from.
     ['www.example.com.'],
@@ -4767,6 +4769,175 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(cfnRefValueFromPhysicalId('AWS::Route53::RecordSet', 'Z1D633PJN98FT9||A')).toBe(
       'Z1D633PJN98FT9||A'
     );
+  });
+
+  // Issue #3890: Route 53 accepts `|` in a record name, so the id is longer
+  // than three segments. The name is everything between the first and the
+  // last `|`, anchored the way `Route53Provider`'s decode sites anchor it: the
+  // last segment equals the recorded `Type` and the middle the recorded `Name`.
+  describe('AWS::Route53::RecordSet Ref with a `|` in the record name (issue #3890)', () => {
+    function recordContext(
+      physicalId: string,
+      properties: Record<string, unknown>,
+      attributes: Record<string, unknown> = {}
+    ): ResolverContext {
+      return {
+        template: { Resources: { MyRecord: { Type: 'AWS::Route53::RecordSet', Properties: {} } } },
+        resources: {
+          MyRecord: {
+            physicalId,
+            resourceType: 'AWS::Route53::RecordSet',
+            properties,
+            attributes,
+            dependencies: [],
+          },
+        },
+      };
+    }
+
+    it('resolves the whole record name, not a segment of it', async () => {
+      const result = await resolver.resolve(
+        { Ref: 'MyRecord' },
+        recordContext('Z1D633PJN98FT9|sep|www.example.com.|A', {
+          HostedZoneId: 'Z1D633PJN98FT9',
+          Name: 'sep|www.example.com.',
+          Type: 'A',
+        })
+      );
+      expect(result).toBe('sep|www.example.com.');
+    });
+
+    it('matches the recorded Name case- and trailing-dot-insensitively, returning the id spelling', async () => {
+      const result = await resolver.resolve(
+        { Ref: 'MyRecord' },
+        recordContext('Z1|a|b.example.com.|A', { Name: 'A|B.example.com', Type: 'A' })
+      );
+      expect(result).toBe('a|b.example.com.');
+    });
+
+    // CloudFormation's own physical id IS the record name; `cdkd import` can
+    // keep it verbatim. Recorded beside the same `Name`, it never anchors —
+    // the middle of a longer id is strictly shorter than the id — so it passes
+    // through raw, which is its `Ref`.
+    it.each([
+      ['the scalar record name', 'a|b|c|A', { Name: 'a|b|c|A', Type: 'A' }],
+      ['a Type that disagrees', 'Z1|a|b.example.com.|A', { Name: 'a|b.example.com.', Type: 'CNAME' }],
+      ['a Name that disagrees', 'Z1|a|b.example.com.|A', { Name: 'c.example.com.', Type: 'A' }],
+      ['no recorded Type', 'Z1|a|b.example.com.|A', { Name: 'a|b.example.com.' }],
+      ['an unresolved Name', 'Z1|a|b.example.com.|A', { Name: { Ref: 'N' }, Type: 'A' }],
+      ['an empty zone segment', '|a|b.example.com.|A', { Name: 'a|b.example.com.', Type: 'A' }],
+    ])('passes the id through raw with %s', async (_label, physicalId, properties) => {
+      const result = await resolver.resolve(
+        { Ref: 'MyRecord' },
+        recordContext(physicalId, properties)
+      );
+      expect(result).toBe(physicalId);
+    });
+
+    it('anchors on attributes when the properties do not carry the anchors', async () => {
+      const result = await resolver.resolve(
+        { Ref: 'MyRecord' },
+        recordContext('Z1|a|b.example.com.|A', {}, { Name: 'a|b.example.com.', Type: 'A' })
+      );
+      expect(result).toBe('a|b.example.com.');
+    });
+
+    // An ordinary record's `Ref` reads nothing but its id.
+    it('never consults state for a three-part id', () => {
+      const lookup = vi.fn(() => 'A');
+      expect(
+        cfnRefValueFromPhysicalId('AWS::Route53::RecordSet', 'Z1|www.example.com.|A', lookup)
+      ).toBe('www.example.com.');
+      expect(lookup).not.toHaveBeenCalled();
+    });
+
+    it('reads Name only once the Type agrees', () => {
+      const lookup = vi.fn((keys: readonly string[]) => (keys[0] === 'Type' ? 'CNAME' : 'x'));
+      expect(
+        cfnRefValueFromPhysicalId('AWS::Route53::RecordSet', 'Z1|a|b.example.com.|A', lookup)
+      ).toBe('Z1|a|b.example.com.|A');
+      expect(lookup.mock.calls.map((call) => call[0])).toEqual([['Type']]);
+    });
+
+    // A masked anchor follows the Glue rule: a caller with no redaction bag
+    // gets the mask, which its readers recognise — never a guess or the raw id.
+    it.each([
+      ['Type', { Name: 'a|b.example.com.', Type: SECRET_MASK }],
+      ['Name', { Name: SECRET_MASK, Type: 'A' }],
+    ])('serves the mask when the %s anchor is masked and no bag is declared', (_key, properties) => {
+      expect(
+        cfnRefValueFromPhysicalId(
+          'AWS::Route53::RecordSet',
+          'Z1|a|b.example.com.|A',
+          refStateLookupFromResource({ properties })
+        )
+      ).toBe(SECRET_MASK);
+    });
+
+    it('reports a masked Type anchor to a caller with a redaction bag, never reading Name', () => {
+      const reported: string[] = [];
+      const read: string[] = [];
+      const inner = refStateLookupFromResource(
+        { properties: { Name: 'a|b.example.com.', Type: SECRET_MASK } },
+        (key) => reported.push(key)
+      );
+      const lookup = (keys: readonly string[]) => {
+        read.push(...keys);
+        return inner(keys);
+      };
+      expect(
+        cfnRefValueFromPhysicalId('AWS::Route53::RecordSet', 'Z1|a|b.example.com.|A', lookup)
+      ).toBe('Z1|a|b.example.com.|A');
+      expect(reported).toEqual(['Type']);
+      expect(read).toEqual(['Type']);
+    });
+
+    // `redactSecretsForState` records a `{{resolve:...}}` template value as
+    // its EXPRESSION: neither the mask nor a value the id can match. Passing
+    // the raw composite through would hand a consumer the wrong value, so it
+    // is redacted like a mask.
+    it.each([
+      ['Name', { Name: '{{resolve:ssm:x}}', Type: 'A' }],
+      ['Type', { Name: 'a|b.example.com.', Type: '{{resolve:ssm:t}}' }],
+    ])('serves the mask for a dynamic-reference %s anchor when no bag is declared', (_key, properties) => {
+      expect(
+        cfnRefValueFromPhysicalId(
+          'AWS::Route53::RecordSet',
+          'Z1|a|b.example.com.|A',
+          refStateLookupFromResource({ properties })
+        )
+      ).toBe(SECRET_MASK);
+    });
+
+    it('reports a dynamic-reference Name anchor to a caller with a redaction bag', () => {
+      const reported: string[] = [];
+      const lookup = refStateLookupFromResource(
+        { properties: { Name: '{{resolve:ssm:x}}', Type: 'A' } },
+        (key) => reported.push(key)
+      );
+      expect(
+        cfnRefValueFromPhysicalId('AWS::Route53::RecordSet', 'Z1|a|b.example.com.|A', lookup)
+      ).toBe('Z1|a|b.example.com.|A');
+      expect(reported).toEqual(['Name']);
+    });
+
+    // Every other type keeps reading a dynamic-reference value as a value.
+    it('leaves the lookup serving a dynamic reference verbatim without the option', () => {
+      const lookup = refStateLookupFromResource({ properties: { TableName: '{{resolve:ssm:x}}' } });
+      expect(lookup(['TableName'])).toBe('{{resolve:ssm:x}}');
+    });
+
+    it('reports a masked Name anchor to a caller with a redaction bag', () => {
+      const reported: string[] = [];
+      const lookup = refStateLookupFromResource(
+        { properties: { Name: SECRET_MASK, Type: 'A' } },
+        (key) => reported.push(key)
+      );
+      expect(cfnRefValueFromPhysicalId('AWS::Route53::RecordSet', 'Z1|a|b.example.com.|A', lookup)).toBe(
+        'Z1|a|b.example.com.|A'
+      );
+      expect(reported).toEqual(['Name']);
+    });
   });
 
   // Issue #1681, ARN-FROM-STATE mechanism. All three AppSync children pack a

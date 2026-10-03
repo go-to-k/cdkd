@@ -1618,7 +1618,7 @@ anything; the table is here because the difference is visible when you compare
 | `AWS::AppSync::Resolver` | the resolver **ARN** |
 | `AWS::EC2::EIP` | the public IP (the segment before the first `\|`) |
 | `AWS::Glue::Table` | the table name — everything after the recorded `DatabaseName` and its `\|`, so a table named `a\|b` resolves to `a\|b` |
-| `AWS::Route53::RecordSet` | the record **name** — the MIDDLE segment |
+| `AWS::Route53::RecordSet` | the record **name**. A three-part id returns its middle segment without reading state. When the name itself contains `\|` (a longer id), it is everything between the first and the last `\|`, only when that matches the recorded `Name` and the last segment the recorded `Type`; an id that does not match passes through raw |
 | `AWS::S3Tables::Namespace` / `::Table` | the namespace / table name (the segment after the last `\|`) |
 
 The three `AWS::AppSync::*` children are the case where the `Ref` value is not
@@ -1759,15 +1759,21 @@ Two more types **accept** a composite id without producing one:
 > [!IMPORTANT]
 > The separator is **not escaped**, so a segment that contains a `|` would
 > make the id ambiguous. `cdkd deploy` **refuses at pre-flight**, naming the
-> offending segment, rather than record such an id. The exception is
-> `AWS::Glue::Table`, where both the table name and the database name may
+> offending segment, rather than record such an id. There are two
+> exceptions. One is `AWS::Glue::Table`, where both the table name and the database name may
 > contain `|`: a table named `a|b` in database `x|y` is recorded as
 > `x|y|a|b`, and cdkd reads the table name back as everything after the
 > recorded `DatabaseName` — for update, destroy, drift and `Ref` alike. A
 > record whose `DatabaseName` is not a plain string (`cdkd import` can leave
 > it unresolved) cannot be placed that way: destroy then skips it and says to
-> set `properties.DatabaseName` in the state file. An
-> `AWS::Route53::RecordSet` record name that contains `|` is still refused.
+> set `properties.DatabaseName` in the state file. The other is
+> `AWS::Route53::RecordSet`, whose record name may contain `|`: a record named
+> `a|b.example.com` of type `A` in zone `Z1` is recorded as
+> `Z1|a|b.example.com|A`, and cdkd reads the name back as everything between
+> the first and the last `|` only when it matches the recorded `Name` and the
+> last segment matches the recorded `Type`. An id that does not match is read
+> as CloudFormation's own physical id (the record name), and the zone comes
+> from the recorded properties.
 > For every other type, AWS's own naming rules and generated ids keep `|` out
 > of the value.
 

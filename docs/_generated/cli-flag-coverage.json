@@ -1476,6 +1476,7 @@
         "redshift-cluster-getatt",
         "remove-protection",
         "rollback-sqs-cooldown",
+        "route53",
         "s3-lifecycle",
         "secret-derived-immutable-names",
         "secrets-array-nested",

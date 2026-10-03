@@ -347,19 +347,29 @@ describe('Route53Provider RecordSet rename (issue #3741)', () => {
     ).toEqual(['UPSERT']);
   });
 
-  it('the #3728 separator refusal still fires before any AWS call on a template rename', async () => {
-    routeSend([]);
+  it('a rename away from a name containing the separator finds and deletes the live old record', async () => {
+    // Issue #3890: such a record is now created rather than refused. Route 53
+    // stores `|` as `\174`, so the old record's lookup must start at that
+    // spelling, or the record sorts before the window and stays live.
+    routeSend([
+      { Name: 'a\\174b.example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.1' }] },
+    ]);
 
-    await expect(
-      provider.update(
-        'Rec',
-        `${ZONE}|old.example.com.|A`,
-        TYPE,
-        record({ Name: 'a|b.example.com.' }),
-        record({})
-      )
-    ).rejects.toThrow(/\|/);
-    expect(mockSend).not.toHaveBeenCalled();
+    const result = await provider.update(
+      'Rec',
+      `${ZONE}|a|b.example.com.|A`,
+      TYPE,
+      record({ Name: 'new.example.com.' }),
+      record({ Name: 'a|b.example.com.' })
+    );
+
+    expect(calls(ListResourceRecordSetsCommand)[0]?.input.StartRecordName).toBe(
+      'a\\174b.example.com.'
+    );
+    expect(
+      calls(ChangeResourceRecordSetsCommand)[0]?.input.ChangeBatch?.Changes?.map((c) => c.Action)
+    ).toEqual(['DELETE', 'CREATE']);
+    expect(result.physicalId).toBe(`${ZONE}|new.example.com.|A`);
   });
 });
 
