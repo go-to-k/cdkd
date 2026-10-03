@@ -77,6 +77,14 @@ import { Construct } from 'constructs';
  *    `B`'s expression into the embedded leaf while the diff side rendered
  *    `A`'s: a perpetual UPDATE. Its own JSON key (`mixed`), so no other arm's
  *    leaf shares its plaintext.
+ *  - `HandoffSpans` / `HandoffSpansIf` (child) — THE #4446 ARM. `HandoffMixed`'s
+ *    shape with an embedding leaf the #2320 template parse REFUSES: an
+ *    `Fn::Join` with TWO parts whose text the template cannot state (the
+ *    region and stack-name pseudo parameters around `SpanSecretA`) and a
+ *    string-selected `Fn::If` part (#4469), and an
+ *    `Fn::If` selecting an `Fn::Sub` over it. Each is positioned from the spans
+ *    the RESOLVER recorded while substituting the parameter. Its own JSON key
+ *    (`spans`); the two resources have a bag each, so they do not collide.
  *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of
  *    `HandoffPair`: ONE `AWS::Events::Rule` whose two matchers are ARRAYS by
  *    the time redaction runs, beside a PUBLIC list-typed negative control.
@@ -149,6 +157,8 @@ class SecretBearingChild extends cdk.NestedStack {
       handoffParamName: string;
       handoffSubParamName: string;
       handoffMixedParamName: string;
+      handoffSpansParamName: string;
+      handoffSpansIfParamName: string;
       pinParamName: string;
       pinParamDescription: string;
       pinTwinParamName: string;
@@ -195,6 +205,11 @@ class SecretBearingChild extends cdk.NestedStack {
     mixedA.overrideLogicalId('MixedSecretA');
     const mixedB = new cdk.CfnParameter(this, 'MixedSecretB', { type: 'String' });
     mixedB.overrideLogicalId('MixedSecretB');
+    // THE #4446 ARM's two inputs: the same shape again, on its OWN JSON key.
+    const spanA = new cdk.CfnParameter(this, 'SpanSecretA', { type: 'String' });
+    spanA.overrideLogicalId('SpanSecretA');
+    const spanB = new cdk.CfnParameter(this, 'SpanSecretB', { type: 'String' });
+    spanB.overrideLogicalId('SpanSecretB');
 
     // THE #2327 ARM's two inputs. The SAME two-references-one-plaintext shape as
     // the pair above, declared `CommaDelimitedList` -- which
@@ -393,6 +408,51 @@ class SecretBearingChild extends cdk.NestedStack {
       }),
     });
     ((handoffMixed.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('HandoffMixed');
+
+    // THE #4446 ARM: `HandoffMixed` with an embedding leaf the #2320 template
+    // parse refuses, so only the resolver's recorded parameter spans can
+    // position it. `Description` before `Value` for the reason given above.
+    //
+    // TWO UNKNOWN PARTS: the region and stack-name pseudo parameters, whose
+    // text the template cannot state, on either side of `SpanSecretA`. Plus a
+    // string-selected `Fn::If` part (CDK's `Fn.conditionIf(c, '-prod', '')`),
+    // whose own record places no span: it is skipped as a gap rather than
+    // dropping the leaf's spans (issue #4469).
+    const spansOn = new cdk.CfnCondition(this, 'SpansOn', {
+      expression: cdk.Fn.conditionEquals('on', 'on'),
+    });
+    spansOn.overrideLogicalId('SpansOn');
+    const handoffSpans = new ssm.StringParameter(this, 'HandoffSpans', {
+      parameterName: names.handoffSpansParamName,
+      stringValue: spanB.valueAsString,
+      description: cdk.Fn.join('', [
+        'postgres://',
+        cdk.Aws.REGION,
+        ':',
+        spanA.valueAsString,
+        cdk.Fn.conditionIf(spansOn.logicalId, '-prod', '').toString(),
+        '@',
+        cdk.Aws.STACK_NAME,
+      ]),
+      ...(names.handoffAllowedPattern !== undefined && {
+        allowedPattern: names.handoffAllowedPattern,
+      }),
+    });
+    ((handoffSpans.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('HandoffSpans');
+    // A TOP-LEVEL `Fn::If`, which the template parse never reads at all.
+    const handoffSpansIf = new ssm.StringParameter(this, 'HandoffSpansIf', {
+      parameterName: names.handoffSpansIfParamName,
+      stringValue: spanB.valueAsString,
+      description: cdk.Fn.conditionIf(
+        spansOn.logicalId,
+        cdk.Fn.sub('x-${SpanSecretA}'),
+        'none'
+      ).toString(),
+      ...(names.handoffAllowedPattern !== undefined && {
+        allowedPattern: names.handoffAllowedPattern,
+      }),
+    });
+    ((handoffSpansIf.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('HandoffSpansIf');
 
     // THE #2327 ARM. ONE resource, TWO LIST-typed leaves, for the reason
     // `HandoffPair` states and one this arm makes sharper still.
@@ -638,6 +698,10 @@ export class NestedStackSecretStack extends cdk.Stack {
     // which arm resolved last. Kept in sync with verify.sh's secret JSON.
     const mixedReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:mixed::}}`;
     const mixedReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:mixed:AWSCURRENT:}}`;
+    // THE #4446 PAIR, on its OWN JSON key (`spans`), for the reason `mixed` has
+    // one. Kept in sync with verify.sh's secret JSON.
+    const spanReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:spans::}}`;
+    const spanReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:spans:AWSCURRENT:}}`;
     // THE #2327 PAIR. Same two-spellings-one-value trick, on a FOURTH JSON key
     // so its plaintext is its own -- sharing any of `stage` / `shared` /
     // `handoff` would drag that arm's only-leaf premise into this collapse.
@@ -691,6 +755,8 @@ export class NestedStackSecretStack extends cdk.Stack {
         handoffParamName: `cdkd-nested-child-handoff-${account}`,
         handoffSubParamName: `cdkd-nested-child-handoffsub-${account}`,
         handoffMixedParamName: `cdkd-nested-child-handoffmixed-${account}`,
+        handoffSpansParamName: `cdkd-nested-child-handoffspans-${account}`,
+        handoffSpansIfParamName: `cdkd-nested-child-handoffspansif-${account}`,
         pinParamName: `cdkd-nested-child-pin-${account}`,
         pinParamDescription,
         pinTwinParamName: `cdkd-nested-child-pintwin-${account}`,
@@ -721,6 +787,9 @@ export class NestedStackSecretStack extends cdk.Stack {
           // The #2320 pair. TWO parameters, ONE resolved plaintext, ONE resource.
           MixedSecretA: mixedReferenceA,
           MixedSecretB: mixedReferenceB,
+          // The #4446 pair. TWO parameters, ONE resolved plaintext.
+          SpanSecretA: spanReferenceA,
+          SpanSecretB: spanReferenceB,
           // The #2327 pair. TWO LIST-typed parameters, ONE resolved plaintext.
           ListSecretA: listReferenceA,
           ListSecretB: listReferenceB,

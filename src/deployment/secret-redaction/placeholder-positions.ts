@@ -1,5 +1,5 @@
 import { isPlainObject, MIN_NEEDLE_LENGTH } from './rules.js';
-import { type RecordedSecretValues } from './pairs.js';
+import { type RecordedSecretValues, intrinsicLeafResolutionOf } from './pairs.js';
 import { crossStackSourceKey, crossStackAssociations } from './cross-stack.js';
 import { redactSecretsForState } from './redact-state.js';
 import { UNKNOWN_PART, joinPartLiteralText } from './positions.js';
@@ -197,13 +197,19 @@ function parameterPlaceholderParts(
  * parameter, a `{{resolve:` token in the literal text) therefore costs only a
  * refusal, i.e. the value scan.
  *
+ * TWO READINGS, the resolver's first. {@link positionByRecordedParameterSpans}
+ * reads the spans the RESOLVER recorded while it substituted each parameter
+ * (issue #4446), which answers any number of unknown parts and an `Fn::If`
+ * selecting an `Fn::Sub` / `Fn::Join`. Where this pass kept no usable record,
+ * the TEMPLATE parse below aligns the source against the leaf instead:
+ *
  * AT MOST ONE UNKNOWN PART (a pseudo parameter, an intrinsic, an unassociated
  * parameter). Every other part has fixed text, so the unknown span is whatever
  * lies between the fixed prefix and the fixed suffix — unambiguous, and so are
  * adjacent placeholders with equal values (`${A}${B}`), because no span is
  * SEARCHED for. That span is kept verbatim, and the arm refuses when the
  * value scan would rewrite it at all. Two or more unknown parts could split
- * the remainder more than one way, and refuse (issue #4446).
+ * the remainder more than one way, and refuse.
  *
  * Refuses (falls to the next arm, then the value scan) when the bag holds no
  * association at all — every non-nested pass — when no parameter placeholder
@@ -220,6 +226,11 @@ export function positionByParameterPlaceholders(
 ): string | undefined {
   const associations = crossStackAssociations.get(secrets);
   if (associations === undefined) return undefined;
+  // The RESOLVER's own spans first (issue #4446): they need no alignment, so
+  // they answer the shapes the template parse below refuses. On any refusal
+  // the parse still gets its turn, under its own guards.
+  const spanned = positionByRecordedParameterSpans(bag, source, secrets, associations);
+  if (spanned !== undefined) return spanned;
   const parts = parameterPlaceholderParts(source, bag);
   if (parts === undefined) return undefined;
   // `[rendered, persisted]` for each side of the (at most one) unknown part.
@@ -284,17 +295,38 @@ export function positionByParameterPlaceholders(
     if (redactSecretsForState(middle, secrets) !== middle) return undefined;
     persisted = before[1] + middle + after[1];
   }
-  // A needle crossing a certified span's edge (part plaintext, part literal or
-  // unknown text) is gone from `persisted` -- the span became an expression --
-  // so the re-scan below cannot see the half left behind. Refuse it on the
-  // RESOLVED leaf instead. A needle wholly inside a span is replaced with it.
   const afterStart = bag.length - after[0].length;
+  return acceptedPlaceholderRendering(
+    bag,
+    persisted,
+    spans.map(([side, offset, length]) => [(side === before ? 0 : afterStart) + offset, length]),
+    secrets
+  );
+}
+
+/**
+ * The two disclosure guards both placeholder arms end on, over the RESOLVED
+ * leaf `bag`, the string about to be persisted, and each certified span as
+ * `[start on bag, length]`; `persisted`, or `undefined` to refuse.
+ *
+ * A needle crossing a certified span's edge (part plaintext, part literal or
+ * unknown text) is gone from `persisted` -- the span became an expression --
+ * so the re-scan cannot see the half left behind. Refuse it on the RESOLVED
+ * leaf instead. A needle wholly inside a span is replaced with it. Then the
+ * value scan must leave `persisted` alone, so nothing it would have rewritten
+ * is persisted.
+ */
+function acceptedPlaceholderRendering(
+  bag: string,
+  persisted: string,
+  spans: ReadonlyArray<readonly [number, number]>,
+  secrets: RecordedSecretValues
+): string | undefined {
   for (const plaintext of secrets.keys()) {
     if (plaintext.length < MIN_NEEDLE_LENGTH) continue;
     for (let at = bag.indexOf(plaintext); at !== -1; at = bag.indexOf(plaintext, at + 1)) {
       const end = at + plaintext.length;
-      for (const [side, offset, length] of spans) {
-        const start = (side === before ? 0 : afterStart) + offset;
+      for (const [start, length] of spans) {
         const overlaps = at < start + length && end > start;
         if (overlaps && (at < start || end > start + length)) return undefined;
       }
@@ -302,4 +334,78 @@ export function positionByParameterPlaceholders(
   }
   if (redactSecretsForState(persisted, secrets) !== persisted) return undefined;
   return persisted;
+}
+
+/**
+ * {@link positionByParameterPlaceholders}'s first arm: the parameter spans the
+ * RESOLVER recorded for `source` in this pass (issue
+ * [#4446](https://github.com/go-to-k/cdkd/issues/4446)), instead of spans
+ * inferred by aligning the template against the resolved leaf.
+ *
+ * The template parse refuses whatever it cannot align: two or more parts whose
+ * text the template cannot state, and every source other than `Fn::Sub` /
+ * `Fn::Join` (an `Fn::If` selecting one). The resolver states WHERE each
+ * parameter `Ref` landed while it substituted it
+ * (`IntrinsicLeafResolution.parameterSpans`, through every nesting and an
+ * `Fn::If`'s selected branch), so nothing here re-implements the rendering and
+ * nothing is searched for.
+ *
+ * - The record must describe THIS leaf: its `output` equals `bag`, and its
+ *   spans are ascending, non-overlapping and inside it; anything else refuses.
+ * - Each span is certified exactly as a whole `{Ref: <Param>}` leaf over its
+ *   text would be ({@link certifiedExpressionForLeaf} over that parameter's
+ *   association), which is what `redactParametersForDiff` renders. A span that
+ *   is not certified stays as text.
+ * - Every other stretch of `bag` (a GAP: literal text, a pseudo parameter, an
+ *   attribute, an uncertified parameter) is kept VERBATIM and must be one the
+ *   value scan leaves alone ON ITS OWN, for the reason the template arm keeps
+ *   its one unknown span that way: a slice the scan would rewrite (a 1-3
+ *   character slice equal to a recorded plaintext, a containment needle) has
+ *   no faithful verbatim rendering, so the leaf refuses to the scan.
+ * - Then {@link acceptedPlaceholderRendering}'s straddle and final re-scan
+ *   guards, the template arm's own.
+ */
+function positionByRecordedParameterSpans(
+  bag: string,
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues,
+  associations: NonNullable<ReturnType<typeof crossStackAssociations.get>>
+): string | undefined {
+  const resolution = intrinsicLeafResolutionOf(secrets, source);
+  if (resolution === undefined || resolution.output !== bag) return undefined;
+  const recorded = resolution.parameterSpans;
+  if (recorded === undefined) return undefined;
+  // `previousEnd` validates EVERY span, certified or not; `cursor` is where
+  // the next gap starts, the end of the last CERTIFIED one.
+  let previousEnd = 0;
+  let cursor = 0;
+  let persisted = '';
+  const gaps: string[] = [];
+  const certified: Array<readonly [number, number]> = [];
+  for (const { start, length, parameter } of recorded) {
+    // The upper bound is load-bearing: `slice` clamps, so an overlong span
+    // whose clamped text IS a plaintext would certify text the record never
+    // described (pinned by the "overlong span" case).
+    if (!(start >= previousEnd && length > 0 && start + length <= bag.length)) return undefined;
+    previousEnd = start + length;
+    const text = bag.slice(start, start + length);
+    const key = crossStackSourceKey({ Ref: parameter });
+    const association = key === undefined ? undefined : associations.get(key);
+    if (association === undefined || typeof association === 'symbol') continue;
+    const expression = certifiedExpressionForLeaf(secrets, association, text);
+    if (expression === undefined) continue;
+    const gap = bag.slice(cursor, start);
+    gaps.push(gap);
+    persisted += gap + expression;
+    certified.push([start, length]);
+    cursor = start + length;
+  }
+  if (certified.length === 0) return undefined;
+  const tail = bag.slice(cursor);
+  gaps.push(tail);
+  persisted += tail;
+  for (const gap of gaps) {
+    if (redactSecretsForState(gap, secrets) !== gap) return undefined;
+  }
+  return acceptedPlaceholderRendering(bag, persisted, certified, secrets);
 }

@@ -342,9 +342,10 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * under a different frame -- the second half closed by (iii)'s second arm).
  * An `Fn::Sub` / `Fn::Join` leaf EMBEDDING the `{Ref}` in a resource that
  * consumes BOTH parameters is positioned by name too since issue #2320
- * (`positionByParameterPlaceholders`, pinned). What remains: a leaf that arm
- * refuses (#4446) takes the value scan, which reads the resource's ONE
- * plaintext-keyed slot -- whichever `{Ref}` resolved last. (b) The framed
+ * (`positionByParameterPlaceholders`, pinned), from the spans the resolver
+ * recorded (#4446). What remains: a leaf that arm refuses takes the value
+ * scan, which reads the resource's ONE plaintext-keyed slot -- whichever
+ * `{Ref}` resolved last. (b) The framed
  * value is a SUBSTRING needle (7 characters here) in every child resource
  * that consumed the parameter, so an unrelated literal there containing it
  * is spliced -- the #2087 class, bounded to resources whose own resolution

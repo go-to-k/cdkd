@@ -50,9 +50,11 @@ import {
  *   describe them; instead the RESOLVER recorded, while reading the producer,
  *   which `{{resolve:...}}` token this exact leaf identity reads.
  * - {@link positionByParameterPlaceholders} (issue #2320), for an `Fn::Sub` /
- *   `Fn::Join` over a nested-stack child's own parameters: each placeholder
- *   takes the expression its `{Ref: <Param>}` association names, so a leaf
- *   EMBEDDING a parameter persists what the diff side renders.
+ *   `Fn::Join` over a nested-stack child's own parameters, or an `Fn::If`
+ *   selecting one: each parameter span the resolver recorded (issue #4446), or
+ *   failing that each placeholder the template states, takes the expression
+ *   its `{Ref: <Param>}` association names, so a leaf EMBEDDING a parameter
+ *   persists what the diff side renders.
  * - {@link positionByIntrinsicSkeleton} (issue #1916), for `Fn::Join` /
  *   `Fn::Sub`: when the intrinsic's literal parts describe exactly one of the
  *   recorded secret expressions, THAT is persisted. This is the dominant CDK
