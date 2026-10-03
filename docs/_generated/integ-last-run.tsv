@@ -109,9 +109,9 @@ ecs-bluegreen	2026-10-01T19:43:10Z	PASS	230	verify.sh	rc ok, orph clean; client-
 ecs-fargate	2026-10-03T08:36:40Z	PASS	431	verify.sh	rc ok, orph clean (#4283 PR #4449 rebased head)
 ecs-schedule-targets	2026-10-01T19:45:46Z	PASS	80	verify.sh	rc ok, orph clean; client-ecs 3.1144.0 (#4324)
 ecs-service-update-props	2026-10-01T19:29:01Z	PASS	120	verify.sh	rc ok, orph clean; client-ecs 3.1144.0 (#4324)
-efs-immutable-replacement	2026-10-02T23:58:36Z	PASS	85	verify.sh	rc ok, orph clean; #4428 regression
+efs-immutable-replacement	2026-10-03T13:51:11Z	PASS	75	verify.sh	rc ok, orph clean; #4438 regression
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
-efs-standalone	2026-10-02T23:58:36Z	PASS	170	verify.sh	rc ok, orph clean; #4428 regression
+efs-standalone	2026-10-03T13:51:11Z	PASS	166	verify.sh	rc ok, orph clean; #4438 regression
 elasticache-replicationgroup-getatt	2026-10-03T06:06:22Z	PASS	806	verify.sh	rc ok, orph clean (#4497)
 elbv2-same-name-replacement	2026-10-02T19:41:51Z	PASS	100	verify.sh	rc ok, orph clean (#4464)
 emr-cluster	2026-10-03T04:11:52Z	PASS	663	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -130,7 +130,7 @@ export	2026-10-03T13:19:14Z	PASS	236	verify.sh	rc ok, orph clean; #4461 regressi
 export-nested-stack	2026-10-03T06:56:28Z	PASS	201	verify.sh	rc ok, orph clean (#4283 PR #4449)
 fallback-recreate-children	2026-10-03T13:19:14Z	PASS	105	verify.sh	rc ok, orph clean; #4461 regression
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
-fsx-lustre	2026-10-03T04:15:14Z	PASS	874	verify.sh	rc ok, orph clean (#4283 PR #4449)
+fsx-lustre	2026-10-03T13:51:11Z	PASS	842	verify.sh	rc ok, orph clean, no final backup left; #4438 regression
 fsx-ontap	2026-10-02T10:50:28Z	PASS	1613	verify.sh	#1160 PR #4398; rc ok, orph clean, no final backup
 fsx-openzfs	2026-10-02T10:50:28Z	PASS	1232	verify.sh	#1160 PR #4398; rc ok; untagged OpenZFS final backup deleted by hand (#1113)
 fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup
@@ -292,7 +292,7 @@ rollback-sqs-cooldown	2026-10-02T18:21:24Z	PASS	170	verify.sh	rc ok, orph clean 
 route53	2026-10-03T08:35:52Z	PASS	386	verify.sh	rc ok, orph clean (#4283 PR #4449 rebased head)
 s3-analytics-inventory	2026-10-03T04:21:06Z	PASS	167	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
-s3-cloudfront	2026-10-03T04:18:14Z	PASS	266	verify.sh	rc ok, orph clean (#4283 PR #4449)
+s3-cloudfront	2026-10-03T13:51:11Z	PASS	240	verify.sh	rc ok, orph clean; #4438 OAI regression
 s3-directory-bucket	2026-10-03T04:27:12Z	PASS	88	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-event-notification	2026-10-03T04:26:03Z	PASS	87	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-lifecycle	2026-10-03T04:13:46Z	PASS	328	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -330,7 +330,7 @@ sns-subscription-update	2026-09-17T17:34:54Z	PASS	372	verify.sh	issue 3329: fixt
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-09-27T12:27:25Z	PASS	80	verify.sh	rc ok, orph clean (#3861)
 ssm-secure-dynamic-ref	2026-10-03T10:33:59Z	PASS	115	verify.sh	rc ok, orph clean (#4508)
-stack-copy-create-tokens	2026-10-02T23:58:36Z	PASS	1818	verify.sh	rc ok, orph clean; #4428 first run: EFS/OAI copies, RETAIN refusal, FSx copies
+stack-copy-create-tokens	2026-10-03T13:51:11Z	PASS	1923	verify.sh	rc ok, orph clean; #4438 nonce + ledger: RETAIN redeploy creates new, orphan rotates, kill -9 resume
 stack-lock-renewal	2026-10-01T10:51:21Z	PASS	426	verify.sh	rc ok, orph clean (PR #4311 stack-lock guard)
 stage-assets	2026-10-03T13:11:36Z	PASS	196	verify.sh	rc ok, orph clean; #4474 Phase 2h stack selection
 stale-attribute-heal	2026-10-03T05:56:27Z	PASS	85	verify.sh	rc ok, orph clean (#4497)
