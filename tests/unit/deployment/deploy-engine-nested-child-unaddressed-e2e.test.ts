@@ -492,4 +492,30 @@ describe('a grandchild skipped DELETE through two real nested levels (#4453)', (
     expect(vi.mocked(leaf.delete)).not.toHaveBeenCalled();
     expect(quiet.updated).toBe(0);
   });
+
+  it("a grandchild's partial UPDATE reaches the root once, as a descendant's (#1989)", async () => {
+    // The grandchild's `Keep` differs from its record, so it updates; the
+    // DELETE of `Gone` lands, so the only unaddressed resource is the partial.
+    states.set(
+      LEAF_STACK,
+      stateOf(LEAF_STACK, { Keep: param('/g/keep', 'v0'), Gone: param('/g/gone', 'x') })
+    );
+    vi.mocked(leaf.delete).mockResolvedValue(undefined);
+    vi.mocked(leaf.update).mockImplementation(async (_id: string, physicalId: string) => ({
+      physicalId,
+      wasReplaced: false,
+      outcome: 'partial' as const,
+      reason: 'the old resource survived',
+    }));
+
+    const result = await run();
+
+    expect(vi.mocked(leaf.update).mock.calls.map((c) => c[0])).toEqual(['Keep']);
+    expect(result.deleteSkipped).toBe(0);
+    // The root's own row is the one update; the grandchild's partial is
+    // counted once (through the child's total), and only as a descendant's.
+    expect(result.updated).toBe(1);
+    expect(result.updatePartial).toBe(1);
+    expect(result.nestedUpdatePartial).toBe(1);
+  });
 });

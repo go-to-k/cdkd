@@ -1871,7 +1871,8 @@ parent deploy.
 A deploy that finishes without a single resource FAILING can still leave a
 resource cdkd was responsible for alive in AWS. That outcome exits `2`,
 matching what `cdkd destroy` does for the identical case. Two cases produce it,
-and they differ in whether they heal themselves:
+reported on three summary rows, and they differ in whether they heal
+themselves:
 
 | Summary row | Cause | Next `cdkd deploy` retries it? |
 | --- | --- | --- |
