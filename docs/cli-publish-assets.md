@@ -15,7 +15,7 @@ pipelines often want.
 cdkd publish-assets                          # the single stack, when the app defines only one
 cdkd publish-assets MyStack MyOtherStack     # specific stacks
 cdkd publish-assets --all                    # every stack in the app
-cdkd publish-assets 'My*'                    # wildcard
+cdkd publish-assets 'My*'                    # wildcard over top-level ids
 cdkd publish-assets -a cdk.out               # skip synth — read a pre-synthesized assembly
 ```
 
@@ -23,9 +23,9 @@ cdkd publish-assets -a cdk.out               # skip synth — read a pre-synthes
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[stacks...]` | — | Stack name(s) to publish assets for. Physical names, CDK display paths, or wildcards. |
+| `[stacks...]` | — | Stack name(s) to publish assets for: CDK display paths with `*` / `**`, or exact physical names. |
 | `--stack <name>` | — | A single stack name, as an alternative to the positional argument. |
-| `--all` | off | Publish assets for every stack in the CDK app. |
+| `--all` | off | Publish assets for every stack in the CDK app, Stage stacks included. |
 | `--use-cdk-bootstrap-assets` | off | Publish to the CDK bootstrap destinations named by the asset manifest, even in a region opted in to cdkd asset storage. |
 | `--asset-publish-concurrency <n>` | `8` | Maximum concurrent asset publishes (S3 upload + ECR push). |
 | `--image-build-concurrency <n>` | `4` | Maximum concurrent Docker image builds. |
@@ -45,12 +45,14 @@ The concurrency defaults are the same as `cdkd deploy`'s; see
 
 - The CDK app is synthesized via the standard `--app` / `CDKD_APP` / `cdk.json`
   chain.
-- Stack-name matching is the same as `deploy`, `diff` and `destroy`: a positional
-  argument containing `/` is matched against the CDK display path, one without it
-  against the physical CloudFormation name. `*` wildcards work in both forms.
+- Stack-name matching is the same as `deploy`, `diff` and `destroy`: the CDK
+  display path with `*` within one segment and `**` across segments, or the
+  exact physical CloudFormation name; see [stack selection](cli-list.md#selecting-stacks).
 - With no argument, `publish-assets` covers the single stack when the app
   defines only one; with more than one it lists them and exits `1`.
-- `--all` covers every stack in the app.
+- `--all` covers every stack in the app, Stage stacks included, as
+  `cdk publish-assets --all` does — unlike `deploy` / `destroy` / `diff`,
+  whose `--all` takes the top-level stacks only.
 - A CDK Stage that failed to load stops the run whatever was selected
   ([the failed-Stage note](cli-deploy-safety.md#a-pre-synthesized-assembly-is-trusted-input)).
 - Each selected stack's asset manifest is fed into the same work graph `deploy`

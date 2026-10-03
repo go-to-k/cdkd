@@ -39,18 +39,50 @@ cdkd list --long --json             # the same payload as JSON
 
 ## Selecting stacks
 
-Positional arguments filter the listing. They accept the same two spellings
-`deploy` / `diff` / `destroy` do — a physical CloudFormation name
-(`MyStage-Api`) or a CDK display path (`MyStage/Api`) — and support wildcards:
+Positional arguments filter the listing. Every stack-selecting command
+(`deploy`, `diff`, `destroy`, `publish-assets`, `scrub`, `synth`, `list`)
+matches them the same way, as the AWS CDK CLI does:
+
+- A pattern is matched against the stack's **hierarchical id**, its CDK display
+  path: `Api` for a top-level stack, `MyStage/Api` inside a Stage. A top-level
+  stack whose `stackName` differs from its construct id is named by the
+  construct id, as in `cdk deploy`.
+- `*` matches within one `/` segment and never crosses `/`, so `'*'` selects
+  the top-level stacks only and `'MyStage/*'` the stacks directly inside
+  `MyStage`. A whole segment `**` spans any number of segments, so `'**'`
+  selects every stack, Stage stacks included.
+- Every other character — `.`, `?`, `(` and the rest — matches only itself.
+- **Differences from `cdk`:** `?`, `[...]`, `{a,b}` and a leading `!` are
+  literal in cdkd, where `cdk`'s picomatch reads them as glob syntax; and
+  cdkd's `*` / `**` also match a segment starting with `.`, which picomatch's
+  do not.
+- **cdkd extension:** a pattern that is EXACTLY a stack's physical
+  CloudFormation name (`MyStage-Api`) selects it too. Exact only, never a glob:
+  `'MyStage-*'` matches hierarchical ids, not physical names.
 
 ```bash
 cdkd list MyStage/Api               # one stack
 cdkd list 'MyStage/*'               # every stack in a stage (quote the glob)
-cdkd list MyStage-Api MyStage-Db    # several, by physical name
+cdkd list '**'                      # every stack, at any depth
+cdkd list MyStage-Api MyStage-Db    # several, by exact physical name
 ```
 
-`*` is the only wildcard: it matches any run of characters, and every other
-character — `.`, `?`, `(` and the rest — matches only itself.
+`--all` on `deploy`, `destroy` and `diff` selects the **top-level** stacks only
+— the AWS CDK CLI's `--all` — and prints one line naming any Stage stacks it
+left out; name those with `'MyStage/*'` or `'**'`. An app whose every stack is
+inside a Stage is refused there. `publish-assets --all` and `scrub --all`
+cover every stack, Stage stacks included.
+
+A pattern is resolved against the whole app before anything else: when it is
+one stack's CDK path, that stack is the one selected, even where another
+stack's physical name is the same string.
+
+Before this rule, `*` crossed `/`: a pattern without `/` was a wildcard over
+the physical name, so `cdkd destroy '*'` or `'MyStage-*'` reached Stage stacks,
+and one with `/` was a wildcard over the display path, so `'MyStage/*'` reached
+`MyStage/Parent/Child`. When `deploy` or `destroy` leaves out a stack that old
+rule would have selected, it warns in one line naming those stacks and the
+pattern that selects them.
 
 Quote a wildcard, so the shell hands the pattern to cdkd rather than trying to
 resolve it itself — under zsh an unmatched glob aborts the command outright.

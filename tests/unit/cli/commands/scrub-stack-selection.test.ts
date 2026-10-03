@@ -17,13 +17,19 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
+const infoSpy = vi.hoisted(() => vi.fn());
 vi.mock('../../../../src/utils/logger.js', () => {
-  const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), setLevel: vi.fn() };
+  const logger = { debug: vi.fn(), info: infoSpy, warn: vi.fn(), error: vi.fn(), setLevel: vi.fn() };
   return { getLogger: () => ({ ...logger, child: () => logger }) };
 });
 
 const synthResult = vi.hoisted(() => ({
-  stacks: [] as Array<{ stackName: string; displayName?: string; template: object }>,
+  stacks: [] as Array<{
+    stackName: string;
+    displayName?: string;
+    stagePath?: string;
+    template: object;
+  }>,
   error: undefined as Error | undefined,
 }));
 const expandMacros = vi.hoisted(() => ({ calls: [] as string[][] }));
@@ -151,5 +157,38 @@ describe('cdkd scrub: a Stage that failed to load fails synthesis (go-to-k/cdkd#
       ['Other'],
       ['Other'],
     ]);
+  });
+});
+
+// go-to-k/cdkd#4474: scrub's `--all` keeps every stack, Stage stacks included.
+// It is a secret-hygiene gate with no AWS CDK CLI counterpart, so narrowing it
+// to top-level stacks would let `--all --dry-run --fail` report clean over
+// state it never read. Patterns follow the CDK-compatible matcher.
+describe('cdkd scrub --all keeps every stack (go-to-k/cdkd#4474)', () => {
+  beforeEach(() => {
+    synthResult.stacks = [];
+    synthResult.error = undefined;
+    expandMacros.calls = [];
+    infoSpy.mockClear();
+  });
+
+  const prod = { ...stack('Prod-Api', 'Prod/Api'), stagePath: 'Prod' };
+
+  it('scrubs Stage stacks under --all, with no top-level hint', async () => {
+    synthResult.stacks = [stack('Other'), prod];
+
+    expect(await scrubError([], { all: true })).toBe(REACHED_EXPANSION);
+    expect(expandMacros.calls).toEqual([['Other', 'Prod-Api']]);
+    expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+      '--all selects top-level stacks only'
+    );
+  });
+
+  it("selects only the top-level stacks with `'*'` and every stack with `'**'`", async () => {
+    synthResult.stacks = [stack('Other'), prod];
+
+    expect(await scrubError(['*'])).toBe(REACHED_EXPANSION);
+    expect(await scrubError(['**'])).toBe(REACHED_EXPANSION);
+    expect(expandMacros.calls).toEqual([['Other'], ['Other', 'Prod-Api']]);
   });
 });

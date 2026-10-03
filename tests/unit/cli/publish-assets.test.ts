@@ -292,6 +292,26 @@ describe('cdkd publish-assets', () => {
       );
     });
 
+    // go-to-k/cdkd#4474: unlike deploy / destroy / diff, `--all` here keeps
+    // every stack, Stage stacks included -- `cdk publish-assets` selects
+    // ALL_STACKS, not the main assembly.
+    it('publishes --all for every stack, Stage stacks included, with no top-level hint', async () => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [
+          makeStack({ stackName: 'TopStack' }),
+          makeStack({ stackName: 'Prod-Api', displayName: 'Prod/Api', stagePath: 'Prod' }),
+        ],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+      });
+
+      await runCmd(['--all']);
+
+      const lines = mockLoggerInfo.mock.calls.map((c) => String(c[0]));
+      expect(lines.filter((l) => l.includes('Publishing assets for stack:')).length).toBe(2);
+      expect(lines.join('\n')).not.toContain('--all selects top-level stacks only');
+    });
+
     it('forwards --asset-publish-concurrency and --image-build-concurrency to WorkGraph', async () => {
       mockSynthesize.mockResolvedValue({
         stacks: [makeStack({ stackName: 'StackA' })],

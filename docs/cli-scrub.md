@@ -28,7 +28,7 @@ cdkd scrub MyStack --verbose              # explain a stack that reports clean
 | Flag | Default | Description |
 | --- | --- | --- |
 | `[stacks...]` | — | Stack name(s) to scrub. Physical name or CDK display path. The [nested stacks](#nested-stacks) under each are scrubbed too. |
-| `--all` | off | Scrub every stack in the synthesized app. |
+| `--all` | off | Scrub every stack in the synthesized app, Stage stacks included. |
 | `--dry-run` | off | Report what would be scrubbed without writing state. |
 | `--fail` | off | Exit non-zero when plaintext is found. With `--dry-run`, any plaintext at all; on a real run, a leak scrub cannot rewrite. |
 | `--stack <name>` | — | A single stack name, as an alternative to the positional argument. |

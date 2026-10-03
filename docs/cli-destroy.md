@@ -15,7 +15,7 @@ counterpart and behaves the same way except where noted.
 ```bash
 cdkd destroy MyStack                        # one stack, with a confirmation prompt
 cdkd destroy 'MyStage/*' --yes              # every stack under a Stage, no prompt
-cdkd destroy --all -f                       # every stack in the CDK app
+cdkd destroy --all -f                       # every top-level stack in the CDK app
 cdkd destroy MyStack --remove-protection    # flip deletion protection off first
 cdkd destroy MyStack --skip-final-snapshot  # skip the DeletionPolicy: Snapshot snapshots
 cdkd state destroy MyStack --yes            # no CDK app needed — reads state only
@@ -25,9 +25,9 @@ cdkd state destroy MyStack --yes            # no CDK app needed — reads state 
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[stacks...]` | — | Stack name(s) to destroy. Physical names, CDK display paths, or wildcards. |
+| `[stacks...]` | — | Stack name(s) to destroy: CDK display paths with `*` / `**`, or exact physical names. |
 | `--stack <name>` | — | A single stack name, as an alternative to the positional argument. |
-| `--all` | off | Destroy every stack in the CDK app. |
+| `--all` | off | Destroy every top-level stack in the CDK app (Stage stacks: `'**'`). |
 | `-y`, `--yes` | off | Answer the confirmation prompts automatically. |
 | `-f`, `--force` | off | Same as `--yes` on `cdkd destroy`. |
 | `--remove-protection` | off | Flip deletion protection off in place before each delete. |
@@ -50,15 +50,18 @@ The two `--resource-*` flags share their syntax with `cdkd deploy`; see
 
 ## Stack selection
 
-A stack is named by its **physical** CloudFormation name (`MyStage-Api`) or by
-its **CDK display path** (`MyStage/Api`); a pattern containing `/` is matched
-against the display path, one without it against the physical name. Wildcards
-work in both forms (`cdkd destroy 'MyStage/*'`). Display-path matching needs
+A stack is named by its **CDK display path** (`MyStage/Api`) or, exactly, by its
+**physical** CloudFormation name (`MyStage-Api`). `*` stays within one `/`
+segment (`cdkd destroy 'MyStage/*'`) and `'**'` selects every stack; see
+[stack selection](cli-list.md#selecting-stacks). Display-path matching needs
 synthesis to succeed, because a state record only carries physical names — so
 `cdkd state destroy`, which never synthesizes, matches physical names only.
 When the app defines a single stack, no name is needed.
 
-`--all` targets every stack in the current CDK app. Whenever more than one stack
+`--all` targets the **top-level** stacks of the current CDK app, as
+`cdk destroy --all` does. Stacks inside a CDK Stage are left running and named
+in one warning line; destroy them with `'MyStage/*'` or `'**'`. An app whose every stack
+is inside a Stage is refused under `--all`. Whenever more than one stack
 is selected — by `--all` or by naming several — they are ordered so that a
 consumer stack is destroyed before the producers it reads from. When the app
 synthesizes but yields no stacks, `--all` and any wildcard pattern (`'*'`,

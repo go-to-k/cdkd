@@ -84,7 +84,16 @@ import {
   resolveUseCdkBootstrapAssets,
   warnDeprecatedNoPrefixCliFlag,
 } from '../config-loader.js';
-import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
+import {
+  matchStacks,
+  describeStack,
+  partitionTopLevel,
+  renderAllLeftOutStageStacks,
+  renderStacksNoLongerSelected,
+  stacksNoLongerSelected,
+  renderAllNoTopLevelStacks,
+  renderNoStackMatch,
+} from '../stack-matcher.js';
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
@@ -401,6 +410,9 @@ async function deployCommand(
     // Determine target stacks: positional args > --stack > --all > auto (single stack)
     const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
     let targetStacks;
+    // Stage stacks `--all` left out, reported once dependency inclusion below
+    // has run: a top-level stack's dependency inside a Stage is still deployed.
+    let allLeftOutStageStacks: typeof allStacks = [];
 
     if (allStacks.length === 0) {
       // Reached before the branch chain below: with zero stacks and no
@@ -409,7 +421,14 @@ async function deployCommand(
     }
 
     if (options.all) {
-      targetStacks = allStacks;
+      // Top-level stacks only, as the AWS CDK CLI's `--all` (#4474); a Stage's
+      // stacks are named with a Stage-path pattern or a globstar (spelled out in
+      // words: a slash-star in a line comment reads as a block comment to the
+      // source scanners), and the run says it left them out.
+      const { topLevel, inStages } = partitionTopLevel(allStacks);
+      if (topLevel.length === 0) throw new Error(renderAllNoTopLevelStacks(inStages));
+      allLeftOutStageStacks = inStages;
+      targetStacks = topLevel;
     } else if (stackPatterns.length > 0) {
       targetStacks = matchStacks(allStacks, stackPatterns);
     } else if (allStacks.length === 1) {
@@ -418,12 +437,18 @@ async function deployCommand(
     } else {
       throw new Error(
         `Multiple stacks found: ${allStacks.map(describeStack).join(', ')}. ` +
-          `Specify stack name(s) or use --all`
+          `Specify stack name(s) or use --all (top-level stacks; '**' for every stack)`
       );
     }
 
     if (targetStacks.length === 0) {
-      throw new Error(renderNoStackMatch(stackPatterns, allStacks));
+      const gone = stacksNoLongerSelected(allStacks, stackPatterns, new Set());
+      throw new Error(
+        renderNoStackMatch(stackPatterns, allStacks) +
+          (gone.stacks.length > 0
+            ? `\n${renderStacksNoLongerSelected(gone.patterns, gone.stacks)}`
+            : '')
+      );
     }
 
     // Cross-stack ordering edges that CDK's manifest dependency graph
@@ -494,6 +519,17 @@ async function deployCommand(
 
       for (const stack of [...targetStacks]) {
         addDependencies(stack.stackName);
+      }
+    }
+    const deployedNames = new Set(targetStacks.map((s) => s.stackName));
+    const leftOut = allLeftOutStageStacks.filter((s) => !deployedNames.has(s.stackName));
+    if (leftOut.length > 0) logger.warn(renderAllLeftOutStageStacks(leftOut));
+    if (!options.all && stackPatterns.length > 0) {
+      // A pattern that used to select a stack by a physical-name wildcard and
+      // no longer does is named, not dropped silently (#4474).
+      const gone = stacksNoLongerSelected(allStacks, stackPatterns, deployedNames);
+      if (gone.stacks.length > 0) {
+        logger.warn(renderStacksNoLongerSelected(gone.patterns, gone.stacks));
       }
     }
 
@@ -1405,9 +1441,9 @@ export function createDeployCommand(): Command {
     .description('Deploy CDK app using SDK/Cloud Control API')
     .argument(
       '[stacks...]',
-      "Stack name(s) to deploy. Accepts physical CloudFormation names (e.g. 'MyStage-Api') or CDK display paths (e.g. 'MyStage/Api'). Supports wildcards (e.g. 'MyStage/*')."
+      "Stack name(s) to deploy. Accepts CDK display paths (e.g. 'MyStage/Api') with wildcards ('MyStage/*', '**'), or exact physical CloudFormation names (e.g. 'MyStage-Api')."
     )
-    .option('--all', 'Deploy all stacks', false)
+    .option('--all', "Deploy every top-level stack (top-level only; Stage stacks: '**')", false)
     .action(withErrorHandling(deployCommand));
 
   // Add options

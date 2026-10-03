@@ -244,7 +244,9 @@ describe('cdkd list', () => {
       assemblyDir: '/tmp/cdk.out',
     });
 
-    const { stdout } = await runList(['MyStage-*']);
+    // An exact physical name (the cdkd extension); a glob matches the
+    // hierarchical id (go-to-k/cdkd#4474).
+    const { stdout } = await runList(['MyStage-Api', 'MyStage-Db']);
     expect(stdout).toBe('MyStage/Api (MyStage-Api)\nMyStage/Db (MyStage-Db)\n');
   });
 

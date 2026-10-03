@@ -39,6 +39,11 @@
 #      manifest and assert every command fails naming it, for --all, a bare
 #      run, a wildcard and an exact name, leaving state and the stack
 #      untouched (go-to-k/cdkd#3507).
+#   3h. (Phase 2h) CDK-compatible selection: `'**'`, `'CdkdStageAssets/*'`,
+#      the display path and the exact physical name select the stack; `'*'`
+#      and physical-name globs do not; `--all` (diff, destroy) refuses this
+#      stage-only app and leaves state and the stack untouched
+#      (go-to-k/cdkd#4474).
 #   4. destroy -> assert clean (0 errors): both Lambdas gone, OUR pushed image
 #      gone from ECR by tag, state file gone.
 #
@@ -411,11 +416,13 @@ echo "    OK: Stage construct path resolved, state untouched"
 # controls over the intact assembly run first, so the failures are attributable
 # to the ghost Stage. scrub exits 2, a refusal, never --fail's 1.
 echo "==> Phase 2g: every command fails on a never-synthesized Stage beside a loading one"
-for control in "--all" ""; do
+# `'**'`, not `--all`: the fixture's only stack is inside a Stage, and `--all`
+# selects top-level stacks only (go-to-k/cdkd#4474; Phase 2h asserts that).
+for control in "**" ""; do
   set +e
-  # ${control} unquoted on purpose: empty for the bare run.
-  # shellcheck disable=SC2086
-  CONTROL_OUT=$(node "${LOCAL_DIST}" diff ${control} --app cdk.out \
+  # ${control:+"${control}"}: the pattern QUOTED when set, so the shell never
+  # globs `**`, and no argument at all for the bare run.
+  CONTROL_OUT=$(node "${LOCAL_DIST}" diff ${control:+"${control}"} --app cdk.out \
     --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
   CONTROL_RC=$?
   set -e
@@ -501,6 +508,79 @@ if gone_probe aws lambda get-function --function-name "${ZIP_FN}" --region "${RE
   exit 1
 fi
 echo "    OK: every command failed on the ghost Stage, state and stack untouched"
+
+# --- Phase 2h: stack selection matches the AWS CDK CLI ----------------------
+# go-to-k/cdkd#4474. A pattern is matched against the hierarchical id
+# (`CdkdStageAssets/Stack`) with `*` inside one segment and `**` across them,
+# plus the EXACT physical name (`CdkdStageAssets-Stack`) as a cdkd extension.
+# `--all` selects top-level stacks only, and this app has none, so it is
+# refused -- destroy included, which must leave the Phase 1 stack running.
+# diff is read-only, so the selection arms write nothing.
+echo "==> Phase 2h: CDK-compatible stack selection"
+ETAG_BEFORE=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ -z "${ETAG_BEFORE}" ]; then
+  echo "FAIL: could not read the state object's ETag before Phase 2h" >&2
+  exit 1
+fi
+# Patterns that must SELECT the stack: diff exits 0.
+for pat in "**" "CdkdStageAssets/*" "${STACK_PATH}" "${STACK}"; do
+  set +e
+  SEL_OUT=$(node "${LOCAL_DIST}" diff "${pat}" --app cdk.out \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+  SEL_RC=$?
+  set -e
+  printf '%s\n' "${SEL_OUT}"
+  if [ "${SEL_RC}" -ne 0 ]; then
+    echo "FAIL: diff '${pat}' exited ${SEL_RC}, expected it to select ${STACK_PATH}" >&2
+    exit 1
+  fi
+  echo "    OK: '${pat}' selected the stack"
+done
+# Patterns that must NOT select it: `*` stays at the top level, and a glob is
+# never matched against the physical name.
+for pat in "*" "CdkdStageAssets-*" "CdkdStageAssets*"; do
+  set +e
+  SEL_OUT=$(node "${LOCAL_DIST}" diff "${pat}" --app cdk.out \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+  SEL_RC=$?
+  set -e
+  printf '%s\n' "${SEL_OUT}"
+  if [ "${SEL_RC}" -eq 0 ] || ! printf '%s' "${SEL_OUT}" | grep -qF -- "No stacks matching ${pat} found in assembly"; then
+    echo "FAIL: diff '${pat}' exited ${SEL_RC} or did not report no match" >&2
+    exit 1
+  fi
+  echo "    OK: '${pat}' selected nothing"
+done
+# `--all` over this stage-only app is refused, by diff and by destroy.
+for verb in diff destroy; do
+  extra=""
+  if [ "${verb}" = "destroy" ]; then extra="--force"; fi
+  set +e
+  # ${extra} unquoted on purpose: empty for diff.
+  # shellcheck disable=SC2086
+  ALL_OUT=$(node "${LOCAL_DIST}" "${verb}" --all --app cdk.out \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" ${extra} 2>&1)
+  ALL_RC=$?
+  set -e
+  printf '%s\n' "${ALL_OUT}"
+  if [ "${ALL_RC}" -eq 0 ] || ! printf '%s' "${ALL_OUT}" | grep -qF -- "--all selects top-level stacks only, and this app has none: every stack is inside a CDK Stage (${STACK} (${STACK_PATH}))"; then
+    echo "FAIL: ${verb} --all over a stage-only app exited ${ALL_RC} or did not refuse" >&2
+    exit 1
+  fi
+  echo "    OK: ${verb} --all refused"
+done
+ETAG_AFTER=$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+  --query ETag --output text)
+if [ "${ETAG_AFTER}" != "${ETAG_BEFORE}" ]; then
+  echo "FAIL: state object changed across Phase 2h (${ETAG_BEFORE} -> ${ETAG_AFTER})" >&2
+  exit 1
+fi
+if gone_probe aws lambda get-function --function-name "${ZIP_FN}" --region "${REGION}"; then
+  echo "FAIL: zip Lambda ${ZIP_FN} is gone after a refused destroy --all" >&2
+  exit 1
+fi
+echo "    OK: selection matches the AWS CDK CLI, state and stack untouched"
 
 # --- Phase 3: destroy + leak assertions -------------------------------------
 echo "==> Phase 3: destroy"

@@ -34,7 +34,14 @@ import {
   resolveStateBucketWithDefault,
   resolveUseCdkBootstrapAssets,
 } from '../config-loader.js';
-import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
+import {
+  matchStacks,
+  describeStack,
+  partitionTopLevel,
+  renderAllLeftOutStageStacks,
+  renderAllNoTopLevelStacks,
+  renderNoStackMatch,
+} from '../stack-matcher.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
@@ -226,7 +233,14 @@ async function diffCommand(
     }
 
     if (options.all) {
-      targetStacks = allStacks;
+      // Top-level stacks only, as the AWS CDK CLI's `--all` (#4474); a Stage's
+      // stacks are named with a Stage-path pattern or a globstar (spelled out in
+      // words: a slash-star in a line comment reads as a block comment to the
+      // source scanners), and the run says it left them out.
+      const { topLevel, inStages } = partitionTopLevel(allStacks);
+      if (topLevel.length === 0) throw new Error(renderAllNoTopLevelStacks(inStages));
+      if (inStages.length > 0) logger.info(renderAllLeftOutStageStacks(inStages));
+      targetStacks = topLevel;
     } else if (stackPatterns.length > 0) {
       targetStacks = matchStacks(allStacks, stackPatterns);
     } else if (allStacks.length === 1) {
@@ -234,7 +248,7 @@ async function diffCommand(
     } else {
       throw new Error(
         `Multiple stacks found: ${allStacks.map(describeStack).join(', ')}. ` +
-          `Specify stack name(s) or use --all`
+          `Specify stack name(s) or use --all (top-level stacks; '**' for every stack)`
       );
     }
 
@@ -481,9 +495,9 @@ export function createDiffCommand(): Command {
     .description('Show difference between current state and desired state')
     .argument(
       '[stacks...]',
-      "Stack name(s) to diff. Accepts physical CloudFormation names (e.g. 'MyStage-Api') or CDK display paths (e.g. 'MyStage/Api'). Supports wildcards (e.g. 'MyStage/*')."
+      "Stack name(s) to diff. Accepts CDK display paths (e.g. 'MyStage/Api') with wildcards ('MyStage/*', '**'), or exact physical CloudFormation names (e.g. 'MyStage-Api')."
     )
-    .option('--all', 'Diff all stacks', false)
+    .option('--all', "Diff every top-level stack (top-level only; Stage stacks: '**')", false)
     .option(
       '--recursive',
       'Recurse into each AWS::CloudFormation::Stack row and diff every nested-stack child against its own deployed state (DFS order). Default is non-recursive, matching cdk diff.',

@@ -356,7 +356,7 @@ export function createListCommand(): Command {
     .description('List all stacks in the CDK app')
     .argument(
       '[stacks...]',
-      "Stack name pattern(s). Accepts physical CloudFormation names (e.g. 'MyStage-Api') or CDK display paths (e.g. 'MyStage/Api'). Supports wildcards (e.g. 'MyStage/*')."
+      "Stack name pattern(s). Accepts CDK display paths (e.g. 'MyStage/Api') with wildcards ('MyStage/*', '**'), or exact physical CloudFormation names (e.g. 'MyStage-Api')."
     )
     .option('-l, --long', 'Display environment information for each stack', false)
     .option('-d, --show-dependencies', 'Display stack dependency information for each stack', false)

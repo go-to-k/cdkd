@@ -14,7 +14,7 @@ safe to run at any time.
 cdkd diff                                  # the single stack in the app
 cdkd diff MyStack                          # one stack by name
 cdkd diff 'MyStage/*'                      # every stack under a stage
-cdkd diff --all                            # every stack in the app
+cdkd diff --all                            # every top-level stack in the app
 cdkd diff ParentStack --recursive          # descend into nested stacks
 cdkd diff --all --fail                     # CI gate: exit 1 on any change
 cdkd diff MyStack --json                   # machine-readable payload
@@ -24,7 +24,7 @@ cdkd diff MyStack --json                   # machine-readable payload
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--all` | off | Diff every stack in the app. |
+| `--all` | off | Diff every top-level stack in the app (Stage stacks: `'**'`). |
 | `--stack <name>` | — | A single stack name, as an alternative to the positional argument. |
 | `--output <path>` | `cdk.out` | Synthesis output directory. |
 | `--recursive` | off | Descend into each `AWS::CloudFormation::Stack` row and diff every nested child against its own state. |
@@ -42,15 +42,16 @@ cdkd diff MyStack --json                   # machine-readable payload
 
 Selection follows the same rules as `cdkd deploy` and `cdkd destroy`:
 
-- **A positional name** matches either the physical CloudFormation stack name
-  (`MyStage-Api`) or the CDK display path (`MyStage/Api`). A pattern containing
-  `/` is matched against the display path; one without `/` against the physical
-  name.
-- **Wildcards** work in both forms: `'My*'`, `'MyStage/*'`. Quote them so the
-  shell does not expand them first.
+- **A positional name** is matched against the stack's CDK display path
+  (`MyStage/Api`), or EXACTLY against its physical CloudFormation name
+  (`MyStage-Api`) — see [stack selection](cli-list.md#selecting-stacks).
+- **Wildcards:** `*` stays within one `/` segment (`'*'` is the top-level
+  stacks, `'MyStage/*'` one Stage's), and `'**'` selects every stack. Quote
+  them so the shell does not expand them first.
 - **Several names** may be given at once; the result is their deduplicated
   union.
-- **`--all`** selects every stack in the synthesized app.
+- **`--all`** selects the app's top-level stacks, as the AWS CDK CLI does, and
+  names any Stage stacks it left out; use `'**'` for every stack.
 - **No argument** is accepted only when the app contains exactly one stack.
   With more than one, cdkd lists the available stacks and exits `1` rather than
   guessing.

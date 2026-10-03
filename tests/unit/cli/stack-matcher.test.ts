@@ -1,9 +1,14 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   matchStacks,
+  partitionTopLevel,
+  renderAllLeftOutStageStacks,
+  renderAllNoTopLevelStacks,
   stackMatchesPattern,
   describeStack,
   renderNoStackMatch,
+  renderStacksNoLongerSelected,
+  stacksNoLongerSelected,
   renderNotInAppWarning,
   renderUnmatchedPatternsWarning,
   unmatchedPatterns,
@@ -18,29 +23,56 @@ const stacks = [
 ];
 
 describe('stackMatchesPattern', () => {
-  it('matches by physical stackName when pattern has no slash', () => {
+  it('matches a stack by its exact physical name and by its display path', () => {
     expect(stackMatchesPattern(stacks[1]!, 'MyStage-Api')).toBe(true);
     expect(stackMatchesPattern(stacks[1]!, 'MyStage/Api')).toBe(true);
   });
 
-  it('routes slash-bearing patterns to displayName only', () => {
-    // pattern has '/', so MyStage-Api stack only matches via displayName
+  it('matches a slash-bearing pattern against the display path only', () => {
+    // No physical name contains the slash, so only the display path can match.
     expect(stackMatchesPattern(stacks[1]!, 'MyStage/Api')).toBe(true);
     // Same pattern won't match a stack whose displayName lacks the slash form
     expect(stackMatchesPattern(stacks[0]!, 'MyStage/Api')).toBe(false);
   });
 
-  it('treats hyphen patterns as physical names, not display paths', () => {
-    // 'MyStage-Api' must NOT match a displayName 'MyStage/Api' on its own —
-    // the routing rule keeps these strictly separate.
+  it('does not equate a hyphenated name with a slash-separated display path', () => {
+    // 'MyStage-Api' is neither this stack's physical name nor its display path.
     const stageOnly = { stackName: 'phys-name', displayName: 'MyStage/Api' };
     expect(stackMatchesPattern(stageOnly, 'MyStage-Api')).toBe(false);
   });
 
-  it('supports wildcards on physical names', () => {
-    expect(stackMatchesPattern(stacks[1]!, 'MyStage-*')).toBe(true);
-    expect(stackMatchesPattern(stacks[2]!, 'MyStage-*')).toBe(true);
-    expect(stackMatchesPattern(stacks[3]!, 'MyStage-*')).toBe(false);
+  // go-to-k/cdkd#4474: the physical name is a cdkd extension and is matched
+  // EXACTLY. A glob over it would let `'*'` select every Stage's stacks too.
+  it('matches a physical name only exactly, never as a glob', () => {
+    expect(stackMatchesPattern(stacks[1]!, 'MyStage-Api')).toBe(true);
+    expect(stackMatchesPattern(stacks[1]!, 'MyStage-*')).toBe(false);
+    expect(stackMatchesPattern(stacks[1]!, '*')).toBe(false);
+  });
+
+  it('matches a top-level stack by its construct id when its stackName differs (CDK parity)', () => {
+    const renamed = { stackName: 'prod-api', displayName: 'Api' };
+    expect(stackMatchesPattern(renamed, 'Api')).toBe(true);
+    expect(stackMatchesPattern(renamed, 'A*')).toBe(true);
+    // ...and still by the physical name, exactly.
+    expect(stackMatchesPattern(renamed, 'prod-api')).toBe(true);
+  });
+
+  it("matches `'*'` against top-level stacks only: `*` does not cross `/`", () => {
+    expect(stackMatchesPattern(stacks[0]!, '*')).toBe(true);
+    expect(stackMatchesPattern(stacks[1]!, '*')).toBe(false);
+    expect(stackMatchesPattern(stacks[1]!, 'MyStage*')).toBe(false);
+    expect(stackMatchesPattern(stacks[1]!, '*Api')).toBe(false);
+  });
+
+  it("matches `'**'` against every stack at any depth", () => {
+    for (const stack of stacks) expect(stackMatchesPattern(stack, '**')).toBe(true);
+    const deep = { stackName: 'Outer-Inner-Api', displayName: 'Outer/Inner/Api' };
+    expect(stackMatchesPattern(deep, '**')).toBe(true);
+    expect(stackMatchesPattern(deep, 'Outer/**')).toBe(true);
+    expect(stackMatchesPattern(deep, '**/Api')).toBe(true);
+    // One `*` segment is one level.
+    expect(stackMatchesPattern(deep, 'Outer/*')).toBe(false);
+    expect(stackMatchesPattern(deep, 'Outer/*/Api')).toBe(true);
   });
 
   it('supports wildcards on display paths (Stage-scoped selection)', () => {
@@ -105,6 +137,19 @@ describe('matchStacks', () => {
     expect(matchStacks(stacks, [])).toEqual([]);
   });
 
+  // go-to-k/cdkd#4474: the CDK path decides first; the physical name is
+  // consulted only when no stack's path matches, so it cannot widen a
+  // selection the AWS CDK CLI would make.
+  it('prefers a stack whose path matches over another whose physical name does', () => {
+    const collide = [
+      { stackName: 'api-v2', displayName: 'Api' },
+      { stackName: 'Api', displayName: 'Legacy' },
+    ];
+    expect(matchStacks(collide, ['Api']).map((s) => s.stackName)).toEqual(['api-v2']);
+    expect(matchStacks(collide, ['api-v2']).map((s) => s.stackName)).toEqual(['api-v2']);
+    expect(matchStacks([collide[1]!], ['Api']).map((s) => s.stackName)).toEqual(['Api']);
+  });
+
   it('selects all stacks under a Stage using a display-path wildcard', () => {
     const result = matchStacks(stacks, ['MyStage/*']);
     expect(result.map((s) => s.stackName)).toEqual(['MyStage-Api', 'MyStage-Db']);
@@ -130,9 +175,15 @@ describe('matchStacks', () => {
   });
 
   it('preserves the input order of stacks', () => {
-    const result = matchStacks(stacks, ['*Api*']);
-    // Wildcard patterns without slash route to stackName.
+    const result = matchStacks(stacks, ['*/Api']);
     expect(result.map((s) => s.stackName)).toEqual(['MyStage-Api', 'OtherStage-Api']);
+  });
+
+  it("selects every stack with `'**'` and only the top-level ones with `'*'`", () => {
+    expect(matchStacks(stacks, ['**']).map((s) => s.stackName)).toEqual(
+      stacks.map((s) => s.stackName)
+    );
+    expect(matchStacks(stacks, ['*']).map((s) => s.stackName)).toEqual(['TopStack']);
   });
 });
 
@@ -229,6 +280,18 @@ describe('unmatchedPatterns / renderUnmatchedPatternsWarning', () => {
     expect(unmatchedPatterns(stacks, ['Typo', 'Typo'])).toEqual(['Typo']);
   });
 
+  it('counts a pattern as matched only when the stack it selects is present', () => {
+    const collide = [
+      { stackName: 'api-v2', displayName: 'Api' },
+      { stackName: 'Api', displayName: 'Legacy' },
+    ];
+    const deployed = (s: { stackName: string }) => s.stackName === 'Api';
+    // `Api` selects `api-v2` by its id; that it also spells the deployed
+    // stack's physical name does not make it matched.
+    expect(unmatchedPatterns(collide, ['Api'], deployed)).toEqual(['Api']);
+    expect(unmatchedPatterns(collide, ['Legacy'], deployed)).toEqual([]);
+  });
+
   it('words a name that is in state but not a stack of this app on its own', () => {
     expect(renderNotInAppWarning(['P~C'])).toBe(
       'P~C is in state but is not a stack of this app and was skipped. ' +
@@ -259,4 +322,119 @@ describe('unmatchedPatterns / renderUnmatchedPatternsWarning', () => {
     expect(warning).not.toContain('\n');
     expect(warning).toMatch(/^"/);
   });
+});
+
+// go-to-k/cdkd#4474: `--all` selects top-level stacks only, as the AWS CDK
+// CLI's `--all` (MAIN_ASSEMBLY) does, and says what it left out.
+describe('--all: top-level stacks only', () => {
+  const app = [
+    { stackName: 'TopStack', displayName: 'TopStack' },
+    { stackName: 'Prod-Api', displayName: 'Prod/Api', stagePath: 'Prod' },
+    { stackName: 'Prod-Db', displayName: 'Prod/Db', stagePath: 'Prod' },
+  ];
+
+  it('partitions on the Stage a stack was read from, not on its display path', () => {
+    // A Stack nested in a Stack (not a Stage) displays `Parent/Child` but is a
+    // stack of the app's own assembly, so `--all` keeps it.
+    const nestedInStack = { stackName: 'ParentChild', displayName: 'Parent/Child' };
+    const { topLevel, inStages } = partitionTopLevel([...app, nestedInStack]);
+    expect(topLevel.map((s) => s.stackName)).toEqual(['TopStack', 'ParentChild']);
+    expect(inStages.map((s) => s.stackName)).toEqual(['Prod-Api', 'Prod-Db']);
+  });
+
+  it('names what it left out and the patterns that select it', () => {
+    expect(renderAllLeftOutStageStacks(app.slice(1))).toBe(
+      '--all selects top-level stacks only; 2 stacks inside a CDK Stage were left out ' +
+        "(Prod-Api (Prod/Api), Prod-Db (Prod/Db)). Name them with 'Prod/*', or select every stack with '**'."
+    );
+    expect(renderAllLeftOutStageStacks(app.slice(1, 2))).toMatch(
+      /^--all selects top-level stacks only; 1 stack inside a CDK Stage was left out /
+    );
+  });
+
+  it('names one pattern per distinct Stage, and falls back to the globstar alone', () => {
+    const two = [...app.slice(1), { stackName: 'Dev-Api', displayName: 'Dev/Api', stagePath: 'Dev' }];
+    expect(renderAllLeftOutStageStacks(two)).toMatch(/Name them with 'Prod\/\*', 'Dev\/\*', or select every stack with '\*\*'\.$/);
+    const odd = [{ stackName: 'X', displayName: "It's/X", stagePath: "It's" }];
+    expect(renderAllLeftOutStageStacks(odd)).toMatch(/\. Select them with '\*\*'\.$/);
+  });
+
+  it('refuses a stage-only app, naming its stacks', () => {
+    expect(renderAllNoTopLevelStacks(app.slice(1))).toBe(
+      '--all selects top-level stacks only, and this app has none: every stack is inside a CDK Stage ' +
+        "(Prod-Api (Prod/Api), Prod-Db (Prod/Db)). Name them with 'Prod/*', or select every stack with '**'."
+    );
+  });
+});
+
+// go-to-k/cdkd#4474: a pattern without `/` used to be a glob over the physical
+// name. deploy and destroy name what that rule selected and the CDK path no
+// longer does.
+describe('stacksNoLongerSelected / renderStacksNoLongerSelected', () => {
+  const app = [
+    { stackName: 'Top', displayName: 'Top' },
+    { stackName: 'api-v2', displayName: 'Api' },
+    { stackName: 'Prod-Api', displayName: 'Prod/Api', stagePath: 'Prod' },
+  ];
+  const names = (r: { stacks: { stackName: string }[]; patterns: string[] }) => [
+    r.stacks.map((s) => s.stackName),
+    r.patterns,
+  ];
+
+  it('returns what the old physical-name glob matched and the selection does not hold', () => {
+    expect(names(stacksNoLongerSelected(app, ['*'], new Set(['Top', 'api-v2'])))).toEqual([
+      ['Prod-Api'],
+      ['*'],
+    ]);
+    // Only the patterns that reached a dropped stack are named.
+    expect(names(stacksNoLongerSelected(app, ['Top', 'api-*'], new Set(['Top'])))).toEqual([
+      ['api-v2'],
+      ['api-*'],
+    ]);
+    // A pattern with `/` is judged on the display path, never the physical name.
+    expect(names(stacksNoLongerSelected(app, ['Prod/*'], new Set(['Prod-Api']))).flat()).toEqual([]);
+    expect(names(stacksNoLongerSelected(app, ['Prod-*/*'], new Set())).flat()).toEqual([]);
+    expect(names(stacksNoLongerSelected(app, ['**'], new Set(app.map((s) => s.stackName)))).flat()).toEqual(
+      []
+    );
+  });
+
+  it('advises the Stage pattern, or the CDK path for a top-level stack', () => {
+    expect(renderStacksNoLongerSelected(['*'], [app[2]!])).toBe(
+      '"*" now matches the CDK path, with * inside one segment, and no longer selects 1 stack it used to ' +
+        "(Prod-Api (Prod/Api)). Name them with 'Prod/*', or select every stack with '**'."
+    );
+    expect(renderStacksNoLongerSelected(['api-*', 'x*'], [app[1]!])).toBe(
+      '"api-*", "x*" now match the CDK path, with * inside one segment, and no longer select 1 stack ' +
+        'they used to (api-v2 (Api)). Name each by the CDK path shown in parentheses.'
+    );
+  });
+
+  // `'Prod/*'` cannot reach a stack outside every Stage (a Stack inside a
+  // plain construct, `Group/X`), so a mixed set gets the CDK-path advice.
+  it('gives the Stage advice only when every named stack is in a Stage', () => {
+    const grouped = { stackName: 'GroupX', displayName: 'Group/X' };
+    expect(renderStacksNoLongerSelected(['*'], [app[2]!, grouped])).toMatch(
+      /\(Prod-Api \(Prod\/Api\), GroupX \(Group\/X\)\)\. Name each by the CDK path shown in parentheses, or select every stack with '\*\*'\.$/
+    );
+  });
+
+  // The old rule's `*` crossed `/` on the display path too, so `'Prod/*'`
+  // reached a Stack nested in a Stack inside the Stage.
+  it("names the deeper stack a slash pattern's `*` used to reach", () => {
+    const deep = { stackName: 'ProdParentChild', displayName: 'Prod/Parent/Child', stagePath: 'Prod' };
+    const withDeep = [...app, deep];
+    expect(
+      names(stacksNoLongerSelected(withDeep, ['Prod/*'], new Set(['Prod-Api'])))
+    ).toEqual([['ProdParentChild'], ['Prod/*']]);
+    // `'Prod/**'` selects it, so nothing is named.
+    expect(
+      names(stacksNoLongerSelected(withDeep, ['Prod/**'], new Set(['Prod-Api', 'ProdParentChild']))).flat()
+    ).toEqual([]);
+    // `'<stage>/*'` would not reach it, so the advice names its path instead.
+    expect(renderStacksNoLongerSelected(['Prod/*'], [deep])).toMatch(
+      /\(ProdParentChild \(Prod\/Parent\/Child\)\)\. Name each by the CDK path shown in parentheses, or select every stack with '\*\*'\.$/
+    );
+  });
+
 });

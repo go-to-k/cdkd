@@ -41,6 +41,14 @@ export interface StackInfo {
    */
   displayName: string;
 
+  /**
+   * The CDK Stage (`cdk:cloud-assembly`) the stack was read from — its path,
+   * the innermost one for a Stage in a Stage — or `undefined` for a stack of
+   * the app's own assembly. `--all` selects only the latter, as the AWS CDK
+   * CLI's `--all` does ([#4474](https://github.com/go-to-k/cdkd/issues/4474)).
+   */
+  stagePath?: string | undefined;
+
   /** Artifact ID in manifest */
   artifactId: string;
 
@@ -245,7 +253,8 @@ export class AssemblyReader {
   private collectStacks(
     assemblyDir: string,
     manifest: AssemblyManifest,
-    assetOutdir: string
+    assetOutdir: string,
+    stagePath?: string
   ): StackInfo[] {
     if (!manifest.artifacts) {
       this.logger.warn('No artifacts found in manifest');
@@ -267,6 +276,7 @@ export class AssemblyReader {
           assetManifestMap,
           assetOutdir
         );
+        if (stagePath !== undefined) stackInfo.stagePath = stagePath;
         stacks.push(stackInfo);
       } else if (artifact.type === 'cdk:cloud-assembly') {
         // Nested assembly (Stage) — recurse into subdirectory
@@ -334,7 +344,7 @@ export class AssemblyReader {
           // refusal whose text names only the stack, and is not a tolerance
           // point.
           try {
-            stacks.push(...this.collectStacks(nestedDir, nestedManifest, assetOutdir));
+            stacks.push(...this.collectStacks(nestedDir, nestedManifest, assetOutdir, stagePath));
           } catch (error) {
             throw stageScopedError(stagePath, error);
           }

@@ -2,8 +2,9 @@
  * Whether `subject` matches the glob `pattern`, where `*` matches any run of
  * characters (the empty run included) and EVERY other character is literal.
  *
- * The one answer to "what does a stack-selection pattern mean", used by
- * `stackMatchesPattern` (`src/cli/stack-matcher.ts`)
+ * One SEGMENT of a stack-selection pattern: {@link pathGlobMatches} applies it
+ * per `/`-separated segment for `stackMatchesPattern`
+ * (`src/cli/stack-matcher.ts`)
  * ([#3508](https://github.com/go-to-k/cdkd/issues/3508)). An import-free LEAF,
  * so any layer may import it.
  *
@@ -43,4 +44,44 @@ export function globMatches(pattern: string, subject: string): boolean {
     cursor = at + segment.length;
   }
   return true;
+}
+
+/**
+ * Whether a `/`-separated `subject` matches the path glob `pattern`, as the
+ * AWS CDK CLI matches a stack pattern against a stack's hierarchical id with
+ * picomatch ([#4474](https://github.com/go-to-k/cdkd/issues/4474)):
+ *
+ * - `*` matches any run of characters WITHIN one segment and never crosses
+ *   `/`, so `'*'` selects top-level stacks only and `'Stage/*'` the stacks
+ *   directly inside `Stage`;
+ * - a segment that is exactly `**` matches zero or more whole segments, so
+ *   `'**'` selects every stack at any depth;
+ * - every other character is literal, as in {@link globMatches}, which matches
+ *   each segment. Unlike picomatch, `?`, `[...]`, `{a,b}` and a leading `!`
+ *   have no meaning here;
+ * - `*` and `**` also match a segment that starts with `.`, which picomatch's
+ *   do not by default.
+ *
+ * **Never a RegExp**, for the reason {@link globMatches} gives. The segments
+ * are matched by bottom-up dynamic programming over (pattern segment, subject
+ * segment), so a run of `**` costs O(|pattern| x |subject|) segment matches
+ * rather than an exponential backtrack, and no recursion depth.
+ */
+export function pathGlobMatches(pattern: string, subject: string): boolean {
+  const p = pattern.split('/');
+  const s = subject.split('/');
+  // can[j] = whether p[i..] matches s[j..], filled from the last pattern
+  // segment back. Iterative, so a long run of `**` cannot exhaust the stack.
+  let can: boolean[] = s.map(() => false).concat(true);
+  for (let i = p.length - 1; i >= 0; i--) {
+    const next: boolean[] = new Array<boolean>(s.length + 1).fill(false);
+    if (p[i] === '**') {
+      // Zero segments (can[j]), or one more and stay on the globstar.
+      for (let j = s.length; j >= 0; j--) next[j] = can[j]! || (j < s.length && next[j + 1]!);
+    } else {
+      for (let j = 0; j < s.length; j++) next[j] = can[j + 1]! && globMatches(p[i]!, s[j]!);
+    }
+    can = next;
+  }
+  return can[0]!;
 }
