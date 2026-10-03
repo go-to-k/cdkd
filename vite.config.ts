@@ -158,6 +158,15 @@ export default defineConfig({
     dts: true,
     sourcemap: true,
     minify: false,
+    // Package size, not behavior. The maps keep their mappings, so
+    // `node --enable-source-maps` still reports `src/*.ts` line numbers; only
+    // the embedded copy of every source file goes. JSDoc blocks are dropped
+    // from the JS (legal and `@__PURE__`-style annotations stay); identifiers
+    // and line breaks are untouched, so stack traces read the same.
+    outputOptions: {
+      sourcemapExcludeSources: true,
+      comments: { legal: true, annotation: true, jsdoc: false },
+    },
     define: {
       __CDKD_VERSION__: JSON.stringify(pkg.version),
     },
