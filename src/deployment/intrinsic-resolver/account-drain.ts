@@ -599,7 +599,7 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
   if (cached) return accountInfoFor(cached, overrideRegion);
 
   const pending = accountInfoInFlight.get(identityKey);
-  if (pending) return accountInfoFor(await pending, overrideRegion);
+  if (pending) return accountInfoFor(await ownRefusal(pending), overrideRegion);
 
   // NOTE the lookup is region-AGNOSTIC — it resolves the ACCOUNT, and every
   // caller's region is applied by `accountInfoFor` afterwards — so sharing one
@@ -609,7 +609,7 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
   const inFlight = resolveAccountIdentity(identityKey);
   accountInfoInFlight.set(identityKey, inFlight);
   try {
-    return accountInfoFor(await inFlight, overrideRegion);
+    return accountInfoFor(await ownRefusal(inFlight), overrideRegion);
   } finally {
     // Only clear the slot we still OWN. `resetAccountInfoCache` clears it too, so
     // a reset mid-flight lets a later caller install its own promise — an
@@ -620,13 +620,31 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
 }
 
 /**
+ * Await a lookup that other callers may share, giving THIS caller its own
+ * refusal instance. Concurrent callers share one rejected promise, and a
+ * caller's catch may decorate what it caught (`markAuxiliaryFailure` stamps a
+ * `logicalId`), which would then leak onto every other caller's error.
+ */
+async function ownRefusal(lookup: Promise<CachedAccountIdentity>): Promise<CachedAccountIdentity> {
+  try {
+    return await lookup;
+  } catch (error) {
+    if (error instanceof AccountIdUnavailableError) {
+      throw new AccountIdUnavailableError(error.message);
+    }
+    throw error;
+  }
+}
+
+/**
  * The refusal {@link resolveAccountIdentity} throws when STS cannot name the
  * account and `AWS_ACCOUNT_ID` is unset or malformed (issue #1730).
  *
  * `reason` is the STS failure's `describeAwsFailure(...).summary`, never its
  * `detail`: this message is THROWN, so it is persisted to the deployment event
- * log, and an AWS-authored message can spell out the caller's role ARN. The full
- * text goes to `logger.debug` at the throw site.
+ * log, and an AWS-authored message can spell out the caller's role ARN. The
+ * summary withholds AWS-authored text (a non-AWS one such as `ECONNREFUSED`
+ * passes through whole); the full text goes to `logger.debug` at the throw site.
  */
 function accountIdUnavailableMessage(reason: string): string {
   return (

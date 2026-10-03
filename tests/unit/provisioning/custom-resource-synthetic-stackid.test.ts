@@ -58,7 +58,10 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: () => Promise.resolve('https://s3.example.com/presigned-url'),
 }));
 
-import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';
+import {
+  CustomResourceProvider,
+  customResourceRetryDelays,
+} from '../../../src/provisioning/providers/custom-resource-provider.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
 import {
   disarmInterruptWatchForTests,
@@ -293,18 +296,76 @@ describe('CustomResourceProvider synthetic StackId (issue #1866)', () => {
     );
   });
 
-  it('a DELETE that cannot resolve the account is reported skipped, never deleted', async () => {
-    // Delete's catch must keep the record: a `Delete` the handler never
-    // received proves nothing was cleaned up.
-    mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
-    const provider = makeProvider();
+  describe('a DELETE re-asks for the account before giving up (issue #1730)', () => {
+    // A Delete that is never sent is reported `skipped`, but the same destroy
+    // deletes the backing Lambda and the next destroy drops the record, so a
+    // transient STS blip would orphan whatever the handler manages. The
+    // lookup is never cached, so asking again can recover.
+    const realSleep = customResourceRetryDelays.sleep;
+    const slept: number[] = [];
 
-    const outcome = await provider.delete('CrResource', 'phys-123', 'Custom::CrResource', {
-      ServiceToken: SERVICE_TOKEN,
+    beforeEach(() => {
+      slept.length = 0;
+      customResourceRetryDelays.sleep = (ms: number) => {
+        slept.push(ms);
+        return Promise.resolve();
+      };
     });
 
-    expect(outcome).toMatchObject({ outcome: 'skipped' });
-    expect(sentRequests()).toEqual([]);
+    afterEach(() => {
+      customResourceRetryDelays.sleep = realSleep;
+    });
+
+    it('recovers when STS answers on a later attempt, and SENDS the Delete', async () => {
+      mockStsSend
+        .mockImplementationOnce(() => Promise.reject(new Error('STS is unreachable')))
+        .mockImplementationOnce(() => Promise.reject(new Error('STS is unreachable')))
+        .mockImplementation(() => Promise.resolve({ Account: '111122223333' }));
+      const provider = makeProvider();
+
+      const outcome = await provider.delete('CrResource', 'phys-123', 'Custom::CrResource', {
+        ServiceToken: SERVICE_TOKEN,
+      });
+
+      expect(outcome).not.toMatchObject({ outcome: 'skipped' });
+      const requests = sentRequests();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.['RequestType']).toBe('Delete');
+      expect(String(requests[0]?.['StackId'])).toContain(':111122223333:stack/cdkd-CrResource/');
+      expect(mockStsSend).toHaveBeenCalledTimes(3);
+      expect(slept.reduce((a, b) => a + b, 0)).toBe(2_000 + 5_000);
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'the Delete request cannot be sent until the account is known'
+      );
+    });
+
+    it('still failing after the bounded retries: reported skipped, never deleted', async () => {
+      // Delete's catch must keep the record: a `Delete` the handler never
+      // received proves nothing was cleaned up.
+      mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
+      const provider = makeProvider();
+
+      const outcome = await provider.delete('CrResource', 'phys-123', 'Custom::CrResource', {
+        ServiceToken: SERVICE_TOKEN,
+      });
+
+      expect(outcome).toMatchObject({ outcome: 'skipped' });
+      expect(sentRequests()).toEqual([]);
+      // One first ask plus three re-asks, on the documented schedule.
+      expect(mockStsSend).toHaveBeenCalledTimes(4);
+      expect(slept.reduce((a, b) => a + b, 0)).toBe(2_000 + 5_000 + 10_000);
+    });
+
+    it('a CREATE does not re-ask: its refusal fails before anything exists', async () => {
+      mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
+      const provider = makeProvider();
+
+      await expect(
+        provider.create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN })
+      ).rejects.toThrow(/Cannot determine the AWS account id/);
+      expect(mockStsSend).toHaveBeenCalledTimes(1);
+      expect(slept).toEqual([]);
+    });
   });
 
   it('pins the region at CONSTRUCTION, so a mid-flight bag swap cannot leak in', async () => {

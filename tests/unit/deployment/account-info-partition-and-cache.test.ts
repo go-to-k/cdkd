@@ -268,6 +268,43 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
     );
   });
 
+  it('treats an EMPTY AWS_ACCOUNT_ID as unset, not as malformed', async () => {
+    process.env['AWS_ACCOUNT_ID'] = '';
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    const error = await getAccountInfo().then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(error).toBeInstanceOf(AccountIdUnavailableError);
+    expect(error?.message).toMatch(/^Cannot determine the AWS account id: STS GetCallerIdentity failed \(STS unreachable\)\. /);
+    expect(error?.message).not.toContain('is not a 12-digit account id');
+  });
+
+  it('gives each concurrent caller its OWN refusal instance', async () => {
+    // Callers share one in-flight lookup, and a caller's catch may decorate
+    // what it caught (`markAuxiliaryFailure` stamps a `logicalId`); a shared
+    // instance would carry that onto every other caller's error.
+    let rejectSts: ((reason: unknown) => void) | undefined;
+    stsSend.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectSts = reject;
+        })
+    );
+    const both = Promise.allSettled([getAccountInfo(), getAccountInfo()]);
+    await Promise.resolve();
+    rejectSts?.(new Error('STS unreachable'));
+    const [first, second] = await both;
+
+    expect(stsSend).toHaveBeenCalledTimes(1);
+    const a = first?.status === 'rejected' ? (first.reason as Error) : undefined;
+    const b = second?.status === 'rejected' ? (second.reason as Error) : undefined;
+    expect(a).toBeInstanceOf(AccountIdUnavailableError);
+    expect(b).toBeInstanceOf(AccountIdUnavailableError);
+    expect(a).not.toBe(b);
+    expect(a?.message).toBe(b?.message);
+  });
+
   it('uses AWS_ACCOUNT_ID when STS answers with no Account', async () => {
     process.env['AWS_ACCOUNT_ID'] = '111122223333';
     stsSend.mockResolvedValue({});
@@ -486,6 +523,43 @@ describe('Fn::GetAtt refuses a value that needs an unknown account (issue #1730)
     expect(error?.message.split('Cannot determine the AWS account id').length).toBe(2);
   });
 
+  it('an account-free value makes ZERO STS calls, even while STS is failing', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    const resolver = new IntrinsicFunctionResolver();
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['Thing', 'DomainName'] },
+      mkContext('AWS::S3::Bucket', 'my-bucket')
+    );
+    expect(result).toBe('my-bucket.s3.amazonaws.com');
+    expect(stsSend).not.toHaveBeenCalled();
+  });
+
+  it('builds an account-free value for the RESOLVER region and partition, not the ambient one', async () => {
+    // The stand-in build must carry what `getAccountInfo` would have derived
+    // for this resolver: AWS_REGION stays us-east-1 here on purpose.
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    const resolver = new IntrinsicFunctionResolver('cn-north-1');
+    expect(
+      await resolver.resolve({ 'Fn::GetAtt': ['Thing', 'Arn'] }, mkContext('AWS::S3::Bucket', 'b'))
+    ).toBe('arn:aws-cn:s3:::b');
+    expect(
+      await resolver.resolve(
+        { 'Fn::GetAtt': ['Thing', 'RegionalDomainName'] },
+        mkContext('AWS::S3::Bucket', 'b')
+      )
+    ).toBe('b.s3.cn-north-1.amazonaws.com.cn');
+  });
+
+  it('substitutes the REAL account into an account-bearing value once STS answers', async () => {
+    stsSend.mockResolvedValue({ Account: '999988887777' });
+    const resolver = new IntrinsicFunctionResolver('cn-north-1');
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['Thing', 'Arn'] },
+      mkContext('AWS::DynamoDB::Table', 'my-table')
+    );
+    expect(result).toBe('arn:aws-cn:dynamodb:cn-north-1:999988887777:table/my-table');
+  });
+
   it('propagates a NON-account failure rather than building against the stand-in', async () => {
     // Only `AccountIdUnavailableError` takes the stand-in arm. Anything else
     // must surface as itself.
@@ -497,8 +571,8 @@ describe('Fn::GetAtt refuses a value that needs an unknown account (issue #1730)
     try {
       await expect(
         resolver.resolve(
-          { 'Fn::GetAtt': ['Thing', 'DomainName'] },
-          mkContext('AWS::S3::Bucket', 'my-bucket')
+          { 'Fn::GetAtt': ['Thing', 'Arn'] },
+          mkContext('AWS::DynamoDB::Table', 'my-table')
         )
       ).rejects.toBe(boom);
     } finally {

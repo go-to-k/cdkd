@@ -316,10 +316,11 @@ export async function constructWithStaleRecordHeal(
 }
 
 /**
- * Stand-in account id {@link constructGuardedAttribute} builds with when
- * `getAccountInfo` refuses (issue #1730). Never served: a value that embeds it
- * is refused, and one that does not never needed the account. A NUL cannot
- * occur in an AWS physical id, so a match is always this stand-in.
+ * Stand-in account id {@link constructGuardedAttribute} builds with (issue
+ * #1730). Never served: a value that embeds it gets the real account
+ * substituted, or is refused when there is none; one that does not never
+ * needed the account. A NUL cannot occur in an AWS physical id, so a match is
+ * always this stand-in.
  */
 const UNKNOWN_ACCOUNT_STAND_IN = '\u0000cdkd-unknown-account\u0000';
 
@@ -332,8 +333,8 @@ const UNKNOWN_ACCOUNT_STAND_IN = '\u0000cdkd-unknown-account\u0000';
  * REFUSES when STS cannot name the account and `AWS_ACCOUNT_ID` is unset —
  * there is no placeholder account to build from. Refusing every
  * `Fn::GetAtt` on that refusal would also fail the values the account is NOT
- * in, so the construction runs against {@link UNKNOWN_ACCOUNT_STAND_IN} and
- * the result is refused only when it EMBEDS that stand-in.
+ * in, so the construction runs against {@link UNKNOWN_ACCOUNT_STAND_IN}, and
+ * the account is asked for only when the result EMBEDS that stand-in.
  *
  * The test is on the CONSTRUCTED VALUE, not on the attribute NAME, and that
  * precision is the whole point: `AWS::S3::Bucket`'s `Arn` is
@@ -361,40 +362,51 @@ export async function constructGuardedAttribute(
   context: ResolverContext,
   logicalId: string
 ): Promise<unknown> {
-  let accountInfo: AwsAccountInfo;
-  let unavailable: AccountIdUnavailableError | undefined;
+  // Built against the stand-in FIRST, so a value the account is not in never
+  // asks STS at all: during an outage every such `Fn::GetAtt` (probe and
+  // settle) would otherwise spend the SDK's own retry chain on a lookup it
+  // does not need. Region and partition are what `getAccountInfo` would
+  // derive (`accountInfoFor`).
+  const region = effectiveAccountInfoRegion(this.resolverRegion);
+  const standIn: AwsAccountInfo = {
+    accountId: UNKNOWN_ACCOUNT_STAND_IN,
+    region,
+    partition: derivePartitionAndUrlSuffix(region).partition,
+  };
+  const value = await this.constructAttribute(resource, attributeName, context, logicalId, standIn);
+  if (!embedsAccountId(value, UNKNOWN_ACCOUNT_STAND_IN)) return value;
+
+  let accountId: string;
   try {
-    accountInfo = await getAccountInfo(this.resolverRegion);
+    accountId = (await getAccountInfo(this.resolverRegion)).accountId;
   } catch (error) {
     if (!(error instanceof AccountIdUnavailableError)) throw error;
-    unavailable = error;
-    const region = effectiveAccountInfoRegion(this.resolverRegion);
-    accountInfo = {
-      accountId: UNKNOWN_ACCOUNT_STAND_IN,
-      region,
-      partition: derivePartitionAndUrlSuffix(region).partition,
-    };
-  }
-  const value = await this.constructAttribute(
-    resource,
-    attributeName,
-    context,
-    logicalId,
-    accountInfo
-  );
-  if (unavailable !== undefined && embedsAccountId(value, UNKNOWN_ACCOUNT_STAND_IN)) {
     // `attributeName` masked for the reason its nested-stack sibling above
     // states (issue #2827 review). The type too (issue #3441): this guard vets
     // EVERY constructed value, and for a type no arm matched that value is the
     // physical id, so the type is arbitrary template text. The account
-    // refusal's own message is cdkd-authored (it names an AWS-authored STS
-    // failure by class only), so it is appended as written, and NOT passed as
+    // refusal's own message is cdkd-authored and withholds AWS-authored STS
+    // message text, so it is appended as written, and NOT passed as
     // `cause`, which `formatError` would print a second time. NOT
     // `markNonRetryable`: a failed lookup is never cached, so a later attempt
     // can heal.
     throw new IntrinsicResolutionRefusalError(
       `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resource.resourceType, context)}: ` +
-        `the value embeds this deploy's account id. ${unavailable.message}`
+        `the value embeds this deploy's account id. ${error.message}`
+    );
+  }
+  // The stand-in cannot occur in a physical id (it carries NULs), so replacing
+  // it is exact: the result is what a build with the real account produces,
+  // without repeating any live read the construction made.
+  return withAccountId(value, accountId);
+}
+
+/** Replace {@link UNKNOWN_ACCOUNT_STAND_IN} in a constructed string or string list. */
+function withAccountId(value: unknown, accountId: string): unknown {
+  if (typeof value === 'string') return value.replaceAll(UNKNOWN_ACCOUNT_STAND_IN, accountId);
+  if (Array.isArray(value)) {
+    return value.map((entry: unknown) =>
+      typeof entry === 'string' ? entry.replaceAll(UNKNOWN_ACCOUNT_STAND_IN, accountId) : entry
     );
   }
   return value;

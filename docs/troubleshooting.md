@@ -1513,7 +1513,8 @@ Cannot determine the AWS account id: STS GetCallerIdentity failed (ExpiredToken.
 ```
 
 It is raised by `Ref: AWS::AccountId`, `AWS::StackId`, a custom resource
-(whose request carries a `StackId`), and an `Fn::GetAtt` whose value embeds the
+(whose request carries a `StackId`; a Delete asks again for about 17 seconds
+first, and is otherwise reported skipped with its record kept), and an `Fn::GetAtt` whose value embeds the
 account — an `Fn::GetAtt` the account is not in, `AWS::Region`,
 `AWS::Partition` and `AWS::URLSuffix` still resolve. A failed lookup is never
 cached, so the next lookup asks STS again.

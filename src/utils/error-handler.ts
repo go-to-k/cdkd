@@ -36,8 +36,10 @@ export class CdkdError extends Error {
  * on this class; everything else lets it propagate.
  *
  * Carries NO `cause`: `formatError` renders a cause at default verbosity, and
- * the STS failure's text is AWS-authored. The message names the failure by
- * `describeAwsFailure(...).summary`, and the full text goes to the debug log.
+ * the STS failure's text may be AWS-authored. The message names the failure by
+ * `describeAwsFailure(...).summary`, which withholds AWS-authored message text
+ * (a cdkd- or SDK-authored one such as `ECONNREFUSED` passes through whole),
+ * and the full text goes to the debug log.
  */
 export class AccountIdUnavailableError extends CdkdError {
   constructor(message: string) {

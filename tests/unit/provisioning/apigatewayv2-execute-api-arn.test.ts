@@ -152,6 +152,19 @@ describe('AWS::ApiGatewayV2::Api ExecuteApiArn', () => {
     );
   });
 
+  it('does NOT report a non-account failure as the unknown-account omission', async () => {
+    // Only `AccountIdUnavailableError` takes the "is NOT recorded:" arm; any
+    // other rejection goes to the generic catch, which names its class.
+    mockGetAccountInfo.mockRejectedValue(new TypeError('x'));
+    const result = await createApi();
+    expect(result.attributes?.['ExecuteApiArn']).toBeUndefined();
+    const warned = warn.mock.calls.map((call) => String(call[0]));
+    expect(warned.some((m) => m.includes('is NOT recorded:'))).toBe(false);
+    expect(warned).toContainEqual(
+      expect.stringContaining('Could not build the ExecuteApiArn attribute for API abc123 (TypeError)')
+    );
+  });
+
   it('still creates the API when the ARN cannot be built, and WARNS', async () => {
     // Pointed at `config.region()` rejecting: the OTHER reachable throw, which
     // takes the generic catch rather than the unknown-account arm above.

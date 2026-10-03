@@ -25,7 +25,7 @@ import {
   type AwsAccountInfo,
 } from '../../deployment/intrinsic-function-resolver.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { AccountIdUnavailableError, ProvisioningError } from '../../utils/error-handler.js';
 import {
   withRetry,
   IAM_PROPAGATION_INITIAL_DELAY_MS,
@@ -914,6 +914,20 @@ export const customResourceRetryDelays = {
 };
 
 /**
+ * Backoff between account lookups on the DELETE path only, when
+ * `getAccountInfo` refuses (issue [#1730](https://github.com/go-to-k/cdkd/issues/1730)).
+ *
+ * A refused Delete is never sent, so the resource is reported `skipped` — and
+ * the same destroy run deletes the backing Lambda, after which the next destroy
+ * drops the record (see {@link CR_SKIP_NOT_A_RETRY_CAVEAT}). A transient STS
+ * blip would therefore become an untracked orphan of whatever the handler
+ * manages. `getAccountInfo` never caches a failure, so asking again can
+ * recover; create / update need no such loop, because their refusal fails
+ * before anything exists and the next deploy simply retries.
+ */
+const DELETE_ACCOUNT_LOOKUP_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 10_000];
+
+/**
  * Lines Lambda emits for EVERY invocation regardless of what the handler logged.
  * A tail consisting only of these carries no diagnostic value, and it is the
  * COMMON case — `LogResult` is never absent on a `LogType: 'Tail'` invoke, so a
@@ -1534,14 +1548,33 @@ export class CustomResourceProvider implements ResourceProvider {
    * (issue [#1730](https://github.com/go-to-k/cdkd/issues/1730)): `StackId` is
    * a REQUIRED member of the request payload and has no honest stand-in, so the
    * create / update / delete fails BEFORE the handler is invoked rather than
-   * handing it a `StackId` naming no account. It is resolved ONCE per `create`
+   * handing it a `StackId` naming no account. A DELETE first asks again on
+   * {@link DELETE_ACCOUNT_LOOKUP_RETRY_DELAYS_MS}, since a Delete that is never
+   * sent can orphan what the handler manages. It is resolved ONCE per `create`
    * / `update` / `delete` rather than per invocation attempt: the value does not
    * vary between attempts, and the request builder the retry loop re-runs is
    * synchronous.
    */
-  private async resolveSyntheticStackId(logicalId: string): Promise<string> {
-    const accountInfo = await getAccountInfo(this.configuredRegion);
-    return syntheticStackId(logicalId, accountInfo);
+  private async resolveSyntheticStackId(
+    logicalId: string,
+    operation: string,
+    watch: InterruptWatch
+  ): Promise<string> {
+    const retryDelays = operation === 'Delete' ? DELETE_ACCOUNT_LOOKUP_RETRY_DELAYS_MS : [];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return syntheticStackId(logicalId, await getAccountInfo(this.configuredRegion));
+      } catch (error) {
+        const delayMs = retryDelays[attempt];
+        if (!(error instanceof AccountIdUnavailableError) || delayMs === undefined) throw error;
+        this.logger.warn(
+          `Custom resource ${logicalId}: the Delete request cannot be sent until the account is ` +
+            `known: ${error.message} Asking again in ${delayMs / 1000}s ` +
+            `(attempt ${attempt + 1}/${retryDelays.length + 1}).`
+        );
+        await this.sleepInterruptibly(delayMs, watch);
+      }
+    }
   }
 
   /**
@@ -2117,8 +2150,9 @@ export class CustomResourceProvider implements ResourceProvider {
       // Resolved ONCE per call, and deliberately AFTER the watch above: the
       // value does not vary between attempts. It REJECTS when STS cannot name
       // the account (issue #1730), before any invocation: create / update
-      // fail, and delete's catch reports the resource `skipped` and keeps it.
-      const stackId = await this.resolveSyntheticStackId(logicalId);
+      // fail, and delete — after a bounded re-ask — reports the resource
+      // `skipped` and keeps it.
+      const stackId = await this.resolveSyntheticStackId(logicalId, operation, watch);
       // Two budgets, counted SEPARATELY (issue #2033). Sharing the loop counter
       // would let a pre-delivery throw consume the FAILED-response arm's budget
       // — with the arms on 26 and 2, three thrown retries would silently leave

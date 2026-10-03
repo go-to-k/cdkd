@@ -796,8 +796,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         accountInfo = await getAccountInfo(region);
       } catch (error) {
         // STS cannot name the account and `AWS_ACCOUNT_ID` is unset (issue
-        // #1730). Its message is cdkd-authored (it names an AWS-authored STS
-        // failure by class only), so it is the warning's reason as written.
+        // #1730). Its message is cdkd-authored and withholds AWS-authored STS
+        // message text, so it is the warning's reason as written.
         if (!(error instanceof AccountIdUnavailableError)) throw error;
         log.warn(
           `The ExecuteApiArn attribute for API ${apiId} is NOT recorded: ${error.message} ` +
