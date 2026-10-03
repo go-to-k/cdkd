@@ -56,6 +56,13 @@ describe('liveMatchesUnresolvedTokenFrame (#2102)', () => {
     const plaintext = `s${A}t`;
     const secrets = new Map([[plaintext, '{{resolve:secretsmanager:x:SecretString:k::}}']]);
     expect(liveMatchesUnresolvedTokenFrame(`p-${plaintext}`, 'p-sQt', BOTH, secrets)).toBe(false);
+    // ...including one that STARTS at the token (the occurrence begins inside
+    // the span rather than before it).
+    const leading = `${A}tail`;
+    const leadingSecrets = new Map([[leading, '{{resolve:secretsmanager:z:SecretString:k::}}']]);
+    expect(liveMatchesUnresolvedTokenFrame(`p-${leading}`, 'p-Qtail', BOTH, leadingSecrets)).toBe(
+      false
+    );
     // A plaintext elsewhere in the string does not affect a disjoint span.
     const other = new Map([[`r${B}`, '{{resolve:secretsmanager:y:SecretString:k::}}']]);
     expect(liveMatchesUnresolvedTokenFrame(`${A}|r${B}`, `v|r${B}`, new Set([A]), other)).toBe(
