@@ -541,6 +541,86 @@ describe('localRunTaskCommand body: --profile credentials file (issue #3394)', (
     expect(existsSync(path.dirname(hostPath!))).toBe(false);
   });
 
+  // Issue #4480: the credentials file is removed right after `docker stop`,
+  // BEFORE the bounded log drain. A second ^C in the drain must not claim the
+  // file is still there; one that lands before the dispose must still name it.
+  it.each([
+    { when: 'after the credentials were disposed', afterDispose: true },
+    { when: 'before the credentials were disposed', afterDispose: false },
+  ])('a second ^C $when names the file only if it still exists', async ({ afterDispose }) => {
+    const stderrChunks: string[] = [];
+    const realExit = process.exit;
+    const realWrite = process.stderr.write;
+    const realOut = process.stdout.write;
+    (process as unknown as { exit: (code?: number) => void }).exit = (): void => undefined;
+    (process.stdout as unknown as { write: (c: string, ...rest: unknown[]) => boolean }).write = (
+      _chunk: string,
+      ...rest: unknown[]
+    ): boolean => {
+      const cb = rest.find((a): a is () => void => typeof a === 'function');
+      if (cb) cb();
+      return true;
+    };
+    (process.stderr as unknown as { write: (c: string, ...rest: unknown[]) => boolean }).write = (
+      chunk: string,
+      ...rest: unknown[]
+    ): boolean => {
+      stderrChunks.push(String(chunk));
+      const cb = rest.find((a): a is () => void => typeof a === 'function');
+      if (cb) cb();
+      return true;
+    };
+    let hostPath: string | undefined;
+    const sigint = (): void => {
+      const listeners = process.listeners('SIGINT');
+      (listeners[listeners.length - 1] as () => void)();
+    };
+    cleanupEcsRunMock.mockImplementation(
+      async (_state: unknown, opts: { afterContainersStopped?: () => Promise<void> }) => {
+        if (afterDispose) {
+          await opts.afterContainersStopped?.();
+          sigint(); // the second ^C, during the drain
+        } else {
+          // Yield first: a real ^C arrives on a later tick, once the
+          // single-flight cleanup promise is assigned.
+          await Promise.resolve();
+          sigint(); // the second ^C, before docker stop finished
+          await opts.afterContainersStopped?.();
+        }
+      }
+    );
+    try {
+      runEcsTaskMock.mockImplementation(
+        (_task: unknown, runOpts: { profileCredentialsFile?: { hostPath: string } }) => {
+          hostPath = runOpts.profileCredentialsFile?.hostPath;
+          if (hostPath) createdCredsDirs.add(path.dirname(hostPath));
+          sigint(); // the first ^C starts the teardown
+          return Promise.resolve({
+            state: { network: { networkName: 'cdkd-unit-net' } },
+            exitCode: 0,
+            essentialContainerName: undefined,
+          });
+        }
+      );
+      await runTask();
+    } finally {
+      (process as unknown as { exit: typeof realExit }).exit = realExit;
+      (process.stderr as unknown as { write: typeof realWrite }).write = realWrite;
+      (process.stdout as unknown as { write: typeof realOut }).write = realOut;
+    }
+
+    expect(hostPath, 'no credentials file was mounted').toBeDefined();
+    const forceExit = stderrChunks.find((c) => c.includes('Force-exit on second ^C'));
+    expect(forceExit, `no force-exit line in ${JSON.stringify(stderrChunks)}`).toBeDefined();
+    if (afterDispose) {
+      expect(forceExit).not.toContain('NOT removed');
+      expect(forceExit).not.toContain(hostPath!);
+    } else {
+      expect(forceExit).toContain('NOT removed');
+      expect(forceExit).toContain(hostPath!);
+    }
+  });
+
   it('flushes stdout and stderr after the cleanup and before the single-^C exit', async () => {
     // Issue #4480. The cleanup drains the containers' `docker logs -f`
     // followers onto our stdout / stderr, and `process.exit` drops writes still
@@ -595,7 +675,7 @@ describe('localRunTaskCommand body: --profile credentials file (issue #3394)', (
     const exitAt = events.indexOf('exit:130');
     expect(exitAt, JSON.stringify(events)).toBeGreaterThan(0);
     const beforeExit = events.slice(0, exitAt);
-    expect(beforeExit[0]).toBe('cleanup');
+    expect(beforeExit[0], JSON.stringify(events)).toBe('cleanup');
     expect(beforeExit).toContain('flush:stdout');
     expect(beforeExit).toContain('flush:stderr');
   });

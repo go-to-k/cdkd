@@ -131,9 +131,9 @@ privileged port and lets `--host-port <containerPort=hostPort>` pin the result.
 
 That credentials file lives in a temporary directory, is written mode `0600`,
 and is removed when the run ends. Two exits keep it: `--detach`, because the
-containers outlive cdkd with the file still mounted, and a second `^C`, which
-exits before any cleanup runs. Both print the path so you can delete it once
-the containers are gone.
+containers outlive cdkd with the file still mounted, and a second `^C` that
+lands before the containers are stopped, which exits before the file is
+removed. Both print the path so you can delete it once the containers are gone.
 
 `--assume-task-role` beats the profile file, which beats the plain sidecar
 pass-through. Bare `--assume-task-role` resolves a flat-string `TaskRoleArn`
@@ -434,8 +434,10 @@ A normal run:
 4. cdkd exits with the essential container's exit code.
 
 `^C` runs the same teardown. A second `^C` exits `130` immediately, skipping
-container cleanup — and, when `--profile <p>` was passed, skipping the removal
-of the credentials file mounted into the containers. The force-exit line names
+the rest of the container cleanup. When `--profile <p>` was passed and the
+second `^C` lands before the containers are stopped (the credentials file is
+removed right after that, before the log drain), it also skips the removal of
+the credentials file mounted into the containers. The force-exit line then names
 that file's path so you can delete it once you have torn the containers down;
 it is mode `0600` and holds live credentials.
 
@@ -466,7 +468,7 @@ it is mode `0600` and holds live credentials.
 | --- | --- |
 | `0` | The essential container exited `0`, or `--detach` started the containers and returned. |
 | `1` | Either the essential container exited `1`, or cdkd itself failed — Docker unavailable, target not found, network creation failed, secret resolution failed, an unsupported volume type. |
-| `130` | `^C`. A first `^C` tears the task down and then exits; a second exits immediately without container cleanup, naming the `--profile` credentials file it also leaves behind. |
+| `130` | `^C`. A first `^C` tears the task down and then exits; a second exits immediately without container cleanup, naming the `--profile` credentials file when it is still on disk. |
 | `N` | Any other code the essential container exited with; cdkd propagates it verbatim. |
 
 `1` is the one ambiguous code: it is both a container's own exit status and

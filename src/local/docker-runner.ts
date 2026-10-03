@@ -498,12 +498,18 @@ export function followContainerLogs(
  * and, unlike `docker stop`, never waits out a grace period on a server that
  * ignores SIGTERM. Errors are swallowed (logged at debug), like
  * {@link removeContainer}: the container may already have exited.
+ *
+ * Bounded by `timeoutMs`: the teardown keeps the SIGINT handler installed
+ * while it runs, so a hung daemon would otherwise make it un-interruptible.
  */
-export async function killContainer(containerId: string): Promise<void> {
+export async function killContainer(
+  containerId: string,
+  timeoutMs: number = 10_000
+): Promise<void> {
   if (!containerId) return;
   const args = ['kill', containerId];
   try {
-    await execFileAsync(getDockerCmd(), args);
+    await execFileAsync(getDockerCmd(), args, { timeout: timeoutMs });
   } catch (error) {
     getLogger()
       .child('docker')

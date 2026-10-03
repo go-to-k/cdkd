@@ -51,6 +51,8 @@ export interface FakeDockerLogsOptions {
    * on its own ("is not running") — the container is stopped all the same.
    */
   killFails?: boolean;
+  /** `kill` never returns — a hung daemon. */
+  killHangs?: boolean;
 }
 
 /** Install the fake as `CDK_DOCKER` until {@link FakeDockerLogs.restore}. */
@@ -80,7 +82,9 @@ export function installFakeDockerLogs(opts: FakeDockerLogsOptions = {}): FakeDoc
             '    exit 0',
           ].join('\n'),
       '    ;;',
-      opts.killFails === true
+      opts.killHangs === true
+        ? `  kill) exec sleep 30 ;;`
+        : opts.killFails === true
         ? `  kill) : > "${killedMarker('$2')}"; echo "Error: container $2 is not running" 1>&2; exit 1 ;;`
         : `  kill) : > "${killedMarker('$2')}" ;;`,
       'esac',

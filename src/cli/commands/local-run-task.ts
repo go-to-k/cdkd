@@ -239,6 +239,9 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
           if (!channels?.profileCredsFile) return;
           try {
             await channels.profileCredsFile.dispose();
+            // Gone now: a second ^C from here on (the log drain, the flush)
+            // must not tell the user to delete a file that no longer exists.
+            credsHostPath = undefined;
           } catch (err) {
             getLogger().debug(
               `Failed to remove profile credentials tmpdir ${channels.profileCredsFile.hostPath}: ${
@@ -518,8 +521,9 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     if (!detachedSuccessfully) await cleanup();
     // Removed only AFTER the teardown: a ^C during its bounded log drain then
     // re-enters the same single-flight cleanup (and a second one takes the
-    // force-exit arm, which names the credentials file) instead of Node's
-    // default exit, which would skip `docker rm -f` and the dispose.
+    // force-exit arm, which names the credentials file only while it still
+    // exists) instead of Node's default exit, which would skip `docker rm -f`
+    // and the dispose.
     if (sigintHandler) process.off('SIGINT', sigintHandler);
   }
 }

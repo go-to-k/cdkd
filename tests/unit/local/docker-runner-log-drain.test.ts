@@ -105,6 +105,14 @@ describe('container log drain (issue #4480)', () => {
     expect(out.text()).not.toContain(CONTAINER_LATE_TOKEN);
   }, 20_000);
 
+  itPosix('docker kill is bounded when the daemon hangs', async () => {
+    fake = installFakeDockerLogs({ killHangs: true });
+    const started = Date.now();
+    await killContainer('cdkd-lane4480-container', 300);
+    // Well under the fake's 30 s sleep: the timeout ended it.
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 20_000);
+
   // `docker kill` exits non-zero for a container that already stopped on its
   // own ("is not running"); that must not skip the drain.
   itPosix('a failing docker kill still drains the follower', async () => {
