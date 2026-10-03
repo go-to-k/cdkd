@@ -745,7 +745,10 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
           (item) =>
             item.UUID &&
             !mappingsCreatedByThisProcess.has(item.UUID) &&
-            (item.LastModified === undefined || item.LastModified.getTime() >= window.floorMs)
+            // A mapping with no `LastModified` is left out, like an undated
+            // layer version: missed, never wrongly reported.
+            item.LastModified !== undefined &&
+            item.LastModified.getTime() >= window.floorMs
               ? item.UUID
               : undefined
         ),

@@ -152,7 +152,8 @@ interface FakeMapping {
   UUID: string;
   FunctionName: string;
   EventSourceArn?: string;
-  LastModified: Date;
+  /** Absent models a mapping Lambda returned without it. */
+  LastModified?: Date;
 }
 
 interface FakeLayerVersion {
@@ -235,7 +236,10 @@ class FakeLambda {
         const created: FakeLayerVersion = {
           LayerName: layerName,
           Version: version,
-          LayerVersionArn: `${LAYER_ARN_PREFIX}${layerName}:${version}`,
+          // A layer ARN given as `LayerName` publishes under that layer.
+          LayerVersionArn: layerName.startsWith('arn:')
+            ? `${layerName}:${version}`
+            : `${LAYER_ARN_PREFIX}${layerName}:${version}`,
           CreatedDate: layerDate(Date.now()),
         };
         this.versions.push(created);
@@ -554,6 +558,20 @@ describe('Lambda tokenless create retry safety (issue #2080, detection only)', (
       expect(line.split(WITHHELD_AWS_COMMAND)).toHaveLength(3);
     });
 
+    it('a secret-derived layer ARN given as LayerName: its bare name is masked in the candidate ARNs too', async () => {
+      const secretArn = `${LAYER_ARN_PREFIX}zq`;
+      aws.loseNextCreateResponse = transient500();
+
+      await createWithRetry(LAYER, { ...LAYER_PROPS, LayerName: secretArn }, 'Res', (t) =>
+        t.split(secretArn).join('***')
+      );
+
+      const line = reportFor('PublishLayerVersion')!;
+      expect(line).toContain('1 layer version(s) were created');
+      expect(line).not.toMatch(/\bzq\b/);
+      expect(line.split(WITHHELD_AWS_COMMAND)).toHaveLength(3);
+    });
+
     it('a region that cannot be read drops the --region flag rather than the command', async () => {
       aws.loseNextCreateResponse = transient500();
       regionFails.remaining = 1;
@@ -715,6 +733,30 @@ describe('Lambda tokenless create retry safety (issue #2080, detection only)', (
 
       expect(aws.count('ListEventSourceMappingsCommand')).toBe(0);
       expect(aws.mappings).toHaveLength(1);
+    });
+
+    it('masks a secret-derived EventSourceArn in the subject', async () => {
+      aws.loseNextCreateResponse = transient500();
+
+      await createWithRetry(ESM, SQS_PROPS, 'Res', (t) => t.split(QUEUE_ARN).join('***')).catch(
+        () => undefined
+      );
+
+      const line = reportFor('CreateEventSourceMapping')!;
+      expect(line).toContain('from *** to function worker-fn');
+      expect(line).not.toContain(QUEUE_ARN);
+      expect(line).toContain('--uuid uuid-1 ');
+    });
+
+    it('does not report a mapping Lambda returned without LastModified', async () => {
+      aws.mappings.push({ UUID: 'uuid-UNDATED', FunctionName: 'worker-fn' });
+      aws.loseNextCreateResponse = transient500();
+
+      await createWithRetry(ESM, KAFKA_PROPS);
+
+      const line = reportFor('CreateEventSourceMapping')!;
+      expect(line).toContain('1 event source mapping(s) match');
+      expect(line).not.toContain('uuid-UNDATED');
     });
 
     it('masks a short secret-derived function name as a WHOLE value', async () => {
