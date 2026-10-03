@@ -164,8 +164,9 @@ export class DriftRevertStack extends cdk.Stack {
         // Issue #2102: a `{{resolve:...}}` token EMBEDDED in a longer string,
         // spelled with a service nobody resolves, so cdkd deploys it as
         // written (synth's validation report flags the service, as a warning:
-        // CloudFormation itself would refuse it, cdkd warns and keeps it). inject-drift.ts puts a different value at the token's span
-        // out of band; the Description drift then makes `--revert` overlay
+        // CloudFormation itself would refuse it, cdkd warns and keeps it).
+        // inject-drift.ts puts a different value at the token's span out of
+        // band; the Description drift then makes `--revert` overlay
         // this whole `DatabaseInput`, and verify.sh step 5b asserts the live
         // value at the span survives it.
         parameters: {
