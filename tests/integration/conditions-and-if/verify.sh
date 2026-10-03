@@ -16,6 +16,8 @@
 #   Phase 2 (basic, redeploy in place): condition-gated resources now
 #     ABSENT, Fn::If basic branches reached AWS, Fn::If DisplayName OMITTED
 #     (AWS::NoValue -> property genuinely missing on AWS).
+#   Phase 2b (basic, unchanged): `diff --fail` exits 0 and a redeploy is a
+#     no-op -- the omitted DisplayName is not a perpetual change (#4471).
 #   Phase 3: destroy + clean.
 #
 # Required env vars:
@@ -283,6 +285,42 @@ if [ "${OR_TAG}" != "no" ]; then
 fi
 echo "    OK: Fn::Or condition flipped on AWS == 'no'"
 
+# --- go-to-k/cdkd#4471: the omitted DisplayName stays a NO-OP ---------
+# The DisplayName assertion above proves the condition-false Fn::If selected
+# its AWS::NoValue branch, a TOP-LEVEL property of the topic. The diff resolves
+# desired properties one top-level key at a time, and before the fix stored the
+# bare AWS::NoValue symbol under the key, which compared unequal to the absent
+# recorded key: `diff --fail` exited 1 and every redeploy planned an UPDATE of
+# the topic. Both commands go through the same DiffCalculator, so each half is
+# asserted.
+echo ""
+echo "==> Phase 2b: unchanged basic template diffs to no changes (#4471)"
+set +e
+DIFF_OUT=$(node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  -c tier=basic --fail 2>&1)
+DIFF_RC=$?
+set -e
+[ "${DIFF_RC}" -eq 0 ] || {
+  printf '%s\n' "${DIFF_OUT}" >&2
+  echo "FAIL: cdkd diff -c tier=basic --fail exited ${DIFF_RC} on the just-deployed template (expected 0, no changes). 1 with the topic's DisplayName listed as changed is go-to-k/cdkd#4471 (a top-level Fn::If -> AWS::NoValue diffed as a perpetual UPDATE); anything else is a failed diff run." >&2
+  exit 1
+}
+echo "    OK: diff --fail exits 0 (the NoValue-omitted DisplayName is not a change)"
+
+REDEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  -c tier=basic --yes 2>&1) || {
+  printf '%s\n' "${REDEPLOY_OUT}" >&2
+  echo "FAIL: the unchanged basic redeploy failed" >&2
+  exit 1
+}
+# Needle copied from deploy-flow.ts's no-change log line.
+if ! printf '%s' "${REDEPLOY_OUT}" | grep -qF 'No changes detected. Stack is up to date.'; then
+  printf '%s\n' "${REDEPLOY_OUT}" >&2
+  echo "FAIL: the unchanged basic redeploy planned a change (expected 'No changes detected. Stack is up to date.'); an UPDATE of the topic is go-to-k/cdkd#4471 on the deploy path" >&2
+  exit 1
+fi
+echo "    OK: unchanged basic redeploy is a no-op"
+
 # ====================================================================
 # Phase 3: destroy + clean
 # ====================================================================
@@ -304,4 +342,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> conditions-and-if test passed (All 14 assertions passed)"
+echo "==> conditions-and-if test passed (All 16 assertions passed)"

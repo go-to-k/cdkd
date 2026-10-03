@@ -26,6 +26,7 @@ import {
   refuseMalformedResourceProperties,
 } from '../state/malformed-resources-bag.js';
 import { SECRET_MASK, splitGetAttStringForm } from '../deployment/secret-redaction.js';
+import { AWS_NO_VALUE } from '../deployment/intrinsic-function-resolver.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../provisioning/masked-retry-logger.js';
 import { safeMsg } from '../utils/display-safe.js';
 
@@ -1353,7 +1354,22 @@ export class DiffCalculator {
         // holds the resolver to it, and deleting this `structuredClone` reds
         // `does NOT mutate the desired template (resolveBestEffort resolves a
         // clone)` in `tests/unit/analyzer/diff-calculator.test.ts`.)
-        resolved[key] = await resolveFn(structuredClone(value));
+        const resolvedValue = await resolveFn(structuredClone(value));
+        // Resolved one key at a time, a top-level `AWS::NoValue` (bare, or the
+        // branch a condition-false `Fn::If` selects) comes back as the bare
+        // symbol: the resolver drops such a key only while resolving the
+        // ENCLOSING object, which this loop never hands it. Omit it the same
+        // way, or it compares unequal to the absent recorded key and diffs as a
+        // perpetual UPDATE (go-to-k/cdkd#4471). Nested and list positions are
+        // already dropped inside the resolver.
+        // The replacement predicates read the omission too, and only an ABSENT
+        // key reads as absent: `durableConfigPresenceToggled` tests `== null`,
+        // which the symbol fails (a removed `DurableConfig` planned an
+        // in-place UPDATE that keeps the live config; an absent one a spurious
+        // replacement), and the createOnly nested-path walk reported the
+        // symbol unresolved and always replaced.
+        if (resolvedValue === AWS_NO_VALUE) continue;
+        resolved[key] = resolvedValue;
       } catch {
         resolved[key] = value;
       }

@@ -19,6 +19,7 @@ vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { STATEFUL_TYPES } from '../../../src/provisioning/stateful-types.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -273,6 +274,77 @@ describe('DiffCalculator - createOnly replacement fallback', () => {
     const changes = await new DiffCalculator().calculateDiff(state, template);
     const pc = changes.get('Pipe')?.propertyChanges?.find((c) => c.path === 'SourceParameters');
     expect(pc?.requiresReplacement).toBe(true);
+  });
+
+  // Issue #4471: a top-level `Fn::If` selecting `AWS::NoValue` now reaches
+  // the nested-path walk as an ABSENT value instead of the bare symbol, which
+  // `valueAtPath` reported unresolved and so always replaced. The REAL
+  // resolver produces the value, so the shape is the production one.
+  describe('a whole nested-createOnly container omitted by Fn::If -> AWS::NoValue (issue #4471)', () => {
+    const omittedTemplate: CloudFormationTemplate = {
+      Conditions: { Off: { 'Fn::Equals': ['a', 'b'] } },
+      Resources: {
+        Pipe: {
+          Type: 'AWS::Pipes::Pipe',
+          Properties: {
+            Name: 'my-pipe',
+            SourceParameters: {
+              'Fn::If': [
+                'Off',
+                { KinesisStreamParameters: { StartingPosition: 'LATEST' } },
+                { Ref: 'AWS::NoValue' },
+              ],
+            },
+          },
+        },
+      },
+    };
+    const pipeState = (sourceParameters: unknown): StackState => {
+      const state = baseState();
+      state.resources['Pipe'] = {
+        physicalId: 'my-pipe',
+        resourceType: 'AWS::Pipes::Pipe',
+        properties: { Name: 'my-pipe', SourceParameters: sourceParameters },
+        attributes: {},
+      };
+      return state;
+    };
+    const diff = (state: StackState) => {
+      const resolver = new IntrinsicFunctionResolver();
+      return new DiffCalculator().calculateDiff(state, omittedTemplate, (value: unknown) =>
+        resolver.resolve(value, {
+          template: omittedTemplate,
+          resources: state.resources,
+          conditions: { Off: false },
+        })
+      );
+    };
+
+    beforeEach(() => {
+      mockGetCreateOnly.mockResolvedValue([
+        ['SourceParameters', 'KinesisStreamParameters', 'StartingPosition'],
+      ]);
+    });
+
+    it('still REPLACES when the recorded container holds the createOnly leaf', async () => {
+      const changes = await diff(
+        pipeState({ KinesisStreamParameters: { StartingPosition: 'LATEST', BatchSize: 10 } })
+      );
+
+      const pc = changes.get('Pipe')?.propertyChanges?.find((c) => c.path === 'SourceParameters');
+      expect(pc?.newValue).toBeUndefined();
+      expect(pc?.requiresReplacement).toBe(true);
+    });
+
+    it('updates IN PLACE when the recorded container lacks the createOnly leaf (was a conservative replacement)', async () => {
+      const changes = await diff(pipeState({ SqsQueueParameters: { BatchSize: 1 } }));
+
+      const change = changes.get('Pipe');
+      expect(change?.changeType).toBe('UPDATE');
+      const pc = change?.propertyChanges?.find((c) => c.path === 'SourceParameters');
+      expect(pc?.newValue).toBeUndefined();
+      expect(pc?.requiresReplacement).toBe(false);
+    });
   });
 
   // Issue #2548: a nested stack CAN diff as a replacement, and replacing one

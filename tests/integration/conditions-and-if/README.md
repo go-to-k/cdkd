@@ -62,4 +62,7 @@ Or via the skill: `/run-integ conditions-and-if`.
    branches on AWS, `DisplayName` SET.
 2. **Phase 2 — `-c tier=basic` (redeploy in place)**: gated resources now ABSENT,
    `Fn::If` basic branches on AWS, `DisplayName` OMITTED (`AWS::NoValue`).
+   Then, unchanged: `cdkd diff -c tier=basic --fail` exits 0 and a redeploy
+   prints `No changes detected` — the omitted top-level property is not a
+   perpetual change (issue #4471).
 3. **Phase 3 — destroy + clean**: all AWS resources gone, state file gone.
