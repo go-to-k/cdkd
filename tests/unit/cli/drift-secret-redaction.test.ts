@@ -98,9 +98,17 @@ const PUBLIC_SSM_VALUE = 'cdkd-known-ssm-value';
 // different values — the shape a position source has to keep apart.
 const mockSecretsManagerSend = vi.hoisted(() =>
   vi.fn(async (command: { input?: { SecretId?: string } }) =>
-    command?.input?.SecretId === 'cdkd-other-secret'
-      ? { SecretString: JSON.stringify({ password: 'cdkd-other-pw-777' }) }
-      : { SecretString: JSON.stringify({ password: 'cdkd-known-pw-123' }) }
+    {
+      // Issue #2102: a reference whose lookup FAILS, for a resource whose
+      // earlier leaf already resolved — the shape whose needle the detection
+      // catch's clear would otherwise discard.
+      if (command?.input?.SecretId === 'cdkd-missing-secret') {
+        throw new Error('ResourceNotFoundException: Secrets Manager cannot find the secret');
+      }
+      return command?.input?.SecretId === 'cdkd-other-secret'
+        ? { SecretString: JSON.stringify({ password: 'cdkd-other-pw-777' }) }
+        : { SecretString: JSON.stringify({ password: 'cdkd-known-pw-123' }) };
+    }
   )
 );
 const mockSsmSend = vi.hoisted(() =>
@@ -1777,13 +1785,12 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     // whole would put it there verbatim, because that leaf IS the substitution
     // `redactSecretsForState` writes in.
     expect(saved).not.toContain(SECRET_PLAINTEXT);
-    // The PAYLOAD does not carry the live value at the look-alike half either —
-    // the whole-token preservation gate declines to copy the live value into a
-    // mixed leaf, so the literal ships there exactly as `cdkd deploy` sends it.
+    // Since issue #2102 the PAYLOAD keeps AWS's value there: its resolved half
+    // equals what cdkd resolved, so the live string differs from the send leaf
+    // only at the look-alike token's span (ordinary data).
     expect(update).toHaveBeenCalledTimes(1);
     const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
-    expect(String(sent.Env['DSN'])).not.toContain(LIVE_AT_UNSUPPORTED);
-    expect(String(sent.Env['DSN'])).toContain(UNSUPPORTED_EXPR);
+    expect(sent.Env['DSN']).toBe(liveDsn);
   });
 
   it('--revert resolves the ssm-secure half of a MIXED leaf into the payload and masks it in the logs (issue #2482)', async () => {
@@ -2297,6 +2304,154 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(saved).not.toContain(SECURE_PLAINTEXT);
     expect(output).not.toContain(SECURE_PLAINTEXT);
     expect(output).not.toContain(ROTATED_SECURE_PLAINTEXT);
+  });
+
+  it('--revert keeps the LIVE value of a look-alike token EMBEDDED in a longer string (issue #2102)', async () => {
+    // Before #2102 only a WHOLE-token leaf was preserved, so a revert triggered
+    // by a sibling key wrote the literal token over this connection string.
+    const update = vi.fn().mockResolvedValue({ physicalId: 'td' });
+    const stateUrl = `jdbc:mysql://db/app?password=${UNSUPPORTED_EXPR}`;
+    const liveUrl = `jdbc:mysql://db/app?password=${LIVE_AT_UNSUPPORTED}`;
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Task: {
+          physicalId: 'td',
+          resourceType: 'AWS::ECS::TaskDefinition',
+          properties: { Env: { DB: stateUrl, LEVEL: 'info' } },
+          observedProperties: { Env: { DB: stateUrl, LEVEL: 'info' } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Env: { DB: liveUrl, LEVEL: 'debug' } }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
+    expect(sent.Env['DB']).toBe(liveUrl);
+    expect(sent.Env['LEVEL']).toBe('info');
+  });
+
+  it('--revert keeps a MIXED leaf live when its resolved half matches, and persists no plaintext from the echo (issue #2102)', async () => {
+    // The look-alike half is AWS's own data; the secretsmanager half is the
+    // plaintext cdkd resolved, so it is a map entry everywhere the payload
+    // goes — the masker, and the #1644 narrowing delta persisted below.
+    const stateDb = `${UNSUPPORTED_EXPR}:${SECRET_EXPR}`;
+    const liveDb = `${LIVE_AT_UNSUPPORTED}:${SECRET_PLAINTEXT}`;
+    const update = vi.fn().mockResolvedValue({
+      physicalId: 'td',
+      effectiveProperties: { Env: { DB: liveDb, LEVEL: 'info', REGION: 'us' } },
+    });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Task: {
+          physicalId: 'td',
+          resourceType: 'AWS::ECS::TaskDefinition',
+          properties: { Env: { DB: stateDb, LEVEL: 'info' } },
+          observedProperties: { Env: { DB: stateDb, LEVEL: 'info' } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Env: { DB: liveDb, LEVEL: 'debug' } }),
+      update,
+    });
+
+    const { output } = await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
+    expect(sent.Env['DB']).toBe(liveDb);
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = JSON.stringify(mockSaveState.mock.calls[0]![2]);
+    expect(saved).toContain('REGION');
+    expect(saved).not.toContain(SECRET_PLAINTEXT);
+    expect(output).not.toContain(SECRET_PLAINTEXT);
+    const said = [warnSpy, errorSpy, infoSpy, debugSpy]
+      .flatMap((spy) => spy.mock.calls.map((c) => String(c[0])))
+      .join('\n');
+    expect(said).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  it('--revert never moves a ROTATED secret beside a look-alike token into the payload (issue #2102)', async () => {
+    // AWS still holds the PREVIOUS secret next to the token. No map entry
+    // matches it, so copying the live string in would hand an unmaskable
+    // plaintext to the retry log, an AWS error text and the narrowing delta.
+    const ROTATED_AWAY = 'cdkd-rotated-away-pw-2102';
+    const stateDb = `${UNSUPPORTED_EXPR}:${SECRET_EXPR}`;
+    const update = vi.fn().mockResolvedValue({ physicalId: 'td' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Task: {
+          physicalId: 'td',
+          resourceType: 'AWS::ECS::TaskDefinition',
+          properties: { Env: { DB: stateDb, LEVEL: 'info' } },
+          observedProperties: { Env: { DB: stateDb, LEVEL: 'info' } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Env: { DB: `${LIVE_AT_UNSUPPORTED}:${ROTATED_AWAY}`, LEVEL: 'debug' },
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
+    expect(sent.Env['DB']).toBe(`${UNSUPPORTED_EXPR}:${SECRET_PLAINTEXT}`);
+    expect(JSON.stringify(sent)).not.toContain(ROTATED_AWAY);
+  });
+
+  it('masks a needle the failed-resolution clear discarded in the readFailed warning (issue #2102)', async () => {
+    // The first leaf resolves and records its plaintext; the second lookup
+    // fails, so the catch clears the map. A later comparison failure whose
+    // text carries that plaintext must still be masked.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: {
+            Env: {
+              A: SECRET_EXPR,
+              B: '{{resolve:secretsmanager:cdkd-missing-secret:SecretString:password::}}',
+            },
+          },
+          observedProperties: {
+            Env: {
+              A: SECRET_EXPR,
+              B: '{{resolve:secretsmanager:cdkd-missing-secret:SecretString:password::}}',
+            },
+          },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Env: { A: SECRET_PLAINTEXT, B: 'x' } }),
+      canonicalizeDriftPair: async () => {
+        throw new Error(`comparison failed near ${SECRET_PLAINTEXT}`);
+      },
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    const said = [warnSpy, errorSpy, infoSpy, debugSpy]
+      .flatMap((spy) => spy.mock.calls.map((c) => String(c[0])))
+      .join('\n');
+    expect(said).toContain('could not be compared');
+    expect(said).toContain('comparison failed near');
+    expect(said).not.toContain(SECRET_PLAINTEXT);
+    expect(output).not.toContain(SECRET_PLAINTEXT);
   });
 
   it('--revert still sends the literal where AWS has nothing at that position', async () => {

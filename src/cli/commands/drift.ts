@@ -117,10 +117,12 @@ import {
   identityKeyFor,
   isSingleDynamicReferenceToken as isWholeDynamicReference,
   isUncertifiedBaselineMaskPosition,
+  liveMatchesUnresolvedTokenFrame,
   pathCrossesDottedKey,
   maskSecretsInError,
   maskSecretsInText,
   MIN_NEEDLE_LENGTH,
+  recordLogOnlyValue,
   recordMaskOnlyValue,
   recordMaskOnlyValuesIn,
   redactSecretsForState,
@@ -3425,6 +3427,15 @@ async function runDriftForStack(
               // a partially completed pass can already hold a plaintext.
               `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
           );
+          // Every needle the clear discards stays a LOG-ONLY one of this bag
+          // (issue #2102): the side set is keyed by the map INSTANCE, so it
+          // survives `clear()`, and only the PRINTING maskers read it — the
+          // report's value redaction and `--accept`'s write still see an empty
+          // map, which is the evenness the clear exists for. Without it the
+          // `readFailed` warning and its debug stack below, which mask through
+          // this same bag, would print a plaintext the pass had already
+          // resolved.
+          for (const plaintext of secrets.keys()) recordLogOnlyValue(secrets, plaintext);
           secrets.clear();
         }
         if (unresolvedTokens.size > 0) {
@@ -3433,21 +3444,23 @@ async function runDriftForStack(
           // once per resource, and safe to say — a token names a reference, not a
           // value.
           //
-          // The revert clause is deliberately conditional. Preservation only
-          // applies where the property's WHOLE value is the token; a token
-          // EMBEDDED in a larger string (`"jdbc:...password={{resolve:...}}"`)
-          // is not preserved, and this is the message the user reads immediately
-          // before the confirmation prompt — promising an untouched live value
-          // there would misinform someone about to authorise a destructive write.
+          // The revert clause is deliberately conditional. A token EMBEDDED in a
+          // larger string (`"jdbc:...password={{resolve:...}}"`) is preserved
+          // only when the rest of the string matches AWS exactly (issue #2102),
+          // and this is the message the user reads immediately before the
+          // confirmation prompt — promising an untouched live value
+          // unconditionally would misinform someone about to authorise a
+          // destructive write.
           logger.warn(
             `${logicalId} (${resource.resourceType}): cdkd cannot resolve ` +
               `${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — those properties ` +
               `are NOT compared. A revert leaves a property whose WHOLE value is one of these ` +
               `tokens untouched where its position can be matched against AWS's report (a list ` +
               `element pairs by an identity field, or by the list's own unchanged literal ` +
-              `values); where it cannot be matched, and where a token is EMBEDDED in a longer ` +
-              `string, the revert writes the token literal, exactly as 'cdkd deploy' does — so ` +
-              `a resolved value AWS holds there WOULD be overwritten. cdkd resolves ` +
+              `values). A token EMBEDDED in a longer string is left untouched the same way when ` +
+              `the rest of that string is exactly what AWS holds. Where it cannot be matched, ` +
+              `the revert writes the token literal, exactly as 'cdkd deploy' does — so a ` +
+              `resolved value AWS holds there WOULD be overwritten. cdkd resolves ` +
               `'secretsmanager', 'ssm' and 'ssm-secure' references; anything else is left as ` +
               `written.`
           );
@@ -3693,20 +3706,14 @@ async function runDriftForStack(
         //   - A plaintext cdkd resolved may nonetheless EXIST. The #2108 refusal
         //     is per LEAF (see the note at the inner catch): an earlier ARN-form
         //     leaf can resolve and record its needle, a later name-form leaf can
-        //     then refuse, and the clear discards the correct needle along with
-        //     the rest. AWS still holds that value, so a readback echo or a
-        //     provider error text can carry it with nothing left to match it
-        //     against.
+        //     then refuse, and the clear discards the correct needle from the
+        //     MAP. It is kept as a LOG-ONLY needle of the same bag (issue
+        //     #2102), so the text below still masks it.
         //
-        // So the residual is real and it is issue
-        // [#2102](https://github.com/go-to-k/cdkd/issues/2102)'s span-masking
-        // gap -- unmaskable by VALUE (no map entry) and by POSITION (no single
-        // token on the source side). It is not a regression: before this guard
-        // the same message reached the top-level handler, which renders the
-        // whole error OBJECT and its cause chain through `util.inspect`,
-        // entirely unmasked, and then aborted. This path is strictly less
-        // exposure per error. It is why the message names the resource and the
-        // error but never a property VALUE.
+        // The message names the resource and the error but never a property
+        // VALUE. Before this guard the same message reached the top-level
+        // handler, which renders the whole error OBJECT and its cause chain
+        // through `util.inspect`, entirely unmasked, and then aborted.
         outcomes.push({
           kind: 'notCompared',
           logicalId,
@@ -4912,40 +4919,41 @@ function mergeUntemplatedValue(awsValue: unknown, desiredValue: unknown): unknow
  */
 export function preserveLiveValuesAtUnresolvedTokens(
   send: Record<string, unknown>,
-  awsProperties: Record<string, unknown>
+  awsProperties: Record<string, unknown>,
+  /**
+   * The tokens `resolveStateSecretExpressions` reported as SURVIVING this
+   * bag's resolution, and the map it resolved into. Both are REQUIRED: they
+   * are what an EMBEDDED token is matched by (issue #2102), and a default
+   * would silently turn that arm off.
+   */
+  unresolvedTokens: ReadonlySet<string>,
+  secrets: RecordedSecretValues
 ): Record<string, unknown> {
   const walk = (value: unknown, live: unknown): unknown => {
     if (typeof value === 'string' && value.includes('{{resolve:')) {
-      // ONLY a whole token is preserved, and this gate is a disclosure boundary
-      // rather than a tidiness rule (issue #1914).
-      //
-      // A MIXED leaf (`{{notaservice:/host}}:{{secretsmanager:db}}`) arrives
-      // here already PARTIALLY resolved: the secretsmanager half is plaintext.
-      // Copying the live value in would move whatever AWS holds at the other
-      // half into the payload beside it, and nothing could mask that: the send
-      // string is not a token, so it cannot be registered as a replacement
-      // expression without substituting the secretsmanager half's plaintext
-      // into state. So the mechanism would CREATE an exposure it then cannot
-      // mask — unmaskable in the #1644 narrowing delta, the retry log and the
-      // AWS error text alike.
-      //
-      // Returning the send string unchanged restores the pre-#1914 behaviour
-      // for that shape — the literal token ships, which is what `cdkd deploy`
-      // does — and gives up the live-value preservation there. That trade is
-      // deliberate: a NEW disclosure is worse than a preserved pre-existing
-      // breakage.
-      //
-      // The shape is ANY leaf whose whole value is not the token, which is
-      // wider than the two-reference case: a single token embedded in a longer
-      // string (`"jdbc:...password={{resolve:...}}"`) is not preserved either,
-      // so a revert triggered by a sibling key writes that string over whatever
-      // AWS holds. Both user-facing warnings say so, because the detection one
-      // is read immediately before the confirmation prompt. Masking by SPAN,
-      // which is what would let these cases be both preserved and safe, is
-      // issue #2102. (NOT #1935, which fixed the value scan's SPLICE for a leaf
-      // it can MATCH; this leaf has no map entry at all, which is the whole
-      // reason it is here.)
-      if (!isWholeDynamicReference(value)) return value;
+      // A leaf whose WHOLE value is not one token — a token EMBEDDED in a
+      // longer string (`"jdbc:...password={{resolve:...}}"`), or a MIXED leaf
+      // (`{{notaservice:/host}}:{{secretsmanager:db}}`) that arrives here
+      // already PARTIALLY resolved, the secretsmanager half as plaintext — is
+      // preserved by SPAN (issue #2102): AWS's value is kept only when it
+      // equals this string at every character outside the unresolved tokens'
+      // spans, resolved plaintext included. See
+      // `liveMatchesUnresolvedTokenFrame` for why that is the disclosure
+      // boundary. What it bounds: the bytes the payload GAINS are AWS's own
+      // text at a look-alike token's span (ordinary data since issue #2482,
+      // which is why nothing is registered for it — see the whole-token arm
+      // below), and a resolved half must match byte for byte, so a ROTATED
+      // secret AWS still holds beside the token — which no map entry could mask
+      // in the #1644 narrowing delta, the retry log or an AWS error text — is
+      // never moved in. Anything else (no live string, a literal that differs)
+      // keeps the send string: the literal token ships, which is what `cdkd
+      // deploy` does, a preserved pre-existing breakage rather than a guess.
+      if (!isWholeDynamicReference(value)) {
+        return typeof live === 'string' &&
+          liveMatchesUnresolvedTokenFrame(value, live, unresolvedTokens, secrets)
+          ? live
+          : value;
+      }
       if (live === undefined) return value;
       // NOTHING IS REGISTERED for the moved value. Until issue #2482 this arm
       // registered `live -> token` into the secrets map when the token was
@@ -6377,10 +6385,11 @@ async function runRevert(
             // cdkd deployed, false where the position was adopted from elsewhere
             // or edited out of band) NOR that the live value is
             // always preserved: `preserveLiveValuesAtUnresolvedTokens` preserves
-            // it only where the property's WHOLE value is the token AND the
-            // position can be paired against the readback (issue #2893 — a list
-            // element by identity field or its list's corroborated frame), and
-            // declines for an embedded one and an unpairable one.
+            // it only where the position can be paired against the readback
+            // (issue #2893 — a list element by identity field or its list's
+            // corroborated frame) AND, for a token embedded in a longer string,
+            // the rest of that string equals AWS's (issue #2102), and declines
+            // otherwise.
             logger.warn(
               // Deliberately worded so it cannot be confused with the
               // DETECTION-side warning, which names the same tokens: a test that
@@ -6391,10 +6400,11 @@ async function runRevert(
                 `${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — a property ` +
                 `whose WHOLE value is one of these tokens is left UNCHANGED by this revert when ` +
                 `cdkd can pair its position against AWS's report (a list element by an identity ` +
-                `field, or by its list's own unchanged literal values). Where it cannot pair, and ` +
-                `where a token is EMBEDDED in a longer string, the token is written literally, ` +
-                `exactly as 'cdkd deploy' does, so a resolved value AWS holds there is ` +
-                `overwritten.`
+                `field, or by its list's own unchanged literal values); a token EMBEDDED in a ` +
+                `longer string is left unchanged the same way when the rest of that string is ` +
+                `exactly what AWS holds. Where it cannot pair or match, the token is written ` +
+                `literally, exactly as 'cdkd deploy' does, so a resolved value AWS holds there ` +
+                `is overwritten.`
             );
           }
           // AWS-current values for non-drifted top-level keys + desired
@@ -6455,7 +6465,12 @@ async function runRevert(
             // byte-identical.
             const tokenPreserved =
               unresolvedTokens.size > 0
-                ? preserveLiveValuesAtUnresolvedTokens(certifiedOverlay, outcome.awsProperties)
+                ? preserveLiveValuesAtUnresolvedTokens(
+                    certifiedOverlay,
+                    outcome.awsProperties,
+                    unresolvedTokens,
+                    secrets
+                  )
                 : certifiedOverlay;
             // Issue #2274: a REDACTION MASK in the baseline must never be written
             // to AWS either. Run UNCONDITIONALLY, unlike the token pass above:
@@ -6677,19 +6692,17 @@ async function runRevert(
                   // this is a state-write surface, and fixing the revert without
                   // it would have moved the disclosure rather than closed it.
                   //
-                  // RESIDUAL, stated here because this is where it lands: cdkd
-                  // cannot mask a value for a reference it never RESOLVED. For an
-                  // unresolvable one (a spelling cdkd resolves for nobody —
-                  // `ssm-secure` until issue #2482) the provider can echo its own
-                  // readback in `effectiveProperties`, and this write persists
-                  // that echo — with no map entry to match and, on a MIXED leaf,
-                  // no single token on the source side to position against
-                  // either. It is not created by this command's own bags (the
-                  // report masks by PATH, and the payload declines to copy a live
-                  // value into a mixed leaf), and before this pass existed the
-                  // delta was persisted with no redaction at all. Masking by SPAN
-                  // is issue #2102 (#1935 fixed the SPLICE for a leaf the
-                  // scan can match; this echo has no map entry to match).
+                  // A reference cdkd never RESOLVED has no map entry, so the
+                  // provider's echo of AWS's value at its position cannot be
+                  // masked by value. That needs no mask (issue #2102): since
+                  // issue #2482 every CloudFormation service resolves, so what
+                  // AWS holds at a surviving token's span is ordinary data. A
+                  // MIXED leaf the payload kept LIVE was kept only because its
+                  // resolved halves equal what cdkd resolved
+                  // (`liveMatchesUnresolvedTokenFrame`), so the plaintext an
+                  // echo carries there is a map entry, and the source side's
+                  // mixed leaf is substituted over the echo by the readback
+                  // refusal below anyway.
                   //
                   // Positioned against `revertBaseline` — the SAME bag
                   // `desiredProperties` was resolved from — and not against

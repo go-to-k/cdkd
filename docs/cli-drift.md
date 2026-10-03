@@ -684,9 +684,13 @@ does to those positions depends on where the token sits:
   guessing. A **one-element list against a one-element readback always
   matches**: there is no other element to mis-pair with, so the live value is
   preserved there even when nothing else in the element corroborates.
-- If the token is **embedded in a longer string**, that string is written
-  **with the token literal**, exactly as `cdkd deploy` does, so a value AWS
-  holds there **is overwritten**.
+- If the token is **embedded in a longer string**, the live value is left
+  **unchanged** when every other character of that string — including any
+  secret cdkd resolved into it — is exactly what AWS holds. Otherwise (AWS
+  holds nothing there, a non-string, different surrounding text, or a
+  different value where cdkd resolved a secret, such as one rotated since the
+  last deploy) the string is written **with the token literal**, exactly as
+  `cdkd deploy` does, so a value AWS holds there **is overwritten**.
 
 Both the drift warning and the revert warning state which of the two applies,
 and the drift one is printed before the confirmation prompt.
