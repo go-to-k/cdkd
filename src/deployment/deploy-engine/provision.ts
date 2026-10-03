@@ -26,6 +26,7 @@ import {
   priorAttemptsInJournal,
   withPriorAttempts,
 } from '../prior-attempt-scope.js';
+import { withStackRecords } from '../stack-records-scope.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -417,44 +418,52 @@ export async function provisionResourceBody(
       change.resourceType
     )
   );
-  switch (change.changeType) {
-    case 'CREATE':
-      return withPriorAttempts(priorAttempts, () =>
-        this.provisionCreate(
-          logicalId,
-          change,
-          stateResources,
-          stackName,
-          template,
-          parameterValues,
-          conditions,
-          counts,
-          progress
-        )
-      );
-    case 'UPDATE':
-      return withPriorAttempts(priorAttempts, () =>
-        this.provisionUpdate(
-          logicalId,
-          change,
-          stateResources,
-          stackName,
-          template,
-          parameterValues,
-          conditions,
-          counts,
-          progress
-        )
-      );
-    case 'DELETE':
-      return this.provisionDelete(
-        logicalId,
-        change,
-        stateResources,
-        stackName,
-        template,
-        counts,
-        progress
-      );
-  }
+  // go-to-k/cdkd#4492: bound for every change type — a DELETE asks which other
+  // records of the stack still hold its resource.
+  return withStackRecords(
+    this.stackRecordsView,
+    (): Promise<ResourceOutcomeSignal | void> | undefined => {
+      switch (change.changeType) {
+        case 'CREATE':
+          return withPriorAttempts(priorAttempts, () =>
+            this.provisionCreate(
+              logicalId,
+              change,
+              stateResources,
+              stackName,
+              template,
+              parameterValues,
+              conditions,
+              counts,
+              progress
+            )
+          );
+        case 'UPDATE':
+          return withPriorAttempts(priorAttempts, () =>
+            this.provisionUpdate(
+              logicalId,
+              change,
+              stateResources,
+              stackName,
+              template,
+              parameterValues,
+              conditions,
+              counts,
+              progress
+            )
+          );
+        case 'DELETE':
+          return this.provisionDelete(
+            logicalId,
+            change,
+            stateResources,
+            stackName,
+            template,
+            counts,
+            progress
+          );
+      }
+      return undefined;
+    }
+  );
 }

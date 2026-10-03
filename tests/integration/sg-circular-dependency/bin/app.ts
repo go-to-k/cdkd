@@ -4,6 +4,7 @@ import { SgCircularDependencyStack } from '../lib/sg-circular-dependency-stack.t
 import { SgIngressExportStack } from '../lib/sg-ingress-export-stack.ts';
 import { SgIngressAmbiguousStack } from '../lib/sg-ingress-ambiguous-stack.ts';
 import { SgIngressStrangerStack } from '../lib/sg-ingress-stranger-stack.ts';
+import { SgIngressSharedStack } from '../lib/sg-ingress-shared-stack.ts';
 
 const app = new cdk.App();
 new SgCircularDependencyStack(app, 'CdkdSgCircularExample', {
@@ -47,6 +48,21 @@ if (strangerGroupId) {
     failAfter: app.node.tryGetContext('strangerFailAfter') === '1',
     description:
       'Ownership arm for issue #4355 - one AWS::EC2::SecurityGroupIngress identical to a rule added by hand to a group this stack does not own. The deploy must refuse naming the existing rule instead of adopting it, and the hand-made rule must survive this stack destroy.',
+    env: {
+      account: process.env.CDK_DEFAULT_ACCOUNT,
+      region: process.env.CDK_DEFAULT_REGION,
+    },
+  });
+}
+
+const sharedGroupId = app.node.tryGetContext('sharedGroupId') as string | undefined;
+if (sharedGroupId) {
+  new SgIngressSharedStack(app, 'CdkdSgIngressSharedExample', {
+    groupId: sharedGroupId,
+    twin: app.node.tryGetContext('sharedTwin') !== '0',
+    failAfter: app.node.tryGetContext('sharedFailAfter') === '1',
+    description:
+      'Shared-rule arm for issue #4492 - two AWS::EC2::SecurityGroupIngress resources of one stack describing the same rule. The second must share the first rule, a delete or rollback of one must leave it for the other, and the destroy must revoke it.',
     env: {
       account: process.env.CDK_DEFAULT_ACCOUNT,
       region: process.env.CDK_DEFAULT_REGION,

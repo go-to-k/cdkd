@@ -84,6 +84,7 @@ import {
 import type { ExportIndexStore } from '../../state/export-index-store.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
+import { destroyStackRecordsView, withStackRecords } from '../../deployment/stack-records-scope.js';
 
 /**
  * Execution context passed by the caller (`cdkd destroy` or
@@ -1559,26 +1560,30 @@ export async function runDestroyForStack(
                   // compensation whether this is the LAST attempt, where a
                   // retryable failure still ends the delete.
                   const outcome = await runDeleteAttempt(attempt >= maxAttempts, () =>
-                    provider.delete(
-                      logicalId,
-                      resource.physicalId,
-                      resource.resourceType,
-                      resource.properties,
-                      {
-                        ...(state.region !== undefined && { expectedRegion: state.region }),
-                        ...(ctx.removeProtection === true && { removeProtection: true }),
-                        ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-                        // Issue #4029: the EFFECTIVE policy, absent read as
-                        // CloudFormation's `Delete` (RDS's `Snapshot` default is
-                        // already in `policy`).
-                        deletionPolicy: policy ?? 'Delete',
-                        ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
-                        ...(secretPrincipalOptIn !== undefined && {
-                          resolveSecretDerivedPrincipals: secretPrincipalOptIn,
-                        }),
-                        // Issue #4157: the identity evidence of the record deleted.
-                        recordedAttributes: resource.attributes,
-                      }
+                    // go-to-k/cdkd#4492: only a RETAINED record outlives the
+                    // destroy, so a resource it shares stays in place.
+                    withStackRecords(destroyStackRecordsView(state.resources), () =>
+                      provider.delete(
+                        logicalId,
+                        resource.physicalId,
+                        resource.resourceType,
+                        resource.properties,
+                        {
+                          ...(state.region !== undefined && { expectedRegion: state.region }),
+                          ...(ctx.removeProtection === true && { removeProtection: true }),
+                          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+                          // Issue #4029: the EFFECTIVE policy, absent read as
+                          // CloudFormation's `Delete` (RDS's `Snapshot` default is
+                          // already in `policy`).
+                          deletionPolicy: policy ?? 'Delete',
+                          ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+                          ...(secretPrincipalOptIn !== undefined && {
+                            resolveSecretDerivedPrincipals: secretPrincipalOptIn,
+                          }),
+                          // Issue #4157: the identity evidence of the record deleted.
+                          recordedAttributes: resource.attributes,
+                        }
+                      )
                     )
                   );
                   // Assign INSIDE the loop, not after it: the loop can

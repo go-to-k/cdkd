@@ -77,6 +77,12 @@
 #      supersede and a re-added rule is refused. Then the ADOPT arm
 #      writes the attempt into the journal: the deploy adopts the rule and the
 #      destroy revokes it.
+#   6. SHARED RULE (issue #4492), phase 1f: `CdkdSgIngressSharedExample`
+#      declares two ingress resources describing one rule on the ambiguity-arm
+#      SG. A fresh deploy creating both together must succeed with one shared
+#      sgr- id. The twin must share the explicit rule's sgr- id; the automatic
+#      rollback of a deploy adding it, and its template-removal DELETE, must
+#      leave the rule for the explicit one; the destroy must revoke it.
 #
 # Asserts post-deploy: both SGs exist, each carries the cross-referencing
 # ingress rule (UserIdGroupPairs points at the OTHER SG). Asserts post-destroy:
@@ -172,6 +178,10 @@ AMBIGUOUS_STATE_KEY="cdkd/${AMBIGUOUS_STACK}/${REGION}/state.json"
 # above unchanged.
 STRANGER_STACK="CdkdSgIngressStrangerExample"
 STRANGER_PREFIX="cdkd/${STRANGER_STACK}/${REGION}"
+# The issue #4492 shared-rule arm (phase 1f): two ingress resources of one
+# stack describing the same rule. Synthesized only with `-c sharedGroupId=...`.
+SHARED_STACK="CdkdSgIngressSharedExample"
+SHARED_PREFIX="cdkd/${SHARED_STACK}/${REGION}"
 FIXTURE_TAG_KEY="cdkd:integ-fixture"
 FIXTURE_TAG_VALUE="sg-circular-dependency"
 
@@ -284,11 +294,17 @@ cleanup() {
       --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
       --yes
-    node "${LOCAL_DIST}" state destroy "${AMBIGUOUS_STACK}" \
+    # The stranger and shared stacks hold rules on the ambiguity-arm group, so
+    # they go before the stack that deletes it.
+    node "${LOCAL_DIST}" state destroy "${STRANGER_STACK}" \
       --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
       --yes
-    node "${LOCAL_DIST}" state destroy "${STRANGER_STACK}" \
+    node "${LOCAL_DIST}" state destroy "${SHARED_STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" \
+      --yes
+    node "${LOCAL_DIST}" state destroy "${AMBIGUOUS_STACK}" \
       --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
       --yes
@@ -305,6 +321,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${AMBIGUOUS_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
     for KEY in state.json lock.json rollback-journal.json; do
       aws s3 rm "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/${KEY}" >/dev/null 2>&1 || true
+      aws s3 rm "s3://${STATE_BUCKET}/${SHARED_PREFIX}/${KEY}" >/dev/null 2>&1 || true
     done
   fi
   # The issue #1791 healing arm rewrites the export-arm state file through a
@@ -1290,6 +1307,184 @@ aws ec2 revoke-security-group-ingress \
   --region "${REGION}" >/dev/null
 aws s3 rm "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" >/dev/null 2>&1 || true
 echo "    OK: POP arm complete"
+
+# --- Phase 1f: the issue #4492 shared-rule arm ------------------------------
+# Two ingress resources of ONE stack describing the same rule (only the
+# descriptions differ), on the ambiguity arm's group, which outlives the stack.
+# The twin must share the explicit rule's sgr- id; a rollback or template
+# removal of the twin must leave the rule for the explicit one; the destroy
+# must revoke it.
+
+# The ids of the ingress rules on the group with the arm's range, sorted, as a
+# JSON array. `|| return 1`: errexit is cleared inside the caller's `$( )`.
+shared_rule_ids() {
+  local out
+  out="$(aws ec2 describe-security-group-rules \
+    --filters "Name=group-id,Values=${AMBIG_SG_ID}" \
+    --region "${REGION}" \
+    --output json)" || return 1
+  printf '%s' "${out}" | jq -c '[.SecurityGroupRules[] | select(.IsEgress == false and .CidrIpv4 == "10.65.0.0/16") | .SecurityGroupRuleId] | sort'
+}
+
+# Deploy the shared stack with extra `-c` flags; prints the ANSI-stripped
+# output and returns the deploy's exit code.
+shared_deploy() {
+  local raw rc=0
+  raw=$(node "${LOCAL_DIST}" deploy "${SHARED_STACK}" \
+    -c "sharedGroupId=${AMBIG_SG_ID}" "$@" \
+    --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" \
+    --yes 2>&1) || rc=$?
+  printf '%s' "${raw}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g'
+  return "${rc}"
+}
+
+# Exactly one rule with the arm's range must be live; prints its id.
+shared_one_rule() { # usage: shared_one_rule <when>
+  local ids
+  if ! ids=$(shared_rule_ids); then
+    echo "FAIL: could not read the rules on ${AMBIG_SG_ID} $1" >&2
+    return 1
+  fi
+  if [ "$(printf '%s' "${ids}" | jq 'length')" -ne 1 ]; then
+    echo "FAIL: expected exactly one 10.65.0.0/16 rule on ${AMBIG_SG_ID} $1, found ${ids}" >&2
+    return 1
+  fi
+  printf '%s' "${ids}" | jq -r '.[0]'
+}
+
+echo "==> Phase 1f: fresh deploy of ${SHARED_STACK} with BOTH twins (no dependency: created together)"
+if ! SHARED_OUT=$(shared_deploy); then
+  echo "FAIL: the fresh deploy with both twins failed — the twin created beside the explicit rule must share it. Full output:" >&2
+  printf '%s\n' "${SHARED_OUT}" >&2
+  exit 1
+fi
+if ! printf '%s\n' "${SHARED_OUT}" | grep -qE "(already held by|created in this deploy and is held by) (ExplicitIngress|TwinIngress) of this stack"; then
+  echo "FAIL: the fresh deploy succeeded without either twin reporting the shared rule — the sharing arm is unreached. Full output:" >&2
+  printf '%s\n' "${SHARED_OUT}" >&2
+  exit 1
+fi
+FRESH_RULE_ID=$(shared_one_rule "after the fresh two-twin deploy") || exit 1
+if ! FRESH_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${SHARED_PREFIX}/state.json" - 2>&1); then
+  echo "FAIL: could not read ${SHARED_STACK}'s state: ${FRESH_STATE}" >&2
+  exit 1
+fi
+for LID in ExplicitIngress TwinIngress; do
+  REC_ID=$(printf '%s' "${FRESH_STATE}" | jq -r --arg l "${LID}" '.resources[$l].attributes.Id // ""')
+  if [ "${REC_ID}" != "${FRESH_RULE_ID}" ]; then
+    echo "FAIL: after the fresh deploy ${LID} records rule id '${REC_ID}', not the shared ${FRESH_RULE_ID}" >&2
+    exit 1
+  fi
+done
+if ! node "${LOCAL_DIST}" destroy "${SHARED_STACK}" \
+  -c "sharedGroupId=${AMBIG_SG_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force; then
+  echo "FAIL: cdkd destroy returned non-zero after the fresh two-twin deploy" >&2
+  exit 1
+fi
+if ! LEFT_IDS=$(shared_rule_ids); then
+  echo "FAIL: could not read the rules on ${AMBIG_SG_ID} after the fresh-arm destroy" >&2
+  exit 1
+fi
+if [ "${LEFT_IDS}" != "[]" ]; then
+  echo "FAIL: the shared rule is still live after the fresh-arm destroy: ${LEFT_IDS}" >&2
+  exit 1
+fi
+aws s3 rm "s3://${STATE_BUCKET}/${SHARED_PREFIX}/rollback-journal.json" >/dev/null 2>&1 || true
+echo "    OK: both twins created together share ${FRESH_RULE_ID}, and the destroy revoked it"
+
+echo "==> Phase 1f: deploy ${SHARED_STACK} with the explicit rule only"
+if ! SHARED_OUT=$(shared_deploy -c "sharedTwin=0"); then
+  echo "FAIL: the first deploy of ${SHARED_STACK} failed. Full output:" >&2
+  printf '%s\n' "${SHARED_OUT}" >&2
+  exit 1
+fi
+SHARED_RULE_ID=$(shared_one_rule "after the first deploy") || exit 1
+echo "    OK: ${SHARED_RULE_ID}"
+
+echo "==> Phase 1f: add the twin and fail after it — the rollback must keep the rule"
+if SHARED_OUT=$(shared_deploy -c "sharedFailAfter=1"); then
+  echo "FAIL: the failing deploy of ${SHARED_STACK} SUCCEEDED — FailIngress did not fail. Full output:" >&2
+  printf '%s\n' "${SHARED_OUT}" >&2
+  exit 1
+fi
+if ! printf '%s\n' "${SHARED_OUT}" | grep -qF "already held by ExplicitIngress of this stack"; then
+  echo "FAIL: the twin did not share the explicit rule before the deploy failed — the rollback arm is unreached. Full output:" >&2
+  printf '%s\n' "${SHARED_OUT}" >&2
+  exit 1
+fi
+ROLLED_RULE_ID=$(shared_one_rule "after the rollback deleted the twin") || exit 1
+if [ "${ROLLED_RULE_ID}" != "${SHARED_RULE_ID}" ]; then
+  echo "FAIL: the rule changed across the rollback (${SHARED_RULE_ID} -> ${ROLLED_RULE_ID})" >&2
+  exit 1
+fi
+echo "    OK: the rollback deleted the twin and left ${SHARED_RULE_ID}"
+
+echo "==> Phase 1f: add the twin — it must share ${SHARED_RULE_ID}"
+if ! SHARED_OUT=$(shared_deploy); then
+  echo "FAIL: the deploy adding the twin failed — cdkd refused a rule its own explicit record holds. Full output:" >&2
+  printf '%s\n' "${SHARED_OUT}" >&2
+  exit 1
+fi
+shared_one_rule "after the twin was added" >/dev/null || exit 1
+if ! SHARED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${SHARED_PREFIX}/state.json" - 2>&1); then
+  echo "FAIL: could not read ${SHARED_STACK}'s state: ${SHARED_STATE}" >&2
+  exit 1
+fi
+for LID in ExplicitIngress TwinIngress; do
+  REC_ID=$(printf '%s' "${SHARED_STATE}" | jq -r --arg l "${LID}" '.resources[$l].attributes.Id // ""')
+  if [ "${REC_ID}" != "${SHARED_RULE_ID}" ]; then
+    echo "FAIL: ${LID} records rule id '${REC_ID}', not the shared ${SHARED_RULE_ID}" >&2
+    exit 1
+  fi
+done
+echo "    OK: both records hold ${SHARED_RULE_ID}"
+
+echo "==> Phase 1f: remove the twin from the template — the rule must stay for the explicit one"
+if ! SHARED_OUT=$(shared_deploy -c "sharedTwin=0"); then
+  echo "FAIL: the deploy removing the twin failed. Full output:" >&2
+  printf '%s\n' "${SHARED_OUT}" >&2
+  exit 1
+fi
+if ! printf '%s\n' "${SHARED_OUT}" | grep -qF "also held by ExplicitIngress of this stack"; then
+  echo "FAIL: the twin's DELETE did not report the rule as still held — the survivor arm is unreached. Full output:" >&2
+  printf '%s\n' "${SHARED_OUT}" >&2
+  exit 1
+fi
+KEPT_RULE_ID=$(shared_one_rule "after the twin's DELETE") || exit 1
+if [ "${KEPT_RULE_ID}" != "${SHARED_RULE_ID}" ]; then
+  echo "FAIL: the rule changed across the twin's DELETE (${SHARED_RULE_ID} -> ${KEPT_RULE_ID})" >&2
+  exit 1
+fi
+echo "    OK: ${SHARED_RULE_ID} survived the twin's DELETE"
+
+echo "==> Phase 1f: add the twin back, then destroy — the rule must be revoked"
+if ! SHARED_OUT=$(shared_deploy); then
+  echo "FAIL: the deploy re-adding the twin failed. Full output:" >&2
+  printf '%s\n' "${SHARED_OUT}" >&2
+  exit 1
+fi
+if ! node "${LOCAL_DIST}" destroy "${SHARED_STACK}" \
+  -c "sharedGroupId=${AMBIG_SG_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force; then
+  echo "FAIL: cdkd destroy returned non-zero for ${SHARED_STACK} — the second revoke of the shared rule must read as already gone" >&2
+  exit 1
+fi
+if ! LEFT_IDS=$(shared_rule_ids); then
+  echo "FAIL: could not read the rules on ${AMBIG_SG_ID} after the destroy" >&2
+  exit 1
+fi
+if [ "${LEFT_IDS}" != "[]" ]; then
+  echo "FAIL: ${SHARED_STACK}'s rule is still live after its destroy: ${LEFT_IDS}" >&2
+  exit 1
+fi
+assert_gone "shared-arm state file s3://${STATE_BUCKET}/${SHARED_PREFIX}/state.json still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${SHARED_PREFIX}/state.json"
+aws s3 rm "s3://${STATE_BUCKET}/${SHARED_PREFIX}/rollback-journal.json" >/dev/null 2>&1 || true
+echo "    OK: shared-rule arm complete"
 
 echo "==> Phase 1d: destroy the ambiguity-arm stack"
 if ! node "${LOCAL_DIST}" destroy "${AMBIGUOUS_STACK}" \

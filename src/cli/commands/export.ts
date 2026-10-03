@@ -5516,7 +5516,70 @@ export async function buildImportPlan(
     });
   }
 
+  // go-to-k/cdkd#4492: two rows can resolve to ONE AWS resource — two
+  // `AWS::EC2::SecurityGroupIngress` records sharing one `sgr-` rule. An import
+  // adopts a resource into exactly one logical id, so neither row can be
+  // imported as it stands; both are refused, each naming the other, rather
+  // than handing CloudFormation a changeset that imports one resource twice.
+  const byIdentifier = new Map<string, ImportPlanEntry[]>();
+  for (const entry of phase1Imports) {
+    const key = sharedImportIdentifierKey(entry);
+    byIdentifier.set(key, [...(byIdentifier.get(key) ?? []), entry]);
+  }
+  const shared = [...byIdentifier.values()].filter((entries) => entries.length > 1);
+  if (shared.length > 0) {
+    const refused = new Set(shared.flat());
+    for (const entries of shared) {
+      for (const entry of entries) {
+        const others = entries.filter((other) => other !== entry).map((other) => other.logicalId);
+        blocked.push({
+          logicalId: entry.logicalId,
+          resourceType: entry.resourceType,
+          reason: sharedImportIdentifierReason(others),
+        });
+      }
+    }
+    return {
+      phase1Imports: phase1Imports.filter((entry) => !refused.has(entry)),
+      phase2Creates,
+      recreateBeforePhase2,
+      nestedStackRows,
+      blocked,
+    };
+  }
+
   return { phase1Imports, phase2Creates, recreateBeforePhase2, nestedStackRows, blocked };
+}
+
+/**
+ * One key per (type, full import identifier): rows sharing it name one AWS
+ * resource. Exported for its test: rows of DIFFERENT types never share one.
+ */
+export function sharedImportIdentifierKey(entry: ImportPlanEntry): string {
+  const identifier = Object.keys(entry.resourceIdentifier)
+    .sort()
+    .map((key) => [key, entry.resourceIdentifier[key]]);
+  return JSON.stringify([entry.resourceType, identifier]);
+}
+
+/**
+ * Why a row sharing its import identifier with `others` is refused. The other
+ * logical ids are rendered only when they are plain identifiers, as every
+ * other blocked reason renders a template-borne name.
+ */
+export function sharedImportIdentifierReason(others: readonly string[]): string {
+  const named = others.filter((id) => isPasteableIdent(id));
+  const which =
+    named.length === others.length
+      ? `${others.length === 1 ? 'resource' : 'resources'} ${named.join(', ')}`
+      : `${others.length} other resource(s) of this stack`;
+  return (
+    `this resource and ${which} are the SAME AWS resource (template rules that resolve ` +
+    'to one security group rule), and a CloudFormation import adopts a resource into only one ' +
+    'logical id. Remove all but one of them from the app before exporting, then add the ' +
+    'others back with a CloudFormation stack update: CloudFormation accepts a rule identical ' +
+    'to an existing one and records the same rule for it.'
+  );
 }
 
 /**

@@ -18,6 +18,7 @@ import {
   isInlinePolicyClaimedByCompletedWriter,
   type InlinePolicyWrite,
 } from './inline-policy-claims.js';
+import type { StackRecordsView } from './stack-records-scope.js';
 import type {
   CloudFormationTemplate,
   InlinePolicyClaimed,
@@ -687,6 +688,13 @@ export class DeployEngine {
    */
   /** @internal */
   deployChanges: ReadonlyMap<string, ResourceChange> = new Map();
+  /**
+   * go-to-k/cdkd#4492: this deploy's view of the stack's records, bound around
+   * each resource's provider call (`stack-records-scope.ts`); set by
+   * `executeDeployment` before its first provider call.
+   */
+  /** @internal */
+  stackRecordsView: StackRecordsView | undefined = undefined;
   /**
    * go-to-k/cdkd#4156: the resources whose provider create / update
    * COMPLETED in this deploy, recorded right after their state record is
