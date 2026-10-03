@@ -1182,7 +1182,7 @@ Notes:
 - **Return `null`, don't throw**, when nothing matches — `cdkd import` treats `null` as "not deployed yet", not as a failure
 - `attributes: {}` is fine for most types — the deploy-time `Fn::GetAtt`
   resolver reconstructs missing attributes via `constructAttribute`
-  (see `src/deployment/intrinsic-resolver/getatt.ts`). `cdkd import`
+  (dispatched from `src/deployment/intrinsic-resolver/getatt.ts`; the per-type handlers live in `getatt-construct-*.ts`). `cdkd import`
   persists whatever map you return, but an empty map is treated as "no
   attributes" and falls back to the same-physical-id map already in state,
   so returning `{}` never clobbers a good snapshot from a prior deploy.

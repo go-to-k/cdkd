@@ -88,8 +88,9 @@
  *   - src/provisioning/providers/*.ts — each SDK provider's `handledProperties`
  *     (which types it serves) + the attribute-object keys its create/update
  *     records, parsed via the TypeScript Compiler API.
- *   - src/deployment/intrinsic-resolver/getatt.ts — the set of types the
- *     `constructAttribute` method references.
+ *   - src/deployment/intrinsic-resolver/getatt.ts and getatt-construct-*.ts — the
+ *     set of types `constructAttribute` and its `constructAttributeFor*` helpers
+ *     reference.
  *
  * Writes: docs/_generated/sdk-attr-coverage.{json,md}.
  *

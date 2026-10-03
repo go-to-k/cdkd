@@ -716,13 +716,14 @@ export function rejectPlaceholderArnAttribute(
  *
  * Reached only through {@link constructGuardedAttribute}, which vets the
  * result. Keep this method's NAME — `scripts/gen-sdk-attr-coverage.ts` reads
- * the resource types it references.
+ * the resource types it and its `constructAttributeFor*` helpers reference.
  */
 export async function constructAttribute(
   this: IntrinsicFunctionResolver,
   resource: ResourceState,
   attributeName: string,
-  // No longer unused (issue #2827 review): the three EC2 fallback warns below
+  // No longer unused (issue #2827 review): the three EC2 fallback warns in
+  // getatt-construct-core.ts and getatt-construct-compute.ts
   // interpolate `attributeName`, which is `resolveValue`'s result, so they
   // need a bag to mask against. Renamed from `_context` rather than left
   // underscored, because an underscored-but-read parameter is the shape a
@@ -733,7 +734,7 @@ export async function constructAttribute(
 ): Promise<unknown> {
   const { resourceType, physicalId } = resource;
   // The region is FOLDED once, here, rather than at each of the ~40 ARN / URI
-  // constructions below (issue #1850). `accountInfo.region` is whatever
+  // constructions in `getatt-construct-*.ts` (issue #1850). `accountInfo.region` is whatever
   // spelling the caller supplied (`--region || AWS_REGION || 'us-east-1'`);
   // the SOURCE now folds
   // (`effectiveAccountInfoRegion`, issue #1882), so this local fold is defense
@@ -755,7 +756,8 @@ export async function constructAttribute(
   // otherwise be one no IAM policy matches (policy matching IS
   // case-sensitive) and every SDK call taking it rejects. Folding at the
   // DESTRUCTURE rather than per site is what
-  // makes it exhaustive WITHIN THIS METHOD: a constructed attribute added
+  // makes it exhaustive WITHIN THIS METHOD and its helpers, which receive only
+  // the folded `region`, never `accountInfo`: a constructed attribute added
   // later inherits it instead of having to remember. `partition` needs no
   // fold — `derivePartitionAndUrlSuffix` canonicalizes its own input (issue
   // #1795) — and double-folding is a no-op, so the two are safe side by side.
@@ -773,7 +775,7 @@ export async function constructAttribute(
   // (issue #1881). A region-less bag resolves from the SDK's own chain
   // instead, which is why the CLI boundary folds the env vars too.
   //
-  // The five S3 branches below pass this region OUT to `s3-endpoints.ts`,
+  // The five S3 branches (getatt-construct-core.ts) pass this region OUT to `s3-endpoints.ts`,
   // which folds again on entry — deliberately, not redundantly. That module
   // has a SECOND caller (`S3BucketProvider.buildAttributes`, what lands in
   // state) that still hands it a raw `client.config.region()`, so folding

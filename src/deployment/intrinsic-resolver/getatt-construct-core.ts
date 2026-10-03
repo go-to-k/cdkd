@@ -21,7 +21,8 @@ export const NOT_CONSTRUCTED: unique symbol = Symbol('NOT_CONSTRUCTED');
 /**
  * `constructAttribute`'s per-type handlers for AWS::DynamoDB::Table through AWS::Kinesis::Stream, moved
  * verbatim and in order (issue #4337). Returns {@link NOT_CONSTRUCTED} when none
- * matched.
+ * matched. Keep the `constructAttributeFor*` name and the `getatt-construct-*.ts`
+ * file name: `scripts/gen-sdk-attr-coverage.ts` finds handled types by both.
  */
 export async function constructAttributeForCoreTypes(
   this: IntrinsicFunctionResolver,

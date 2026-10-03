@@ -23,7 +23,8 @@ import { NOT_CONSTRUCTED } from './getatt-construct-core.js';
 /**
  * `constructAttribute`'s per-type handlers for AWS::Logs::LogGroup through AWS::RDS::DBProxy, moved
  * verbatim and in order (issue #4337). Returns {@link NOT_CONSTRUCTED} when none
- * matched.
+ * matched. Keep the `constructAttributeFor*` name and the `getatt-construct-*.ts`
+ * file name: `scripts/gen-sdk-attr-coverage.ts` finds handled types by both.
  */
 export async function constructAttributeForComputeTypes(
   this: IntrinsicFunctionResolver,

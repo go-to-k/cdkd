@@ -122,9 +122,13 @@ describe('collectConstructAttributeTypes', () => {
         if (resource.resourceType === 'AWS::KMS::Key') return 'arn';
         return NOT_CONSTRUCTED;
       }
+      export async function constructAttributeForAppTypes(this: R, resource) {
+        if (resource.resourceType === 'AWS::SNS::Topic') return 'arn';
+        return NOT_CONSTRUCTED;
+      }
       export function constructSomethingElse() { return 'AWS::S3::Bucket'; }
     `;
-    expect([...collectConstructAttributeTypes(src)]).toEqual(['AWS::KMS::Key']);
+    expect([...collectConstructAttributeTypes(src)]).toEqual(['AWS::KMS::Key', 'AWS::SNS::Topic']);
   });
 
   it('reads the mixin FUNCTION the resolver split it into (#4337)', () => {
