@@ -177,7 +177,7 @@ function redactSecretsForStatePasses<T>(
   // `substringNeedlesOf`, not `secrets.keys()`: the MASK-ONLY class (issue
   // #2274) is withheld from this scan and reaches the whole-value arm below
   // (and, for a fresh `NoEcho` value, the containment arm the exported
-  // wrapper runs afterwards). See the mask-only channel note above — an inline `***` cannot be told from
+  // wrapper runs afterwards). See the mask-only channel note in mask-only.ts — an inline `***` cannot be told from
   // a user's own literal, so nothing downstream could recognise it and
   // `drift --revert` / the rollback replay would push the corrupted string to
   // AWS. Every EXPRESSION-bearing needle is unaffected, so a bag with no

@@ -15,7 +15,7 @@ import { buildNeedleRegex } from './rules.js';
  * recognise or re-resolve; this output is a log line, an error message or an
  * event, which no consumer reads back as a value, so a partial mask costs
  * nothing and closes an EMBEDDED disclosure that would otherwise print. See
- * the mask-only channel note above.
+ * the mask-only channel note in mask-only.ts.
  *
  * The LOG-ONLY needles ({@link logOnlyValuesOf}, go-to-k/cdkd#1998) take part
  * on the same terms, which is what makes this the PRINTING masker: a `NoEcho`
