@@ -487,6 +487,7 @@ cleanup_watch() {
   cp "${AGENT_SRC_BAK}" "${AGENT_SRC}" 2>/dev/null || true
   docker ps -a --filter name=cdkd-local-agentcore- -q | xargs -r docker rm -f >/dev/null 2>&1 || true
   rm -f "${AGENT_SRC_BAK}" "${WATCH_LOG}" "${WATCH_EVENT}"
+  [[ -n "${SHIM_DIR:-}" ]] && rm -rf "${SHIM_DIR}" || true
 }
 trap 'cleanup_watch; rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${LOOP_EVENT_FILE}" "${A2A_EVENT}"' EXIT
 trap '(exit 130); cleanup_watch; rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${LOOP_EVENT_FILE}" "${A2A_EVENT}"; exit 130' INT
@@ -542,5 +543,111 @@ grep -q "${MARKER}" "${WATCH_LOG}" || {
 cleanup_watch
 WATCH_PID=""
 
+# Test 22 — issue #4488: a ^C that lands while a --watch rebuild's `docker run`
+# is in flight must not leave the container that run starts. The old container
+# is already gone by then, so cdkd's cleanup knew no id and exited, and the
+# in-flight run then started a container nothing removed. A `CDK_DOCKER` shim
+# holds the rebuild's `docker run` for 3s once armed, so the ^C lands inside
+# it deterministically; only cdkd's node process is signalled, so the shim's
+# run completes either way and the check reads what cdkd left behind.
+echo "==> [22/22] EchoAgent --ws --watch: ^C during a rebuild's docker run leaves no container"
+AGENT_SRC_BAK=$(mktemp -t cdkd-agent-src-XXXX.js)
+WATCH_LOG=$(mktemp -t cdkd-watch-log-XXXX.txt)
+WATCH_EVENT=$(mktemp -t cdkd-watch-event-XXXX.json)
+SHIM_DIR=$(mktemp -d -t cdkd-docker-shim-XXXX)
+cp "${AGENT_SRC}" "${AGENT_SRC_BAK}"
+echo '{"loop":true}' > "${WATCH_EVENT}"
+cat > "${SHIM_DIR}/docker-shim" <<'SHIM'
+#!/usr/bin/env bash
+d="${CDKD_VERIFY_SHIM_DIR}"
+if [[ "${1:-}" == "run" && -f "${d}/armed" ]]; then
+  rm -f "${d}/armed"
+  touch "${d}/in-run"
+  sleep 3
+  rc=0
+  docker "$@" > "${d}/run-id" || rc=$?
+  cat "${d}/run-id"
+  echo "${rc}" > "${d}/run-done"
+  exit "${rc}"
+fi
+exec docker "$@"
+SHIM
+chmod +x "${SHIM_DIR}/docker-shim"
+
+CDK_DOCKER="${SHIM_DIR}/docker-shim" CDKD_VERIFY_SHIM_DIR="${SHIM_DIR}" \
+  ${CDKD} local invoke-agentcore "${TARGET}" --ws --watch --event "${WATCH_EVENT}" \
+  </dev/null >"${WATCH_LOG}" 2>&1 &
+WATCH_PID=$!
+for _ in $(seq 1 60); do
+  grep -q 'Watching .* for source changes' "${WATCH_LOG}" && break
+  sleep 1
+done
+grep -q 'Watching .* for source changes' "${WATCH_LOG}" || {
+  echo "FAIL: --watch never armed the file watcher. Log:"
+  cat "${WATCH_LOG}"
+  exit 1
+}
+
+# Arm the shim, then trigger the rebuild with a source edit (the EchoAgent is a
+# Dockerfile container asset, so the edit takes the full-rebuild path).
+touch "${SHIM_DIR}/armed"
+sed -i.sedbak "s/ws: true,/ws: true, interrupted: 'cdkd-4488',/" "${AGENT_SRC}"
+rm -f "${AGENT_SRC}.sedbak"
+for _ in $(seq 1 120); do
+  [[ -f "${SHIM_DIR}/in-run" ]] && break
+  sleep 1
+done
+[[ -f "${SHIM_DIR}/in-run" ]] || {
+  echo "FAIL: the rebuild never reached its docker run. Log:"
+  cat "${WATCH_LOG}"
+  exit 1
+}
+
+kill -INT "${WATCH_PID}"
+# Bounded: a cleanup that never settles must fail here, not hang the run.
+for _ in $(seq 1 60); do
+  kill -0 "${WATCH_PID}" 2>/dev/null || break
+  sleep 1
+done
+kill -0 "${WATCH_PID}" 2>/dev/null && {
+  echo "FAIL: cdkd did not exit within 60s of the ^C. Log:"
+  cat "${WATCH_LOG}"
+  exit 1
+}
+WATCH_RC=0
+wait "${WATCH_PID}" || WATCH_RC=$?
+for _ in $(seq 1 30); do
+  [[ -f "${SHIM_DIR}/run-done" ]] && break
+  sleep 1
+done
+# Guards the check below against vacuity: the held run really started a
+# container, so an empty listing means cdkd removed it.
+[[ "$(cat "${SHIM_DIR}/run-done" 2>/dev/null)" == "0" ]] || {
+  echo "FAIL: the held docker run did not start a container (run-done: $(cat "${SHIM_DIR}/run-done" 2>/dev/null || echo missing)). Log:"
+  cat "${WATCH_LOG}"
+  exit 1
+}
+[[ "${WATCH_RC}" == "130" ]] || {
+  echo "FAIL: expected cdkd to exit 130 on ^C, got ${WATCH_RC}. Log:"
+  cat "${WATCH_LOG}"
+  exit 1
+}
+RUN_ID=$(cat "${SHIM_DIR}/run-id")
+[[ -n "${RUN_ID}" ]] || {
+  echo "FAIL: the held docker run printed no container id."
+  exit 1
+}
+LEFT=$(docker ps -a --filter "id=${RUN_ID}" --format '{{.Names}}')
+LEFT="${LEFT}$(docker ps -a --filter "name=cdkd-local-agentcore-${WATCH_PID}-" --format '{{.Names}}')"
+[[ -z "${LEFT}" ]] || {
+  echo "FAIL: ^C during the rebuild's docker run left a container behind: ${LEFT}. Log:"
+  cat "${WATCH_LOG}"
+  exit 1
+}
+
+cleanup_watch
+WATCH_PID=""
+SHIM_DIR=""
+
 echo ""
-echo "==> All 21 local-invoke-agentcore tests passed"
+echo "==> All 22 local-invoke-agentcore tests passed"

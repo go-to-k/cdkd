@@ -360,8 +360,39 @@ async function localInvokeAgentCoreCommand(
   // a `singleFlight`: a `--watch` rebuild drains one container and then
   // follows the next.
   let drainInFlight: Promise<void> | undefined;
-  /** Set by the SIGINT handler; see {@link teardownForRebuild}. */
-  let interrupted = false;
+  /**
+   * Set once `cleanup()` begins (a ^C, or the command's own exit): from then
+   * on a `--watch` rebuild starts no container, and removes one whose
+   * `docker run` was already in flight (see {@link teardownForRebuild} and
+   * {@link startGuard}).
+   */
+  let closing = false;
+  /**
+   * A `--watch` rebuild's container start while it is in flight, settled only
+   * once a container started under a closing command has been removed (issue
+   * #4488). `cleanup()` awaits it: its `process.exit` would otherwise run while
+   * that `docker run` was still starting a container nothing then removes.
+   */
+  let startInFlight: Promise<void> | undefined;
+  let startPending = false;
+  /** The in-flight start's `--name`, for removing it by name if it never settles. */
+  let startName: string | undefined;
+  const startGuard: ContainerStartGuard = {
+    closing: () => closing,
+    starting: (start, containerName) => {
+      startPending = true;
+      startName = containerName;
+      // Never rejects: a rejection would end `cleanup()` here, before it
+      // disposes the credentials file and flushes stdio.
+      startInFlight = start.then(
+        () => undefined,
+        () => undefined
+      );
+      void startInFlight.then(() => {
+        startPending = false;
+      });
+    },
+  };
   const drainLogs = (): Promise<void> => {
     if (!drainInFlight) {
       const stream = logStream;
@@ -391,16 +422,12 @@ async function localInvokeAgentCoreCommand(
       await removeContainer(containerId);
       containerId = undefined;
     }
-    if (interrupted) {
-      throw new CdkdError(
-        'Interrupted during the --watch rebuild; not starting a new container.',
-        WATCH_INTERRUPTED_CODE
-      );
-    }
+    if (closing) throw watchInterruptedError('not starting a new container');
   };
 
   const cleanup = singleFlight(
     async (): Promise<void> => {
+      closing = true;
       if (stateProvider) {
         try {
           stateProvider.dispose();
@@ -408,6 +435,28 @@ async function localInvokeAgentCoreCommand(
           getLogger().debug(
             `state provider dispose failed: ${err instanceof Error ? err.message : String(err)}`
           );
+        }
+      }
+      // A rebuild's `docker run` in flight: its container is not `containerId`
+      // yet, and the start removes it itself once it sees `closing`.
+      if (startPending) {
+        getLogger().info('Waiting for the in-flight docker run so its container can be removed...');
+      }
+      // Bounded: `docker run` has no timeout of its own, and a hung daemon
+      // must not turn ^C into a process that cannot exit. Past the bound the
+      // container is removed by its deterministic `--name` instead.
+      if (startInFlight && !(await settlesWithin(startInFlight, containerStartWait.ms))) {
+        const secs = containerStartWait.ms / 1000;
+        if (startName) {
+          // The `docker rm -f` can run before the hung daemon has created the
+          // container, and the `docker run` child outlives this process, so
+          // the warning cannot promise the container is gone.
+          await settlesWithin(removeContainer(startName), containerStartWait.ms);
+          getLogger().warn(
+            safeMsg`The in-flight docker run did not finish within ${secs}s; removed '${startName}' if it existed, but a docker run that completes later can still start it -- run 'docker rm -f ${startName}' if it appears.`
+          );
+        } else {
+          getLogger().warn(safeMsg`The in-flight docker run did not finish within ${secs}s.`);
         }
       }
       await drainLogs();
@@ -620,7 +669,6 @@ async function localInvokeAgentCoreCommand(
     logStream = boot.logStream;
 
     sigintHandler = (): void => {
-      interrupted = true;
       void cleanup().then(() => process.exit(130));
     };
     process.on('SIGINT', sigintHandler);
@@ -712,6 +760,7 @@ async function localInvokeAgentCoreCommand(
           rebuild: async () => {
             const result = await rebuildAgentCoreContainer({
               cleanupBefore: teardownForRebuild,
+              startGuard,
               resolvedTarget,
               options,
               synthesizer,
@@ -805,6 +854,7 @@ async function localInvokeAgentCoreCommand(
         rebuild: async () => {
           const result = await rebuildAgentCoreContainer({
             cleanupBefore: teardownForRebuild,
+            startGuard,
             resolvedTarget,
             options,
             synthesizer,
@@ -890,6 +940,54 @@ export function isAgentCoreWatchEligible(protocol: string): boolean {
 }
 
 /**
+ * How a `--watch` rebuild's container start stays visible to the command's
+ * cleanup (issue #4488): `closing` reports that cleanup has begun, and
+ * `starting` hands it the in-flight start, which settles only after a
+ * container started under a closing command has been removed.
+ */
+export interface ContainerStartGuard {
+  closing: () => boolean;
+  /** `containerName` is the start's `--name`, so cleanup can remove it by name. */
+  starting: (start: Promise<string>, containerName: string) => void;
+}
+
+/**
+ * How long `cleanup()` waits for an in-flight `--watch` rebuild's
+ * `docker run`, and then for the `docker rm -f` by name that replaces it.
+ * Mutable only so a unit test can drive the bound without waiting it out.
+ *
+ * @internal
+ */
+export const containerStartWait = { ms: 15_000 };
+
+/** Resolves `true` once `p` settles, or `false` after `ms`. Never rejects. */
+async function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([
+      p.then(
+        () => true,
+        () => true
+      ),
+      timeout,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The rebuild stopped because the command is closing; the watch loop exits
+ * quietly on it. `what` says what the rebuild did about its container.
+ */
+function watchInterruptedError(what: string): CdkdError {
+  return new CdkdError(`Interrupted during the --watch rebuild; ${what}.`, WATCH_INTERRUPTED_CODE);
+}
+
+/**
  * Cold-boot (and rebuild) the agent container from an already-resolved runtime
  * descriptor: resolve an intrinsic fromS3 bucket, resolve the image, build the
  * container env, pick a free port, `docker run`, and start the log stream.
@@ -915,6 +1013,8 @@ export async function bootAgentCoreContainer(args: {
   imageContext: ImageResolutionContext | undefined;
   isMcp: boolean;
   isA2a: boolean;
+  /** A `--watch` rebuild's; see {@link ContainerStartGuard}. */
+  startGuard?: ContainerStartGuard;
 }): Promise<{ containerId: string; hostPort: number; logStream: ContainerLogStream }> {
   const logger = getLogger();
   const {
@@ -928,6 +1028,7 @@ export async function bootAgentCoreContainer(args: {
     imageContext,
     isMcp,
     isA2a,
+    startGuard,
   } = args;
 
   // If the fromS3 bundle's Code.S3.Bucket is an intrinsic, resolve it against
@@ -960,22 +1061,39 @@ export async function bootAgentCoreContainer(args: {
     : isA2a
       ? `${A2A_CONTAINER_PORT}${A2A_PATH}`
       : '8080';
+  // A `--watch` rebuild's synth and image step can outlast a ^C; once the
+  // command is closing, start nothing (issue #4488).
+  if (startGuard?.closing()) throw watchInterruptedError('not starting a new container');
   logger.info(
     `Starting agent container (image=${image}, port=${hostPort} -> ${containerPortLabel})...`
   );
-  const containerId = await runDetached({
-    image,
-    mounts: [],
-    env: dockerEnv,
-    cmd: [],
-    hostPort,
-    host: containerHost,
-    platform: options.platform,
-    name: containerName,
-    ...(containerPort !== undefined && { containerPort }),
-    // Keep decrypted SecureString SSM env values off the `docker run` argv.
-    ...(sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys }),
-  });
+  const start = (async (): Promise<string> => {
+    const id = await runDetached({
+      image,
+      mounts: [],
+      env: dockerEnv,
+      cmd: [],
+      hostPort,
+      host: containerHost,
+      platform: options.platform,
+      name: containerName,
+      ...(containerPort !== undefined && { containerPort }),
+      // Keep decrypted SecureString SSM env values off the `docker run` argv.
+      ...(sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys }),
+    });
+    // The command began closing while `docker run` was in flight: its cleanup
+    // could not see this id, so the start removes the container itself.
+    if (startGuard?.closing()) {
+      await removeContainer(id).catch(() => {});
+      throw watchInterruptedError('removed the container it had just started');
+    }
+    return id;
+  })();
+  startGuard?.starting(start, containerName);
+  // Nothing from here to the caller recording `containerId` may yield to a
+  // macrotask: a ^C landing there would find neither a pending start nor a
+  // recorded id, and the container would be left behind again (issue #4488).
+  const containerId = await start;
 
   // If anything after `runDetached` throws, the container is already up but
   // the caller has not yet captured its id (on a `--watch` rebuild the loop's
@@ -1005,6 +1123,8 @@ export async function bootAgentCoreContainer(args: {
  */
 export async function rebuildAgentCoreContainer(args: {
   cleanupBefore: () => Promise<void>;
+  /** See {@link ContainerStartGuard}. */
+  startGuard: ContainerStartGuard;
   resolvedTarget: string;
   options: LocalInvokeAgentCoreOptions;
   synthesizer: Synthesizer;
@@ -1024,6 +1144,7 @@ export async function rebuildAgentCoreContainer(args: {
 }> {
   const {
     cleanupBefore,
+    startGuard,
     resolvedTarget,
     options,
     synthesizer,
@@ -1059,6 +1180,7 @@ export async function rebuildAgentCoreContainer(args: {
     imageContext: newImageContext,
     isMcp,
     isA2a,
+    startGuard,
   });
   return { ...boot, stacks: newStacks };
 }

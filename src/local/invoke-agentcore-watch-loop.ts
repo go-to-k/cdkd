@@ -54,8 +54,10 @@ import { invokeAgentCoreWs } from './agentcore-ws-client.js';
 import { waitForAgentCorePing } from './agentcore-client.js';
 
 /**
- * The code `local-invoke-agentcore.ts` throws from a rebuild's teardown when a
- * ^C interrupted it (issue #4480); the loop stops on it without an error.
+ * The code `local-invoke-agentcore.ts` throws from a rebuild when the command
+ * began closing (a ^C) during it: from the teardown of the old container
+ * (issue #4480), or from the boot's guard around `docker run` (issue #4488).
+ * The loop stops on it without an error.
  */
 export const WATCH_INTERRUPTED_CODE = 'LOCAL_INVOKE_AGENTCORE_WATCH_INTERRUPTED';
 
@@ -247,8 +249,9 @@ export async function runAgentCoreWatchLoop(args: RunAgentCoreWatchLoopArgs): Pr
         }
       } catch (err) {
         if (err instanceof CdkdError && err.code === WATCH_INTERRUPTED_CODE) {
-          // A ^C landed during the rebuild's teardown: the command's SIGINT
-          // cleanup is already exiting, so this is not a failure to report.
+          // A ^C landed during the rebuild (its teardown, or the boot's
+          // `docker run` guard): the command's SIGINT cleanup is already
+          // exiting, so this is not a failure to report.
           logger.debug(safeMsg`Reload stopped: ${err.message}`);
           reloadFailed = true;
           currentAbort?.abort();
