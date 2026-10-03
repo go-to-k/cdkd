@@ -64,6 +64,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - [A warning that a KMS key, Cognito user pool or AppSync API may be an orphan](#a-warning-that-a-kms-key-cognito-user-pool-or-appsync-api-may-be-an-orphan)
   - [A warning that an API Gateway API, authorizer, integration or deployment may be an orphan](#a-warning-that-an-api-gateway-api-authorizer-integration-or-deployment-may-be-an-orphan)
   - [A warning that an EMR cluster, instance fleet or instance group may be an orphan](#a-warning-that-an-emr-cluster-instance-fleet-or-instance-group-may-be-an-orphan)
+  - [A warning that a Lambda layer version or event source mapping may be an orphan](#a-warning-that-a-lambda-layer-version-or-event-source-mapping-may-be-an-orphan)
   - [`DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for](#distributionalreadyexists-on-a-cloudfront-deploy-and-a-distribution-you-did-not-ask-for)
   - [an ACM certificate deploy fails with "did not reach ISSUED status"](#an-acm-certificate-deploy-fails-with-did-not-reach-issued-status)
   - [Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`](#reverting-a-failed-no-rollback-interrupted-deploy-cdkd-rollback)
