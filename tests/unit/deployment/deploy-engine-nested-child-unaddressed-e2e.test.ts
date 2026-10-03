@@ -248,6 +248,26 @@ describe('a nested child skipped DELETE through the real engine and provider (#1
     expect(result.updated).toBe(1);
     expect(result.deleteSkipped).toBe(1);
     expect(result.updatePartial).toBe(0);
+    expect(result.nestedUpdatePartial).toBe(0);
+  });
+
+  it("a child's partial UPDATE is the parent's updatePartial, marked as a descendant's", async () => {
+    vi.mocked(leaf.update).mockImplementationOnce(async (_id: string, physicalId: string) => ({
+      physicalId,
+      wasReplaced: false,
+      outcome: 'partial' as const,
+      reason: 'the old resource survived',
+    }));
+
+    const result = await run();
+
+    expect(vi.mocked(leaf.update).mock.calls.map((c) => c[0])).toEqual(['Keep']);
+    // `updated` is the parent's own nested-stack row; the child's partial is
+    // in `updatePartial` (the exit code reads it) and in `nestedUpdatePartial`
+    // (the summary keeps it out of the parent's `Updated:` total).
+    expect(result.updated).toBe(1);
+    expect(result.updatePartial).toBe(1);
+    expect(result.nestedUpdatePartial).toBe(1);
   });
 
   it('a plain re-deploy with NO template change re-attempts the child\'s kept DELETE (#4453)', async () => {
