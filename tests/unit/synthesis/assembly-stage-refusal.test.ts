@@ -496,6 +496,36 @@ describe('a Stage whose own manifest cannot be read is fatal (go-to-k/cdkd#3507)
     expect(warn).not.toHaveBeenCalled();
   });
 
+  it('records the Stage each stack was read from, the innermost one for a nested Stage (go-to-k/cdkd#4474)', () => {
+    // `--all` selects the stacks of the app's own assembly only, so the reader
+    // must say which stacks came from a Stage.
+    const dir = outdir();
+    writeFileSync(join(dir, 'Top.template.json'), JSON.stringify({ Resources: {} }));
+    const outer = stageDir(dir, 'assembly-Outer', {
+      OuterApi: stackArtifact('Outer-Api', { templateFile: 'OuterApi.template.json' }),
+      'assembly-OuterInner': stageArtifact('assembly-OuterInner', 'Outer/Inner'),
+    });
+    writeFileSync(join(outer, 'OuterApi.template.json'), JSON.stringify({ Resources: {} }));
+    const inner = stageDir(outer, 'assembly-OuterInner', {
+      InnerDb: stackArtifact('Outer-Inner-Db', { templateFile: 'InnerDb.template.json' }),
+    });
+    writeFileSync(join(inner, 'InnerDb.template.json'), JSON.stringify({ Resources: {} }));
+
+    const { stacks } = new AssemblyReader().readAssembly(
+      dir,
+      manifest({
+        Top: stackArtifact('TopStack', { templateFile: 'Top.template.json' }),
+        'assembly-Outer': stageArtifact('assembly-Outer', 'Outer'),
+      })
+    );
+
+    expect(stacks.map((s) => [s.stackName, s.stagePath])).toEqual([
+      ['TopStack', undefined],
+      ['Outer-Api', 'Outer'],
+      ['Outer-Inner-Db', 'Outer/Inner'],
+    ]);
+  });
+
   it('refuses getStack as well, before any "not found" answer', () => {
     const error = (() => {
       try {

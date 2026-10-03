@@ -541,7 +541,8 @@ export function refuseRedactedAttributeReads(
       `to update (change one of its properties, e.g. a nonce / version property) so its handler ` +
       `runs again and supplies the value in this same run; or stop setting NoEcho on that ` +
       `response. If the value comes from ANOTHER stack, the producer and this stack must deploy ` +
-      `in ONE run (cdkd deploy --all) with the producer's custom resource actually running — ` +
+      `in ONE run (cdkd deploy --all, or cdkd deploy '**' when either is inside a CDK Stage) ` +
+      `with the producer's custom resource actually running — ` +
       `re-deploying the producer by itself does not help, because it re-masks the value on the ` +
       `way into its own state. (2) The value holds the Fn::Base64 encoding of a secret value ` +
       `(a {{resolve:...}} dynamic reference under Fn::Base64, such as EC2 UserData), which cdkd ` +

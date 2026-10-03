@@ -626,7 +626,8 @@ There is no `--all`. The state bucket is shared by every CDK app deployed to
 the account, so a flag selecting every stack in it destroyed stacks across
 apps; it was removed, and passing it now fails with exit `1` before anything is
 read. Name each stack instead (`cdkd state list` shows them), or run
-`cdkd destroy --all` from the CDK app, which destroys only that app's stacks.
+`cdkd destroy --all` from the CDK app, which destroys only that app's top-level
+stacks (`cdkd destroy '**'` destroys its CDK Stage stacks too).
 
 The flag semantics, the data guards, and the confirmation matrix are documented
 once, on the destroy page:

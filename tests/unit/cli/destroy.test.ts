@@ -966,6 +966,7 @@ describe('cdkd destroy: a Stage that failed to load fails synthesis (go-to-k/cdk
   });
 
   const infoText = (): string => infoSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+  const warnText = (): string => warnSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
 
   it('fails every selection with the synthesis error, before the state bucket is listed', async () => {
     // Even an EXACT name: unlike an app that cannot be synthesized at all
@@ -1049,6 +1050,200 @@ describe('cdkd destroy: a Stage that failed to load fails synthesis (go-to-k/cdk
     expect(warnSpy.mock.calls.map((c) => String(c[0] ?? ''))).toContainEqual(
       expect.stringContaining('OtherAppStack is in state but is not a stack of this app and was skipped.')
     );
+  });
+
+  // go-to-k/cdkd#4474: `--all` destroys the app's top-level stacks only, as
+  // the AWS CDK CLI's `destroy --all` does. The Stage stacks it now leaves
+  // running are named, so the narrower run is never silent.
+  it('destroys --all for the top-level stack only and names the Stage stack it left running', async () => {
+    const prod = { ...makeStackInfo('Prod-Api'), displayName: 'Prod/Api', stagePath: 'Prod' };
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other'), prod],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Other', region: 'us-east-1' },
+      { stackName: 'Prod-Api', region: 'us-east-1' },
+    ]);
+
+    await runDestroy(['--all', '--yes']);
+
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0])).toEqual(['Other']);
+    // At warn level: a destroy that used to reach these stacks leaves them running.
+    expect(warnText()).toContain(
+      '--all selects top-level stacks only; 1 stack inside a CDK Stage was left out (Prod-Api (Prod/Api)).'
+    );
+
+    // `'**'` reaches it.
+    mockRunDestroyForStack.mockClear();
+    await runDestroy(['**', '--yes']);
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0]).sort()).toEqual(['Other', 'Prod-Api']);
+  });
+
+  // The CDK path decides first: a pattern naming one stack's construct id
+  // must not also destroy a different stack whose physical name it equals.
+  it("destroys only the stack whose path matches, not another whose physical name does", async () => {
+    const byPath = { ...makeStackInfo('api-v2'), displayName: 'Api' };
+    const byName = { ...makeStackInfo('Api'), displayName: 'Legacy' };
+    mockSynthesize.mockResolvedValue({ manifest: {}, assemblyDir: '/tmp/cdk.out', stacks: [byPath, byName] });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'api-v2', region: 'us-east-1' },
+      { stackName: 'Api', region: 'us-east-1' },
+    ]);
+
+    await runDestroy(['Api', '--yes']);
+
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0])).toEqual(['api-v2']);
+  });
+
+  // Precedence is decided over the whole app, not only what is deployed: with
+  // the id-matching stack undeployed, the stack whose physical name spells
+  // the pattern is still not the one it names, so it is left alone.
+  it('leaves a deployed stack alone when the pattern is an undeployed stack\'s id', async () => {
+    const byPath = { ...makeStackInfo('api-v2'), displayName: 'Api' };
+    const byName = { ...makeStackInfo('Api'), displayName: 'Legacy' };
+    mockSynthesize.mockResolvedValue({ manifest: {}, assemblyDir: '/tmp/cdk.out', stacks: [byPath, byName] });
+    mockListStacks.mockResolvedValue([{ stackName: 'Api', region: 'us-east-1' }]);
+    warnSpy.mockClear();
+
+    await runDestroy(['Api', '--yes']);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    const warned = warnSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(warned).toContain('Api matched no stack in state and was skipped.');
+    expect(warned).not.toContain('is in state but is not a stack of this app');
+  });
+
+  // A pattern without `/` used to be a glob over the PHYSICAL name, so
+  // `cdkd destroy '*'` reached the Stage stacks too. Now it matches the CDK
+  // path; a deployed stack it no longer selects is named at warn level.
+  const NO_LONGER = 'now matches the CDK path, with * inside one segment, and no longer selects';
+  const prodApi = () => ({ ...makeStackInfo('Prod-Api'), displayName: 'Prod/Api', stagePath: 'Prod' });
+
+  it("names the deployed Stage stack `'*'` used to destroy and no longer does", async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other'), prodApi()],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Other', region: 'us-east-1' },
+      { stackName: 'Prod-Api', region: 'us-east-1' },
+    ]);
+    warnSpy.mockClear();
+
+    await runDestroy(['*', '--yes']);
+
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0])).toEqual(['Other']);
+    expect(warnText()).toContain(
+      `"*" ${NO_LONGER} 1 stack it used to ` +
+        "(Prod-Api (Prod/Api)). Name them with 'Prod/*', or select every stack with '**'."
+    );
+  });
+
+  it("points to the Stage stacks when `'*'` matches only undeployed stacks", async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other'), prodApi()],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Prod-Api', region: 'us-east-1' }]);
+    warnSpy.mockClear();
+
+    await runDestroy(['*', '--yes']);
+
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    expect(warnText()).toContain('"*" matched no stack in state and was skipped.');
+    expect(warnText()).toContain(`"*" ${NO_LONGER}`);
+    expect(warnText()).toContain("or select every stack with '**'.");
+  });
+
+  it('names the deployed stack a physical-name wildcard no longer reaches', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other'), prodApi()],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Other', region: 'us-east-1' },
+      { stackName: 'Prod-Api', region: 'us-east-1' },
+    ]);
+    warnSpy.mockClear();
+
+    await runDestroy(['Prod-*', '--yes']);
+
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    expect(warnText()).toContain(`"Prod-*" ${NO_LONGER}`);
+  });
+
+  it("names the deeper Stage stack `'Prod/*'` used to destroy and no longer does", async () => {
+    const deep = { ...makeStackInfo('ProdParentChild'), displayName: 'Prod/Parent/Child', stagePath: 'Prod' };
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [prodApi(), deep],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Prod-Api', region: 'us-east-1' },
+      { stackName: 'ProdParentChild', region: 'us-east-1' },
+    ]);
+    warnSpy.mockClear();
+
+    await runDestroy(['Prod/*', '--yes']);
+
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0])).toEqual(['Prod-Api']);
+    expect(warnText()).toContain(`"Prod/*" ${NO_LONGER} 1 stack it used to (ProdParentChild (Prod/Parent/Child)).`);
+  });
+
+  it('says nothing more when the pattern selects what the old rule did', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other'), prodApi()],
+    });
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Other', region: 'us-east-1' },
+      { stackName: 'Prod-Api', region: 'us-east-1' },
+    ]);
+    warnSpy.mockClear();
+
+    await runDestroy(['Prod-Api', '--yes']);
+    await runDestroy(['**', '--yes']);
+
+    expect(warnText()).not.toContain(NO_LONGER);
+  });
+
+  it('refuses --all over a stage-only app', async () => {
+    const prod = { ...makeStackInfo('Prod-Api'), displayName: 'Prod/Api', stagePath: 'Prod' };
+    mockSynthesize.mockResolvedValue({ manifest: {}, assemblyDir: '/tmp/cdk.out', stacks: [prod] });
+    mockListStacks.mockResolvedValue([{ stackName: 'Prod-Api', region: 'us-east-1' }]);
+
+    await expect(runDestroy(['--all', '--yes'])).rejects.toThrow('process.exit-mock');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(mockListStacks).not.toHaveBeenCalled();
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    expect(errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n')).toContain(
+      '--all selects top-level stacks only, and this app has none'
+    );
+  });
+
+  it('selects nothing, with the hint, when only the Stage stacks are deployed', async () => {
+    const prod = { ...makeStackInfo('Prod-Api'), displayName: 'Prod/Api', stagePath: 'Prod' };
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other'), prod],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Prod-Api', region: 'us-east-1' }]);
+
+    await runDestroy(['--all', '--yes']);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    expect(warnText()).toContain('--all selects top-level stacks only; 1 stack inside a CDK Stage was left out');
   });
 
   it('still falls back to state for an exact name when synthesis fails for another reason (#3839)', async () => {

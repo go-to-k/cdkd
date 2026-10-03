@@ -34,8 +34,14 @@ Index of every area: [code-layout.md](code-layout.md).
 - **src/cli/config-loader.ts** - config resolution (cdk.json, env vars for
   `--app` and `--state-bucket`).
 - **src/cli/stack-matcher.ts** - shared stack-name matcher for deploy / diff /
-  destroy / list / synth; routes a pattern by whether it contains `/` (display
-  path) or not (physical name) and returns a deduplicated union.
+  destroy / list / synth, CDK-compatible
+  ([#4474](https://github.com/go-to-k/cdkd/issues/4474)): a pattern is matched
+  against the hierarchical id with `pathGlobMatches` (`*` within a segment,
+  `**` across), plus the EXACT physical name as a cdkd extension — never a glob
+  over it, or `'*'` would reach every Stage's stacks — and consulted only when
+  no id matches. `partitionTopLevel` is what deploy / destroy / diff `--all`
+  selects (stacks without a `stagePath`); publish-assets and scrub `--all` keep
+  every stack (CDK's ALL_STACKS; scrub is a secret gate).
   `renderNoStackMatch` owns the empty-selection message for deploy / diff /
   list / publish-assets / scrub / import / export / synth. Each of the first
   seven also throws it on a ZERO-stack assembly BEFORE its branch chain, which

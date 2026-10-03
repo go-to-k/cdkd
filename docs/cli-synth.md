@@ -36,7 +36,7 @@ cdkd synth --ignore-errors          # never fail on annotations
 
 | Argument | Description |
 | --- | --- |
-| `[stacks...]` | Which stack's template to print. Accepts physical CloudFormation names (`MyStage-Api`), CDK display paths (`MyStage/Api`) and wildcards (`MyStage/*`). A name matching nothing is refused, naming what the app does hold. |
+| `[stacks...]` | Which stack's template to print. Accepts CDK display paths (`MyStage/Api`) with `*` within a segment and `**` across segments (`MyStage/*`, `'**'`), and exact physical CloudFormation names (`MyStage-Api`). A name matching nothing is refused, naming what the app does hold. |
 
 With no argument and several stacks, cdkd prints no template and lists the
 stack ids you can pass. Selecting several prints none either — stdout carries

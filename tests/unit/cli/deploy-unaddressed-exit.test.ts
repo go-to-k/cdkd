@@ -648,3 +648,163 @@ describe('deploy fails on a Stage that failed to load (issue #3507)', () => {
     expect(vi.mocked(DeployEngine)).toHaveBeenCalledTimes(2);
   });
 });
+
+// go-to-k/cdkd#4474: `--all` deploys the app's top-level stacks only, as the
+// AWS CDK CLI's `--all` does, and says which Stage stacks it left out.
+describe('deploy --all selects top-level stacks only (issue #4474)', () => {
+  beforeEach(() => {
+    engineResults.clear();
+    synthError.value = undefined;
+    errorSpy.mockClear();
+    infoSpy.mockClear();
+    warnSpy.mockClear();
+    process.env['CDKD_NO_LIVE'] = '1';
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    delete process.env['CDKD_NO_LIVE'];
+  });
+
+  // The left-out line is a warning: a run that used to include those stacks
+  // now leaves them out.
+  const info = (): string => warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+
+  it('deploys the top-level stack and names the Stage stack it left out', async () => {
+    synthStacks.value = [
+      makeStack('TopStack'),
+      makeStack('Prod-Api', { displayName: 'Prod/Api', stagePath: 'Prod' }),
+    ];
+
+    const code = await runDeploy(['--all', '--yes']);
+
+    expect(code).toBeUndefined();
+    expect(vi.mocked(DeployEngine)).toHaveBeenCalledTimes(1);
+    expect(info()).toContain(
+      '--all selects top-level stacks only; 1 stack inside a CDK Stage was left out (Prod-Api (Prod/Api)).'
+    );
+  });
+
+  it("deploys the Stage stack too when it is named with `'**'`, and prints no hint", async () => {
+    synthStacks.value = [
+      makeStack('TopStack'),
+      makeStack('Prod-Api', { displayName: 'Prod/Api', stagePath: 'Prod' }),
+    ];
+
+    expect(await runDeploy(['**', '--yes'])).toBeUndefined();
+
+    expect(vi.mocked(DeployEngine)).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses --all over a stage-only app, naming its stacks', async () => {
+    synthStacks.value = [makeStack('Prod-Api', { displayName: 'Prod/Api', stagePath: 'Prod' })];
+
+    const code = await runDeploy(['--all', '--yes']);
+
+    expect(code).toBe(1);
+    expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      '--all selects top-level stacks only, and this app has none'
+    );
+    expect(vi.mocked(DeployEngine)).not.toHaveBeenCalled();
+  });
+
+  // Defensive: aws-cdk-lib refuses a dependency across a Stage boundary, so a
+  // real app cannot reach this, but the hint must never name a deployed stack.
+  it('still deploys a Stage stack a top-level stack depends on, and does not call it left out', async () => {
+    synthStacks.value = [
+      makeStack('TopStack', { dependencyNames: ['Prod-Api'] }),
+      makeStack('Prod-Api', { displayName: 'Prod/Api', stagePath: 'Prod' }),
+    ];
+
+    expect(await runDeploy(['--all', '--yes'])).toBeUndefined();
+
+    expect(vi.mocked(DeployEngine)).toHaveBeenCalledTimes(2);
+    expect(info()).not.toContain('--all selects top-level stacks only');
+  });
+
+  it('prints no hint when the app has no Stage stacks', async () => {
+    synthStacks.value = [makeStack('TopStack')];
+
+    expect(await runDeploy(['--all', '--yes'])).toBeUndefined();
+    expect(info()).not.toContain('--all selects top-level stacks only');
+  });
+  // A pattern without `/` used to be a glob over the PHYSICAL name, so `'*'`
+  // reached the Stage stacks too. It now matches the CDK path; a stack it no
+  // longer selects is named, not dropped silently.
+  const warned = (): string => warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+  const NO_LONGER = 'now matches the CDK path, with * inside one segment, and no longer selects';
+
+  it("names the Stage stack `'*'` used to deploy and no longer does", async () => {
+    warnSpy.mockClear();
+    synthStacks.value = [
+      makeStack('TopStack'),
+      makeStack('Prod-Api', { displayName: 'Prod/Api', stagePath: 'Prod' }),
+    ];
+
+    expect(await runDeploy(['*', '--yes'])).toBeUndefined();
+
+    expect(vi.mocked(DeployEngine)).toHaveBeenCalledTimes(1);
+    expect(warned()).toContain(
+      `"*" ${NO_LONGER} 1 stack it used to ` +
+        "(Prod-Api (Prod/Api)). Name them with 'Prod/*', or select every stack with '**'."
+    );
+  });
+
+  it('adds the line to the no-match error when a physical-name wildcard now selects nothing', async () => {
+    synthStacks.value = [
+      makeStack('TopStack'),
+      makeStack('Prod-Api', { displayName: 'Prod/Api', stagePath: 'Prod' }),
+    ];
+
+    expect(await runDeploy(['Prod-*', '--yes'])).toBe(1);
+
+    const errors = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errors).toContain(`"Prod-*" ${NO_LONGER}`);
+    expect(errors).toContain('(Prod-Api (Prod/Api))');
+    expect(vi.mocked(DeployEngine)).not.toHaveBeenCalled();
+  });
+
+  // The set is read AFTER dependency inclusion: a stack the old rule reached
+  // that comes back in as a dependency is deployed, so it is not named.
+  it('does not name a stack the pattern dropped but a dependency pulled back in', async () => {
+    warnSpy.mockClear();
+    synthStacks.value = [
+      makeStack('Prod-Api', {
+        displayName: 'Prod/Api',
+        stagePath: 'Prod',
+        dependencyNames: ['ProdParentChild'],
+      }),
+      makeStack('ProdParentChild', { displayName: 'Prod/Parent/Child', stagePath: 'Prod' }),
+    ];
+
+    expect(await runDeploy(['Prod/*', '--yes'])).toBeUndefined();
+
+    expect(vi.mocked(DeployEngine)).toHaveBeenCalledTimes(2);
+    expect(warned()).not.toContain(NO_LONGER);
+  });
+
+  it('control: names that stack when nothing pulls it back in', async () => {
+    warnSpy.mockClear();
+    synthStacks.value = [
+      makeStack('Prod-Api', { displayName: 'Prod/Api', stagePath: 'Prod' }),
+      makeStack('ProdParentChild', { displayName: 'Prod/Parent/Child', stagePath: 'Prod' }),
+    ];
+
+    expect(await runDeploy(['Prod/*', '--yes'])).toBeUndefined();
+
+    expect(vi.mocked(DeployEngine)).toHaveBeenCalledTimes(1);
+    expect(warned()).toContain(`"Prod/*" ${NO_LONGER} 1 stack it used to (ProdParentChild (Prod/Parent/Child)).`);
+  });
+
+  it('says nothing when the pattern selects what the old rule did', async () => {
+    warnSpy.mockClear();
+    synthStacks.value = [
+      makeStack('TopStack'),
+      makeStack('Prod-Api', { displayName: 'Prod/Api', stagePath: 'Prod' }),
+    ];
+
+    expect(await runDeploy(['Prod-Api', '--yes'])).toBeUndefined();
+    expect(await runDeploy(['**', '--yes'])).toBeUndefined();
+    expect(warned()).not.toContain(NO_LONGER);
+  });
+});

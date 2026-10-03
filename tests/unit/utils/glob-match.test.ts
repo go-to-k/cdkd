@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
-import { globMatches } from '../../../src/utils/glob-match.js';
+import { globMatches, pathGlobMatches } from '../../../src/utils/glob-match.js';
 import { PATHOLOGICAL_PATTERN, REGEXP_REFUSED, withoutRegExp } from '../_without-regexp.js';
 
 /** The pre-#3508 expansion, verbatim, used only as the differential oracle. */
@@ -122,5 +122,62 @@ describe('globMatches', () => {
     // Guards the guard: if the spies stopped intercepting, the case above
     // would pass for a matcher that still built a RegExp.
     expect(() => withoutRegExp(() => oldExpansion('a*', 'ab'))).toThrow(REGEXP_REFUSED);
+  });
+});
+
+// go-to-k/cdkd#4474: a stack pattern is matched against the hierarchical id
+// path-aware, as the AWS CDK CLI's picomatch does.
+describe('pathGlobMatches', () => {
+  it('keeps `*` within one segment', () => {
+    expect(pathGlobMatches('*', 'Stack')).toBe(true);
+    expect(pathGlobMatches('*', 'Stage/Stack')).toBe(false);
+    expect(pathGlobMatches('Stage*', 'Stage/Stack')).toBe(false);
+    expect(pathGlobMatches('*Stack', 'Stage/Stack')).toBe(false);
+    expect(pathGlobMatches('Stage/*', 'Stage/Stack')).toBe(true);
+    expect(pathGlobMatches('Stage/*', 'Stage/Inner/Stack')).toBe(false);
+    expect(pathGlobMatches('Stage/*', 'Other/Stack')).toBe(false);
+    // Unlike picomatch's default, `*` and `**` match a segment that starts
+    // with `.` (documented in pathGlobMatches and docs/cli-list.md).
+    expect(pathGlobMatches('*', '.x')).toBe(true);
+    expect(pathGlobMatches('**', 'Stage/.x/Stack')).toBe(true);
+    expect(pathGlobMatches('Stage/*', 'Stage/.x')).toBe(true);
+  });
+
+  it('lets a whole-segment `**` span zero or more segments', () => {
+    expect(pathGlobMatches('**', 'Stack')).toBe(true);
+    expect(pathGlobMatches('**', 'Stage/Stack')).toBe(true);
+    expect(pathGlobMatches('**', 'A/B/C/Stack')).toBe(true);
+    expect(pathGlobMatches('Stage/**', 'Stage/Inner/Stack')).toBe(true);
+    expect(pathGlobMatches('**/Stack', 'Stack')).toBe(true);
+    expect(pathGlobMatches('**/Stack', 'A/B/Stack')).toBe(true);
+    expect(pathGlobMatches('**/Stack', 'A/B/Other')).toBe(false);
+    expect(pathGlobMatches('A/**/C', 'A/C')).toBe(true);
+    expect(pathGlobMatches('A/**/C', 'A/X/Y/C')).toBe(true);
+  });
+
+  it('reads `**` inside a segment as `*`, which still stays within the segment', () => {
+    expect(pathGlobMatches('Sta**', 'Stage')).toBe(true);
+    expect(pathGlobMatches('Sta**', 'Stage/Stack')).toBe(false);
+  });
+
+  it('keeps every other character literal, per segment', () => {
+    expect(pathGlobMatches('My.Stage/*', 'MyXStage/Api')).toBe(false);
+    expect(pathGlobMatches('My.Stage/*', 'My.Stage/Api')).toBe(true);
+    expect(pathGlobMatches('Stack?', 'Stack1')).toBe(false);
+    expect(pathGlobMatches('Stack', 'Stack')).toBe(true);
+    expect(pathGlobMatches('Stack', 'Stage/Stack')).toBe(false);
+  });
+
+  it('answers a run of globstars over a deep path without any RegExp', () => {
+    const subject = Array.from({ length: 200 }, (_, i) => `s${i}`).join('/');
+    const pattern = Array.from({ length: 40 }, () => '**').join('/') + '/nope';
+    expect(withoutRegExp(() => pathGlobMatches(pattern, subject))).toEqual({
+      value: false,
+      regexCalls: 0,
+    });
+    expect(withoutRegExp(() => pathGlobMatches(PATHOLOGICAL_PATTERN, 'a'.repeat(3000)))).toEqual({
+      value: false,
+      regexCalls: 0,
+    });
   });
 });

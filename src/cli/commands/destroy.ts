@@ -52,7 +52,13 @@ import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/inter
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import {
   matchStacks,
+  stackMatchesPattern,
   describeStack,
+  partitionTopLevel,
+  renderAllLeftOutStageStacks,
+  renderStacksNoLongerSelected,
+  stacksNoLongerSelected,
+  renderAllNoTopLevelStacks,
   renderNotInAppWarning,
   renderUnmatchedPatternsWarning,
   unmatchedPatterns,
@@ -366,6 +372,7 @@ async function destroyCommand(
         appStacks = result.stacks.map((s) => ({
           stackName: s.stackName,
           displayName: s.displayName,
+          ...(s.stagePath !== undefined && { stagePath: s.stagePath }),
           ...(s.region && { region: s.region }),
           ...(s.terminationProtection !== undefined && {
             terminationProtection: s.terminationProtection,
@@ -438,6 +445,14 @@ async function destroyCommand(
         'DESTROY_NO_APP_SCOPE',
         synthError
       );
+    }
+
+    // `--all` over a stage-only APP is refused, as the AWS CDK CLI refuses it
+    // (#4474), before the bucket is listed. An app whose top-level stacks are
+    // merely not deployed selects nothing below, with the hint.
+    if (options.all && appStacks.length > 0) {
+      const app = partitionTopLevel(appStacks);
+      if (app.topLevel.length === 0) throw new Error(renderAllNoTopLevelStacks(app.inStages));
     }
 
     // Determine candidate stacks. State only carries physical names + regions
@@ -529,12 +544,36 @@ async function destroyCommand(
     let stoppedEarly = false;
 
     let stackNames: string[];
+    // Patterns that name a stack of this app by its CDK path (or exact
+    // physical name) whether or not it is deployed. Filled by the pattern arm.
+    const namesAppStack = new Set<string>();
     if (options.all) {
-      // --all: destroy all stacks in the current app
-      stackNames = candidateStacks.map((s) => s.stackName);
+      // --all: the app's TOP-LEVEL stacks that are in state, as the AWS CDK
+      // CLI's `destroy --all` (#4474). A Stage's stacks are left running and
+      // named in one line, so the narrower set is never silent.
+      const { topLevel, inStages } = partitionTopLevel(candidateStacks);
+      if (inStages.length > 0) logger.warn(renderAllLeftOutStageStacks(inStages));
+      stackNames = topLevel.map((s) => s.stackName);
     } else if (stackPatterns.length > 0) {
-      // Explicit stack names or wildcards
-      stackNames = matchStacks(candidateStacks, stackPatterns).map((s) => s.stackName);
+      // Explicit stack names or wildcards. Resolved against the WHOLE app
+      // and only then narrowed to what is in state: a pattern that is one
+      // stack's CDK id selects that stack, as the AWS CDK CLI does, even when
+      // it is not deployed and another deployed stack's physical name equals
+      // the pattern -- that other stack must not be destroyed instead (#4474).
+      const selectFrom = appStacks.length > 0 ? appStacks : candidateStacks;
+      const inState = new Set(candidateStacks.map((s) => s.stackName));
+      stackNames = matchStacks(selectFrom, stackPatterns)
+        .map((s) => s.stackName)
+        .filter((n) => inState.has(n));
+      // A deployed stack a pattern used to select by a physical-name wildcard
+      // and no longer does is named, not dropped silently (#4474) -- also when
+      // the pattern now matches only undeployed stacks and selects nothing.
+      if (appStacks.length > 0) {
+        const gone = stacksNoLongerSelected(candidateStacks, stackPatterns, new Set(stackNames));
+        if (gone.stacks.length > 0) {
+          logger.warn(renderStacksNoLongerSelected(gone.patterns, gone.stacks));
+        }
+      }
       // Every pattern that matched nothing is warned about, as the AWS CDK
       // CLI's destroy does (one warning per pattern, whether or not another
       // matched), rather than dropped silently: a typo must not pass for a
@@ -546,9 +585,18 @@ async function destroyCommand(
       // matched, the by-name special case below handles it instead (a nested
       // child is refused there), so it is not warned about twice.
       const stateNames = new Set(allStateRefs.map((r) => r.stackName));
-      const unmatched = unmatchedPatterns(candidateStacks, stackPatterns);
-      const inStateOnly = unmatched.filter((p) => stateNames.has(p));
-      const absent = unmatched.filter((p) => !stateNames.has(p));
+      const unmatched = unmatchedPatterns(selectFrom, stackPatterns, (s) =>
+        inState.has(s.stackName)
+      );
+      if (appStacks.length > 0) {
+        for (const p of stackPatterns) {
+          if (appStacks.some((s) => stackMatchesPattern(s, p))) namesAppStack.add(p);
+        }
+      }
+      // A pattern naming an app stack that is not deployed is "not in state",
+      // even when it also spells another stack's state record.
+      const inStateOnly = unmatched.filter((p) => stateNames.has(p) && !namesAppStack.has(p));
+      const absent = unmatched.filter((p) => !inStateOnly.includes(p));
       if (absent.length > 0) {
         logger.warn(renderUnmatchedPatternsWarning(absent, 'in state'));
       }
@@ -565,7 +613,7 @@ async function destroyCommand(
     } else {
       throw new Error(
         `Multiple stacks found: ${candidateStacks.map(describeStack).join(', ')}. ` +
-          `Specify stack name(s) or use --all`
+          `Specify stack name(s) or use --all (top-level stacks; '**' for every stack)`
       );
     }
 
@@ -588,6 +636,8 @@ async function destroyCommand(
         for (const pattern of stackPatterns) {
           if (pattern.includes('*') || pattern.includes('?') || pattern.includes('/')) continue;
           if (!allStateNamesSet.has(pattern)) continue;
+          // Names an undeployed stack of this app; warned about above.
+          if (namesAppStack.has(pattern)) continue;
           // Single-region MVP per design §3 (`parentRegion === region` until
           // cross-region nested stacks ship). For v6 state — which is the
           // only state that has `parentStack` set, and therefore the only
@@ -1080,9 +1130,9 @@ export function createDestroyCommand(): Command {
     .description('Destroy all resources in the stack')
     .argument(
       '[stacks...]',
-      "Stack name(s) to destroy. Accepts physical CloudFormation names (e.g. 'MyStage-Api') or CDK display paths (e.g. 'MyStage/Api'). Supports wildcards (e.g. 'MyStage/*')."
+      "Stack name(s) to destroy. Accepts CDK display paths (e.g. 'MyStage/Api') with wildcards ('MyStage/*', '**'), or exact physical CloudFormation names (e.g. 'MyStage-Api')."
     )
-    .option('--all', 'Destroy all stacks', false)
+    .option('--all', "Destroy every top-level stack (top-level only; Stage stacks: '**')", false)
     .option(
       '--purge-events',
       "After a clean destroy, also delete the stack's deployment-event history " +

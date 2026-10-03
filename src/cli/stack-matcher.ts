@@ -1,46 +1,58 @@
 /**
- * Match stacks against user-supplied name patterns.
+ * Match stacks against user-supplied name patterns, as the AWS CDK CLI does
+ * ([#4474](https://github.com/go-to-k/cdkd/issues/4474)).
  *
- * Patterns are evaluated against two fields:
+ * A pattern is matched against the stack's HIERARCHICAL id (`displayName`:
+ * `MyStack` for a top-level stack, `MyStage/MyStack` inside a Stage) with a
+ * path-aware glob — `*` stays within one `/` segment, `**` spans any number —
+ * so `'*'` selects the top-level stacks, `'MyStage/*'` one Stage's stacks and
+ * `'**'` every stack. See `pathGlobMatches`.
  *
- * - `stackName` — the physical CloudFormation stack name (e.g. `MyStage-MyStack`)
- * - `displayName` — the hierarchical CDK path (e.g. `MyStage/MyStack`); falls
- *   back to `stackName` when the assembly does not carry one
+ * cdkd extension: a pattern that is EXACTLY a stack's physical CloudFormation
+ * name (`MyStage-MyStack`) selects it, which the CDK CLI never does -- but only
+ * when no stack's hierarchical id matches the pattern. Exact only, never a
+ * glob: a wildcard over physical names would make `'*'` select every Stage's
+ * stacks as well.
  *
- * Routing is decided by whether the pattern contains `/`:
- *
- * - Pattern contains `/` → matched only against `displayName` (a `/` cannot
- *   appear in a CloudFormation stack name, so this is unambiguous)
- * - Pattern contains no `/` → matched only against `stackName`
- *
- * Wildcards (`*`) are supported in either case; every other character is
- * literal. Results are de-duplicated by
- * `stackName`, so a pattern that incidentally matches the same stack via both
- * fields is returned only once.
+ * Results are de-duplicated by `stackName`.
  */
 import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
-import { globMatches } from '../utils/glob-match.js';
+import { globMatches, pathGlobMatches } from '../utils/glob-match.js';
 
 export interface StackLike {
   stackName: string;
   displayName?: string;
+  /**
+   * The CDK Stage the stack was read from, or `undefined` for a top-level
+   * stack of the app's own assembly. `--all` selects top-level stacks only.
+   */
+  stagePath?: string | undefined;
 }
 
 export function matchStacks<T extends StackLike>(stacks: T[], patterns: string[]): T[] {
   if (patterns.length === 0) return [];
 
-  const seen = new Set<string>();
-  const result: T[] = [];
-
-  for (const stack of stacks) {
-    const matched = patterns.some((pattern) => stackMatchesPattern(stack, pattern));
-    if (matched && !seen.has(stack.stackName)) {
-      seen.add(stack.stackName);
-      result.push(stack);
-    }
+  const selected = new Set<string>();
+  for (const pattern of patterns) {
+    for (const stack of stacksForPattern(stacks, pattern)) selected.add(stack.stackName);
   }
+  // Input order, deduplicated by `stackName`.
+  const seen = new Set<string>();
+  return stacks.filter(
+    (s) => selected.has(s.stackName) && !seen.has(s.stackName) && seen.add(s.stackName)
+  );
+}
 
-  return result;
+/**
+ * The stacks ONE pattern selects. The hierarchical id wins: the exact physical
+ * name is consulted only when no stack's id matched, so a name that is one
+ * stack's construct id and ANOTHER stack's physical name selects only the
+ * former, as the AWS CDK CLI does -- never both, which a union would, and a
+ * `destroy --yes` would then delete a stack the user did not mean.
+ */
+function stacksForPattern<T extends StackLike>(stacks: readonly T[], pattern: string): T[] {
+  const byId = stacks.filter((s) => pathGlobMatches(pattern, s.displayName ?? s.stackName));
+  return byId.length > 0 ? byId : stacks.filter((s) => s.stackName === pattern);
 }
 
 /**
@@ -113,12 +125,15 @@ export function renderNoStackMatch(
  * partly-unmatched selection and fail only on an EMPTY union, which is CDK's
  * `PATTERN_MUST_MATCH` ([#3507](https://github.com/go-to-k/cdkd/issues/3507)).
  */
-export function unmatchedPatterns(
-  stacks: readonly StackLike[],
-  patterns: readonly string[]
+export function unmatchedPatterns<T extends StackLike>(
+  stacks: readonly T[],
+  patterns: readonly string[],
+  isPresent: (stack: T) => boolean = () => true
 ): string[] {
-  // Deduplicated, so `cdkd destroy Typo Typo` names `Typo` once.
-  return [...new Set(patterns)].filter((p) => !stacks.some((s) => stackMatchesPattern(s, p)));
+  // Deduplicated, so `cdkd destroy Typo Typo` names `Typo` once. A pattern
+  // counts as matched only when the stack it SELECTS is present: destroy
+  // resolves over the whole app and passes "is in state" here (#4474).
+  return [...new Set(patterns)].filter((p) => !stacksForPattern(stacks, p).some(isPresent));
 }
 
 /**
@@ -159,10 +174,126 @@ function renderPatternList(patterns: readonly string[]): string {
 }
 
 /**
- * `*` matches any run of characters and every other character is literal —
- * `globMatches` owns that rule ([#3508](https://github.com/go-to-k/cdkd/issues/3508)).
+ * Whether `pattern` could select `stack` on its own: the hierarchical id under
+ * a path-aware glob, or the physical name exactly (the cdkd extension).
+ * `pathGlobMatches` owns the glob rule. SELECTION goes through `matchStacks`,
+ * where the id takes precedence over the physical name.
  */
 export function stackMatchesPattern(stack: StackLike, pattern: string): boolean {
-  const target = pattern.includes('/') ? (stack.displayName ?? stack.stackName) : stack.stackName;
-  return globMatches(pattern, target);
+  return (
+    pathGlobMatches(pattern, stack.displayName ?? stack.stackName) || pattern === stack.stackName
+  );
+}
+
+/**
+ * What `--all` selects: the stacks of the app's own assembly, as the AWS CDK
+ * CLI's `--all` does (`MAIN_ASSEMBLY`). Stacks inside a CDK Stage are named
+ * with `'Stage/*'` or `'**'` ([#4474](https://github.com/go-to-k/cdkd/issues/4474)).
+ */
+export function partitionTopLevel<T extends StackLike>(
+  stacks: readonly T[]
+): { topLevel: T[]; inStages: T[] } {
+  const topLevel: T[] = [];
+  const inStages: T[] = [];
+  for (const stack of stacks) (stack.stagePath === undefined ? topLevel : inStages).push(stack);
+  return { topLevel, inStages };
+}
+
+/**
+ * The one line `--all` prints when it left stacks inside CDK Stages out, so a
+ * run that used to include them does not narrow silently.
+ */
+export function renderAllLeftOutStageStacks(inStages: readonly StackLike[]): string {
+  const n = inStages.length;
+  return (
+    `--all selects top-level stacks only; ${n} stack${n === 1 ? '' : 's'} inside a CDK Stage ` +
+    `${n === 1 ? 'was' : 'were'} left out (${inStages.map(describeStack).join(', ')}). ` +
+    renderStagePatternAdvice(inStages)
+  );
+}
+
+/**
+ * The advice both `--all` lines end with: each Stage's own `'<stage>/*'`
+ * pattern, pasteable, and `'**'` for every stack. A Stage path that is not a
+ * plain identifier is left out of the list rather than rendered in a form the
+ * shell would read differently; `'**'` still reaches it.
+ */
+function renderStagePatternAdvice(inStages: readonly StackLike[]): string {
+  const stagePatterns = [
+    ...new Set(
+      inStages
+        .map((s) => s.stagePath)
+        .filter(
+          (p): p is string =>
+            p !== undefined && displayIdent(p, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === p
+        )
+    ),
+  ].map((p) => `'${p}/*'`);
+  return stagePatterns.length > 0
+    ? `Name them with ${stagePatterns.join(', ')}, or select every stack with '**'.`
+    : `Select them with '**'.`;
+}
+
+/**
+ * The stacks a pattern selected before [#4474](https://github.com/go-to-k/cdkd/issues/4474)
+ * that the CDK-compatible selection in `selected` no longer holds. The old
+ * rule was one glob whose `*` crossed `/`: over the physical name for a
+ * pattern without `/`, over the display path for one with it (`'Stage/*'`
+ * reached `Stage/Parent/Child`). `deploy` and
+ * `destroy` name them in one line, so a script written against the old rule
+ * (`cdkd destroy '*'` meaning every stack) does not narrow silently.
+ */
+export function stacksNoLongerSelected<T extends StackLike>(
+  stacks: readonly T[],
+  patterns: readonly string[],
+  selected: ReadonlySet<string>
+): { stacks: T[]; patterns: string[] } {
+  const oldRule = (p: string, s: StackLike) =>
+    globMatches(p, p.includes('/') ? (s.displayName ?? s.stackName) : s.stackName);
+  const dropped = stacks.filter(
+    (s) => !selected.has(s.stackName) && patterns.some((p) => oldRule(p, s))
+  );
+  return {
+    stacks: dropped,
+    patterns: [...new Set(patterns)].filter((p) => dropped.some((s) => oldRule(p, s))),
+  };
+}
+
+/** The line for {@link stacksNoLongerSelected}. */
+export function renderStacksNoLongerSelected(
+  patterns: readonly string[],
+  dropped: readonly StackLike[]
+): string {
+  const n = dropped.length;
+  const one = patterns.length === 1;
+  const inStages = dropped.filter((s) => s.stagePath !== undefined);
+  // `'<stage>/*'` reaches only a Stage's DIRECT stacks; a deeper one (a Stack
+  // nested in a Stack inside the Stage) is named by its path instead.
+  const direct = (s: StackLike) =>
+    s.stagePath !== undefined &&
+    (s.displayName ?? s.stackName).split('/').length === s.stagePath.split('/').length + 1;
+  return (
+    `${renderPatternList(patterns)} now ${one ? 'matches' : 'match'} the CDK path, with * inside ` +
+    `one segment, and no longer ${one ? 'selects' : 'select'} ${n} stack${n === 1 ? '' : 's'} ` +
+    `${one ? 'it' : 'they'} used to (${dropped.map(describeStack).join(', ')}). ` +
+    // The Stage advice only when it reaches EVERY named stack.
+    (inStages.length === dropped.length && inStages.every(direct)
+      ? renderStagePatternAdvice(inStages)
+      : inStages.length > 0
+        ? "Name each by the CDK path shown in parentheses, or select every stack with '**'."
+        : 'Name each by the CDK path shown in parentheses.')
+  );
+}
+
+/**
+ * The refusal `--all` raises when the app's own assembly has no stacks and
+ * every stack sits inside a CDK Stage, as the AWS CDK CLI's `--all` refuses a
+ * stage-only app.
+ */
+export function renderAllNoTopLevelStacks(inStages: readonly StackLike[]): string {
+  return (
+    `--all selects top-level stacks only, and this app has none: every stack is inside a ` +
+    `CDK Stage (${inStages.map(describeStack).join(', ')}). ` +
+    renderStagePatternAdvice(inStages)
+  );
 }

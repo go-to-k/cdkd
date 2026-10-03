@@ -2525,7 +2525,8 @@ async function stateDestroyCommand(
         'bucket, which every CDK app deployed to this account shares, so one command ' +
         'reached across apps. Name each stack to destroy: ' +
         `cdkd state destroy ${commandHole('stacks...')} (cdkd state list shows them), ` +
-        "or run cdkd destroy --all from the CDK app, which destroys only that app's stacks.",
+        "or run cdkd destroy --all from the CDK app, which destroys only that app's top-level " +
+        "stacks (cdkd destroy '**' destroys its CDK Stage stacks too).",
       'STATE_DESTROY_ALL_REMOVED'
     );
   }

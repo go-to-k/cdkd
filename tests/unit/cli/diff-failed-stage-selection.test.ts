@@ -7,11 +7,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockLoggerError = vi.hoisted(() => vi.fn());
+const mockLoggerInfo = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
-    info: vi.fn(),
+    info: mockLoggerInfo,
     warn: vi.fn(),
     error: mockLoggerError,
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
@@ -149,5 +150,46 @@ describe('cdkd diff fails on a Stage that failed to load (issue #3507)', () => {
       [expect.objectContaining({ stackName: 'TopStack' })],
       expect.anything()
     );
+  });
+});
+
+// go-to-k/cdkd#4474: `--all` diffs the app's top-level stacks only, as the
+// AWS CDK CLI selects for a bare `cdk diff`, and names what it left out.
+describe('cdkd diff --all selects top-level stacks only (issue #4474)', () => {
+  beforeEach(() => {
+    mockSynthesize.mockReset();
+    mockLoggerError.mockReset();
+    mockLoggerInfo.mockReset();
+    mockExpandMacros.mockClear();
+  });
+
+  const stageStack = { ...makeStack('Prod-Api'), displayName: 'Prod/Api', stagePath: 'Prod' };
+
+  it('diffs the top-level stack and names the Stage stack it left out', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack('TopStack'), stageStack],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+
+    await runDiff(['--all']);
+
+    expect(mockExpandMacros).toHaveBeenCalledWith(
+      [expect.objectContaining({ stackName: 'TopStack' })],
+      expect.anything()
+    );
+    expect(mockLoggerInfo.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      '--all selects top-level stacks only; 1 stack inside a CDK Stage was left out'
+    );
+  });
+
+  it('refuses --all over a stage-only app', async () => {
+    mockSynthesize.mockResolvedValue({ stacks: [stageStack], manifest: {}, assemblyDir: '/tmp/cdk.out' });
+
+    const reported = await runDiff(['--all']);
+
+    expect(lastExitCode).toBe(1);
+    expect(reported).toContain('--all selects top-level stacks only, and this app has none');
+    expect(mockExpandMacros).not.toHaveBeenCalled();
   });
 });
