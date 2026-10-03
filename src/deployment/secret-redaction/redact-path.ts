@@ -13,16 +13,9 @@ import {
   positionByIntrinsicSkeleton,
   positionByIntrinsicFrame,
 } from './positions.js';
-import {
-  positionByCrossStackSource,
-} from './certified-positions.js';
-import {
-  positionByParameterPlaceholders,
-} from './placeholder-positions.js';
-import {
-  positionListByCrossStackSource,
-  identityKeyFor,
-} from './identity-keys.js';
+import { positionByCrossStackSource } from './certified-positions.js';
+import { positionByParameterPlaceholders } from './placeholder-positions.js';
+import { positionListByCrossStackSource, identityKeyFor } from './identity-keys.js';
 import {
   carriesSecretMask,
   isKnownSecretExpression,

@@ -1,4 +1,8 @@
-import { DYNAMIC_REFERENCE_INNER_CHAR, escapeRegExp, isSingleDynamicReferenceToken } from './rules.js';
+import {
+  DYNAMIC_REFERENCE_INNER_CHAR,
+  escapeRegExp,
+  isSingleDynamicReferenceToken,
+} from './rules.js';
 import { type RecordedSecretValues, resolvedPlaintextOf, resolvedExpressionsOf } from './pairs.js';
 import { redactSecretsForState } from './redact-state.js';
 import { recordedSecretExpressions } from './mask-only.js';

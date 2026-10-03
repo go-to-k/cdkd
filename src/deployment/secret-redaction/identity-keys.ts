@@ -34,7 +34,7 @@ const ARRAY_IDENTITY_KEYS = ['Name', 'Key'] as const;
  * Is every element of `items` a plain object carrying a NON-EMPTY OWN string at
  * `key`, with no two elements sharing a value?
  *
- * `Object.hasOwn` for the same reason the object walk below uses it: without
+ * `Object.hasOwn` for the same reason the object walk (`redact-path.ts`) uses it: without
  * it the prototype chain answers for a key like `constructor`, and while state
  * that came from `JSON.parse` cannot carry one, this module is called with
  * caller-constructed bags too and the two walks disagreeing is the kind of gap
