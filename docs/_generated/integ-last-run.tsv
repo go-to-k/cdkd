@@ -229,6 +229,7 @@ log-pipeline	2026-07-31T07:44:41Z	PASS	95	standard	issue #1326 removalPolicy fix
 loggroup-class-guard	2026-10-02T09:33:03Z	PASS	115	verify.sh	rc ok, orph clean (#4414)
 loggroup-kms-associate	2026-10-01T09:34:19Z	PASS	60	verify.sh	PR #4313 (#4307 orphan-warning --region) at 98ccf47e4; rc ok, 2 deleted 0 errors, orph clean
 loggroup-never-expire-guard	2026-10-02T20:44:23Z	PASS	131	verify.sh	rc ok, orph clean (#4468)
+lost-child-after-failed-deploy	2026-10-03T06:29:21Z	PASS	165	verify.sh	rc ok, orph clean; #4443 first run; pre-fix origin/main build FAILS at the dropped-record arm
 macro-expansion	2026-09-25T09:36:54Z	PASS	55	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 microservices	2026-10-03T03:00:18Z	PASS	50	standard	rc ok, orph clean (#4485)
 migrate-from-cfn	2026-09-29T07:13:32Z	PASS	388	run.sh	PR #4058 merge-gate run; rc ok, orph clean
@@ -261,9 +262,9 @@ rds-dbinstance-backfill	2026-09-30T17:44:01Z	PASS	777	verify.sh	PR #4234 (#4111 
 rds-full-stack	2026-10-02T08:38:07Z	PASS	1163	verify.sh	#1160 PR #4401; rc ok, orph clean
 recreate-mixed-direction	2026-10-02T20:40:31Z	PASS	111	verify.sh	rc ok, orph clean (#4468)
 recreate-nested-logical-id-collision	2026-10-02T20:42:43Z	PASS	130	verify.sh	rc ok, orph clean (#4468)
-recreate-parent-child-permission	2026-10-02T17:09:39Z	PASS	170	verify.sh	rc ok, orph clean; #4411 first run
+recreate-parent-child-permission	2026-10-03T06:29:21Z	PASS	150	verify.sh	rc ok, orph clean; #4443 regression
 recreate-target-readers	2026-10-02T20:44:14Z	PASS	86	verify.sh	rc ok, orph clean (#4468)
-recreate-via-cc-api	2026-10-02T20:40:26Z	PASS	106	verify.sh	rc ok, orph clean (#4468)
+recreate-via-cc-api	2026-10-03T06:29:21Z	PASS	156	verify.sh	rc ok, orph clean; #4443 regression
 recreate-via-sdk-provider	2026-10-02T20:42:07Z	PASS	100	verify.sh	rc ok, orph clean (#4468)
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
