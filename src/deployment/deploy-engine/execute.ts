@@ -785,21 +785,24 @@ export async function executeDeployment(
         // no longer points at, so name `--revert-failed` here. Not for a
         // nested child: its stack-less `cdkd rollback` would resolve to the
         // top-level stack (go-to-k/cdkd#3864).
-        const revertFailedHint =
+        this.logger.warn(
+          safeMsg`The automatic rollback could not revert ${rollbackResult.skipped} operation(s) ` +
+            `(see the warnings above; each is recorded as a ROLLBACK_RESOURCE_SKIPPED event). ` +
+            `The rollback journal keeps them.`
+        );
+        if (
           this.options.parentStackInfo === undefined &&
           failedOperations.some((op) => op.changeType !== 'DELETE')
-            ? `\nThe record of the operation that failed is kept too. Revert both with: ` +
+        ) {
+          this.logger.warn(
+            safeMsg`The record of the operation that failed is kept too. Revert both with: ${
               pasteableCommand('cdkd rollback', [
                 { value: stackName, hole: 'stack' },
                 { literal: '--revert-failed' },
               ]).command
-            : '';
-        this.logger.warn(
-          safeMsg`The automatic rollback could not revert ${rollbackResult.skipped} operation(s) ` +
-            `(see the warnings above; each is recorded as a ROLLBACK_RESOURCE_SKIPPED event). ` +
-            `The rollback journal keeps them.` +
-            revertFailedHint
-        );
+            }`
+          );
+        }
       }
       // Hoisted out of this block because both saves below sit outside it
       // (issue #2934) — the post-rollback save and its ETag-mismatch retry —

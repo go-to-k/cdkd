@@ -407,9 +407,9 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
 
     expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
     const warns = (getLogger().warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
-    const line = warns.find((m) => m.includes('could not revert 1 operation(s)'));
-    expect(line).toBeDefined();
-    expect(line).toContain(`cdkd rollback ${stackName} --revert-failed`);
+    expect(warns.some((m) => m.includes('could not revert 1 operation(s)'))).toBe(true);
+    const hint = warns.find((m) => m.includes('Revert both with:'));
+    expect(hint).toContain(`cdkd rollback ${stackName} --revert-failed`);
   });
 
   it('a pop failure during journal settling leaves the full segment in place (best-effort)', async () => {
