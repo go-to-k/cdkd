@@ -8,6 +8,7 @@ import {
   isAbsoluteCrossPlatform,
 } from '../../../src/provisioning/providers/nested-stack-provider.js';
 import {
+  collectNestedChildUnaddressed,
   withNestedStackContext,
   type NestedStackProviderContext,
 } from '../../../src/provisioning/nested-stack-context.js';
@@ -35,6 +36,14 @@ const AMBIENT_ID = (): string => credentialFingerprint(ambientCredentialConfig()
 // context at deploy() time so the test can verify both the constructor
 // inputs (parentStackInfo etc.) and the ALS childCtx the recursive
 // provider switched into for grandchild resolution.
+/**
+ * Issue #1989: per-call override of the child engine's reported counters, one
+ * entry consumed per `deploy()` call, so a case can make the child report what
+ * it left unaddressed (and a retry report it again).
+ */
+const childDeployCounts = vi.hoisted(() => ({
+  queue: [] as Array<{ deleteSkipped?: number; updatePartial?: number }>,
+}));
 const deployCalls: Array<{
   ctor: unknown[];
   deploy: {
@@ -67,9 +76,12 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
         created: 1,
         updated: 0,
         deleted: 0,
+        deleteSkipped: 0,
+        updatePartial: 0,
         unchanged: 0,
         durationMs: 1,
         outputs: {},
+        ...childDeployCounts.queue.shift(),
       };
     }),
   })),
@@ -181,6 +193,7 @@ beforeEach(() => {
   destroyCalls.length = 0;
   childCounts.value = {};
   childRunnerOverride.fn = undefined;
+  childDeployCounts.queue = [];
 });
 
 describe('NestedStackProvider', () => {
@@ -1560,6 +1573,122 @@ describe('NestedStackProvider', () => {
       const opts = deployCalls[0]!.ctor[5] as { parameters?: Record<string, string> };
       expect(opts.parameters).toEqual({});
       expect(opts.parameters).not.toHaveProperty('Leaked');
+    });
+  });
+
+  describe('a child deploy reports what it left unaddressed (issue #1989)', () => {
+    function childTemplate(): string {
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-stack-test-unaddressed-'));
+      const childTemplatePath = join(dir, 'child.nested.template.json');
+      writeFileSync(
+        childTemplatePath,
+        JSON.stringify({
+          AWSTemplateFormatVersion: '2010-09-09',
+          Resources: { Foo: { Type: 'AWS::S3::Bucket' } },
+        })
+      );
+      return childTemplatePath;
+    }
+    const ARN = 'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child';
+
+    it('create(): the child DeployResult counters reach the row slot', async () => {
+      childDeployCounts.queue = [{ deleteSkipped: 2, updatePartial: 1 }];
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ nestedTemplates: { Child: childTemplate() } });
+
+      const { unaddressed } = await withNestedStackContext(ctx, () =>
+        collectNestedChildUnaddressed(() =>
+          provider.create('Child', 'AWS::CloudFormation::Stack', {})
+        )
+      );
+
+      expect(unaddressed).toEqual({ deleteSkipped: 2, updatePartial: 1 });
+    });
+
+    it('update(): the child DeployResult counters reach the row slot', async () => {
+      childDeployCounts.queue = [{ deleteSkipped: 0, updatePartial: 3 }];
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ nestedTemplates: { Child: childTemplate() } });
+
+      const { unaddressed } = await withNestedStackContext(ctx, () =>
+        collectNestedChildUnaddressed(() =>
+          provider.update('Child', ARN, 'AWS::CloudFormation::Stack', {}, {})
+        )
+      );
+
+      expect(unaddressed).toEqual({ deleteSkipped: 0, updatePartial: 3 });
+    });
+
+    it('a re-run child deploy in one row scope keeps the last deleteSkipped and ACCUMULATES updatePartial', async () => {
+      // The provider sets `disableOuterRetry`, so one row runs its child once
+      // today; this pins the rule should that change. A skipped DELETE keeps
+      // its record, so a re-run counts it again (last report wins). An
+      // orphaned predecessor is untracked, so a re-run reports 0 for it, and
+      // replacing would drop it from the exit code.
+      childDeployCounts.queue = [
+        { deleteSkipped: 1, updatePartial: 1 },
+        { deleteSkipped: 1, updatePartial: 0 },
+      ];
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ nestedTemplates: { Child: childTemplate() } });
+
+      const { unaddressed } = await withNestedStackContext(ctx, () =>
+        collectNestedChildUnaddressed(async () => {
+          await provider.create('Child', 'AWS::CloudFormation::Stack', {});
+          return provider.create('Child', 'AWS::CloudFormation::Stack', {});
+        })
+      );
+
+      expect(deployCalls).toHaveLength(2);
+      expect(unaddressed).toEqual({ deleteSkipped: 1, updatePartial: 1 });
+    });
+
+    it("does not hand the parent row's slot to the child engine's context", async () => {
+      // A grandchild writing straight into the parent's slot would be counted
+      // twice: once there, once through the child's own DeployResult.
+      childDeployCounts.queue = [{ deleteSkipped: 1 }];
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ nestedTemplates: { Child: childTemplate() } });
+
+      await withNestedStackContext(ctx, () =>
+        collectNestedChildUnaddressed(() =>
+          provider.create('Child', 'AWS::CloudFormation::Stack', {})
+        )
+      );
+
+      expect(deployCalls[0]!.deploy.capturedCtx).toBeDefined();
+      expect(deployCalls[0]!.deploy.capturedCtx!.childUnaddressed).toBeUndefined();
+    });
+
+    it("delete(): the child destroy's context does not carry the parent row's slot either", async () => {
+      const provider = new NestedStackProvider();
+      const ctx = makeContext();
+
+      await withNestedStackContext(ctx, () =>
+        collectNestedChildUnaddressed(() =>
+          provider.delete('Child', 'arn', 'AWS::CloudFormation::Stack', {})
+        )
+      );
+
+      expect(destroyCalls).toHaveLength(1);
+      expect(destroyCalls[0]!.capturedCtx).toBeDefined();
+      expect(destroyCalls[0]!.capturedCtx!.childUnaddressed).toBeUndefined();
+    });
+
+    it('a clean child reports zeros, and no slot bound is not an error', async () => {
+      const provider = new NestedStackProvider();
+      const ctx = makeContext({ nestedTemplates: { Child: childTemplate() } });
+
+      const { unaddressed } = await withNestedStackContext(ctx, () =>
+        collectNestedChildUnaddressed(() =>
+          provider.create('Child', 'AWS::CloudFormation::Stack', {})
+        )
+      );
+      expect(unaddressed).toEqual({ deleteSkipped: 0, updatePartial: 0 });
+
+      await expect(
+        withNestedStackContext(ctx, () => provider.create('Child', 'AWS::CloudFormation::Stack', {}))
+      ).resolves.toBeDefined();
     });
   });
 

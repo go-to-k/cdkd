@@ -447,6 +447,12 @@ export interface DeployResult {
    * #1752. Self-healing means the next run can fix it; it does not mean this
    * run applied the template it was given. (`--allow-unaddressed` opts back
    * out of the exit code, not out of the warning.)
+   *
+   * Includes every nested-stack descendant's own count (issue
+   * [#1989](https://github.com/go-to-k/cdkd/issues/1989)): a child engine's
+   * `DeployResult` is added to its `AWS::CloudFormation::Stack` row's engine,
+   * so a skip inside a child or grandchild reaches the top-level summary and
+   * exit code. `created` / `updated` / `deleted` stay this stack's own rows.
    */
   deleteSkipped: number;
   /**
@@ -454,7 +460,10 @@ export interface DeployResult {
    * updated, but something the update owned survives untracked. Separate from
    * `updated` so a clean run and a run that orphaned a resource do not print
    * the same summary, and separate from `deleteSkipped` because the surviving
-   * resource is not the row's own.
+   * resource is not the row's own. Includes nested-stack descendants' counts,
+   * as `deleteSkipped` does (issue #1989), so a descendant's partial also
+   * raises the `Updated:` total `deploy.ts` prints as `updated + updatePartial`
+   * while `updated` stays this stack's own rows.
    */
   updatePartial: number;
   /** Number of resources unchanged */

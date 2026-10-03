@@ -118,6 +118,39 @@ export interface NestedStackProviderContext {
     skipFinalSnapshot?: boolean;
     profile?: string;
   };
+
+  /**
+   * Deploy-only: where a nested child's DEPLOY reports what it left
+   * unaddressed, so the parent engine's counters see it (issue
+   * [#1989](https://github.com/go-to-k/cdkd/issues/1989)). Bound per
+   * resource by the parent engine through
+   * {@link collectNestedChildUnaddressed}; `NestedStackProvider` writes it
+   * after its child `DeployEngine` returns.
+   *
+   * Carried here rather than on `ResourceCreateResult` /
+   * `ResourceUpdateResult`, a type every provider implements. Recursion holds
+   * because a child engine binds its OWN slot around each of its rows, so a
+   * grandchild's counts reach the child's `DeployResult` first and the parent
+   * through it. `| undefined` lets the provider drop the parent's slot from
+   * the child's context under `exactOptionalPropertyTypes`.
+   */
+  childUnaddressed?: NestedChildUnaddressedSlot | undefined;
+}
+
+/** What a nested child's deploy left unaddressed: `DeployResult`'s two counters. */
+export interface NestedChildUnaddressed {
+  deleteSkipped: number;
+  updatePartial: number;
+}
+
+/**
+ * One resource's report slot, written by `NestedStackProvider.runChildDeploy`.
+ * Should a row run its child twice, `deleteSkipped` is the last report's (a
+ * kept record is counted again) and `updatePartial` accumulates (an untracked
+ * survivor is not).
+ */
+export interface NestedChildUnaddressedSlot {
+  last?: NestedChildUnaddressed;
 }
 
 const storage = new AsyncLocalStorage<NestedStackProviderContext>();
@@ -144,4 +177,24 @@ export function withNestedStackContext<T>(ctx: NestedStackProviderContext, fn: (
  */
 export function getCurrentNestedStackContext(): NestedStackProviderContext | undefined {
   return storage.getStore();
+}
+
+/**
+ * Run one resource's provisioning `fn` with a fresh
+ * {@link NestedStackProviderContext.childUnaddressed} slot bound, and return
+ * what a nested child's deploy reported into it (issue #1989). Outside any
+ * nested-stack context `fn` runs as-is: `NestedStackProvider` refuses to run
+ * there, so nothing could report.
+ *
+ * `unaddressed` is `undefined` when no child deploy reported, i.e. for every
+ * resource that is not an `AWS::CloudFormation::Stack` row.
+ */
+export async function collectNestedChildUnaddressed<T>(
+  fn: () => Promise<T>
+): Promise<{ value: T; unaddressed: NestedChildUnaddressed | undefined }> {
+  const ctx = storage.getStore();
+  if (!ctx) return { value: await fn(), unaddressed: undefined };
+  const slot: NestedChildUnaddressedSlot = {};
+  const value = await storage.run({ ...ctx, childUnaddressed: slot }, fn);
+  return { value, unaddressed: slot.last };
 }

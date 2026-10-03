@@ -66,6 +66,10 @@
 #           the child's description reads the root's `Stage4094` Default, and
 #           `MidPinIf`'s condition is the root's. Step 4 stays clean.
 #
+#   #1989 - a DELETE the great-grandchild skips (an injected state record)
+#           reaches the ROOT's `Skipped (not deleted)` row, verdict line and
+#           exit 2 through three nested-stack hops (Step 4c).
+#
 # Run via: /run-integ nested-stack-3level
 #         or: bash tests/integration/nested-stack-3level/verify.sh
 
@@ -174,6 +178,7 @@ cleanup() {
   local rc=$?
   echo ""
   echo "==> Cleanup (errors during this block are tolerated)"
+  remove_injected_1989 >/dev/null 2>&1 || true
   ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
     --force-delete-without-recovery --region "${AWS_REGION}" >/dev/null 2>&1 || true
@@ -199,6 +204,40 @@ state_key_uri() {
 # fetch_state <stackName> -> prints the state JSON to stdout (fails if absent)
 fetch_state() {
   aws s3 cp "$(state_key_uri "$1")" - 2>/dev/null
+}
+
+# Step 4c (#1989): add / remove a record the great-grandchild's template does
+# not declare. Defined up here so `cleanup` can always remove it: a destroy
+# would SKIP the record too, keep that level's state and fail the teardown.
+INJECTED_1989="Cdkd1989Injected"
+# write_ggc_state_1989 <json>: refuses an EMPTY document. A failed `jq` piped
+# straight into `aws s3 cp -` would upload empty stdin over the level's
+# state.json (pipefail changes only the status), orphaning every resource it
+# records, cleanup's destroy included.
+write_ggc_state_1989() {
+  [[ -n "$1" ]] || { echo "refusing to write an empty ${GREATGRANDCHILD} state.json" >&2; return 1; }
+  aws s3 cp - "$(state_key_uri "${GREATGRANDCHILD}")" >/dev/null <<<"$1" || return 1
+}
+inject_1989() {
+  local ggc_json new_json
+  ggc_json=$(fetch_state "${GREATGRANDCHILD}") || return 1
+  [[ -n "${ggc_json}" ]] || return 1
+  new_json=$(jq --arg id "${INJECTED_1989}" '.resources[$id] = {
+      physicalId: "cdkd-1989-not-composite",
+      resourceType: "AWS::AppSync::Resolver",
+      properties: {},
+      attributes: {},
+      dependencies: [],
+      provisionedBy: "sdk"
+    }' <<<"${ggc_json}") || return 1
+  write_ggc_state_1989 "${new_json}" || return 1
+}
+remove_injected_1989() {
+  local ggc_json new_json
+  ggc_json=$(fetch_state "${GREATGRANDCHILD}") || return 1
+  [[ -n "${ggc_json}" ]] || return 1
+  new_json=$(jq --arg id "${INJECTED_1989}" 'del(.resources[$id])' <<<"${ggc_json}") || return 1
+  write_ggc_state_1989 "${new_json}" || return 1
 }
 
 echo "==> Installing fixture deps"
@@ -657,6 +696,86 @@ if ! echo "${CHANGED_OUT}" | grep -q "\[~\]"; then
   exit 1
 fi
 echo "  OK: depth=3 UPDATE surfaced under its Nested stack header"
+
+# --------------------------------------------------------------------
+# Step 4c (#1989): a resource the GREAT-GRANDCHILD leaves unaddressed reaches
+# the ROOT's summary and exit code, three nested-stack hops up.
+# --------------------------------------------------------------------
+# The skip is induced without any AWS resource: a record of a composite-id type
+# whose physicalId is NOT composite is injected into the great-grandchild's
+# state. The template does not declare it, so the deploy issues a template-
+# removal DELETE, and the AppSync provider skips it with no AWS call (the
+# record is KEPT). The changed great-grandchild value is the ORDINARY
+# difference that makes every level's row an UPDATE: with no template change
+# the root's Child row diffs NO_CHANGE and the child deploys never run.
+# Before #1989 the child result was discarded: the run printed the skip
+# warning from the great-grandchild and still exited 0 with a clean summary.
+echo ""
+echo "==> Step 4c: #1989 -- a great-grandchild's skipped DELETE fails the root's exit code"
+inject_1989
+assert_eq "premise: the injected record is in the great-grandchild's state" \
+  "$(jq_of "$(fetch_state "${GREATGRANDCHILD}")" ".resources | has(\"${INJECTED_1989}\")")" 'true'
+set +e
+SKIP_OUT=$(CDKD_INTEG_GGC_VALUE="${CHANGED_VALUE}" ${CDKD} deploy ${STACK} \
+  --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes 2>&1)
+SKIP_RC=$?
+set -e
+scan_output "cdkd deploy (#1989 skip)" "${SKIP_OUT}"
+echo "${SKIP_OUT}"
+SKIP_TXT=$(printf '%s\n' "${SKIP_OUT}" | sed $'s/\033\[[0-9;]*m//g')
+# Premise sentinel, independent of the summary rows under test: the
+# great-grandchild's own skip warning names the injected record. Without it a
+# red below would mean the injection never reached a DELETE, not that the
+# count was lost on the way up.
+if ! grep -F "${INJECTED_1989}" <<<"${SKIP_TXT}" | grep -qF "Skipping the delete"; then
+  echo "FAIL: premise: no skip warning for ${INJECTED_1989} -- the great-grandchild never attempted its DELETE" >&2
+  exit 1
+fi
+if [[ ${SKIP_RC} -ne 2 ]]; then
+  echo "FAIL: #1989: the deploy exited ${SKIP_RC}; a run whose great-grandchild left a resource unaddressed must exit 2" >&2
+  exit 1
+fi
+if ! grep -qE 'Skipped \(not deleted\): 1$' <<<"${SKIP_TXT}"; then
+  echo "FAIL: #1989: the root's summary has no 'Skipped (not deleted): 1' row" >&2
+  exit 1
+fi
+if ! grep -qF "Stack ${STACK} deployed, but 1 resource(s) were left unaddressed" <<<"${SKIP_TXT}"; then
+  echo "FAIL: #1989: no unaddressed verdict line for ${STACK}" >&2
+  exit 1
+fi
+if grep -qF "Deployment completed successfully" <<<"${SKIP_TXT}"; then
+  echo "FAIL: #1989: the root still reports 'Deployment completed successfully'" >&2
+  exit 1
+fi
+assert_eq "the skipped DELETE kept its record in the great-grandchild's state" \
+  "$(jq_of "$(fetch_state "${GREATGRANDCHILD}")" ".resources | has(\"${INJECTED_1989}\")")" 'true'
+echo "  OK: the depth-3 skip reached the root's summary row, verdict line and exit 2"
+
+# Negative control: the record removed, the same tree redeployed (the value
+# changed back, so every level runs again) exits 0 with a clean summary -- the
+# exit 2 above came from the injected skip, not from the changed value.
+remove_injected_1989
+set +e
+CLEAN_DEPLOY_OUT=$(${CDKD} deploy ${STACK} \
+  --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes 2>&1)
+CLEAN_DEPLOY_RC=$?
+set -e
+scan_output "cdkd deploy (#1989 control)" "${CLEAN_DEPLOY_OUT}"
+echo "${CLEAN_DEPLOY_OUT}"
+CLEAN_DEPLOY_TXT=$(printf '%s\n' "${CLEAN_DEPLOY_OUT}" | sed $'s/\033\[[0-9;]*m//g')
+if [[ ${CLEAN_DEPLOY_RC} -ne 0 ]]; then
+  echo "FAIL: #1989 control: the deploy without the injected record exited ${CLEAN_DEPLOY_RC}" >&2
+  exit 1
+fi
+if ! grep -qF "Deployment completed successfully" <<<"${CLEAN_DEPLOY_TXT}"; then
+  echo "FAIL: #1989 control: no success line after the injected record was removed" >&2
+  exit 1
+fi
+if grep -qF "Skipped (not deleted)" <<<"${CLEAN_DEPLOY_TXT}"; then
+  echo "FAIL: #1989 control: a 'Skipped (not deleted)' row without any skip" >&2
+  exit 1
+fi
+echo "  OK: #1989 control: the same tree without the skip exits 0"
 
 # --------------------------------------------------------------------
 # Step 5: 'cdkd state list --tree' renders the 4-level hierarchy.
