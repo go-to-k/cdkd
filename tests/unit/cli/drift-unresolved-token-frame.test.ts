@@ -63,6 +63,11 @@ describe('liveMatchesUnresolvedTokenFrame (#2102)', () => {
     expect(liveMatchesUnresolvedTokenFrame(`p-${leading}`, 'p-Qtail', BOTH, leadingSecrets)).toBe(
       false
     );
+    // A plaintext elsewhere in the string does not affect a disjoint span.
+    const other = new Map([[`r${B}`, '{{resolve:secretsmanager:y:SecretString:k::}}']]);
+    expect(liveMatchesUnresolvedTokenFrame(`${A}|r${B}`, `v|r${B}`, new Set([A]), other)).toBe(
+      true
+    );
   });
 
   it('refuses when a plaintext supplies only a span EDGE (PR #4513 security review)', () => {
@@ -88,11 +93,6 @@ describe('liveMatchesUnresolvedTokenFrame (#2102)', () => {
     const secrets = new Map([['{a{', '{{resolve:secretsmanager:c:SecretString:k::}}']]);
     expect(liveMatchesUnresolvedTokenFrame(`{a{a${T}`, '{a{aZZ', new Set([T]), secrets)).toBe(
       false
-    );
-    // A plaintext elsewhere in the string does not affect a disjoint span.
-    const other = new Map([[`r${B}`, '{{resolve:secretsmanager:y:SecretString:k::}}']]);
-    expect(liveMatchesUnresolvedTokenFrame(`${A}|r${B}`, `v|r${B}`, new Set([A]), other)).toBe(
-      true
     );
   });
 });

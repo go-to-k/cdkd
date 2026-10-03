@@ -2540,6 +2540,25 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
       .flatMap((spy) => spy.mock.calls.map((c) => String(c[0])))
       .join('\n');
     expect(said).not.toContain(SECRET_PLAINTEXT);
+
+    // `--accept` refuses the masked key rather than persisting the live value.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: { Env: env },
+          observedProperties: { Env: env },
+        },
+      })
+    );
+    await runDrift(['TestStack', '--accept', '--yes']);
+    for (const call of mockSaveState.mock.calls) {
+      const saved = JSON.stringify(call[2]);
+      expect(saved).not.toContain('v2');
+      expect(saved).not.toContain(SECRET_MASK);
+    }
   });
 
   it('--revert still sends the literal where AWS has nothing at that position', async () => {
