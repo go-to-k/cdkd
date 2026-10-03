@@ -24,8 +24,9 @@ import { takenFnIfArms } from './recreate-target-readers.js';
  * Only the replacement arm records a parent. The update-failure fallback
  * (`ResourceUpdateNotSupportedError` -> delete, create) also re-creates under
  * the same id, but the diff never promoted that parent's readers, so they are
- * not reached here (go-to-k/cdkd#4444); nor is a child the deploy failed
- * before reaching, as this set lives only in memory (go-to-k/cdkd#4443).
+ * not reached here (go-to-k/cdkd#4444). A child the deploy fails before
+ * reaching has its state record forgotten instead, so the next deploy creates
+ * it ({@link lostChildActions}).
  *
  * A child is lost only when its parent-naming value is UNCHANGED (the caller
  * compares the resolved value with the record): one the same deploy re-points
@@ -77,6 +78,8 @@ interface ChildEntry {
   readonly parentTypes: readonly string[];
   /** Names several parents, so it is updated in place rather than re-created. */
   readonly mode?: 'reput';
+  /** Other properties naming holders of a `reput` child that are not parents here. */
+  readonly otherHolders?: readonly string[];
 }
 
 const LAMBDA_FUNCTION = 'AWS::Lambda::Function';
@@ -113,7 +116,12 @@ const CHILD_STORED_IN_PARENT: Readonly<Record<string, ChildEntry>> = {
     parentTypes: ['AWS::Logs::LogGroup'],
   },
   'AWS::IAM::RolePolicy': { properties: ['RoleName'], parentTypes: ['AWS::IAM::Role'] },
-  'AWS::IAM::Policy': { properties: ['Roles'], parentTypes: ['AWS::IAM::Role'], mode: 'reput' },
+  'AWS::IAM::Policy': {
+    properties: ['Roles'],
+    parentTypes: ['AWS::IAM::Role'],
+    mode: 'reput',
+    otherHolders: ['Users', 'Groups'],
+  },
 };
 
 /** The child types, for the test that pins the list. */
@@ -185,4 +193,168 @@ export function namesRecreatedParent(
     entry.properties.includes(property) &&
     entry.parentTypes.includes(parentType)
   );
+}
+
+/**
+ * What a failed deploy does to the record of a child it never restored;
+ * `parent` is the logical id of the re-created parent it went with.
+ */
+export type LostChildAction =
+  /** Gone from AWS: drop the record, so the next deploy creates it. */
+  | { logicalId: string; parent: string; action: 'forget' }
+  /**
+   * A policy naming several parents that still holds on the surviving ones:
+   * keep the record, minus the recreated parents' entries, so the next deploy
+   * diffs a change and writes it to them again (and a destroy still removes
+   * the surviving copies).
+   */
+  | { logicalId: string; parent: string; action: 'trim'; property: string; kept: unknown[] };
+
+/**
+ * go-to-k/cdkd#4443: what a FAILED deploy must do to the records of children
+ * stored inside a parent it destroyed and re-created under the same physical
+ * id, which it never wrote (`written`: every logical id this deploy created,
+ * updated or restored -- a child it created or moved onto the recreated parent
+ * before failing is live and keeps its record). Each such child is gone from
+ * AWS, yet its record survived the failure (the rollback keeps the equal-id
+ * parent as done), and every later deploy diffed it `NO_CHANGE`, so it stayed
+ * missing for good -- for a bucket or IAM policy carrying a Deny, a control
+ * silently absent while state recorded it.
+ *
+ * A child counts only while its RECORDED parent-naming value names the
+ * parent's physical id: one the same deploy was moving onto the recreated
+ * parent from another still has its record, and its copy, on the other one.
+ * A `reput` child (a policy naming several parents) is forgotten only when
+ * every parent it names was recreated; otherwise it is trimmed.
+ */
+export function lostChildActions(input: {
+  templateResources: Readonly<
+    Record<string, { Type: string; Properties?: Record<string, unknown> }>
+  >;
+  records: Readonly<
+    Record<
+      string,
+      { resourceType: string; physicalId: string; properties?: Record<string, unknown> }
+    >
+  >;
+  recreatedUnderSameId: ReadonlySet<string>;
+  written: ReadonlySet<string>;
+  conditions?: Readonly<Record<string, boolean>> | undefined;
+}): LostChildAction[] {
+  if (input.recreatedUnderSameId.size === 0) return [];
+  const recordOf = (id: string) =>
+    Object.hasOwn(input.records, id) ? input.records[id] : undefined;
+  // Grandchildren: a forgotten child that is itself a parent type (an alias or
+  // version of the recreated function) went with it too, and so did what is
+  // stored inside IT (a permission on that alias). Extend the recreated set
+  // with each such child and scan again, to a fixpoint.
+  const recreated = new Set(input.recreatedUnderSameId);
+  const decided = new Map<string, LostChildAction>();
+  for (;;) {
+    const before = decided.size;
+    for (const action of scanLostChildren(input, recreated, recordOf, decided)) {
+      decided.set(action.logicalId, action);
+      const type = recordOf(action.logicalId)?.resourceType;
+      if (action.action === 'forget' && type !== undefined && PARENT_TYPES.has(type)) {
+        recreated.add(action.logicalId);
+      }
+    }
+    if (decided.size === before) break;
+  }
+  return [...decided.values()];
+}
+
+/** Every type some child entry names as a parent. */
+const PARENT_TYPES: ReadonlySet<string> = new Set(
+  Object.values(CHILD_STORED_IN_PARENT).flatMap((entry) => entry.parentTypes)
+);
+
+function scanLostChildren(
+  input: Parameters<typeof lostChildActions>[0],
+  recreated: ReadonlySet<string>,
+  recordOf: (
+    id: string
+  ) =>
+    | { resourceType: string; physicalId: string; properties?: Record<string, unknown> }
+    | undefined,
+  decided: ReadonlyMap<string, LostChildAction>
+): LostChildAction[] {
+  // The recreated parents' physical ids, by type: a list entry is a re-created
+  // holder only when a recreated resource of one of the child's PARENT types
+  // carries that id (a recreated function `app` says nothing of a role `app`).
+  const recreatedIdsOf = (parentTypes: readonly string[]): string[] =>
+    [...recreated]
+      .map((id) => recordOf(id))
+      .filter((r) => r !== undefined && parentTypes.includes(r.resourceType))
+      .map((r) => r!.physicalId)
+      .filter((id) => id !== '');
+  const actions: LostChildAction[] = [];
+  for (const [logicalId, resource] of Object.entries(input.templateResources)) {
+    if (decided.has(logicalId) || input.written.has(logicalId) || recreated.has(logicalId)) {
+      continue;
+    }
+    const record = recordOf(logicalId);
+    if (record === undefined || record.resourceType !== resource.Type) continue;
+    const lost = childLostWithRecreatedParent({
+      resourceType: resource.Type,
+      templateProperties: resource.Properties,
+      recreatedUnderSameId: recreated,
+      recordedTypeOf: (id) => recordOf(id)?.resourceType,
+      conditions: input.conditions,
+    });
+    if (lost === undefined) continue;
+    const parent = recordOf(lost.parent);
+    if (parent === undefined) continue;
+    const recorded = record.properties ?? {};
+    if (!Object.hasOwn(recorded, lost.property)) continue;
+    const value = recorded[lost.property];
+    if (lost.mode === 'reput' && Array.isArray(value)) {
+      const recreatedIds = recreatedIdsOf(CHILD_STORED_IN_PARENT[resource.Type]!.parentTypes);
+      const kept = value.filter((item) => !recreatedIds.some((id) => namesPhysicalId(item, id)));
+      if (kept.length === value.length) continue;
+      const otherHolders = CHILD_STORED_IN_PARENT[resource.Type]!.otherHolders ?? [];
+      const heldElsewhere =
+        kept.length > 0 ||
+        otherHolders.some((key) => {
+          const other = recorded[key];
+          return Array.isArray(other) ? other.length > 0 : other !== undefined && other !== null;
+        });
+      actions.push(
+        heldElsewhere
+          ? { logicalId, parent: lost.parent, action: 'trim', property: lost.property, kept }
+          : { logicalId, parent: lost.parent, action: 'forget' }
+      );
+      continue;
+    }
+    if (namesPhysicalId(value, parent.physicalId)) {
+      actions.push({ logicalId, parent: lost.parent, action: 'forget' });
+    }
+  }
+  return actions;
+}
+
+/**
+ * Does a recorded value name `physicalId`: the id itself, or a Lambda
+ * function ARN for that function -- `arn:<partition>:lambda:<region>:<account>:function:<id>`
+ * or the partial `<account>:function:<id>` that `FunctionName` accepts, each
+ * optionally qualified (`:<alias or version>`, which went with the function
+ * too) -- anywhere in a list? Only these exact forms: a looser suffix would
+ * match a different resource sharing the tail (`/aws/lambda/foo` for the log
+ * group `foo`, an alias `...:function:other:my-fn`) and forget a live child.
+ */
+function namesPhysicalId(value: unknown, physicalId: string): boolean {
+  if (physicalId === '') return false;
+  if (typeof value === 'string') {
+    if (value === physicalId) return true;
+    const parts = value.split(':');
+    if (parts[0] === 'arn' && (parts.length === 7 || parts.length === 8)) {
+      return parts[2] === 'lambda' && parts[5] === 'function' && parts[6] === physicalId;
+    }
+    if (/^\d{12}$/.test(parts[0]!) && (parts.length === 3 || parts.length === 4)) {
+      return parts[1] === 'function' && parts[2] === physicalId;
+    }
+    return false;
+  }
+  if (Array.isArray(value)) return value.some((item) => namesPhysicalId(item, physicalId));
+  return false;
 }

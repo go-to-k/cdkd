@@ -200,6 +200,12 @@ interface ResourceUpdateResultBase extends EffectivePropertiesResult, NoEchoAttr
   wasReplaced: boolean;
   /** Updated resource attributes */
   attributes?: Record<string, unknown>;
+  /**
+   * The update sent NOTHING to AWS (go-to-k/cdkd#4443): Cloud Control's patch
+   * from record to template came out empty. Only a provider that can tell
+   * sets it; absent means "may have written".
+   */
+  sentNothing?: true;
 }
 
 /**

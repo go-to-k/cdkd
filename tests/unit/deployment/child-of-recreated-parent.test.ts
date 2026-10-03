@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   childLostWithRecreatedParent,
   childStoredInParentTypes,
+  lostChildActions,
 } from '../../../src/deployment/child-of-recreated-parent.js';
 
 /** go-to-k/cdkd#4411: which resource went with a parent recreated under the same id. */
@@ -114,5 +115,185 @@ describe('childLostWithRecreatedParent', () => {
       'AWS::SQS::QueueInlinePolicy',
       'AWS::SQS::QueuePolicy',
     ]);
+  });
+});
+
+describe('lostChildActions (go-to-k/cdkd#4443)', () => {
+  const rec = (resourceType: string, physicalId: string, properties: Record<string, unknown> = {}) => ({
+    resourceType,
+    physicalId,
+    properties,
+  });
+  const act = (
+    records: Record<string, ReturnType<typeof rec>>,
+    templateResources: Record<string, { Type: string; Properties?: Record<string, unknown> }>,
+    written: string[] = []
+  ) =>
+    lostChildActions({
+      templateResources,
+      records,
+      recreatedUnderSameId: new Set(['Fn', 'Queue', 'Role']),
+      written: new Set(written),
+    });
+  const forgotten = (actions: ReturnType<typeof act>): string[] =>
+    actions.filter((a) => a.action === 'forget').map((a) => a.logicalId).sort();
+
+  const templateResources = {
+    Fn: { Type: 'AWS::Lambda::Function' },
+    Queue: { Type: 'AWS::SQS::Queue' },
+    Role: { Type: 'AWS::IAM::Role' },
+    ByName: { Type: 'AWS::Lambda::Permission', Properties: { FunctionName: { Ref: 'Fn' } } },
+    ByArn: {
+      Type: 'AWS::Lambda::Permission',
+      Properties: { FunctionName: { 'Fn::GetAtt': ['Fn', 'Arn'] } },
+    },
+    Policy: { Type: 'AWS::SQS::QueuePolicy', Properties: { Queues: [{ Ref: 'Queue' }] } },
+  };
+  const queueUrl = 'https://sqs.us-east-1.amazonaws.com/123/q';
+  const records = {
+    Fn: rec('AWS::Lambda::Function', 'my-fn'),
+    Queue: rec('AWS::SQS::Queue', queueUrl),
+    Role: rec('AWS::IAM::Role', 'role-a'),
+    ByName: rec('AWS::Lambda::Permission', 'p1', { FunctionName: 'my-fn' }),
+    ByArn: rec('AWS::Lambda::Permission', 'p2', {
+      FunctionName: 'arn:aws:lambda:us-east-1:123:function:my-fn',
+    }),
+    Policy: rec('AWS::SQS::QueuePolicy', 'qp', { Queues: [queueUrl] }),
+  };
+
+  it('forgets every unwritten child whose record names the recreated parent, by id or function ARN', () => {
+    expect(forgotten(act(records, templateResources))).toEqual(['ByArn', 'ByName', 'Policy']);
+  });
+
+  it('keeps every child this deploy wrote (restored, created or moved), and never the parent', () => {
+    expect(act(records, templateResources, ['ByName', 'ByArn', 'Policy'])).toEqual([]);
+  });
+
+  it('keeps a child whose record names another resource, a shared tail, or a qualified ARN', () => {
+    expect(
+      act(
+        {
+          ...records,
+          ByName: rec('AWS::Lambda::Permission', 'p1', { FunctionName: 'other-fn' }),
+          ByArn: rec('AWS::Lambda::Permission', 'p2', {
+            // An alias named like the recreated function, on another function.
+            FunctionName: 'arn:aws:lambda:us-east-1:123:function:other:my-fn',
+          }),
+        },
+        templateResources,
+        ['Policy']
+      )
+    ).toEqual([]);
+    expect(
+      act(
+        { ...records, ByName: rec('AWS::Lambda::Permission', 'p1', { FunctionName: 'x/my-fn' }) },
+        templateResources,
+        ['ByArn', 'Policy']
+      )
+    ).toEqual([]);
+  });
+
+  it('matches full and partial function ARNs, qualified or not, but not another function or a non-account prefix', () => {
+    const one = (value: string) =>
+      act(
+        { ...records, ByName: rec('AWS::Lambda::Permission', 'p1', { FunctionName: value }) },
+        templateResources,
+        ['ByArn', 'Policy']
+      );
+    const forgot = [{ logicalId: 'ByName', parent: 'Fn', action: 'forget' }];
+    expect(one('arn:aws:lambda:us-east-1:123456789012:function:my-fn:live')).toEqual(forgot);
+    expect(one('123456789012:function:my-fn')).toEqual(forgot);
+    expect(one('123456789012:function:my-fn:7')).toEqual(forgot);
+    expect(one('arn:aws:lambda:us-east-1:123456789012:function:other:my-fn')).toEqual([]);
+    expect(one('arn:aws:lambda:us-east-1:123456789012:function:my-fn:live:extra')).toEqual([]);
+    expect(one('x:function:my-fn')).toEqual([]);
+  });
+
+  it('follows grandchildren: a permission on an alias of the recreated function is forgotten with the alias', () => {
+    const aliasArn = 'arn:aws:lambda:us-east-1:123:function:my-fn:live';
+    expect(
+      act(
+        {
+          ...records,
+          Alias: rec('AWS::Lambda::Alias', aliasArn, { FunctionName: 'my-fn', Name: 'live' }),
+          AliasPerm: rec('AWS::Lambda::Permission', 'ap', { FunctionName: aliasArn }),
+        },
+        {
+          ...templateResources,
+          Alias: { Type: 'AWS::Lambda::Alias', Properties: { FunctionName: { Ref: 'Fn' } } },
+          AliasPerm: { Type: 'AWS::Lambda::Permission', Properties: { FunctionName: { Ref: 'Alias' } } },
+        },
+        ['ByName', 'ByArn', 'Policy']
+      )
+        .map((a) => `${a.logicalId}:${a.action}`)
+        .sort()
+    ).toEqual(['Alias:forget', 'AliasPerm:forget']);
+  });
+
+  it('trims only entries naming a recreated resource of a PARENT type', () => {
+    // A recreated function `role-b` says nothing of the role `role-b`.
+    const policyTemplate = {
+      ...templateResources,
+      Fn2: { Type: 'AWS::Lambda::Function' },
+      IamPolicy: { Type: 'AWS::IAM::Policy', Properties: { Roles: [{ Ref: 'Role' }, 'role-b'] } },
+    };
+    expect(
+      lostChildActions({
+        templateResources: policyTemplate,
+        records: {
+          ...records,
+          Fn2: rec('AWS::Lambda::Function', 'role-b'),
+          IamPolicy: rec('AWS::IAM::Policy', 'pol', { Roles: ['role-a', 'role-b'] }),
+        },
+        recreatedUnderSameId: new Set(['Fn', 'Queue', 'Role', 'Fn2']),
+        written: new Set(['ByName', 'ByArn', 'Policy']),
+      })
+    ).toEqual([{ logicalId: 'IamPolicy', parent: 'Role', action: 'trim', property: 'Roles', kept: ['role-b'] }]);
+  });
+
+  it('keeps a child with no record, or recorded under another type', () => {
+    const { ByName: _a, ...withoutByName } = records;
+    expect(act(withoutByName, templateResources, ['ByArn', 'Policy'])).toEqual([]);
+    expect(
+      act(
+        { ...records, ByName: rec('AWS::SNS::Topic', 'p1', { FunctionName: 'my-fn' }) },
+        templateResources,
+        ['ByArn', 'Policy']
+      )
+    ).toEqual([]);
+  });
+
+  it('trims a policy naming several holders to the surviving ones, and forgets it only when none survive', () => {
+    const policyTemplate = {
+      ...templateResources,
+      IamPolicy: { Type: 'AWS::IAM::Policy', Properties: { Roles: [{ Ref: 'Role' }, 'ext-role'] } },
+    };
+    const written = ['ByName', 'ByArn', 'Policy'];
+    expect(
+      act(
+        { ...records, IamPolicy: rec('AWS::IAM::Policy', 'pol', { Roles: ['role-a', 'ext-role'] }) },
+        policyTemplate,
+        written
+      )
+    ).toEqual([{ logicalId: 'IamPolicy', parent: 'Role', action: 'trim', property: 'Roles', kept: ['ext-role'] }]);
+    // Only the recreated role, but the policy is also on a user: trim, not forget.
+    expect(
+      act(
+        {
+          ...records,
+          IamPolicy: rec('AWS::IAM::Policy', 'pol', { Roles: ['role-a'], Users: ['u'] }),
+        },
+        policyTemplate,
+        written
+      )
+    ).toEqual([{ logicalId: 'IamPolicy', parent: 'Role', action: 'trim', property: 'Roles', kept: [] }]);
+    // On the recreated role alone: gone from AWS.
+    expect(
+      act(
+        { ...records, IamPolicy: rec('AWS::IAM::Policy', 'pol', { Roles: ['role-a'] }) },
+        policyTemplate,
+        written
+      )
+    ).toEqual([{ logicalId: 'IamPolicy', parent: 'Role', action: 'forget' }]);
   });
 });

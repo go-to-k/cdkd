@@ -5616,6 +5616,7 @@
         "local-invoke-from-state",
         "local-start-cloudfront",
         "log-pipeline",
+        "lost-child-after-failed-deploy",
         "migrate-from-cfn",
         "multi-resource",
         "multi-stack-deps",
@@ -5735,6 +5736,10 @@
         "log-pipeline": [
           "l2"
         ],
+        "lost-child-after-failed-deploy": [
+          "l1",
+          "literal"
+        ],
         "migrate-from-cfn": [
           "l2"
         ],
@@ -5823,6 +5828,7 @@
       "resourceType": "AWS::S3::BucketPolicy",
       "integs": [
         "asset-migration",
+        "lost-child-after-failed-deploy",
         "migrate-from-cfn",
         "propagation-races-2",
         "s3-analytics-inventory",
@@ -5830,6 +5836,10 @@
       ],
       "signals": {
         "asset-migration": [
+          "literal"
+        ],
+        "lost-child-after-failed-deploy": [
+          "l1",
           "literal"
         ],
         "migrate-from-cfn": [
@@ -6497,6 +6507,7 @@
         "legacy-state-migration",
         "list-parameters",
         "local-invoke-from-cfn-stack-multi-stack",
+        "lost-child-after-failed-deploy",
         "microservices",
         "multi-region-same-stack",
         "nested-stack",
@@ -6691,6 +6702,10 @@
         ],
         "local-invoke-from-cfn-stack-multi-stack": [
           "l2"
+        ],
+        "lost-child-after-failed-deploy": [
+          "l1",
+          "literal"
         ],
         "microservices": [
           "l2"

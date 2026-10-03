@@ -316,6 +316,10 @@ export async function updateInPlace(
       undefined,
       updateProvider
     );
+    // go-to-k/cdkd#4443: the provider's own word that it sent nothing, taken
+    // before anything below can throw, so a failed deploy can tell a re-put
+    // child that wrote nothing from one that may have.
+    if (result.sentNothing === true) this.updatesThatSentNothing.add(logicalId);
     // An injected reset is sent, never recorded: state keeps the template.
     result = withoutInjectedRemovals(result, removal.injected);
     if (removal.unhandled.length > 0) {

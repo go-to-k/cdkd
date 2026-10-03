@@ -1250,6 +1250,7 @@ export class CloudControlProvider implements ResourceProvider {
         return {
           physicalId,
           wasReplaced: false,
+          sentNothing: true,
         };
       }
 
@@ -1302,6 +1303,7 @@ export class CloudControlProvider implements ResourceProvider {
           return {
             physicalId,
             wasReplaced: false,
+            sentNothing: true,
           };
         }
       }

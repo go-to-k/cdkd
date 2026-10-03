@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-lost-child-after-failed-deploy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd restores a bucket policy lost with a failed same-id recreate (#4443)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
