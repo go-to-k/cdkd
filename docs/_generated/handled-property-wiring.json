@@ -7610,7 +7610,8 @@
         "object spread in canonicalizeSgInlineRuleProtocols()",
         "object spread in createSecurityGroupIngress()",
         "object spread in narrowIngressIpProtocol()",
-        "object spread in narrowRouteDestinations()"
+        "object spread in narrowRouteDestinations()",
+        "object spread in updateSecurityGroupIngress()"
       ]
     },
     {
