@@ -383,8 +383,9 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
     // would report a phantom DELETE of a condition-gated child resource that
     // deploy keeps (or a phantom CREATE of one it drops).
     //
-    // The guard falls back to the WHOLE template — the same fallback the
-    // existing `parametersBound` guard already takes for the same reason.
+    // The condition is left out of the evaluated map (go-to-k/cdkd#4470), and
+    // `filterResourcesByCondition` keeps every resource gated on a condition
+    // the map does not hold.
     const childPath = join(dir, 'child.json');
     writeFileSync(
       childPath,
@@ -500,15 +501,13 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
   });
 
   it('goes back to NOT pruning when the token parameter is reached through a {Condition: X} chain', async () => {
-    // The CHAINED shape (issue #840's `Fn::And`-over-a-named-condition), kept
-    // as a regression guard rather than as a fence on a transitive walk: the
-    // resource is gated on `IsDev`, which never names the secret parameter and
-    // only wraps `IsProd`, which does. The scan answers correctly WITHOUT
-    // following the chain, because `IsProd` is itself an entry in the same
-    // `Conditions` map and every entry is visited — measured, which is why the
-    // chain walk the first cut carried was removed as dead code. What this case
-    // pins is the OUTCOME for the shape, so a future narrowing that scans only
-    // the conditions a resource is gated on would go red here.
+    // The CHAINED shape (issue #840's `Fn::And`-over-a-named-condition): the
+    // resource is gated on `IsProdChained`, which never names the secret
+    // parameter and only wraps `IsProd`, which does. Since conditions are
+    // evaluated per condition (go-to-k/cdkd#4470) the transitive walk in
+    // `unknownConditionNames` is what keeps `IsProdChained` unevaluated:
+    // without it the chained condition would be evaluated against a map
+    // missing `IsProd`, answer FALSE and prune.
     const childPath = join(dir, 'child.json');
     writeFileSync(
       childPath,
