@@ -758,7 +758,18 @@ export class IAMUserGroupProvider implements ResourceProvider {
           })
         );
         log.debug(`Created login profile for user ${v(physicalId)}`);
-      } else if (newLoginProfile && oldLoginProfile) {
+      } else if (
+        newLoginProfile &&
+        oldLoginProfile &&
+        // Only on a CHANGE, as CloudFormation does (go-to-k/cdkd#4461): an
+        // update reached for another reason -- a tag, or re-adding the user to
+        // a group the deploy re-created -- must not reset the password and
+        // re-force a reset at the next sign-in. A secret-derived password is
+        // recorded as its reference, so it still compares unequal and is sent.
+        (newLoginProfile.Password !== oldLoginProfile.Password ||
+          (newLoginProfile.PasswordResetRequired ?? false) !==
+            (oldLoginProfile.PasswordResetRequired ?? false))
+      ) {
         await this.iamClient.send(
           new UpdateLoginProfileCommand({
             UserName: physicalId,

@@ -1,4 +1,4 @@
-import { childLostWithRecreatedParent } from '../child-of-recreated-parent.js';
+import { childLostWithRecreatedParent, survivesParent } from '../child-of-recreated-parent.js';
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import {
@@ -226,12 +226,17 @@ export async function provisionUpdate(
   // may fire and no ceiling may lower it: it is re-created, without deleting
   // the old one, which no longer exists.
   // A child naming several parents (`reput`) only bypasses the skips: its
-  // in-place update writes the policy to each parent it names.
+  // in-place update writes the policy to each parent it names. One that
+  // survives the parent (`reattach`, go-to-k/cdkd#4461) bypasses them too,
+  // and its update attaches it to the re-created parent again.
   //
   // Only when the parent-naming value did NOT move: a child the same deploy
   // re-points from a surviving parent to the recreated one still has its old
   // copy on the surviving parent, and takes the ordinary replacement, whose
-  // delete removes that copy.
+  // delete removes that copy. A `reattach` child takes no such gate: it is
+  // never replaced, and its update drops from the recorded side only names
+  // that the record AND the template give to a re-created parent, so a list
+  // the same deploy also edits (`[R]` -> `[R, X]`) attaches R again as well.
   const lostCandidate = childLostWithRecreatedParent({
     resourceType,
     templateProperties: desiredProps,
@@ -241,11 +246,12 @@ export async function provisionUpdate(
     conditions,
   });
   const lostChild =
-    lostCandidate !== undefined &&
-    Object.hasOwn(resolvedProps, lostCandidate.property) &&
-    Object.hasOwn(currentProps, lostCandidate.property) &&
-    keyOrderFreeJson(resolvedProps[lostCandidate.property]) ===
-      keyOrderFreeJson(currentProps[lostCandidate.property])
+    lostCandidate?.mode === 'reattach' ||
+    (lostCandidate !== undefined &&
+      Object.hasOwn(resolvedProps, lostCandidate.property) &&
+      Object.hasOwn(currentProps, lostCandidate.property) &&
+      keyOrderFreeJson(resolvedProps[lostCandidate.property]) ===
+        keyOrderFreeJson(currentProps[lostCandidate.property]))
       ? lostCandidate
       : undefined;
   const lostWithParent = lostChild?.mode === 'recreate' ? lostChild.parent : undefined;
@@ -582,8 +588,13 @@ export async function provisionUpdate(
       // The provider sent nothing (Cloud Control's patch from record to
       // template is empty), so nothing reached the recreated parent: say so
       // rather than report it restored. A failed deploy reads the same set.
+      // A resource merely attached to the parent (go-to-k/cdkd#4461) is not
+      // pointed at a recreate flag: re-creating it to redo one attach would,
+      // for an IAM user, revoke its access keys.
       this.logger.warn(
-        safeMsg`  ⚠ ${logicalId} went with ${lostChild.parent}, which was re-created, but its update sent no change (it is recorded on Cloud Control, which patches record against template); its policy may be missing from ${lostChild.parent}. Re-run with --recreate-via-sdk-provider ${logicalId} to write it again.`
+        survivesParent(resourceType)
+          ? safeMsg`  ⚠ ${logicalId} lost its attachment to ${lostChild.parent}, which was re-created, but its update sent no change (it is recorded on Cloud Control, which patches record against template); it may no longer be attached to ${lostChild.parent}. Attach it there by hand.`
+          : safeMsg`  ⚠ ${logicalId} went with ${lostChild.parent}, which was re-created, but its update sent no change (it is recorded on Cloud Control, which patches record against template); its policy may be missing from ${lostChild.parent}. Re-run with --recreate-via-sdk-provider ${logicalId} to write it again.`
       );
       return outcome;
     }
@@ -639,6 +650,7 @@ export async function provisionUpdate(
       template,
       updateReplacePolicy,
       updateSecrets,
+      reattach: lostChild?.mode === 'reattach',
     })
   );
 }

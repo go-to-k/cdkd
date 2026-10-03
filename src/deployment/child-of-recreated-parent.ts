@@ -58,10 +58,26 @@ import { takenFnIfArms } from './recreate-target-readers.js';
  *   identified by their name AND the log group they belong to;
  *   `DeleteLogGroup` deletes "all the archived log events associated with the
  *   log group" (CloudWatch Logs API reference).
- * - IAM `RolePolicy`, and `Policy` through its `Roles`: inline role
- *   policies, which `DeleteRole` requires removing first (IAM API reference),
- *   so cdkd's role provider deletes them before the role. Its `Users` /
- *   `Groups` are not listed: only the role path was checked.
+ * - IAM `RolePolicy` / `UserPolicy` / `GroupPolicy`, and `Policy` through its
+ *   `Roles` / `Users` / `Groups`:
+ *   inline policies, which `DeleteRole` / `DeleteUser` / `DeleteGroup`
+ *   require removing first (IAM API reference), so cdkd's role, user and
+ *   group providers delete them before the principal.
+ *
+ * `mode: 'reattach'` (go-to-k/cdkd#4461): the child SURVIVES its parent, and
+ * only its attachment to the parent is lost, because IAM refuses to delete a
+ * principal that still has one (`DeleteConflict`), so every route detaches it
+ * first. A re-create would collide on the child's name; the in-place update
+ * re-attaches instead, from a recorded side with the re-created parents'
+ * names dropped ({@link withRecreatedAttachmentsDropped}), so the provider's
+ * own diff adds them back:
+ * - IAM `ManagedPolicy` through `Roles` / `Users` / `Groups`
+ *   (`AttachRolePolicy` / `AttachUserPolicy` / `AttachGroupPolicy`).
+ * - IAM `InstanceProfile` through `Roles` (`AddRoleToInstanceProfile`).
+ * - IAM `User` through `Groups`, and `UserToGroupAddition` through `Users`
+ *   (`AddUserToGroup`): a group is deleted only once its members are removed.
+ *   A `UserToGroupAddition` whose `GroupName` names the re-created group lost
+ *   every member it added, so its whole recorded `Users` is dropped.
  *
  * Deliberately NOT listed:
  * - Lambda `EventSourceMapping`: `DeleteFunction` does not delete it (Lambda
@@ -69,22 +85,35 @@ import { takenFnIfArms } from './recreate-target-readers.js';
  * - Lambda `Url`: deleted ASYNCHRONOUSLY with the function, and the Lambda
  *   guide warns that a function re-created at once under the same name may
  *   inherit the old URL instead, so a re-create can collide.
- * - IAM `ManagedPolicy` attachments (`Roles` / `Users` / `Groups`) and an
- *   `InstanceProfile`'s `Roles` (cdkd's role delete removes the role from its
- *   instance profiles): the attachment is lost but the policy or profile
- *   survives, so the remedy is a re-attach, not a re-create (which would
- *   collide on its name).
  */
 interface ChildEntry {
   readonly properties: readonly string[];
   readonly parentTypes: readonly string[];
-  /** Names several parents, so it is updated in place rather than re-created. */
-  readonly mode?: 'reput';
-  /** Other properties naming holders of a `reput` child that are not parents here. */
-  readonly otherHolders?: readonly string[];
+  /**
+   * `reput`: names several parents, so it is updated in place rather than
+   * re-created. `reattach`: survives the parent, and its in-place update
+   * attaches it to the re-created parent again.
+   */
+  readonly mode?: 'reput' | 'reattach';
+  /**
+   * The parent types each property may name, where they differ by property
+   * (an IAM principal list names roles, users or groups by its key); absent,
+   * every property may name any of `parentTypes`.
+   */
+  readonly byProperty?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * `reattach` only: a property naming the parent itself (not a list of
+   * attachments), mapped to the recorded list the parent's re-create emptied.
+   */
+  readonly clears?: Readonly<Record<string, string>>;
 }
 
 const LAMBDA_FUNCTION = 'AWS::Lambda::Function';
+const IAM_ROLE = 'AWS::IAM::Role';
+const IAM_USER = 'AWS::IAM::User';
+const IAM_GROUP = 'AWS::IAM::Group';
+const IAM_PRINCIPAL_TYPES = [IAM_ROLE, IAM_USER, IAM_GROUP];
+const IAM_PRINCIPAL_LISTS = { Roles: [IAM_ROLE], Users: [IAM_USER], Groups: [IAM_GROUP] };
 
 const CHILD_STORED_IN_PARENT: Readonly<Record<string, ChildEntry>> = {
   'AWS::Lambda::Permission': {
@@ -118,13 +147,45 @@ const CHILD_STORED_IN_PARENT: Readonly<Record<string, ChildEntry>> = {
     parentTypes: ['AWS::Logs::LogGroup'],
   },
   'AWS::IAM::RolePolicy': { properties: ['RoleName'], parentTypes: ['AWS::IAM::Role'] },
+  'AWS::IAM::UserPolicy': { properties: ['UserName'], parentTypes: [IAM_USER] },
+  'AWS::IAM::GroupPolicy': { properties: ['GroupName'], parentTypes: [IAM_GROUP] },
   'AWS::IAM::Policy': {
-    properties: ['Roles'],
-    parentTypes: ['AWS::IAM::Role'],
+    properties: ['Roles', 'Users', 'Groups'],
+    parentTypes: IAM_PRINCIPAL_TYPES,
+    byProperty: IAM_PRINCIPAL_LISTS,
     mode: 'reput',
-    otherHolders: ['Users', 'Groups'],
+  },
+  'AWS::IAM::ManagedPolicy': {
+    properties: ['Roles', 'Users', 'Groups'],
+    parentTypes: IAM_PRINCIPAL_TYPES,
+    byProperty: IAM_PRINCIPAL_LISTS,
+    mode: 'reattach',
+  },
+  'AWS::IAM::InstanceProfile': { properties: ['Roles'], parentTypes: [IAM_ROLE], mode: 'reattach' },
+  'AWS::IAM::User': { properties: ['Groups'], parentTypes: [IAM_GROUP], mode: 'reattach' },
+  'AWS::IAM::UserToGroupAddition': {
+    properties: ['GroupName', 'Users'],
+    parentTypes: [IAM_GROUP, IAM_USER],
+    byProperty: { GroupName: [IAM_GROUP], Users: [IAM_USER] },
+    mode: 'reattach',
+    clears: { GroupName: 'Users' },
   },
 };
+
+/** The parent types `property` of `entry` may name. */
+function typesFor(entry: ChildEntry, property: string): readonly string[] {
+  return entry.byProperty !== undefined && Object.hasOwn(entry.byProperty, property)
+    ? entry.byProperty[property]!
+    : entry.parentTypes;
+}
+
+/** Does `resourceType` survive its parent's re-create, losing only the attachment (`reattach`)? */
+export function survivesParent(resourceType: string): boolean {
+  return (
+    Object.hasOwn(CHILD_STORED_IN_PARENT, resourceType) &&
+    CHILD_STORED_IN_PARENT[resourceType]!.mode === 'reattach'
+  );
+}
 
 /** The child types, for the test that pins the list. */
 export function childStoredInParentTypes(): readonly string[] {
@@ -139,9 +200,10 @@ let parser: TemplateParser | undefined;
 /**
  * The parent this deploy destroyed and re-created under the same physical id
  * that `resourceType` is stored inside, and how to restore the child:
- * `recreate` (created anew, the old one never deleted) or `reput` (updated in
- * place, writing to every parent it names). `undefined` when it is no such
- * child.
+ * `recreate` (created anew, the old one never deleted), `reput` (updated in
+ * place, writing to every parent it names) or `reattach` (updated in place,
+ * attaching it to the re-created parent again). `undefined` when it is no
+ * such child.
  *
  * `recreatedUnderSameId` holds the parents; `recordedTypeOf` answers the
  * state record's type of a logical id, read by OWN key. Given the deploy's
@@ -154,7 +216,7 @@ export function childLostWithRecreatedParent(input: {
   recreatedUnderSameId: ReadonlySet<string>;
   recordedTypeOf: (logicalId: string) => string | undefined;
   conditions?: Readonly<Record<string, boolean>> | undefined;
-}): { parent: string; property: string; mode: 'recreate' | 'reput' } | undefined {
+}): { parent: string; property: string; mode: 'recreate' | 'reput' | 'reattach' } | undefined {
   if (input.recreatedUnderSameId.size === 0) return undefined;
   if (!Object.hasOwn(CHILD_STORED_IN_PARENT, input.resourceType)) return undefined;
   const entry = CHILD_STORED_IN_PARENT[input.resourceType]!;
@@ -169,7 +231,7 @@ export function childLostWithRecreatedParent(input: {
     for (const referencedId of parser.extractReferences(value)) {
       if (!input.recreatedUnderSameId.has(referencedId)) continue;
       const parentType = input.recordedTypeOf(referencedId);
-      if (parentType !== undefined && entry.parentTypes.includes(parentType)) {
+      if (parentType !== undefined && typesFor(entry, property).includes(parentType)) {
         return { parent: referencedId, property, mode: entry.mode ?? 'recreate' };
       }
     }
@@ -193,7 +255,7 @@ export function namesRecreatedParent(
   return (
     entry.mode === undefined &&
     entry.properties.includes(property) &&
-    entry.parentTypes.includes(parentType)
+    typesFor(entry, property).includes(parentType)
   );
 }
 
@@ -205,12 +267,14 @@ export type LostChildAction =
   /** Gone from AWS: drop the record, so the next deploy creates it. */
   | { logicalId: string; parent: string; action: 'forget' }
   /**
-   * A policy naming several parents that still holds on the surviving ones:
-   * keep the record, minus the recreated parents' entries, so the next deploy
-   * diffs a change and writes it to them again (and a destroy still removes
-   * the surviving copies).
+   * A policy naming several parents that still holds on the surviving ones,
+   * or a resource merely attached to the parents (`reattach`, never gone):
+   * keep the record with `trimmed` -- each list minus the recreated parents'
+   * entries, or the list a `clears` parent's re-create emptied -- so the next
+   * deploy diffs a change and writes or attaches it to them again (and a
+   * destroy still removes the surviving copies).
    */
-  | { logicalId: string; parent: string; action: 'trim'; property: string; kept: unknown[] };
+  | { logicalId: string; parent: string; action: 'trim'; trimmed: Record<string, unknown[]> };
 
 /**
  * go-to-k/cdkd#4443: what a FAILED deploy must do to the records of children
@@ -308,31 +372,71 @@ function scanLostChildren(
     const parent = recordOf(lost.parent);
     if (parent === undefined) continue;
     const recorded = record.properties ?? {};
-    if (!Object.hasOwn(recorded, lost.property)) continue;
-    const value = recorded[lost.property];
-    if (lost.mode === 'reput' && Array.isArray(value)) {
-      const recreatedIds = recreatedIdsOf(CHILD_STORED_IN_PARENT[resource.Type]!.parentTypes);
-      const kept = value.filter((item) => !recreatedIds.some((id) => namesPhysicalId(item, id)));
-      if (kept.length === value.length) continue;
-      const otherHolders = CHILD_STORED_IN_PARENT[resource.Type]!.otherHolders ?? [];
-      const heldElsewhere =
-        kept.length > 0 ||
-        otherHolders.some((key) => {
-          const other = recorded[key];
-          return Array.isArray(other) ? other.length > 0 : other !== undefined && other !== null;
-        });
+    if (lost.mode !== 'recreate') {
+      const trimmed = trimmedHolders(
+        CHILD_STORED_IN_PARENT[resource.Type]!,
+        recorded,
+        recreatedIdsOf
+      );
+      if (trimmed === undefined) continue;
       actions.push(
-        heldElsewhere
-          ? { logicalId, parent: lost.parent, action: 'trim', property: lost.property, kept }
+        // A `reattach` child still exists, so it is never forgotten.
+        lost.mode === 'reattach' ||
+          heldElsewhere(CHILD_STORED_IN_PARENT[resource.Type]!, { ...recorded, ...trimmed })
+          ? { logicalId, parent: lost.parent, action: 'trim', trimmed }
           : { logicalId, parent: lost.parent, action: 'forget' }
       );
       continue;
     }
+    if (!Object.hasOwn(recorded, lost.property)) continue;
+    const value = recorded[lost.property];
     if (namesPhysicalId(value, parent.physicalId)) {
       actions.push({ logicalId, parent: lost.parent, action: 'forget' });
     }
   }
   return actions;
+}
+
+/**
+ * A `reput` / `reattach` child's recorded holder lists with every entry naming
+ * a re-created parent of that list's types removed, and each list a `clears`
+ * parent's re-create emptied; `undefined` when nothing changes.
+ */
+function trimmedHolders(
+  entry: ChildEntry,
+  recorded: Record<string, unknown>,
+  recreatedIdsOf: (parentTypes: readonly string[]) => string[]
+): Record<string, unknown[]> | undefined {
+  const trimmed: Record<string, unknown[]> = {};
+  for (const [property, cleared] of Object.entries(entry.clears ?? {})) {
+    const value = recorded[property];
+    const members = recorded[cleared];
+    if (
+      typeof value === 'string' &&
+      recreatedIdsOf(typesFor(entry, property)).includes(value) &&
+      Array.isArray(members) &&
+      members.length > 0
+    ) {
+      trimmed[cleared] = [];
+    }
+  }
+  for (const property of entry.properties) {
+    if (Object.hasOwn(trimmed, property) || !Object.hasOwn(recorded, property)) continue;
+    const value = recorded[property];
+    if (!Array.isArray(value)) continue;
+    const ids = recreatedIdsOf(typesFor(entry, property));
+    const kept = value.filter((item) => !ids.some((id) => namesPhysicalId(item, id)));
+    if (kept.length !== value.length) trimmed[property] = kept;
+  }
+  return Object.keys(trimmed).length > 0 ? trimmed : undefined;
+}
+
+/** Does a `reput` child still name any holder once trimmed? */
+function heldElsewhere(entry: ChildEntry, recorded: Record<string, unknown>): boolean {
+  return entry.properties.some((key) => {
+    const value = recorded[key];
+    return Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null;
+  });
 }
 
 /**
@@ -395,4 +499,71 @@ export function noChangeChildrenOfRecreatedParents(input: {
     if (lost !== undefined) found.push(logicalId);
   }
   return found;
+}
+
+/**
+ * go-to-k/cdkd#4461: the recorded side a `reattach` child's in-place update
+ * diffs against, with every entry naming a re-created parent dropped (or, for
+ * a `clears` property naming the parent itself, the list it emptied), so the
+ * provider's own add-what-is-new diff attaches it again. `undefined` when
+ * nothing names such a parent. In memory only: the record is never rewritten.
+ *
+ * A dropped name is matched against the re-created parent's physical id (an
+ * IAM role, user or group's NAME, which is what these lists hold).
+ */
+export function withRecreatedAttachmentsDropped(input: {
+  resourceType: string;
+  templateProperties: Record<string, unknown> | undefined;
+  previous: Record<string, unknown>;
+  recreatedUnderSameId: ReadonlySet<string>;
+  recordOf: (logicalId: string) => { resourceType: string; physicalId: string } | undefined;
+  conditions?: Readonly<Record<string, boolean>> | undefined;
+}): { previous: Record<string, unknown>; parents: string[] } | undefined {
+  if (input.recreatedUnderSameId.size === 0) return undefined;
+  if (!Object.hasOwn(CHILD_STORED_IN_PARENT, input.resourceType)) return undefined;
+  const entry = CHILD_STORED_IN_PARENT[input.resourceType]!;
+  if (entry.mode !== 'reattach') return undefined;
+  const properties = input.templateProperties ?? {};
+  const out: Record<string, unknown> = { ...input.previous };
+  const parents: string[] = [];
+  for (const property of entry.properties) {
+    if (!Object.hasOwn(properties, property)) continue;
+    const value =
+      input.conditions === undefined
+        ? properties[property]
+        : takenFnIfArms(properties[property], input.conditions);
+    parser ??= new TemplateParser();
+    const recreated = [...parser.extractReferences(value)]
+      .filter((id) => input.recreatedUnderSameId.has(id))
+      .map((id) => ({ id, record: input.recordOf(id) }))
+      .filter(
+        (p): p is { id: string; record: { resourceType: string; physicalId: string } } =>
+          p.record !== undefined && typesFor(entry, property).includes(p.record.resourceType)
+      );
+    if (recreated.length === 0) continue;
+    const cleared =
+      entry.clears !== undefined && Object.hasOwn(entry.clears, property)
+        ? entry.clears[property]!
+        : undefined;
+    if (cleared !== undefined) {
+      // Only while the RECORD names the re-created parent too: one the same
+      // deploy re-points onto it from another still has its members in the
+      // other, and the provider's move removes exactly the recorded ones.
+      const names = new Set(recreated.map((p) => p.record.physicalId));
+      const recordedParent = out[property];
+      if (typeof recordedParent !== 'string' || !names.has(recordedParent)) continue;
+      const members = out[cleared];
+      if (!Array.isArray(members) || members.length === 0) continue;
+      out[cleared] = [];
+    } else {
+      const recorded = out[property];
+      if (!Array.isArray(recorded)) continue;
+      const names = new Set(recreated.map((p) => p.record.physicalId));
+      const kept = recorded.filter((name) => !(typeof name === 'string' && names.has(name)));
+      if (kept.length === recorded.length) continue;
+      out[property] = kept;
+    }
+    for (const { id } of recreated) if (!parents.includes(id)) parents.push(id);
+  }
+  return parents.length > 0 ? { previous: out, parents } : undefined;
 }

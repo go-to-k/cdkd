@@ -3969,6 +3969,7 @@
       "resourceType": "AWS::IAM::Group",
       "integs": [
         "iam-managed-policy",
+        "iam-recreate-reattach",
         "iam-secret-derived-principals",
         "import-attribute-readback-misc",
         "infra-security"
@@ -3976,6 +3977,10 @@
       "signals": {
         "iam-managed-policy": [
           "l2"
+        ],
+        "iam-recreate-reattach": [
+          "l1",
+          "literal"
         ],
         "iam-secret-derived-principals": [
           "l2"
@@ -3996,6 +4001,7 @@
         "emr-instance-configs",
         "emr-instance-fleets",
         "iam-managed-policy",
+        "iam-recreate-reattach",
         "import-attribute-readback-misc",
         "propagation-races-2",
         "remove-protection"
@@ -4020,6 +4026,10 @@
           "l1",
           "literal"
         ],
+        "iam-recreate-reattach": [
+          "l1",
+          "literal"
+        ],
         "import-attribute-readback-misc": [
           "l1"
         ],
@@ -4035,6 +4045,7 @@
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
         "iam-managed-policy",
+        "iam-recreate-reattach",
         "iam-secret-derived-principals",
         "import-attributes",
         "import-auto-mode",
@@ -4042,6 +4053,10 @@
       ],
       "signals": {
         "iam-managed-policy": [
+          "literal"
+        ],
+        "iam-recreate-reattach": [
+          "l1",
           "literal"
         ],
         "iam-secret-derived-principals": [
@@ -4066,6 +4081,7 @@
         "asset-migration",
         "export",
         "iam-propagation-stress",
+        "iam-recreate-reattach",
         "iam-role-policies-drift-clean",
         "iam-secret-derived-principals",
         "migrate-from-cfn"
@@ -4079,6 +4095,10 @@
           "literal"
         ],
         "iam-propagation-stress": [
+          "literal"
+        ],
+        "iam-recreate-reattach": [
+          "l1",
           "literal"
         ],
         "iam-role-policies-drift-clean": [
@@ -4127,6 +4147,7 @@
         "iam-managed-policy",
         "iam-oidc-provider",
         "iam-propagation-stress",
+        "iam-recreate-reattach",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
         "iam-secret-derived-principals",
@@ -4281,6 +4302,10 @@
         ],
         "iam-propagation-stress": [
           "l2"
+        ],
+        "iam-recreate-reattach": [
+          "l1",
+          "literal"
         ],
         "iam-role-policies-drift-clean": [
           "l2",
@@ -4467,6 +4492,7 @@
       "integs": [
         "iam-access-key",
         "iam-managed-policy",
+        "iam-recreate-reattach",
         "iam-secret-derived-principals",
         "import-attribute-readback-misc",
         "import-heal-prefix-record",
@@ -4478,6 +4504,10 @@
         ],
         "iam-managed-policy": [
           "l2"
+        ],
+        "iam-recreate-reattach": [
+          "l1",
+          "literal"
         ],
         "iam-secret-derived-principals": [
           "l1",
@@ -4498,11 +4528,16 @@
       "resourceType": "AWS::IAM::UserToGroupAddition",
       "integs": [
         "iam-managed-policy",
+        "iam-recreate-reattach",
         "iam-secret-derived-principals",
         "infra-security"
       ],
       "signals": {
         "iam-managed-policy": [
+          "l1",
+          "literal"
+        ],
+        "iam-recreate-reattach": [
           "l1",
           "literal"
         ],

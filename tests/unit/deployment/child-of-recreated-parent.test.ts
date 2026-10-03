@@ -4,6 +4,7 @@ import {
   childStoredInParentTypes,
   lostChildActions,
   noChangeChildrenOfRecreatedParents,
+  withRecreatedAttachmentsDropped,
 } from '../../../src/deployment/child-of-recreated-parent.js';
 
 /** go-to-k/cdkd#4411: which resource went with a parent recreated under the same id. */
@@ -100,8 +101,14 @@ describe('childLostWithRecreatedParent', () => {
 
   it('pins the child types', () => {
     expect(childStoredInParentTypes()).toEqual([
+      'AWS::IAM::GroupPolicy',
+      'AWS::IAM::InstanceProfile',
+      'AWS::IAM::ManagedPolicy',
       'AWS::IAM::Policy',
       'AWS::IAM::RolePolicy',
+      'AWS::IAM::User',
+      'AWS::IAM::UserPolicy',
+      'AWS::IAM::UserToGroupAddition',
       'AWS::Lambda::Alias',
       'AWS::Lambda::EventInvokeConfig',
       'AWS::Lambda::Permission',
@@ -249,7 +256,7 @@ describe('lostChildActions (go-to-k/cdkd#4443)', () => {
         recreatedUnderSameId: new Set(['Fn', 'Queue', 'Role', 'Fn2']),
         written: new Set(['ByName', 'ByArn', 'Policy']),
       })
-    ).toEqual([{ logicalId: 'IamPolicy', parent: 'Role', action: 'trim', property: 'Roles', kept: ['role-b'] }]);
+    ).toEqual([{ logicalId: 'IamPolicy', parent: 'Role', action: 'trim', trimmed: { Roles: ['role-b'] } }]);
   });
 
   it('keeps a child with no record, or recorded under another type', () => {
@@ -276,7 +283,7 @@ describe('lostChildActions (go-to-k/cdkd#4443)', () => {
         policyTemplate,
         written
       )
-    ).toEqual([{ logicalId: 'IamPolicy', parent: 'Role', action: 'trim', property: 'Roles', kept: ['ext-role'] }]);
+    ).toEqual([{ logicalId: 'IamPolicy', parent: 'Role', action: 'trim', trimmed: { Roles: ['ext-role'] } }]);
     // Only the recreated role, but the policy is also on a user: trim, not forget.
     expect(
       act(
@@ -287,7 +294,7 @@ describe('lostChildActions (go-to-k/cdkd#4443)', () => {
         policyTemplate,
         written
       )
-    ).toEqual([{ logicalId: 'IamPolicy', parent: 'Role', action: 'trim', property: 'Roles', kept: [] }]);
+    ).toEqual([{ logicalId: 'IamPolicy', parent: 'Role', action: 'trim', trimmed: { Roles: [] } }]);
     // On the recreated role alone: gone from AWS.
     expect(
       act(
@@ -335,5 +342,209 @@ describe('noChangeChildrenOfRecreatedParents (go-to-k/cdkd#4444)', () => {
 
   it('names nothing when no parent was recreated', () => {
     expect(find([])).toEqual([]);
+  });
+});
+
+/** go-to-k/cdkd#4461: a child that survives its parent is attached to it again. */
+describe('withRecreatedAttachmentsDropped', () => {
+  const records: Record<string, { resourceType: string; physicalId: string }> = {
+    Role: { resourceType: 'AWS::IAM::Role', physicalId: 'fixed-role' },
+    User: { resourceType: 'AWS::IAM::User', physicalId: 'fixed-user' },
+    Group: { resourceType: 'AWS::IAM::Group', physicalId: 'fixed-group' },
+    Fn: { resourceType: 'AWS::Lambda::Function', physicalId: 'fixed-role' },
+  };
+  const drop = (
+    resourceType: string,
+    templateProperties: Record<string, unknown>,
+    previous: Record<string, unknown>,
+    recreated: string[] = ['Role', 'User', 'Group'],
+    conditions?: Record<string, boolean>
+  ): ReturnType<typeof withRecreatedAttachmentsDropped> =>
+    withRecreatedAttachmentsDropped({
+      resourceType,
+      templateProperties,
+      previous,
+      recreatedUnderSameId: new Set(recreated),
+      recordOf: (id) => (Object.hasOwn(records, id) ? records[id] : undefined),
+      conditions,
+    });
+
+  it('classifies the IAM attachment types as reattach, and the inline policy on users and groups as reput', () => {
+    const ask = (resourceType: string, props: Record<string, unknown>) =>
+      childLostWithRecreatedParent({
+        resourceType,
+        templateProperties: props,
+        recreatedUnderSameId: new Set(['Role', 'User', 'Group']),
+        recordedTypeOf: (id) => records[id]?.resourceType,
+      })?.mode;
+    expect(ask('AWS::IAM::ManagedPolicy', { Roles: [{ Ref: 'Role' }] })).toBe('reattach');
+    expect(ask('AWS::IAM::ManagedPolicy', { Users: [{ Ref: 'User' }] })).toBe('reattach');
+    expect(ask('AWS::IAM::ManagedPolicy', { Groups: [{ Ref: 'Group' }] })).toBe('reattach');
+    expect(ask('AWS::IAM::InstanceProfile', { Roles: [{ Ref: 'Role' }] })).toBe('reattach');
+    expect(ask('AWS::IAM::User', { Groups: [{ Ref: 'Group' }] })).toBe('reattach');
+    expect(ask('AWS::IAM::UserToGroupAddition', { GroupName: { Ref: 'Group' } })).toBe('reattach');
+    expect(ask('AWS::IAM::UserToGroupAddition', { Users: [{ Ref: 'User' }] })).toBe('reattach');
+    expect(ask('AWS::IAM::Policy', { Users: [{ Ref: 'User' }] })).toBe('reput');
+    expect(ask('AWS::IAM::Policy', { Groups: [{ Ref: 'Group' }] })).toBe('reput');
+  });
+
+  it('drops only the re-created parents\' names from each attachment list', () => {
+    expect(
+      drop(
+        'AWS::IAM::ManagedPolicy',
+        { Roles: [{ Ref: 'Role' }, 'other-role'], Users: [{ Ref: 'User' }], Groups: ['g2'] },
+        { Roles: ['fixed-role', 'other-role'], Users: ['fixed-user'], Groups: ['g2'], PolicyDocument: {} }
+      )
+    ).toEqual({
+      previous: { Roles: ['other-role'], Users: [], Groups: ['g2'], PolicyDocument: {} },
+      parents: ['Role', 'User'],
+    });
+    expect(
+      drop('AWS::IAM::InstanceProfile', { Roles: [{ Ref: 'Role' }] }, { Roles: ['fixed-role'] })
+    ).toEqual({ previous: { Roles: [] }, parents: ['Role'] });
+    expect(
+      drop('AWS::IAM::User', { Groups: [{ Ref: 'Group' }, 'kept'] }, { Groups: ['fixed-group', 'kept'] })
+    ).toEqual({ previous: { Groups: ['kept'] }, parents: ['Group'] });
+  });
+
+  it('empties a UserToGroupAddition\'s recorded Users when its group was re-created', () => {
+    expect(
+      drop(
+        'AWS::IAM::UserToGroupAddition',
+        { GroupName: { Ref: 'Group' }, Users: ['u1', 'u2'] },
+        { GroupName: 'fixed-group', Users: ['u1', 'u2'] }
+      )
+    ).toEqual({ previous: { GroupName: 'fixed-group', Users: [] }, parents: ['Group'] });
+    expect(
+      drop(
+        'AWS::IAM::UserToGroupAddition',
+        { GroupName: 'other-group', Users: [{ Ref: 'User' }, 'u2'] },
+        { GroupName: 'other-group', Users: ['fixed-user', 'u2'] }
+      )
+    ).toEqual({ previous: { GroupName: 'other-group', Users: ['u2'] }, parents: ['User'] });
+  });
+
+  it('drops nothing for a parent not re-created, of another type, or for a reput / recreate child', () => {
+    const props = { Roles: [{ Ref: 'Role' }] };
+    const previous = { Roles: ['fixed-role'] };
+    expect(drop('AWS::IAM::ManagedPolicy', props, previous, ['User'])).toBeUndefined();
+    // A function that happens to share the role's name is not a role.
+    expect(
+      drop('AWS::IAM::ManagedPolicy', { Roles: [{ Ref: 'Fn' }] }, previous, ['Fn'])
+    ).toBeUndefined();
+    expect(drop('AWS::IAM::Policy', props, previous)).toBeUndefined();
+    expect(drop('AWS::IAM::RolePolicy', { RoleName: { Ref: 'Role' } }, { RoleName: 'fixed-role' })).toBeUndefined();
+    // Already absent from the record: nothing to add back.
+    expect(drop('AWS::IAM::ManagedPolicy', props, { Roles: ['other'] })).toBeUndefined();
+  });
+
+  it('clears a UserToGroupAddition only while its RECORD names the re-created group, and only when it has members', () => {
+    // Re-pointed from another group: its members are still in that one.
+    expect(
+      drop(
+        'AWS::IAM::UserToGroupAddition',
+        { GroupName: { Ref: 'Group' }, Users: ['u1'] },
+        { GroupName: 'other-group', Users: ['u1'] }
+      )
+    ).toBeUndefined();
+    expect(
+      drop(
+        'AWS::IAM::UserToGroupAddition',
+        { GroupName: { Ref: 'Group' }, Users: [] },
+        { GroupName: 'fixed-group', Users: [] }
+      )
+    ).toBeUndefined();
+  });
+
+  it('reads only the taken Fn::If arm', () => {
+    const props = { Roles: [{ 'Fn::If': ['UseRole', 'other-role', { Ref: 'Role' }] }] };
+    const previous = { Roles: ['fixed-role'] };
+    expect(drop('AWS::IAM::ManagedPolicy', props, previous, undefined, { UseRole: true })).toBeUndefined();
+    expect(drop('AWS::IAM::ManagedPolicy', props, previous, undefined, { UseRole: false })).toEqual({
+      previous: { Roles: [] },
+      parents: ['Role'],
+    });
+  });
+});
+
+/** go-to-k/cdkd#4461 on the failed-deploy path: an attached resource is trimmed, never forgotten. */
+describe('lostChildActions for reattach children', () => {
+  const rec = (resourceType: string, physicalId: string, properties: Record<string, unknown> = {}) => ({
+    resourceType,
+    physicalId,
+    properties,
+  });
+  const principals = {
+    Role: rec('AWS::IAM::Role', 'fixed-role'),
+    Group: rec('AWS::IAM::Group', 'fixed-group'),
+    User: rec('AWS::IAM::User', 'fixed-user'),
+  };
+  const principalTemplate = {
+    Role: { Type: 'AWS::IAM::Role' },
+    Group: { Type: 'AWS::IAM::Group' },
+    User: { Type: 'AWS::IAM::User' },
+  };
+  const act = (
+    child: ReturnType<typeof rec>,
+    properties: Record<string, unknown>,
+    recreated: string[] = ['Role', 'Group', 'User']
+  ) =>
+    lostChildActions({
+      templateResources: { ...principalTemplate, Child: { Type: child.resourceType, Properties: properties } },
+      records: { ...principals, Child: child },
+      recreatedUnderSameId: new Set(recreated),
+      written: new Set(),
+    });
+
+  it('trims a managed policy that named only the re-created role to [], keeping its record', () => {
+    expect(
+      act(rec('AWS::IAM::ManagedPolicy', 'arn:aws:iam::1:policy/p', { Roles: ['fixed-role'] }), {
+        Roles: [{ Ref: 'Role' }],
+      })
+    ).toEqual([{ logicalId: 'Child', parent: 'Role', action: 'trim', trimmed: { Roles: [] } }]);
+  });
+
+  it('trims every list naming a re-created principal, each against its own type', () => {
+    expect(
+      act(
+        rec('AWS::IAM::ManagedPolicy', 'arn:aws:iam::1:policy/p', {
+          Roles: ['fixed-role', 'other'],
+          Groups: ['fixed-group'],
+          // A user that happens to share the role's name is not the role.
+          Users: ['fixed-role'],
+        }),
+        { Roles: [{ Ref: 'Role' }, 'other'], Groups: [{ Ref: 'Group' }], Users: ['fixed-role'] }
+      )
+    ).toEqual([
+      {
+        logicalId: 'Child',
+        parent: 'Role',
+        action: 'trim',
+        trimmed: { Roles: ['other'], Groups: [] },
+      },
+    ]);
+  });
+
+  it('empties a UserToGroupAddition whose recorded group was re-created, and trims a user list', () => {
+    expect(
+      act(rec('AWS::IAM::UserToGroupAddition', 'm', { GroupName: 'fixed-group', Users: ['u1'] }), {
+        GroupName: { Ref: 'Group' },
+        Users: ['u1'],
+      })
+    ).toEqual([{ logicalId: 'Child', parent: 'Group', action: 'trim', trimmed: { Users: [] } }]);
+    expect(
+      act(rec('AWS::IAM::User', 'member', { Groups: ['fixed-group', 'kept'] }), {
+        Groups: [{ Ref: 'Group' }, 'kept'],
+      })
+    ).toEqual([{ logicalId: 'Child', parent: 'Group', action: 'trim', trimmed: { Groups: ['kept'] } }]);
+  });
+
+  it('forgets an inline policy whose every holder was re-created, across its lists', () => {
+    expect(
+      act(rec('AWS::IAM::Policy', 'pol', { Roles: ['fixed-role'], Users: ['fixed-user'] }), {
+        Roles: [{ Ref: 'Role' }],
+        Users: [{ Ref: 'User' }],
+      })
+    ).toEqual([{ logicalId: 'Child', parent: 'Role', action: 'forget' }]);
   });
 });

@@ -342,20 +342,26 @@ stacks are covered by
 Some resources live inside another one and are deleted with it: a Lambda
 function's permissions, versions, aliases and event invoke config, an SNS
 topic's subscriptions and policies, an SQS queue's or S3 bucket's policy, a log
-group's streams and metric and subscription filters, a role's inline policies. When a deploy
+group's streams and metric and subscription filters, an IAM role's, user's or
+group's inline policies. When a deploy
 destroys such a parent and re-creates it under the same physical id (a
 fixed-name function recreated by this flag, or the delete-first `--replace` of
 a replacement), each of those children in the same stack is re-created too,
 without a delete: the old one went with the old parent. A child the same
 deploy moves from another parent onto the recreated one is replaced as usual,
 which removes its copy from the parent it left. A policy that names
-several parents (a topic or queue policy, an IAM policy on several roles) is
-written again in place instead. A Lambda function URL, an IAM managed policy
-attachment and an instance profile's role are not handled this way. The same
-holds when the parent is re-created by the update-failure fallback (an in-place
-update the provider refuses, re-created under `--replace`, or automatically when
-Cloud Control reports `UnsupportedAction`): its children are re-created as soon
-as it is, before any pending resource that reads them.
+several parents (a topic or queue policy, an IAM policy on several roles,
+users or groups) is written again in place instead. What is merely ATTACHED to
+a re-created IAM role, user or group -- a managed policy, an instance profile's
+role, a group's members (a user's `Groups`, a `UserToGroupAddition`) -- survives
+it, but IAM refuses to delete a principal that still has one, so cdkd detaches
+it first; cdkd then updates the attached resource in place, which attaches it
+to the re-created principal again (also when the same deploy edits the list).
+A Lambda function URL is not handled this way. The same holds when the parent
+is re-created by the update-failure fallback (an in-place update the provider
+refuses, re-created under `--replace`, or automatically when Cloud Control
+reports `UnsupportedAction`): its children are re-created as soon as it is,
+before any pending resource that reads them.
 If the deploy fails after re-creating the parent and before restoring such a
 child, cdkd drops the child's state record, since AWS no longer has it, and the
 next deploy creates it again; until then the parent runs without it. A policy
@@ -365,7 +371,10 @@ own restore was attempted and then failed may be in AWS after all: it keeps its
 record when a `--recreate-via-*` flag can write it again, and the warning names
 that flag; otherwise its record is dropped as above, and the warning says the
 write may still be on the parent, to be removed by hand if the child leaves the
-template before the next deploy.
+template before the next deploy. An attached resource's
+record is never dropped: it is kept minus the re-created principals (a
+`UserToGroupAddition` on a re-created group keeps no members), so the next
+deploy attaches it to them again.
 
 ### When to use it
 

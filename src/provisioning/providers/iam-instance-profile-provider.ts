@@ -325,12 +325,23 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       // Add new roles that were not previously attached
       for (const roleName of newRoles) {
         if (!oldRoles.includes(roleName)) {
-          await this.iamClient.send(
-            new AddRoleToInstanceProfileCommand({
-              InstanceProfileName: physicalId,
-              RoleName: roleName,
-            })
-          );
+          try {
+            await this.iamClient.send(
+              new AddRoleToInstanceProfileCommand({
+                InstanceProfileName: physicalId,
+                RoleName: roleName,
+              })
+            );
+          } catch (error) {
+            // Idempotent (go-to-k/cdkd#4461): a profile already holding THIS
+            // role is the outcome asked for. A failed deploy keeps a re-attach
+            // record without the role even when its add landed, and IAM
+            // refuses a second role with `LimitExceeded`, so every later
+            // deploy would fail. Any other holder still fails loudly.
+            if (!(await this.holdsRole(physicalId, roleName, error))) throw error;
+            log.debug(`Instance profile ${v(physicalId)} already holds role ${v(roleName)}`);
+            continue;
+          }
           log.debug(`Added role ${v(roleName)} to instance profile ${v(physicalId)}`);
         }
       }
@@ -363,6 +374,24 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
             cause
           )
       );
+    }
+  }
+
+  /**
+   * Does the profile already hold `roleName`, after `AddRoleToInstanceProfile`
+   * threw `error`? Only a `LimitExceeded` / `EntityAlreadyExists` refusal is
+   * read back; a failed read answers no, so the original error stands.
+   */
+  private async holdsRole(profileName: string, roleName: string, error: unknown): Promise<boolean> {
+    const name = (error as { name?: unknown } | null)?.name;
+    if (name !== 'LimitExceededException' && name !== 'EntityAlreadyExistsException') return false;
+    try {
+      const response = await this.iamClient.send(
+        new GetInstanceProfileCommand({ InstanceProfileName: profileName })
+      );
+      return (response.InstanceProfile?.Roles ?? []).some((r) => r.RoleName === roleName);
+    } catch {
+      return false;
     }
   }
 

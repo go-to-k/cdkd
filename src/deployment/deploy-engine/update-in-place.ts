@@ -1,6 +1,7 @@
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
+import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import { STICKY_CC_MIGRATION_EXEMPT } from '../../provisioning/provider-registry.js';
 import {
@@ -76,6 +77,7 @@ export async function updateInPlace(
     template,
     updateReplacePolicy,
     updateSecrets,
+    reattach,
   }: {
     conditions: Record<string, boolean> | undefined;
     counts: ProvisionCounts | undefined;
@@ -96,6 +98,8 @@ export async function updateInPlace(
     template: CloudFormationTemplate | undefined;
     updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | undefined;
     updateSecrets: RecordedSecretValues;
+    /** go-to-k/cdkd#4461: a `reattach` child of a parent re-created under the same id. */
+    reattach?: boolean;
   }
 ): Promise<ResourceOutcomeSignal | void> {
   // Normal update (in-place).
@@ -188,7 +192,7 @@ export async function updateInPlace(
   // way is dropped from the previous side (go-to-k/cdkd#4064): the
   // record's `{{resolve:...}}` is not a name, so every in-place update
   // was refused, and the desired side names that principal too.
-  const { previous: previousForUpdate, dropped: droppedPrincipalKinds } =
+  const { previous: previousWithSecretsDropped, dropped: droppedPrincipalKinds } =
     withUnchangedSecretPrincipalLists(
       resourceType,
       currentResource.physicalId,
@@ -204,6 +208,28 @@ export async function updateInPlace(
           },
       desiredForSkipCheckAsWritten
     );
+  // go-to-k/cdkd#4461: a child that survived a parent re-created under the
+  // same id lost its attachment to it (IAM detaches a policy, an instance
+  // profile's role, or a group's members before it deletes the principal),
+  // while its record still lists the parent. Dropping the parent's name from
+  // the side the provider diffs against makes its own diff attach it again.
+  const reattached =
+    reattach === true
+      ? withRecreatedAttachmentsDropped({
+          resourceType,
+          templateProperties: template?.Resources?.[logicalId]?.Properties,
+          previous: previousWithSecretsDropped,
+          recreatedUnderSameId: this.recreatedUnderSameId,
+          recordOf: (id) => (Object.hasOwn(stateResources, id) ? stateResources[id] : undefined),
+          conditions,
+        })
+      : undefined;
+  const previousForUpdate = reattached?.previous ?? previousWithSecretsDropped;
+  if (reattached !== undefined) {
+    this.logger.info(
+      safeMsg`  ${logicalId} (${resourceType}) lost its attachment to ${reattached.parents.join(', ')}, which this deploy re-created under the same name: attaching it again`
+    );
+  }
   if (droppedPrincipalKinds.length > 0) {
     // Kinds only, never names. A secret whose value changed since the
     // last deploy under the same reference is not visible here: the
@@ -282,7 +308,9 @@ export async function updateInPlace(
             // nothing for it. `previousForUpdate` differs from it only
             // at confirmed NoEcho paths (go-to-k/cdkd#3729), and at an
             // IAM::Policy / UserToGroupAddition principal list whose
-            // unchanged secret reference was dropped (go-to-k/cdkd#4064).
+            // unchanged secret reference was dropped (go-to-k/cdkd#4064),
+            // and at a `reattach` child's list naming a principal this
+            // deploy re-created (go-to-k/cdkd#4461).
             previousForUpdate,
             // The UPDATE twin of the CREATE call's masker (issue #1932
             // item 3): same resolved bag, same exposure, so the contract
