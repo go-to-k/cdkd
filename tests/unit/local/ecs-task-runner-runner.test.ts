@@ -1411,6 +1411,36 @@ describe('runEcsTask — container log drain (issue #4480)', () => {
     expect(ev.indexOf('relay c2')).toBeGreaterThan(ev.indexOf('after-stop'));
   });
 
+  it('a throwing afterContainersStopped still drains and removes every container', async () => {
+    captured.responder = responder();
+    const state = createEcsRunState();
+    dockerRunnerStubs.removeContainer.mockImplementation(async (id: string) => {
+      captured.events.push(`rm ${id}`);
+    });
+    const out = captureStdout();
+    try {
+      await runEcsTask(
+        makeTask({
+          containers: [makeContainer(), makeContainer({ name: 'side', essential: false })],
+        }),
+        baseOptions(),
+        state
+      );
+      await cleanupEcsRun(state, {
+        keepRunning: false,
+        afterContainersStopped: async () => {
+          throw new Error('dispose failed');
+        },
+      });
+    } finally {
+      out.restore();
+      dockerRunnerStubs.removeContainer.mockImplementation(async () => undefined);
+    }
+    expect(out.text()).toContain('[side] last-line-c2\n');
+    expect(captured.events).toContain('rm c1');
+    expect(captured.events).toContain('rm c2');
+  });
+
   it('runs afterContainersStopped under keepRunning too, stopping no container', async () => {
     const state = createEcsRunState();
     let ran = 0;

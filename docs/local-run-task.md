@@ -442,7 +442,7 @@ it is mode `0600` and holds live credentials.
 | Flag | Steps skipped |
 | --- | --- |
 | `--detach` | 1, 2 and 4. The sidecar and user containers stay up for you to manage; cdkd prints the network name so you can `docker ps --filter network=<name>` to inspect it. |
-| `--keep-running` | 2 only. The network and sidecar are still torn down, leaving the stopped containers for a `docker exec` post-mortem. |
+| `--keep-running` | The stop, relay and `docker rm -f` of the other containers in 2 (the essential container's output is still relayed). The network and sidecar are still torn down, leaving the stopped containers for a `docker exec` post-mortem. |
 
 ## Limitations
 

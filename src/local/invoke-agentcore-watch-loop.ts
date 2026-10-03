@@ -32,6 +32,12 @@ import { getLogger } from '../utils/logger.js';
 import { resolveDockerContextDirectory } from '../assets/docker-build.js';
 import { describeDockerExecFailure, getDockerCmd } from '../utils/docker-cmd.js';
 import { CdkdError } from '../utils/error-handler.js';
+
+/**
+ * The code `local-invoke-agentcore.ts` throws from a rebuild's teardown when a
+ * ^C interrupted it (issue #4480); the loop stops on it without an error.
+ */
+export const WATCH_INTERRUPTED_CODE = 'LOCAL_INVOKE_AGENTCORE_WATCH_INTERRUPTED';
 import {
   AssetManifestLoader,
   getDockerImageBySourceHash,
@@ -239,6 +245,14 @@ export async function runAgentCoreWatchLoop(args: RunAgentCoreWatchLoopArgs): Pr
           logger.info(`Reload: rebuilt the agent container.`);
         }
       } catch (err) {
+        if (err instanceof CdkdError && err.code === WATCH_INTERRUPTED_CODE) {
+          // A ^C landed during the rebuild's teardown: the command's SIGINT
+          // cleanup is already exiting, so this is not a failure to report.
+          logger.debug(`Reload stopped: ${err.message}`);
+          reloadFailed = true;
+          currentAbort?.abort();
+          return;
+        }
         logger.error(
           `Reload failed: ${err instanceof Error ? err.message : String(err)}. ` +
             'The previous container may already be torn down; exiting --watch loop. ' +

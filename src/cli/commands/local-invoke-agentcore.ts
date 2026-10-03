@@ -83,6 +83,7 @@ import { invokeAgentCoreWs, type AgentCoreWsResult } from '../../local/agentcore
 import {
   runAgentCoreWatchLoop,
   softReloadAgentContainer,
+  WATCH_INTERRUPTED_CODE,
 } from '../../local/invoke-agentcore-watch-loop.js';
 import { createJwksCache, verifyJwtViaDiscovery } from '../../local/cognito-jwt.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
@@ -393,7 +394,7 @@ async function localInvokeAgentCoreCommand(
     if (interrupted) {
       throw new CdkdError(
         'Interrupted during the --watch rebuild; not starting a new container.',
-        'LOCAL_INVOKE_AGENTCORE_WATCH_INTERRUPTED'
+        WATCH_INTERRUPTED_CODE
       );
     }
   };

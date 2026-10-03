@@ -50,6 +50,7 @@ import {
   runAgentCoreWatchLoop,
   softReloadAgentContainer,
   loadAgentCoreAssetContext,
+  WATCH_INTERRUPTED_CODE,
   type AgentCoreWatchInvokeOutcome,
   type RunAgentCoreWatchLoopArgs,
 } from '../../../src/local/invoke-agentcore-watch-loop.js';
@@ -77,6 +78,7 @@ import type {
 } from 'cdk-local/internal';
 import type { Synthesizer } from '../../../src/synthesis/synthesizer.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
+import { CdkdError } from '../../../src/utils/error-handler.js';
 
 describe('invoke-agentcore --watch option surface', () => {
   it('registers --watch on the command, defaulting to false', () => {
@@ -368,6 +370,49 @@ describe('runAgentCoreWatchLoop — classifier dispatch', () => {
     expect(pingCalls).toBe(1);
     expect(invokeOnce).toHaveBeenCalledTimes(1);
     expect(watcher.close).toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: 'a ^C-interrupted rebuild exits quietly', interrupted: true },
+    { name: 'a failed rebuild still reports Reload failed', interrupted: false },
+  ])('$name (issue #4480)', async ({ interrupted }) => {
+    const invokeOnce = vi
+      .fn<InvokeOnceFn>()
+      .mockImplementationOnce(
+        async ({ abortSignal }: { abortSignal: AbortSignal }): Promise<AgentCoreWatchInvokeOutcome> => {
+          process.nextTick(() => onChangeRef?.(['/abs/handler.py']));
+          await new Promise<void>((res) => {
+            abortSignal.addEventListener('abort', () => res());
+          });
+          return { pendingReload: abortSignal.aborted };
+        }
+      );
+    rebuild.mockRejectedValue(
+      interrupted
+        ? new CdkdError('Interrupted during the --watch rebuild', WATCH_INTERRUPTED_CODE)
+        : new Error('build failed: missing Dockerfile')
+    );
+    const errors: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((line: unknown) => {
+      errors.push(String(line));
+    });
+
+    await runAgentCoreWatchLoop({
+      ...baseArgs(),
+      invokeOnce,
+      rebuild,
+      softReload,
+      __waitForPing: waitForPing,
+      __watcherFactory: (onChange) => {
+        onChangeRef = onChange;
+        return watcher;
+      },
+      __classifierContext: async () => undefined,
+    });
+
+    expect(invokeOnce).toHaveBeenCalledTimes(1);
+    expect(watcher.close).toHaveBeenCalled();
+    expect(errors.some((e) => e.includes('Reload failed'))).toBe(!interrupted);
   });
 
   it('exits on a benign close with no pending reload', async () => {
