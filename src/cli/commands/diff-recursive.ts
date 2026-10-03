@@ -1,5 +1,5 @@
 import { stripControlChars } from '../../utils/regexp.js';
-import { displayIdent, displayStackName } from '../../utils/display-safe.js';
+import { displayIdent, displayStackName, safeMsg } from '../../utils/display-safe.js';
 import {
   describeFileReadFailure,
   displayAssemblyPath,
@@ -134,49 +134,80 @@ function collectRefTargets(value: unknown, refs: Set<string>): void {
   for (const nested of Object.values(obj)) collectRefTargets(nested, refs);
 }
 
-/**
- * Whether ANY condition in `template` references one of `tokenParameterNames`
- * (issue #1903, review round 2).
- *
- * WHY THIS EXISTS AND WHY THE BROAD FORM IS NOT MERELY CONSERVATIVE. The
- * token-parameter guard originally skipped condition evaluation for the WHOLE
- * template as soon as any bound parameter was a redacted token, on the argument
- * that the cost is "a condition-false resource is diffed rather than pruned".
- * That is only half of it: leaving `conditions` UNDEFINED also means `resolveIf`
- * finds no entry, warns, and takes the FALSE branch for every `Fn::If` in every
- * property value — so a condition-TRUE property diffs as a spurious UPDATE
- * (perpetual, and `--fail` exits 1) and condition-gated resources surface as
- * phantom CREATEs. And it fired whenever ANY parameter was token-valued, even
- * when not one condition mentioned it.
- *
- * So the skip is narrowed to what it can actually get wrong: a condition whose
- * verdict DEPENDS on a value this side does not have.
- *
- * NO TRANSITIVE `{Condition: X}` WALK, and its absence is a reachability
- * argument rather than an omission. An `Fn::And` over a NAMED condition (issue
- * #840's shape) does inherit that condition's dependency — but the named
- * condition is itself an entry in this same `Conditions` map, and this scan
- * visits EVERY entry, so the dependency is already found directly on the
- * referenced condition. A chain walk was written first and measured dead: with
- * it removed, a template whose `IsDev` wraps `{Condition: IsProd}` while only
- * `IsProd` names the token parameter still answers `true`.
- */
-function conditionsDependOnTokenParameters(
-  template: CloudFormationTemplate,
-  tokenParameterNames: ReadonlySet<string>
-): boolean {
-  const templateConditions = template.Conditions;
-  if (!templateConditions || typeof templateConditions !== 'object') return false;
-  if (tokenParameterNames.size === 0) return false;
+/** Every `{Condition: X}` target reachable from a condition definition. */
+function collectConditionTargets(value: unknown, names: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const element of value) collectConditionTargets(element, names);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj['Condition'] === 'string') names.add(obj['Condition']);
+  for (const nested of Object.values(obj)) collectConditionTargets(nested, names);
+}
 
-  for (const definition of Object.values(templateConditions)) {
-    const refs = new Set<string>();
-    collectRefTargets(definition, refs);
-    for (const ref of refs) {
-      if (tokenParameterNames.has(ref)) return true;
+/**
+ * The conditions whose verdict this diff cannot know (go-to-k/cdkd#4470): each
+ * one that reaches a parameter in `unknownParameterNames` — one binding failed
+ * for, or one fed a redacted `{{resolve:...}}` token (issue #1903) — directly
+ * or through a chain of `{Condition: X}` references.
+ *
+ * PER CONDITION, never per template. The skip this replaces left the WHOLE
+ * `Conditions` section unevaluated as soon as ANY condition depended on such a
+ * parameter, or binding failed at all, so every `Fn::If` in the stack took its
+ * FALSE branch — including one on a condition that reads no parameter — and
+ * diffed as a perpetual spurious UPDATE. Only the dependency closure is
+ * unknowable; every other condition gets the verdict the deploy computes.
+ *
+ * The TRANSITIVE walk is load-bearing here, unlike in the per-template scan it
+ * replaces: a chained condition that is not itself unknown would be EVALUATED,
+ * and the evaluator answers a `{Condition: X}` to a condition missing from the
+ * map it is handed with FALSE — a verdict that prunes. Operands are read two
+ * ways: every `Ref` anywhere in the definition, and `TemplateParser`'s
+ * reference walk for the `${Name}` placeholders of an `Fn::Sub`. Reading more
+ * names than the evaluator would only marks more conditions unknown, which is
+ * the safe direction: unknown never prunes.
+ *
+ * A reference cycle is a template CloudFormation refuses and the evaluator
+ * downgrades to FALSE; the fixpoint terminates on one and answers it the same
+ * whatever the declaration order.
+ */
+function unknownConditionNames(
+  template: CloudFormationTemplate,
+  unknownParameterNames: ReadonlySet<string>
+): Set<string> {
+  const unknown = new Set<string>();
+  const definitions = template.Conditions;
+  if (!definitions || typeof definitions !== 'object') return unknown;
+  if (unknownParameterNames.size === 0) return unknown;
+
+  // A FIXPOINT, not a memoized depth-first walk: a memo filled while a
+  // reference cycle is still being visited records `false` for a member whose
+  // dependency is only found after the back-edge, which made the answer
+  // depend on declaration order.
+  const parser = new TemplateParser();
+  const conditionRefsOf = new Map<string, Set<string>>();
+  for (const [name, definition] of Object.entries(definitions as Record<string, unknown>)) {
+    const parameterRefs = new Set<string>();
+    collectRefTargets(definition, parameterRefs);
+    for (const ref of parser.extractReferences(definition)) parameterRefs.add(ref);
+    if ([...parameterRefs].some((ref) => unknownParameterNames.has(ref))) unknown.add(name);
+    const conditionRefs = new Set<string>();
+    collectConditionTargets(definition, conditionRefs);
+    conditionRefsOf.set(name, conditionRefs);
+  }
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [name, conditionRefs] of conditionRefsOf) {
+      if (unknown.has(name)) continue;
+      if ([...conditionRefs].some((ref) => unknown.has(ref))) {
+        unknown.add(name);
+        grew = true;
+      }
     }
   }
-  return false;
+  return unknown;
 }
 
 /**
@@ -1181,17 +1212,22 @@ export async function computeStackDiff(
 
   // Mirror the deploy engine's parameter/condition preprocessing (steps
   // 2.5-2.7, issue #1027) so the diff matches what deploy will actually do.
-  // Everything here is best-effort: a template whose parameters cannot be
-  // bound (e.g. a required parameter with no default) falls back to the
-  // pre-#1027 behavior — raw template, nested input parameters only — and
-  // the calculator keeps unresolved intrinsics as-is.
+  // Everything here is best-effort, and PER PARAMETER / PER CONDITION
+  // (go-to-k/cdkd#4470): a parameter that cannot be bound (e.g. a required one
+  // with no default) stays out of the bound set — its `Ref`s keep the raw
+  // intrinsic, which the calculator compares as-is — and only the conditions
+  // that depend on it go unevaluated.
   //
   // 1) Bind template `Parameters` (defaults + SSM-typed lookups). The
   //    nested-stack input parameters (see the resolver-context comment
   //    below) act as the user-provided values, exactly like
   //    `DeployEngineOptions.parameters` does on deploy.
   let mergedParameters: Record<string, unknown> | undefined = parameters;
-  let parametersBound = false;
+  // The declared parameters binding FAILED for. `resolveParameters` throws on
+  // the first one (a required parameter with no value, a failed SSM lookup), so
+  // it is asked one parameter at a time: one unbindable parameter used to leave
+  // EVERY parameter unbound and every condition unevaluated.
+  const unboundParameterNames = new Set<string>();
   // The names whose incoming value is a REDACTED `{{resolve:...}}` token rather
   // than the value the deploy will actually bind (issue #1903).
   // `resolveChildStackParameters` sets `skipDynamicReferences`, so a
@@ -1235,48 +1271,56 @@ export async function computeStackDiff(
       );
     }
   }
-  try {
-    const userParameters: Record<string, string> = {};
-    for (const [name, value] of Object.entries(parameters ?? {})) {
-      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-        userParameters[name] = String(value);
-      }
+  const userParameters: Record<string, string> = {};
+  for (const [name, value] of Object.entries(parameters ?? {})) {
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      userParameters[name] = String(value);
     }
-    // `inheritedForResolver` masks this method's `using user-provided value`
-    // debug lines (go-to-k/cdkd#4049).
-    const templateParameters = await intrinsicResolver.resolveParameters(
-      template,
-      userParameters,
-      inheritedForResolver ? { inheritedSecrets: inheritedForResolver } : undefined
-    );
-    // `resolveParameters` output wins for template-declared parameters — it
-    // carries the deploy-coerced values (a Number-typed nested input becomes
-    // a number, like deploy) — while raw nested inputs survive for any name
-    // the template does not declare.
-    //
-    // EXCEPT for a redacted token (see `tokenParameterNames`), which is bound to
-    // the shape the CHILD'S STATE HOLDS for it -- see
-    // {@link tokenValueForComparison}. An earlier revision kept the raw token
-    // for EVERY such parameter and justified it as "exactly what the child's
-    // state holds", which is true only for a SCALAR one; issue
-    // [#2327](https://github.com/go-to-k/cdkd/issues/2327) measured that a
-    // `CommaDelimitedList` parameter's state leaf is an ARRAY, so the raw token
-    // compared a string against a list and reported a phantom change on every
-    // run. An over-stated invariant in a comment is durable precisely because
-    // it stops the next reader looking, which is why the correction is spelled
-    // here rather than only in the helper.
-    mergedParameters = { ...parameters, ...templateParameters };
-    for (const name of tokenParameterNames) {
-      const declaredType = (template.Parameters?.[name] as { Type?: unknown } | undefined)?.Type;
-      mergedParameters[name] = tokenValueForComparison(
-        (parameters ?? {})[name],
-        typeof declaredType === 'string' ? declaredType : undefined
+  }
+  const templateParameters = nullPrototypeRecord<unknown>();
+  const declaredParameters =
+    template.Parameters && typeof template.Parameters === 'object' ? template.Parameters : {};
+  for (const [name, definition] of Object.entries(declaredParameters)) {
+    try {
+      // `inheritedForResolver` masks this method's `using user-provided value`
+      // debug lines (go-to-k/cdkd#4049). The template keeps every other
+      // section, so the SSM unreferenced-skip (#1002) still reads the whole of
+      // it; only `Parameters` is narrowed to the one being bound.
+      const bound = await intrinsicResolver.resolveParameters(
+        { ...template, Parameters: { [name]: definition } },
+        userParameters,
+        inheritedForResolver ? { inheritedSecrets: inheritedForResolver } : undefined
+      );
+      if (Object.hasOwn(bound, name)) templateParameters[name] = bound[name];
+    } catch (error) {
+      unboundParameterNames.add(name);
+      logger.debug(
+        `Diff parameter binding for stack ${displayStackName(stackName)} is partial: ${error instanceof Error ? error.message : String(error)}`
       );
     }
-    parametersBound = true;
-  } catch (error) {
-    logger.debug(
-      `Diff parameter binding for stack ${displayStackName(stackName)} is partial: ${error instanceof Error ? error.message : String(error)}`
+  }
+  // `resolveParameters` output wins for template-declared parameters — it
+  // carries the deploy-coerced values (a Number-typed nested input becomes
+  // a number, like deploy) — while raw nested inputs survive for any name
+  // the template does not declare.
+  //
+  // EXCEPT for a redacted token (see `tokenParameterNames`), which is bound to
+  // the shape the CHILD'S STATE HOLDS for it -- see
+  // {@link tokenValueForComparison}. An earlier revision kept the raw token
+  // for EVERY such parameter and justified it as "exactly what the child's
+  // state holds", which is true only for a SCALAR one; issue
+  // [#2327](https://github.com/go-to-k/cdkd/issues/2327) measured that a
+  // `CommaDelimitedList` parameter's state leaf is an ARRAY, so the raw token
+  // compared a string against a list and reported a phantom change on every
+  // run. An over-stated invariant in a comment is durable precisely because
+  // it stops the next reader looking, which is why the correction is spelled
+  // here rather than only in the helper.
+  mergedParameters = { ...parameters, ...templateParameters };
+  for (const name of tokenParameterNames) {
+    const declaredType = (template.Parameters?.[name] as { Type?: unknown } | undefined)?.Type;
+    mergedParameters[name] = tokenValueForComparison(
+      (parameters ?? {})[name],
+      typeof declaredType === 'string' ? declaredType : undefined
     );
   }
 
@@ -1284,52 +1328,74 @@ export async function computeStackDiff(
   //    condition-false resource is neither reported as "to create" nor
   //    diffed against state (matching deploy's `filterResourcesByCondition`
   //    step — a condition-false resource still in state correctly falls
-  //    through to the DELETE path, exactly like deploy). ONLY when parameter
-  //    binding succeeded: the resolver downgrades a condition it cannot
-  //    evaluate (e.g. a Ref to the unbound parameter) to FALSE, so running
-  //    this after a binding failure would prune condition-gated resources
-  //    and report phantom DELETEs — the raw-template fallback must stay
-  //    whole-template in that case.
+  //    through to the DELETE path, exactly like deploy).
+  //
+  //    PER CONDITION (go-to-k/cdkd#4470). A condition that reaches an UNBOUND
+  //    parameter, or one fed a redacted `{{resolve:...}}` token (issue #1903),
+  //    has no verdict this side can compute: the resolver downgrades a
+  //    condition it cannot evaluate to FALSE, and one evaluated over the token
+  //    compares an expression where the deploy compares the real value — the
+  //    deploy engine deliberately hands its CONDITION context the unredacted
+  //    parameters, and this side does not have them and must not fetch them.
+  //    Pruning by either verdict reports phantom DELETEs (or CREATEs). So that
+  //    dependency closure ({@link unknownConditionNames}) is left out of the
+  //    map handed to the evaluator, and `filterResourcesByCondition` — which
+  //    prunes only a name the map holds as `false` — keeps every resource
+  //    gated on it. Every OTHER condition gets its real verdict.
+  //
+  //    This used to be all-or-nothing, and the cost was not merely "diffed
+  //    rather than pruned": with `conditions` undefined `resolveIf` takes the
+  //    FALSE branch for EVERY `Fn::If`, so a condition-true property on a
+  //    condition that reads no parameter at all diffed as a perpetual
+  //    spurious UPDATE and `--fail` exited 1. An `Fn::If` on an UNKNOWN
+  //    condition still takes FALSE, as it always did: the resolver has no
+  //    "unknown" verdict, and inferring one is out of this fix's scope.
   let effectiveTemplate = template;
   let conditions: Record<string, boolean> | undefined;
-  // ALSO skipped when a CONDITION transitively references a redacted-token
-  // parameter (issue #1903): the deploy engine evaluates its conditions against
-  // the REAL parameter values, and this side does not have them and must not
-  // fetch them. Rather than evaluate a condition on an expression string and
-  // prune by the answer, fall back to the whole template — the SAME fallback
-  // the `parametersBound` guard already takes, for the same reason (an
-  // unreliable condition verdict prunes real resources and reports phantom
-  // DELETEs).
-  //
-  // THE COST OF THE SKIP IS NOT MERELY "DIFFED RATHER THAN PRUNED", which is
-  // what this comment used to claim. Leaving `conditions` undefined ALSO makes
-  // `resolveIf` warn and take the FALSE branch for every `Fn::If` in every
-  // property value, so a condition-true property diffs as a spurious UPDATE
-  // (perpetual, and `--fail` exits 1) on top of the phantom CREATEs. That is
-  // why the test is `conditionsDependOnTokenParameters` and not
-  // `tokenParameterNames.size === 0`: the broad form fired whenever ANY
-  // parameter was token-valued, including the common case where no condition
-  // mentions one, and paid that price for nothing.
-  if (parametersBound && !conditionsDependOnTokenParameters(template, tokenParameterNames)) {
-    try {
-      conditions = await intrinsicResolver.evaluateConditions({
-        template,
-        resources: currentState.resources,
-        stateBackend,
-        stackName,
-        bestEffort: true,
-        ...(mergedParameters && { parameters: mergedParameters }),
-        // Its `Evaluated condition` / `Resolved` debug lines print a condition
-        // over a parent-fed value (go-to-k/cdkd#4049).
-        ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
-        ...(attributeHealer && { attributeHealer }),
-      });
-      effectiveTemplate = new TemplateParser().filterResourcesByCondition(template, conditions);
-    } catch (error) {
-      logger.debug(
-        `Diff condition evaluation for stack ${displayStackName(stackName)} skipped: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
+  const unknownConditions = unknownConditionNames(
+    template,
+    new Set([...unboundParameterNames, ...tokenParameterNames])
+  );
+  // Whether EVERY parameter bound and EVERY condition has a verdict — what
+  // `conditions !== undefined` meant before go-to-k/cdkd#4470. The Outputs merge
+  // below still needs all of it.
+  let everyConditionKnown = false;
+  try {
+    // A known condition never references an unknown one (the closure is
+    // transitive), so the narrowed map is self-contained.
+    const knownTemplate: CloudFormationTemplate =
+      unknownConditions.size === 0 || !template.Conditions
+        ? template
+        : {
+            ...template,
+            Conditions: Object.fromEntries(
+              Object.entries(template.Conditions).filter(([name]) => !unknownConditions.has(name))
+            ),
+          };
+    conditions = await intrinsicResolver.evaluateConditions({
+      template: knownTemplate,
+      resources: currentState.resources,
+      stateBackend,
+      stackName,
+      bestEffort: true,
+      ...(mergedParameters && { parameters: mergedParameters }),
+      // Its `Evaluated condition` / `Resolved` debug lines print a condition
+      // over a parent-fed value (go-to-k/cdkd#4049).
+      ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
+      ...(attributeHealer && { attributeHealer }),
+    });
+    effectiveTemplate = new TemplateParser().filterResourcesByCondition(template, conditions);
+    everyConditionKnown = unboundParameterNames.size === 0 && unknownConditions.size === 0;
+  } catch (error) {
+    logger.debug(
+      `Diff condition evaluation for stack ${displayStackName(stackName)} skipped: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  if (unknownConditions.size > 0) {
+    const names = [...unknownConditions].map((name) => displayIdent(name)).join(', ');
+    logger.debug(
+      safeMsg`Stack ${displayStackName(stackName)}: condition(s) ${names} depend on a parameter this diff cannot bind or read; resources gated on them are not pruned, and an Fn::If on them still takes its FALSE branch`
+    );
   }
 
   // The PRINTING half of go-to-k/cdkd#4049. The diff resolver gets a bag of its
@@ -1706,8 +1772,16 @@ export async function computeStackDiff(
       ),
     }
   );
+  // The RAW template too whenever a parameter is unbound or a condition has no
+  // verdict (go-to-k/cdkd#4470):
+  // main skipped condition evaluation for exactly those stacks and so scanned
+  // the unpruned template, while known-FALSE pruning now runs first and can
+  // drop the only secret reference — releasing a legacy stored output main
+  // withheld (#1948).
   const templateHasSecretReference =
-    resolved.templateHasSecretReference || inheritSecretBearingTemplate === true;
+    resolved.templateHasSecretReference ||
+    inheritSecretBearingTemplate === true ||
+    (!everyConditionKnown && templateHasSecretDynamicReference(template));
   const diffOutputsAgainst = (
     desired: Record<string, unknown>,
     exportNames: ReadonlySet<string>,
@@ -1743,9 +1817,10 @@ export async function computeStackDiff(
   // verdict can differ from the deploy's (a malformed `Fn::Sub` inside
   // `Fn::Equals` keeps its placeholder here and throws at deploy). The test is
   // not "declares no `Conditions`": every env-agnostic CDK app declares
-  // `CDKMetadataAvailable` for its metadata resource alone. `conditions` stays
-  // undefined when parameter binding failed, where a `Ref` to the unbound
-  // parameter fails here and resolves at deploy. Both are shapes where the
+  // `CDKMetadataAvailable` for its metadata resource alone. `everyConditionKnown`
+  // is false when any parameter failed to bind, where a `Ref` to the unbound
+  // parameter fails here and resolves at deploy, and when any condition has
+  // no verdict (go-to-k/cdkd#4470). Both are shapes where the
   // preview KNOWS its resolution differs, so it keeps the suppression there.
   //
   // Everywhere the merge does run, a failure can still depend on something only
@@ -1788,7 +1863,7 @@ export async function computeStackDiff(
     const resourcesChange = diffCalculator.hasChanges(changes);
     const merge =
       resolved.failuresMirrorDeploy &&
-      conditions !== undefined &&
+      everyConditionKnown &&
       !templateLetsConditionsReachOutputs(template) &&
       !resourcesChange
         ? mergeNoChangeOutputs({

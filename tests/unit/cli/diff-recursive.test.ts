@@ -1181,8 +1181,8 @@ describe('computeStackDiff', () => {
 
     it('keeps condition-gated resources when a required parameter cannot be bound (no phantom DELETE)', async () => {
       // The resolver downgrades an unevaluable condition (Ref to the unbound
-      // parameter) to FALSE — so condition evaluation must be skipped
-      // entirely on a binding failure, or a condition-gated resource in
+      // parameter) to FALSE — so a condition over the unbound parameter must
+      // stay unevaluated (go-to-k/cdkd#4470), or a condition-gated resource in
       // state would be pruned and reported as a spurious DELETE.
       const template: CloudFormationTemplate = {
         Parameters: { Req: { Type: 'String' } },
@@ -3527,10 +3527,10 @@ describe('Outputs-only change (issue #1921)', () => {
     });
 
     it('keeps the suppression when a condition reads a secret-valued parameter', async () => {
-      // Condition evaluation is skipped (a condition reads a secret-valued
-      // parameter). No condition verdict can reach an output in this template,
-      // so the refusal is the `conditions` gate's; the unbound-parameter case
-      // below reaches that gate by the other route.
+      // A condition reads a secret-valued parameter, so it has no verdict. No
+      // condition verdict can reach an output in this template, so the refusal
+      // is the `everyConditionKnown` gate's; the unbound-parameter case below
+      // reaches that gate by the other route.
       const suppressed = captureSuppressionWarnings();
       const tpl: CloudFormationTemplate = {
         ...template({ Out: { Value: FAILING }, Plain2: { Value: 'p2' } }),

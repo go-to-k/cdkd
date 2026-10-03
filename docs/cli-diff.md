@@ -252,8 +252,8 @@ still withhold the values. The section is still omitted when:
   not count: an output never reads a resource's template properties. Should the
   diff and the deploy disagree about such a resource, the warning above already
   says the deploy may write a different value for each failed output;
-- a template parameter could not be bound for the diff, or condition evaluation
-  was skipped because a condition depends on a parameter holding a secret
+- a template parameter could not be bound for the diff, or a condition could
+  not be evaluated because it depends on a parameter holding a secret
   reference (see [Condition pruning is skipped](#condition-pruning-is-skipped));
 - an output's value came back in a shape that does not tell the diff what the
   deploy will do with it — a function the diff could not evaluate, an
@@ -955,18 +955,20 @@ when the coercion actually destroys it.
 
 ### Condition pruning is skipped
 
-A child stack is **not condition-pruned** on that run when one of its
-`Conditions` transitively references a token-valued parameter. `cdkd deploy`
-evaluates its conditions against the real values, so a verdict computed over an
-expression could flip an `Fn::Equals` and report a phantom CREATE or DELETE of a
-condition-gated child resource. The whole child template is diffed instead,
-which is the same fallback an unbindable parameter already takes.
+A condition that transitively references a token-valued parameter — directly,
+or through another condition it names — is **not evaluated** on that run.
+`cdkd deploy` evaluates its conditions against the real values, so a verdict
+computed over an expression could flip an `Fn::Equals` and report a phantom
+CREATE or DELETE of a condition-gated child resource. A resource gated on such
+a condition is kept and diffed rather than pruned. A template parameter the
+diff cannot bind is treated the same way: parameters are bound one at a time,
+so only the conditions that reach the unbound one go unevaluated.
 
-The skip is scoped to conditions that actually depend on such a parameter.
-Leaving the condition map unevaluated would also make every `Fn::If` in a
-property value take its FALSE branch, so a template whose conditions mention no
-secret parameter is evaluated and pruned exactly as it would be without a secret
-in the tree.
+Every other condition is evaluated and prunes exactly as it would with no
+secret in the tree, so an `Fn::If` on a condition that reads no such parameter
+resolves to the branch the deploy takes. An `Fn::If` on a condition that is not
+evaluated still resolves to its FALSE branch, which can show a change the
+deploy will not make.
 
 ### Secret parameters must be `Type: String`
 
