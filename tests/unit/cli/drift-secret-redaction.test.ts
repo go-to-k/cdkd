@@ -2553,7 +2553,11 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
         },
       })
     );
-    await runDrift(['TestStack', '--accept', '--yes']);
+    const accepted = await runDrift(['TestStack', '--accept', '--yes']);
+    expect(accepted.error).toBeUndefined();
+    // The run reached the write (another drifted key would be accepted), and
+    // the masked key kept its recorded value.
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
     for (const call of mockSaveState.mock.calls) {
       const saved = JSON.stringify(call[2]);
       expect(saved).not.toContain('v2');
