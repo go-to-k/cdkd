@@ -203,7 +203,7 @@ const MIN_THREADED_CONSTRUCTIONS = 350;
  * the population drifting off composers until only the self-probe exercises
  * the arm.
  */
-const MIN_COMPOSER_THREADED_CONSTRUCTIONS = 10;
+const MIN_COMPOSER_THREADED_CONSTRUCTIONS = 12;
 /** Minimum size of the DERIVED error-class table. */
 const MIN_ERROR_CLASSES = 20;
 

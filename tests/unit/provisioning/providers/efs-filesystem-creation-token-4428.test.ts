@@ -57,7 +57,19 @@ import {
   isNameCollisionErrorFrom,
   isRecreateRetryableError,
 } from '../../../../src/deployment/retryable-errors.js';
-import { allowUnscopedCreateTokensForTests } from '../../../../src/provisioning/providers/idempotency-token.js';
+import {
+  allowUnscopedCreateTokensForTests,
+  stackScopedCreateToken,
+} from '../../../../src/provisioning/providers/idempotency-token.js';
+import { getLogger } from '../../../../src/utils/logger.js';
+import {
+  CreateTokenLedger,
+  withCreateTokenLedger,
+} from '../../../../src/provisioning/providers/create-token-ledger.js';
+import {
+  CREATE_TOKEN_LEDGER_VERSION,
+  type CreateTokenLedgerDoc,
+} from '../../../../src/state/create-token-ledger.js';
 
 // These cases drive create() directly, outside a withStackName scope, so the
 // stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
@@ -69,6 +81,8 @@ afterAll(() => {
 });
 
 const TYPE = 'AWS::EFS::FileSystem';
+/** The pre-ledger holder lookup of a create whose ledger starts in this deploy. */
+const NO_PRE_LEDGER_HOLDER = { FileSystems: [] };
 const HELD_ID = 'fs-held0000';
 const HELD_ARN = `arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/${HELD_ID}`;
 
@@ -193,7 +207,7 @@ describe('EFS file-system CreationToken (go-to-k/cdkd#4428)', () => {
       () => undefined,
       (e: unknown) => e
     );
-    expect((error as Error).message).toContain('RemovalPolicy defaults to RETAIN');
+    expect((error as Error).message).toContain('cdkd later let go of it');
     expect(isMarkedNonRetryable(error)).toBe(true);
     expect(commandsSent(DeleteFileSystemCommand)).toBe(0);
   });
@@ -545,4 +559,158 @@ describe('EFS file-system CreationToken (go-to-k/cdkd#4428)', () => {
       expect(mockSend).toHaveBeenCalledTimes(1);
     }
   );
+  describe('with the stack\'s create-token ledger bound (go-to-k/cdkd#4438)', () => {
+    /** The ledger object of one stack, as a deploy reads and writes it. */
+    const ledgerOver = (doc: CreateTokenLedgerDoc | null) => {
+      let body = doc === null ? undefined : JSON.stringify(doc);
+      return {
+        ledger: () =>
+          new CreateTokenLedger({
+            load: async () => (body === undefined ? null : JSON.parse(body)),
+            save: async (d) => {
+              body = JSON.stringify(d);
+            },
+          }),
+        current: () => (body === undefined ? undefined : (JSON.parse(body) as CreateTokenLedgerDoc)),
+      };
+    };
+    const deploy = <T,>(ledger: CreateTokenLedger, fn: () => Promise<T>) =>
+      withStackName('DevStack', () => withCreateTokenLedger(ledger, fn));
+
+    it('adopts the file system an earlier run made when that run died before recording it', async () => {
+      // Run 1 created the file system an hour ago; the CREATE returned, and the
+      // process died before the deploy's state record named it (a first deploy
+      // writes that record only at its end).
+      const store = ledgerOver(null);
+      mockSend
+        .mockResolvedValueOnce(NO_PRE_LEDGER_HOLDER)
+        .mockResolvedValueOnce({ FileSystemId: HELD_ID, FileSystemArn: HELD_ARN, CreationTime: new Date() })
+        .mockResolvedValueOnce({ FileSystems: [{ LifeCycleState: 'available' }] });
+      await deploy(store.ledger(), () => provider.create('MyFs', TYPE, {}));
+      const runOneToken = store.current()!.sent['MyFs']!.token;
+      const doc = store.current()!;
+      doc.sent['MyFs']!.firstSentAt -= 3_600_000; // run 1 was an hour ago
+      const rerun = ledgerOver(doc);
+
+      // Run 2, a NEW provider (a new process): same token, and EFS names the
+      // file system run 1 made, created an hour ago.
+      provider = new EFSProvider();
+      mockSend.mockReset();
+      mockSend
+        .mockRejectedValueOnce(alreadyExists())
+        .mockResolvedValueOnce(holder('available', new Date(Date.now() - 3_600_000 + 2_000)))
+        .mockResolvedValueOnce({ FileSystems: [{ LifeCycleState: 'available' }] });
+      const result = await deploy(rerun.ledger(), () => provider.create('MyFs', TYPE, {}));
+
+      expect(result.physicalId).toBe(HELD_ID);
+      expect(creationTokens()[0]).toBe(runOneToken);
+      // Kept: it is only ever held by what this stack made.
+      expect(rerun.current()!.sent['MyFs']?.token).toBe(runOneToken);
+    });
+
+    it('still refuses a file system older than the earlier run\'s first send', async () => {
+      const store = ledgerOver(null);
+      await deploy(store.ledger(), async () => {
+        mockSend.mockResolvedValueOnce(NO_PRE_LEDGER_HOLDER).mockRejectedValueOnce(serverError());
+        await expect(provider.create('MyFs', TYPE, {})).rejects.toThrow();
+      });
+      provider = new EFSProvider();
+      mockSend
+        .mockRejectedValueOnce(alreadyExists())
+        .mockResolvedValueOnce(holder('available', LONG_AGO));
+      await expect(
+        deploy(store.ledger(), () => provider.create('MyFs', TYPE, {}))
+      ).rejects.toThrow(/NOT recorded in cdkd state/);
+    });
+
+    it('records the send of a create that ended AMBIGUOUS', async () => {
+      const store = ledgerOver(null);
+      await deploy(store.ledger(), async () => {
+        mockSend.mockResolvedValueOnce(NO_PRE_LEDGER_HOLDER).mockRejectedValueOnce(serverError());
+        await expect(provider.create('MyFs', TYPE, {})).rejects.toThrow();
+      });
+      expect(store.current()!.sent['MyFs']).toBeDefined();
+    });
+
+    it('sends a different token once the ledger was replaced (a destroy that kept the file system)', async () => {
+      const before = ledgerOver({
+        ledgerVersion: CREATE_TOKEN_LEDGER_VERSION,
+        nonce: 'before-destroy',
+        sent: {},
+      });
+      answerCreate('fs-1');
+      await deploy(before.ledger(), () => provider.create('MyFs', TYPE, {}));
+      mockSend.mockResolvedValueOnce(NO_PRE_LEDGER_HOLDER);
+      answerCreate('fs-2');
+      await deploy(ledgerOver(null).ledger(), () => provider.create('MyFs', TYPE, {}));
+      const [first, second] = creationTokens();
+      expect(second).not.toBe(first);
+    });
+
+    const tokenLookups = (): string[] =>
+      mockSend.mock.calls
+        .filter(([cmd]) => cmd instanceof DescribeFileSystemsCommand)
+        .map(([cmd]) => (cmd as DescribeFileSystemsCommand).input.CreationToken)
+        .filter((t): t is string => t !== undefined);
+
+    it('names a file system an EARLIER cdkd version left under the nonce-free token when the ledger starts', async () => {
+      // An interrupted create of a cdkd version without the ledger holds the
+      // nonce-free token. This create sends a nonce token, so it is not
+      // handed that file system back: it would bill, unnamed, until deleted.
+      const store = ledgerOver(null);
+      mockSend.mockResolvedValueOnce({ FileSystems: [{ FileSystemId: 'fs-left0000' }] });
+      answerCreate('fs-new');
+      const base = withStackName('DevStack', () =>
+        stackScopedCreateToken({
+          logicalId: 'MyFs',
+          immutableInputs: [undefined, undefined, undefined, undefined],
+          maxLength: 64,
+        })
+      );
+      const result = await deploy(store.ledger(), () => provider.create('MyFs', TYPE, {}));
+      expect(result.physicalId).toBe('fs-new');
+      expect(tokenLookups()).toEqual([base]);
+      expect(creationTokens()[0]).not.toBe(base);
+      const warn = vi.mocked(getLogger().child('x').warn);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('fs-left0000'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('MyFs'));
+      // It may be a file system a destroy or a replacement KEPT, holding data.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('kept by an earlier destroy or replacement'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('may hold data'));
+    });
+
+    it('does not name a holder that is being deleted (a recreate of a file system made before the ledger)', async () => {
+      mockSend.mockResolvedValueOnce({
+        FileSystems: [
+          { FileSystemId: 'fs-going0000', LifeCycleState: 'deleting' },
+          { FileSystemId: 'fs-gone00000', LifeCycleState: 'deleted' },
+        ],
+      });
+      answerCreate('fs-new');
+      await deploy(ledgerOver(null).ledger(), () => provider.create('MyFs', TYPE, {}));
+      const warn = vi.mocked(getLogger().child('x').warn);
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('fs-going0000'));
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('fs-gone00000'));
+    });
+
+    it('does not look the nonce-free token up once the stack has a ledger', async () => {
+      const store = ledgerOver({
+        ledgerVersion: CREATE_TOKEN_LEDGER_VERSION,
+        nonce: 'existing',
+        sent: {},
+      });
+      answerCreate('fs-new');
+      await deploy(store.ledger(), () => provider.create('MyFs', TYPE, {}));
+      expect(tokenLookups()).toEqual([]);
+    });
+
+    it('a lookup that fails does not stop the create', async () => {
+      mockSend.mockRejectedValueOnce(serverError());
+      answerCreate('fs-new');
+      const result = await deploy(ledgerOver(null).ledger(), () =>
+        provider.create('MyFs', TYPE, {})
+      );
+      expect(result.physicalId).toBe('fs-new');
+    });
+  });
 });

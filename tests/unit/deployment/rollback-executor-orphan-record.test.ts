@@ -12,7 +12,7 @@
  * record carries the DISCARDED STATE RECORD rather than an id, and that the
  * arms which must NOT record stay silent.
  */
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   replayRollback,
   replayFailedOperations,
@@ -21,6 +21,21 @@ import {
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
 import { orphansAfterRollback, type ResourceState } from '../../../src/types/state.js';
+
+// go-to-k/cdkd#4438: a rollback that keeps a resource rotates the stack's
+// create-token nonce for its logical id (the type filter is in the module).
+const noteRetained = vi.hoisted(() =>
+  vi.fn(async (_resourceType: string, _logicalId: string) => undefined)
+);
+vi.mock('../../../src/provisioning/providers/create-token-ledger.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../../src/provisioning/providers/create-token-ledger.js')
+  >('../../../src/provisioning/providers/create-token-ledger.js');
+  return { ...actual, noteRetainedResource: noteRetained };
+});
+beforeEach(() => {
+  noteRetained.mockClear();
+});
 
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/deployment/retry.js')>();
@@ -99,6 +114,8 @@ describe('rollback records what it orphans (#2934)', () => {
 
     expect(del).not.toHaveBeenCalled();
     expect(state['KeptRole']).toBeUndefined();
+    // go-to-k/cdkd#4438: the kept resource holds the stack's create token.
+    expect(noteRetained).toHaveBeenCalledWith('AWS::IAM::Role', 'KeptRole');
     expect(result.orphaned).toHaveLength(1);
     const record = result.orphaned[0]!;
     expect(record.logicalId).toBe('KeptRole');
@@ -134,6 +151,7 @@ describe('rollback records what it orphans (#2934)', () => {
     // with and nothing to record.
     expect(del).toHaveBeenCalledTimes(1);
     expect(result.orphaned).toEqual([]);
+    expect(noteRetained).not.toHaveBeenCalled();
   });
 
   it('`RetainExceptOnCreate` deletes and records nothing', async () => {
@@ -170,6 +188,9 @@ describe('rollback records what it orphans (#2934)', () => {
     expect(del).not.toHaveBeenCalled();
     expect(state['KeptRole']).toBeUndefined();
     expect(result.orphaned).toEqual([]);
+    // go-to-k/cdkd#4438: `--orphan` lets the resource go while it still holds
+    // the stack's create token, so the nonce is rotated for it.
+    expect(noteRetained).toHaveBeenCalledWith('AWS::IAM::Role', 'KeptRole');
   });
 });
 
@@ -282,6 +303,7 @@ describe('the failed-in-flight CREATE arm records too (#2934)', () => {
     // deleting this arm's push left the whole suite green.
     expect(del).not.toHaveBeenCalled();
     expect(state['PartialRole']).toBeUndefined();
+    expect(noteRetained).toHaveBeenCalledWith('AWS::IAM::Role', 'PartialRole');
     expect(result.orphaned).toHaveLength(1);
     expect(result.orphaned[0]?.logicalId).toBe('PartialRole');
     expect(result.orphaned[0]?.state.properties).toEqual({ Path: '/partial/' });

@@ -34,6 +34,21 @@ import type { CloudFormationTemplate, ResourceProvider } from '../../../src/type
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
+// go-to-k/cdkd#4438: a Retain that leaves the old resource alive rotates the
+// stack's create-token nonce; the type filter lives in the ledger module.
+const noteRetained = vi.hoisted(() =>
+  vi.fn(async (_resourceType: string, _logicalId: string) => undefined)
+);
+vi.mock('../../../src/provisioning/providers/create-token-ledger.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../../src/provisioning/providers/create-token-ledger.js')
+  >('../../../src/provisioning/providers/create-token-ledger.js');
+  return { ...actual, noteRetainedResource: noteRetained };
+});
+beforeEach(() => {
+  noteRetained.mockClear();
+});
+
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
     setLevel: vi.fn(),
@@ -307,6 +322,8 @@ describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
       const state = makeState();
       await invokeProvision(engine, makeUpdateChange(), state, templateWithRetain());
       expect([...retainedSet(engine)]).toEqual(['MyLambda']);
+      // go-to-k/cdkd#4438: the kept resource holds the stack's create token.
+      expect(noteRetained).toHaveBeenCalledWith('AWS::Lambda::Function', 'MyLambda');
       // The verdict has to match what the arm DID: under Retain this path
       // warns and skips the destroy entirely.
       expect(sdkProvider.delete).not.toHaveBeenCalled();
@@ -316,6 +333,7 @@ describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
       const engine = makeEngine();
       await invokeProvision(engine, makeUpdateChange(), makeState(), makeTemplate());
       expect([...retainedSet(engine)]).toEqual([]);
+      expect(noteRetained).not.toHaveBeenCalled();
       expect(sdkProvider.delete).toHaveBeenCalled();
     });
   });

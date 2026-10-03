@@ -32,6 +32,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { CloudFrontOAIProvider } from '../../../src/provisioning/providers/cloudfront-oai-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { withStackName } from '../../../src/provisioning/resource-name.js';
+import {
+  CreateTokenLedger,
+  withCreateTokenLedger,
+} from '../../../src/provisioning/providers/create-token-ledger.js';
 import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 
 // These cases drive create() directly, outside a withStackName scope, so the
@@ -107,6 +111,34 @@ describe('CloudFrontOAIProvider', () => {
       // Deterministic within one stack: a retry after a lost response is
       // answered with the identity the first attempt made.
       expect(refs[0]).toBe(refs[2]);
+    });
+
+    it("folds the stack's create-token nonce into the CallerReference (go-to-k/cdkd#4438)", async () => {
+      mockSend.mockResolvedValue({ CloudFrontOriginAccessIdentity: { Id: 'E1', S3CanonicalUserId: 'c' } });
+      const type = 'AWS::CloudFront::CloudFrontOriginAccessIdentity';
+      const props = { CloudFrontOriginAccessIdentityConfig: { Comment: 'c' } };
+      let body: string | undefined;
+      const ledger = () =>
+        new CreateTokenLedger({
+          load: async () => (body === undefined ? null : JSON.parse(body)),
+          save: async (d) => {
+            body = JSON.stringify(d);
+          },
+        });
+      const deploy = (l: CreateTokenLedger) =>
+        withStackName('DevStack', () => withCreateTokenLedger(l, () => provider.create('MyOAI', type, props)));
+
+      await withStackName('DevStack', () => provider.create('MyOAI', type, props)); // no ledger
+      await deploy(ledger());
+      expect(Object.keys(JSON.parse(body!).sent)).toEqual(['MyOAI']);
+      body = undefined; // the record and its ledger deleted: a destroy
+      await deploy(ledger());
+
+      const refs = mockSend.mock.calls.map(
+        ([cmd]) => cmd.input.CloudFrontOriginAccessIdentityConfig.CallerReference
+      );
+      expect(refs[1]).not.toBe(refs[0]);
+      expect(refs[2]).not.toBe(refs[1]);
     });
 
     it('should create an OAI with empty Comment when config is missing', async () => {

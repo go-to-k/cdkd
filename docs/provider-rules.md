@@ -1125,17 +1125,30 @@ during a replacement). Derive it with `stackScopedCreateToken`, which also
 hashes the stack name and region, and refuses to run outside a `withStackName`
 scope: without them, two copies of one stack in an account sent the same token,
 and FSx and CloudFront handed the second stack the first one's resource (#4428).
-A token stable across runs is also held by a resource an earlier destroy KEPT
-(RETAIN / RetainExceptOnCreate) or a `state rm` forgot, so a create takes a
+Take it through `reserveStackCreateToken`
+(`src/provisioning/providers/create-token-ledger.ts`), which folds in the
+stack's create-token ledger nonce -- replaced whenever cdkd lets go of a
+resource that still holds a token (#4438) -- and records the send before the
+create is sent, so a re-run after an interruption sends the same token and
+reports when that earlier attempt was first sent. Add the type to
+`LEDGER_TOKEN_RESOURCE_TYPES`, and pass any new site that keeps such a resource
+alive while dropping it from state to `noteRetainedResource(type, logicalId)`,
+which rotates the nonce and drops that logical id's entry. The entry is kept
+until the deploy that wrote it succeeds (`forgetRecordedCreateTokens` after the
+final save): a re-run of an interrupted deploy needs it, and a later let-go
+must not find it. When the ledger cannot be read or written,
+`reserveStackCreateToken` throws: a create sent with any other token could not
+be found again by the re-run, and its resource would leak. A
+token stable across runs can still be held by a resource cdkd did not make, so a create takes a
 handed-back or named file system only when it was created after that create's
-FIRST send in this process -- judged on AWS's clock, never the host's: a host
+FIRST send (in this process, or recorded by the ledger) -- judged on AWS's clock, never the host's: a host
 clock running fast would otherwise refuse every ordinary create.
 `src/provisioning/providers/server-clock.ts` reads the response's HTTP `Date`
 (`withServerClock` / `earliestOwnCreationTime`) and falls back to SigV4's
 five-minute bound without one. FSx refuses an older one outright, and
 `EFSProvider.sendCreateFileSystem` (EFS refuses a repeated `CreationToken` with
 `FileSystemAlreadyExists`) adopts the named one only when this process's own
-earlier attempt may have made it. A holder still `deleting`, or one whose
+earlier attempt, or the ledger's, may have made it. A holder still `deleting`, or one whose
 read-back fails transiently, rethrows EFS's own error stamped
 `markReplayMayCollide`: a delete-first re-create's message-based retry waits it
 out, and no delete-first site acts on a holder cdkd does not own. That reasoning is

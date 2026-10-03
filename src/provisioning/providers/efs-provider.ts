@@ -43,7 +43,12 @@ import { definedAttributes } from '../attribute-map.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { acquireIdempotencyToken, stackScopedCreateToken } from './idempotency-token.js';
+import { acquireIdempotencyToken } from './idempotency-token.js';
+import {
+  earliestDefined,
+  reserveStackCreateToken,
+  type StackCreateToken,
+} from './create-token-ledger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
@@ -544,6 +549,39 @@ export class EFSProvider implements ResourceProvider {
 
   // ─── AWS::EFS::FileSystem ──────────────────────────────────────────
 
+  /**
+   * The stack's create-token ledger was started in this deploy, so a create
+   * of `logicalId` an EARLIER cdkd version sent and never recorded -- an
+   * interrupted deploy -- holds the nonce-free token `base`, which this create
+   * no longer sends: that file system is not handed back, and bills until
+   * deleted. Name it (go-to-k/cdkd#4438). Best-effort: a lookup that fails is
+   * only logged.
+   */
+  private async warnOfPreLedgerHolder(
+    logicalId: string,
+    base: string,
+    log: MaskedLogSinks
+  ): Promise<void> {
+    try {
+      const response = await this.getClient().send(
+        new DescribeFileSystemsCommand({ CreationToken: base })
+      );
+      for (const holder of response.FileSystems ?? []) {
+        // One on its way out (a recreate's delete) is not left behind.
+        if (holder.LifeCycleState === 'deleting' || holder.LifeCycleState === 'deleted') continue;
+        log.warn(
+          safeMsg`EFS file system ${holder.FileSystemId ?? '<unknown id>'} holds the creation token cdkd versions without a create-token ledger sent for ${logicalId}, and this create does not take it over. It was kept by an earlier destroy or replacement, or left by an interrupted create of an earlier cdkd version. It may hold data: inspect it before deleting it.`
+        );
+      }
+    } catch (error) {
+      log.debug(
+        safeMsg`Could not look up an EFS file system an earlier cdkd version created for ${logicalId}: ${
+          describeAwsFailure(error).detail
+        }`
+      );
+    }
+  }
+
   private async createFileSystem(
     logicalId: string,
     resourceType: string,
@@ -563,9 +601,11 @@ export class EFSProvider implements ResourceProvider {
     // creates the new FS while the old still exists, so hash ONLY the
     // immutable, createOnly inputs), and be SCOPED to this stack, or a second
     // copy of this stack in the account is refused (go-to-k/cdkd#4428).
-    // `stackScopedCreateToken` owns all three. EFS caps the token at 64
-    // characters.
-    const creationToken = stackScopedCreateToken({
+    // `stackScopedCreateToken` owns all three; `reserveStackCreateToken` adds
+    // the stack's create-token ledger (go-to-k/cdkd#4438): a nonce replaced
+    // whenever cdkd lets go of resources it made, and a marker of this create
+    // persisted before it is sent. EFS caps the token at 64 characters.
+    const reservation = await reserveStackCreateToken({
       logicalId,
       immutableInputs: [
         properties['AvailabilityZoneName'],
@@ -575,6 +615,10 @@ export class EFSProvider implements ResourceProvider {
       ],
       maxLength: 64,
     });
+    const creationToken = reservation.value;
+    if (reservation.ledgerStartedThisDeploy) {
+      await this.warnOfPreLedgerHolder(logicalId, reservation.base, log);
+    }
 
     const tags = properties['FileSystemTags'] as Array<{ Key: string; Value: string }> | undefined;
 
@@ -584,7 +628,7 @@ export class EFSProvider implements ResourceProvider {
     let fileSystemId: string | undefined;
 
     try {
-      const created = await this.sendCreateFileSystem(logicalId, resourceType, {
+      const created = await this.sendCreateFileSystem(logicalId, resourceType, reservation, {
         CreationToken: creationToken,
         Encrypted: properties['Encrypted'] as boolean | undefined,
         KmsKeyId: properties['KmsKeyId'] as string | undefined,
@@ -708,14 +752,17 @@ export class EFSProvider implements ResourceProvider {
    *    withholds the collision verdict and no delete-first site acts on a
    *    holder whose ownership cdkd has not established.
    *  - live, and this process may have made it: ADOPTED. That needs BOTH an
-   *    earlier attempt of this create that sent the token and never saw it
-   *    confirmed (an AMBIGUOUS failure, or an answered create whose later step
-   *    failed without the cleanup deleting it) or an SDK resend of this very
-   *    request (`$metadata.attempts > 1`), AND a `CreationTime` no earlier than
-   *    the first such send, on AWS's clock. The time
-   *    check is what keeps a file system an earlier destroy RETAINED (CDK's
-   *    `efs.FileSystem` default), which carries this same deterministic token,
-   *    from being adopted and then deleted by the partial-create cleanup.
+   *    earlier attempt of this create that sent the token -- in this process
+   *    and never confirmed (an AMBIGUOUS failure, or an answered create whose
+   *    later step failed without the cleanup deleting it), or recorded by the
+   *    stack's create-token ledger in an earlier run (#4438) -- or an SDK
+   *    resend of this very request (`$metadata.attempts > 1`), AND a
+   *    `CreationTime` no earlier than the first such send, on AWS's clock
+   *    (re-measured from this response, so an earlier run's local time is
+   *    skew-corrected by today's reading). The time check is what keeps a file
+   *    system made under this token outside the ledger -- under an earlier
+   *    cdkd, or kept while the ledger could not be updated -- from being
+   *    adopted and then deleted by the partial-create cleanup.
    *  - anything else: refused, non-retryably, in words a name-collision
    *    classifier does not match — a `--replace` delete-first would delete the
    *    LIVE old file system and then collide again, since what holds the token
@@ -724,11 +771,18 @@ export class EFSProvider implements ResourceProvider {
   private async sendCreateFileSystem(
     logicalId: string,
     resourceType: string,
+    reservation: StackCreateToken,
     input: CreateFileSystemCommandInput & { CreationToken: string }
   ): Promise<{ fileSystemId: string; arn: string | undefined }> {
     const token = input.CreationToken;
     const sentAt = Date.now();
-    const earlierSentAt = this.unconfirmedCreationTokens.get(token);
+    // An earlier attempt of this create: in this process, or -- through the
+    // stack's create-token ledger -- in an earlier run that was interrupted
+    // before it recorded the file system (go-to-k/cdkd#4438).
+    const earlierSentAt = earliestDefined(
+      this.unconfirmedCreationTokens.get(token),
+      reservation.earlierFirstSentAt
+    );
     const firstSentAt = earlierSentAt ?? sentAt;
     // Records AWS's `Date` for the answered attempt -- the refusal's too.
     const command = withServerClock(new CreateFileSystemCommand(input));
@@ -830,7 +884,7 @@ export class EFSProvider implements ResourceProvider {
         madeAfterFirstSend
       ) {
         this.logger.debug(
-          safeMsg`EFS CreateFileSystem for ${logicalId} was a replay of this deploy's own create; using ${holderId}`
+          safeMsg`EFS CreateFileSystem for ${logicalId} was a replay of this stack's own earlier create; using ${holderId}`
         );
         this.unconfirmedCreationTokens.set(token, firstSentAt);
         return { fileSystemId: holderId, arn: holder?.FileSystemArn };
@@ -864,7 +918,7 @@ export class EFSProvider implements ResourceProvider {
     holderId: string | undefined,
     why: string
   ): string {
-    return `EFS refused CreateFileSystem for ${logicalId}: the creation token cdkd derives for this stack's file system (${token}) is held by file system ${holderId ?? '(not named by EFS)'}, which is NOT recorded in cdkd state and was not created by this deploy.${why} It is either kept by an earlier destroy of this stack (an EFS file system's RemovalPolicy defaults to RETAIN) or left over from an earlier interrupted deploy, and it may hold data. Inspect it with: ${withPasteableAwsProfile('aws efs describe-file-systems')} --creation-token ${token} -- then import it into this stack, or delete it once you are sure its data is not needed, and deploy again.`;
+    return `EFS refused CreateFileSystem for ${logicalId}: the creation token cdkd derives for this stack's file system (${token}) is held by file system ${holderId ?? '(not named by EFS)'}, which is NOT recorded in cdkd state and was not created by this deploy.${why} It is not one this deploy, or an interrupted earlier deploy of this stack, made: it was created under this token by an earlier cdkd version, or a completed deploy recorded it and cdkd later let go of it, and it may hold data. Inspect it with: ${withPasteableAwsProfile('aws efs describe-file-systems')} --creation-token ${token} -- then import it into this stack, or delete it once you are sure its data is not needed, and deploy again.`;
   }
 
   // ─── Post-ACTIVE control-plane helpers ─────────────────────────────

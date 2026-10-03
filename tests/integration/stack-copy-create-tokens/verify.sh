@@ -17,11 +17,13 @@
 #   3. destroy B -- A's file system and OAI must survive it;
 #   4. destroy A -- everything gone;
 #   5. RETAIN arm: deploy A with a RETAINed file system, destroy (it is kept),
-#      redeploy -- the redeploy sends the same token and must be REFUSED,
-#      naming the kept file system, which is neither adopted nor deleted;
-#   6. FSx arm: two copies of a Lustre SCRATCH_2 file system on one shared
-#      subnet and security group -- copy B must get its own file system, and
-#      destroying it must leave copy A's.
+#      redeploy -- the redeploy must create a NEW file system (#4438), leaving
+#      the kept one untouched; 5b, the same after `cdkd orphan`;
+#   6. FSx arm: copy A's first deploy is killed mid-create and re-run -- the
+#      re-run must take the file system the killed run made (#4438); then two
+#      copies of a Lustre SCRATCH_2 file system on one shared subnet and
+#      security group -- copy B must get its own file system, and destroying
+#      it must leave copy A's.
 #
 # Required env vars:
 #   STATE_BUCKET -- cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -81,6 +83,7 @@ DEPLOY_LOG="$(mktemp)"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 state_key() { printf 'cdkd/%s/%s/state.json' "$1" "${REGION}"; }
+ledger_key() { printf 'cdkd/%s/%s/create-tokens.json' "$1" "${REGION}"; }
 
 # Best-effort orphan sweep, for a run that died between a create and its state
 # write (or a pre-fix run, where copy B's rollback can act on copy A's OAI).
@@ -190,12 +193,18 @@ state_destroy() { # usage: state_destroy <stack>; returns the destroy's rc
     aws s3 rm "s3://${STATE_BUCKET}/$(state_key "$1")" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/$1/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  # The create-token ledger (#4438): a killed first deploy leaves one with no
+  # state record, which `state destroy` cannot see.
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/$(ledger_key "$1")" >/dev/null 2>&1 || true
+  fi
   return "${rc}"
 }
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  [ -n "${KILLED_PID:-}" ] && kill -9 "${KILLED_PID}" 2>/dev/null
   local stack
   # FSx copies first, then any FSx file system no state records, and only
   # then the network they sit in.
@@ -328,13 +337,35 @@ assert_gone "file system ${FS_A} still exists after destroy" aws efs describe-fi
 assert_gone "OAI ${OAI_A} still exists after destroy" aws cloudfront get-cloud-front-origin-access-identity --id "${OAI_A}"
 for stack in "${STACK_A}" "${STACK_B}"; do
   assert_gone "state file for ${stack} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(state_key "${stack}")"
+  assert_gone "create-token ledger for ${stack} still exists after destroy (#4438)" aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(ledger_key "${stack}")"
 done
 echo "    OK: both copies destroyed cleanly"
 
-# --- Phase 5: RETAIN arm -------------------------------------------------
-# A destroy keeps a RETAINed file system, and the stack's next deploy sends the
-# same deterministic token. The kept file system holds data: the redeploy must
-# refuse it, naming it, and neither record nor delete it.
+# Delete an EFS file system this run left outside cdkd state, and wait until
+# it is gone (the delete is asynchronous).
+delete_efs_and_wait() { # usage: delete_efs_and_wait <file system id>
+  aws efs delete-file-system --file-system-id "$1" --region "${REGION}"
+  local _i
+  for _i in $(seq 1 30); do
+    if gone_probe aws efs describe-file-systems --file-system-id "$1" --region "${REGION}"; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "FAIL: file system $1 is still present 150s after its delete" >&2
+  exit 1
+}
+
+efs_state_of() { # usage: efs_state_of <file system id>
+  aws efs describe-file-systems --file-system-id "$1" --region "${REGION}" \
+    --query 'FileSystems[0].LifeCycleState' --output text
+}
+
+# --- Phase 5: RETAIN arm (go-to-k/cdkd#4438) --------------------------------
+# A destroy keeps a RETAINed file system, which still holds the create token
+# the stack sent for it. The destroy deletes the stack's create-token ledger,
+# so the redeploy sends a NEW token and creates a new file system -- as the
+# AWS CDK CLI does -- and the kept one stays untouched and unrecorded.
 echo "==> Phase 5: deploy ${STACK_A} with a RETAINed file system, destroy, redeploy"
 CDKD_TEST_RETAIN=true node "${LOCAL_DIST}" deploy "${STACK_A}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -345,62 +376,77 @@ CDKD_TEST_RETAIN=true node "${LOCAL_DIST}" destroy "${STACK_A}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --force
-KEPT_STATE=$(aws efs describe-file-systems --file-system-id "${FS_KEPT}" --region "${REGION}" \
-  --query 'FileSystems[0].LifeCycleState' --output text)
-if [ "${KEPT_STATE}" != "available" ]; then
-  echo "FAIL: the RETAINed file system ${FS_KEPT} is '${KEPT_STATE}' after destroy, expected 'available' (premise)" >&2
+if [ "$(efs_state_of "${FS_KEPT}")" != "available" ]; then
+  echo "FAIL: the RETAINed file system ${FS_KEPT} is not available after destroy (premise)" >&2
   exit 1
 fi
 
-if CDKD_TEST_RETAIN=true node "${LOCAL_DIST}" deploy "${STACK_A}" \
+if ! node "${LOCAL_DIST}" deploy "${STACK_A}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes > "${DEPLOY_LOG}" 2>&1; then
-  cat "${DEPLOY_LOG}"
-  echo "FAIL: the redeploy after a RETAIN destroy succeeded -- it adopted the kept file system ${FS_KEPT} instead of refusing it" >&2
-  exit 1
-fi
-cat "${DEPLOY_LOG}"
-if ! grep -q "NOT recorded in cdkd state" "${DEPLOY_LOG}" || ! grep -q "${FS_KEPT}" "${DEPLOY_LOG}"; then
-  echo "FAIL: the redeploy failed, but not with the refusal naming the kept file system ${FS_KEPT}" >&2
-  exit 1
-fi
-KEPT_STATE=$(aws efs describe-file-systems --file-system-id "${FS_KEPT}" --region "${REGION}" \
-  --query 'FileSystems[0].LifeCycleState' --output text)
-if [ "${KEPT_STATE}" != "available" ]; then
-  echo "FAIL: the kept file system ${FS_KEPT} is '${KEPT_STATE}' after the refused redeploy -- it was deleted" >&2
-  exit 1
-fi
-STATE_AFTER=$(aws s3 cp "s3://${STATE_BUCKET}/$(state_key "${STACK_A}")" - 2>/dev/null || true)
-if printf '%s' "${STATE_AFTER}" | grep -q "${FS_KEPT}"; then
-  echo "FAIL: the kept file system ${FS_KEPT} was recorded in ${STACK_A}'s state" >&2
-  exit 1
-fi
-echo "    OK: the redeploy refused the kept file system ${FS_KEPT}, leaving it unrecorded and intact"
-
-# The refused deploy rolled back what it created; destroy whatever state it
-# left (the OAI it rolled back leaves at most an empty record).
-if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(state_key "${STACK_A}")"; then
-  node "${LOCAL_DIST}" destroy "${STACK_A}" \
-    --state-bucket "${STATE_BUCKET}" \
-    --region "${REGION}" \
-    --force
-fi
-aws efs delete-file-system --file-system-id "${FS_KEPT}" --region "${REGION}"
-kept_gone=0
-for _i in $(seq 1 30); do
-  if gone_probe aws efs describe-file-systems --file-system-id "${FS_KEPT}" --region "${REGION}"; then
-    kept_gone=1
-    break
+  --yes 2>&1 | tee "${DEPLOY_LOG}"; then
+  if grep -q "NOT recorded in cdkd state" "${DEPLOY_LOG}"; then
+    echo "FAIL: the redeploy after a RETAIN destroy refused the kept file system ${FS_KEPT}: the create token was NOT renewed (issue #4438 NOT closed)" >&2
+  else
+    echo "FAIL: the redeploy after a RETAIN destroy failed (see the deploy output above)" >&2
   fi
-  sleep 5
-done
-if [ "${kept_gone}" -ne 1 ]; then
-  echo "FAIL: the kept file system ${FS_KEPT} is still present 150s after its delete" >&2
   exit 1
 fi
-assert_gone "state file for ${STACK_A} still exists after the RETAIN arm" aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(state_key "${STACK_A}")"
+FS_NEW=$(output_of "${STACK_A}" FileSystemId)
+if [ "${FS_NEW}" = "${FS_KEPT}" ]; then
+  echo "FAIL: the redeploy recorded the kept file system ${FS_KEPT} as new" >&2
+  exit 1
+fi
+if [ "$(efs_state_of "${FS_KEPT}")" != "available" ]; then
+  echo "FAIL: the kept file system ${FS_KEPT} is not available after the redeploy" >&2
+  exit 1
+fi
+echo "    OK: the redeploy created ${FS_NEW}; the kept ${FS_KEPT} is untouched"
+
+node "${LOCAL_DIST}" destroy "${STACK_A}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force
+assert_gone "file system ${FS_NEW} still exists after destroy" aws efs describe-file-systems --file-system-id "${FS_NEW}" --region "${REGION}"
+assert_gone "create-token ledger for ${STACK_A} still exists after the RETAIN arm's final destroy (#4438)" aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(ledger_key "${STACK_A}")"
+delete_efs_and_wait "${FS_KEPT}"
 echo "    OK: RETAIN arm cleaned up"
+
+# --- Phase 5b: cdkd orphan arm (go-to-k/cdkd#4438) --------------------------
+# `cdkd orphan` drops the file system from state while it still holds the
+# stack's create token; it rotates the ledger's nonce, so the next deploy
+# creates a new file system instead of being refused.
+echo "==> Phase 5b: deploy ${STACK_A}, orphan its file system, redeploy"
+node "${LOCAL_DIST}" deploy "${STACK_A}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+FS_ORPHANED=$(output_of "${STACK_A}" FileSystemId)
+node "${LOCAL_DIST}" orphan "${STACK_A}/TokenScopeFs" \
+  --state-bucket "${STATE_BUCKET}" \
+  --stack-region "${REGION}" \
+  --yes
+if ! node "${LOCAL_DIST}" deploy "${STACK_A}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1 | tee "${DEPLOY_LOG}"; then
+  echo "FAIL: the redeploy after orphaning ${FS_ORPHANED} failed (see the deploy output above)" >&2
+  exit 1
+fi
+FS_AFTER_ORPHAN=$(output_of "${STACK_A}" FileSystemId)
+if [ "${FS_AFTER_ORPHAN}" = "${FS_ORPHANED}" ]; then
+  echo "FAIL: the redeploy recorded the orphaned file system ${FS_ORPHANED} again" >&2
+  exit 1
+fi
+echo "    OK: the redeploy created ${FS_AFTER_ORPHAN}; the orphaned ${FS_ORPHANED} was left alone"
+node "${LOCAL_DIST}" destroy "${STACK_A}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force
+delete_efs_and_wait "${FS_ORPHANED}"
+assert_gone "state file for ${STACK_A} still exists after the orphan arm" aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(state_key "${STACK_A}")"
+assert_gone "create-token ledger for ${STACK_A} still exists after the orphan arm (#4438)" aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(ledger_key "${STACK_A}")"
+echo "    OK: orphan arm cleaned up"
 
 # --- Phase 6: FSx arm ----------------------------------------------------
 echo "==> Phase 6: deploy ${STACK_NET}, then ${STACK_FSX_A} and ${STACK_FSX_B} (shared subnet + security group)"
@@ -408,11 +454,76 @@ node "${LOCAL_DIST}" deploy "${STACK_NET}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
+
+# go-to-k/cdkd#4438: the FIRST deploy of copy A is killed (SIGKILL) while its
+# file system is being created -- AWS made it, cdkd never recorded it. The
+# re-run must send the same token (from the ledger's pending marker) and take
+# that file system, not create a second one nor refuse it.
+fsx_ids_tagged() {
+  aws fsx describe-file-systems --region "${REGION}" \
+    --query "FileSystems[?Tags[?Key=='cdkd-integ' && Value=='${FSX_TAG_VALUE}']].FileSystemId" \
+    --output text
+}
 node "${LOCAL_DIST}" deploy "${STACK_FSX_A}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes
+  --yes > "${DEPLOY_LOG}" 2>&1 &
+KILLED_PID=$!
+FSX_INTERRUPTED=""
+for _i in $(seq 1 60); do
+  FSX_INTERRUPTED=$(fsx_ids_tagged)
+  [ "${FSX_INTERRUPTED}" = "None" ] && FSX_INTERRUPTED=""
+  [ -n "${FSX_INTERRUPTED}" ] && break
+  if ! kill -0 "${KILLED_PID}" 2>/dev/null; then
+    cat "${DEPLOY_LOG}"
+    echo "FAIL: the deploy of ${STACK_FSX_A} ended before its file system appeared (premise)" >&2
+    exit 1
+  fi
+  sleep 5
+done
+if [ -z "${FSX_INTERRUPTED}" ]; then
+  kill -9 "${KILLED_PID}" 2>/dev/null || true
+  echo "FAIL: no file system appeared within 300s of deploying ${STACK_FSX_A} (premise)" >&2
+  exit 1
+fi
+kill -9 "${KILLED_PID}"
+wait "${KILLED_PID}" 2>/dev/null || true
+unset KILLED_PID
+echo "    killed the deploy of ${STACK_FSX_A} while ${FSX_INTERRUPTED} was being created"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(state_key "${STACK_FSX_A}")"; then
+  echo "FAIL: the killed first deploy of ${STACK_FSX_A} left a state record (premise: the file system is unrecorded)" >&2
+  exit 1
+fi
+# The mechanism, not only the outcome: the killed run recorded its send of the
+# file system's create token before it was killed.
+if ! aws s3 cp "s3://${STATE_BUCKET}/$(ledger_key "${STACK_FSX_A}")" - | jq -e '.sent.TokenScopeFsx.token' >/dev/null; then
+  echo "FAIL: the killed deploy of ${STACK_FSX_A} left no create-token ledger entry for TokenScopeFsx (premise)" >&2
+  exit 1
+fi
+# The killed run held the stack lock; release it as an operator would.
+aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK_FSX_A}/${REGION}/lock.json" >/dev/null
+
+if ! node "${LOCAL_DIST}" deploy "${STACK_FSX_A}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1 | tee "${DEPLOY_LOG}"; then
+  if grep -q "predates this create" "${DEPLOY_LOG}"; then
+    echo "FAIL: the re-run refused ${FSX_INTERRUPTED}, the file system its own interrupted run made (issue #4438 NOT closed)" >&2
+  else
+    echo "FAIL: the re-run of ${STACK_FSX_A} failed (see the deploy output above)" >&2
+  fi
+  exit 1
+fi
 FSX_A=$(output_of "${STACK_FSX_A}" FileSystemId)
+if [ "${FSX_A}" != "${FSX_INTERRUPTED}" ]; then
+  echo "FAIL: the re-run recorded ${FSX_A}, not ${FSX_INTERRUPTED} the interrupted run made" >&2
+  exit 1
+fi
+if [ "$(fsx_ids_tagged | wc -w | tr -d ' ')" != "1" ]; then
+  echo "FAIL: the re-run created a second file system: $(fsx_ids_tagged)" >&2
+  exit 1
+fi
+echo "    OK: the re-run took ${FSX_A}, the file system its interrupted run made"
 if ! node "${LOCAL_DIST}" deploy "${STACK_FSX_B}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -449,7 +560,8 @@ done
 assert_gone "FSx file system ${FSX_A} still exists after destroy" aws fsx describe-file-systems --file-system-ids "${FSX_A}" --region "${REGION}"
 for stack in "${STACK_FSX_A}" "${STACK_FSX_B}" "${STACK_NET}"; do
   assert_gone "state file for ${stack} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(state_key "${stack}")"
+  assert_gone "create-token ledger for ${stack} still exists after destroy (#4438)" aws s3api head-object --bucket "${STATE_BUCKET}" --key "$(ledger_key "${stack}")"
 done
 echo "    OK: FSx arm destroyed cleanly"
 
-echo "[verify] PASS -- two copies of one stack each own their EFS file system, CloudFront OAI and FSx file system, and a RETAINed file system is refused, not adopted (#4428)"
+echo "[verify] PASS -- two copies of one stack each own their EFS file system, CloudFront OAI and FSx file system (#4428); a redeploy after a RETAIN destroy or a cdkd orphan creates anew, and a re-run after a killed create takes what it made (#4438)"

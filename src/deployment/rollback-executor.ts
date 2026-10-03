@@ -294,6 +294,7 @@ export {
 } from './secret-region-classification.js';
 
 import { withProducerRegions } from './producer-regions-scope.js';
+import { noteRetainedResource } from '../provisioning/providers/create-token-ledger.js';
 
 async function replaySingle(
   op: CompletedOperation,
@@ -634,6 +635,8 @@ async function replayFailedOperationsUnbound(
             options.onOrphan?.(orphaned);
           }
           delete stateResources[op.logicalId];
+          // go-to-k/cdkd#4438: as on the `orphan-retain` arm.
+          await noteRetainedResource(op.resourceType, op.logicalId);
           logger.info(
             `  Rollback: leaving partially-created ${safe(op.logicalId)} (${safe(op.resourceType)}) in AWS ` +
               `(DeletionPolicy: Retain) — removed from state`

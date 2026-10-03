@@ -60,6 +60,11 @@ import {
 } from '../../../../src/deployment/retryable-errors.js';
 import { withStackName } from '../../../../src/provisioning/resource-name.js';
 import { recordServerClockForTests } from '../../../../src/provisioning/providers/server-clock.js';
+import {
+  CreateTokenLedger,
+  withCreateTokenLedger,
+} from '../../../../src/provisioning/providers/create-token-ledger.js';
+import type { CreateTokenLedgerDoc } from '../../../../src/state/create-token-ledger.js';
 import { allowUnscopedCreateTokensForTests } from '../../../../src/provisioning/providers/idempotency-token.js';
 
 // These cases drive create() directly, outside a withStackName scope, so the
@@ -482,6 +487,90 @@ describe('FSxFileSystemProvider create', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe('with the stack\'s create-token ledger bound (go-to-k/cdkd#4438)', () => {
+    const ledgerOver = (doc: CreateTokenLedgerDoc | null) => {
+      let body = doc === null ? undefined : JSON.stringify(doc);
+      return {
+        ledger: () =>
+          new CreateTokenLedger({
+            load: async () => (body === undefined ? null : JSON.parse(body)),
+            save: async (d) => {
+              body = JSON.stringify(d);
+            },
+          }),
+        current: () => (body === undefined ? undefined : (JSON.parse(body) as CreateTokenLedgerDoc)),
+        set: (d: CreateTokenLedgerDoc) => {
+          body = JSON.stringify(d);
+        },
+      };
+    };
+    const deploy = <T,>(ledger: CreateTokenLedger, fn: () => Promise<T>) =>
+      withStackName('DevStack', () => withCreateTokenLedger(ledger, fn));
+
+    /** Run 1 sends the create an hour ago and dies before recording it. */
+    const interruptedRunOne = async () => {
+      const store = ledgerOver(null);
+      mockSend.mockImplementation(async (cmd: object) => {
+        if (cmd instanceof CreateFileSystemCommand) {
+          throw Object.assign(new Error('internal'), { $metadata: { httpStatusCode: 500 } });
+        }
+        return {};
+      });
+      await deploy(store.ledger(), () =>
+        newProvider().create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }).catch(() => undefined)
+      );
+      const doc = store.current()!;
+      doc.sent['MyFs']!.firstSentAt -= 3_600_000;
+      store.set(doc);
+      return store;
+    };
+
+    /** FSx hands back a file system made an hour ago, `Date` agreeing with this host. */
+    const handBackFromAnHourAgo = () => {
+      mockSend.mockReset();
+      routeSend({
+        CreateFileSystemCommand: {
+          FileSystem: { FileSystemId: FS_ID, CreationTime: new Date(Date.now() - 3_600_000 + 10_000) },
+        },
+        DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+      });
+      const routed = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation(async (cmd: object) => {
+        if (cmd instanceof CreateFileSystemCommand) {
+          recordServerClockForTests(cmd, {
+            sentAtMs: Date.now(),
+            receivedAtMs: Date.now(),
+            serverDateMs: Date.now(),
+          });
+        }
+        return routed(cmd);
+      });
+    };
+
+    it('records the file system an INTERRUPTED earlier run of this create made', async () => {
+      const store = await interruptedRunOne();
+      const runOneToken = store.current()!.sent['MyFs']!.token;
+      handBackFromAnHourAgo();
+
+      const result = await deploy(store.ledger(), () =>
+        newProvider().create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS })
+      );
+
+      expect(result.physicalId).toBe(FS_ID);
+      expect(callsOf(CreateFileSystemCommand)[0]?.input['ClientRequestToken']).toBe(runOneToken);
+      expect(store.current()!.sent['MyFs']?.token).toBe(runOneToken);
+    });
+
+    it('refuses the same hand-back when the ledger holds no earlier attempt', async () => {
+      handBackFromAnHourAgo();
+      await expect(
+        deploy(ledgerOver(null).ledger(), () =>
+          newProvider().create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS })
+        )
+      ).rejects.toThrow(/predates this create/);
+    });
   });
 
   it('routes BackupId creates through CreateFileSystemFromBackup without FileSystemType', async () => {

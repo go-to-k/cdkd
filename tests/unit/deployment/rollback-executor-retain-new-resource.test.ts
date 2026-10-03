@@ -14,7 +14,7 @@
  * verdict.
  */
 
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   planRollback,
   replayRollback,
@@ -31,6 +31,21 @@ import {
   spansThatRun,
   withPasteDir,
 } from '../utils/paste-harness.js';
+
+// go-to-k/cdkd#4438: a rollback that keeps a resource rotates the stack's
+// create-token nonce for its logical id (the type filter is in the module).
+const noteRetained = vi.hoisted(() =>
+  vi.fn(async (_resourceType: string, _logicalId: string) => undefined)
+);
+vi.mock('../../../src/provisioning/providers/create-token-ledger.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../../src/provisioning/providers/create-token-ledger.js')
+  >('../../../src/provisioning/providers/create-token-ledger.js');
+  return { ...actual, noteRetainedResource: noteRetained };
+});
+beforeEach(() => {
+  noteRetained.mockClear();
+});
 
 // Single-attempt pass-through so the collision arm does not sleep through the
 // real 2-10s name-release schedule.
@@ -122,6 +137,8 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
 
       expect(create).toHaveBeenCalledTimes(1);
       expect(del).not.toHaveBeenCalled();
+      // go-to-k/cdkd#4438: the retained new copy holds the stack's create token.
+      expect(noteRetained).toHaveBeenCalledWith('AWS::SQS::Queue', 'B');
       // The revert still COMPLETES — state names the re-created old resource,
       // and nothing names the survivor. The A/B measured that CloudFormation
       // orphans a retained new copy OUT of the stack (deleting the stack

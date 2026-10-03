@@ -67,6 +67,10 @@ import {
   withStackName,
 } from '../provisioning/resource-name.js';
 import { displayIdent, displaySafe, safeMsg } from '../utils/display-safe.js';
+import {
+  ledgerForStack,
+  withCreateTokenLedger,
+} from '../provisioning/providers/create-token-ledger.js';
 
 /** The segment reason a nested engine records on success. */
 export const NESTED_PENDING_PARENT_REASON = 'nested-pending-parent' as const;
@@ -557,21 +561,25 @@ export async function revertNestedChildFromJournal(args: {
       const result = await withNestedStackContext(childCtx, () =>
         withSkipPrefix(skipPrefix, () =>
           withStackName(childStackName, () =>
-            withNestedRevertRun(runId, async (inner) => {
-              const replayed = await replayRollback(
-                segment.operations,
-                stateResources,
-                childStackName,
-                execCtx,
-                {
-                  afterOp: save,
-                  onOrphan: (record) => mintedOrphans.push(record),
-                  inlinePolicyWriters,
-                }
-              );
-              for (const [id, below] of inner.settled) settledBelow.set(id, below);
-              return { ...replayed, warnings: replayed.warnings + inner.warnings };
-            })
+            // go-to-k/cdkd#4438: the CHILD's own create-token ledger, not the
+            // parent's the enclosing replay bound.
+            withCreateTokenLedger(ledgerForStack(ctx.stateBackend, childStackName, region), () =>
+              withNestedRevertRun(runId, async (inner) => {
+                const replayed = await replayRollback(
+                  segment.operations,
+                  stateResources,
+                  childStackName,
+                  execCtx,
+                  {
+                    afterOp: save,
+                    onOrphan: (record) => mintedOrphans.push(record),
+                    inlinePolicyWriters,
+                  }
+                );
+                for (const [id, below] of inner.settled) settledBelow.set(id, below);
+                return { ...replayed, warnings: replayed.warnings + inner.warnings };
+              })
+            )
           )
         )
       );

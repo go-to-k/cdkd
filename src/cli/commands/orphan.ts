@@ -512,6 +512,17 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
         }
       }
 
+      // go-to-k/cdkd#4438: the orphaned resources still hold this stack's
+      // create tokens (EFS, FSx, CloudFront OAI), so the stack's next create
+      // of them must send new ones -- as the AWS CDK CLI's next deploy creates
+      // a new resource. BEFORE the record is saved, and fail-closed: a record
+      // that dropped them while the ledger still names their tokens would let
+      // the next deploy be handed them back.
+      await stateBackend.rotateCreateTokenNonce(
+        stackInfo.stackName,
+        targetRegion,
+        orphanLogicalIds
+      );
       await stateBackend.saveState(stackInfo.stackName, targetRegion, rewriteResult.state, {
         expectedEtag: etag,
         ...(migrationPending && { migrateLegacy: true }),

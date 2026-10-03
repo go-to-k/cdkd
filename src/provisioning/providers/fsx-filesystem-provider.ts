@@ -42,7 +42,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
-import { stackScopedCreateToken } from './idempotency-token.js';
+import { earliestDefined, reserveStackCreateToken } from './create-token-ledger.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
@@ -320,9 +320,11 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * When THIS process first sent each ClientRequestToken whose create has not
    * yet returned (go-to-k/cdkd#4428). FSx answers a repeated token with the
    * file system already holding it, so a retry is handed the one its earlier
-   * attempt made — or, the token being deterministic per stack, one an earlier
-   * destroy RETAINED. `create()` takes -- records, or cleans up on failure --
-   * only a file system created after the first send, and refuses any other.
+   * attempt made — or one made under the token outside the stack's
+   * create-token ledger (#4438). `create()` takes -- records, or cleans up on
+   * failure -- only a file system created after the first send (this
+   * process's, else the ledger's, judged on AWS's clock as measured now), and
+   * refuses any other.
    */
   private readonly createTokenFirstSentAt = new Map<string, number>();
 
@@ -448,7 +450,12 @@ export class FSxFileSystemProvider implements ResourceProvider {
     // immutable, createOnly inputs), and be SCOPED to this stack — a token
     // shared with another stack's copy of this logical id is handed that
     // stack's file system (go-to-k/cdkd#4428). `stackScopedCreateToken` owns
-    // all three; EFSProvider's CreationToken takes the same derivation.
+    // all three; `reserveStackCreateToken` adds the stack's create-token ledger
+    // (go-to-k/cdkd#4438): a nonce replaced whenever cdkd lets go of resources
+    // it made, so a file system a destroy kept no longer holds the token, and
+    // a marker persisted before the create, so a re-run after an interruption
+    // sends the same token and is handed the file system it made.
+    // EFSProvider's CreationToken takes the same derivation.
     //
     // NOTE the hash deliberately covers only the REGISTRY-createOnly
     // top-level properties, not the provider-classified immutable Lustre
@@ -459,7 +466,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
     // create runs — no token collision is possible on that path.
     //
     // FSx ClientRequestToken max length is 63 chars.
-    const clientRequestToken = stackScopedCreateToken({
+    const reservation = await reserveStackCreateToken({
       logicalId,
       immutableInputs: [
         properties['FileSystemType'],
@@ -470,6 +477,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       ],
       maxLength: 63,
     });
+    const clientRequestToken = reservation.value;
 
     const common = {
       ClientRequestToken: clientRequestToken,
@@ -501,7 +509,14 @@ export class FSxFileSystemProvider implements ResourceProvider {
     };
 
     let fileSystemId: string | undefined;
-    const firstSentAt = this.createTokenFirstSentAt.get(clientRequestToken) ?? Date.now();
+    // This create's first send: the earliest of this process's earlier attempt
+    // and the one the ledger recorded (this run's, or an earlier, interrupted
+    // run's), else now.
+    const firstSentAt =
+      earliestDefined(
+        this.createTokenFirstSentAt.get(clientRequestToken),
+        reservation.earlierFirstSentAt
+      ) ?? Date.now();
     this.createTokenFirstSentAt.set(clientRequestToken, firstSentAt);
 
     try {
@@ -539,9 +554,10 @@ export class FSxFileSystemProvider implements ResourceProvider {
         );
       }
       // FSx answers a token that still names a file system with THAT file
-      // system. The token is deterministic per stack, so besides this
-      // create's own earlier attempt it is also held by one an earlier destroy
-      // kept (RETAIN / RetainExceptOnCreate) or one a `state rm` forgot.
+      // system. Besides this create's own earlier attempt, the token can be
+      // held by one made outside the stack's create-token ledger: under an
+      // earlier cdkd, or kept by a destroy while the ledger could not be
+      // updated (#4438).
       // Recording such a file system as CREATED would hand it to every delete
       // path a create owns -- the cleanup below, a rollback of this deploy --
       // so only one created after this create's FIRST send is taken; anything
@@ -558,7 +574,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
           new ProvisioningError(
             safeMsg`FSx answered the create of ${logicalId} with file system ${returnedId}, which ${
               createdAt === undefined ? 'carries no creation time' : 'predates this create'
-            }: the create token cdkd derives for this stack's file system is held by it, and it is NOT recorded in cdkd state. It is either kept by an earlier destroy of this stack (an FSx file system's RemovalPolicy defaults to RETAIN) or left over from an earlier interrupted deploy, and it may hold data, so cdkd neither records nor deletes it. Inspect it with: ${inspect} --file-system-ids ${returnedId} -- then import it into this stack, or delete it once you are sure its data is not needed, and deploy again.`,
+            }: the create token cdkd derives for this stack's file system is held by it, and it is NOT recorded in cdkd state. It is not one this deploy, or an interrupted earlier deploy of this stack, made: it was created under this token by an earlier cdkd version, or a completed deploy recorded it and cdkd later let go of it, and it may hold data, so cdkd neither records nor deletes it. Inspect it with: ${inspect} --file-system-ids ${returnedId} -- then import it into this stack, or delete it once you are sure its data is not needed, and deploy again.`,
             resourceType,
             logicalId
           )

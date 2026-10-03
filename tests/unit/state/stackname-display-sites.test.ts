@@ -502,8 +502,15 @@ describe('S3StateBackend renders a hostile stack name, region and error flattene
     // The legacy probe reads the region-less legacy key: a body naming no
     // region belongs to every region, so the sweep runs.
     c.queue('GetObjectCommand', lockBody({ version: 1, stackName: STACK, resources: {} }));
-    // Deletes: state.json, the legacy key, then the rollback journal.
-    c.queue('DeleteObjectCommand', () => ({}), () => ({}), fail(s3err('InternalError', 500)));
+    // Deletes: the create-token ledger (#4438, first), state.json, the legacy
+    // key, then the rollback journal.
+    c.queue(
+      'DeleteObjectCommand',
+      () => ({}),
+      () => ({}),
+      () => ({}),
+      fail(s3err('InternalError', 500))
+    );
     await backend(c).deleteState(STACK, REGION);
     const texts = logged();
     expectFlattened(texts, 'Deleting state:', SHOWN_STACK, SHOWN_REGION);
@@ -514,7 +521,16 @@ describe('S3StateBackend renders a hostile stack name, region and error flattene
 
   it('deleteState and deleteLegacyState refusals', async () => {
     const c = makeClient();
-    c.queue('DeleteObjectCommand', fail(s3err('InternalError', 500)), () => ({}), fail(s3err('InternalError', 500)));
+    // The create-token ledger delete (#4438, first) succeeds, state.json
+    // fails, the journal sweep (#1183) succeeds; then deleteLegacyState's
+    // delete fails.
+    c.queue(
+      'DeleteObjectCommand',
+      () => ({}),
+      fail(s3err('InternalError', 500)),
+      () => ({}),
+      fail(s3err('InternalError', 500))
+    );
     const b = backend(c);
     const failed = await thrownMessage(b.deleteState(STACK, REGION));
     expectFlattened([failed], 'Failed to delete state for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
@@ -573,6 +589,20 @@ describe('S3StateBackend renders a hostile stack name, region and error flattene
     );
     expect(await backend(c).getState(STACK, REGION)).not.toBeNull();
     expectFlattened(logged(), 'names no usable region', SHOWN_STACK);
+  });
+
+  it('loadCreateTokenLedger over a body it cannot read', async () => {
+    const c = makeClient();
+    c.store.body = '{"ledgerVersion":99}';
+    const failed = await thrownMessage(backend(c).loadCreateTokenLedger(STACK, REGION));
+    expectFlattened([failed], 'the create-token ledger of stack', SHOWN_STACK, SHOWN_REGION);
+  });
+
+  it('rotateCreateTokenNonce refusing a ledger it cannot read', async () => {
+    const c = makeClient();
+    c.queue('GetObjectCommand', fail(s3err('AccessDenied', 403)));
+    const failed = await thrownMessage(backend(c).rotateCreateTokenNonce(STACK, REGION, ['X']));
+    expectFlattened([failed], 'Failed to renew the create-token ledger of stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
   });
 
   it('a purge that could not start', async () => {

@@ -32,6 +32,21 @@ import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.j
 import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 
+// go-to-k/cdkd#4438: a Retain that leaves the old resource alive rotates the
+// stack's create-token nonce; the type filter lives in the ledger module.
+const noteRetained = vi.hoisted(() =>
+  vi.fn(async (_resourceType: string, _logicalId: string) => undefined)
+);
+vi.mock('../../../src/provisioning/providers/create-token-ledger.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../../src/provisioning/providers/create-token-ledger.js')
+  >('../../../src/provisioning/providers/create-token-ledger.js');
+  return { ...actual, noteRetainedResource: noteRetained };
+});
+beforeEach(() => {
+  noteRetained.mockClear();
+});
+
 /** What the engine's outer `ProvisioningError` carries as its `cause`. */
 type InnerError = Error & { code?: string; cause?: unknown };
 
@@ -426,6 +441,8 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
       const engine = makeEngine();
       await invokeProvision(engine, 'Retain');
       expect([...retainedSet(engine)]).toEqual(['MyResource']);
+      // go-to-k/cdkd#4438: the kept resource holds the stack's create token.
+      expect(noteRetained).toHaveBeenCalledTimes(1);
       // The verdict and the fact must agree: nothing was deleted.
       expect(deleteCalls).toEqual([]);
     });
@@ -437,6 +454,7 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
       const engine = makeEngine();
       await invokeProvision(engine);
       expect([...retainedSet(engine)]).toEqual([]);
+      expect(noteRetained).not.toHaveBeenCalled();
       expect(deleteCalls).toEqual(['old-pid']);
     });
   });

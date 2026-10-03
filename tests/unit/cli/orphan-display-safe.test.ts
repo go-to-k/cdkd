@@ -74,6 +74,8 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
     saveState: mockSaveState,
     listStacks: mockListStacks,
     verifyBucketExists: mockVerifyBucketExists,
+    // go-to-k/cdkd#4438: an orphan rotates the stack's create-token nonce.
+    rotateCreateTokenNonce: vi.fn(async () => undefined),
   })),
 }));
 

@@ -43,6 +43,7 @@ import {
 import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.js';
 import { createWithRollbackRetry, recordedPropertiesAfterReplayCreate } from './replay-retry.js';
 import type { ReplayOpScope } from './replay-scope.js';
+import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 
 /** `replaySingle`'s 'reverse-replacement' arm (#4426). */
 export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> {
@@ -871,6 +872,9 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     logger.warn(survivorMessages.warn);
     survivorReason = survivorMessages.reason;
     result.warnings++;
+    // go-to-k/cdkd#4438: the retained copy still holds this stack's create
+    // token, so the stack's next create of the logical id must not send it.
+    await noteRetainedResource(op.resourceType, op.logicalId);
   } else if (!deletedNewFirst && !adoptedLiveNewResource) {
     try {
       const finalSnapshotIdentifier = rollbackFinalSnapshotId(

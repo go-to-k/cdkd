@@ -49,12 +49,14 @@ const mockGetState = vi.hoisted(() => vi.fn());
 const mockSaveState = vi.hoisted(() => vi.fn());
 const mockListStacks = vi.hoisted(() => vi.fn());
 const mockVerifyBucketExists = vi.hoisted(() => vi.fn(async () => undefined));
+const mockRotateCreateTokenNonce = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     getState: mockGetState,
     saveState: mockSaveState,
     listStacks: mockListStacks,
     verifyBucketExists: mockVerifyBucketExists,
+    rotateCreateTokenNonce: mockRotateCreateTokenNonce,
   })),
 }));
 
@@ -199,6 +201,37 @@ describe('cdkd orphan (per-resource)', () => {
     expect(mockGetState).not.toHaveBeenCalled();
   });
 
+  it('does not save the record when the create-token rotation fails (go-to-k/cdkd#4438)', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        {
+          stackName: 'MyStack',
+          displayName: 'MyStack',
+          template: templateWith({ Bucket: 'MyStack/Bucket' }),
+          region: 'us-east-1',
+        },
+      ],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({
+      state: {
+        version: 2,
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        resources: { Bucket: { physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} } },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"e"',
+    });
+    mockRotateCreateTokenNonce.mockRejectedValueOnce(new Error('ledger denied'));
+
+    await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+
+    expect(mockSaveState).not.toHaveBeenCalled();
+    expect(mockReleaseLock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+  });
+
   it('errors when paths reference different stacks', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [
@@ -299,6 +332,13 @@ describe('cdkd orphan (per-resource)', () => {
     expect(stack).toBe('MyStack');
     expect(region).toBe('us-east-1');
     expect(savedState.resources.Bucket).toBeUndefined();
+    // go-to-k/cdkd#4438: the orphaned resource keeps its create token, so the
+    // stack's create-token nonce is rotated -- BEFORE the record is saved,
+    // so a rotation that fails leaves the record untouched.
+    expect(mockRotateCreateTokenNonce).toHaveBeenCalledWith('MyStack', 'us-east-1', ['Bucket']);
+    expect(mockRotateCreateTokenNonce.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSaveState.mock.invocationCallOrder[0]!
+    );
     expect(savedState.resources.Other.dependencies).not.toContain('Bucket');
   });
 

@@ -81,9 +81,11 @@ s3://{STATE_BUCKET}/{STATE_PREFIX}/
       └── {Region}/
           ├── lock.json               # Exclusive lock information (region-scoped)
           ├── state.json              # Resource state (region-scoped)
-          └── rollback-journal.json   # Transient — between a failed deploy and its
-                                      #   `cdkd rollback`; for a nested stack, also
-                                      #   until its top-level deploy succeeds
+          ├── rollback-journal.json   # Transient — between a failed deploy and its
+          │                           #   `cdkd rollback`; for a nested stack, also
+          │                           #   until its top-level deploy succeeds
+          └── create-tokens.json      # Create-token ledger (EFS / FSx / CloudFront
+                                      #   OAI); deleted with state.json
 s3://{STATE_BUCKET}/cdkd-bootstrap/
   └── {Region}.json          # Asset-storage bootstrap marker
 s3://{STATE_BUCKET}/custom-resource-responses/
@@ -137,6 +139,48 @@ names the two grants, and the body stays retrievable by `VersionId`. A purge
 that SUCCEEDS still leaves the bodies behind if the state bucket is replicated
 — see
 [S3 replication defeats the purge](#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you).
+
+The `create-tokens.json` sibling is the stack's create-token ledger. EFS file systems, FSx
+file systems and CloudFront origin access identities are created with a token
+the service binds to the resource for its whole life, so the token decides which
+resource a create gets back. The ledger holds a random `nonce` folded into those
+tokens, and a `sent` entry per logical id: the token its latest create sent and
+when it was first sent, written BEFORE the create is sent. It holds no secret.
+
+- The nonce is replaced whenever cdkd lets go of a resource it made while the
+  resource still exists. The ledger is deleted, BEFORE `state.json`, with the
+  state record (`cdkd destroy`, `cdkd state destroy`, `cdkd state orphan`, an
+  export, a rolled-back first deploy); if it cannot be deleted, the record is
+  left in place and the command fails. Its nonce is rotated, and the let-go
+  logical id's `sent` entry dropped, by `cdkd orphan` (before it saves the
+  record, failing if it cannot) and by a deploy or `cdkd rollback` that keeps a
+  resource (`DeletionPolicy: Retain`, `UpdateReplacePolicy: Retain`,
+  `cdkd rollback --orphan`). So a file system or identity left behind that way
+  does not hold the token the stack's next create sends, and that create makes
+  a new one, as the AWS CDK CLI does.
+- A `sent` entry is kept until the deploy that wrote it SUCCEEDS and its state
+  record names the resource. So a deploy interrupted anywhere -- during the
+  create, or after it but before the state record named the resource -- is
+  re-run with the same token, and takes the resource that interrupted run made.
+- A deploy that finds no state record but a ledger that one was saved under
+  (an earlier cdkd version deleted the record and left the ledger) starts a
+  fresh ledger instead of resuming, so it does not take over resources that
+  deployment kept. A first deploy interrupted before its first state save
+  still resumes.
+- A ledger cdkd cannot read or write (including one written by a newer cdkd)
+  refuses each EFS, FSx and origin access identity create in that deploy,
+  naming the stack and the logical id, and is never overwritten: a create sent
+  without the ledger's token could not be found again by a re-run. Re-run once
+  the ledger is reachable.
+- The first time a stack's ledger is started, an EFS create looks up a file
+  system holding the token cdkd versions without the ledger sent, and warns
+  naming it: an earlier destroy or replacement kept it, or an interrupted
+  create left it, and this create does not take it over. It may hold data, so
+  inspect it before deleting it. FSx has no lookup by token, so an FSx file
+  system left that way is not named.
+- `s3:DeleteObject` on the ledger key is required wherever deleting the stack
+  record is: a denied delete stops the command before the record is touched,
+  even when no ledger exists, because S3 checks the permission first.
 
 The `rollback-journal.json` sibling is written whenever a
 deploy ends **without a completed rollback** — a `--no-rollback` failure, a

@@ -4,6 +4,27 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
+// go-to-k/cdkd#4438: a Retain that keeps the old resource rotates the stack's
+// create-token nonce for its logical id (the type filter is in the module).
+const noteRetained = vi.hoisted(() =>
+  vi.fn(async (_resourceType: string, _logicalId: string) => undefined)
+);
+const forgetRecorded = vi.hoisted(() =>
+  vi.fn(async (_logicalIds: readonly string[]) => undefined)
+);
+const noteDeployState = vi.hoisted(() => vi.fn((_exists: boolean) => undefined));
+vi.mock('../../../src/provisioning/providers/create-token-ledger.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../../src/provisioning/providers/create-token-ledger.js')
+  >('../../../src/provisioning/providers/create-token-ledger.js');
+  return {
+    ...actual,
+    noteRetainedResource: noteRetained,
+    forgetRecordedCreateTokens: forgetRecorded,
+    noteDeployStateRecord: noteDeployState,
+  };
+});
+
 // No real AWS client: the create-only DescribeType prefetch reads the
 // process-global client factory (see _inert-cloudformation-client.ts).
 vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
@@ -588,6 +609,53 @@ describe('DeployEngine - Resource Replacement', () => {
     // old one was RETAINED (delete never called).
     expect(mockProvider.create).toHaveBeenCalledTimes(1);
     expect(mockProvider.delete).not.toHaveBeenCalled();
+    // go-to-k/cdkd#4438: the kept old resource holds this stack's create token.
+    expect(noteRetained).toHaveBeenCalledWith('AWS::S3::Bucket', 'MyBucket');
+    // ...and the deploy SUCCEEDED, so the entries of what its final record
+    // names are forgotten -- after that record is saved.
+    expect(forgetRecorded).toHaveBeenCalledWith(['MyBucket']);
+    expect(forgetRecorded.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockStateBackend.saveState.mock.invocationCallOrder.at(-1)!
+    );
+    // The ledger learned, before the create, that this stack has a record.
+    expect(noteDeployState).toHaveBeenCalledWith(true);
+    expect(noteDeployState.mock.invocationCallOrder[0]).toBeLessThan(
+      mockProvider.create.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it("tells the create-token ledger, before the first create, that a first deploy found no state record (go-to-k/cdkd#4438)", async () => {
+    // Without it, a ledger an older cdkd's destroy left behind is resumed and
+    // its creates hand back the resources that destroy kept.
+    mockStateBackend.getState.mockResolvedValue(null);
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'MyBucket',
+          {
+            logicalId: 'MyBucket',
+            changeType: 'CREATE',
+            resourceType: 'AWS::S3::Bucket',
+            desiredProperties: { BucketName: 'old-bucket-name' },
+          },
+        ],
+      ])
+    );
+    const engine = new DeployEngine(
+      mockStateBackend as any,
+      mockLockManager as any,
+      mockDagBuilder as any,
+      mockDiffCalculator as any,
+      mockProviderRegistry as any,
+      {},
+      'us-east-1'
+    );
+    await engine.deploy(stackName, template);
+    expect(mockProvider.create).toHaveBeenCalledTimes(1);
+    expect(noteDeployState.mock.calls).toEqual([[false]]);
+    expect(noteDeployState.mock.invocationCallOrder[0]).toBeLessThan(
+      mockProvider.create.mock.invocationCallOrder[0]!
+    );
   });
 
   it('ALLOWS a property-driven replacement of a NON-stateful type without the flag', async () => {
