@@ -466,13 +466,17 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
    * late line must be relayed AND stderr flushed before the exit.
    */
   it.skipIf(process.platform === 'win32')(
-    'on SIGINT, relays the late log line and flushes stderr before process.exit(130)',
+    'on SIGINT, relays the late log line before docker rm, and flushes stdio before process.exit(130)',
     async () => {
       const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
         '../../../src/local/docker-runner.js'
       );
       mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
       mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
+      let seqAtRemove: string[] | undefined;
+      mocks.removeContainer.mockImplementation(async () => {
+        seqAtRemove = live ? [...live.seq] : undefined;
+      });
       const onSpy = vi.spyOn(process, 'on');
       let seqAtExit: string[] | undefined;
       let exited!: () => void;
@@ -511,6 +515,8 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
       expect(late).toBeGreaterThanOrEqual(0);
       expect(flush).toBeGreaterThan(late);
       expect(seq[seq.length - 1]).toBe('exit:130');
+      // The ^C teardown drains BEFORE it removes the container, too.
+      expect(seqAtRemove?.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
     }
   );
 });

@@ -525,13 +525,17 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
 
   /** Issue #4480, the ^C arm: drain, then flush stderr, then `process.exit(130)`. */
   it.skipIf(process.platform === 'win32')(
-    'on SIGINT, relays the late log line and flushes stderr before process.exit(130)',
+    'on SIGINT, relays the late log line before docker rm, and flushes stdio before process.exit(130)',
     async () => {
       const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
         '../../../src/local/docker-runner.js'
       );
       mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
       mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
+      let seqAtRemove: string[] | undefined;
+      mocks.removeContainer.mockImplementation(async () => {
+        seqAtRemove = live ? [...live.seq] : undefined;
+      });
       const onSpy = vi.spyOn(process, 'on');
       let seqAtExit: string[] | undefined;
       let exited!: () => void;
@@ -570,6 +574,8 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       expect(late).toBeGreaterThanOrEqual(0);
       expect(flush).toBeGreaterThan(late);
       expect(seq[seq.length - 1]).toBe('exit:130');
+      // The ^C teardown drains BEFORE it removes the container, too.
+      expect(seqAtRemove?.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
     }
   );
 
