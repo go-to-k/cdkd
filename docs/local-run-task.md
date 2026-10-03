@@ -131,9 +131,10 @@ privileged port and lets `--host-port <containerPort=hostPort>` pin the result.
 
 That credentials file lives in a temporary directory, is written mode `0600`,
 and is removed when the run ends. Two exits keep it: `--detach`, because the
-containers outlive cdkd with the file still mounted, and a second `^C`, which
-exits before any cleanup runs. Both print the path so you can delete it once
-the containers are gone.
+containers outlive cdkd with the file still mounted, and a second `^C` that
+lands before the file is removed (it is removed right after the containers are
+stopped, or, under `--keep-running`, once cdkd stops following their logs).
+Both print the path so you can delete it once the containers are gone.
 
 `--assume-task-role` beats the profile file, which beats the plain sidecar
 pass-through. Bare `--assume-task-role` resolves a flat-string `TaskRoleArn`
@@ -426,21 +427,26 @@ A normal run:
 
 1. The first `essential: true` container drives the task. When no container
    declares `essential: false`, that is the first container in the template.
-2. When the essential container exits, every other container is `docker stop`ped
-   with a ten-second grace period, then `docker rm -f`ed.
+2. When the essential container exits, cdkd waits (up to 5 seconds) for Docker
+   to relay the rest of its log output. Every other container is then
+   `docker stop`ped with a ten-second grace period, its remaining output is
+   relayed the same way, and it is `docker rm -f`ed.
 3. The metadata sidecar is removed and the Docker network is deleted.
 4. cdkd exits with the essential container's exit code.
 
 `^C` runs the same teardown. A second `^C` exits `130` immediately, skipping
-container cleanup — and, when `--profile <p>` was passed, skipping the removal
-of the credentials file mounted into the containers. The force-exit line names
+the rest of the container cleanup. When `--profile <p>` was passed and the
+second `^C` lands before the credentials file is removed (right after the
+containers are stopped, or, under `--keep-running`, once cdkd stops following
+their logs; either way before the log drain), it also skips the removal of
+the credentials file mounted into the containers. The force-exit line then names
 that file's path so you can delete it once you have torn the containers down;
 it is mode `0600` and holds live credentials.
 
 | Flag | Steps skipped |
 | --- | --- |
 | `--detach` | 1, 2 and 4. The sidecar and user containers stay up for you to manage; cdkd prints the network name so you can `docker ps --filter network=<name>` to inspect it. |
-| `--keep-running` | 2 only. The network and sidecar are still torn down, leaving the stopped containers for a `docker exec` post-mortem. |
+| `--keep-running` | The stop, relay and `docker rm -f` of the other containers in 2 (the essential container's output is still relayed). The network and sidecar are still torn down, leaving the stopped containers for a `docker exec` post-mortem. |
 
 ## Limitations
 
@@ -464,7 +470,7 @@ it is mode `0600` and holds live credentials.
 | --- | --- |
 | `0` | The essential container exited `0`, or `--detach` started the containers and returned. |
 | `1` | Either the essential container exited `1`, or cdkd itself failed — Docker unavailable, target not found, network creation failed, secret resolution failed, an unsupported volume type. |
-| `130` | `^C`. A first `^C` tears the task down and then exits; a second exits immediately without container cleanup, naming the `--profile` credentials file it also leaves behind. |
+| `130` | `^C`. A first `^C` tears the task down and then exits; a second exits immediately without container cleanup, naming the `--profile` credentials file when it is still on disk. |
 | `N` | Any other code the essential container exited with; cdkd propagates it verbatim. |
 
 `1` is the one ambiguous code: it is both a container's own exit status and

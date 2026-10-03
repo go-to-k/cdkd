@@ -506,7 +506,13 @@ emulator puts `START` / `END` / `REPORT` and every handler log line —
 `console.error` included — on the container's stdout; cdkd streams it to
 stderr on these two commands, beside the container's stderr, so a handler that
 prints does not land ahead of the response. `docker pull` progress is
-redirected the same way.
+redirected the same way. When an invocation ends the container (every
+`local invoke`, and `invoke-agentcore` without `--watch`), cdkd stops the
+container before writing the response and waits (up to 5 seconds) for Docker to
+relay the rest of its output, so every line the handler printed reaches stderr
+first, even when the Docker daemon is slow to relay it. Under `--watch` the
+container serves the next invocation, so its remaining output is relayed when
+the container is rebuilt or torn down.
 
 **One source still reaches stdout, so pipe a container-image target through
 `tail -1`.** For a container-image Lambda, and for an AgentCore runtime cdkd

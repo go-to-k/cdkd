@@ -35,10 +35,10 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
  *    they must keep writing to stdout, byte-exact, while `emitResult`'s own
  *    HTTP >= 400 `logger.warn` goes to stderr exactly once.
  *
- * The CONTAINER's own stdout, which `streamLogs` (`src/local/docker-runner.ts`)
+ * The CONTAINER's own stdout, which `followContainerLogs` (`src/local/docker-runner.ts`)
  * pipes into ours, is a raw child-process pipe the logger cannot route; since
  * [#2419](https://github.com/go-to-k/cdkd/issues/2419) it follows the
- * reservation instead. Its case drives the REAL `streamLogs` against a fake
+ * reservation instead. Its cases drive the REAL `followContainerLogs` against a fake
  * `docker` binary (`tests/unit/_fake-docker-logs.ts`).
  */
 
@@ -49,12 +49,15 @@ const mocks = vi.hoisted(() => ({
   pullImage: vi.fn(),
   pickFreePort: vi.fn(),
   runDetached: vi.fn(),
-  streamLogs: vi.fn(),
+  followContainerLogs: vi.fn(),
+  killAndDrainContainerLogs: vi.fn(),
   removeContainer: vi.fn(),
   waitForAgentCorePing: vi.fn(),
   invokeAgentCore: vi.fn(),
   invokeAgentCoreWs: vi.fn(),
   runAgentCoreWatchLoop: vi.fn(),
+  mcpInvokeOnce: vi.fn(),
+  a2aInvokeOnce: vi.fn(),
   stsSend: vi.fn(),
 }));
 
@@ -79,7 +82,8 @@ vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => {
     pullImage: mocks.pullImage,
     pickFreePort: mocks.pickFreePort,
     runDetached: mocks.runDetached,
-    streamLogs: mocks.streamLogs,
+    followContainerLogs: mocks.followContainerLogs,
+    killAndDrainContainerLogs: mocks.killAndDrainContainerLogs,
     removeContainer: mocks.removeContainer,
   };
 });
@@ -91,6 +95,16 @@ vi.mock('../../../src/local/agentcore-client.js', async (importOriginal) => {
     waitForAgentCorePing: mocks.waitForAgentCorePing,
     invokeAgentCore: mocks.invokeAgentCore,
   };
+});
+
+vi.mock('../../../src/local/agentcore-mcp-client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/local/agentcore-mcp-client.js')>();
+  return { ...actual, mcpInvokeOnce: mocks.mcpInvokeOnce };
+});
+
+vi.mock('../../../src/local/agentcore-a2a-client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/local/agentcore-a2a-client.js')>();
+  return { ...actual, a2aInvokeOnce: mocks.a2aInvokeOnce };
 });
 
 vi.mock('../../../src/local/agentcore-ws-client.js', async (importOriginal) => {
@@ -139,6 +153,7 @@ import {
 } from '../../../src/utils/logger.js';
 import { resetAwsClientDefaults } from '../../../src/utils/aws-client-defaults.js';
 import {
+  CONTAINER_LATE_TOKEN,
   CONTAINER_STDERR_TOKEN,
   CONTAINER_STDOUT_TOKEN,
   installFakeDockerLogs,
@@ -149,6 +164,8 @@ const CHATTER = 'Bundling asset AgentStack/EchoAgent/Code/Stage...';
 /** A non-ECR image tag, so `resolveAgentCoreImage` takes the plain `pullImage` arm. */
 const AGENT_IMAGE = 'lane2410-agent:local';
 const AGENT_PAYLOAD = '{"result":"lane2410-agentcore-response"}';
+/** The container id a `--watch` rebuild boots, distinct from the first one. */
+const REBUILT_ID = 'cdkd-agentcore-rebuilt-4480';
 const ROLE_ARN = 'arn:aws:iam::111122223333:role/cdkd-agentcore-stream-reader';
 const ASSUMED_LINE = `Assumed role ${ROLE_ARN}`;
 
@@ -179,7 +196,7 @@ function makeStack(): StackInfo {
  * template, which is what makes the `Target: ...` status line the command
  * prints production prose rather than a literal invented here.
  */
-function makeAgentStack(): StackInfo {
+function makeAgentStack(protocol?: 'MCP' | 'A2A'): StackInfo {
   return {
     artifactId: 'AgentStack',
     stackName: 'AgentStack',
@@ -191,6 +208,7 @@ function makeAgentStack(): StackInfo {
           Properties: {
             AgentRuntimeArtifact: { ContainerConfiguration: { ContainerUri: AGENT_IMAGE } },
             EnvironmentVariables: {},
+            ...(protocol !== undefined && { ProtocolConfiguration: protocol }),
           },
         },
       },
@@ -202,7 +220,9 @@ function makeAgentStack(): StackInfo {
 }
 
 /** The in-flight capture's two buffers, for a mock that must wait on delivery. */
-let live: { out: string[]; err: string[] } | undefined;
+let live: { out: string[]; err: string[]; seq: string[] } | undefined;
+/** The ordered transcript of the last finished capture. */
+let lastSeq: string[] = [];
 
 /**
  * Capture fd-1 / fd-2 into one ordered transcript while `body` runs. Shared by
@@ -211,15 +231,26 @@ let live: { out: string[]; err: string[] } | undefined;
 async function capture(body: () => Promise<void> | void): Promise<Streams> {
   const out: string[] = [];
   const err: string[] = [];
-  live = { out, err };
+  // One ordered transcript across both fds, `out:` / `err:`-prefixed, plus a
+  // `flush` / `flush-out` entry for `flushStdio`'s zero-length writes.
+  const seq: string[] = [];
+  live = { out, err, seq };
   const origOut = process.stdout.write.bind(process.stdout);
   const origErr = process.stderr.write.bind(process.stderr);
-  process.stdout.write = ((chunk: string | Uint8Array): boolean => {
-    out.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+  process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
+    out.push(text);
+    seq.push(text === '' ? 'flush-out' : `out:${text}`);
+    const cb = rest.find((a): a is () => void => typeof a === 'function');
+    if (cb) cb();
     return true;
   }) as typeof process.stdout.write;
-  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
-    err.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
+    err.push(text);
+    seq.push(text === '' ? 'flush' : `err:${text}`);
+    const cb = rest.find((a): a is () => void => typeof a === 'function');
+    if (cb) cb();
     return true;
   }) as typeof process.stderr.write;
   const toFd1 = (line: unknown): void => void out.push(`${String(line)}\n`);
@@ -242,6 +273,7 @@ async function capture(body: () => Promise<void> | void): Promise<Streams> {
     process.stdout.write = origOut;
     process.stderr.write = origErr;
     live = undefined;
+    lastSeq = seq;
   }
   return { stdout: out.join(''), stderr: err.join(''), error };
 }
@@ -287,7 +319,11 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
     mocks.pullImage.mockResolvedValue(undefined);
     mocks.pickFreePort.mockResolvedValue(19411);
     mocks.runDetached.mockResolvedValue('cdkd-agentcore-lane2410');
-    mocks.streamLogs.mockReturnValue(() => undefined);
+    mocks.followContainerLogs.mockReturnValue({
+      stop: () => undefined,
+      drain: async () => true,
+    });
+    mocks.killAndDrainContainerLogs.mockResolvedValue(undefined);
     mocks.removeContainer.mockResolvedValue(undefined);
     mocks.waitForAgentCorePing.mockResolvedValue(undefined);
     // Shape matches the REAL `AgentCoreInvokeResult` (cdk-local's
@@ -419,7 +455,7 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
 
   /**
    * Issue #2419. An agent container's stdout is piped into ours by
-   * `streamLogs` — a raw write the logger never sees. The REAL `streamLogs`
+   * `followContainerLogs` — a raw write the logger never sees. The REAL `followContainerLogs`
    * runs against a fake `docker` binary, and the agent call waits until the
    * fake container's output has been DELIVERED (to either stream) before
    * answering, so the assertion is about routing, not timing.
@@ -430,7 +466,8 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
         '../../../src/local/docker-runner.js'
       );
-      mocks.streamLogs.mockImplementation(actual.streamLogs);
+      mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
+      mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
       mocks.invokeAgentCore.mockImplementation(async () => {
         await waitForContainerOutput(() =>
           live ? live.out.join('') + live.err.join('') : ''
@@ -450,8 +487,327 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       expect(stdout).toBe(`${AGENT_PAYLOAD}\n`);
       expect(stderr).toContain(`${CONTAINER_STDOUT_TOKEN}logs -f cdkd-agentcore-lane2410`);
       expect(stderr).toContain(CONTAINER_STDERR_TOKEN);
-    }
+    },
+    20_000
   );
+
+  /**
+   * Issue #4480: the agent container's last log lines can reach `docker logs
+   * -f` only after the response returned. The fake relays
+   * {@link CONTAINER_LATE_TOKEN} only once `docker kill` stopped the
+   * container; the teardown must kill, drain, and only then write the result
+   * and remove the container.
+   */
+  it.skipIf(process.platform === 'win32')(
+    "relays the agent container's late log line before the response and before docker rm",
+    async () => {
+      const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
+        '../../../src/local/docker-runner.js'
+      );
+      mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
+      mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
+      let seqAtRemove: string[] | undefined;
+      mocks.removeContainer.mockImplementation(async () => {
+        seqAtRemove = live ? [...live.seq] : undefined;
+      });
+      mocks.invokeAgentCore.mockImplementation(async () => {
+        await waitForContainerOutput(() =>
+          live ? live.out.join('') + live.err.join('') : ''
+        );
+        return { status: 200, contentType: 'application/json', raw: AGENT_PAYLOAD, streamed: false };
+      });
+      const fake = installFakeDockerLogs();
+      let streams: Streams;
+      let seq: string[] = [];
+      try {
+        streams = await runAgentCore(['AgentStack:EchoAgent', '--no-pull']);
+        seq = lastSeq;
+      } finally {
+        fake.restore();
+      }
+      const { stdout, stderr, error } = streams;
+
+      expect(error).toBeUndefined();
+      expect(stdout).toBe(`${AGENT_PAYLOAD}\n`);
+      expect(stderr).toContain(CONTAINER_LATE_TOKEN);
+      const late = seq.findIndex((e) => e.startsWith('err:') && e.includes(CONTAINER_LATE_TOKEN));
+      const response = seq.findIndex((e) => e.startsWith('out:') && e.includes(AGENT_PAYLOAD));
+      expect(late).toBeGreaterThanOrEqual(0);
+      expect(response).toBeGreaterThan(late);
+      expect(mocks.removeContainer).toHaveBeenCalledWith('cdkd-agentcore-lane2410');
+      expect(seqAtRemove?.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
+    },
+    20_000
+  );
+
+  /**
+   * Issue #4480, every other arm that ends the container: each path that
+   * serves ONE request drains before it writes the result (so the late line
+   * precedes it on the terminal), and every path drains before `docker rm -f`
+   * — a `--watch` session at its teardown, and on a rebuild before it removes
+   * the OLD container.
+   */
+  describe.each([
+    // A `/ws` frame streams to stdout as it arrives; what follows the drain
+    // is `emitWsResult`'s terminator, the LAST stdout write.
+    { arm: '--ws', args: ['--ws'], protocol: undefined, beforePayload: undefined, lastOut: true },
+    { arm: 'MCP', args: [], protocol: 'MCP' as const, beforePayload: 'lane4480-mcp' },
+    { arm: 'A2A', args: [], protocol: 'A2A' as const, beforePayload: 'lane4480-a2a' },
+    { arm: '--watch (HTTP)', args: ['--watch'], protocol: undefined, beforePayload: undefined },
+    { arm: '--ws --watch', args: ['--ws', '--watch'], protocol: undefined, beforePayload: undefined },
+    {
+      arm: '--watch rebuild',
+      args: ['--watch'],
+      protocol: undefined,
+      beforePayload: undefined,
+      rebuild: true,
+    },
+    {
+      arm: '--ws --watch rebuild',
+      args: ['--ws', '--watch'],
+      protocol: undefined,
+      beforePayload: undefined,
+      rebuild: true,
+    },
+  ])('the $arm arm', ({ args, protocol, beforePayload, lastOut, rebuild }) => {
+    it.skipIf(process.platform === 'win32')(
+      'relays the late log line before its result and before docker rm',
+      async () => {
+        const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
+          '../../../src/local/docker-runner.js'
+        );
+        mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
+        mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
+        mocks.synthesize.mockImplementation(async () => ({
+          stacks: [makeAgentStack(protocol)],
+          assemblyDir: 'cdk.out',
+        }));
+        const delivered = (): Promise<void> =>
+          waitForContainerOutput(() => (live ? live.out.join('') + live.err.join('') : ''));
+        mocks.invokeAgentCoreWs.mockImplementation(
+          async (_h: string, _p: number, _e: unknown, options: { onMessage: (t: string) => void }) => {
+            await delivered();
+            options.onMessage('{"token":"lane4480-ws"}');
+            return { frames: 1 };
+          }
+        );
+        mocks.mcpInvokeOnce.mockImplementation(async () => {
+          await delivered();
+          return { raw: '{"jsonrpc":"2.0","result":"lane4480-mcp"}', ok: true };
+        });
+        mocks.a2aInvokeOnce.mockImplementation(async () => {
+          await delivered();
+          return { raw: '{"jsonrpc":"2.0","result":"lane4480-a2a"}', ok: true };
+        });
+        mocks.invokeAgentCore.mockImplementation(async () => {
+          await delivered();
+          return { status: 200, contentType: 'application/json', raw: AGENT_PAYLOAD, streamed: false };
+        });
+        if (rebuild) {
+          // The rebuilt container gets its OWN id, so its late line is told
+          // apart from the old one's.
+          mocks.runDetached
+            .mockResolvedValueOnce('cdkd-agentcore-lane2410')
+            .mockResolvedValueOnce(REBUILT_ID);
+          mocks.runAgentCoreWatchLoop.mockImplementation(
+            async (loop: { rebuild: () => Promise<unknown> }) => {
+              await delivered();
+              await loop.rebuild();
+            }
+          );
+        }
+        const removals: string[][] = [];
+        mocks.removeContainer.mockImplementation(async () => {
+          removals.push(live ? [...live.seq] : []);
+        });
+        const fake = installFakeDockerLogs();
+        let error: unknown;
+        let seq: string[] = [];
+        try {
+          ({ error } = await runAgentCore(['AgentStack:EchoAgent', '--no-pull', ...args]));
+          seq = lastSeq;
+        } finally {
+          fake.restore();
+        }
+
+        expect(error).toBeUndefined();
+        const late = seq.findIndex(
+          (e) => e.startsWith('err:') && e.includes(CONTAINER_LATE_TOKEN)
+        );
+        expect(late).toBeGreaterThanOrEqual(0);
+        if (beforePayload !== undefined) {
+          const payload = seq.findIndex((e) => e.startsWith('out:') && e.includes(beforePayload));
+          expect(payload).toBeGreaterThan(late);
+        }
+        if (lastOut === true) {
+          const outs = seq.flatMap((e, i) => (e.startsWith('out:') ? [i] : []));
+          expect(outs[outs.length - 1]).toBeGreaterThan(late);
+        }
+        // The FIRST removal (on a rebuild, the old container's) already has it.
+        const oldLate = `${CONTAINER_LATE_TOKEN}:cdkd-agentcore-lane2410`;
+        expect(removals.length).toBeGreaterThan(0);
+        expect(removals[0]!.some((e) => e.includes(oldLate))).toBe(true);
+        if (rebuild) {
+          // ...and the rebuilt container is followed, then drained before ITS
+          // removal at teardown.
+          const newLate = `${CONTAINER_LATE_TOKEN}:${REBUILT_ID}`;
+          expect(removals[0]!.some((e) => e.includes(newLate))).toBe(false);
+          expect(removals.length).toBe(2);
+          expect(removals[1]!.some((e) => e.includes(newLate))).toBe(true);
+        }
+      },
+      20_000
+    );
+  });
+
+  /** Issue #4480, the ^C arm: drain, then flush stderr, then `process.exit(130)`. */
+  it.skipIf(process.platform === 'win32')(
+    'on SIGINT, relays the late log line before docker rm, and flushes stdio before process.exit(130)',
+    async () => {
+      const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
+        '../../../src/local/docker-runner.js'
+      );
+      mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
+      mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
+      let seqAtRemove: string[] | undefined;
+      mocks.removeContainer.mockImplementation(async () => {
+        seqAtRemove = live ? [...live.seq] : undefined;
+      });
+      const onSpy = vi.spyOn(process, 'on');
+      let seqAtExit: string[] | undefined;
+      let exited!: () => void;
+      const exitCalled = new Promise<void>((r) => {
+        exited = r;
+      });
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        seqAtExit = live ? [...live.seq, `exit:${String(code)}`] : undefined;
+        exited();
+        return undefined as never;
+      }) as typeof process.exit);
+      mocks.invokeAgentCore.mockImplementation(async () => {
+        await waitForContainerOutput(() =>
+          live ? live.out.join('') + live.err.join('') : ''
+        );
+        const call = onSpy.mock.calls.find(([event]) => event === 'SIGINT');
+        expect(call).toBeDefined();
+        (call![1] as () => void)();
+        await exitCalled;
+        return { status: 200, contentType: 'application/json', raw: AGENT_PAYLOAD, streamed: false };
+      });
+      const fake = installFakeDockerLogs();
+      try {
+        await runAgentCore(['AgentStack:EchoAgent', '--no-pull']);
+      } finally {
+        fake.restore();
+        onSpy.mockRestore();
+        exitSpy.mockRestore();
+      }
+
+      // `mockRestore` clears the spy's calls, so the exit is read from the
+      // transcript it appended to.
+      const seq = seqAtExit ?? [];
+      const late = seq.findIndex((e) => e.startsWith('err:') && e.includes(CONTAINER_LATE_TOKEN));
+      const flush = seq.lastIndexOf('flush');
+      expect(late).toBeGreaterThanOrEqual(0);
+      expect(flush).toBeGreaterThan(late);
+      expect(seq[seq.length - 1]).toBe('exit:130');
+      // The ^C teardown drains BEFORE it removes the container, too.
+      expect(seqAtRemove?.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
+    },
+    20_000
+  );
+
+  /**
+   * Issue #4480 on the FAILED-invoke exit: the error unwinds through the
+   * `finally`, whose cleanup drains the late line, and `handleError` then
+   * calls `process.exit(1)` — which drops writes still queued on a pipe, so
+   * the cleanup flushes first. The SIGINT handler also stays installed while
+   * that teardown runs, so a ^C there awaits it instead of Node's default exit.
+   */
+  it.skipIf(process.platform === 'win32')(
+    'on a failed invoke, relays the late line and flushes stdio before exit(1), handler kept',
+    async () => {
+      const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
+        '../../../src/local/docker-runner.js'
+      );
+      mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
+      mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
+      const sigintBefore = process.listeners('SIGINT').length;
+      let sigintAtRemove: number | undefined;
+      mocks.removeContainer.mockImplementation(async () => {
+        sigintAtRemove = process.listeners('SIGINT').length;
+      });
+      let seqAtExit: string[] | undefined;
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        seqAtExit = live ? [...live.seq, `exit:${String(code)}`] : undefined;
+        return undefined as never;
+      }) as typeof process.exit);
+      mocks.invokeAgentCore.mockImplementation(async () => {
+        await waitForContainerOutput(() =>
+          live ? live.out.join('') + live.err.join('') : ''
+        );
+        throw new Error('lane4480 invoke timed out');
+      });
+      const fake = installFakeDockerLogs();
+      try {
+        await runAgentCore(['AgentStack:EchoAgent', '--no-pull']);
+      } finally {
+        fake.restore();
+        exitSpy.mockRestore();
+      }
+
+      const seq = seqAtExit ?? [];
+      const late = seq.findIndex((e) => e.startsWith('err:') && e.includes(CONTAINER_LATE_TOKEN));
+      expect(late).toBeGreaterThanOrEqual(0);
+      expect(seq.lastIndexOf('flush')).toBeGreaterThan(late);
+      expect(seq.lastIndexOf('flush-out')).toBeGreaterThan(late);
+      expect(seq[seq.length - 1]).toBe('exit:1');
+      expect(sigintAtRemove).toBe(sigintBefore + 1);
+      expect(process.listeners('SIGINT').length).toBe(sigintBefore);
+    },
+    20_000
+  );
+
+  /**
+   * A ^C during a `--watch` rebuild's drain runs `cleanup()` and exits once it
+   * is done; a rebuild that went on to boot the next container in that window
+   * would orphan it, so the rebuild stops before `docker run`.
+   */
+  it('a ^C during a --watch rebuild starts no new container', async () => {
+    const onSpy = vi.spyOn(process, 'on');
+    let exited!: () => void;
+    const exitCalled = new Promise<void>((r) => {
+      exited = r;
+    });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      exited();
+      return undefined as never;
+    }) as typeof process.exit);
+    let rebuildError: unknown;
+    mocks.runAgentCoreWatchLoop.mockImplementation(
+      async (loop: { rebuild: () => Promise<unknown> }) => {
+        const call = onSpy.mock.calls.find(([event]) => event === 'SIGINT');
+        expect(call).toBeDefined();
+        (call![1] as () => void)();
+        try {
+          await loop.rebuild();
+        } catch (err) {
+          rebuildError = err;
+        }
+        await exitCalled;
+      }
+    );
+    try {
+      await runAgentCore(['AgentStack:EchoAgent', '--no-pull', '--watch']);
+    } finally {
+      onSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+
+    expect(String(rebuildError)).toContain('Interrupted during the --watch rebuild');
+    // Only the first boot ran `docker run`.
+    expect(mocks.runDetached).toHaveBeenCalledTimes(1);
+  });
 
   /**
    * The REAL chunk sink. `onChunk` is a `process.stdout.write(text)` closure

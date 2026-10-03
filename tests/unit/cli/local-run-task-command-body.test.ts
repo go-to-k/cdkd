@@ -486,6 +486,200 @@ describe('localRunTaskCommand body: --profile credentials file (issue #3394)', (
     expect(exitCodes).toContain(130);
   });
 
+  it('disposes the credentials file from the hook that runs before the log drain', async () => {
+    // Issue #4480: `cleanupEcsRun` now waits (bounded) for the containers'
+    // log followers after `docker stop`. A second ^C in that wait force-exits,
+    // so the file goes as soon as the containers are stopped, from the hook,
+    // not after the whole teardown.
+    let hostPath: string | undefined;
+    let presentBeforeHook: boolean | undefined;
+    let goneAfterHook: boolean | undefined;
+    runEcsTaskMock.mockImplementation(
+      (_task: unknown, runOpts: { profileCredentialsFile?: { hostPath: string } }) => {
+        hostPath = runOpts.profileCredentialsFile?.hostPath;
+        if (hostPath) createdCredsDirs.add(path.dirname(hostPath));
+        return Promise.resolve({
+          state: { network: { networkName: 'cdkd-unit-net' } },
+          exitCode: 0,
+          essentialContainerName: undefined,
+        });
+      }
+    );
+    cleanupEcsRunMock.mockImplementation(
+      async (_state: unknown, opts: { afterContainersStopped?: () => Promise<void> }) => {
+        presentBeforeHook = hostPath !== undefined && existsSync(hostPath);
+        await opts.afterContainersStopped?.();
+        goneAfterHook = hostPath !== undefined && !existsSync(path.dirname(hostPath));
+      }
+    );
+
+    await runTask();
+
+    expect(hostPath, 'no credentials file was mounted').toBeDefined();
+    expect(presentBeforeHook).toBe(true);
+    expect(goneAfterHook).toBe(true);
+  });
+
+  it('still disposes the credentials file when cleanupEcsRun throws before the hook', async () => {
+    let hostPath: string | undefined;
+    runEcsTaskMock.mockImplementation(
+      (_task: unknown, runOpts: { profileCredentialsFile?: { hostPath: string } }) => {
+        hostPath = runOpts.profileCredentialsFile?.hostPath;
+        if (hostPath) createdCredsDirs.add(path.dirname(hostPath));
+        return Promise.resolve({
+          state: { network: { networkName: 'cdkd-unit-net' } },
+          exitCode: 0,
+          essentialContainerName: undefined,
+        });
+      }
+    );
+    cleanupEcsRunMock.mockRejectedValue(new Error('docker daemon went away'));
+
+    await runTask();
+
+    expect(hostPath, 'no credentials file was mounted').toBeDefined();
+    expect(existsSync(path.dirname(hostPath!))).toBe(false);
+  });
+
+  // Issue #4480: the credentials file is removed right after `docker stop`,
+  // BEFORE the bounded log drain. A second ^C in the drain must not claim the
+  // file is still there; one that lands before the dispose must still name it.
+  it.each([
+    { when: 'after the credentials were disposed', afterDispose: true },
+    { when: 'before the credentials were disposed', afterDispose: false },
+  ])('a second ^C $when names the file only if it still exists', async ({ afterDispose }) => {
+    const stderrChunks: string[] = [];
+    const realExit = process.exit;
+    const realWrite = process.stderr.write;
+    const realOut = process.stdout.write;
+    (process as unknown as { exit: (code?: number) => void }).exit = (): void => undefined;
+    (process.stdout as unknown as { write: (c: string, ...rest: unknown[]) => boolean }).write = (
+      _chunk: string,
+      ...rest: unknown[]
+    ): boolean => {
+      const cb = rest.find((a): a is () => void => typeof a === 'function');
+      if (cb) cb();
+      return true;
+    };
+    (process.stderr as unknown as { write: (c: string, ...rest: unknown[]) => boolean }).write = (
+      chunk: string,
+      ...rest: unknown[]
+    ): boolean => {
+      stderrChunks.push(String(chunk));
+      const cb = rest.find((a): a is () => void => typeof a === 'function');
+      if (cb) cb();
+      return true;
+    };
+    let hostPath: string | undefined;
+    const sigint = (): void => {
+      const listeners = process.listeners('SIGINT');
+      (listeners[listeners.length - 1] as () => void)();
+    };
+    cleanupEcsRunMock.mockImplementation(
+      async (_state: unknown, opts: { afterContainersStopped?: () => Promise<void> }) => {
+        if (afterDispose) {
+          await opts.afterContainersStopped?.();
+          sigint(); // the second ^C, during the drain
+        } else {
+          // Yield first: a real ^C arrives on a later tick, once the
+          // single-flight cleanup promise is assigned.
+          await Promise.resolve();
+          sigint(); // the second ^C, before docker stop finished
+          await opts.afterContainersStopped?.();
+        }
+      }
+    );
+    try {
+      runEcsTaskMock.mockImplementation(
+        (_task: unknown, runOpts: { profileCredentialsFile?: { hostPath: string } }) => {
+          hostPath = runOpts.profileCredentialsFile?.hostPath;
+          if (hostPath) createdCredsDirs.add(path.dirname(hostPath));
+          sigint(); // the first ^C starts the teardown
+          return Promise.resolve({
+            state: { network: { networkName: 'cdkd-unit-net' } },
+            exitCode: 0,
+            essentialContainerName: undefined,
+          });
+        }
+      );
+      await runTask();
+    } finally {
+      (process as unknown as { exit: typeof realExit }).exit = realExit;
+      (process.stderr as unknown as { write: typeof realWrite }).write = realWrite;
+      (process.stdout as unknown as { write: typeof realOut }).write = realOut;
+    }
+
+    expect(hostPath, 'no credentials file was mounted').toBeDefined();
+    const forceExit = stderrChunks.find((c) => c.includes('Force-exit on second ^C'));
+    expect(forceExit, `no force-exit line in ${JSON.stringify(stderrChunks)}`).toBeDefined();
+    if (afterDispose) {
+      expect(forceExit).not.toContain('NOT removed');
+      expect(forceExit).not.toContain(hostPath!);
+    } else {
+      expect(forceExit).toContain('NOT removed');
+      expect(forceExit).toContain(hostPath!);
+    }
+  });
+
+  it('flushes stdout and stderr after the cleanup and before the single-^C exit', async () => {
+    // Issue #4480. The cleanup drains the containers' `docker logs -f`
+    // followers onto our stdout / stderr, and `process.exit` drops writes still
+    // queued on a pipe, so the handler hands both streams to the OS first.
+    const events: string[] = [];
+    const realExit = process.exit;
+    const realOut = process.stdout.write;
+    const realErr = process.stderr.write;
+    let exited!: () => void;
+    const exitCalled = new Promise<void>((r) => {
+      exited = r;
+    });
+    (process as unknown as { exit: (code?: number) => void }).exit = (code?: number): void => {
+      events.push(`exit:${String(code)}`);
+      exited();
+    };
+    const recorder =
+      (name: string) =>
+      (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (String(chunk) === '') events.push(`flush:${name}`);
+        const cb = rest.find((a): a is () => void => typeof a === 'function');
+        if (cb) cb();
+        return true;
+      };
+    (process.stdout as unknown as { write: unknown }).write = recorder('stdout');
+    (process.stderr as unknown as { write: unknown }).write = recorder('stderr');
+    cleanupEcsRunMock.mockImplementation(async () => {
+      events.push('cleanup');
+    });
+
+    try {
+      runEcsTaskMock.mockImplementation(async () => {
+        const listeners = process.listeners('SIGINT');
+        const handler = listeners[listeners.length - 1] as (() => void) | undefined;
+        expect(handler, 'the command body registered no SIGINT handler').toBeDefined();
+        handler!();
+        await exitCalled;
+        return {
+          state: { network: { networkName: 'cdkd-unit-net' } },
+          exitCode: 0,
+          essentialContainerName: undefined,
+        };
+      });
+
+      await runTask();
+    } finally {
+      (process as unknown as { exit: typeof realExit }).exit = realExit;
+      (process.stdout as unknown as { write: typeof realOut }).write = realOut;
+      (process.stderr as unknown as { write: typeof realErr }).write = realErr;
+    }
+
+    const exitAt = events.indexOf('exit:130');
+    expect(exitAt, JSON.stringify(events)).toBeGreaterThan(0);
+    const beforeExit = events.slice(0, exitAt);
+    expect(beforeExit[0], JSON.stringify(events)).toBe('cleanup');
+    expect(beforeExit).toContain('flush:stdout');
+    expect(beforeExit).toContain('flush:stderr');
+  });
+
   it('writes and mounts NOTHING when --profile is absent', async () => {
     // The gate's other arm. Without it every assertion above is satisfied by a
     // body that writes a credentials file unconditionally — which would mount

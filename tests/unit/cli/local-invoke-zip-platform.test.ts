@@ -23,7 +23,9 @@ vi.mock('../../../src/local/docker-runner.js', () => ({
   pickFreePort: vi.fn(),
   removeContainer: vi.fn(),
   runDetached: vi.fn(),
-  streamLogs: vi.fn(),
+  followContainerLogs: vi.fn(),
+  killAndDrainContainerLogs: vi.fn(),
+  flushStdio: vi.fn(),
 }));
 vi.mock('../../../src/local/runtime-image.js', () => ({
   resolveRuntimeImage: mocks.resolveRuntimeImageMock,

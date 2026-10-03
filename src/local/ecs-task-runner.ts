@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import { promisify } from 'node:util';
@@ -16,15 +16,18 @@ import {
   isMalformedEnvKey,
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
-import { displayIdent, displaySafe } from '../utils/display-safe.js';
+import { displayIdent, displaySafe, safeMsg } from '../utils/display-safe.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 import { displayAssemblyPath } from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
 import {
+  CONTAINER_LOG_DRAIN_TIMEOUT_MS,
   DockerRunnerError,
   SENSITIVE_ENV_KEYS,
+  followContainerLogs,
   pullImage,
   removeContainer,
+  type ContainerLogStream,
 } from './docker-runner.js';
 import { buildDockerImage } from '../assets/docker-build.js';
 import { pullEcrImage } from './ecr-puller.js';
@@ -231,8 +234,12 @@ export interface EcsRunState {
   dockerVolumeNames: string[];
   /** Container name → docker id, in start order. */
   startedContainers: { name: string; id: string }[];
-  /** Active log streams (stop functions). Drained on teardown. */
-  logStoppers: (() => void)[];
+  /**
+   * Active `docker logs -f` followers, by container id. Teardown drains each
+   * once its container has stopped, so the container's last lines are not
+   * lost to the daemon's relay lag (issue #4480).
+   */
+  logStreams: { containerId: string; stream: ContainerLogStream }[];
 }
 
 export interface RunEcsTaskResult {
@@ -249,7 +256,21 @@ export interface RunEcsTaskResult {
  * internals.
  */
 export function createEcsRunState(): EcsRunState {
-  return { network: undefined, dockerVolumeNames: [], startedContainers: [], logStoppers: [] };
+  return { network: undefined, dockerVolumeNames: [], startedContainers: [], logStreams: [] };
+}
+
+async function runAfterContainersStopped(
+  hook: (() => Promise<void>) | undefined,
+  logger: ReturnType<typeof getLogger>
+): Promise<void> {
+  if (!hook) return;
+  try {
+    await hook();
+  } catch (err) {
+    logger.debug(
+      safeMsg`afterContainersStopped hook failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
 }
 
 /**
@@ -259,31 +280,60 @@ export function createEcsRunState(): EcsRunState {
  */
 export async function cleanupEcsRun(
   state: EcsRunState,
-  options: { keepRunning: boolean }
+  options: {
+    keepRunning: boolean;
+    /**
+     * Runs once the containers no longer need what the caller mounted into
+     * them — after `docker stop` (or, under `keepRunning`, after the followers
+     * stop), BEFORE the bounded log drain — so a second ^C during the drain
+     * cannot strand it (issue #4480). Errors are logged at debug.
+     */
+    afterContainersStopped?: () => Promise<void>;
+  }
 ): Promise<void> {
   const logger = getLogger().child('ecs-runner');
-  for (const stop of state.logStoppers) {
-    try {
-      stop();
-    } catch (err) {
-      logger.debug(`log stream stop failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  state.logStoppers = [];
+  const logStreams = state.logStreams;
+  state.logStreams = [];
 
-  if (!options.keepRunning) {
+  if (options.keepRunning) {
+    // The containers stay up, so their followers would never end on their own.
+    for (const { stream } of logStreams) {
+      try {
+        stream.stop();
+      } catch (err) {
+        logger.debug(`log stream stop failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    await runAfterContainersStopped(options.afterContainersStopped, logger);
+  } else {
+    // Both callees swallow their own errors today, so these handlers are
+    // defensive. They still pass the REAL argv rather than a plausible-looking
+    // one: the composer's contract is "the argv you redact with is the argv
+    // you spawned", and a fabricated array quietly breaks it the day a callee
+    // starts propagating.
     for (const c of state.startedContainers) {
-      // Both callees swallow their own errors today, so these handlers are
-      // defensive. They still pass the REAL argv rather than a plausible-looking
-      // one: the composer's contract is "the argv you redact with is the argv
-      // you spawned", and a fabricated array quietly breaks it the day a callee
-      // starts propagating.
       const stopArgs = dockerStopArgs(c.id, CLEANUP_STOP_GRACE_SECONDS);
       try {
         await stopContainer(c.id, CLEANUP_STOP_GRACE_SECONDS);
       } catch (err) {
         logger.debug(`docker stop ${c.id} failed: ${describeDockerFailure(err, stopArgs)}`);
       }
+    }
+    await runAfterContainersStopped(options.afterContainersStopped, logger);
+    // Every container is stopped, so each follower ends once it has relayed
+    // its container's last lines; remove the containers only after that.
+    await Promise.all(
+      logStreams.map(async ({ stream }) => {
+        try {
+          await stream.drain(CONTAINER_LOG_DRAIN_TIMEOUT_MS);
+        } catch (err) {
+          logger.debug(
+            safeMsg`log stream drain failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      })
+    );
+    for (const c of state.startedContainers) {
       try {
         await removeContainer(c.id);
       } catch (err) {
@@ -530,7 +580,7 @@ export async function runEcsTask(
     startedByName.set(container.name, { id, container });
 
     if (!options.detach) {
-      state.logStoppers.push(streamContainerLogs(container.name, id));
+      state.logStreams.push({ containerId: id, stream: streamContainerLogs(container.name, id) });
     }
   }
 
@@ -549,6 +599,12 @@ export async function runEcsTask(
     throw new EcsTaskRunnerError(`Essential container '${essential.name}' did not start.`);
   }
   const exitCode = await waitForContainerExit(essentialId);
+  // The essential container has exited, so its follower ends on its own once
+  // it has relayed the container's last lines (issue #4480). Drained here
+  // rather than at teardown so `--keep-running`, which leaves the OTHER
+  // containers up and stops their followers, still shows all of it.
+  const essentialLogs = state.logStreams.find((l) => l.containerId === essentialId);
+  if (essentialLogs) await essentialLogs.stream.drain(CONTAINER_LOG_DRAIN_TIMEOUT_MS);
   return { exitCode, essentialContainerName: essential.name, state };
 }
 
@@ -736,28 +792,37 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Stream `docker logs -f <id>` with `[<container-name>]` prefixes on
- * every line. Returns a stop function for the caller's `finally`.
+ * every line. A trailing partial line is written when the follower is
+ * stopped or drained.
  */
-function streamContainerLogs(containerName: string, containerId: string): () => void {
-  const proc = spawn(getDockerCmd(), ['logs', '-f', containerId], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+function streamContainerLogs(containerName: string, containerId: string): ContainerLogStream {
   const prefix = `[${containerName}] `;
   let stdoutBuf = '';
   let stderrBuf = '';
-  proc.stdout?.on('data', (chunk: Buffer) => {
-    stdoutBuf = writePrefixed(prefix, stdoutBuf + chunk.toString('utf-8'), process.stdout);
-  });
-  proc.stderr?.on('data', (chunk: Buffer) => {
-    stderrBuf = writePrefixed(prefix, stderrBuf + chunk.toString('utf-8'), process.stderr);
-  });
-  proc.on('error', () => {
-    /* surfaced through the parent's docker-wait result */
-  });
-  return () => {
+  const flushPartialLines = (): void => {
     if (stdoutBuf) process.stdout.write(prefix + stdoutBuf + '\n');
     if (stderrBuf) process.stderr.write(prefix + stderrBuf + '\n');
-    if (!proc.killed) proc.kill('SIGTERM');
+    stdoutBuf = '';
+    stderrBuf = '';
+  };
+  const follower = followContainerLogs(containerId, {
+    stdout: (chunk) => {
+      stdoutBuf = writePrefixed(prefix, stdoutBuf + chunk.toString('utf-8'), process.stdout);
+    },
+    stderr: (chunk) => {
+      stderrBuf = writePrefixed(prefix, stderrBuf + chunk.toString('utf-8'), process.stderr);
+    },
+  });
+  return {
+    stop: (): void => {
+      flushPartialLines();
+      follower.stop();
+    },
+    drain: async (timeoutMs: number): Promise<boolean> => {
+      const drained = await follower.drain(timeoutMs);
+      flushPartialLines();
+      return drained;
+    },
   };
 }
 

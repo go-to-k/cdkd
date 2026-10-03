@@ -555,7 +555,7 @@ describe('cleanupEcsRun', () => {
     await expect(cleanupEcsRun(state, { keepRunning: false })).resolves.toBeUndefined();
     expect(state.startedContainers).toEqual([]);
     expect(state.dockerVolumeNames).toEqual([]);
-    expect(state.logStoppers).toEqual([]);
+    expect(state.logStreams).toEqual([]);
     expect(state.network).toBeUndefined();
   });
 
@@ -565,24 +565,55 @@ describe('cleanupEcsRun', () => {
     await expect(cleanupEcsRun(state, { keepRunning: false })).resolves.toBeUndefined();
   });
 
-  it('clears logStoppers even when keepRunning is true', async () => {
+  it('stops (never drains) the log streams when keepRunning is true', async () => {
     const state = createEcsRunState();
     let stoppedCount = 0;
-    state.logStoppers.push(() => {
-      stoppedCount += 1;
+    let drainedCount = 0;
+    state.logStreams.push({
+      containerId: 'cid-a',
+      stream: {
+        stop: () => {
+          stoppedCount += 1;
+        },
+        drain: async () => {
+          drainedCount += 1;
+          return true;
+        },
+      },
     });
     await cleanupEcsRun(state, { keepRunning: true });
+    // The containers stay up, so a drain would wait out its whole timeout.
     expect(stoppedCount).toBe(1);
-    expect(state.logStoppers).toEqual([]);
+    expect(drainedCount).toBe(0);
+    expect(state.logStreams).toEqual([]);
   });
 
-  it('swallows log-stopper throws so cleanup completes regardless', async () => {
+  it('swallows log-stream throws so cleanup completes regardless', async () => {
     const state = createEcsRunState();
-    state.logStoppers.push(() => {
-      throw new Error('stop failed');
+    state.logStreams.push({
+      containerId: 'cid-a',
+      stream: {
+        stop: () => {
+          throw new Error('stop failed');
+        },
+        drain: async () => {
+          throw new Error('drain failed');
+        },
+      },
     });
     await expect(cleanupEcsRun(state, { keepRunning: false })).resolves.toBeUndefined();
-    expect(state.logStoppers).toEqual([]);
+    expect(state.logStreams).toEqual([]);
+    state.logStreams.push({
+      containerId: 'cid-a',
+      stream: {
+        stop: () => {
+          throw new Error('stop failed');
+        },
+        drain: async () => true,
+      },
+    });
+    await expect(cleanupEcsRun(state, { keepRunning: true })).resolves.toBeUndefined();
+    expect(state.logStreams).toEqual([]);
   });
 });
 

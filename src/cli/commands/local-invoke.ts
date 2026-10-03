@@ -68,11 +68,14 @@ import {
 } from '../../local/runtime-image.js';
 import {
   ensureDockerAvailable,
+  flushStdio,
+  followContainerLogs,
+  killAndDrainContainerLogs,
   pickFreePort,
   pullImage,
   removeContainer,
   runDetached,
-  streamLogs,
+  type ContainerLogStream,
 } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { architectureToPlatform, buildContainerImage } from '../../local/docker-image-builder.js';
@@ -284,7 +287,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   // Two raw writers used to be listed here and are now CLOSED, both by
   // consulting this reservation: `docker pull` progress under
   // `runDockerForeground` (`docker-cmd.ts` redirects that child's fd 1 to
-  // fd 2), and the CONTAINER's own stdout, piped in by `streamLogs`
+  // fd 2), and the CONTAINER's own stdout, piped in by `followContainerLogs`
   // (`src/local/docker-runner.ts`), where the RIE puts START/END/REPORT and
   // every handler log line — it now joins the container's stderr on ours
   // ([#2419](https://github.com/go-to-k/cdkd/issues/2419)). Do not re-file
@@ -336,13 +339,30 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   // (potentially hundreds of MB for node_modules-heavy layers).
   let imagePlan: ImagePlan | undefined;
   let containerId: string | undefined;
-  let stopLogs: (() => void) | undefined;
+  let logStream: ContainerLogStream | undefined;
   let sigintHandler: (() => void) | undefined;
   // Issue #2 deferred from #655: synthesized AWS shared credentials file
   // (one INI section) bind-mounted into the container so handlers using
   // `fromIni({ profile })` explicitly resolve to the same creds.
   // Disposed in the shared `cleanup` single-flight.
   let profileCredsFile: ProfileCredentialsFile | undefined;
+
+  /**
+   * Kill the container, then wait (bounded) for `docker logs -f` to relay
+   * its last lines — the handler's output and the RIE's END / REPORT — before
+   * anything removes it (issue #4480). Single-flight, so the success path's
+   * drain, the outer `finally` and a ^C all await the SAME drain.
+   */
+  const drainLogs = singleFlight(
+    async (): Promise<void> => {
+      await killAndDrainContainerLogs(containerId, logStream);
+    },
+    (err) => {
+      getLogger().debug(
+        safeMsg`container log drain failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  );
 
   /**
    * Unified cleanup for both the success / failure unwind path AND the
@@ -354,20 +374,12 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
    * Wrapped in `singleFlight(...)` so a ^C that lands during the outer
    * `finally`'s normal unwind awaits the in-flight cleanup instead of
    * launching a parallel run against the shared `containerId` /
-   * `stopLogs` / `imagePlan` cells (which would risk double
+   * `logStream` / `imagePlan` cells (which would risk double
    * `docker rm -f` and corrupt mid-iteration mutation of `imagePlan`).
    */
   const cleanup = singleFlight(
     async (): Promise<void> => {
-      if (stopLogs) {
-        try {
-          stopLogs();
-        } catch (err) {
-          getLogger().debug(
-            `streamLogs stop failed: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      }
+      await drainLogs();
       if (containerId) {
         try {
           await removeContainer(containerId);
@@ -423,6 +435,10 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
           );
         }
       }
+      // Every exit after this — a ^C's `process.exit(130)`, or `handleError`'s
+      // on a failed invoke — drops writes still queued on a pipe (async on
+      // macOS), which is where the drained container logs just went (#4480).
+      await flushStdio();
     },
     (err) => {
       getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -775,9 +791,9 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     });
 
     // Stream the container's logs to the user's terminal so they see the
-    // handler's stdout/stderr as it runs. The stop function is called from
-    // the finally to detach before docker rm.
-    stopLogs = streamLogs(containerId);
+    // handler's stdout/stderr as it runs. `drainLogs` ends the stream: it
+    // kills the container and waits for the follower to relay the rest.
+    logStream = followContainerLogs(containerId);
 
     // Make sure SIGINT (^C) cleans up the container — the user expects
     // ^C to stop both the CLI AND the daemonized container in one shot.
@@ -804,12 +820,18 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     const invokeTimeoutMs = Math.max(30_000, lambda.timeoutSec * 2 * 1000);
     const result = await invokeRie(containerHost, hostPort, event, invokeTimeoutMs);
 
-    // Settle a few hundred ms so logs fully flush before we tear down.
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    // Every log line the invocation printed reaches stderr BEFORE the
+    // response reaches stdout. The container served its one invocation, so
+    // the drain may kill it here.
+    await drainLogs();
     process.stdout.write(`${result.raw}\n`);
   } finally {
-    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    // The handler stays installed while the teardown runs: a ^C during the
+    // drain then awaits this same single-flight cleanup instead of taking
+    // Node's default exit, which would skip `docker rm -f` and the
+    // credentials dispose.
     await cleanup();
+    if (sigintHandler) process.off('SIGINT', sigintHandler);
   }
 }
 

@@ -29,10 +29,10 @@ import type { ResolvedZipLambda } from '../../../src/local/lambda-resolver.js';
  * `logger.info` output plus the `AppExecutor` child-logger re-emission — never
  * a literal invented here.
  *
- * The CONTAINER's own stdout, which `streamLogs` (`src/local/docker-runner.ts`)
+ * The CONTAINER's own stdout, which `followContainerLogs` (`src/local/docker-runner.ts`)
  * pipes into ours, is a raw child-process pipe the logger cannot route; since
  * [#2419](https://github.com/go-to-k/cdkd/issues/2419) it follows the
- * reservation instead. Its case drives the REAL `streamLogs` against a fake
+ * reservation instead. Its cases drive the REAL `followContainerLogs` against a fake
  * `docker` binary (`tests/unit/_fake-docker-logs.ts`), so what it proves is
  * the wiring: the command holds the reservation while the container's output
  * flows.
@@ -46,7 +46,8 @@ const mocks = vi.hoisted(() => ({
   pullImage: vi.fn(),
   pickFreePort: vi.fn(),
   runDetached: vi.fn(),
-  streamLogs: vi.fn(),
+  followContainerLogs: vi.fn(),
+  killAndDrainContainerLogs: vi.fn(),
   removeContainer: vi.fn(),
   resolveHostGatewayExtraHosts: vi.fn(),
   waitForRieReady: vi.fn(),
@@ -80,7 +81,8 @@ vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => {
     pullImage: mocks.pullImage,
     pickFreePort: mocks.pickFreePort,
     runDetached: mocks.runDetached,
-    streamLogs: mocks.streamLogs,
+    followContainerLogs: mocks.followContainerLogs,
+    killAndDrainContainerLogs: mocks.killAndDrainContainerLogs,
     removeContainer: mocks.removeContainer,
   };
 });
@@ -114,6 +116,7 @@ vi.mock('../../../src/local/rie-client.js', async (importOriginal) => {
 
 import { createLocalCommand } from '../../../src/cli/commands/local-invoke.js';
 import {
+  CONTAINER_LATE_TOKEN,
   CONTAINER_STDERR_TOKEN,
   CONTAINER_STDOUT_TOKEN,
   installFakeDockerLogs,
@@ -164,20 +167,33 @@ interface Streams {
 }
 
 /** The in-flight run's two buffers, for a mock that must wait on delivery. */
-let live: { out: string[]; err: string[] } | undefined;
+let live: { out: string[]; err: string[]; seq: string[] } | undefined;
+/** The ordered transcript of the last finished run. */
+let lastSeq: string[] = [];
 
 async function runInvoke(args: string[]): Promise<Streams> {
   const out: string[] = [];
   const err: string[] = [];
-  live = { out, err };
+  // One ordered transcript across both fds, `out:` / `err:`-prefixed, plus a
+  // `flush` / `flush-out` entry for `flushStdio`'s zero-length writes.
+  const seq: string[] = [];
+  live = { out, err, seq };
   const origOut = process.stdout.write.bind(process.stdout);
   const origErr = process.stderr.write.bind(process.stderr);
-  process.stdout.write = ((chunk: string | Uint8Array): boolean => {
-    out.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+  process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
+    out.push(text);
+    seq.push(text === '' ? 'flush-out' : `out:${text}`);
+    const cb = rest.find((a): a is () => void => typeof a === 'function');
+    if (cb) cb();
     return true;
   }) as typeof process.stdout.write;
-  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
-    err.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
+    err.push(text);
+    seq.push(text === '' ? 'flush' : `err:${text}`);
+    const cb = rest.find((a): a is () => void => typeof a === 'function');
+    if (cb) cb();
     return true;
   }) as typeof process.stderr.write;
   const toFd1 = (line: unknown): void => void out.push(`${String(line)}\n`);
@@ -203,6 +219,7 @@ async function runInvoke(args: string[]): Promise<Streams> {
     process.stdout.write = origOut;
     process.stderr.write = origErr;
     live = undefined;
+    lastSeq = seq;
   }
   return { stdout: out.join(''), stderr: err.join(''), error };
 }
@@ -233,7 +250,11 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
     mocks.pullImage.mockResolvedValue(undefined);
     mocks.pickFreePort.mockResolvedValue(19410);
     mocks.runDetached.mockResolvedValue('cdkd-local-lane2410');
-    mocks.streamLogs.mockReturnValue(() => undefined);
+    mocks.followContainerLogs.mockReturnValue({
+      stop: () => undefined,
+      drain: async () => true,
+    });
+    mocks.killAndDrainContainerLogs.mockResolvedValue(undefined);
     mocks.removeContainer.mockResolvedValue(undefined);
     mocks.resolveHostGatewayExtraHosts.mockResolvedValue([]);
     mocks.waitForRieReady.mockResolvedValue(undefined);
@@ -349,8 +370,8 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
   });
   /**
    * Issue #2419. The Lambda RIE puts `START` / `END` / `REPORT` and every
-   * handler log line on the CONTAINER's stdout, and `streamLogs` pipes that
-   * into ours — a raw write the logger never sees. Here the REAL `streamLogs`
+   * handler log line on the CONTAINER's stdout, and `followContainerLogs` pipes that
+   * into ours — a raw write the logger never sees. Here the REAL `followContainerLogs`
    * runs against a fake `docker` binary, and the RIE call waits until the fake
    * container's output has actually been DELIVERED (to either stream) before
    * returning the response, so the assertion is about routing, not timing.
@@ -362,7 +383,8 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
       const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
         '../../../src/local/docker-runner.js'
       );
-      mocks.streamLogs.mockImplementation(actual.streamLogs);
+      mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
+      mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
       mocks.invokeRie.mockImplementation(async () => {
         await waitForContainerOutput(() =>
           live ? live.out.join('') + live.err.join('') : ''
@@ -384,6 +406,169 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
       // both of the container's streams are on ours-stderr.
       expect(stderr).toContain(`${CONTAINER_STDOUT_TOKEN}logs -f cdkd-local-lane2410`);
       expect(stderr).toContain(CONTAINER_STDERR_TOKEN);
-    }
+    },
+    20_000
+  );
+
+  /**
+   * Issue #4480. A loaded daemon relays the container's last lines to
+   * `docker logs -f` only AFTER the invocation returned; the fake models it
+   * by relaying {@link CONTAINER_LATE_TOKEN} only once `docker kill` stopped
+   * the container. The teardown used to SIGTERM the follower and `docker rm
+   * -f` straight away, so that line never arrived. Now the container is
+   * killed and the follower drained BEFORE the payload is written and before
+   * the container is removed.
+   */
+  it.skipIf(process.platform === 'win32')(
+    "relays the container's late log line before the payload and before docker rm",
+    async () => {
+      const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
+        '../../../src/local/docker-runner.js'
+      );
+      mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
+      mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
+      let seqAtRemove: string[] | undefined;
+      mocks.removeContainer.mockImplementation(async () => {
+        seqAtRemove = live ? [...live.seq] : undefined;
+      });
+      mocks.invokeRie.mockImplementation(async () => {
+        await waitForContainerOutput(() =>
+          live ? live.out.join('') + live.err.join('') : ''
+        );
+        return { payload: JSON.parse(PAYLOAD), raw: PAYLOAD };
+      });
+      const fake = installFakeDockerLogs();
+      let streams: Streams;
+      let seq: string[] = [];
+      try {
+        streams = await runInvoke(['LocalStack/EchoHandler', '--no-pull']);
+        seq = lastSeq;
+      } finally {
+        fake.restore();
+      }
+      const { stdout, stderr, error } = streams;
+
+      expect(error).toBeUndefined();
+      expect(stdout).toBe(`${PAYLOAD}\n`);
+      expect(stderr).toContain(CONTAINER_LATE_TOKEN);
+      const late = seq.findIndex((e) => e.startsWith('err:') && e.includes(CONTAINER_LATE_TOKEN));
+      const payload = seq.indexOf(`out:${PAYLOAD}\n`);
+      expect(late).toBeGreaterThanOrEqual(0);
+      expect(payload).toBeGreaterThan(late);
+      // Drained before removal, not merely before the process ended.
+      expect(mocks.removeContainer).toHaveBeenCalledWith('cdkd-local-lane2410');
+      expect(seqAtRemove?.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
+    },
+    20_000
+  );
+
+  /**
+   * Issue #4480, the ^C arm: the SIGINT handler runs the same cleanup and then
+   * `process.exit(130)`, which drops writes still queued on a pipe. The
+   * late line must be relayed AND stderr flushed before the exit.
+   */
+  it.skipIf(process.platform === 'win32')(
+    'on SIGINT, relays the late log line before docker rm, and flushes stdio before process.exit(130)',
+    async () => {
+      const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
+        '../../../src/local/docker-runner.js'
+      );
+      mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
+      mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
+      let seqAtRemove: string[] | undefined;
+      mocks.removeContainer.mockImplementation(async () => {
+        seqAtRemove = live ? [...live.seq] : undefined;
+      });
+      const onSpy = vi.spyOn(process, 'on');
+      let seqAtExit: string[] | undefined;
+      let exited!: () => void;
+      const exitCalled = new Promise<void>((r) => {
+        exited = r;
+      });
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        seqAtExit = live ? [...live.seq, `exit:${String(code)}`] : undefined;
+        exited();
+        return undefined as never;
+      }) as typeof process.exit);
+      mocks.invokeRie.mockImplementation(async () => {
+        await waitForContainerOutput(() =>
+          live ? live.out.join('') + live.err.join('') : ''
+        );
+        const call = onSpy.mock.calls.find(([event]) => event === 'SIGINT');
+        expect(call).toBeDefined();
+        (call![1] as () => void)();
+        await exitCalled;
+        return { payload: JSON.parse(PAYLOAD), raw: PAYLOAD };
+      });
+      const fake = installFakeDockerLogs();
+      try {
+        await runInvoke(['LocalStack/EchoHandler', '--no-pull']);
+      } finally {
+        fake.restore();
+        onSpy.mockRestore();
+        exitSpy.mockRestore();
+      }
+
+      // `mockRestore` clears the spy's calls, so the exit is read from the
+      // transcript it appended to.
+      const seq = seqAtExit ?? [];
+      const late = seq.findIndex((e) => e.startsWith('err:') && e.includes(CONTAINER_LATE_TOKEN));
+      const flush = seq.lastIndexOf('flush');
+      expect(late).toBeGreaterThanOrEqual(0);
+      expect(flush).toBeGreaterThan(late);
+      expect(seq[seq.length - 1]).toBe('exit:130');
+      // The ^C teardown drains BEFORE it removes the container, too.
+      expect(seqAtRemove?.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
+    },
+    20_000
+  );
+  /**
+   * Issue #4480 on the FAILED-invoke exit (a hung handler's invoke timeout is
+   * where its last lines matter most): the `finally`'s cleanup drains the late
+   * line and flushes stdio before `handleError`'s `process.exit(1)`, and the
+   * SIGINT handler stays installed while that teardown runs.
+   */
+  it.skipIf(process.platform === 'win32')(
+    'on a failed invoke, relays the late line and flushes stdio before exit(1), handler kept',
+    async () => {
+      const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
+        '../../../src/local/docker-runner.js'
+      );
+      mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
+      mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
+      const sigintBefore = process.listeners('SIGINT').length;
+      let sigintAtRemove: number | undefined;
+      mocks.removeContainer.mockImplementation(async () => {
+        sigintAtRemove = process.listeners('SIGINT').length;
+      });
+      let seqAtExit: string[] | undefined;
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        seqAtExit = live ? [...live.seq, `exit:${String(code)}`] : undefined;
+        return undefined as never;
+      }) as typeof process.exit);
+      mocks.invokeRie.mockImplementation(async () => {
+        await waitForContainerOutput(() =>
+          live ? live.out.join('') + live.err.join('') : ''
+        );
+        throw new Error('lane4480 invoke timed out');
+      });
+      const fake = installFakeDockerLogs();
+      try {
+        await runInvoke(['LocalStack/EchoHandler', '--no-pull']);
+      } finally {
+        fake.restore();
+        exitSpy.mockRestore();
+      }
+
+      const seq = seqAtExit ?? [];
+      const late = seq.findIndex((e) => e.startsWith('err:') && e.includes(CONTAINER_LATE_TOKEN));
+      expect(late).toBeGreaterThanOrEqual(0);
+      expect(seq.lastIndexOf('flush')).toBeGreaterThan(late);
+      expect(seq.lastIndexOf('flush-out')).toBeGreaterThan(late);
+      expect(seq[seq.length - 1]).toBe('exit:1');
+      expect(sigintAtRemove).toBe(sigintBefore + 1);
+      expect(process.listeners('SIGINT').length).toBe(sigintBefore);
+    },
+    20_000
   );
 });

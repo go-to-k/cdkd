@@ -41,6 +41,17 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 const captured = vi.hoisted(() => ({
   calls: [] as { cmd: string; args: string[]; opts: unknown }[],
+  // Fake `docker logs -f` followers by container id. `end` models the
+  // container stopping: the follower relays its container's LAST line (issue
+  // #4480: the daemon relays it only then) and closes. `docker wait <id>` /
+  // `docker stop <id>` end it, as a real container exit does.
+  // A list per id: some cases give every container the same id.
+  followers: new Map<string, (() => void)[]>(),
+  // One ordered transcript: `docker <args>` per execFile, `relay <id>` per
+  // follower's last line, for the #4480 ordering cases.
+  events: [] as string[],
+  // When set, the last line is relayed WITHOUT a trailing newline.
+  partialLastLine: false,
   // Per-test responder; defaults to "return synthetic id".
   responder: undefined as
     | ((cmd: string, args: string[]) =>
@@ -62,6 +73,7 @@ vi.mock('node:child_process', async () => {
       const args = allArgs[1] as string[];
       const opts = allArgs.length === 4 ? allArgs[2] : undefined;
       captured.calls.push({ cmd, args, opts });
+      captured.events.push(`docker ${args.join(' ')}`);
       const respond = (
         out: { stdout?: string; stderr?: string; err?: Error } | void
       ): void => {
@@ -76,18 +88,45 @@ vi.mock('node:child_process', async () => {
         }
         cb(null, { stdout: out?.stdout ?? 'fake-id\n', stderr: out?.stderr ?? '' });
       };
+      const endFollower = (): void => {
+        if (args[0] === 'wait' || args[0] === 'stop') {
+          const id = args[args.length - 1]!;
+          setImmediate(() => {
+            for (const end of captured.followers.get(id) ?? []) end();
+          });
+        }
+      };
       const r = captured.responder?.(cmd, args);
       if (r && 'then' in r) {
-        (r as Promise<{ stdout?: string; stderr?: string; err?: Error }>).then(respond);
+        (r as Promise<{ stdout?: string; stderr?: string; err?: Error }>).then((out) => {
+          respond(out);
+          endFollower();
+        });
       } else {
         respond(r as { stdout?: string; stderr?: string; err?: Error } | void);
+        endFollower();
       }
       return { kill: (): void => {} } as never;
     },
-    spawn: (_cmd: string, _args: string[]) => {
-      // streamContainerLogs uses this. Return a fake proc that registers
-      // no-op handlers; the runner only `kill('SIGTERM')`s it on cleanup.
+    spawn: (_cmd: string, args: string[]) => {
+      // streamContainerLogs uses this (`logs -f <id>`). A fake proc whose
+      // handlers fire only through `end` (container stopped) or `kill`.
       const handlers: Record<string, ((arg?: unknown) => void)[]> = {};
+      const id = args[args.length - 1]!;
+      let closed = false;
+      const close = (): void => {
+        if (closed) return;
+        closed = true;
+        for (const h of handlers['close'] ?? []) h(0);
+      };
+      const end = (): void => {
+        if (closed) return;
+        captured.events.push(`relay ${id}`);
+        const last = captured.partialLastLine ? `partial-${id}` : `last-line-${id}\n`;
+        for (const h of handlers['stdout-data'] ?? []) h(Buffer.from(last));
+        close();
+      };
+      captured.followers.set(id, [...(captured.followers.get(id) ?? []), end]);
       const proc = {
         killed: false,
         stdout: {
@@ -112,6 +151,7 @@ vi.mock('node:child_process', async () => {
         },
         kill: (_sig?: string): boolean => {
           proc.killed = true;
+          setImmediate(close);
           return true;
         },
       };
@@ -336,6 +376,9 @@ let exitSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   captured.calls = [];
+  captured.events = [];
+  captured.partialLastLine = false;
+  captured.followers.clear();
   captured.responder = undefined;
   dockerRunnerStubs.pullImage.mockClear();
   dockerRunnerStubs.removeContainer.mockClear();
@@ -995,7 +1038,7 @@ describe('runEcsTask — exit propagation + essential selection (G1)', () => {
     expect(counterByLeadArg().wait).toBeUndefined();
     expect(state.startedContainers).toHaveLength(2);
     // No log streams should have been added in detach mode.
-    expect(state.logStoppers).toHaveLength(0);
+    expect(state.logStreams).toHaveLength(0);
   });
 
   it('startedContainers is recorded in start order so cleanup can roll back', async () => {
@@ -1144,7 +1187,7 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
         { name: 'a', id: 'cid-a' },
         { name: 'b', id: 'cid-b' },
       ],
-      logStoppers: [],
+      logStreams: [],
     };
     await cleanupEcsRun(state, { keepRunning: true });
     // No `docker stop` / `docker rm` invocations.
@@ -1181,7 +1224,7 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
         { name: 'a', id: 'cid-a' },
         { name: 'b', id: 'cid-b' },
       ],
-      logStoppers: [],
+      logStreams: [],
     };
     await expect(cleanupEcsRun(state, { keepRunning: false })).resolves.toBeUndefined();
     // Both containers were attempted (errors swallowed):
@@ -1208,7 +1251,7 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
       network: { networkName: 'n', sidecarContainerId: 's', sidecarIp: '169.254.170.2' },
       dockerVolumeNames: ['vol-1', 'vol-2'],
       startedContainers: [{ name: 'a', id: 'cid-a' }],
-      logStoppers: [],
+      logStreams: [],
     };
     await cleanupEcsRun(state, { keepRunning: false });
 
@@ -1238,7 +1281,7 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
       },
       dockerVolumeNames: [],
       startedContainers: [],
-      logStoppers: [],
+      logStreams: [],
     };
     await cleanupEcsRun(state, { keepRunning: false });
     expect(networkStubs.destroyTaskNetwork).not.toHaveBeenCalled();
@@ -1258,7 +1301,7 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
       },
       dockerVolumeNames: [],
       startedContainers: [],
-      logStoppers: [],
+      logStreams: [],
     };
     await cleanupEcsRun(state, { keepRunning: false });
     expect(networkStubs.destroyTaskNetwork).toHaveBeenCalledTimes(1);
@@ -1278,7 +1321,7 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
       network: undefined,
       dockerVolumeNames: ['vol-1', 'vol-2'],
       startedContainers: [],
-      logStoppers: [],
+      logStreams: [],
     };
     await cleanupEcsRun(state, { keepRunning: false });
     expect(volRms).toEqual(['vol-1', 'vol-2']);
@@ -1286,6 +1329,161 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
   });
 });
 
+
+describe('runEcsTask — container log drain (issue #4480)', () => {
+  // The fake follower relays `last-line-<id>` only when its container stops
+  // (`docker wait` returned / `docker stop`), the way a loaded daemon relays a
+  // container's last line after the exit. A teardown that SIGTERMs the
+  // follower first never prints it.
+  function responder() {
+    let seq = 0;
+    return (_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: `c${++seq}\n` };
+      if (args[0] === 'wait') return { stdout: '0\n' };
+      return { stdout: '' };
+    };
+  }
+
+  function captureStdout(): { text: () => string; restore: () => void } {
+    const chunks: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+      chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+      return true;
+    }) as typeof process.stdout.write;
+    return { text: () => chunks.join(''), restore: () => (process.stdout.write = orig) };
+  }
+
+  it("relays the essential container's last line before runEcsTask returns", async () => {
+    captured.responder = responder();
+    const state = createEcsRunState();
+    const out = captureStdout();
+    try {
+      await runEcsTask(makeTask({ containers: [makeContainer()] }), baseOptions(), state);
+    } finally {
+      out.restore();
+    }
+    expect(out.text()).toContain('[app] last-line-c1\n');
+    expect(captured.events.indexOf('relay c1')).toBeGreaterThan(
+      captured.events.indexOf('docker wait c1')
+    );
+  });
+
+  it('writes a last line that has no trailing newline once the follower is drained', async () => {
+    captured.responder = responder();
+    captured.partialLastLine = true;
+    const state = createEcsRunState();
+    const out = captureStdout();
+    try {
+      await runEcsTask(makeTask({ containers: [makeContainer()] }), baseOptions(), state);
+    } finally {
+      out.restore();
+    }
+    expect(out.text()).toContain('[app] partial-c1\n');
+  });
+
+  it('runs afterContainersStopped after docker stop and before the drain', async () => {
+    captured.responder = responder();
+    const state = createEcsRunState();
+    const out = captureStdout();
+    try {
+      await runEcsTask(
+        makeTask({
+          containers: [makeContainer(), makeContainer({ name: 'side', essential: false })],
+        }),
+        baseOptions(),
+        state
+      );
+      await cleanupEcsRun(state, {
+        keepRunning: false,
+        afterContainersStopped: async () => {
+          captured.events.push('after-stop');
+        },
+      });
+    } finally {
+      out.restore();
+    }
+    const ev = captured.events;
+    const lastStop = ev.map((e) => e.startsWith('docker stop')).lastIndexOf(true);
+    expect(ev.indexOf('after-stop')).toBeGreaterThan(lastStop);
+    // The hook ran before the drain waited on anything: c2's follower had not
+    // relayed its last line yet.
+    expect(ev.indexOf('relay c2')).toBeGreaterThan(ev.indexOf('after-stop'));
+  });
+
+  it('a throwing afterContainersStopped still drains and removes every container', async () => {
+    captured.responder = responder();
+    const state = createEcsRunState();
+    dockerRunnerStubs.removeContainer.mockImplementation(async (id: string) => {
+      captured.events.push(`rm ${id}`);
+    });
+    const out = captureStdout();
+    try {
+      await runEcsTask(
+        makeTask({
+          containers: [makeContainer(), makeContainer({ name: 'side', essential: false })],
+        }),
+        baseOptions(),
+        state
+      );
+      await cleanupEcsRun(state, {
+        keepRunning: false,
+        afterContainersStopped: async () => {
+          throw new Error('dispose failed');
+        },
+      });
+    } finally {
+      out.restore();
+      dockerRunnerStubs.removeContainer.mockImplementation(async () => undefined);
+    }
+    expect(out.text()).toContain('[side] last-line-c2\n');
+    expect(captured.events).toContain('rm c1');
+    expect(captured.events).toContain('rm c2');
+  });
+
+  it('runs afterContainersStopped under keepRunning too, stopping no container', async () => {
+    const state = createEcsRunState();
+    let ran = 0;
+    await cleanupEcsRun(state, {
+      keepRunning: true,
+      afterContainersStopped: async () => {
+        ran += 1;
+      },
+    });
+    expect(ran).toBe(1);
+  });
+
+  it('stops every container, then drains its follower, and only then removes it', async () => {
+    captured.responder = responder();
+    const state = createEcsRunState();
+    dockerRunnerStubs.removeContainer.mockImplementation(async (id: string) => {
+      captured.events.push(`rm ${id}`);
+    });
+    const out = captureStdout();
+    try {
+      await runEcsTask(
+        makeTask({
+          containers: [makeContainer(), makeContainer({ name: 'side', essential: false })],
+        }),
+        baseOptions(),
+        state
+      );
+      await cleanupEcsRun(state, { keepRunning: false });
+    } finally {
+      out.restore();
+      dockerRunnerStubs.removeContainer.mockImplementation(async () => undefined);
+    }
+    // The sidecar (c2) never exited on its own: its last line arrives only
+    // after `docker stop`, and must be printed before `docker rm -f`.
+    expect(out.text()).toContain('[side] last-line-c2\n');
+    const ev = captured.events;
+    const stop = ev.findIndex((e) => e.startsWith('docker stop') && e.endsWith(' c2'));
+    expect(stop).toBeGreaterThanOrEqual(0);
+    expect(ev.indexOf('relay c2')).toBeGreaterThan(stop);
+    expect(ev.indexOf('rm c2')).toBeGreaterThan(ev.indexOf('relay c2'));
+    expect(ev.indexOf('rm c1')).toBeGreaterThan(ev.indexOf('relay c2'));
+  });
+});
 
 describe('runEcsTask — secret values stay off argv (issue #2183)', () => {
   it('passes a resolved secret value-less on argv and hands the value to the spawn env', async () => {

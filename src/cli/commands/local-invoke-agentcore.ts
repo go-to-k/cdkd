@@ -83,6 +83,7 @@ import { invokeAgentCoreWs, type AgentCoreWsResult } from '../../local/agentcore
 import {
   runAgentCoreWatchLoop,
   softReloadAgentContainer,
+  WATCH_INTERRUPTED_CODE,
 } from '../../local/invoke-agentcore-watch-loop.js';
 import { createJwksCache, verifyJwtViaDiscovery } from '../../local/cognito-jwt.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
@@ -97,11 +98,14 @@ import {
 } from '../../local/intrinsic-image.js';
 import {
   ensureDockerAvailable,
+  flushStdio,
+  followContainerLogs,
+  killAndDrainContainerLogs,
   pickFreePort,
   pullImage,
   removeContainer,
   runDetached,
-  streamLogs,
+  type ContainerLogStream,
 } from '../../local/docker-runner.js';
 import { buildContainerImage } from '../../local/docker-image-builder.js';
 import { parseEcrUri, pullEcrImage } from '../../local/ecr-puller.js';
@@ -290,7 +294,7 @@ async function localInvokeAgentCoreCommand(
   // Two raw writers used to be listed here and are now CLOSED, both by
   // consulting this reservation: `docker pull` progress under
   // `runDockerForeground` (`docker-cmd.ts` redirects that child's fd 1 to
-  // fd 2), and the CONTAINER's own stdout, piped in by `streamLogs`
+  // fd 2), and the CONTAINER's own stdout, piped in by `followContainerLogs`
   // (`src/local/docker-runner.ts`), where the RIE puts START/END/REPORT and
   // every handler log line — it now joins the container's stderr on ours
   // ([#2419](https://github.com/go-to-k/cdkd/issues/2419)). Do not re-file
@@ -344,10 +348,56 @@ async function localInvokeAgentCoreCommand(
   }
 
   let containerId: string | undefined;
-  let stopLogs: (() => void) | undefined;
+  let logStream: ContainerLogStream | undefined;
   let sigintHandler: (() => void) | undefined;
   let profileCredsFile: ProfileCredentialsFile | undefined;
   let stateProvider: LocalStateProvider | undefined;
+
+  // Kill the container, then wait (bounded) for `docker logs -f` to relay its
+  // last lines before anything removes it (issue #4480). Taking the stream out
+  // of its cell makes a second call a no-op; the in-flight promise makes a ^C
+  // during the drain await it rather than remove the container under it. Not
+  // a `singleFlight`: a `--watch` rebuild drains one container and then
+  // follows the next.
+  let drainInFlight: Promise<void> | undefined;
+  /** Set by the SIGINT handler; see {@link teardownForRebuild}. */
+  let interrupted = false;
+  const drainLogs = (): Promise<void> => {
+    if (!drainInFlight) {
+      const stream = logStream;
+      logStream = undefined;
+      drainInFlight = killAndDrainContainerLogs(containerId, stream)
+        .catch((err: unknown) => {
+          getLogger().debug(
+            safeMsg`container log drain failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        })
+        .finally(() => {
+          drainInFlight = undefined;
+        });
+    }
+    return drainInFlight;
+  };
+
+  /**
+   * A `--watch` rebuild's teardown of the OLD container: drain, then remove.
+   * A ^C during the drain runs `cleanup()`, which exits once it is done; a
+   * rebuild that went on to boot the next container in that window would
+   * leave it running with nothing to remove it, so it stops here instead.
+   */
+  const teardownForRebuild = async (): Promise<void> => {
+    await drainLogs();
+    if (containerId) {
+      await removeContainer(containerId);
+      containerId = undefined;
+    }
+    if (interrupted) {
+      throw new CdkdError(
+        'Interrupted during the --watch rebuild; not starting a new container.',
+        WATCH_INTERRUPTED_CODE
+      );
+    }
+  };
 
   const cleanup = singleFlight(
     async (): Promise<void> => {
@@ -360,15 +410,7 @@ async function localInvokeAgentCoreCommand(
           );
         }
       }
-      if (stopLogs) {
-        try {
-          stopLogs();
-        } catch (err) {
-          getLogger().debug(
-            `streamLogs stop failed: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      }
+      await drainLogs();
       if (containerId) {
         try {
           await removeContainer(containerId);
@@ -389,6 +431,10 @@ async function localInvokeAgentCoreCommand(
           );
         }
       }
+      // Every exit after this — a ^C's `process.exit(130)`, or `handleError`'s
+      // on a failed invoke — drops writes still queued on a pipe (async on
+      // macOS), which is where the drained container logs just went (#4480).
+      await flushStdio();
     },
     (err) => {
       getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -571,9 +617,10 @@ async function localInvokeAgentCoreCommand(
     });
     containerId = boot.containerId;
     const hostPort = boot.hostPort;
-    stopLogs = boot.stopLogs;
+    logStream = boot.logStream;
 
     sigintHandler = (): void => {
+      interrupted = true;
       void cleanup().then(() => process.exit(130));
     };
     process.on('SIGINT', sigintHandler);
@@ -585,8 +632,9 @@ async function localInvokeAgentCoreCommand(
       const mcp = await mcpInvokeOnce(containerHost, hostPort, mcpRequest, {
         requestTimeoutMs: options.timeout,
       });
-      // Settle so container logs flush before teardown.
-      await new Promise((r) => setTimeout(r, 250));
+      // Every container log line reaches stderr before the result reaches
+      // stdout; the one request is done, so the drain may kill the container.
+      await drainLogs();
       emitMcpResult(mcp);
     } else if (isA2a && a2aRequest) {
       // A2A has no /ping either: a2aInvokeOnce folds the boot-wait into a
@@ -595,7 +643,7 @@ async function localInvokeAgentCoreCommand(
       const a2a = await a2aInvokeOnce(containerHost, hostPort, a2aRequest, {
         requestTimeoutMs: options.timeout,
       });
-      await new Promise((r) => setTimeout(r, 250));
+      await drainLogs();
       emitA2aResult(a2a);
     } else if (options.ws) {
       // Bidirectional `/ws` (same 8080 container as /invocations): send the
@@ -654,26 +702,16 @@ async function localInvokeAgentCoreCommand(
               ...(authorization && { authorization }),
               ...(frameSource && { frameSource }),
             });
+            // The container serves the NEXT iteration, so it cannot be killed
+            // to drain its logs here: a settle orders this iteration's lines
+            // before its result, and the teardown drain relays the rest.
             await new Promise((r) => setTimeout(r, 250));
             emitWsResult(wsResult);
             return { pendingReload: abortSignal.aborted };
           },
           rebuild: async () => {
             const result = await rebuildAgentCoreContainer({
-              cleanupBefore: async () => {
-                if (stopLogs) {
-                  try {
-                    stopLogs();
-                  } catch {
-                    /* best-effort */
-                  }
-                  stopLogs = undefined;
-                }
-                if (containerId) {
-                  await removeContainer(containerId);
-                  containerId = undefined;
-                }
-              },
+              cleanupBefore: teardownForRebuild,
               resolvedTarget,
               options,
               synthesizer,
@@ -685,7 +723,7 @@ async function localInvokeAgentCoreCommand(
               isA2a,
             });
             containerId = result.containerId;
-            stopLogs = result.stopLogs;
+            logStream = result.logStream;
             return {
               containerId: result.containerId,
               hostPort: result.hostPort,
@@ -722,8 +760,7 @@ async function localInvokeAgentCoreCommand(
           ...(authorization && { authorization }),
           ...(frameSource && { frameSource }),
         });
-        // Settle so container logs flush before teardown.
-        await new Promise((r) => setTimeout(r, 250));
+        await drainLogs();
         emitWsResult(wsResult);
       }
     } else if (watchActive) {
@@ -757,6 +794,7 @@ async function localInvokeAgentCoreCommand(
             ...(authorization && { authorization }),
             ...(additionalHeaders && { additionalHeaders }),
           });
+          // The container serves the next iteration; see the `/ws` loop above.
           await new Promise((r) => setTimeout(r, 250));
           emitResult(result);
           // A one-shot POST is not abortable mid-flight, so a reload firing
@@ -766,20 +804,7 @@ async function localInvokeAgentCoreCommand(
         },
         rebuild: async () => {
           const result = await rebuildAgentCoreContainer({
-            cleanupBefore: async () => {
-              if (stopLogs) {
-                try {
-                  stopLogs();
-                } catch {
-                  /* best-effort */
-                }
-                stopLogs = undefined;
-              }
-              if (containerId) {
-                await removeContainer(containerId);
-                containerId = undefined;
-              }
-            },
+            cleanupBefore: teardownForRebuild,
             resolvedTarget,
             options,
             synthesizer,
@@ -791,7 +816,7 @@ async function localInvokeAgentCoreCommand(
             isA2a,
           });
           containerId = result.containerId;
-          stopLogs = result.stopLogs;
+          logStream = result.logStream;
           return {
             containerId: result.containerId,
             hostPort: result.hostPort,
@@ -838,13 +863,16 @@ async function localInvokeAgentCoreCommand(
         ...(additionalHeaders && { additionalHeaders }),
       });
 
-      // Settle so container logs flush before teardown.
-      await new Promise((r) => setTimeout(r, 250));
+      await drainLogs();
       emitResult(result);
     }
   } finally {
-    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    // The handler stays installed while the teardown runs: a ^C during the
+    // drain then awaits this same single-flight cleanup instead of taking
+    // Node's default exit, which would skip `docker rm -f` and the
+    // credentials dispose.
     await cleanup();
+    if (sigintHandler) process.off('SIGINT', sigintHandler);
   }
 }
 
@@ -887,7 +915,7 @@ export async function bootAgentCoreContainer(args: {
   imageContext: ImageResolutionContext | undefined;
   isMcp: boolean;
   isA2a: boolean;
-}): Promise<{ containerId: string; hostPort: number; stopLogs: () => void }> {
+}): Promise<{ containerId: string; hostPort: number; logStream: ContainerLogStream }> {
   const logger = getLogger();
   const {
     resolved,
@@ -954,14 +982,14 @@ export async function bootAgentCoreContainer(args: {
   // `containerId` was nulled by `cleanupBefore`), so `cleanup()` could not
   // remove it -> orphan. Tear the just-started container down before
   // re-throwing so a boot-tail failure never leaks a container.
-  let stopLogs: () => void;
+  let logStream: ContainerLogStream;
   try {
-    stopLogs = streamLogs(containerId);
+    logStream = followContainerLogs(containerId);
   } catch (err) {
     await removeContainer(containerId).catch(() => {});
     throw err;
   }
-  return { containerId, hostPort, stopLogs };
+  return { containerId, hostPort, logStream };
 }
 
 /**
@@ -988,7 +1016,12 @@ export async function rebuildAgentCoreContainer(args: {
   stateProvider: LocalStateProvider | undefined;
   isMcp: boolean;
   isA2a: boolean;
-}): Promise<{ containerId: string; hostPort: number; stopLogs: () => void; stacks: StackInfo[] }> {
+}): Promise<{
+  containerId: string;
+  hostPort: number;
+  logStream: ContainerLogStream;
+  stacks: StackInfo[];
+}> {
   const {
     cleanupBefore,
     resolvedTarget,
