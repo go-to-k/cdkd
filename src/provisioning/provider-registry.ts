@@ -1161,12 +1161,12 @@ export class ProviderRegistry {
         );
       }
       if (overridden.length > 0) {
-        // The REMEDY is per property, because "remove the override" is FALSE
-        // for a create-only one (issue #2750, residual #2790): cdkd keeps such
-        // a key in the state record -- removing it would make the next deploy
-        // read it as an addition and so as a REPLACEMENT -- so with the flag
-        // gone the diff is NO_CHANGE, nothing routes anywhere, and the property
-        // still does not reach AWS.
+        // The REMEDY is per property, because "remove the override" is not
+        // enough for a create-only one (issue #2790): with the flag gone the
+        // property can only be applied by a REPLACEMENT, and the deploy
+        // refuses that until it is opted into (`unwrittenCreateOnlyRefusal`
+        // in `deploy-engine/update.ts`, which names the flags with their
+        // conditions at the moment they apply).
         //
         // The create-only sentence deliberately prescribes NO COMMAND. The
         // obvious one, `--recreate-via-cc-api <LogicalId>`, is REFUSED by
@@ -1175,8 +1175,8 @@ export class ProviderRegistry {
         // these types that are stateful, and is refused outright for a provider
         // declaring `disableCcApiFallback`. A sentence that has to be right
         // about all three is a sentence that will be wrong about one; the
-        // deploy-safety docs carry the remedy with its conditions, and this
-        // line carries only what is true unconditionally.
+        // refusal carries the remedy with its conditions, and this line
+        // carries only what is true unconditionally.
         //
         // And BOTH sentences are false for a type with no Cloud Control route
         // (NON_PROVISIONABLE, or a provider declaring `disableCcApiFallback`;
@@ -1210,9 +1210,10 @@ export class ProviderRegistry {
           const one = needsRecreate.length === 1;
           remedies.push(
             `${needsRecreate.join(', ')} ${one ? 'is' : 'are'} create-only, so ` +
-              `removing the override does not apply ${one ? 'it' : 'them'} ` +
-              `either -- a create-only property can only be applied by ` +
-              `recreating the resource.`
+              `removing the override does not apply ${one ? 'it' : 'them'} in place ` +
+              `-- a create-only property can only be applied by recreating the ` +
+              `resource, and a deploy without the override that changes nothing ` +
+              `else about it refuses until that recreate is opted into.`
           );
         }
         this.logger.warn(

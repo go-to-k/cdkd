@@ -307,11 +307,10 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
   });
 
   /**
-   * The remedy is per property, because "remove the override" is FALSE for a
-   * create-only one: cdkd keeps such a key in the record (removing it would
-   * make the next deploy read it as an addition and so as a REPLACEMENT), so
-   * with the flag gone the diff is NO_CHANGE and nothing routes anywhere.
-   * go-to-k/cdkd#2790 is the residual.
+   * The remedy is per property, because "remove the override" is not enough
+   * for a create-only one: with the flag gone it can only be applied by a
+   * REPLACEMENT, which the deploy refuses until it is opted into
+   * (go-to-k/cdkd#2790).
    */
   it('tells a create-only drop it needs a RECREATE, not a flag removal', () => {
     const fx = pickCreateOnlyDropFixture();

@@ -120,7 +120,8 @@ new unguarded copy cannot be written.
   Control; each `<ResourceType>:<PropertyName>` token opts back INTO the drop,
   keeping the resource on the SDK route — and the property is then not written to
   the STATE record either, so removing the flag lets the auto-route deliver it
-  (except a create-only one). The check runs AFTER `validateResourceTypes`, and
+  (a create-only one needs a replacement, which the deploy refuses until
+  `--replace` / `--recreate-via-cc-api` opts in, #2790). The check runs AFTER `validateResourceTypes`, and
   is a no-op for a Tier 2 / Custom / unknown type. A property absent from the CFn
   schema snapshot routes like a drop unless read-only, on a type with no CC
   route, or held unchanged by the record

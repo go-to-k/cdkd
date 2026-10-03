@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
 
 /**
  * What a still-SDK resource does when the template gains a property cdkd's SDK
@@ -70,6 +71,16 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
  *                operation as the arm; the only difference is the recorded
  *                bag, which is what makes the pair a clean A/B.
  *
+ *   subnet / subnettag -- go-to-k/cdkd#2790: the alarm stays at `dropagain`
+ *                (already on Cloud Control, so it no longer moves), and a VPC +
+ *                `AWS::EC2::Subnet` join the stack carrying `AvailabilityZoneId`,
+ *                which is a CREATE-ONLY silent drop for that type (the alarm has
+ *                none). `subnettag` differs from `subnet` by the subnet's Name
+ *                tag alone, an ordinary in-place change. verify.sh deploys them
+ *                with and without `--prefer-sdk-route` and with
+ *                `--recreate-via-cc-api`; the AZ id comes from `CDKD_TEST_AZ_ID`,
+ *                resolved from the account's region.
+ *
  * The threshold moves with the phase for the same reason the sibling
  * `cc-to-sdk-reroute` fixture varies its DisplayName: routing is decided while
  * PROVISIONING, so a deploy the differ classifies NO_CHANGE never calls the
@@ -85,10 +96,24 @@ const THRESHOLD_BY_PHASE: Record<string, number> = {
   // the policy attribute ALONE, or the property diff it tests is not empty.
   allowmeta: 4,
   dropagain: 5,
+  // The alarm is on Cloud Control after `dropagain`; the subnet phases leave it
+  // exactly as that phase did, so only the subnet moves.
+  subnet: 5,
+  subnettag: 5,
 };
 
+/** The go-to-k/cdkd#2790 phases, which add the VPC and subnet. */
+const SUBNET_PHASES = new Set(['subnet', 'subnettag']);
+
 /** The phases whose template carries the silently-dropped property. */
-const PHASES_WITH_DROP = new Set(['drop', 'allowdrop', 'allowmeta', 'dropagain']);
+const PHASES_WITH_DROP = new Set([
+  'drop',
+  'allowdrop',
+  'allowmeta',
+  'dropagain',
+  'subnet',
+  'subnettag',
+]);
 
 export class SdkToCcAutorouteStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -121,5 +146,26 @@ export class SdkToCcAutorouteStack extends cdk.Stack {
     }
 
     new cdk.CfnOutput(this, 'AlarmName', { value: alarm.ref });
+
+    if (SUBNET_PHASES.has(phase)) {
+      const azId = process.env.CDKD_TEST_AZ_ID;
+      if (!azId) throw new Error(`phase ${phase} needs CDKD_TEST_AZ_ID (set by verify.sh)`);
+      // The tag is what verify.sh's cleanup sweeps by, should a run die before
+      // destroy.
+      const fixtureTag = { key: 'cdkd-integ-fixture', value: 'sdk-to-cc-autoroute' };
+      const vpc = new ec2.CfnVPC(this, 'CreateOnlyVpc', {
+        cidrBlock: '10.42.0.0/16',
+        tags: [fixtureTag],
+      });
+      // `AvailabilityZoneId` is the create-only drop; `AvailabilityZone` is
+      // left out so the SDK route (which drops the id) lets EC2 pick the AZ.
+      const subnet = new ec2.CfnSubnet(this, 'CreateOnlySubnet', {
+        vpcId: vpc.ref,
+        cidrBlock: '10.42.0.0/24',
+        availabilityZoneId: azId,
+        tags: [fixtureTag, { key: 'Name', value: `${this.stackName}-${phase}` }],
+      });
+      new cdk.CfnOutput(this, 'SubnetId', { value: subnet.ref });
+    }
   }
 }

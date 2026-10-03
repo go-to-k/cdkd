@@ -19,7 +19,7 @@ import {
 import { tryGetTopLevelWriteOnlyProperties } from '../provisioning/write-only-properties.js';
 import {
   withoutAcceptedSilentDropProperties,
-  withoutSilentDropProperties,
+  withoutUnwrittenSilentDropProperties,
 } from '../provisioning/property-coverage.js';
 import {
   refuseMalformedResourceEntriesForDeploy,
@@ -489,7 +489,8 @@ export class DiffCalculator {
         //
         // The two sides take DIFFERENT rules and the asymmetry is the fix:
         //
-        // - RECORD side, every silent drop for the type. A resource recorded
+        // - RECORD side, every silent drop for the type (a create-only one
+        //   only once this deploy stops accepting it). A resource recorded
         //   `provisionedBy: 'sdk'` cannot have had one written, whatever flags
         //   were passed then, so its presence is junk — and removing it is what
         //   makes a record written before this fix heal: the key reads as an
@@ -515,8 +516,17 @@ export class DiffCalculator {
                 currentResource.properties
               )
             : resolvedDesiredProps;
+        // A create-only drop stays on the record side only while THIS deploy
+        // accepts it, so a flag removed since reads it as an addition, which
+        // is a replacement the engine refuses unless opted into (issue
+        // #2790). No allow set (`cdkd diff`) is the flag-less deploy.
         const currentAfterDrops = sdkRouted
-          ? withoutSilentDropProperties(desiredResource.Type, currentResource.properties)
+          ? withoutUnwrittenSilentDropProperties(
+              desiredResource.Type,
+              currentResource.properties,
+              resolvedDesiredProps,
+              allowedUnsupportedProperties ?? new Set<string>()
+            )
           : currentResource.properties;
 
         const desiredPropsForCompare = canonicalizeProperties
