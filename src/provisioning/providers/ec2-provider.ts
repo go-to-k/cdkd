@@ -3481,6 +3481,9 @@ export class EC2Provider implements ResourceProvider {
    *   (go-to-k/cdkd#4355, {@link resolveDuplicateIngress}).
    * @param revokedRule Set by `updateSecurityGroupIngress`: the physical id of
    *   the previous rule it has just revoked, which a refusal names.
+   * @param onIdLookedUp Called once the "already exists" arm has looked the
+   *   rule id up, so a caller wanting the id does not walk the group again
+   *   (go-to-k/cdkd#4484).
    */
   private async createSecurityGroupIngress(
     logicalId: string,
@@ -3489,7 +3492,8 @@ export class EC2Provider implements ResourceProvider {
     onUnusableProtocol?: (message: string) => void,
     maskSecrets?: MaskerFn,
     replayingState = false,
-    revokedRule?: string
+    revokedRule?: string,
+    onIdLookedUp?: () => void
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SecurityGroupIngress ${logicalId}`);
 
@@ -3616,6 +3620,7 @@ export class EC2Provider implements ResourceProvider {
         // nothing to orphan.
         const desired = { ...properties, IpProtocol: ipProtocol };
         const existingRuleId = await this.lookupIngressRuleId(logicalId, groupId, desired);
+        onIdLookedUp?.();
         await this.resolveDuplicateIngress({
           logicalId,
           resourceType,
@@ -4130,13 +4135,18 @@ export class EC2Provider implements ResourceProvider {
       // revoked rule is re-created, and a live one answers Duplicate, which the
       // replay adopts. Short-circuiting would report a restore that never
       // happened; revoking first would drop a live rule for nothing.
+      let idLookedUp = false;
       const restored = await this.createSecurityGroupIngress(
         logicalId,
         resourceType,
         properties,
         (message) => this.logger.warn(message),
         maskSecrets,
-        true
+        true,
+        undefined,
+        () => {
+          idLookedUp = true;
+        }
       );
       // go-to-k/cdkd#4484: the recorded `sgr-` id may name the rule the refused
       // update revoked. An in-place answer is merged key-wise over the restored
@@ -4146,14 +4156,17 @@ export class EC2Provider implements ResourceProvider {
       // REPLACE the record's: only an id proven now is recorded. A Duplicate
       // is no proof the recorded id still holds — an earlier send of this
       // replay that failed ambiguously, or an outer retry after a 5xx, may
-      // have authorized the rule it now meets. Without an id in hand the
-      // rule's id is looked up by identity: best-effort (`lookupIngressRuleId`
-      // never throws), and safe to `await` here since the record this replay
-      // restores already names the rule, so nothing is orphaned.
+      // have authorized the rule it now meets. Without an id in hand, and no
+      // lookup already made by the Duplicate arm, the rule's id is looked up
+      // by identity: best-effort (`lookupIngressRuleId` never throws), and
+      // safe to `await` here since the record this replay restores already
+      // names the rule, so nothing is orphaned.
       const ruleId =
         typeof restored.attributes?.['Id'] === 'string'
           ? restored.attributes['Id']
-          : await this.lookupIngressRuleId(
+          : idLookedUp
+            ? undefined
+            : await this.lookupIngressRuleId(
               logicalId,
               properties['GroupId'] as string,
               restored.effectiveProperties ?? properties

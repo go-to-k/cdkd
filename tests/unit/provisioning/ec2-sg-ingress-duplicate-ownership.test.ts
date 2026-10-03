@@ -477,6 +477,10 @@ describe('EC2Provider SecurityGroupIngress duplicate ownership (#4355)', () => {
         const result = await replayOnly();
 
         expect(authorizes).toBe(2);
+        // The Duplicate arm's own lookup is not repeated by the update arm.
+        expect(sent().filter((name) => name === 'DescribeSecurityGroupRulesCommand')).toHaveLength(
+          1
+        );
         expect(result.wasReplaced).toBe(true);
         expect(recordAfterRollbackUpdate(RESTORED, result).attributes).toEqual({});
       });
