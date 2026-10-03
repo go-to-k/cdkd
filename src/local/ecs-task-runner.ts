@@ -259,6 +259,20 @@ export function createEcsRunState(): EcsRunState {
   return { network: undefined, dockerVolumeNames: [], startedContainers: [], logStreams: [] };
 }
 
+async function runAfterContainersStopped(
+  hook: (() => Promise<void>) | undefined,
+  logger: ReturnType<typeof getLogger>
+): Promise<void> {
+  if (!hook) return;
+  try {
+    await hook();
+  } catch (err) {
+    logger.debug(
+      safeMsg`afterContainersStopped hook failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
 /**
  * Cleanup the resources tracked in `state`. Idempotent and safe to call
  * from both the outer `finally` AND the SIGINT handler. Errors per-step
@@ -266,7 +280,16 @@ export function createEcsRunState(): EcsRunState {
  */
 export async function cleanupEcsRun(
   state: EcsRunState,
-  options: { keepRunning: boolean }
+  options: {
+    keepRunning: boolean;
+    /**
+     * Runs once the containers no longer need what the caller mounted into
+     * them — after `docker stop` (or, under `keepRunning`, after the followers
+     * stop), BEFORE the bounded log drain — so a second ^C during the drain
+     * cannot strand it (issue #4480). Errors are logged at debug.
+     */
+    afterContainersStopped?: () => Promise<void>;
+  }
 ): Promise<void> {
   const logger = getLogger().child('ecs-runner');
   const logStreams = state.logStreams;
@@ -281,6 +304,7 @@ export async function cleanupEcsRun(
         logger.debug(`log stream stop failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    await runAfterContainersStopped(options.afterContainersStopped, logger);
   } else {
     // Both callees swallow their own errors today, so these handlers are
     // defensive. They still pass the REAL argv rather than a plausible-looking
@@ -295,6 +319,7 @@ export async function cleanupEcsRun(
         logger.debug(`docker stop ${c.id} failed: ${describeDockerFailure(err, stopArgs)}`);
       }
     }
+    await runAfterContainersStopped(options.afterContainersStopped, logger);
     // Every container is stopped, so each follower ends once it has relayed
     // its container's last lines; remove the containers only after that.
     await Promise.all(

@@ -164,6 +164,8 @@ const CHATTER = 'Bundling asset AgentStack/EchoAgent/Code/Stage...';
 /** A non-ECR image tag, so `resolveAgentCoreImage` takes the plain `pullImage` arm. */
 const AGENT_IMAGE = 'lane2410-agent:local';
 const AGENT_PAYLOAD = '{"result":"lane2410-agentcore-response"}';
+/** The container id a `--watch` rebuild boots, distinct from the first one. */
+const REBUILT_ID = 'cdkd-agentcore-rebuilt-4480';
 const ROLE_ARN = 'arn:aws:iam::111122223333:role/cdkd-agentcore-stream-reader';
 const ASSUMED_LINE = `Assumed role ${ROLE_ARN}`;
 
@@ -485,7 +487,8 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       expect(stdout).toBe(`${AGENT_PAYLOAD}\n`);
       expect(stderr).toContain(`${CONTAINER_STDOUT_TOKEN}logs -f cdkd-agentcore-lane2410`);
       expect(stderr).toContain(CONTAINER_STDERR_TOKEN);
-    }
+    },
+    20_000
   );
 
   /**
@@ -533,7 +536,8 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       expect(response).toBeGreaterThan(late);
       expect(mocks.removeContainer).toHaveBeenCalledWith('cdkd-agentcore-lane2410');
       expect(seqAtRemove?.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
-    }
+    },
+    20_000
   );
 
   /**
@@ -554,6 +558,13 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
     {
       arm: '--watch rebuild',
       args: ['--watch'],
+      protocol: undefined,
+      beforePayload: undefined,
+      rebuild: true,
+    },
+    {
+      arm: '--ws --watch rebuild',
+      args: ['--ws', '--watch'],
       protocol: undefined,
       beforePayload: undefined,
       rebuild: true,
@@ -593,6 +604,11 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
           return { status: 200, contentType: 'application/json', raw: AGENT_PAYLOAD, streamed: false };
         });
         if (rebuild) {
+          // The rebuilt container gets its OWN id, so its late line is told
+          // apart from the old one's.
+          mocks.runDetached
+            .mockResolvedValueOnce('cdkd-agentcore-lane2410')
+            .mockResolvedValueOnce(REBUILT_ID);
           mocks.runAgentCoreWatchLoop.mockImplementation(
             async (loop: { rebuild: () => Promise<unknown> }) => {
               await delivered();
@@ -628,9 +644,19 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
           expect(outs[outs.length - 1]).toBeGreaterThan(late);
         }
         // The FIRST removal (on a rebuild, the old container's) already has it.
+        const oldLate = `${CONTAINER_LATE_TOKEN}:cdkd-agentcore-lane2410`;
         expect(removals.length).toBeGreaterThan(0);
-        expect(removals[0]!.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
-      }
+        expect(removals[0]!.some((e) => e.includes(oldLate))).toBe(true);
+        if (rebuild) {
+          // ...and the rebuilt container is followed, then drained before ITS
+          // removal at teardown.
+          const newLate = `${CONTAINER_LATE_TOKEN}:${REBUILT_ID}`;
+          expect(removals[0]!.some((e) => e.includes(newLate))).toBe(false);
+          expect(removals.length).toBe(2);
+          expect(removals[1]!.some((e) => e.includes(newLate))).toBe(true);
+        }
+      },
+      20_000
     );
   });
 
@@ -687,8 +713,101 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       expect(seq[seq.length - 1]).toBe('exit:130');
       // The ^C teardown drains BEFORE it removes the container, too.
       expect(seqAtRemove?.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
-    }
+    },
+    20_000
   );
+
+  /**
+   * Issue #4480 on the FAILED-invoke exit: the error unwinds through the
+   * `finally`, whose cleanup drains the late line, and `handleError` then
+   * calls `process.exit(1)` — which drops writes still queued on a pipe, so
+   * the cleanup flushes first. The SIGINT handler also stays installed while
+   * that teardown runs, so a ^C there awaits it instead of Node's default exit.
+   */
+  it.skipIf(process.platform === 'win32')(
+    'on a failed invoke, relays the late line and flushes stdio before exit(1), handler kept',
+    async () => {
+      const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
+        '../../../src/local/docker-runner.js'
+      );
+      mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
+      mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
+      const sigintBefore = process.listeners('SIGINT').length;
+      let sigintAtRemove: number | undefined;
+      mocks.removeContainer.mockImplementation(async () => {
+        sigintAtRemove = process.listeners('SIGINT').length;
+      });
+      let seqAtExit: string[] | undefined;
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        seqAtExit = live ? [...live.seq, `exit:${String(code)}`] : undefined;
+        return undefined as never;
+      }) as typeof process.exit);
+      mocks.invokeAgentCore.mockImplementation(async () => {
+        await waitForContainerOutput(() =>
+          live ? live.out.join('') + live.err.join('') : ''
+        );
+        throw new Error('lane4480 invoke timed out');
+      });
+      const fake = installFakeDockerLogs();
+      try {
+        await runAgentCore(['AgentStack:EchoAgent', '--no-pull']);
+      } finally {
+        fake.restore();
+        exitSpy.mockRestore();
+      }
+
+      const seq = seqAtExit ?? [];
+      const late = seq.findIndex((e) => e.startsWith('err:') && e.includes(CONTAINER_LATE_TOKEN));
+      expect(late).toBeGreaterThanOrEqual(0);
+      expect(seq.lastIndexOf('flush')).toBeGreaterThan(late);
+      expect(seq.lastIndexOf('flush-out')).toBeGreaterThan(late);
+      expect(seq[seq.length - 1]).toBe('exit:1');
+      expect(sigintAtRemove).toBe(sigintBefore + 1);
+      expect(process.listeners('SIGINT').length).toBe(sigintBefore);
+    },
+    20_000
+  );
+
+  /**
+   * A ^C during a `--watch` rebuild's drain runs `cleanup()` and exits once it
+   * is done; a rebuild that went on to boot the next container in that window
+   * would orphan it, so the rebuild stops before `docker run`.
+   */
+  it('a ^C during a --watch rebuild starts no new container', async () => {
+    const onSpy = vi.spyOn(process, 'on');
+    let exited!: () => void;
+    const exitCalled = new Promise<void>((r) => {
+      exited = r;
+    });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      exited();
+      return undefined as never;
+    }) as typeof process.exit);
+    let rebuildError: unknown;
+    mocks.runAgentCoreWatchLoop.mockImplementation(
+      async (loop: { rebuild: () => Promise<unknown> }) => {
+        const call = onSpy.mock.calls.find(([event]) => event === 'SIGINT');
+        expect(call).toBeDefined();
+        (call![1] as () => void)();
+        try {
+          await loop.rebuild();
+        } catch (err) {
+          rebuildError = err;
+        }
+        await exitCalled;
+      }
+    );
+    try {
+      await runAgentCore(['AgentStack:EchoAgent', '--no-pull', '--watch']);
+    } finally {
+      onSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+
+    expect(String(rebuildError)).toContain('Interrupted during the --watch rebuild');
+    // Only the first boot ran `docker run`.
+    expect(mocks.runDetached).toHaveBeenCalledTimes(1);
+  });
 
   /**
    * The REAL chunk sink. `onChunk` is a `process.stdout.write(text)` closure

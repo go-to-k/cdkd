@@ -472,6 +472,9 @@ export function followContainerLogs(
       try {
         const drained = await Promise.race([closed.then(() => true), timedOut]);
         if (!drained) {
+          // Nothing waits for the SIGTERMed follower to close, so a chunk it
+          // had in flight can still land after this resolves — only on this
+          // timeout arm, which already gave up on a complete relay.
           getLogger()
             .child('docker')
             .debug(

@@ -486,6 +486,40 @@ describe('localRunTaskCommand body: --profile credentials file (issue #3394)', (
     expect(exitCodes).toContain(130);
   });
 
+  it('disposes the credentials file from the hook that runs before the log drain', async () => {
+    // Issue #4480: `cleanupEcsRun` now waits (bounded) for the containers'
+    // log followers after `docker stop`. A second ^C in that wait force-exits,
+    // so the file goes as soon as the containers are stopped, from the hook,
+    // not after the whole teardown.
+    let hostPath: string | undefined;
+    let presentBeforeHook: boolean | undefined;
+    let goneAfterHook: boolean | undefined;
+    runEcsTaskMock.mockImplementation(
+      (_task: unknown, runOpts: { profileCredentialsFile?: { hostPath: string } }) => {
+        hostPath = runOpts.profileCredentialsFile?.hostPath;
+        if (hostPath) createdCredsDirs.add(path.dirname(hostPath));
+        return Promise.resolve({
+          state: { network: { networkName: 'cdkd-unit-net' } },
+          exitCode: 0,
+          essentialContainerName: undefined,
+        });
+      }
+    );
+    cleanupEcsRunMock.mockImplementation(
+      async (_state: unknown, opts: { afterContainersStopped?: () => Promise<void> }) => {
+        presentBeforeHook = hostPath !== undefined && existsSync(hostPath);
+        await opts.afterContainersStopped?.();
+        goneAfterHook = hostPath !== undefined && !existsSync(path.dirname(hostPath));
+      }
+    );
+
+    await runTask();
+
+    expect(hostPath, 'no credentials file was mounted').toBeDefined();
+    expect(presentBeforeHook).toBe(true);
+    expect(goneAfterHook).toBe(true);
+  });
+
   it('flushes stdout and stderr after the cleanup and before the single-^C exit', async () => {
     // Issue #4480. The cleanup drains the containers' `docker logs -f`
     // followers onto our stdout / stderr, and `process.exit` drops writes still

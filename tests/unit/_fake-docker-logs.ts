@@ -12,13 +12,13 @@
  * `docker logs -f` does, until either the caller kills it or the container
  * stops.
  *
- * The container stopping is modelled by `kill`, which `killContainer` runs:
- * it leaves a marker the attached `logs` polls for, and `logs` then relays ONE
- * more token, {@link CONTAINER_LATE_TOKEN}, before exiting. That is the shape
- * of a loaded daemon (#4480): the container's last line reaches the follower
- * only after the request returned, so a teardown that kills the follower
- * without draining it never prints that token. Every other subcommand (`rm`)
- * exits 0.
+ * The container stopping is modelled by `kill <id>`, which `killContainer`
+ * runs: it leaves a per-container marker the attached `logs -f <id>` polls
+ * for, and `logs` then relays ONE more token, `${CONTAINER_LATE_TOKEN}:<id>`,
+ * before exiting. That is the shape of a loaded daemon (#4480): the
+ * container's last line reaches the follower only after the request
+ * returned, so a teardown that kills the follower without draining it never
+ * prints that token. Every other subcommand (`rm`) exits 0.
  *
  * A mocked `spawn` would let a test assert the routing of bytes no pipe ever
  * carried, which is the reason `tests/unit/utils/docker-cmd-stdout-reservation.test.ts`
@@ -46,13 +46,19 @@ export interface FakeDockerLogsOptions {
    * for the drain's timeout arm.
    */
   neverEnds?: boolean;
+  /**
+   * `kill` exits 1 the way docker does for a container that already stopped
+   * on its own ("is not running") — the container is stopped all the same.
+   */
+  killFails?: boolean;
 }
 
 /** Install the fake as `CDK_DOCKER` until {@link FakeDockerLogs.restore}. */
 export function installFakeDockerLogs(opts: FakeDockerLogsOptions = {}): FakeDockerLogs {
   const dir = mkdtempSync(join(tmpdir(), 'cdkd-lane2419-docker-'));
   const script = join(dir, 'docker');
-  const killed = join(dir, 'killed');
+  // `$3` is the id in `logs -f <id>`, `$2` the one in `kill <id>`.
+  const killedMarker = (idVar: string): string => `${dir}/killed-${idVar}`;
   writeFileSync(
     script,
     [
@@ -65,16 +71,18 @@ export function installFakeDockerLogs(opts: FakeDockerLogsOptions = {}): FakeDoc
         ? '    exec sleep 30'
         : [
             '    i=0',
-            `    while [ ! -f '${killed}' ]; do`,
+            `    while [ ! -f "${killedMarker('$3')}" ]; do`,
             '      sleep 0.02',
             '      i=$((i + 1))',
             '      [ "$i" -ge 1500 ] && exit 0',
             '    done',
-            `    printf '%s' '${CONTAINER_LATE_TOKEN}'`,
+            `    printf '%s:%s' '${CONTAINER_LATE_TOKEN}' "$3"`,
             '    exit 0',
           ].join('\n'),
       '    ;;',
-      `  kill) : > '${killed}' ;;`,
+      opts.killFails === true
+        ? `  kill) : > "${killedMarker('$2')}"; echo "Error: container $2 is not running" 1>&2; exit 1 ;;`
+        : `  kill) : > "${killedMarker('$2')}" ;;`,
       'esac',
       'exit 0',
       '',

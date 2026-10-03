@@ -426,8 +426,10 @@ A normal run:
 
 1. The first `essential: true` container drives the task. When no container
    declares `essential: false`, that is the first container in the template.
-2. When the essential container exits, every other container is `docker stop`ped
-   with a ten-second grace period, then `docker rm -f`ed.
+2. When the essential container exits, cdkd waits (up to 5 seconds) for Docker
+   to relay the rest of its log output. Every other container is then
+   `docker stop`ped with a ten-second grace period, its remaining output is
+   relayed the same way, and it is `docker rm -f`ed.
 3. The metadata sidecar is removed and the Docker network is deleted.
 4. cdkd exits with the essential container's exit code.
 

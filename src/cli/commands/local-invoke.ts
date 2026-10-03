@@ -435,6 +435,10 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
           );
         }
       }
+      // Every exit after this — a ^C's `process.exit(130)`, or `handleError`'s
+      // on a failed invoke — drops writes still queued on a pipe (async on
+      // macOS), which is where the drained container logs just went (#4480).
+      await flushStdio();
     },
     (err) => {
       getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -802,13 +806,9 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     // non-async closure so the lint rule about misused-promises doesn't
     // fire.
     sigintHandler = (): void => {
-      // `process.exit` drops writes still queued on a pipe (async on macOS),
-      // which is where the drained container logs just went.
-      void cleanup()
-        .then(() => flushStdio())
-        .then(() => {
-          process.exit(130);
-        });
+      void cleanup().then(() => {
+        process.exit(130);
+      });
     };
     process.on('SIGINT', sigintHandler);
 
@@ -826,8 +826,12 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     await drainLogs();
     process.stdout.write(`${result.raw}\n`);
   } finally {
-    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    // The handler stays installed while the teardown runs: a ^C during the
+    // drain then awaits this same single-flight cleanup instead of taking
+    // Node's default exit, which would skip `docker rm -f` and the
+    // credentials dispose.
     await cleanup();
+    if (sigintHandler) process.off('SIGINT', sigintHandler);
   }
 }
 

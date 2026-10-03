@@ -235,12 +235,8 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
   const cleanup = async (): Promise<void> => {
     if (!cleanupPromise) {
       cleanupPromise = (async () => {
-        try {
-          await cleanupEcsRun(state, { keepRunning: options.keepRunning });
-        } catch (err) {
-          getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        if (channels?.profileCredsFile) {
+        const disposeCreds = async (): Promise<void> => {
+          if (!channels?.profileCredsFile) return;
           try {
             await channels.profileCredsFile.dispose();
           } catch (err) {
@@ -250,7 +246,24 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
               }`
             );
           }
+        };
+        try {
+          // The credentials go as soon as the containers are stopped, BEFORE
+          // the bounded log drain (#4480): a second ^C during the drain
+          // force-exits, and would otherwise strand them.
+          await cleanupEcsRun(state, {
+            keepRunning: options.keepRunning,
+            afterContainersStopped: disposeCreds,
+          });
+        } catch (err) {
+          getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
         }
+        // Idempotent (`rm --force`); covers a `cleanupEcsRun` that threw first.
+        await disposeCreds();
+        // Every exit after this — a ^C's `process.exit(130)`, or `handleError`'s
+        // — drops writes still queued on a pipe (async on macOS), which is
+        // where the drained container logs just went (#4480).
+        await flushStdio();
       })();
     }
     await cleanupPromise;
@@ -394,11 +407,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
         process.exit(130);
       }
       logger.info('Stopping task...');
-      // `process.exit` drops writes still queued on a pipe (async on macOS),
-      // which is where the drained container logs just went (issue #4480).
-      void cleanup()
-        .then(() => flushStdio())
-        .then(() => process.exit(130));
+      void cleanup().then(() => process.exit(130));
     };
     process.on('SIGINT', sigintHandler);
 
@@ -497,7 +506,6 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
       process.exitCode = result.exitCode;
     }
   } finally {
-    if (sigintHandler) process.off('SIGINT', sigintHandler);
     if (stateProvider) stateProvider.dispose();
     // `detachedSuccessfully`, not `options.detach` (go-to-k/cdkd#3390 round 2).
     // The flag is what `--detach` MEANS here -- the containers were handed off
@@ -508,6 +516,11 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     // credentials in `/tmp` that nothing would ever remove, and no message named
     // it either because the notice above is on the success path too.
     if (!detachedSuccessfully) await cleanup();
+    // Removed only AFTER the teardown: a ^C during its bounded log drain then
+    // re-enters the same single-flight cleanup (and a second one takes the
+    // force-exit arm, which names the credentials file) instead of Node's
+    // default exit, which would skip `docker rm -f` and the dispose.
+    if (sigintHandler) process.off('SIGINT', sigintHandler);
   }
 }
 

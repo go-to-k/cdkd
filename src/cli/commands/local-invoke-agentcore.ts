@@ -359,6 +359,8 @@ async function localInvokeAgentCoreCommand(
   // a `singleFlight`: a `--watch` rebuild drains one container and then
   // follows the next.
   let drainInFlight: Promise<void> | undefined;
+  /** Set by the SIGINT handler; see {@link teardownForRebuild}. */
+  let interrupted = false;
   const drainLogs = (): Promise<void> => {
     if (!drainInFlight) {
       const stream = logStream;
@@ -374,6 +376,26 @@ async function localInvokeAgentCoreCommand(
         });
     }
     return drainInFlight;
+  };
+
+  /**
+   * A `--watch` rebuild's teardown of the OLD container: drain, then remove.
+   * A ^C during the drain runs `cleanup()`, which exits once it is done; a
+   * rebuild that went on to boot the next container in that window would
+   * leave it running with nothing to remove it, so it stops here instead.
+   */
+  const teardownForRebuild = async (): Promise<void> => {
+    await drainLogs();
+    if (containerId) {
+      await removeContainer(containerId);
+      containerId = undefined;
+    }
+    if (interrupted) {
+      throw new CdkdError(
+        'Interrupted during the --watch rebuild; not starting a new container.',
+        'LOCAL_INVOKE_AGENTCORE_WATCH_INTERRUPTED'
+      );
+    }
   };
 
   const cleanup = singleFlight(
@@ -408,6 +430,10 @@ async function localInvokeAgentCoreCommand(
           );
         }
       }
+      // Every exit after this — a ^C's `process.exit(130)`, or `handleError`'s
+      // on a failed invoke — drops writes still queued on a pipe (async on
+      // macOS), which is where the drained container logs just went (#4480).
+      await flushStdio();
     },
     (err) => {
       getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -593,11 +619,8 @@ async function localInvokeAgentCoreCommand(
     logStream = boot.logStream;
 
     sigintHandler = (): void => {
-      // `process.exit` drops writes still queued on a pipe (async on macOS),
-      // which is where the drained container logs just went.
-      void cleanup()
-        .then(() => flushStdio())
-        .then(() => process.exit(130));
+      interrupted = true;
+      void cleanup().then(() => process.exit(130));
     };
     process.on('SIGINT', sigintHandler);
 
@@ -687,13 +710,7 @@ async function localInvokeAgentCoreCommand(
           },
           rebuild: async () => {
             const result = await rebuildAgentCoreContainer({
-              cleanupBefore: async () => {
-                await drainLogs();
-                if (containerId) {
-                  await removeContainer(containerId);
-                  containerId = undefined;
-                }
-              },
+              cleanupBefore: teardownForRebuild,
               resolvedTarget,
               options,
               synthesizer,
@@ -786,13 +803,7 @@ async function localInvokeAgentCoreCommand(
         },
         rebuild: async () => {
           const result = await rebuildAgentCoreContainer({
-            cleanupBefore: async () => {
-              await drainLogs();
-              if (containerId) {
-                await removeContainer(containerId);
-                containerId = undefined;
-              }
-            },
+            cleanupBefore: teardownForRebuild,
             resolvedTarget,
             options,
             synthesizer,
@@ -855,8 +866,12 @@ async function localInvokeAgentCoreCommand(
       emitResult(result);
     }
   } finally {
-    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    // The handler stays installed while the teardown runs: a ^C during the
+    // drain then awaits this same single-flight cleanup instead of taking
+    // Node's default exit, which would skip `docker rm -f` and the
+    // credentials dispose.
     await cleanup();
+    if (sigintHandler) process.off('SIGINT', sigintHandler);
   }
 }
 

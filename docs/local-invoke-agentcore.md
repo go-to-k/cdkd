@@ -126,7 +126,7 @@ A per-firing classifier picks the reload primitive:
 | Edit | Primitive |
 | --- | --- |
 | An interpreted-language source edit inside a `CodeConfiguration` (`fromCodeAsset`) source tree — no Dockerfile, dependency-manifest or compiled-source change, and no asset-hash change that matters | **Soft reload**: `docker cp` the freshly synthed source into the running container's WORKDIR, then `docker restart`. No `docker build`, no container swap — the container ID and host port are preserved. |
-| A Dockerfile, compiled-source, asset-hash-changed or ambiguous edit; a `fromS3` or non-CDK-asset runtime; any classifier-context failure | **Full rebuild**: tear the container down (SIGTERM, then `docker rm -f`), re-resolve the image through the same build pipeline the cold boot runs, and start a fresh container. |
+| A Dockerfile, compiled-source, asset-hash-changed or ambiguous edit; a `fromS3` or non-CDK-asset runtime; any classifier-context failure | **Full rebuild**: tear the container down (`docker kill`, a wait of up to 5 seconds for Docker to relay the rest of its log output, then `docker rm -f`), re-resolve the image through the same build pipeline the cold boot runs, and start a fresh container. |
 
 `--watch` applies to both the `--ws` session path and the default one-shot
 `POST /invocations`, where the reload re-runs the single shot. On `--ws`, the

@@ -50,6 +50,8 @@ const captured = vi.hoisted(() => ({
   // One ordered transcript: `docker <args>` per execFile, `relay <id>` per
   // follower's last line, for the #4480 ordering cases.
   events: [] as string[],
+  // When set, the last line is relayed WITHOUT a trailing newline.
+  partialLastLine: false,
   // Per-test responder; defaults to "return synthetic id".
   responder: undefined as
     | ((cmd: string, args: string[]) =>
@@ -120,7 +122,8 @@ vi.mock('node:child_process', async () => {
       const end = (): void => {
         if (closed) return;
         captured.events.push(`relay ${id}`);
-        for (const h of handlers['stdout-data'] ?? []) h(Buffer.from(`last-line-${id}\n`));
+        const last = captured.partialLastLine ? `partial-${id}` : `last-line-${id}\n`;
+        for (const h of handlers['stdout-data'] ?? []) h(Buffer.from(last));
         close();
       };
       captured.followers.set(id, [...(captured.followers.get(id) ?? []), end]);
@@ -374,6 +377,7 @@ let exitSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   captured.calls = [];
   captured.events = [];
+  captured.partialLastLine = false;
   captured.followers.clear();
   captured.responder = undefined;
   dockerRunnerStubs.pullImage.mockClear();
@@ -1363,6 +1367,60 @@ describe('runEcsTask — container log drain (issue #4480)', () => {
     expect(captured.events.indexOf('relay c1')).toBeGreaterThan(
       captured.events.indexOf('docker wait c1')
     );
+  });
+
+  it('writes a last line that has no trailing newline once the follower is drained', async () => {
+    captured.responder = responder();
+    captured.partialLastLine = true;
+    const state = createEcsRunState();
+    const out = captureStdout();
+    try {
+      await runEcsTask(makeTask({ containers: [makeContainer()] }), baseOptions(), state);
+    } finally {
+      out.restore();
+    }
+    expect(out.text()).toContain('[app] partial-c1\n');
+  });
+
+  it('runs afterContainersStopped after docker stop and before the drain', async () => {
+    captured.responder = responder();
+    const state = createEcsRunState();
+    const out = captureStdout();
+    try {
+      await runEcsTask(
+        makeTask({
+          containers: [makeContainer(), makeContainer({ name: 'side', essential: false })],
+        }),
+        baseOptions(),
+        state
+      );
+      await cleanupEcsRun(state, {
+        keepRunning: false,
+        afterContainersStopped: async () => {
+          captured.events.push('after-stop');
+        },
+      });
+    } finally {
+      out.restore();
+    }
+    const ev = captured.events;
+    const lastStop = ev.map((e) => e.startsWith('docker stop')).lastIndexOf(true);
+    expect(ev.indexOf('after-stop')).toBeGreaterThan(lastStop);
+    // The hook ran before the drain waited on anything: c2's follower had not
+    // relayed its last line yet.
+    expect(ev.indexOf('relay c2')).toBeGreaterThan(ev.indexOf('after-stop'));
+  });
+
+  it('runs afterContainersStopped under keepRunning too, stopping no container', async () => {
+    const state = createEcsRunState();
+    let ran = 0;
+    await cleanupEcsRun(state, {
+      keepRunning: true,
+      afterContainersStopped: async () => {
+        ran += 1;
+      },
+    });
+    expect(ran).toBe(1);
   });
 
   it('stops every container, then drains its follower, and only then removes it', async () => {

@@ -406,7 +406,8 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
       // both of the container's streams are on ours-stderr.
       expect(stderr).toContain(`${CONTAINER_STDOUT_TOKEN}logs -f cdkd-local-lane2410`);
       expect(stderr).toContain(CONTAINER_STDERR_TOKEN);
-    }
+    },
+    20_000
   );
 
   /**
@@ -457,7 +458,8 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
       // Drained before removal, not merely before the process ended.
       expect(mocks.removeContainer).toHaveBeenCalledWith('cdkd-local-lane2410');
       expect(seqAtRemove?.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
-    }
+    },
+    20_000
   );
 
   /**
@@ -517,6 +519,56 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
       expect(seq[seq.length - 1]).toBe('exit:130');
       // The ^C teardown drains BEFORE it removes the container, too.
       expect(seqAtRemove?.some((e) => e.includes(CONTAINER_LATE_TOKEN))).toBe(true);
-    }
+    },
+    20_000
+  );
+  /**
+   * Issue #4480 on the FAILED-invoke exit (a hung handler's invoke timeout is
+   * where its last lines matter most): the `finally`'s cleanup drains the late
+   * line and flushes stdio before `handleError`'s `process.exit(1)`, and the
+   * SIGINT handler stays installed while that teardown runs.
+   */
+  it.skipIf(process.platform === 'win32')(
+    'on a failed invoke, relays the late line and flushes stdio before exit(1), handler kept',
+    async () => {
+      const actual = await vi.importActual<typeof import('../../../src/local/docker-runner.js')>(
+        '../../../src/local/docker-runner.js'
+      );
+      mocks.followContainerLogs.mockImplementation(actual.followContainerLogs);
+      mocks.killAndDrainContainerLogs.mockImplementation(actual.killAndDrainContainerLogs);
+      const sigintBefore = process.listeners('SIGINT').length;
+      let sigintAtRemove: number | undefined;
+      mocks.removeContainer.mockImplementation(async () => {
+        sigintAtRemove = process.listeners('SIGINT').length;
+      });
+      let seqAtExit: string[] | undefined;
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        seqAtExit = live ? [...live.seq, `exit:${String(code)}`] : undefined;
+        return undefined as never;
+      }) as typeof process.exit);
+      mocks.invokeRie.mockImplementation(async () => {
+        await waitForContainerOutput(() =>
+          live ? live.out.join('') + live.err.join('') : ''
+        );
+        throw new Error('lane4480 invoke timed out');
+      });
+      const fake = installFakeDockerLogs();
+      try {
+        await runInvoke(['LocalStack/EchoHandler', '--no-pull']);
+      } finally {
+        fake.restore();
+        exitSpy.mockRestore();
+      }
+
+      const seq = seqAtExit ?? [];
+      const late = seq.findIndex((e) => e.startsWith('err:') && e.includes(CONTAINER_LATE_TOKEN));
+      expect(late).toBeGreaterThanOrEqual(0);
+      expect(seq.lastIndexOf('flush')).toBeGreaterThan(late);
+      expect(seq.lastIndexOf('flush-out')).toBeGreaterThan(late);
+      expect(seq[seq.length - 1]).toBe('exit:1');
+      expect(sigintAtRemove).toBe(sigintBefore + 1);
+      expect(process.listeners('SIGINT').length).toBe(sigintBefore);
+    },
+    20_000
   );
 });

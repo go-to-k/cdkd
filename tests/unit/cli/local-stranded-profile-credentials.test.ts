@@ -274,10 +274,7 @@ describe('every force-exit arm that can strand the file consults the builder', (
       // deletes rather than reads.
       const collapsed = source.replace(/\s+/g, ' ');
       expect(
-        // The optional middle step is the stdio flush before the exit (#4480).
-        /void cleanup\(\)(?: ?\.then\(\(\) => flushStdio\(\)\))? ?\.then\(\(\) => \{? ?process\.exit\(130\)/.test(
-          collapsed
-        ),
+        /void cleanup\(\)\.then\(\(\) => \{? ?process\.exit\(130\)/.test(collapsed),
         `${name} no longer routes its SIGINT handler through cleanup(), so a second ^C may now ` +
           'skip the dispose — it needs the force-exit notice, or its handler restored.'
       ).toBe(true);

@@ -3,6 +3,7 @@ import {
   flushStdio,
   followContainerLogs,
   killAndDrainContainerLogs,
+  killContainer,
 } from '../../../src/local/docker-runner.js';
 import { releaseStdoutForPayload } from '../../../src/utils/logger.js';
 import {
@@ -75,27 +76,49 @@ describe('container log drain (issue #4480)', () => {
       out.restore();
     }
 
-    expect(out.text()).toContain(CONTAINER_LATE_TOKEN);
+    expect(out.text()).toContain(`${CONTAINER_LATE_TOKEN}:cdkd-lane4480-container`);
     expect(drained).toBe(true);
   }, 20_000);
 
-  // The contrast that makes the case above mean something: stopping the
-  // follower without stopping the container (the pre-#4480 teardown) never
-  // sees the late line.
-  itPosix('stop() alone drops the line the follower would receive after the stop', async () => {
+  // The contrast that makes the case above mean something: the pre-#4480
+  // teardown SIGTERMed the follower FIRST, so when the container then stops
+  // (the kill below), nothing is left to relay its last line.
+  itPosix('stop() before the container stops drops the line relayed after it', async () => {
     fake = installFakeDockerLogs();
     const out = captureOutput();
+    let closedAfterStop: boolean | undefined;
     try {
       const stream = followContainerLogs('cdkd-lane4480-container');
       await waitForContainerOutput(out.text);
       stream.stop();
-      await stream.drain(10_000);
+      // The follower closed because of the SIGTERM, not a timeout...
+      closedAfterStop = await stream.drain(10_000);
+      // ...so a container stop now has no follower left to relay through.
+      await killContainer('cdkd-lane4480-container');
+      await new Promise((r) => setTimeout(r, 200));
     } finally {
       out.restore();
     }
 
+    expect(closedAfterStop).toBe(true);
     expect(out.text()).toContain(CONTAINER_STDERR_TOKEN);
     expect(out.text()).not.toContain(CONTAINER_LATE_TOKEN);
+  }, 20_000);
+
+  // `docker kill` exits non-zero for a container that already stopped on its
+  // own ("is not running"); that must not skip the drain.
+  itPosix('a failing docker kill still drains the follower', async () => {
+    fake = installFakeDockerLogs({ killFails: true });
+    const out = captureOutput();
+    try {
+      const stream = followContainerLogs('cdkd-lane4480-container');
+      await waitForContainerOutput(out.text);
+      await killAndDrainContainerLogs('cdkd-lane4480-container', stream, 10_000);
+    } finally {
+      out.restore();
+    }
+
+    expect(out.text()).toContain(`${CONTAINER_LATE_TOKEN}:cdkd-lane4480-container`);
   }, 20_000);
 
   itPosix('drain is bounded: a follower that never ends is stopped at the timeout', async () => {
