@@ -246,7 +246,7 @@ multi-resource	2026-10-02T18:15:13Z	PASS	75	standard	rc ok, orph clean (#4455)
 multi-stack-deps	2026-10-02T18:18:59Z	PASS	86	standard	rc ok, orph clean (#4455)
 nested-required-preflight	2026-09-23T18:43:53Z	PASS	53	verify.sh	rc ok, orph clean (#1802)
 nested-stack	2026-10-01T11:08:44Z	PASS	60	verify.sh	rc ok, orph clean (PR #4311 stack-lock guard)
-nested-stack-3level	2026-10-01T10:47:58Z	PASS	201	verify.sh	rc ok, orph clean (PR #4311 stack-lock guard)
+nested-stack-3level	2026-10-03T00:17:43Z	PASS	491	verify.sh	rc ok, orph clean (PR #4459 Step 4c; pre-fix probe red at exit-2 assert)
 nested-stack-deep	2026-09-30T10:20:59Z	PASS	105	verify.sh	rc ok, orph clean; PR #4221 (#4094 bound child params + conditions)
 nested-stack-replace-guard	2026-09-25T14:59:50Z	PASS	55	verify.sh	rc ok, orph clean; pre-fix probe red at the fixture's own assertion
 nested-stack-rollback	2026-10-02T13:42:45Z	PASS	110	verify.sh	rc ok, orph clean (#4436)
