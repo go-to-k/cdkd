@@ -23,7 +23,7 @@ import {
  * which SEVEN call sites across four files pass as a deliberately NARROW
  * `isRetryable`: `describe-type.ts:67` (which states the intent outright --
  * "retry ONLY throttle-shaped failures"), `dynamodb-globaltable-provider.ts`
- * (x4), `export.ts:1744`, and `intrinsic-resolver/dynamic-refs.ts` (`sendWithThrottleRetry`). Widening
+ * (x4), `export.ts:1744`, and `intrinsic-resolver/dynamic-ref-lookups.ts` (`sendWithThrottleRetry`). Widening
  * the shared set would have silently converted every one of them from "retry
  * throttles" into "retry throttles and server errors", which none of them
  * asked for.

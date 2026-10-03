@@ -2510,7 +2510,7 @@ export async function resolveImportedProperties(
       // string. (Embedding on its own is NOT a limit — the substring arm masks
       // `key '<plaintext>' not found` fine; an earlier revision of this line
       // said otherwise.) The enumeration lives where it is ACTED ON and kept
-      // true — `intrinsic-resolver/masking.ts`'s `maskValueLeaves` and the
+      // true — `intrinsic-resolver/masking-display.ts`'s `maskValueLeaves` and the
       // residual note above `maskingContext` in `evaluateConditions` — because
       // five review rounds on this PR each rewrote a taxonomy in THIS spot and
       // each was wrong in a NEW way (`no mask can fix it`, then `a raw-value
