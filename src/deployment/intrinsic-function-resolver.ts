@@ -53,6 +53,9 @@ import {
 } from './intrinsic-resolver/support.js';
 import * as getAttMixin from './intrinsic-resolver/getatt.js';
 import * as crossStackMixin from './intrinsic-resolver/cross-stack.js';
+import * as cfnFallbackMixin from './intrinsic-resolver/cfn-fallback.js';
+import * as stackOutputMixin from './intrinsic-resolver/stack-output.js';
+import * as stackStateMixin from './intrinsic-resolver/stack-state.js';
 import * as dynamicRefsMixin from './intrinsic-resolver/dynamic-refs.js';
 import * as stringFnMixin from './intrinsic-resolver/string-functions.js';
 import * as fnMixin from './intrinsic-resolver/functions.js';
@@ -2344,24 +2347,24 @@ IntrinsicFunctionResolver.prototype.reresolveCrossStackValue =
   crossStackMixin.reresolveCrossStackValue;
 IntrinsicFunctionResolver.prototype.pinSecretVerdict = crossStackMixin.pinSecretVerdict;
 IntrinsicFunctionResolver.prototype.resolveImportValue = crossStackMixin.resolveImportValue;
-IntrinsicFunctionResolver.prototype.lookupCfnExport = crossStackMixin.lookupCfnExport;
+IntrinsicFunctionResolver.prototype.lookupCfnExport = cfnFallbackMixin.lookupCfnExport;
 IntrinsicFunctionResolver.prototype.describeAvailableOutputs =
-  crossStackMixin.describeAvailableOutputs;
-IntrinsicFunctionResolver.prototype.fetchAllCfnExports = crossStackMixin.fetchAllCfnExports;
-IntrinsicFunctionResolver.prototype.lookupCfnStackOutputs = crossStackMixin.lookupCfnStackOutputs;
-IntrinsicFunctionResolver.prototype.fetchCfnStackOutputs = crossStackMixin.fetchCfnStackOutputs;
-IntrinsicFunctionResolver.prototype.getCfnClient = crossStackMixin.getCfnClient;
+  cfnFallbackMixin.describeAvailableOutputs;
+IntrinsicFunctionResolver.prototype.fetchAllCfnExports = cfnFallbackMixin.fetchAllCfnExports;
+IntrinsicFunctionResolver.prototype.lookupCfnStackOutputs = cfnFallbackMixin.lookupCfnStackOutputs;
+IntrinsicFunctionResolver.prototype.fetchCfnStackOutputs = cfnFallbackMixin.fetchCfnStackOutputs;
+IntrinsicFunctionResolver.prototype.getCfnClient = cfnFallbackMixin.getCfnClient;
 IntrinsicFunctionResolver.prototype.recordImport = crossStackMixin.recordImport;
-IntrinsicFunctionResolver.prototype.resolveGetStackOutput = crossStackMixin.resolveGetStackOutput;
-IntrinsicFunctionResolver.prototype.recordOutputRead = crossStackMixin.recordOutputRead;
-IntrinsicFunctionResolver.prototype.positionalNameMask = crossStackMixin.positionalNameMask;
-IntrinsicFunctionResolver.prototype.maskStateReadError = crossStackMixin.maskStateReadError;
-IntrinsicFunctionResolver.prototype.maskNamedError = crossStackMixin.maskNamedError;
-IntrinsicFunctionResolver.prototype.namedRequestMasks = crossStackMixin.namedRequestMasks;
+IntrinsicFunctionResolver.prototype.resolveGetStackOutput = stackOutputMixin.resolveGetStackOutput;
+IntrinsicFunctionResolver.prototype.recordOutputRead = stackOutputMixin.recordOutputRead;
+IntrinsicFunctionResolver.prototype.positionalNameMask = stackOutputMixin.positionalNameMask;
+IntrinsicFunctionResolver.prototype.maskStateReadError = stackOutputMixin.maskStateReadError;
+IntrinsicFunctionResolver.prototype.maskNamedError = stackOutputMixin.maskNamedError;
+IntrinsicFunctionResolver.prototype.namedRequestMasks = stackOutputMixin.namedRequestMasks;
 IntrinsicFunctionResolver.prototype.getSameAccountStackState =
-  crossStackMixin.getSameAccountStackState;
+  stackStateMixin.getSameAccountStackState;
 IntrinsicFunctionResolver.prototype.getCrossAccountStackState =
-  crossStackMixin.getCrossAccountStackState;
+  stackStateMixin.getCrossAccountStackState;
 
 IntrinsicFunctionResolver.prototype.pushRedactedAttributeRead =
   getAttMixin.pushRedactedAttributeRead;

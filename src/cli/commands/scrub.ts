@@ -962,7 +962,7 @@ function nestedChildParameters(resolved: unknown): Record<string, string> | unde
  * that cannot identify the needle must not guess:
  * `state.outputs` is re-applied VERBATIM to consumer stacks — by the exports
  * index (`src/state/export-index-store.ts`) and by `Fn::ImportValue` /
- * `Fn::GetStackOutput` (`src/deployment/intrinsic-resolver/cross-stack.ts`) — so a
+ * `Fn::GetStackOutput` (`src/deployment/intrinsic-resolver/{cross-stack,stack-output}.ts`) — so a
  * fabricated redaction ships a literal `{{resolve:...}}` token into a
  * consumer's own AWS call. (`cdkd drift` is NOT one of those readers: it reads
  * `state.resources`, never `state.outputs`.) See `redactUnaccountedOutputs`.
@@ -2117,7 +2117,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
  * BASELINE, and it does not transfer here: `state.outputs` is re-applied
  * VERBATIM to consumer stacks by the exports index
  * (`src/state/export-index-store.ts`) and by `Fn::ImportValue` /
- * `Fn::GetStackOutput` (`src/deployment/intrinsic-resolver/cross-stack.ts`), so a
+ * `Fn::GetStackOutput` (`src/deployment/intrinsic-resolver/{cross-stack,stack-output}.ts`), so a
  * false redaction ships a literal `{{resolve:...}}` token into a consumer's own
  * AWS call — the #1934 class, a BREAK rather than a recoverable mismatch. (Two
  * readers, not the whole list: the module doc records a third that is out of
