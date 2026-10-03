@@ -18,7 +18,7 @@
  * predicate, so a third spelling cannot appear without deleting this file.
  *
  * This lives in `src/utils/` rather than beside either consumer because it has
- * TWO, in different layers -- `src/deployment/intrinsic-function-resolver.ts`
+ * TWO, in different layers -- `src/deployment/intrinsic-resolver/params-conditions.ts`
  * and `src/synthesis/macro-expander.ts`. Hosting it in `src/deployment/` gave
  * the tree its FIRST `src/synthesis/**` -> `src/deployment/**` import, which
  * inverts the documented layer order (synthesis runs before deployment); every

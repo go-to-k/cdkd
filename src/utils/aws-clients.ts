@@ -106,7 +106,7 @@ export class AwsClients {
     //
     // Double-folding is a no-op, and this cannot hide a raw spelling from a
     // consumer that wants one: nothing reads `configuredRegion` expecting the
-    // user's exact case (`intrinsic-function-resolver.ts` already compares it
+    // user's exact case (`intrinsic-resolver/clients.ts` already compares it
     // THROUGH `canonicalizeRegion`), and the one consumer that does want the
     // raw spelling - the bootstrap marker's second probe - takes it as a
     // string argument, never from a client.

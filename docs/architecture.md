@@ -644,7 +644,8 @@ including `ResolverContext`, live in
 `account-drain.ts` it re-exports; the method groups live beside them in
 `intrinsic-resolver/` (`getatt.ts`, `cross-stack.ts`, `cfn-fallback.ts`,
 `stack-output.ts`, `stack-state.ts`, `dynamic-refs.ts`, `string-functions.ts`,
-`functions.ts`, `masking.ts`).
+`functions.ts`, `masking.ts`, `params-conditions.ts`, `parameter-secrets.ts`,
+`refs.ts`, `clients.ts`).
 
 **Resolution Context**:
 
