@@ -23,7 +23,7 @@ verify, clean up.
 
 1. **Rebase, then build**: `git fetch origin` and rebase onto current
    `origin/main` (merge it when a force push is denied) BEFORE the run — a
-   stale base verifies code that is not what will merge, and nothing warns you.
+   stale base verifies code other than what will merge, and nothing warns.
    Then `vp run build` so `dist/` is current. **Never build beside a live
    fixture in this tree**: any build (`/check`, `/verify-pr`, `vp run verify`,
    `vp run runtime:smoke`, a building `verify.sh`, …) rewrites `dist/`, and the
@@ -42,8 +42,8 @@ verify, clean up.
    legacy `cdkd-state-{accountId}-us-east-1` and note the deprecation.
 
 4. **Pre-flight orphan scan** (mandatory): a prior run killed mid-deploy leaves
-   orphans matching the stack about to deploy, and cdkd's diff does not see them
-   (not in state), so the deploy attempts CREATE and collides. **Pick the region
+   orphans matching the stack about to deploy, and cdkd's diff does not see them,
+   so the deploy attempts CREATE and collides. **Pick the region
    first**: `us-east-1`, unless the fixture's `verify.sh` header names a
    constraint (`asset-bootstrap` needs a region with no cdkd asset storage,
    #4063; its last ledger note shows a region that passed). Every
@@ -52,8 +52,8 @@ verify, clean up.
    resource types), then scan:
 
    ```bash
-   # Always (cheap, broadly applicable):
-   # Recursive + filtered: deployments/** is retained history, not an orphan (below).
+   # Always:
+   # deployments/** is retained history, not an orphan (below).
    aws s3 ls s3://<bucket>/cdkd/<StackName>/ --recursive --region us-east-1 | grep -v '/deployments/'
    aws iam list-roles --query 'Roles[?contains(RoleName, `<StackName>`)].RoleName' --output text
    aws lambda list-functions --region us-east-1 \
@@ -75,9 +75,10 @@ verify, clean up.
    region-less `state.json`); `deployments/**` is event-log history a clean
    destroy RETAINS unless `--purge-events`. **Except a `lock.json` whose
    `expiresAt` is in the future: a LIVE peer on the same fixture** — wait, then
-   re-scan. Expired: a killed run's orphan. A peer BETWEEN commands, or not yet
-   deployed, holds no lock, so the LAST call before step 5 also checks this
-   host: a `pgrep -f verify.sh` PID whose cwd (`lsof -a -p <pid> -d cwd`) ends
+   re-scan. Expired: a killed run's orphan. The LAST call before step 5 re-runs
+   the S3 listing (a batch's earlier scan is stale, #4080) and, since a peer
+   BETWEEN commands or not yet deployed holds no lock, checks this host: a
+   `pgrep -f verify.sh` PID whose cwd (`lsof -a -p <pid> -d cwd`) ends
    in `tests/integration/<test-name>` is a live peer — wait for it to exit.
 
 5. **Run the test(s)**
