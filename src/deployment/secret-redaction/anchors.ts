@@ -16,7 +16,7 @@ import {
 import { isRecordedSecretExpression } from './mask-only.js';
 import { singleSpanFrame } from './positions.js';
 import { type RecordedSecretValues } from './pairs.js';
-import { refuseUncertifiedReadbackPositions } from './redact-state.js';
+import { refuseUncertifiedReadbackPositions } from './readback-certification.js';
 
 /**
  * Is an equal SOURCE value at an anchor position actually EVIDENCE that the two

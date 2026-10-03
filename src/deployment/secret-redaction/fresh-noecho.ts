@@ -141,7 +141,7 @@ function freshNoEchoLeafTest(
  * {@link containmentValuesOf} population, still mask-only in the map.
  *
  * Why the WHOLE leaf and not the matched span: an inline `***` is not
- * recognisable (see the mask-only channel note above), while a leaf that IS
+ * recognisable (see the mask-only channel note in mask-only.ts), while a leaf that IS
  * {@link SECRET_MASK} is what {@link carriesSecretMask} recognises, so
  * `drift --revert` / `--accept` and the rollback replay keep refusing it. The
  * public text around the value is lost in the record; the template still holds
@@ -272,7 +272,7 @@ export function flattenEmbeddedNoEchoLeaves<T>(value: T, secrets: RecordedSecret
 
 /**
  * The plaintexts the PERSIST path may scan for as SUBSTRINGS — every recorded
- * one except the mask-only class. See the mask-only channel note above for why the
+ * one except the mask-only class. See the mask-only channel note in mask-only.ts for why the
  * mask class is whole-leaf only.
  */
 export function substringNeedlesOf(secrets: RecordedSecretValues): string[] {

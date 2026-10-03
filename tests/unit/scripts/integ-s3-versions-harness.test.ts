@@ -2388,7 +2388,7 @@ const FALSIFIED_CLAIMS: readonly {
   {
     retired: 'On today\'s code the plaintext does NOT reach state -- the GHSA-p5qg-v9gv-hc7w fix', // falsified sample
     why:
-      'FALSE on the DEPLOY path: `secret-redaction/redact-state.ts`\'s own table carries three `LEAK (#2012)` rows ' +
+      'FALSE on the DEPLOY path: `secret-redaction/readback-certification.ts`\'s own table carries three `LEAK (#2012)` rows ' +
       'reachable by a plain `cdkd deploy`, whose `drainObservedCaptures` baseline reaches the persist ' +
       'choke point with an empty secrets map. The redaction substitutes only where it can certify the ' +
       'position; say that, rather than asserting the outcome. This sentence had THREE verbatim copies.',

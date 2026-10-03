@@ -1145,7 +1145,7 @@ describe('a fixture that resolves a secret DYNAMIC REFERENCE must sweep too', ()
    * applies the same `redactSecretsForState` to the rollback journal's
    * `attemptedProperties` -- but that is a redaction pass, not an invariant:
    * it substitutes only where it can certify the position, and
-   * `secret-redaction/redact-state.ts`'s own table carries deploy-path shapes where it
+   * `secret-redaction/readback-certification.ts`'s own table carries deploy-path shapes where it
    * cannot and persists what it was handed (issue #2012). Keeping plaintext out
    * of state is what the redaction is FOR, never something a fixture may assume
    * it achieved.
