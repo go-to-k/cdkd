@@ -180,11 +180,14 @@ Three exceptions:
   sticky, so the flag changes nothing: Cloud Control keeps writing the whole
   map.
 - **A property CloudFormation marks create-only.** Applying one to a live
-  resource requires a replacement, so cdkd does not narrow it out of the record
-  — the drop is still accepted and still warned about, but removing the flag
-  later does not deliver it. Applying it means recreating the resource, which
-  is [`--recreate-via-cc-api`](#recreate-via-cc-api-deploy) — and that flag is
-  refused while the same property is still named in
+  resource requires a replacement, so cdkd keeps it in the record — the drop
+  is still accepted and still warned about, but removing the flag later does
+  not apply it in place. A deploy without the flag refuses with
+  [`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](#create-only-drop-needs-replacement)
+  instead of replacing the resource on its own. Applying it means recreating
+  the resource, with
+  [`--recreate-via-cc-api`](#recreate-via-cc-api-deploy) or `--replace` — and
+  the recreate flag is refused while the same property is still named in
   `--prefer-sdk-route`, so drop the entry in the same run. A
   stateful type also needs
   [`--force-stateful-recreation`](#force-stateful-recreation). A type the Cloud
@@ -395,7 +398,7 @@ before the redeploy survived. A later phase deliberately recreates the alarm
 and checks that tag DIES, so its survival above means something. This section
 said the opposite until that run measured it.
 
-**An earlier opt-out deploy no longer defeats this, with one exception.** cdkd
+**An earlier opt-out deploy does not defeat this, with one exception.** cdkd
 records only what the SDK provider actually sent, so after a
 [`--prefer-sdk-route`](#prefer-sdk-route-deploy) deploy a removable drop is
 simply absent from the record: the later flag-less deploy sees a genuine
@@ -404,17 +407,33 @@ addition, re-routes the resource, and Cloud Control sends the field. The same
 phase asserts the record does NOT carry `EvaluationWindow`, and the flag-less
 phase after it reads the property back off the live alarm.
 
-**The exception is a create-only drop**, and there the old failure survives.
-cdkd deliberately leaves such a property IN the record, because removing it
-would make the key read as an addition against the template — and an added
-create-only property is a REPLACEMENT, so a plain upgrade deploy over an
-unchanged template would destroy and recreate a resource nobody touched. The
-cost of that choice is stated rather than hidden: the record keeps claiming a
-value AWS does not hold, the flag-less deploy diffs it as identical on both
-sides, nothing is sent, and the deploy reports success. That residual is a
-known defect with its own tracking issue. It is still open because the
-alternatives to today's behaviour — refuse the deploy, or classify it as a
-replacement — both change what a plain deploy does to a live resource.
+**The exception is a create-only drop.** cdkd keeps such a property IN the
+record, so a redeploy that still passes the flag sees no difference and does not
+replace the resource. A deploy WITHOUT the flag does see one: AWS never held
+the value, and an added create-only property is a replacement. cdkd refuses
+that replacement rather than doing it on its own — see
+[`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](#create-only-drop-needs-replacement).
+The same `sdk-to-cc-autoroute` fixture measures it on an `AWS::EC2::Subnet`'s
+`AvailabilityZoneId`.
+
+#### `CREATE_ONLY_DROP_NEEDS_REPLACEMENT`
+
+The deploy refuses when the ONLY thing asking for a replacement is a
+create-only property the record holds, that the SDK provider never wrote, and
+that the template still asks for unchanged. This resource is not touched, and
+the error names:
+
+| Remedy | What it does |
+| --- | --- |
+| `--recreate-via-cc-api <LogicalId>` | Re-creates the resource through Cloud Control with the property applied |
+| `--replace` | The same for every such resource in the deploy, nested stacks included |
+| `--force-stateful-recreation` | Also required for a stateful type |
+| `--prefer-sdk-route <Type>:<Prop>,...` | Keeps the resource on its SDK provider and keeps dropping the property |
+
+A replacement something else in the template already requires goes ahead and
+applies the property too, and a template that removes such a property does not
+replace the resource. `cdkd diff` previews the flag-less deploy, so it shows
+the replacement.
 
 Reach for the flag when the auto-routed **update** cannot deliver the property,
 which is a narrower case:
@@ -437,9 +456,9 @@ which is a narrower case:
   unapplied.) A stateful type
   is refused until `--force-stateful-recreation`, **unless** it declares
   `UpdateReplacePolicy: Retain` — that is exempt from the consent flag, because
-  the old resource is orphaned rather than deleted. The flag is for the case
-  where the record DOES claim the value — the `--prefer-sdk-route` sequence
-  above — because there the diff finds no difference to act on.
+  the old resource is orphaned rather than deleted. Where the record DOES claim
+  the value — the `--prefer-sdk-route` sequence above — the deploy refuses
+  instead, and this flag (or `--replace`) is how to opt in.
 - **The SDK-created resource's physical id is not a valid Cloud Control
   identifier.** Cloud Control addresses a resource by the `Identifier` its
   schema's `primaryIdentifier` defines, while an SDK provider stores whatever
@@ -454,14 +473,10 @@ Both bullets are reasoned from the routing model, not measured — unlike the
 same way, so they are not reached for the same way. The second one fails
 loudly: the auto-routed update errors, and the flag is a remedy you reach for
 after a failure rather than a precaution you take before one. The first one
-fails loudly only when the record does not already claim the property — the
-replacement is planned, and for a stateful type without
-`UpdateReplacePolicy: Retain` it is refused out loud. In the recorded
-create-only case above there is no failure at all, and the output is worse than
-silent: pre-flight still prints the routing line promising Cloud Control will
-forward the full property map, the diff then finds no change, nothing retracts
-the promise, and nothing points at this flag. So that one is a precaution you
-do have to take before the fact.
+fails loudly too: when the record does not already claim the property the
+replacement is planned (and refused for a stateful type without
+`UpdateReplacePolicy: Retain`), and when it does the deploy refuses with
+`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`, naming this flag.
 
 ### When not to use it
 
