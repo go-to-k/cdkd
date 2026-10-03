@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   collectStoredAttributeKeys,
   collectConstructAttributeTypes,
+  constructAttributeFiles,
   classifyType,
   buildReport,
   findGaps,
@@ -113,6 +114,21 @@ describe('collectConstructAttributeTypes', () => {
     expect(types.has('AWS::EC2::LaunchTemplate')).toBe(true);
     // A literal in a DIFFERENT method must not count.
     expect(types.has('AWS::S3::Bucket')).toBe(false);
+  });
+
+  it('reads the constructAttributeFor* helpers the handlers moved into (#4337)', () => {
+    const src = `
+      export async function constructAttributeForCoreTypes(this: R, resource) {
+        if (resource.resourceType === 'AWS::KMS::Key') return 'arn';
+        return NOT_CONSTRUCTED;
+      }
+      export async function constructAttributeForAppTypes(this: R, resource) {
+        if (resource.resourceType === 'AWS::SNS::Topic') return 'arn';
+        return NOT_CONSTRUCTED;
+      }
+      export function constructSomethingElse() { return 'AWS::S3::Bucket'; }
+    `;
+    expect([...collectConstructAttributeTypes(src)]).toEqual(['AWS::KMS::Key', 'AWS::SNS::Topic']);
   });
 
   it('reads the mixin FUNCTION the resolver split it into (#4337)', () => {
@@ -313,9 +329,15 @@ describe('real repo coverage (regression floor)', () => {
         cached.set(type, t);
       }
     }
-    const ctorTypes = collectConstructAttributeTypes(
-      readFileSync(join(repoRoot, 'src/deployment/intrinsic-resolver/getatt.ts'), 'utf8')
-    );
+    const ctorTypes = new Set<string>();
+    const ctorFiles = constructAttributeFiles(join(repoRoot, 'src/deployment/intrinsic-resolver'));
+    // getatt.ts plus the three getatt-construct-*.ts handler modules (#4337).
+    expect(ctorFiles.length).toBeGreaterThanOrEqual(4);
+    for (const file of ctorFiles) {
+      for (const type of collectConstructAttributeTypes(readFileSync(file, 'utf8'))) ctorTypes.add(type);
+    }
+    // Floor: the handlers name dozens of types; a reader that lost the helpers would see a handful.
+    expect(ctorTypes.size).toBeGreaterThan(40);
     const report = buildReport(fixtures, sdkBacked, cached, ctorTypes);
 
     // Floors: the generator must actually see providers + fixtures.

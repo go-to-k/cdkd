@@ -18,6 +18,8 @@ import {
   coerceParameterTypedValue,
 } from './intrinsic-resolver/support.js';
 import * as getAttMixin from './intrinsic-resolver/getatt.js';
+import * as getAttRefusalsMixin from './intrinsic-resolver/getatt-refusals.js';
+import * as getAttHealMixin from './intrinsic-resolver/getatt-heal.js';
 import * as crossStackMixin from './intrinsic-resolver/cross-stack.js';
 import * as cfnFallbackMixin from './intrinsic-resolver/cfn-fallback.js';
 import * as stackOutputMixin from './intrinsic-resolver/stack-output.js';
@@ -839,26 +841,29 @@ IntrinsicFunctionResolver.prototype.publicNoEchoTokens = getAttMixin.publicNoEch
 IntrinsicFunctionResolver.prototype.noteAttributeSecrecy = getAttMixin.noteAttributeSecrecy;
 IntrinsicFunctionResolver.prototype.rejectPlaceholderArnAttribute =
   getAttMixin.rejectPlaceholderArnAttribute;
-IntrinsicFunctionResolver.prototype.staleRecordRemedy = getAttMixin.staleRecordRemedy;
-IntrinsicFunctionResolver.prototype.unenrichedRemedy = getAttMixin.unenrichedRemedy;
-IntrinsicFunctionResolver.prototype.healWithheld = getAttMixin.healWithheld;
-IntrinsicFunctionResolver.prototype.withheldRemedy = getAttMixin.withheldRemedy;
-IntrinsicFunctionResolver.prototype.healStaleAttributes = getAttMixin.healStaleAttributes;
-IntrinsicFunctionResolver.prototype.usableHealedAttribute = getAttMixin.usableHealedAttribute;
-IntrinsicFunctionResolver.prototype.serveHealedAttribute = getAttMixin.serveHealedAttribute;
+IntrinsicFunctionResolver.prototype.staleRecordRemedy = getAttHealMixin.staleRecordRemedy;
+IntrinsicFunctionResolver.prototype.unenrichedRemedy = getAttHealMixin.unenrichedRemedy;
+IntrinsicFunctionResolver.prototype.healWithheld = getAttHealMixin.healWithheld;
+IntrinsicFunctionResolver.prototype.withheldRemedy = getAttHealMixin.withheldRemedy;
+IntrinsicFunctionResolver.prototype.healStaleAttributes = getAttHealMixin.healStaleAttributes;
+IntrinsicFunctionResolver.prototype.usableHealedAttribute = getAttHealMixin.usableHealedAttribute;
+IntrinsicFunctionResolver.prototype.serveHealedAttribute = getAttHealMixin.serveHealedAttribute;
 IntrinsicFunctionResolver.prototype.constructWithStaleRecordHeal =
-  getAttMixin.constructWithStaleRecordHeal;
+  getAttHealMixin.constructWithStaleRecordHeal;
 IntrinsicFunctionResolver.prototype.constructGuardedAttribute =
-  getAttMixin.constructGuardedAttribute;
-IntrinsicFunctionResolver.prototype.healBeforeConstructing = getAttMixin.healBeforeConstructing;
+  getAttHealMixin.constructGuardedAttribute;
+IntrinsicFunctionResolver.prototype.healBeforeConstructing = getAttHealMixin.healBeforeConstructing;
 IntrinsicFunctionResolver.prototype.constructAttribute = getAttMixin.constructAttribute;
-IntrinsicFunctionResolver.prototype.refuseUnservedAttribute = getAttMixin.refuseUnservedAttribute;
+IntrinsicFunctionResolver.prototype.refuseUnservedAttribute =
+  getAttRefusalsMixin.refuseUnservedAttribute;
 IntrinsicFunctionResolver.prototype.refuseUnconstructibleAttribute =
-  getAttMixin.refuseUnconstructibleAttribute;
-IntrinsicFunctionResolver.prototype.refuseUndefinedAttribute = getAttMixin.refuseUndefinedAttribute;
-IntrinsicFunctionResolver.prototype.describeFailureObserved = getAttMixin.describeFailureObserved;
+  getAttRefusalsMixin.refuseUnconstructibleAttribute;
+IntrinsicFunctionResolver.prototype.refuseUndefinedAttribute =
+  getAttRefusalsMixin.refuseUndefinedAttribute;
+IntrinsicFunctionResolver.prototype.describeFailureObserved =
+  getAttRefusalsMixin.describeFailureObserved;
 IntrinsicFunctionResolver.prototype.guardedPhysicalIdFallback =
-  getAttMixin.guardedPhysicalIdFallback;
+  getAttRefusalsMixin.guardedPhysicalIdFallback;
 IntrinsicFunctionResolver.prototype.resolveParameters = paramsConditionsMixin.resolveParameters;
 IntrinsicFunctionResolver.prototype.evaluateConditions = paramsConditionsMixin.evaluateConditions;
 IntrinsicFunctionResolver.prototype.resolveKeyUnit = paramsConditionsMixin.resolveKeyUnit;

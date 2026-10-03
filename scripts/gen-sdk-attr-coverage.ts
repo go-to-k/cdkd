@@ -88,8 +88,9 @@
  *   - src/provisioning/providers/*.ts — each SDK provider's `handledProperties`
  *     (which types it serves) + the attribute-object keys its create/update
  *     records, parsed via the TypeScript Compiler API.
- *   - src/deployment/intrinsic-resolver/getatt.ts — the set of types the
- *     `constructAttribute` method references.
+ *   - src/deployment/intrinsic-resolver/getatt.ts and getatt-construct-*.ts — the
+ *     set of types `constructAttribute` and its `constructAttributeFor*` helpers
+ *     reference.
  *
  * Writes: docs/_generated/sdk-attr-coverage.{json,md}.
  *
@@ -134,7 +135,17 @@ const repoRoot = resolve(__dirname, '..');
 const FIXTURE_DIR = resolve(repoRoot, 'tests/fixtures/cfn-schemas');
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
 // `constructAttribute` lives in the resolver's GetAtt module (#4337).
-const RESOLVER_FILE = resolve(repoRoot, 'src/deployment/intrinsic-resolver/getatt.ts');
+const RESOLVER_DIR = resolve(repoRoot, 'src/deployment/intrinsic-resolver');
+/**
+ * `getatt.ts` plus the `getatt-construct-*.ts` modules `constructAttribute`'s
+ * per-type handlers were split into (#4337).
+ */
+export function constructAttributeFiles(dir = RESOLVER_DIR): string[] {
+  return readdirSync(dir)
+    .filter((f) => f === 'getatt.ts' || /^getatt-construct-[a-z-]+\.ts$/.test(f))
+    .sort()
+    .map((f) => resolve(dir, f));
+}
 const OUT_JSON = resolve(repoRoot, 'docs/_generated/sdk-attr-coverage.json');
 const OUT_MD = resolve(repoRoot, 'docs/_generated/sdk-attr-coverage.md');
 
@@ -314,7 +325,8 @@ export function collectStoredAttributeKeys(source: string, fileName = 'provider.
 
 /**
  * Collect the set of `AWS::X::Y` resource types referenced anywhere inside the
- * `constructAttribute` method / mixin function (`intrinsic-resolver/getatt.ts`). A type with a
+ * `constructAttribute` method / mixin function (`intrinsic-resolver/getatt.ts`)
+ * or a `constructAttributeFor*` helper it delegates to (#4337). A type with a
  * per-type handler there can build its own ARN, so it is not a gap even when
  * the provider does not cache it.
  */
@@ -322,20 +334,22 @@ export function collectConstructAttributeTypes(source: string, fileName = 'resol
   const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
   const types = new Set<string>();
 
-  let methodBody: ts.Node | undefined;
+  const bodies: ts.Node[] = [];
   const findMethod = (node: ts.Node): void => {
     if (
       (ts.isMethodDeclaration(node) || ts.isFunctionDeclaration(node)) &&
       node.name !== undefined &&
       ts.isIdentifier(node.name) &&
-      node.name.text === 'constructAttribute'
+      (node.name.text === 'constructAttribute' || /^constructAttributeFor[A-Z]\w*$/.test(node.name.text)) &&
+      node.body !== undefined
     ) {
-      methodBody = node.body;
+      bodies.push(node.body);
+      return;
     }
-    if (!methodBody) ts.forEachChild(node, findMethod);
+    ts.forEachChild(node, findMethod);
   };
   findMethod(sf);
-  if (!methodBody) return types;
+  if (bodies.length === 0) return types;
 
   const collect = (node: ts.Node): void => {
     if (
@@ -346,7 +360,7 @@ export function collectConstructAttributeTypes(source: string, fileName = 'resol
     }
     ts.forEachChild(node, collect);
   };
-  collect(methodBody);
+  for (const body of bodies) collect(body);
   return types;
 }
 
@@ -611,7 +625,10 @@ function loadReport(): SdkAttrCoverageReport {
     }
   }
 
-  const constructAttributeTypes = collectConstructAttributeTypes(readFileSync(RESOLVER_FILE, 'utf8'));
+  const constructAttributeTypes = new Set<string>();
+  for (const file of constructAttributeFiles()) {
+    for (const t of collectConstructAttributeTypes(readFileSync(file, 'utf8'))) constructAttributeTypes.add(t);
+  }
   return buildReport(fixtures, sdkBackedTypes, cachedKeysByType, constructAttributeTypes);
 }
 
