@@ -24,11 +24,10 @@ integ's ledger row lands in the same tree (#4302). A lane REPORTS
 `mise exec -- markgate status integ-destroy --explain`'s line, never "integ
 not needed": comment-only edits count (#3873). Bare `markgate` can resolve to
 a stale PATH copy that dies `unknown hash "diff"` (#4477's lane, three
-reports). The
-gate's `hash: diff` stales on a rebase only when main changed a scoped file
-THIS branch changes too, so a set marker on a MERGEABLE PR needs no rebase
-(`mise exec -- markgate status`) — unless main changed code the fixture EXERCISES: re-run
-it on the rebased head (#3726).
+reports). The gate's `hash: diff` stales on a rebase only when main changed a
+scoped file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
+rebase (`mise exec -- markgate status`) — unless main changed code the fixture
+EXERCISES: re-run it on the rebased head (#3726).
 
 - **DECLARE the tree final, in words, to whoever is still editing it** — every
   scoped touch buys another real-AWS run, comment-only deltas included. The one
