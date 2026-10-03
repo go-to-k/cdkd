@@ -62,8 +62,9 @@ every comment, doc or rule the fix makes FALSE — stating the old invariant or
 calling the issue open (`grep -rnw '<issue digits>\|<key symbol>' src docs
 .claude/rules`, minus `docs/_generated`, each through §2's open-PR `files`
 query); a NEW SDK provider adds `.claude/rules/providers.md`'s "Adding a New
-SDK Provider" files plus the tables its fences read (`name-keys.ts` + tests,
-nested-key coverage, `docs/cli-drift.md`) — a narrower list stops the lane
+SDK Provider" files, the fenced tables (`name-keys.ts`,
+`reverse-replacement-name-holder.test.ts`, `docs/cli-drift.md`) and, for a new
+SDK client, `package.json` + `pnpm-lock.yaml` — a narrower list stops the lane
 mid-run to ask (go-to-k/cdkd#1160).
 
 **Correct the classification lines in the same turn as the claim**: rewrite a
@@ -88,15 +89,14 @@ stand down naming the winning branch and pick another issue, unasked. Escalate
 when timestamps cannot settle it (go-to-k/cdkd#1446).
 
 **A QUEUED comment IS a claim, and its `createdAt` is what the tie-break reads.**
-Re-read the thread to the END before publishing a precedence account, and never
-infer absence from a missing branch: a signal shows LIFE only (§9), and a claim
-has no TTL, so one you believe dead goes to arbitration.
+Re-read the thread to the END before claiming precedence. A missing branch is
+not absence (signals show LIFE only, §9); a claim has no TTL, so one you think
+dead goes to arbitration.
 
 **Nothing makes the tie-break's LOSER re-read**: re-read the claims before you
 PUSH; if yours is later, stand down even with code written.
 
-**Claim what you FILE, too — filing is not claiming**: a self-filed
-deferral is invisible to ownership probes. For one THIS run means to pick up
+**Claim what you FILE**: a self-filed deferral is invisible to ownership probes. For one THIS run means to pick up
 (`Session-fit: now`), claim it in the turn you file it, naming the LANE, not your
 current branch, which §9 deletes. One handed off (`next`) gets NO claim until a
 later run takes it.
