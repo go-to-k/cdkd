@@ -819,7 +819,10 @@ describe('the pre-pass walks what the RESOLVER walks (issue #2133 review)', () =
     // Modifier-agnostic: the split resolver (#4337) relaxes `private` members a
     // mixin reads to `@internal`.
     const dispatchStart = resolverSrc.search(/^ {2}(?:private )?async resolveValue\(/m);
-    const dispatchEnd = resolverSrc.search(/^ {2}(?:private )?async resolveRef\(/m);
+    // The next class member after `resolveValue` (its JSDoc or its name), since
+    // `resolveRef` moved to the `refs.ts` mixin (#4337).
+    const afterStart = resolverSrc.slice(dispatchStart + 1).search(/^ {2}[^\s}]/m);
+    const dispatchEnd = afterStart < 0 ? -1 : dispatchStart + 1 + afterStart;
     expect(dispatchStart, 'resolveValue moved or was renamed').toBeGreaterThan(-1);
     expect(dispatchEnd).toBeGreaterThan(dispatchStart);
     const dispatch = resolverSrc.slice(dispatchStart, dispatchEnd);
