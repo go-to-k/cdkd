@@ -3481,9 +3481,6 @@ export class EC2Provider implements ResourceProvider {
    *   (go-to-k/cdkd#4355, {@link resolveDuplicateIngress}).
    * @param revokedRule Set by `updateSecurityGroupIngress`: the physical id of
    *   the previous rule it has just revoked, which a refusal names.
-   * @param onAdopted Called when the rule was not authorized but an identical
-   *   existing one adopted, so a caller can tell a re-created rule (a new
-   *   `sgr-` id) from an adopted one (go-to-k/cdkd#4484).
    */
   private async createSecurityGroupIngress(
     logicalId: string,
@@ -3492,8 +3489,7 @@ export class EC2Provider implements ResourceProvider {
     onUnusableProtocol?: (message: string) => void,
     maskSecrets?: MaskerFn,
     replayingState = false,
-    revokedRule?: string,
-    onAdopted?: () => void
+    revokedRule?: string
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SecurityGroupIngress ${logicalId}`);
 
@@ -3635,7 +3631,6 @@ export class EC2Provider implements ResourceProvider {
           ...(maskSecrets && { maskSecrets }),
           ...(revokedRule !== undefined && { revokedRule }),
         });
-        onAdopted?.();
         // The same record the success arm writes: this arm reports the rule as
         // provisioned, so state is written here too and the narrowing has to
         // reach it or the phantom drift survives on the idempotent path.
@@ -4042,10 +4037,13 @@ export class EC2Provider implements ResourceProvider {
    * Best-effort lookup of the `sgr-...` id of an ALREADY-EXISTING ingress rule
    * (issue #1761).
    *
-   * Only the "already exists" arm of {@link createSecurityGroupIngress}
-   * calls this: the successful arm reads the id straight off
+   * The "already exists" arm of {@link createSecurityGroupIngress} calls
+   * this; its successful arm reads the id straight off
    * `AuthorizeSecurityGroupIngress`'s own response, which is what keeps the
-   * mutating path free of the issue #1710 orphan hazard.
+   * mutating path free of the issue #1710 orphan hazard. The other caller is
+   * `updateSecurityGroupIngress`'s equal-sides replay, AFTER the create
+   * returned without an id (go-to-k/cdkd#4484): the record it restores
+   * already names the rule, so nothing there can be orphaned.
    *
    * **Never throws.** A `DescribeSecurityGroupRules` failure (permissions,
    * throttle, a rule that no longer matches) degrades to `undefined`, which
@@ -4055,7 +4053,7 @@ export class EC2Provider implements ResourceProvider {
    *
    * Returns a value only when EXACTLY ONE non-egress rule on the group matches
    * the requested `(protocol, ports, source)` triple. Zero matches means the
-   * "already exists" error came from a rule cdkd cannot pin down; two or more
+   * rule is one cdkd cannot pin down; two or more
    * means the identifier would be ambiguous, and adopting an ambiguous id is
    * the #1658 failure mode (a state row that looks adopted but names the wrong
    * AWS object).
@@ -4132,49 +4130,38 @@ export class EC2Provider implements ResourceProvider {
       // revoked rule is re-created, and a live one answers Duplicate, which the
       // replay adopts. Short-circuiting would report a restore that never
       // happened; revoking first would drop a live rule for nothing.
-      let adopted = false;
       const restored = await this.createSecurityGroupIngress(
         logicalId,
         resourceType,
         properties,
         (message) => this.logger.warn(message),
         maskSecrets,
-        true,
-        undefined,
-        () => {
-          adopted = true;
-        }
+        true
       );
-      // go-to-k/cdkd#4484: a re-created rule is a NEW rule under a new `sgr-`
-      // id, and the recorded one names the rule the refused update revoked. An
-      // in-place answer is merged key-wise over the restored record
-      // (`recordAfterRollbackUpdate`), so a response naming no single id would
-      // leave that revoked id under `Id` for `cdkd export` and `Fn::GetAtt`.
-      // Answer a replacement, whose attributes REPLACE the record's, and look
-      // the new id up by identity when the response named none: best-effort
-      // (`lookupIngressRuleId` never throws), and safe to `await` here since
-      // the record this replay restores already names the rule.
-      if (!adopted) {
-        const ruleId =
-          typeof restored.attributes?.['Id'] === 'string'
-            ? restored.attributes['Id']
-            : await this.lookupIngressRuleId(logicalId, properties['GroupId'] as string, {
-                ...properties,
-                ...restored.effectiveProperties,
-              });
-        return {
-          physicalId: restored.physicalId,
-          wasReplaced: true,
-          attributes: ruleId ? { Id: ruleId } : {},
-          ...(restored.effectiveProperties && {
-            effectiveProperties: restored.effectiveProperties,
-          }),
-        };
-      }
+      // go-to-k/cdkd#4484: the recorded `sgr-` id may name the rule the refused
+      // update revoked. An in-place answer is merged key-wise over the restored
+      // record (`recordAfterRollbackUpdate`), so an Authorize response naming
+      // no single id would leave that revoked id under `Id` for `cdkd export`
+      // and `Fn::GetAtt`. So the answer is a replacement, whose attributes
+      // REPLACE the record's: only an id proven now is recorded. A Duplicate
+      // is no proof the recorded id still holds — an earlier send of this
+      // replay that failed ambiguously, or an outer retry after a 5xx, may
+      // have authorized the rule it now meets. Without an id in hand the
+      // rule's id is looked up by identity: best-effort (`lookupIngressRuleId`
+      // never throws), and safe to `await` here since the record this replay
+      // restores already names the rule, so nothing is orphaned.
+      const ruleId =
+        typeof restored.attributes?.['Id'] === 'string'
+          ? restored.attributes['Id']
+          : await this.lookupIngressRuleId(
+              logicalId,
+              properties['GroupId'] as string,
+              restored.effectiveProperties ?? properties
+            );
       return {
         physicalId: restored.physicalId,
-        wasReplaced: false,
-        ...(restored.attributes && { attributes: restored.attributes }),
+        wasReplaced: true,
+        attributes: ruleId ? { Id: ruleId } : {},
         ...(restored.effectiveProperties && {
           effectiveProperties: restored.effectiveProperties,
         }),

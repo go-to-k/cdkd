@@ -387,6 +387,15 @@ describe('EC2Provider SecurityGroupIngress duplicate ownership (#4355)', () => {
         properties: { ...PROPS },
         attributes: { Id: REVOKED_ID },
       };
+      const replayOnly = () =>
+        provider.update(
+          'Rule',
+          `${GROUP_ID}|tcp|5432|5432`,
+          TYPE,
+          PROPS,
+          { ...PROPS },
+          { replayingState: true }
+        );
       const replayWith = (authorized: unknown[], described: () => Promise<unknown>) => {
         mockSend.mockImplementation((command: unknown) => {
           if (command instanceof AuthorizeSecurityGroupIngressCommand) {
@@ -395,14 +404,7 @@ describe('EC2Provider SecurityGroupIngress duplicate ownership (#4355)', () => {
           if (command instanceof DescribeSecurityGroupRulesCommand) return described();
           return Promise.reject(new Error('unexpected call'));
         });
-        return provider.update(
-          'Rule',
-          `${GROUP_ID}|tcp|5432|5432`,
-          TYPE,
-          PROPS,
-          { ...PROPS },
-          { replayingState: true }
-        );
+        return replayOnly();
       };
       const liveRule = (id: string) => ({
         SecurityGroupRuleId: id,
@@ -451,36 +453,40 @@ describe('EC2Provider SecurityGroupIngress duplicate ownership (#4355)', () => {
         expect(record.physicalId).toBe(RESTORED.physicalId);
       });
 
-      it('an ADOPTED live rule whose id cannot be found keeps the recorded one (merged in place)', async () => {
-        // The rule was never revoked, so the recorded id still names it.
+      it('a Duplicate after an ambiguous send is no proof the recorded id holds: it is dropped', async () => {
+        // The reset send may have re-created the rule the re-send then meets,
+        // so the recorded (revoked) id is not kept when no id can be found.
+        vi.spyOn(
+          provider as unknown as { sleep: (ms: number) => Promise<void> },
+          'sleep'
+        ).mockResolvedValue();
+        let authorizes = 0;
         mockSend.mockImplementation((command: unknown) => {
           if (command instanceof AuthorizeSecurityGroupIngressCommand) {
             return Promise.reject(
-              Object.assign(new Error('the specified rule already exists'), {
-                name: 'InvalidPermission.Duplicate',
-              })
+              authorizes++ === 0
+                ? Object.assign(new Error('socket ECONNRESET'), { code: 'ECONNRESET' })
+                : Object.assign(new Error('the specified rule already exists'), {
+                    name: 'InvalidPermission.Duplicate',
+                  })
             );
           }
           return Promise.reject(new Error('DescribeSecurityGroupRules throttled'));
         });
 
-        const result = await provider.update(
-          'Rule',
-          `${GROUP_ID}|tcp|5432|5432`,
-          TYPE,
-          PROPS,
-          { ...PROPS },
-          { replayingState: true }
-        );
+        const result = await replayOnly();
 
-        expect(result.wasReplaced).toBe(false);
-        expect(recordAfterRollbackUpdate(RESTORED, result).attributes).toEqual({ Id: REVOKED_ID });
+        expect(authorizes).toBe(2);
+        expect(result.wasReplaced).toBe(true);
+        expect(recordAfterRollbackUpdate(RESTORED, result).attributes).toEqual({});
       });
     });
 
     it('adopts, never revokes, a LIVE rule on an equal-sides replay', async () => {
       // A failed update that never reached its revoke: the rule is intact, so
-      // the Authorize answers Duplicate and the replay adopts it in place.
+      // the Authorize answers Duplicate and the replay adopts it. Answered as a
+      // replacement under the same id, so only the id proven now is recorded
+      // (go-to-k/cdkd#4484).
       const result = await provider.update(
         'Rule',
         `${GROUP_ID}|tcp|5432|5432`,
@@ -492,7 +498,7 @@ describe('EC2Provider SecurityGroupIngress duplicate ownership (#4355)', () => {
 
       expect(sent()).not.toContain('RevokeSecurityGroupIngressCommand');
       expect(result.physicalId).toBe(`${GROUP_ID}|tcp|5432|5432`);
-      expect(result.wasReplaced).toBe(false);
+      expect(result.wasReplaced).toBe(true);
       expect(result.attributes).toEqual({ Id: RULE_ID });
     });
 
