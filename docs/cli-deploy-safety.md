@@ -426,7 +426,7 @@ the error names:
 | Remedy | What it does |
 | --- | --- |
 | `--recreate-via-cc-api <LogicalId>` | Re-creates the resource through Cloud Control with the property applied |
-| `--replace` | The same for every such resource in the deploy, nested stacks included |
+| `--replace` | Replaces every such resource in the deploy, nested stacks included, creating the new one first |
 | `--force-stateful-recreation` | Also required for a stateful type |
 | `--prefer-sdk-route <Type>:<Prop>,...` | Keeps the resource on its SDK provider and keeps dropping the property |
 
