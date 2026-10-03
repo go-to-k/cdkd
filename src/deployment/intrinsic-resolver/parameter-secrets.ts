@@ -22,6 +22,7 @@ declare module '../intrinsic-function-resolver.js' {
     recordInheritedParameterSecrets: OmitThisParameter<typeof recordInheritedParameterSecrets>;
     /** @internal */
     recordNoEchoParameterValue: OmitThisParameter<typeof recordNoEchoParameterValue>;
+    /** @internal */
     refuseCoercedInheritedSecret: OmitThisParameter<typeof refuseCoercedInheritedSecret>;
   }
 }
