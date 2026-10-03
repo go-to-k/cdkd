@@ -467,13 +467,19 @@ cannot target a child (see
 physical id that layer recorded, and Cloud Control's identifier and the id
 cdkd's SDK provider stores differ for many types (an ARN versus a name, or a
 composite id), so relabelling the record alone would hand the SDK provider an
-id it may not address. To move such a resource back, change its construct id
+id it may not address. First check whether the type already returns on its
+own (see
+[Going back to the SDK provider](cli-deploy-safety.md#going-back-to-the-sdk-provider)).
+Otherwise, to move such a resource back, change its construct id
 (and so its logical id) in the child. The next deploy then creates the new
 logical id through the default routing, which ignores the old stamp, and
 deletes the old one through the layer that created it. This is a destroy and
 recreate: a stateful resource comes back empty, and a resource with a fixed
 physical name needs a new name, or its removal deployed first and its re-add
-in a second deploy.
+in a second deploy. Under `DeletionPolicy: Retain` (the CDK default for many
+stateful constructs) the old resource is only dropped from state and stays in
+AWS: delete it yourself, and for a fixed physical name do so before the
+re-add deploy.
 
 ### Skipped outputs
 
