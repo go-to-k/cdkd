@@ -283,3 +283,82 @@ describe('cdkd diff never hashes a physical-id fallback (go-to-k/cdkd#4543 G10)'
     expect(fallbackWarnings.length).toBeLessThanOrEqual(1);
   });
 });
+
+describe('cdkd diff never fetches a secret a masked property input yields (go-to-k/cdkd#4543 P29)', () => {
+  it('a cross-stack read yielding a {{resolve:...}} reference is kept as written, never fetched', async () => {
+    const { IntrinsicFunctionResolver } = await import(
+      '../../../src/deployment/intrinsic-function-resolver.js'
+    );
+    let fetched = 0;
+    const fetch = vi
+      .spyOn(IntrinsicFunctionResolver.prototype, 'resolveSecretsManagerReference')
+      .mockImplementation(() => Promise.resolve(`fetched-plaintext-${++fetched}`));
+    try {
+      const IMPORT = { 'Fn::ImportValue': 'shared-pw' };
+      const value = {
+        'Fn::Base64': { 'Fn::Join': ['', ['b=', { Ref: 'P' }, ';pw=', IMPORT]] },
+      };
+      const templateAtP = (p: string): CloudFormationTemplate => ({
+        Parameters: { P: { Type: 'String', Default: p } },
+        Resources: {
+          R: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'n', Type: 'String', Value: value } },
+        },
+      });
+      // The producer's state holds its secret output as the expression, as
+      // the save writes it; resolving it would fetch the secret.
+      const producer: StackState = {
+        stackName: 'Producer',
+        region: 'us-east-1',
+        resources: {},
+        outputs: { 'shared-pw': '{{resolve:secretsmanager:app-pw}}' },
+        exportNames: ['shared-pw'],
+        version: 10,
+        lastModified: 0,
+      };
+      const backend = {
+        listStacks: async () => [{ stackName: 'Producer', region: 'us-east-1' }],
+        getState: async (name: string) =>
+          name === 'Producer' ? { state: producer, etag: 'e' } : null,
+      } as unknown as S3StateBackend;
+      // What the deploy stamps: the reference stays as written, the parameter
+      // enters as its value.
+      const template = templateAtP('one');
+      const stamped = await maskedInputFingerprint(value, {
+        template,
+        parameterInput: parameterInputsFor({ template, values: { P: 'one' } }).parameterInput,
+        resolve: () => Promise.resolve({ value: '{{resolve:secretsmanager:app-pw}}' }),
+      });
+      expect(stamped).toBeDefined();
+      const state: StackState = {
+        stackName: 'S',
+        region: 'us-east-1',
+        resources: {
+          R: {
+            physicalId: 'n',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Name: 'n', Type: 'String', Value: '***' },
+            maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(value) },
+            maskedPropertyInputFingerprints: { Value: stamped! },
+          },
+        },
+        outputs: {},
+        version: 10,
+        lastModified: 0,
+      };
+      const rowOf = async (t: CloudFormationTemplate) =>
+        (
+          await computeStackDiff(state, t, 'us-east-1', 'S', backend, new DiffCalculator(), {
+            previewMaskedInputs: true,
+          })
+        ).changes.get('R')!;
+      // Unchanged inputs: no preview, and no secret fetched.
+      expect((await rowOf(templateAtP('one'))).changeType).toBe('NO_CHANGE');
+      // The comparison did run (control): a moved parameter beside the
+      // cross-stack read previews the UPDATE, still without a fetch.
+      expect((await rowOf(templateAtP('two'))).changeType).toBe('UPDATE');
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+});

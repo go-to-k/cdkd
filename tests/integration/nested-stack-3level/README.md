@@ -26,6 +26,16 @@ hands each value down both as `{Ref}` and re-wrapped in an `Fn::Join`.
 every grandchild leaf, and that the grandchild's parameter debug lines are
 present and masked. The SecureString is created out of band by `verify.sh`.
 
+Since issue [#4543](https://github.com/go-to-k/cdkd/issues/4543) the child
+also owns `W1Script`, an SSM parameter whose value is `Fn::Base64` over a
+script joining a plain root parameter the root hands down (`Input4543`) and a
+Secrets Manager reference the child resolves itself, so the child records it
+as `***`. `verify.sh` (Step 4d) changes only that root parameter's `Default`
+(`CDKD_TEST_4543_INPUT`), redeploys, and asserts on the live parameter that the
+new script was sent (value and version), that the child's input fingerprint
+moved while its text fingerprint did not, and that an unchanged redeploy sends
+nothing. The `w1` secret key is created out of band with the others.
+
 This fixture is a strictly deeper + wider + bidirectional **superset** of the
 existing [`nested-stack-deep`](../nested-stack-deep) fixture. Where
 `nested-stack-deep` stops at 3 levels with one resource per level and only
@@ -44,6 +54,7 @@ CdkdNestedStack3LevelExample (root, depth=0)
 ├─ RootRef                         (AWS::SSM::Parameter — value = Fn::GetAtt[Child, Outputs.<child-param>])
 └─ Child                           (AWS::CloudFormation::Stack, depth=1)
    ├─ Param                        (AWS::SSM::Parameter — value = Fn::GetAtt[Grandchild, Outputs.<gc-param>])
+   ├─ W1Script                     (AWS::SSM::Parameter — Fn::Base64 over the root-passed Input4543 + a secret, #4543)
    └─ Grandchild                   (AWS::CloudFormation::Stack, depth=2 — BRANCHING node)
       ├─ Topic                     (AWS::SNS::Topic — sibling of the nested-stack node)
       ├─ Param                     (AWS::SSM::Parameter — value = Fn::GetAtt[GreatGrandchild, Outputs.<ggc-param>] + sibling topic name)
