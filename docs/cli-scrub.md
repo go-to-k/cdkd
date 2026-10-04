@@ -593,7 +593,7 @@ it:
 - an SSM-typed parameter's value changed after the last deploy, with the same
   effect;
 - the parameter's `Default` was removed after the last deploy, so scrub cannot
-  resolve the reference at all and only warns `keeping placeholder`.
+  resolve the reference at all and only warns.
 
 This holds for any reference built from a parameter, in the stack's own region
 too. There is no flag for it: in any of these cases, inspect the record with
@@ -607,8 +607,9 @@ a `Conditions` entry with, and a condition it cannot evaluate reads as false.
 
 When a parameter's `Default` or SSM value changed after the last deploy, that
 means scrub can pick a branch the deploy never took. In a RESOURCE position a
-cross-stack read on that branch still refuses, so the stack can be refused over a producer that
-legitimately does not exist for the parameters it was actually deployed with.
+cross-stack read on that branch still refuses, so the stack can be refused over
+a producer that legitimately does not exist for the parameters it was actually
+deployed with.
 
 An output position is spared this: `state.outputs` records what the deploy
 really wrote, and a key absent from it disarms the refusal. There is no
@@ -949,8 +950,9 @@ These keys are **kept**:
   or one listing anything but names, an intrinsic name matching a declared
   output name proves nothing). Otherwise — a parameterized name whose
   `Default` or SSM value changed after the last deploy, one that does not
-  resolve here, or an export the last deploy did not write — scrub cannot tell that alias from a deleted one, keeps the
-  key, and warns: `... were LEFT as they are`. Such a key's value can still be
+  resolve here, or an export the last deploy did not write — scrub cannot tell
+  that alias from a deleted one, keeps the key, and warns:
+  `... were LEFT as they are`. Such a key's value can still be
   printed by `cdkd diff`, so the stack is not reported clean and `--fail` exits
   `1`; a deploy rewrites the outputs;
 - one **another stack still reads**. Before dropping, scrub reads every state
