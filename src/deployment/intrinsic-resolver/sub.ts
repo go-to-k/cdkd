@@ -3,7 +3,12 @@ import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import { type ResolverContext, isUnboundTemplateParameter } from './support.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { type IntrinsicLeafResolution } from '../secret-redaction.js';
-import { type ParameterSpans, appendShiftedSpans, partParameterSpans } from './string-functions.js';
+import {
+  type ParameterSpans,
+  appendShiftedSpans,
+  partParameterSpans,
+  wholeReferenceSpans,
+} from './string-functions.js';
 
 declare module '../intrinsic-function-resolver.js' {
   interface IntrinsicFunctionResolver {
@@ -378,9 +383,9 @@ export async function resolveSub(
   // placeholder) carries its replacement as its own twin.
   // `record` is set only for a variable: what it contributes to the
   // object's record (issues #3156, #3306).
-  // `parameterSpans` is where parameter values lie on `replacement` (issue
-  // #4446): `[]` for an entry that places none it can vouch for, whose
-  // replacement is then a gap.
+  // `parameterSpans` is where parameter values and cross-stack reads lie on
+  // `replacement` (issues #4446, #4527): `[]` for an entry that places none it
+  // can vouch for, whose replacement is then a gap.
   const replacements: Array<{
     match: string;
     replacement: string;
@@ -476,8 +481,8 @@ export async function resolveSub(
           if (!refusal) twinReplacement = this.productLogTwin(value, context);
           // The parameter arm answered: the whole replacement is that
           // parameter's value (issue #4446).
-          if (!refusal && fromParameter && typeof value === 'string' && value !== '') {
-            parameterSpans = [{ start: 0, length: value.length, parameter: varNameStr }];
+          if (!refusal && fromParameter) {
+            parameterSpans = wholeReferenceSpans({ Ref: varNameStr }, value);
           }
         } catch (refError) {
           // A DELIBERATE refusal (`lookupResourceRecord`'s malformed-record
@@ -492,7 +497,13 @@ export async function resolveSub(
               const refusal = this.subListRefusal(`the variable \${${varNameStr}}`, value, context);
               listRefusal ??= refusal;
               replacement = refusal ? match[0] : String(value);
-              if (!refusal) twinReplacement = this.productLogTwin(value, context);
+              if (!refusal) {
+                twinReplacement = this.productLogTwin(value, context);
+                // The whole replacement is this attribute's value, keyed as the
+                // `Fn::GetAtt` the cross-stack writer records a nested-stack
+                // output read under (issue #4527).
+                parameterSpans = wholeReferenceSpans({ 'Fn::GetAtt': varNameStr }, value);
+              }
             } catch (getAttError) {
               // A DELIBERATE refusal is re-raised, never laundered into a
               // literal `${...}` (issue #1740). Only a genuine miss — or an

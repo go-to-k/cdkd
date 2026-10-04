@@ -171,11 +171,14 @@ export interface DynamicReferenceSubstitution {
  * other branch poisons the `Fn::If`.
  *
  * `parameterSpans` (issue [#4446](https://github.com/go-to-k/cdkd/issues/4446))
- * lists, in order, where on `output` the resolver placed a TEMPLATE PARAMETER's
- * value: each span is the text a `Ref` answered through the parameter arm of
+ * lists, in order, where on `output` the resolver placed a REFERENCE's value:
+ * each span is the text a `Ref` answered through the parameter arm of
  * `resolveRef` (a `{Ref}` object, an `Fn::Sub` placeholder or a bound `{Ref}`
- * variable), or one a nested part's own record lent, shifted to where that part
- * landed. Spans are non-empty, non-overlapping and ascending. It is absent
+ * variable), the text a cross-stack read answered (an `Fn::ImportValue` /
+ * `Fn::GetStackOutput` / `Fn::GetAtt` object, or a dotted `${Res.Attr}`
+ * placeholder, issue [#4527](https://github.com/go-to-k/cdkd/issues/4527)), or
+ * one a nested part's own record lent, shifted to where that part landed.
+ * Spans are non-empty, non-overlapping and ascending. It is absent
  * whenever the resolver cannot vouch for the offsets -- the object's own
  * final dynamic-reference pass changed the text, an `Fn::Sub` entry was
  * misaligned, or the record is a string-selected `Fn::If`'s own (written
@@ -192,11 +195,17 @@ export interface IntrinsicLeafResolution {
   readonly parameterSpans?: readonly ParameterSpan[];
 }
 
-/** One parameter value's place on a resolved string (issue #4446). */
+/**
+ * One reference value's place on a resolved string (issues #4446, #4527).
+ * `key` is the `crossStackSourceKey` of the RAW intrinsic the resolver
+ * answered there (`{Ref: <Param>}` for a parameter), the key the association
+ * store is written under, so the reader looks the span up exactly as it
+ * would a whole leaf of that reference.
+ */
 export interface ParameterSpan {
   readonly start: number;
   readonly length: number;
-  readonly parameter: string;
+  readonly key: string;
 }
 
 /** Poison for an intrinsic object one pass resolved two different ways. */
@@ -246,10 +255,10 @@ export function recordIntrinsicLeafResolution(
     ...(resolution.parameterSpans === undefined
       ? {}
       : {
-          parameterSpans: resolution.parameterSpans.map(({ start, length, parameter }) => ({
+          parameterSpans: resolution.parameterSpans.map(({ start, length, key }) => ({
             start,
             length,
-            parameter,
+            key,
           })),
         }),
   };
@@ -325,10 +334,7 @@ function sameParameterSpans(
   if (a === undefined || b === undefined) return a === b;
   return (
     a.length === b.length &&
-    a.every(
-      (s, i) =>
-        s.start === b[i]!.start && s.length === b[i]!.length && s.parameter === b[i]!.parameter
-    )
+    a.every((s, i) => s.start === b[i]!.start && s.length === b[i]!.length && s.key === b[i]!.key)
   );
 }
 
