@@ -2800,7 +2800,8 @@ of the confirmation flags.
   reverted op that left a resource cdkd no longer tracks (a new copy retained
   by `UpdateReplacePolicy: Retain`, or one whose delete failed) exits `2` too;
   its `ROLLBACK_RESOURCE_SUCCEEDED` event carries the survivor's id and a
-  `reason`.
+  `reason`. So does a reverse-replacement whose re-create returned the live
+  new resource (not fully reversed), whose event carries a `reason` only.
 - Use `--orphan <logicalId>` (repeatable) to leave a specific resource alone
   during the revert (mirrors `cdk rollback --orphan`).
 - **Secret dynamic references need live access at rollback time.** A resource
