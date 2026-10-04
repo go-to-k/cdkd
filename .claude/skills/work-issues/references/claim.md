@@ -23,8 +23,8 @@ it and say so here; I will stand down."
 ```
 
 When the run ends before reaching one — or a lane never becomes RUNNABLE because
-an open PR holds what its fix needs (triage.md §2: a peer's files, a fork's
-hunks) — **stand it down**: say it is
+an open PR holds the lines its fix needs (triage.md §2: its hunks and what
+they couple to) — **stand it down**: say it is
 unclaimed, carry the four classification fields, and **when the blocker is
 EXTERNAL name the query that clears it**, passing it **via `--body-file`** (that
 query is BACKTICKED; `--body "..."` would execute it).
@@ -46,7 +46,7 @@ For EACH issue you start — PROMOTING a QUEUED one included — first re-check
 `gh issue view <n> --json state`, §2's open-PR `files` query, and §3's premise
 check on CURRENT `origin/main` — in a call BEFORE the claim, never chained with
 it: after TRIAGE a peer can close a queued issue, or open a PR holding its
-files, before its turn (#3979). Then:
+lines, before its turn (#3979). Then:
 
 ```bash
 gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <files>. \

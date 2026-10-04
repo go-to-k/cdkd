@@ -137,8 +137,14 @@ answer that the resource is not there (a not-found error, or a status such as
 an ECS cluster's `INACTIVE` that the service keeps listing for a while after a
 delete). An access-denied or throttled read is never reported as deleted, and
 neither is a read that cannot tell. A deleted resource of a type cdkd has no
-reader for (a nested `AWS::CloudFormation::Stack` or an `AWS::EC2::EIP`, for
-two) still reads as **drift unknown**. See [JSON output](#json-output) for the `--json` shape change.
+reader for still reads as **drift unknown**.
+
+A nested `AWS::CloudFormation::Stack` row always reads as **drift unknown**:
+cdkd deploys a nested stack's resources itself, so no CloudFormation stack
+exists in AWS to read back. The nested stack's resources are recorded as a
+stack of their own, `<parent>~<child>`, which `cdkd drift` compares like any
+other stack. Name it (`cdkd drift 'Parent~Child'`), or pass `--all`, to check
+them; drifting the parent alone does not. See [JSON output](#json-output) for the `--json` shape change.
 
 ### Why a resource was not compared
 
@@ -798,8 +804,8 @@ the fallback:
    `drift unknown` before the Cloud Control call fires. Current entries are
    `AWS::ApiGateway::RestApi` (its `Body` / `BodyS3Location` are write-only
    inputs the response omits, while cdkd state preserves them),
-   `AWS::CloudFormation::Stack` (the response is runtime stack state — outputs
-   and status — not the template parameters cdkd stores), and
+   `AWS::CloudFormation::Stack` (cdkd deploys a nested stack itself, so no
+   CloudFormation stack exists and the row's id is a cdkd-local placeholder), and
    `AWS::EC2::LaunchTemplate` (the response carries version-bumped
    `LaunchTemplateData` plus a synthetic `LatestVersionNumber`).
 2. **Strip pass.** Known AWS-managed timestamp, owner and generated-id fields

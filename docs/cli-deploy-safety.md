@@ -801,9 +801,12 @@ CloudFormation:
 A table name differing only in letter case is the same table (Glue folds table
 names to lowercase), so it updates in place. The replacement creates the
 renamed resource before deleting the old one, so if another table already holds
-the new name, the create fails and nothing is deleted; pick a free name. Do
-not answer that failure with `--replace`, which deletes the old resource first
-and then collides with the same holder again. Renaming a database through
+the new name, the create fails and nothing is deleted; pick a free name.
+`--replace` refuses that collision too, with nothing deleted: the old table
+does not hold the new name, so deleting it first would only collide again. A
+table replacement that keeps its database, catalog and name (a change to the
+top-level `Name` alone) collides with the old table itself, and `--replace`
+deletes the old table first and re-creates it. Renaming a database through
 `DatabaseInput.Name` fails in CloudFormation too; cdkd refuses it before any
 AWS call, because the update would leave the state naming the old database.
 

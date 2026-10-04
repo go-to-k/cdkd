@@ -17,6 +17,7 @@ import { AccountIdUnavailableError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -183,6 +184,9 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(err!.message).toContain('Nothing was created');
     expect(err!.message).toContain('cdkd import');
     expect(isMarkedNonRetryable(err)).toBe(true);
+    // go-to-k/cdkd#4356: nothing was applied, so the deploy journals no failed
+    // op whose `--revert-failed` line would advise deleting THEIR queue.
+    expect(isRefusedBeforeApplying(err, 'Res')).toBe(true);
     // The feared shape: CreateQueue hands back theirs and state records it.
     expect(h.callOrder).toEqual(['import']);
     expect(h.provider.import).toHaveBeenCalledWith(
@@ -265,6 +269,7 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(err!.message).toContain('AccessDenied');
     expect(err!.message).toContain('Nothing was created');
     expect(isMarkedNonRetryable(err)).toBe(true);
+    expect(isRefusedBeforeApplying(err, 'Res')).toBe(true);
     expect(h.callOrder).toEqual(['import']);
   });
 
@@ -453,7 +458,40 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(err!.message).toContain("which this stack's OldQueue");
     expect(err!.message).toContain('deploy the removal of OldQueue first');
     expect(err!.message).not.toContain('adopt it with');
+    expect(isRefusedBeforeApplying(err, 'Res')).toBe(true);
     expect(h.callOrder).toEqual(['import']);
+  });
+
+  it('the mark survives the error provisionResource wraps it in (go-to-k/cdkd#4356)', async () => {
+    // `execute.ts` reads the mark off what provisionResource THROWS, not off
+    // the inner refusal the helper above unwraps.
+    h.importResult = { physicalId: THEIRS };
+    const engine = makeEngine(h);
+    const props = { QueueName: 'their-queue' };
+    const outer = await (
+      engine as unknown as {
+        provisionResource: (
+          logicalId: string,
+          change: ResourceChange,
+          stateResources: Record<string, unknown>,
+          stackName: string,
+          template: CloudFormationTemplate
+        ) => Promise<void>;
+      }
+    )
+      .provisionResource(
+        'Res',
+        { logicalId: 'Res', changeType: 'CREATE', resourceType: QUEUE, desiredProperties: props },
+        {},
+        'MyStack',
+        { Resources: { Res: { Type: QUEUE, Properties: props } } }
+      )
+      .then(
+        () => null,
+        (e: unknown) => e
+      );
+    expect(outer).not.toBeNull();
+    expect(isRefusedBeforeApplying(outer, 'Res')).toBe(true);
   });
 
   it('keeps the stranger advice when the state record of that id is another type', async () => {

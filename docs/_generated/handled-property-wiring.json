@@ -6410,6 +6410,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
@@ -6435,6 +6436,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
@@ -6717,6 +6719,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "survivingIngressHolder",
             "update",
@@ -6850,6 +6853,8 @@
             "create",
             "createEip",
             "createRoute",
+            "readCurrentState",
+            "readEipCurrentState",
             "update",
             "updateEip",
             "updateRoute"
@@ -6922,6 +6927,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "survivingIngressHolder",
             "update",
@@ -7369,6 +7375,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
@@ -7394,6 +7401,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
@@ -7418,6 +7426,7 @@
             "deleteSecurityGroupIngress",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "update",
             "updateSecurityGroupIngress"
           ]
@@ -7473,6 +7482,8 @@
             "createSecurityGroup",
             "createSubnet",
             "createVpc",
+            "readCurrentState",
+            "readEipCurrentState",
             "update",
             "updateEip",
             "updateInstance",
@@ -7501,6 +7512,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "survivingIngressHolder",
             "update",
@@ -7607,6 +7619,7 @@
         "computed key in comparableIngressIdentity()",
         "computed key in ingressRuleIdentity()",
         "computed key in narrowRouteDestinations()",
+        "identity(...) in readSgIngressByIdentity()",
         "object spread in canonicalizeSgInlineRuleProtocols()",
         "object spread in createSecurityGroupIngress()",
         "object spread in narrowIngressIpProtocol()",

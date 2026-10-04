@@ -353,8 +353,8 @@ importers:
         specifier: ^8.0.0
         version: 8.0.0
       cdk-local:
-        specifier: ^0.149.7
-        version: 0.149.7(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@54.24.0)(aws-cdk-lib@2.270.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0)
+        specifier: ^0.149.8
+        version: 0.149.8(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@54.24.0)(aws-cdk-lib@2.270.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0)
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
@@ -615,10 +615,6 @@ packages:
 
   '@aws-sdk/client-ecr@3.1140.0':
     resolution: {integrity: sha512-6LltQTLCKIW9jLiY3++vH50+Ht/uDy418E++3EqVcd3769JBuh2nYj0Ma6Vxbe87Rai/n0l4YQX18kSvIhmcYA==}
-    engines: {node: '>=20.0.0'}
-
-  '@aws-sdk/client-ecs@3.1140.0':
-    resolution: {integrity: sha512-6Op5aYODHl7V+GtzLM0sTG36zOtCSlLIpLys7izHTEmlD/B/N+3yL4uxr0KZRpYfoLIV1GeReuZ/QdymUK+HJg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/client-ecs@3.1144.0':
@@ -2967,13 +2963,18 @@ packages:
   cdk-from-cfn@0.302.0:
     resolution: {integrity: sha512-jbwwzl9yXhCpuOacrQ/jDXnsEnWE7n5UqhfnCdpGOvLhy2FqWlbk1Wd7mDwNsT/QfL3AYZqIyjYSsSLxYVjPlA==}
 
-  cdk-local@0.149.7:
-    resolution: {integrity: sha512-eLNC9geqgpii+5bHci/A1sDu/aELMEL75DjVFEwhgmmFJrsi6zJOJ2/Hwck9frpPgAviGAOa+xXDt3/tbWsreg==}
+  cdk-local@0.149.8:
+    resolution: {integrity: sha512-+TrMiqUzz6kKHa4SiBpm9QG5Y7JyhhbMIpk/D7iJHhJA6VeUkeq9g/N8YWN1EF/y/V7oXMeWSp6v+pZV1OzwnQ==}
     engines: {node: '>=22.12.0'}
     hasBin: true
     peerDependencies:
       aws-cdk-lib: ^2.0.0
       constructs: ^10.0.0
+    peerDependenciesMeta:
+      aws-cdk-lib:
+        optional: true
+      constructs:
+        optional: true
 
   chai@6.2.2:
     resolution: {integrity: sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==}
@@ -4718,7 +4719,7 @@ snapshots:
       '@aws-sdk/client-codebuild': 3.1140.0
       '@aws-sdk/client-ec2': 3.1140.0
       '@aws-sdk/client-ecr': 3.1140.0
-      '@aws-sdk/client-ecs': 3.1140.0
+      '@aws-sdk/client-ecs': 3.1144.0
       '@aws-sdk/client-elastic-load-balancing-v2': 3.1140.0
       '@aws-sdk/client-iam': 3.1140.0
       '@aws-sdk/client-kms': 3.1140.0
@@ -5065,17 +5066,6 @@ snapshots:
       tslib: 2.8.1
 
   '@aws-sdk/client-ecr@3.1140.0':
-    dependencies:
-      '@aws-sdk/core': 3.978.1
-      '@aws-sdk/credential-provider-node': 3.972.84
-      '@aws-sdk/types': 3.974.6
-      '@smithy/core': 3.35.0
-      '@smithy/fetch-http-handler': 5.8.0
-      '@smithy/node-http-handler': 4.12.1
-      '@smithy/types': 4.19.0
-      tslib: 2.8.1
-
-  '@aws-sdk/client-ecs@3.1140.0':
     dependencies:
       '@aws-sdk/core': 3.978.1
       '@aws-sdk/credential-provider-node': 3.972.84
@@ -7433,7 +7423,7 @@ snapshots:
 
   cdk-from-cfn@0.302.0: {}
 
-  cdk-local@0.149.7(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@54.24.0)(aws-cdk-lib@2.270.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0):
+  cdk-local@0.149.8(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@54.24.0)(aws-cdk-lib@2.270.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0):
     dependencies:
       '@aws-cdk/cloud-assembly-api': 2.2.5(@aws-cdk/cloud-assembly-schema@54.24.0)
       '@aws-cdk/toolkit-lib': 1.28.0(@aws-cdk/cli-plugin-contract@2.182.2)
@@ -7461,16 +7451,17 @@ snapshots:
       '@smithy/signature-v4': 5.7.3
       '@smithy/types': 4.19.0
       agent-base: 9.0.0
-      aws-cdk-lib: 2.270.0(constructs@10.8.1)
       chokidar: 5.0.0
       commander: 14.0.3
-      constructs: 10.8.1
       fflate: 0.8.3
       graphlib: 2.1.8
       http-proxy-agent: 9.1.0(supports-color@7.2.0)
       https-proxy-agent: 9.1.0(supports-color@7.2.0)
       proxy-from-env: 2.1.0
       ws: 8.21.3
+    optionalDependencies:
+      aws-cdk-lib: 2.270.0(constructs@10.8.1)
+      constructs: 10.8.1
     transitivePeerDependencies:
       - '@aws-cdk/cli-plugin-contract'
       - '@aws-cdk/cloud-assembly-schema'

@@ -295,7 +295,22 @@ describe('reverseReplacementNewHoldsName — scoped and nested names', () => {
       })
     );
     expect(r.known).toBe(true);
-    expect(r.diagnosis).toContain('DatabaseName');
+    // The shared id proves no name (#3932), so the recorded names decide.
+    expect(r.diagnosis).toContain('holds "orders"');
+  });
+
+  // #3932 review B1: the rollback's delete-new-first must not take the new
+  // table `a|b` for the holder of `b` from the id tail `x|a|b`.
+  it('a Glue table is never proven by its `|`-joined physical id', () => {
+    const TABLE = 'AWS::Glue::Table';
+    const verdict = ask({
+      oldResourceType: TABLE,
+      newResourceType: TABLE,
+      requested: { DatabaseName: 'x', TableInput: { Name: 'b' } },
+      recorded: { DatabaseName: 'x', TableInput: { Name: 'a|b' } },
+      physicalId: 'x|a|b',
+    });
+    expect(verdict.holds).toBe(false);
   });
 
   it('reads a nested name, and the first of alternative paths that yields one', () => {
