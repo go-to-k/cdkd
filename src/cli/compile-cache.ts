@@ -31,7 +31,8 @@ export function compileCacheDirectory(
   } catch {
     return undefined;
   }
-  return dir === '' ? undefined : join(dir, '.cache', 'cdkd', 'compile-cache');
+  // A relative (or empty) HOME would resolve against the cwd the same way.
+  return isAbsolute(dir) ? join(dir, '.cache', 'cdkd', 'compile-cache') : undefined;
 }
 
 /**

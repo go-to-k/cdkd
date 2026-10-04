@@ -26,6 +26,7 @@ describe('compileCacheDirectory', () => {
   // Never a shared location: with no home there is no cache at all.
   it('answers undefined when no home directory can be determined', () => {
     expect(compileCacheDirectory({}, () => '')).toBeUndefined();
+    expect(compileCacheDirectory({}, () => 'rel')).toBeUndefined();
     expect(
       compileCacheDirectory({}, () => {
         throw new Error('no passwd entry');
