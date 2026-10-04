@@ -1028,8 +1028,10 @@ parameter as its `Ref`, and these are kept as written:
 - a condition that reads a `NoEcho` parameter, a reference, a cross-stack
   value or an attribute (as its whole `Fn::If`);
 - a `Ref` / `Fn::GetAtt` to a resource whose own definition reads a secret, a
-  `NoEcho` parameter, a cross-stack value or a name the template does not
-  declare, directly or through another resource;
+  `NoEcho` parameter, a cross-stack value, a name the template does not
+  declare or an `Fn::FindInMap` over a mapping holding a reference anywhere
+  (or one it cannot name), directly or through another resource; a condition
+  reading such a mapping is kept whole the same way;
 - an `Fn::GetAtt` on a custom resource, whose attributes may be `NoEcho` (its
   physical id is hashed), and one whose attribute NAME is built from any of
   these;

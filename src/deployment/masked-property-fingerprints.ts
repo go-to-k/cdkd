@@ -451,7 +451,11 @@ function taintOf(logicalId: string, walk: Walk): Taint {
           ? 'tainted'
           : nameTaint(target);
     } else if (key === 'Fn::ImportValue' || key === 'Fn::GetStackOutput') verdict = 'tainted';
-    else if (key === 'Fn::Sub') {
+    else if (key === 'Fn::FindInMap' && mapReadClass(operand, walk.sources.template) !== 'clean') {
+      // A mapping leaf the operands never show, or a map name that is not a
+      // literal: the resource reads it as a secret (go-to-k/cdkd#4565).
+      verdict = 'tainted';
+    } else if (key === 'Fn::Sub') {
       const text = Array.isArray(operand) ? operand[0] : operand;
       const vars = Array.isArray(operand) && isPlainObject(operand[1]) ? operand[1] : {};
       if (typeof text === 'string') {
@@ -551,6 +555,11 @@ function conditionClosure(
     // Every other way a condition can read a value is classified as strictly
     // as `taintOf` reads a resource: a verdict over a secret is one bit of it.
     const key = keys.length === 1 ? keys[0] : undefined;
+    if (key === 'Fn::FindInMap') {
+      const read = mapReadClass(value['Fn::FindInMap'], walk.sources.template);
+      if (read === 'secret') secret = true;
+      if (read === 'unknown') unknown = true;
+    }
     if (key === 'Fn::ImportValue' || key === 'Fn::GetStackOutput' || key === 'Fn::GetAtt') {
       secret = true;
       return;
@@ -580,6 +589,26 @@ function conditionClosure(
     visit(definitions[current]);
   }
   return { secret, unknown, unread };
+}
+
+/**
+ * What an `Fn::FindInMap` reads, from the template alone: its value is a leaf
+ * of `Mappings` the operands never show, so the WHOLE map it names counts.
+ * `secret` when that map holds a `{{resolve:...}}` reference or the mask
+ * anywhere; `unknown` for a map name that is not a literal or names no
+ * declared map; else `clean` (the key operands are the caller's to read).
+ */
+function mapReadClass(
+  operand: unknown,
+  template: CloudFormationTemplate
+): 'clean' | 'secret' | 'unknown' {
+  const mapName = Array.isArray(operand) ? operand[0] : undefined;
+  if (typeof mapName !== 'string') return 'unknown';
+  const mappings = template.Mappings as unknown;
+  const map =
+    isPlainObject(mappings) && Object.hasOwn(mappings, mapName) ? mappings[mapName] : undefined;
+  if (!isPlainObject(map)) return 'unknown';
+  return carriesSecretValue(map, []) ? 'secret' : 'clean';
 }
 
 /** Resolves an input node, keeping it as written when its value may be a secret. */
@@ -1126,16 +1155,9 @@ async function expressionClass(value: unknown, scope: OutputScope): Promise<Nest
     case 'Fn::FindInMap': {
       // The value is a leaf of the child's `Mappings`, which the operands
       // never show: the whole map it names counts, a literal name only.
-      const mapName = Array.isArray(operand) ? operand[0] : undefined;
-      if (typeof mapName !== 'string') return worseOf('unknown', await all([operand]));
-      const mappings = scope.walk.sources.template.Mappings;
-      const map =
-        isPlainObject(mappings) && Object.hasOwn(mappings, mapName) ? mappings[mapName] : undefined;
-      if (!isPlainObject(map)) return 'unknown';
-      return worseOf(
-        carriesSecretValue(map, []) ? 'secret' : 'clean',
-        await all((operand as unknown[]).slice(1))
-      );
+      const read = mapReadClass(operand, scope.walk.sources.template);
+      if (read === 'unknown') return worseOf('unknown', await all([operand]));
+      return worseOf(read, await all((operand as unknown[]).slice(1)));
     }
     default:
       return expressionClass(operand, scope);

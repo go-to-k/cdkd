@@ -69,6 +69,9 @@ const CHILD: CloudFormationTemplate = {
     SecretCond: { 'Fn::Equals': [{ Ref: 'PassedNoEcho' }, 'x'] },
     UnreadCond: { 'Fn::Equals': [{ Ref: 'PassedUnread' }, 'x'] },
     ResourceCond: { 'Fn::Equals': [{ Ref: 'Target' }, 'x'] },
+    // A condition over a map that holds a reference: one bit of it.
+    SecretMapCond: { 'Fn::Equals': [{ 'Fn::FindInMap': ['Secrets', 'a', 'plain'] }, 'x'] },
+    DynamicMapCond: { 'Fn::Equals': [{ 'Fn::FindInMap': [{ Ref: 'Defaulted' }, 'a', 'b'] }, 'x'] },
   },
   Resources: {
     Target: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'n', Value: 'v' } },
@@ -79,6 +82,19 @@ const CHILD: CloudFormationTemplate = {
     ReadsClean: {
       Type: 'AWS::SSM::Parameter',
       Properties: { Name: { Ref: 'PassedClean' }, Value: 'v' },
+    },
+    // One step away from the output: a resource that reads the secret map.
+    ReadsSecretMap: {
+      Type: 'AWS::SSM::Parameter',
+      Properties: { Name: 'm', Value: { 'Fn::FindInMap': ['Secrets', 'a', 'plain'] } },
+    },
+    ReadsDynamicMap: {
+      Type: 'AWS::SSM::Parameter',
+      Properties: { Name: 'm2', Value: { 'Fn::FindInMap': [{ Ref: 'Defaulted' }, 'a', 'b'] } },
+    },
+    ReadsCleanMap: {
+      Type: 'AWS::SSM::Parameter',
+      Properties: { Name: 'm3', Value: { 'Fn::FindInMap': ['Plain', 'a', 'b'] } },
     },
     ReadsUnread: {
       Type: 'AWS::SSM::Parameter',
@@ -158,6 +174,12 @@ const CHILD: CloudFormationTemplate = {
     MapDynamicName: { Value: { 'Fn::FindInMap': [{ Ref: 'Defaulted' }, 'a', 'b'] } },
     MapUndeclared: { Value: { 'Fn::FindInMap': ['Nope', 'a', 'b'] } },
     MapProto: { Value: { 'Fn::FindInMap': ['__proto__', 'a', 'b'] } },
+    FromSecretMapResource: { Value: { 'Fn::GetAtt': ['ReadsSecretMap', 'Value'] } },
+    FromDynamicMapResource: { Value: { Ref: 'ReadsDynamicMap' } },
+    FromCleanMapResource: { Value: { 'Fn::GetAtt': ['ReadsCleanMap', 'Value'] } },
+    CondSecretMap: { Condition: 'SecretMapCond', Value: 'x' },
+    IfSecretMapCond: { Value: { 'Fn::If': ['SecretMapCond', 'a', 'b'] } },
+    CondDynamicMap: { Condition: 'DynamicMapCond', Value: 'x' },
     MalformedGetAtt: { Value: { 'Fn::GetAtt': 5 } },
     GetAttUndeclared: { Value: { 'Fn::GetAtt': ['Nope', 'Arn'] } },
     RefNonString: { Value: { Ref: ['Target'] } },
@@ -270,6 +292,7 @@ describe('nestedStackOutputClass: taint over the child template (go-to-k/cdkd#45
       'FromReadsClean',
       'SubVarClean',
       'MapClean',
+      'FromCleanMapResource',
       'GrandStringForm',
     ]) {
       expect(await classOf(output), output).toBe('clean');
@@ -317,6 +340,11 @@ describe('nestedStackOutputClass: taint over the child template (go-to-k/cdkd#45
       // The mapping leaf is not in the operands: the whole map counts.
       'MapSecret',
       'MapSecretKey',
+      // ...and one step away: a resource or a condition reading such a map.
+      'FromSecretMapResource',
+      'FromDynamicMapResource',
+      'CondSecretMap',
+      'IfSecretMapCond',
     ]) {
       expect(await classOf(output), output).toBe('secret');
     }
@@ -359,6 +387,7 @@ describe('nestedStackOutputClass: taint over the child template (go-to-k/cdkd#45
       'MapDynamicName',
       'MapUndeclared',
       'MapProto',
+      'CondDynamicMap',
     ]) {
       expect(await classOf(output), output).toBe('unknown');
     }
@@ -793,6 +822,85 @@ describe('maskedInputFingerprint over a nested-stack output (go-to-k/cdkd#4565)'
         resolve: () => Promise.reject(new Error('none')),
       })
     ).toBeUndefined();
+  });
+
+  it('a same-stack masked property reading a resource built from a secret map keeps it as written', async () => {
+    const template: CloudFormationTemplate = {
+      ...PARENT,
+      Mappings: { Secrets: { a: { plain: 'p', hidden: '{{resolve:secretsmanager:s}}' } } },
+      Resources: {
+        ...PARENT.Resources,
+        MapReader: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: 'm', Value: { 'Fn::FindInMap': ['Secrets', 'a', 'plain'] } },
+        },
+      },
+    };
+    const node = { 'Fn::GetAtt': ['MapReader', 'Value'] };
+    const s = sources({ template, resolved: { [JSON.stringify(node)]: 'p' } });
+    expect(await maskedInputFingerprint(script(node), s)).toMatch(/^inputs-sha256:/);
+    expect(s.resolve).not.toHaveBeenCalledWith(node);
+  });
+
+  it('one template reached through two rows is classified per passed classes, never by the first read alone', async () => {
+    // The same NestedStack class twice: A passes a literal, B a NoEcho value.
+    const shared: CloudFormationTemplate = {
+      Parameters: { X: { Type: 'String' } },
+      Resources: {},
+      Outputs: { O: { Value: { Ref: 'X' } } },
+    };
+    const template: CloudFormationTemplate = {
+      ...PARENT,
+      Resources: {
+        A: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u', Parameters: { X: 'lit' } } },
+        B: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'u', Parameters: { X: { Ref: 'Hidden' } } },
+        },
+      },
+    };
+    const s = sources({
+      template,
+      loader: () => ({ template: shared, identity: 'same', childTemplate: () => undefined }),
+      resolved: { [key('O', 'A')]: 'a', [key('O', 'B')]: 'b' },
+    });
+    await maskedInputFingerprint(script({ 'Fn::Join': ['', [getAtt('O', 'A'), getAtt('O', 'B')]] }), s);
+    expect(s.resolve).toHaveBeenCalledWith(getAtt('O', 'A'));
+    expect(s.resolve).not.toHaveBeenCalledWith(getAtt('O', 'B'));
+  });
+
+  it("a child row is classified per the template it sits in, never by another template's row of the same name", async () => {
+    // Two child templates, each with a `Grand` row passing `{Ref: P}`: A's
+    // `P` is clean, B's is a NoEcho value.
+    const child = (): CloudFormationTemplate => ({
+      Parameters: { P: { Type: 'String' } },
+      Resources: {
+        Grand: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'u', Parameters: { G: { Ref: 'P' } } },
+        },
+      },
+      Outputs: { X: { Value: getAtt('FromG', 'Grand') } },
+    });
+    const template: CloudFormationTemplate = {
+      ...PARENT,
+      Resources: {
+        A: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u', Parameters: { P: 'lit' } } },
+        B: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'u', Parameters: { P: { Ref: 'Hidden' } } },
+        },
+      },
+    };
+    const grand = { template: GRAND, identity: 'grand', childTemplate: () => undefined };
+    const s = sources({
+      template,
+      loader: (id) => ({ template: child(), identity: `child-${id}`, childTemplate: () => grand }),
+      resolved: { [key('X', 'A')]: 'a', [key('X', 'B')]: 'b' },
+    });
+    await maskedInputFingerprint(script({ 'Fn::Join': ['', [getAtt('X', 'A'), getAtt('X', 'B')]] }), s);
+    expect(s.resolve).toHaveBeenCalledWith(getAtt('X', 'A'));
+    expect(s.resolve).not.toHaveBeenCalledWith(getAtt('X', 'B'));
   });
 
   it('an Fn::Sub placeholder reads it the same way', async () => {
