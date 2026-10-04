@@ -456,6 +456,44 @@ What every mode here does with a record whose `resources` is not a JSON object â
 including `--show-nested` at any depth â€” is described once, under
 [When `resources` is not an object](#when-resources-is-not-an-object).
 
+### When a nested resource shows the wrong `provisionedBy`
+
+Earlier versions let `--recreate-via-cc-api <LogicalId>` also recreate a
+nested child's resource that shared the logical id, stamping the child's
+record `provisionedBy: cc-api`. The stamp is sticky and the recreate flags
+cannot target a child (see
+[Nested stacks](cli-deploy-safety.md#nested-stacks)), and there is no
+`state` subcommand that edits it, by design: the stamp travels with the
+physical id that layer recorded, and Cloud Control's identifier and the id
+cdkd's SDK provider stores differ for many types (an ARN versus a name, or a
+composite id), so relabelling the record alone would hand the SDK provider an
+id it may not address. First check whether the type already returns on its
+own (see
+[Going back to the SDK provider](cli-deploy-safety.md#going-back-to-the-sdk-provider)
+and the exemption table under
+[`version: 7` adds `provisionedBy`](state-management.md#version-7-adds-provisionedby-v7-writers)).
+Otherwise, to move such a resource back, change its construct id
+(and so its logical id) in the child. The next deploy then creates the new
+logical id through the default routing, which ignores the old stamp, and
+deletes the old one through the layer that created it. This is a destroy and
+recreate, and the deploy does not ask first: the stateful guard and
+`--force-stateful-recreation` cover replacements, not the delete of a logical
+id that left the template. A stateful resource comes back empty (under a
+`Snapshot` policy, the RDS default, the old one is deleted after a final
+snapshot). Creates run before deletes, so an old resource whose delete is
+refused fails the deploy after the new one exists. Empty a non-empty S3 bucket
+that lacks `autoDeleteObjects` first; otherwise the automatic rollback deletes
+the new bucket again (`--no-rollback` leaves both). Deletion protection needs
+its own deploy BEFORE the rename, setting the property to false: a deploy
+never lifts protection (only a destroy with `--remove-protection` does), and the
+renamed resource is created from the same properties, so it is born protected
+and the rollback cannot delete it either, leaving both live. A resource with a fixed
+physical name needs a new name, or its removal deployed first and its re-add
+in a second deploy. Under `DeletionPolicy: Retain` (the CDK default for many
+stateful constructs) the old resource is only dropped from state and stays in
+AWS: delete it yourself, and for a fixed physical name do so before the
+re-add deploy.
+
 ### Skipped outputs
 
 A `Skipped outputs:` block appears when `skippedOutputs` contains entries. Its

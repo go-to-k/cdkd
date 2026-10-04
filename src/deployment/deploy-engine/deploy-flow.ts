@@ -34,6 +34,15 @@ import {
   mergeNoChangeOutputs,
 } from '../no-change-outputs-merge.js';
 import { refuseNoValueOutputs } from '../output-value-preflight.js';
+import {
+  buildConditionVerdictRecord,
+  conditionInputsFrom,
+  conditionVerdictRecordsEqual,
+  conditionsReadByDiff,
+  deployConditionInputs,
+  parentSuppliedValues,
+  readRecordedConditionVerdicts,
+} from '../condition-verdicts.js';
 import { withProducerRegions } from '../producer-regions-scope.js';
 import { promoteRecreateTargets, recreateTargetIdsFor } from '../recreate-target-promotion.js';
 import { refuseStatefulReplacedReaders } from '../recreate-target-readers.js';
@@ -337,6 +346,39 @@ export async function doDeployWithPrefetch(
     // AWS::NoValue before it creates anything (issue #4077), so refuse it
     // here, before provisioning, rather than publishing nothing after it.
     refuseNoValueOutputs(template.Outputs, conditions);
+    // go-to-k/cdkd#4479: the verdicts `cdkd diff` cannot compute (a condition
+    // over a parameter a nested child received from a secret), each with the
+    // fingerprint the diff must recompute to reuse it. Persisted by the final
+    // save and the no-change save below; the other saves of a deploy rebuild
+    // state without it, so a failed or interrupted deploy leaves NO record and
+    // the next diff falls back to the FALSE branch, never a stale verdict.
+    // Skipped when the template has no condition the diff reads: the token
+    // derivation redacts every parameter value, which a child with no such
+    // condition does not need.
+    let conditionVerdicts: ReturnType<typeof buildConditionVerdictRecord>;
+    if (conditionsReadByDiff(template, conditions).size > 0) {
+      // A parameter the resolver would serve from a STATE resource of the same
+      // logical id (`Ref` checks resources first) is no input.
+      const { tokens, unavailable } = deployConditionInputs(
+        parameterValues,
+        this.options.inheritedSecrets,
+        new Set(Object.keys(currentState.resources))
+      );
+      // A plain value the parent supplied is no input either: the inherited
+      // corpus can miss a short ancestor secret embedded in it.
+      for (const name of parentSuppliedValues(
+        template,
+        this.options.parameters,
+        new Set(Object.keys(tokens))
+      )) {
+        unavailable.add(name);
+      }
+      conditionVerdicts = buildConditionVerdictRecord(
+        template,
+        conditions,
+        conditionInputsFrom({ tokens, bound: parameterValues, unavailable })
+      );
+    }
 
     // 2.7. Prune resources whose `Condition:` key evaluated false (issue
     // #840). CFn does not strip condition-gated resources at synth time —
@@ -809,8 +851,21 @@ export async function doDeployWithPrefetch(
         // never sees the attribute at all.
         const healedAttributesPending = this.hasUnpersistedHeals(currentState.resources);
 
+        // go-to-k/cdkd#4479: the record changed (a first record, another
+        // verdict, or one to clear) on a run with no resource change, so it is
+        // saved here with no provider call; the save below also keeps it
+        // through any other refresh. A nested child reaches this only when its
+        // engine runs: a parent skips an unchanged nested-stack row, so a child
+        // an older binary deployed gains its record on the next deploy that
+        // reaches it, not on a plain re-deploy of an unchanged tree.
+        const conditionVerdictsChanged = !conditionVerdictRecordsEqual(
+          readRecordedConditionVerdicts(currentState),
+          conditionVerdicts
+        );
+
         if (
           observedRefresh ||
+          conditionVerdictsChanged ||
           outputsChanged ||
           exportSetChanged ||
           skippedOutputsChanged ||
@@ -859,6 +914,7 @@ export async function doDeployWithPrefetch(
                 this.recordedOutputReads,
                 this.crossStackReadKeyNormalizer()
               ),
+              ...(conditionVerdicts && { conditionVerdicts }),
               lastModified: Date.now(),
             };
             const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {};
@@ -1056,7 +1112,10 @@ export async function doDeployWithPrefetch(
     const newEtag = await this.stateBackend.saveState(
       stackName,
       this.stackRegion,
-      this.withParentInfo(newState)
+      // The record joins here, on the save that ends a successful deploy
+      // (go-to-k/cdkd#4479): `executeDeployment` builds its states field by
+      // field, so none of its saves carries it.
+      this.withParentInfo(conditionVerdicts ? { ...newState, conditionVerdicts } : newState)
     );
     this.logger.debug(`State saved (ETag: ${newEtag})`);
     // go-to-k/cdkd#4438: the record now names every resource this deploy

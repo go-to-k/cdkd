@@ -255,7 +255,7 @@ still withhold the values. The section is still omitted when:
   says the deploy may write a different value for each failed output;
 - a template parameter could not be bound for the diff, or a condition could
   not be evaluated because it depends on a parameter holding a secret
-  reference (see [Condition pruning is skipped](#condition-pruning-is-skipped));
+  reference (see [Conditions over a secret-fed parameter](#conditions-over-a-secret-fed-parameter));
 - an output's value came back in a shape that does not tell the diff what the
   deploy will do with it — a function the diff could not evaluate, an
   `AWS::NoValue`, an `Fn::Sub` placeholder left unsubstituted, or a list or
@@ -800,8 +800,9 @@ The walk previews the full next deploy:
 - A nested stack **removed from the CDK code** — present in state, absent from
   the template — diffs as all-DELETE, recursively. So does one whose row's
   `Condition` evaluates false: the deploy deletes it and never reads its
-  template. This holds only when the diff can evaluate the condition; see
-  [Condition pruning is skipped](#condition-pruning-is-skipped).
+  template. This holds only when the diff can evaluate the condition, or reuses
+  a verdict the last deploy recorded for it; see
+  [Conditions over a secret-fed parameter](#conditions-over-a-secret-fed-parameter).
 - A child whose record is **malformed** is reported on rather than aborted on,
   at every depth. A `resources` bag that is not a JSON object, and an `orphans`
   field that is present but not a list, are treated as
@@ -954,22 +955,66 @@ fed such a reference reports a phantom change on every
 lose the plaintext under coercion, because `cdkd deploy` refuses that parameter
 when the coercion actually destroys it.
 
-### Condition pruning is skipped
+### Conditions over a secret-fed parameter
 
 A condition that transitively references a token-valued parameter — directly,
 or through another condition it names — is **not evaluated** on that run.
 `cdkd deploy` evaluates its conditions against the real values, so a verdict
 computed over an expression could flip an `Fn::Equals` and report a phantom
-CREATE or DELETE of a condition-gated child resource. A resource gated on such
-a condition is kept and diffed rather than pruned. A template parameter the
+CREATE or DELETE of a condition-gated child resource. Unless the verdict is
+reused from a deploy record (below), a resource gated on such a condition is
+kept and diffed rather than pruned. A template parameter the
 diff cannot bind is treated the same way: parameters are bound one at a time,
 so only the conditions that reach the unbound one go unevaluated.
 
 Every other condition is evaluated and prunes exactly as it would with no
 secret in the tree, so an `Fn::If` on a condition that reads no such parameter
-resolves to the branch the deploy takes. An `Fn::If` on a condition that is not
-evaluated still resolves to its FALSE branch, which can show a change the
-deploy will not make.
+resolves to the branch the deploy takes.
+
+A condition that is not evaluated takes the verdict **the last deploy
+recorded** for it, when there is one. `cdkd deploy` evaluates the condition
+against the real secret, and records the verdict in the nested child's state
+together with a fingerprint. The fingerprint covers the condition's
+definition, every condition it names, and the inputs of the parameters they
+read. A secret-fed parameter contributes its `{{resolve:...}}` reference, never
+its value. The diff recomputes the fingerprint and reuses the verdict only when
+the two are equal. The reused verdict then selects `Fn::If` branches and prunes
+exactly as an evaluated one does, so a swapped branch or an edited property is
+still reported.
+
+Without a matching record, an `Fn::If` on the condition resolves to its FALSE
+branch, and a resource gated on it is kept rather than pruned. That can show a
+change the deploy will not make, and it can also HIDE one: after a deploy that
+took FALSE, an edit that makes the condition TRUE still shows as no change.
+When a record exists but no longer matches, the diff warns and names the
+condition. There is no matching record when:
+
+- the condition, a condition it names, or a parameter input changed since the
+  last deploy;
+- the state was written by an older cdkd, or by a deploy that failed or was
+  interrupted. A parent skips an unchanged nested stack, so a child an older
+  cdkd deployed gains its record only on the next deploy that changes it;
+- a parameter in the condition is SSM-typed (`AWS::SSM::Parameter::Value<...>`):
+  the diff resolves its `Default` live, so the value is not one it can vouch
+  for, and a value the parent supplies is withheld the same way;
+- a parameter in the condition could not be bound for the diff, or its value
+  in the parent's nested-stack row is not one the diff can vouch for. Only
+  literals, the parent's own trusted parameters and conditions, and parent
+  resources that are unchanged and read only such inputs count. A `Ref` to a resource the deploy creates or
+  replaces, an `Fn::If` on a condition the parent cannot evaluate, a
+  `Fn::GetAtt` with no recorded attribute and a cross-stack read do not;
+- the parent passes a parameter in the condition a plain value other than its
+  `Default`. Such a value is never fingerprinted, because it can carry an
+  ancestor's secret;
+- the condition uses anything other than `Fn::And`, `Fn::Or`, `Fn::Not` and
+  `Fn::Equals` over string literals, declared scalar parameters and other
+  such conditions;
+- a parameter in it holds a `NoEcho` plain value, or any other value carrying
+  a secret that the deploy cannot spell back as its `{{resolve:...}}`
+  reference alone. Such a value is never fingerprinted.
+
+The diff assumes the value behind an unchanged `{{resolve:...}}` reference is
+unchanged, as it does for every secret-bearing property.
 
 ### Secret parameters must be `Type: String`
 
