@@ -2946,6 +2946,66 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     expect(lines.some((l) => l.includes('no journal record for this run'))).toBe(true);
   });
 
+  it('the nested-child plan lists an op of an id cdkd import adopted as left alone (go-to-k/cdkd#4523)', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as ReturnType<typeof vi.fn>;
+    info.mockClear();
+    replayProvider.update.mockReset();
+    replayProvider.update.mockResolvedValue({ physicalId: 'arn:child', wasReplaced: false });
+    const childSegment = (imported: boolean) => ({
+      runId: 'r1',
+      timestamp: 1,
+      reason: 'nested-pending-parent',
+      initialDeploy: false,
+      operations: [{ logicalId: 'Db', changeType: 'CREATE', resourceType: 'AWS::SQS::Queue', physicalId: 'db-1' }],
+      ...(imported && { importedLogicalIds: ['Db'] }),
+    });
+    const planLines = async (imported: boolean): Promise<string[]> => {
+      info.mockClear();
+      installSetup({
+        listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+        getState: vi.fn().mockImplementation(async (name: string) =>
+          name === 'S'
+            ? parentState
+            : {
+                state: {
+                  version: 8,
+                  stackName: 'S~Child',
+                  region: 'us-east-1',
+                  resources: { Db: { physicalId: 'db-1', resourceType: 'AWS::SQS::Queue', properties: {}, attributes: {}, dependencies: [] } },
+                  outputs: {},
+                  lastModified: 1,
+                },
+                etag: 'c0',
+              }
+        ),
+        loadRollbackJournal: vi.fn().mockImplementation(async (name: string) =>
+          name === 'S'
+            ? {
+                journalVersion: 1,
+                stackName: 'S',
+                region: 'us-east-1',
+                segments: [
+                  { runId: 'r1', timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [updateOp('old')] },
+                ],
+              }
+            : { ...childJournal, segments: [childSegment(imported)] }
+        ),
+        ...({ dropRollbackJournalSegments: vi.fn().mockResolvedValue(1) } as object),
+      });
+      await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+      return info.mock.calls.map((c) => String(c[0]));
+    };
+
+    const marked = await planLines(true);
+    expect(marked.some((l) => l.includes('Db') && l.includes('adopted by cdkd import'))).toBe(true);
+    expect(marked.some((l) => l.includes('delete') && l.includes('Db'))).toBe(false);
+    // Control: unmarked, the same child op is planned as a delete.
+    const unmarked = await planLines(false);
+    expect(unmarked.some((l) => l.includes('delete') && l.includes('Db'))).toBe(true);
+    expect(unmarked.some((l) => l.includes('adopted by cdkd import'))).toBe(false);
+  });
+
   it('the nested-child plan line describes a padded stack name (go-to-k/cdkd#3760)', async () => {
     // The child's name embeds the parent's journal-key name, and the line
     // prints in the same run as a failed-persist `Re-run with:` row, so a

@@ -234,6 +234,36 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(true);
   });
 
+  it('--revert-failed: stripping the handled failed ops keeps the imported one in the journal', async () => {
+    const failedCreate = (logicalId: string, physicalId: string) => ({
+      logicalId,
+      changeType: 'CREATE',
+      resourceType: TOPIC,
+      physicalId,
+      attemptedProperties: { TopicName: physicalId },
+      provisionedBy: 'sdk',
+    });
+    install({ Topic: topicRecord('imported'), Other: { ...topicRecord('x'), physicalId: 'other' } }, [
+      {
+        operations: [],
+        failedOperations: [failedCreate('Topic', NAME), failedCreate('Other', 'other')],
+        importedLogicalIds: ['Topic'],
+      },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+
+    expect(thrown).toBeUndefined();
+    // Only `Other` is reverted.
+    expect(provider.delete).toHaveBeenCalledTimes(1);
+    expect(provider.delete.mock.calls[0]![1]).toBe('other');
+    expect(backend['setRollbackJournalFailedOperations']).toHaveBeenCalledTimes(1);
+    const kept = backend['setRollbackJournalFailedOperations']!.mock.calls[0]![2] as Array<{
+      logicalId: string;
+    }>;
+    expect(kept.map((op) => op.logicalId)).toEqual(['Topic']);
+  });
+
   it('control: --revert-failed deletes the same failed CREATE without the mark', async () => {
     install({ Topic: topicRecord('imported') }, [
       {
