@@ -379,7 +379,8 @@ export function classifyFailedOp(
   // so a record that now names ANOTHER resource (one `cdkd import` adopted
   // under this id) must not receive the failed op's pre-deploy bag — the same
   // guard the CREATE arm above applies.
-  if (op.physicalId !== undefined && current.physicalId !== op.physicalId) return 'skip-failed-noop';
+  if (op.physicalId !== undefined && current.physicalId !== op.physicalId)
+    return 'skip-failed-noop';
   // Issue #2668: a failed Type change was a REPLACEMENT in flight, and the
   // force-revert below is an in-place `update()` routed on `op.resourceType` —
   // the NEW type — against the OLD resource's physical id. There is no in-place

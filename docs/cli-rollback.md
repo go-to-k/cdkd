@@ -329,7 +329,9 @@ Two cases still go through the ordinary replay:
 
 - An operation of the same logical id that recorded a different physical
   resource, for example an auto-named resource the deploy created before you
-  imported another one under that id. It plans and warns as usual.
+  imported another one under that id. A completed operation plans and warns
+  as usual. A failed one is not reverted under `--revert-failed`, because the
+  record now names another resource.
 - An id you pass to `--orphan`, which is honoured.
 
 The mark matters for a resource with an explicit name, whose physical id is
