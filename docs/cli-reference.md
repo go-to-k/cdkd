@@ -362,7 +362,9 @@ exception, on **four** of the eight commands: `local invoke`, `local start-api`,
 `local run-task` and `local invoke-agentcore`. On those, everything **cdkd**
 resolves *for* the workload stays on your own identity — the credentials it is
 given, any role it assumes on the container's behalf (`--assume-role` /
-`--assume-task-role`), and the ECS task secrets read into its environment — so
+`--assume-task-role`), the ECS task secrets read into its environment, and
+everything `--from-cfn-stack` reads from the deployed stack, including the
+SecureString parameters it decrypts into the container — so
 `--role-arn` cannot quietly hand your local code more permission than you asked
 for. That holds however you
 selected a profile, including not selecting one: cdkd captures your own
@@ -371,20 +373,27 @@ environment afterwards. What cdkd does for *itself* still uses the role,
 including reading state and pulling the container image (which leaves an ECR
 login for the role's account in your Docker config).
 
+One read for the workload is not yet covered on `local invoke` and
+`local start-api`: a Lambda layer given as a literal layer ARN in
+`Properties.Layers` is downloaded through the local emulation engine's own
+client, so with `--role-arn` and no profile selected the layer code mounted
+into the container is fetched as the role. Pass the `--profile` flag (or export
+`AWS_PROFILE`) to keep it on your identity.
+
 The `${AWS::AccountId}` substituted into the workload is an identifier, not a
 permission, and depends on the state source. Under `--from-state` it is the
 account the state was read in — the role's, when `--role-arn` is set — so the
 ARNs, image URIs and the bare `--assume-task-role` ARN it completes name the
-stack's own account. Under `--from-cfn-stack` it is your own account — which,
-with `--role-arn` and no profile selected, is not the account the engine read
-the stack from (the last row of the table below).
+stack's own account. Under `--from-cfn-stack` it is your own account — the same
+identity the stack is read with, so the stack has to be readable by you.
 
 Read "what cdkd resolves" strictly — the next section is what it excludes.
 
 ### What the local emulation engine resolves does NOT get that treatment
 
-The guarantee above is about what **cdkd** resolves. A `cdkd local` command also
-hands work to the local emulation engine, and the engine builds its own AWS
+The guarantee above is about what **cdkd** resolves. The other four commands —
+`start-service`, `start-alb`, `start-cloudfront` and `start-agentcore` — hand
+the whole run to the local emulation engine, and the engine builds its own AWS
 clients from the region and the `--profile` flag alone. It never sees the
 opt-out cdkd applies to its own clients, so **anything the engine resolves for
 your workload, while `--role-arn` is set and no profile is selected, it resolves
@@ -398,11 +407,14 @@ against it, not the set of everything it covers.
 | The **credential triple** is copied into the container, so your code runs as the role | `start-alb` (its Lambda front-door containers), `start-cloudfront` (Function URL and Lambda@Edge containers), `start-agentcore` | the `--profile` **flag** only |
 | The ECS task **secrets** are fetched with the role and injected as plaintext into the container's environment | `start-service`, `start-alb` | the `--profile` flag, or an exported `AWS_PROFILE` |
 | `${AWS::AccountId}` resolves to the **role's** account, and is substituted into the container's environment variables, its secret references and its image URIs | `start-service`, `start-alb`, `start-agentcore` | the `--profile` flag, or an exported `AWS_PROFILE` |
-| **`--from-cfn-stack`** reads the stack — including `GetParameters` with decryption, whose plaintext lands in the container's environment | **all eight commands** — the four the guarantee covers included | the `--profile` flag, or an exported `AWS_PROFILE` |
+| **`--from-cfn-stack`** reads the stack — including `GetParameters` with decryption, whose plaintext lands in the container's environment, and on `start-cloudfront` a deployed S3 origin's objects and KeyValueStore entries | `start-service`, `start-alb`, `start-cloudfront`, `start-agentcore` | the `--profile` flag, or an exported `AWS_PROFILE` |
+| A role **`--assume-role`** (or `--assume-task-role`) assumes for the container is assumed *by* the `--role-arn` role, so the container can receive a role you could not assume yourself | `start-service`, `start-alb`, `start-cloudfront`, `start-agentcore`, when that flag is passed | the `--profile` flag, or an exported `AWS_PROFILE` |
 
-The last row is the one to read twice: the four commands the guarantee covers
-are covered for what **cdkd** resolves, and `--from-cfn-stack` is the engine
-resolving. `--from-state` is cdkd's own equivalent and is not affected.
+On the four commands the guarantee covers, cdkd builds the `--from-cfn-stack`
+reader's clients itself, on your identity, so the last row does not apply to
+them. `--from-state` is cdkd's own state read and is not affected on any
+command. cdkd does not close these rows on the engine commands: that needs the
+engine to accept your credentials, which it does not yet.
 
 Two more things worth knowing. `start-service`'s own ECS workload containers are
 not in the first row — they receive credentials through the metadata sidecar,
@@ -411,12 +423,14 @@ the mitigations are not uniform: everywhere else in this section `--profile` and
 an exported `AWS_PROFILE` behave the same, but the credential-triple row reads
 the **flag** specifically and an exported `AWS_PROFILE` leaves it open.
 
-cdkd emits no warning for any of this. On the first three rows the code path
-that warns is one the engine does not take at all. On the last row, over the
-four commands the guarantee covers, it does run — but it only warns when a
-profile is selected, which is exactly the case that row is already mitigated in.
+Each of the four engine commands prints a warning at startup when `--role-arn`
+(or `CDKD_ROLE_ARN`) is set without the `--profile` flag, naming the rows above
+that apply to it — `--from-cfn-stack` and `--assume-role` only when that flag is
+passed. With an
+exported `AWS_PROFILE` and no flag, it names only the credential-triple row, and
+`start-service`, which has none, prints nothing.
 
-So when you pass `--role-arn` to any `cdkd local` command, pass the `--profile`
+So when you pass `--role-arn` to one of those four commands, pass the `--profile`
 flag with it, or do not give it a role whose permissions you would not hand to
 the code running in the container.
 

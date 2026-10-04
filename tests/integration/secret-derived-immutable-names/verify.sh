@@ -387,9 +387,14 @@ for needle in "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}
   fi
 done
 echo "    OK: the update log carries no secret-derived value"
+# The pre-rotation value reaches the log only through a line that prints the
+# previous physical id; update()'s debug line withholds it (go-to-k/cdkd#3869).
 if grep -qF -- "${FILTER_NAME}" <<< "${UPDATE_LOG_BODY}"; then
-  echo "    NOTE: the update log names SecretFilter's pre-rotation FilterName in plaintext (tracked in go-to-k/cdkd#3869)"
+  echo "FAIL: the update log names SecretFilter's pre-rotation FilterName in plaintext (go-to-k/cdkd#3869):" >&2
+  grep -nF -- "${FILTER_NAME}" <<< "${UPDATE_LOG_BODY}" | sed "s/${FILTER_NAME}/<FILTER_NAME>/g" >&2
+  exit 1
 fi
+echo "    OK: the update log does not name SecretFilter's pre-rotation FilterName"
 
 echo "==> Step 5 (LOAD-BEARING): the update landed IN PLACE"
 expect_eq "SecretStage's Description after the update" "cdkd integ: updated" "$(stage_field "${STAGE_NAME}" Description)"

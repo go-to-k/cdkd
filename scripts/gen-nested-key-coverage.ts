@@ -1203,12 +1203,14 @@ const API_GATEWAY_V2_WRITE_FLOORS = {
  * a floor below the band fences nothing. Raised again to 107 by
  * go-to-k/cdkd#4275, whose immutable-identity guards (the
  * `unchangedBehindSecretReference` evidence objects) grew the yield until the
- * band floored it there.
+ * band floored it there. Raised again to 111 by go-to-k/cdkd#2080's
+ * `CreateApiKey` slice, whose orphan-lookup object literal grew the yield
+ * the same way.
  * No `minHandoffPoints`: the provider hands off no blob generically, so the
  * walk is not load-bearing for any of the three.
  */
 const APPSYNC_WRITE_FLOORS = {
-  minWrittenMembers: 107,
+  minWrittenMembers: 111,
   minWriteScopes: 24,
 } as const;
 

@@ -34,10 +34,15 @@ against live AWS.
    - `ModifySubnetAttribute` flips the first public subnet's
      `MapPublicIpOnLaunch` from `true` to `false` (deterministic
      coverage of the issue #1300 `updateSubnet` revert path).
+   - `UpdateSecurityGroupRuleDescriptionsIngress` (from `verify.sh`) edits
+     the standalone ingress rule's `Description`.
 3. `cdkd drift CdkdDriftRevertVpcExample` — assert exit code **1**
    (drift detected on every mutated resource).
 4. `cdkd drift CdkdDriftRevertVpcExample --revert -y` — assert exit
-   code **0** (revert succeeds for every drifted resource).
+   code **0** (revert succeeds for every drifted resource). Reverting the
+   ingress rule's description revokes and re-authorizes it under a new
+   `sgr-` id, and the record's `attributes.Id` must name that live rule, not
+   the revoked one (issue #4476).
 5. `cdkd drift CdkdDriftRevertVpcExample` again — assert exit code
    **0** (state and AWS are back in sync).
 6. Attach `tg2` to the ASG out-of-band, rewrite the recorded ASG
@@ -79,6 +84,8 @@ The script:
 - `AWS::EC2::SecurityGroup` × 2 (Sg1 / Sg2) — Sg1 is the templated
   initial value for EFS MT and ALB; Sg2 is the swap target for
   `inject-drift.ts`.
+- `AWS::EC2::SecurityGroupIngress` (DriftSgIngress) — a standalone tcp 8443
+  rule on Sg2 from `10.99.0.0/16`, with a templated `Description`.
 - `AWS::EFS::FileSystem` (DriftFileSystem) — `ThroughputMode: elastic`.
   `removalPolicy: DESTROY`.
 - `AWS::EFS::MountTarget` (DriftMountTarget) — `SecurityGroups: [Sg1]`.

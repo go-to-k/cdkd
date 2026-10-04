@@ -991,6 +991,56 @@ the condition's FALSE branch, as before
   scrub, orphan rewrite, `state refresh-observed`) may carry it, since none of
   them changes a definition or an input the fingerprint covers.
 
+### `maskedPropertyFingerprints` (no version bump)
+
+A property whose resolved value carries a secret in a form state cannot
+record as a reference is persisted as `***`. The common case is the EC2
+`UserData` shape: `Fn::Base64` over a script that embeds a
+`{{resolve:...}}` reference, whose encoding decodes straight back to the
+secret. `***` identifies nothing, so for each such top-level property the
+record also keeps `sha256:` over the property's UNRESOLVED template value.
+`cdkd diff` and `cdkd deploy` treat a property whose recorded fingerprint no
+longer matches the template as changed, so an edit to the script around the
+reference, or a retarget of the reference, is shown and sent. A secret rotated
+behind an unchanged template leaves it equal and sends nothing, as
+CloudFormation does. Only template text is hashed: a secret appears there as
+its reference and a `NoEcho` parameter as its `Ref`, so the hash says nothing
+about a value. A property whose template text holds, as a literal, the value
+of one of the stack's `NoEcho` parameters, or a value the same resource
+resolved as a secret, is the exception: it gets no hash and is compared as
+before the field existed. A `NoEcho` parameter value is known when the deploy
+starts, so this holds from the first deploy. A resolved secret is known only
+to a deploy that resolves the resource, so a hash the first deploy under this
+version filled in for a resource it did not change is checked by the next
+deploy that resolves it.
+The check is a plain text match, so a short secret that also occurs as
+ordinary text in the property (a word in a script) costs that property its
+hash too, and edits to it are not seen through the mask. Because only
+template text is hashed, a change that leaves the property's template text as
+it was (a new parameter value, a `Ref` to a resource that was replaced, a
+condition that flipped) is not seen through the mask yet, although
+CloudFormation would update the resource.
+
+- **Written** by the save of a deploy that created, updated or replaced the
+  resource, from the template it deployed. A failed update keeps the previous
+  record and its previous fingerprints, so the retry still sends the edit.
+- **No version bump.** A record without the field (an older cdkd's) is
+  compared exactly as before. The first deploy under a cdkd that knows the
+  field fills it in, per masked property, from the template it deploys, and
+  saves even when nothing else changed; that deploy cannot tell an edit made
+  since the last deploy, so such an edit is not sent until the property
+  changes again. To push one anyway, change the property once more, or replace
+  the resource with `--recreate-via-cc-api` / `--recreate-via-sdk-provider`.
+- **Nested stacks.** A nested child is deployed only when its parent row
+  changed, which is usually because the child's own template changed. So the
+  first deploy that reaches a child last deployed by an older cdkd is, most
+  likely, one that carries an edit, and an edit to a masked property in that
+  deploy is not sent. Check such a child after that deploy, and change the
+  property once more if it did not take.
+- A malformed field reads as absent. A record a rollback orphans gets it from
+  the same save, and a writer that spreads an existing record (rollback,
+  drift, scrub, orphan adoption) carries it.
+
 ## State Schema
 
 ### StackState (`state.json`)
@@ -1426,6 +1476,7 @@ interface ResourceState {
   observedBaselineRefused?: true               // v10+: `cdkd import` declined to capture a baseline
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution' // optional, no bump: only the first survives an in-place UPDATE
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
+  maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its unresolved template value (issue #4451)
 }
 ```
 

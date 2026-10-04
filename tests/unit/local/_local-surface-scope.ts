@@ -36,9 +36,9 @@ export const ROOTS = ['src/local', 'src/cli/commands'];
  * shim re-exporting cdk-local's ECS service emulator, which is what
  * `local start-service` / `local start-alb` run. It builds no client and writes
  * no credential TODAY, which is exactly why it belongs in the population — both
- * fences exist to make the FIRST one decide. `.claude/rules/local-caller-identity.md`
- * names it as a candidate fix site for issue
- * [#3240](https://github.com/go-to-k/cdkd/issues/3240).
+ * fences exist to make the FIRST one decide: once cdk-local accepts the caller's
+ * credentials (go-to-k/cdk-local#783), the engine-side half of issue
+ * [#3240](https://github.com/go-to-k/cdkd/issues/3240) is wired through here.
  */
 export const EXTRA_SURFACE_FILES = ['src/cli/commands/ecs-service-emulator.ts'];
 

@@ -38,6 +38,7 @@ import {
   recordNestedStackParameterExpressions,
   redactSecretsForState,
 } from '../secret-redaction.js';
+import { movedMaskedProperties } from '../masked-property-fingerprints.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -270,6 +271,13 @@ export async function provisionUpdate(
       : undefined;
   const lostWithParent = lostChild?.mode === 'recreate' ? lostChild.parent : undefined;
   const suppliesFreshMaskOnlyValue = carriesFreshNoEchoValue(resolvedProps, updateSecrets);
+  // go-to-k/cdkd#4451: a property the record holds as `***` whose UNRESOLVED
+  // template value moved since it was written. Its redacted value compares
+  // `***` with `***` whatever the edit (the text around a secret reference
+  // inside one `Fn::Base64`, or the reference's target), so neither skip
+  // below may fire for it. A record with no fingerprint (an older cdkd's)
+  // reads as unmoved, the comparison it always had.
+  const movedMasked = new Set(movedMaskedProperties(currentResource, desiredProps));
   const desiredForSkipCheck = redactSecretsForState(
     markSameGenerationBag({ ...resolvedProps }),
     updateSecrets,
@@ -306,6 +314,13 @@ export async function provisionUpdate(
           allowedForRecord,
           createOnlyEvidence
         );
+  // What both no-change skips require of the bags: equal redacted values, and
+  // no masked property whose template expression moved (go-to-k/cdkd#4451),
+  // since `***` equals `***` whatever the edit. ONE predicate, so the two
+  // skips cannot disagree on it.
+  const recordMatchesDesired =
+    movedMasked.size === 0 &&
+    keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten);
   // The metadata-only arm both no-change skips share: refresh the record's
   // template attributes and call no provider.
   const applyAttributeOnlyUpdate = (
@@ -332,7 +347,7 @@ export async function provisionUpdate(
     !suppliesFreshMaskOnlyValue &&
     lostChild === undefined &&
     this.recreateDirectionFor(stackName, logicalId) === undefined &&
-    keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten)
+    recordMatchesDesired
   ) {
     // Attribute-only change (schema v5+): `DeletionPolicy` /
     // `UpdateReplacePolicy` may have flipped without any AWS-side
@@ -418,9 +433,12 @@ export async function provisionUpdate(
       }
       // The non-NoEcho half first, unchanged: a moved leaf keeps the
       // replacement whatever AWS holds at the masked ones.
+      // A masked property whose template moved (go-to-k/cdkd#4451) moved,
+      // whatever its two `***` say.
       const moved =
+        movedMasked.has(pc.path) ||
         keyOrderFreeJson(desiredForSkipCheckAsWritten[pc.path]) !==
-        keyOrderFreeJson(currentPropsAsWritten[pc.path]);
+          keyOrderFreeJson(currentPropsAsWritten[pc.path]);
       // A propagated CEILING whose value MOVED is kept, unless the type's
       // own conditional rule reads the move as in place (issue #4134) --
       // the same predicate the diff applies to a template edit. A
@@ -500,7 +518,7 @@ export async function provisionUpdate(
     !typeChanged &&
     lostChild === undefined &&
     this.recreateDirectionFor(stackName, logicalId) === undefined &&
-    keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten) &&
+    recordMatchesDesired &&
     Object.entries(resolvedProps).every(
       ([key, value]) =>
         noEchoHeldPaths.has(key) || freshNoEchoLeafPositions(value, updateSecrets).length === 0
