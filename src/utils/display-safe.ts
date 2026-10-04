@@ -384,7 +384,7 @@ export const STACK_REF_MAX_CODE_POINTS = 128 + 4 * (1 + IDENT_MAX_CODE_POINTS);
  * AWS bounds a role PATH at 512 characters and a role NAME at 64, on top of the
  * `arn:<partition>:iam::<12-digit account>:role` prefix -- so a perfectly valid
  * ARN reaches ~612 and `displayIdent`'s default would render
- * `[cut: N more characters withheld]` inside the very message that says WHICH
+ * `[cut: N more characters withheld, ...]` inside the very message that says WHICH
  * role failed to assume (go-to-k/cdkd#3390 round 3). Cutting the identifier out
  * of the sentence whose only job is to identify it is the failure this constant
  * exists to avoid, and it is the same argument `STACK_REF_MAX_CODE_POINTS`
@@ -417,7 +417,7 @@ export const ROLE_ARN_MAX_CODE_POINTS = 27 + 10 + 512 + 64;
  * A separate constant from {@link ROLE_ARN_MAX_CODE_POINTS} because the grammar
  * is genuinely different and the role figure is too small: an SSM parameter NAME
  * runs to 1011 characters on its own, and AWS caps an ARN at 2048. Rendering
- * `[cut: N more characters withheld]` in the message that says WHICH secret
+ * `[cut: N more characters withheld, ...]` in the message that says WHICH secret
  * failed to resolve is the failure both constants exist to avoid
  * (go-to-k/cdkd#3390 round 4).
  *
@@ -495,15 +495,16 @@ const CUT_DIGEST_HEX_CHARS = 32;
  * the tail without showing any of it.
  *
  * Pass it ONLY where the rendering serves as an IDENTITY (`displayIdent` and
- * `export.ts`'s record-value renderer), over text that has ALREADY been
- * through whatever masking its site applies, and never where a message-level
- * masker (`maskSecretsInError`) runs DOWNSTREAM of the render: the digest is a
- * CONFIRM and brute-force ORACLE over whatever the mask left in the tail (a
- * secret under the needle floor, a derived spelling it missed) — the concern
- * go-to-k/cdkd#3729 records for a salted hash beside a mask. That is accepted
- * here only because every digesting site masks before the cut (or replaces the
- * whole rendered token, as `stack-output.ts` does), and no legitimate value
- * reaches an identifier cap. Free-form text — AWS's error messages, which can
+ * `export.ts`'s record-value renderer), over text that either has ALREADY
+ * been through whatever masking its site applies or is an identifier that
+ * holds no secret. A message-level masker running DOWNSTREAM of the render
+ * (`maskSecretsInError`, the logger's whole-line mask) never sees the tail:
+ * the digest is a CONFIRM and brute-force ORACLE over whatever reaches it
+ * unmasked (a secret under the needle floor, a derived spelling a mask missed)
+ * — the concern go-to-k/cdkd#3729 records for a salted hash beside a mask.
+ * That is accepted only because every digesting site renders an identifier,
+ * or masks before the cut (or replaces the whole rendered token, as
+ * `stack-output.ts` does), and no legitimate value reaches an identifier cap. Free-form text — AWS's error messages, which can
  * echo a submitted payload a BOUNDED masker missed — takes the bare marker:
  * two messages rendering alike spoof no identity, so the digest would buy
  * nothing there.
