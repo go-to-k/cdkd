@@ -583,13 +583,14 @@ protect.
 
 A parameter is resolved from today's template: its `Default`, or for an
 SSM-typed parameter the value Parameter Store holds now. If the deploy used a
-different value (`--parameters`, an older `Default`, or an SSM value that has
-since changed), scrub looks up a DIFFERENT reference than the deploy resolved
-and cannot tell: the plaintext the deploy wrote can stay in state while the
-stack prints clean. This holds for any reference built from a parameter, in the
-stack's own region too. There is no flag for it: for a stack deployed with
-non-default parameters, inspect the record with `cdkd state show` rather than
-trusting a clean result.
+different value (an older `Default`, or an SSM value that has since changed),
+scrub looks up a DIFFERENT reference than the deploy resolved and cannot tell:
+the plaintext the deploy wrote can stay in state while the stack prints clean.
+This holds for any reference built from a parameter, in the stack's own region
+too. A nested stack is not affected: scrub binds the values its parent passes.
+There is no flag for it: when a parameter's `Default` or SSM value changed after
+the last deploy, inspect the record with `cdkd state show` rather than trusting
+a clean result.
 
 ### Which `Fn::If` branch scrub selects
 
