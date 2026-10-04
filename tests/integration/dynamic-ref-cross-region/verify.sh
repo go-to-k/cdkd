@@ -74,10 +74,13 @@
 # parameter's TYPE (issue #1901), so a lookup answered by the wrong region
 # misclassifies as well as mis-resolves, and region B's value is persisted in
 # PLAINTEXT. That is #1957's acceptance criterion 3 and the shape
-# `cdkd scrub --all` hits.
+# `cdkd scrub --all` hits. A FIFTH resource swaps those types (SecureString in
+# region A, String in region B) for phase 3f's `cdkd diff` arm, issue #4105: a
+# secret VERDICT pinned by region A must not make region B skip its own lookup.
 #
-# SECURITY: three of the seeded values are SecureString plaintexts (the shared
-# secure name in both regions, plus the mixed-type name's region-B value). They
+# SECURITY: four of the seeded values are SecureString plaintexts (the shared
+# secure name in both regions, the mixed-type name's region-B value, and the
+# reversed mixed-type name's region-A value). They
 # are test data, but they are never printed — assertions compare them and report
 # PASS/FAIL only. Anyone extending this file must keep that property: never add
 # one to an `echo`, and never let one reach a failure message.
@@ -220,6 +223,9 @@ EMBEDDED_ECHO_PARAM_B="${STACK_B}-secure-embedded-echo"
 # The MIXED-TYPE arm (issue #1957): one shared NAME whose TYPE differs by region.
 MIXED_ECHO_PARAM_A="${STACK_A}-mixed-echo"
 MIXED_ECHO_PARAM_B="${STACK_B}-mixed-echo"
+# The VERDICT-SCOPE arm (issue #4105): the mixed-type name with the types swapped.
+MIXED_REV_ECHO_PARAM_A="${STACK_A}-mixed-rev-echo"
+MIXED_REV_ECHO_PARAM_B="${STACK_B}-mixed-rev-echo"
 # The ASSEMBLED-FOREIGN arm (issue #2134). Region A's stack only -- the arm
 # proves a reference is answered by the region its ARN NAMES rather than by the
 # stack's own, so a copy on both stacks would make "foreign" ambiguous.
@@ -249,11 +255,21 @@ MIXED_PARAM="/cdkd-test/dynref-cross-region-mixed-${ACCOUNT_ID}"
 EXPECTED_MIXED_PUBLIC_A="cdkd-dynref-mixed-public-a"
 EXPECTED_MIXED_SECRET_B="cdkd-dynref-mixed-secret-b"
 
+# The REVERSED mixed-type source (issue #4105): a `SecureString` in region A and
+# a plain `String` in region B. Region A's value is treated as secret throughout
+# and never echoed; region B's is public test data. A distinct stem rather than
+# a suffix on MIXED_PARAM, so neither name's expression is a substring of the
+# other's and the state greps below cannot match the wrong arm.
+MIXED_REV_PARAM="/cdkd-test/dynref-cross-region-revmixed-${ACCOUNT_ID}"
+EXPECTED_MIXED_REV_SECRET_A="cdkd-dynref-revmixed-secret-a"
+EXPECTED_MIXED_REV_PUBLIC_B="cdkd-dynref-revmixed-public-b"
+
 export CDKD_IT_DYNREF_REGION_A="${REGION_A}"
 export CDKD_IT_DYNREF_REGION_B="${REGION_B}"
 export CDKD_IT_DYNREF_SOURCE_PARAM="${SOURCE_PARAM}"
 export CDKD_IT_DYNREF_SECURE_PARAM="${SECURE_PARAM}"
 export CDKD_IT_DYNREF_MIXED_PARAM="${MIXED_PARAM}"
+export CDKD_IT_DYNREF_MIXED_REV_PARAM="${MIXED_REV_PARAM}"
 # Issue #2134: the FULL ARN of REGION B's copy of the shared String parameter,
 # handed to region A's stack. Built here rather than in the app because it needs
 # the account id, which is resolved above.
@@ -301,6 +317,9 @@ LEGACY_STATE_C=""
 # candidate for one in /tmp -- which is exactly what this file's SECURITY note
 # forbids. It was missed on the first cut of that phase.
 SCRUB_C_LOG=""
+# Phase 3f's `cdkd diff` stderr. Held for diagnostics only, printed after the
+# same plaintext scan as the payload, and shredded by `cleanup`.
+REV_DIFF_ERR=""
 cleanup() {
   rc=$?
   # The INT / TERM traps call `cleanup` and then `exit`, which re-fires the EXIT
@@ -315,7 +334,7 @@ cleanup() {
   # which is slow and can itself fail. `|| true` matches the rest of this
   # function: a cleanup step must never abort the steps after it.
   rm -f "${SEEDED_STATE}" "${LEGACY_STATE}" "${SEEDED_STATE_C}" "${LEGACY_STATE_C}" \
-    "${SCRUB_C_LOG}" >/dev/null 2>&1 || true
+    "${SCRUB_C_LOG}" "${REV_DIFF_ERR}" >/dev/null 2>&1 || true
   # Best-effort stack teardown first, so the echo parameters go with their
   # stacks and cdkd state is not left pointing at deleted resources.
   ${CLI} destroy "${STACK_A}" "${STACK_B}" "${STACK_C}" \
@@ -329,6 +348,8 @@ cleanup() {
   aws ssm delete-parameter --name "${EMBEDDED_ECHO_PARAM_B}" --region "${REGION_B}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${MIXED_ECHO_PARAM_A}" --region "${REGION_A}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${MIXED_ECHO_PARAM_B}" --region "${REGION_B}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${MIXED_REV_ECHO_PARAM_A}" --region "${REGION_A}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${MIXED_REV_ECHO_PARAM_B}" --region "${REGION_B}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${ASSEMBLED_SECRET_ECHO_PARAM}" --region "${REGION_A}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${SOURCE_PARAM}" --region "${REGION_A}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${SOURCE_PARAM}" --region "${REGION_B}" >/dev/null 2>&1 || true
@@ -336,6 +357,8 @@ cleanup() {
   aws ssm delete-parameter --name "${SECURE_PARAM}" --region "${REGION_B}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${MIXED_PARAM}" --region "${REGION_A}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${MIXED_PARAM}" --region "${REGION_B}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${MIXED_REV_PARAM}" --region "${REGION_A}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${MIXED_REV_PARAM}" --region "${REGION_B}" >/dev/null 2>&1 || true
   # Stale state/lock keys, in case the destroy above could not run.
   for region in "${REGION_A}" "${REGION_B}"; do
     for stack in "${STACK_A}" "${STACK_B}" "${STACK_C}"; do
@@ -410,6 +433,27 @@ if [ "${MIXED_TYPE_B}" != "SecureString" ]; then
   exit 1
 fi
 echo "    OK: ${MIXED_PARAM} seeded String in ${REGION_A} / SecureString in ${REGION_B}"
+
+# The REVERSED mixed-type source (issue #4105): SecureString in A, String in B.
+aws ssm put-parameter --name "${MIXED_REV_PARAM}" --type SecureString \
+  --value "${EXPECTED_MIXED_REV_SECRET_A}" --overwrite --region "${REGION_A}" >/dev/null
+aws ssm put-parameter --name "${MIXED_REV_PARAM}" --type String \
+  --value "${EXPECTED_MIXED_REV_PUBLIC_B}" --overwrite --region "${REGION_B}" >/dev/null
+# Both types asserted, as above: if the two regions agreed on a type, phase 3f
+# would have no foreign verdict to leak and would pass vacuously.
+MIXED_REV_TYPE_A="$(aws ssm get-parameter --name "${MIXED_REV_PARAM}" --region "${REGION_A}" \
+  --query 'Parameter.Type' --output text)"
+MIXED_REV_TYPE_B="$(aws ssm get-parameter --name "${MIXED_REV_PARAM}" --region "${REGION_B}" \
+  --query 'Parameter.Type' --output text)"
+if [ "${MIXED_REV_TYPE_A}" != "SecureString" ]; then
+  echo "FAIL: ${MIXED_REV_PARAM} in ${REGION_A} has Type '${MIXED_REV_TYPE_A}', expected SecureString" >&2
+  exit 1
+fi
+if [ "${MIXED_REV_TYPE_B}" != "String" ]; then
+  echo "FAIL: ${MIXED_REV_PARAM} in ${REGION_B} has Type '${MIXED_REV_TYPE_B}', expected String" >&2
+  exit 1
+fi
+echo "    OK: ${MIXED_REV_PARAM} seeded SecureString in ${REGION_A} / String in ${REGION_B}"
 
 echo "==> Phase 2: deploy BOTH stacks in ONE cdkd process (serial)"
 ${CLI} deploy "${STACK_A}" "${STACK_B}" "${STACK_C}" \
@@ -589,6 +633,25 @@ assert_state_redacted "${STACK_B}" "${REGION_B}" "${EXPECTED_MIXED_SECRET_B}" "$
 assert_state_lacks "${STACK_A}" "${REGION_A}" "${EXPECTED_MIXED_SECRET_B}" \
   "${STACK_A} (${REGION_A}) state.json carries region B's SecureString value"
 echo "    OK: mixed-type arm resolved per region and region B's copy is redacted"
+# The REVERSED arm's echoes (issue #4105), by the same rules: region B's value is
+# public and may be printed, region A's is a SecureString and is only compared.
+# Phase 3f's state controls rest on both having resolved from their own region.
+ACTUAL_MIXED_REV_A="$(aws ssm get-parameter --name "${MIXED_REV_ECHO_PARAM_A}" --region "${REGION_A}" \
+  --query 'Parameter.Value' --output text)"
+ACTUAL_MIXED_REV_B="$(aws ssm get-parameter --name "${MIXED_REV_ECHO_PARAM_B}" --region "${REGION_B}" \
+  --query 'Parameter.Value' --output text)"
+if [ "${ACTUAL_MIXED_REV_A}" != "${EXPECTED_MIXED_REV_SECRET_A}" ]; then
+  echo "FAIL: ${MIXED_REV_ECHO_PARAM_A} (${REGION_A}) did not resolve to its own region's" >&2
+  echo "      SecureString value" >&2
+  exit 1
+fi
+ACTUAL_MIXED_REV_A=""
+if [ "${ACTUAL_MIXED_REV_B}" != "${EXPECTED_MIXED_REV_PUBLIC_B}" ]; then
+  echo "FAIL: ${MIXED_REV_ECHO_PARAM_B} (${REGION_B}) resolved to '${ACTUAL_MIXED_REV_B}', expected" >&2
+  echo "      the region-local public String value '${EXPECTED_MIXED_REV_PUBLIC_B}'" >&2
+  exit 1
+fi
+echo "    OK: reversed mixed-type arm resolved per region"
 # NOTE deliberately absent: an assertion that region A's state still holds the
 # mixed value RESOLVED. It usually does, but the secret VERDICT store
 # (`recordedSecretExpressions`) is process-global by design (#1933), so region
@@ -805,6 +868,91 @@ assert_state_redacted "${STACK_C}" "${REGION_A}" "${EXPECTED_SECURE_B}" \
 s3_purge_key_versions "${STATE_BUCKET}" "${STATE_KEY_C}" noncurrent || true
 echo "    OK: the assembled foreign reference was scrubbed, not refused (issue #2157)"
 
+echo "==> Phase 3f: 'cdkd diff' over BOTH stacks reads region B's own copy of a name region A pinned as a SecureString (issue #4105)"
+# THE #4105 ARM. `cdkd diff` resolves each stack's template on the comparison
+# path (`skipDynamicReferences`), where a token KNOWN to be a secret is left
+# unresolved without a lookup. That verdict was remembered process-wide keyed by
+# the token text alone, so region A's `SecureString` answer for the reversed
+# mixed-type name made region B's pass skip ITS lookup too. Region B's copy is a
+# plain `String`, persisted RESOLVED, so B's diff compared the unresolved token
+# against the public value in state: a phantom change on every run.
+#
+# ORDER IS THE PRECONDITION. `cdkd diff` walks stacks in ASSEMBLY order (A, then
+# B; `matchStacks` keeps input order), so A's pin exists before B asks. The
+# payload is emitted in the same order, and that is asserted below rather than
+# assumed: reversed, the arm could not fail.
+#
+# Positive controls first. Region A's record must hold the EXPRESSION (A
+# classified it secret, which is the verdict that leaks), and region B's must
+# hold the public value RESOLVED (the baseline the phantom is measured against).
+assert_state_redacted "${STACK_A}" "${REGION_A}" "${EXPECTED_MIXED_REV_SECRET_A}" "${MIXED_REV_PARAM}"
+B_REV_STATE="$(${CLI} state show "${STACK_B}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION_B}" --json)"
+if ! printf '%s' "${B_REV_STATE}" | grep -F -q "${EXPECTED_MIXED_REV_PUBLIC_B}"; then
+  echo "FAIL: ${STACK_B} (${REGION_B}) state.json does not hold ${MIXED_REV_PARAM}'s public" >&2
+  echo "      value resolved, so the phase-3f comparison has no baseline to measure" >&2
+  exit 1
+fi
+if printf '%s' "${B_REV_STATE}" | grep -F -q "{{resolve:ssm:${MIXED_REV_PARAM}}}"; then
+  echo "FAIL: ${STACK_B} (${REGION_B}) persisted ${MIXED_REV_PARAM}'s public String as" >&2
+  echo "      the unresolved expression (issue #1901's class)" >&2
+  exit 1
+fi
+
+REV_DIFF_ERR="$(mktemp)"
+set +e
+REV_DIFF_JSON="$(${CLI} diff "${STACK_A}" "${STACK_B}" --json \
+  --state-bucket "${STATE_BUCKET}" 2>"${REV_DIFF_ERR}")"
+REV_DIFF_RC=$?
+set -e
+# Never print a payload (or its stderr) holding one of this file's SecureString
+# plaintexts — see the SECURITY note in the header.
+for secret in "${EXPECTED_MIXED_REV_SECRET_A}" "${EXPECTED_MIXED_SECRET_B}" \
+  "${EXPECTED_SECURE_A}" "${EXPECTED_SECURE_B}"; do
+  if printf '%s' "${REV_DIFF_JSON}" | grep -F -q "${secret}" \
+    || grep -F -q "${secret}" "${REV_DIFF_ERR}"; then
+    echo "FAIL: 'cdkd diff --json' (rc ${REV_DIFF_RC}) printed a SecureString plaintext" >&2
+    exit 1
+  fi
+done
+# Positive receipt: both trees present, in processing order. An unparsed or
+# reshaped payload would otherwise read exactly like a clean diff.
+REV_DIFF_ORDER="$(printf '%s' "${REV_DIFF_JSON}" | jq -r '[.[].stack] | join(",")' 2>/dev/null || true)"
+if [ "${REV_DIFF_ORDER}" != "${STACK_A},${STACK_B}" ]; then
+  echo "FAIL: 'cdkd diff --json' (rc ${REV_DIFF_RC}) did not emit ${STACK_A} then ${STACK_B}" >&2
+  echo "      (got '${REV_DIFF_ORDER}'), so the order phase 3f depends on is unproven:" >&2
+  printf '%s\n' "${REV_DIFF_JSON}" >&2
+  cat "${REV_DIFF_ERR}" >&2
+  exit 1
+fi
+REV_DIFF_ROWS="$(printf '%s' "${REV_DIFF_JSON}" | jq -r \
+  '[.[] | .stack as $s | .changes[] | select(.logicalId == "MixedTypeReversedEchoParameter")
+   | "\($s): \(.changeType)"] | join("; ")')"
+if [ -n "${REV_DIFF_ROWS}" ]; then
+  echo "FAIL: 'cdkd diff' reports a change on the unchanged reversed mixed-type echo:" >&2
+  echo "      ${REV_DIFF_ROWS}" >&2
+  echo "      Region A's SecureString verdict made region B skip its own lookup (issue #4105)." >&2
+  printf '%s\n' "${REV_DIFF_JSON}" >&2
+  cat "${REV_DIFF_ERR}" >&2
+  exit 1
+fi
+# `diffTreeToJson` drops NO_CHANGE rows, so "no row" also describes a resource
+# that was never compared. Require that neither tree parked the echo in a
+# refusal or unreadable list instead.
+REV_DIFF_PARKED="$(printf '%s' "${REV_DIFF_JSON}" | jq -r \
+  '[.[] | .stack as $s | (.blocking, .unreadable, .unreadableContainers) | tostring
+   | select(contains("MixedTypeReversedEchoParameter")) | $s] | unique | join(",")')"
+if [ -n "${REV_DIFF_PARKED}" ]; then
+  echo "FAIL: 'cdkd diff' did not compare the reversed mixed-type echo in ${REV_DIFF_PARKED}:" >&2
+  echo "      it was reported blocking or unreadable, so the missing change row proves nothing" >&2
+  printf '%s\n' "${REV_DIFF_JSON}" >&2
+  cat "${REV_DIFF_ERR}" >&2
+  exit 1
+fi
+rm -f "${REV_DIFF_ERR}"
+REV_DIFF_ERR=""
+echo "    OK: each region's diff answered the reversed mixed-type name from its own region"
+
 echo "==> Phase 4: destroy both stacks"
 ${CLI} destroy "${STACK_A}" "${STACK_B}" "${STACK_C}" \
   --state-bucket "${STATE_BUCKET}" --force
@@ -826,6 +974,10 @@ assert_gone "${MIXED_ECHO_PARAM_A} still exists in ${REGION_A} after destroy" \
   aws ssm get-parameter --name "${MIXED_ECHO_PARAM_A}" --region "${REGION_A}"
 assert_gone "${MIXED_ECHO_PARAM_B} still exists in ${REGION_B} after destroy" \
   aws ssm get-parameter --name "${MIXED_ECHO_PARAM_B}" --region "${REGION_B}"
+assert_gone "${MIXED_REV_ECHO_PARAM_A} still exists in ${REGION_A} after destroy" \
+  aws ssm get-parameter --name "${MIXED_REV_ECHO_PARAM_A}" --region "${REGION_A}"
+assert_gone "${MIXED_REV_ECHO_PARAM_B} still exists in ${REGION_B} after destroy" \
+  aws ssm get-parameter --name "${MIXED_REV_ECHO_PARAM_B}" --region "${REGION_B}"
 assert_gone "state.json for ${STACK_A} still present after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK_A}/${REGION_A}/state.json"
 assert_gone "state.json for ${STACK_B} still present after destroy" \
@@ -842,6 +994,8 @@ aws ssm delete-parameter --name "${SECURE_PARAM}" --region "${REGION_A}" >/dev/n
 aws ssm delete-parameter --name "${SECURE_PARAM}" --region "${REGION_B}" >/dev/null
 aws ssm delete-parameter --name "${MIXED_PARAM}" --region "${REGION_A}" >/dev/null
 aws ssm delete-parameter --name "${MIXED_PARAM}" --region "${REGION_B}" >/dev/null
+aws ssm delete-parameter --name "${MIXED_REV_PARAM}" --region "${REGION_A}" >/dev/null
+aws ssm delete-parameter --name "${MIXED_REV_PARAM}" --region "${REGION_B}" >/dev/null
 assert_gone "source parameter still exists in ${REGION_A}" \
   aws ssm get-parameter --name "${SOURCE_PARAM}" --region "${REGION_A}"
 assert_gone "source parameter still exists in ${REGION_B}" \
@@ -854,6 +1008,10 @@ assert_gone "mixed-type source parameter still exists in ${REGION_A}" \
   aws ssm get-parameter --name "${MIXED_PARAM}" --region "${REGION_A}"
 assert_gone "mixed-type source parameter still exists in ${REGION_B}" \
   aws ssm get-parameter --name "${MIXED_PARAM}" --region "${REGION_B}"
+assert_gone "reversed mixed-type source parameter still exists in ${REGION_A}" \
+  aws ssm get-parameter --name "${MIXED_REV_PARAM}" --region "${REGION_A}"
+assert_gone "reversed mixed-type source parameter still exists in ${REGION_B}" \
+  aws ssm get-parameter --name "${MIXED_REV_PARAM}" --region "${REGION_B}"
 
 # --- Teardown VERSION sweep, ON THE SUCCESS PATH ---------------------------
 # `cleanup` also sweeps, but `cleanup` runs from the TRAP — which the line below

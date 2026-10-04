@@ -921,6 +921,13 @@ export interface NamedRequestMasks {
  * path is the other consumer: one set in the LEAF module means the redactor can
  * answer with no caller threading it, and the resolver reaches it along an
  * import edge it already has — the reverse would close a cycle.
+ *
+ * The resolver no longer reads or writes it through this facade (issue
+ * [#4105](https://github.com/go-to-k/cdkd/issues/4105)): `pinSecretVerdict`
+ * files each verdict under the resolver's SCOPE (region + credential
+ * identity) and `isKnownSecret` reads only that scope, since another region's
+ * `SecureString` under the same parameter name says nothing about this one.
+ * `has` here still answers the bare, last-writer set the redaction path reads.
  */
 export const recordedSecretExpressions = {
   has: (expression: string): boolean => isRecordedSecretExpression(expression),
