@@ -1034,8 +1034,11 @@ never behaves like `--accept`. Two further limits keep that guarantee airtight:
 
 The write is BEST-EFFORT: AWS has already been reverted by the time it runs,
 so a failed state write warns and the command carries on — under `--all`,
-aborting would skip every later stack's revert. The only cost of the warn path
-is that the narrowing re-surfaces on the next `cdkd drift`.
+aborting would skip every later stack's revert. The same write carries the
+physical id and attributes the revert returned, so the warn path costs two
+things: the narrowing re-surfaces on the next `cdkd drift`, and the record keeps
+the identity from before the revert, which a re-run cannot repair because the
+revert landed.
 
 #### Update-not-supported resources
 

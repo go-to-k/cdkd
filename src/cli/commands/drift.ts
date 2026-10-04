@@ -5989,6 +5989,37 @@ function deepEqualUnordered(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * The redacted attributes a `--revert` records (go-to-k/cdkd#4476), with each
+ * top-level key the value scan masked put back to the RECORDED value when the
+ * plaintext it masked is exactly that value.
+ *
+ * The scan runs over the revert's whole per-resource `secrets` map, which also
+ * holds the deliberately over-broad mask-only needles of the uncertified-path
+ * and masked-leaf overlays (every live string under such a path). Those are
+ * safe for the narrowing write, which `keepBaselineAtUncertifiedPaths` repairs,
+ * but here they would mask an unrelated identity value (a queue name equal to a
+ * tag value) and persist `***` over it. Keeping a value `state.json` already
+ * holds in the clear discloses nothing new; a key whose plaintext CHANGED stays
+ * masked, which fails safe.
+ */
+function keepRecordedAttributesOverMask(
+  redacted: Record<string, unknown>,
+  plaintext: Record<string, unknown>,
+  recorded: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  if (recorded === undefined) return redacted;
+  const out: Record<string, unknown> = { ...redacted };
+  for (const key of Object.keys(redacted)) {
+    if (!hasOwnKey(recorded, key) || !carriesSecretMask(redacted[key])) continue;
+    if (carriesSecretMask(recorded[key])) continue;
+    if (JSON.stringify(plaintext[key]) === JSON.stringify(recorded[key])) {
+      defineOwnKey(out, key, recorded[key]);
+    }
+  }
+  return out;
+}
+
+/**
  * `--revert`: AWS ← state.
  *
  * For each drifted resource, call `provider.update(logicalId, physicalId,
@@ -6884,7 +6915,11 @@ async function runRevert(
                 const attributes =
                   next.attributes === undefined
                     ? undefined
-                    : redactSecretsForState(next.attributes, secrets);
+                    : keepRecordedAttributesOverMask(
+                        redactSecretsForState(next.attributes, secrets),
+                        next.attributes,
+                        stateResource.attributes
+                      );
                 if (
                   next.physicalId !== stateResource.physicalId ||
                   JSON.stringify(attributes) !== JSON.stringify(stateResource.attributes)
@@ -7068,7 +7103,9 @@ async function runRevert(
                 // next drift reports no difference to revert.
                 (reRecordedCount > 0
                   ? ` The state record still holds the physical id and attributes from before ` +
-                    `the revert, which a later 'Fn::GetAtt' and 'cdkd export' read.`
+                    `the revert, which a later 'Fn::GetAtt' and 'cdkd export' read. Re-running the ` +
+                    `revert does not repair it, since the revert landed; a later deploy that updates ` +
+                    `this resource records the identity its update returns.`
                   : '') +
                 (recordedCount > 0
                   ? ` The next 'cdkd drift' will report the same difference — ` +

@@ -138,7 +138,10 @@ live_ingress_ids() { # $1 = group id -> the live port-8443 ingress rule ids
     --query "SecurityGroupRules[?IsEgress==\`false\` && FromPort==\`8443\`].SecurityGroupRuleId" \
     --output text
 }
-read -r INGRESS_SG OLD_INGRESS_ID <<<"$(ingress_record)"
+# Assigned first, so a failed state read aborts here under `set -e` rather
+# than reading as an empty id.
+INGRESS_REC="$(ingress_record)"
+read -r INGRESS_SG OLD_INGRESS_ID <<<"${INGRESS_REC}"
 LIVE_INGRESS_ID="$(live_ingress_ids "${INGRESS_SG}")"
 if [ -z "${OLD_INGRESS_ID}" ] || [ "${LIVE_INGRESS_ID}" != "${OLD_INGRESS_ID}" ]; then
   echo "[verify] FAIL: step 3: the recorded ingress Id '${OLD_INGRESS_ID}' is not the one live rule '${LIVE_INGRESS_ID}'"
@@ -166,7 +169,8 @@ ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
 # rule, so AWS holds a NEW id; the record must name it. Before the fix the
 # record kept the revoked one.
 echo "[verify] step 5b: the record's ingress Id follows the re-created rule"
-read -r _ RECORDED_INGRESS_ID <<<"$(ingress_record)"
+INGRESS_REC="$(ingress_record)"
+read -r _ RECORDED_INGRESS_ID <<<"${INGRESS_REC}"
 LIVE_INGRESS_ID="$(live_ingress_ids "${INGRESS_SG}")"
 if [ -z "${LIVE_INGRESS_ID}" ] || [ "${LIVE_INGRESS_ID}" = "${OLD_INGRESS_ID}" ]; then
   echo "[verify] FAIL: step 5b: expected the revert to re-create the rule under a new id (old '${OLD_INGRESS_ID}', live '${LIVE_INGRESS_ID}')"
