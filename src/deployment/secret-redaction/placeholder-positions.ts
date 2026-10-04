@@ -194,7 +194,9 @@ function parameterPlaceholderParts(
  * `Fn::ImportValue` / `Fn::GetStackOutput` / `Fn::GetAtt` element or bound
  * variable. The writer records each such read WHOLE-TOKEN under the key of the
  * raw intrinsic it resolved, so the embedded part has its own association even
- * though the leaf does not; nothing keys the partial leaf itself. Before it, a leaf such as `Fn::Sub 'x${A}'` could only be redacted by the
+ * though the leaf does not; nothing keys the partial leaf itself.
+ *
+ * Before it, a leaf such as `Fn::Sub 'x${A}'` could only be redacted by the
  * plaintext-keyed value scan, which reads ONE expression per plaintext —
  * whichever parameter the resource resolved LAST. The DIFF side
  * (`redactParametersForDiff`) answers per PARAMETER, so a resource holding this
@@ -207,6 +209,10 @@ function parameterPlaceholderParts(
  * {@link certifiedExpressionForLeaf} — so the leaf persists what the diff side
  * renders: the template's literals with each reference's own expression in its
  * place. A placeholder with no certified association is UNKNOWN.
+ *
+ * Condition 2 of {@link certifiedExpressionForLeaf} is always true here, since
+ * each part is certified over its association's OWN plaintext; the exact
+ * reassembly below is what refuses a bag the association is not about.
  *
  * THE RENDERING IS CHECKED, NOT TRUSTED. Nothing here reproduces the
  * resolver's substitution: the literals and each association's plaintext must

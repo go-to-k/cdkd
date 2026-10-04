@@ -279,7 +279,11 @@ describe('secret-redaction - cross-stack secret EMBEDDED in a leaf (issue #2298)
       expect(redacted['P']).toBe(`PRE-${EXPR_PREVIOUS}`);
     });
 
-    it('an association recorded against a DIFFERENT plaintext (condition 2)', () => {
+    it('a bag whose embedded value is not the association’s plaintext (condition 1 + reassembly)', () => {
+      // Condition 2 cannot refuse in this arm: each part is certified over the
+      // association's OWN plaintext, so the pairing it checks is always true.
+      // What stands in for it is the reassembly test (literals + association
+      // plaintexts must rebuild the bag), plus condition 1 over the bag.
       const OTHER_PLAINTEXT = 'a-completely-different-secret';
       const OTHER_EXPR = '{{resolve:secretsmanager:other:SecretString:v}}';
       const secrets: RecordedSecretValues = new Map([[OTHER_PLAINTEXT, OTHER_EXPR]]);
