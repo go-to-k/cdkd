@@ -85,10 +85,11 @@ export async function getCrossAccountStackState(
     // sentence (go-to-k/cdkd#3950).
     // not-in-class(displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })): the RoleArn argument, refused unless it is a literal template string.
     const shownRoleArn = displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS });
-    // Whitespace FIRST: the round-trip alone admits a value that is
-    // `displayIdent`'s own cut output (the cap's worth of plain characters,
-    // then ` [cut: N more characters withheld]`), which then sits inside
-    // cdkd's `'...'` with `: ` in it.
+    // Whitespace FIRST: a value that IS `displayIdent`'s own cut output (the
+    // cap's worth of plain characters, then ` [cut: N more characters
+    // withheld, tail sha256:<hex>]`) would sit inside cdkd's `'...'` with `: `
+    // in it, and only the marker's tail digest keeps the round-trip from
+    // admitting it (go-to-k/cdkd#4002).
     const plain = !/\s/.test(roleArn) && shownRoleArn === roleArn;
     const bounded = plain ? `'${shownRoleArn}'` : shellBoundedDisplay(shownRoleArn);
     // A described value reads as a noun phrase, not as the ARN itself.

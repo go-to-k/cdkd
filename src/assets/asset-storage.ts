@@ -492,8 +492,9 @@ function quotedIfPlain(value: string, description: string): string {
 
 /**
  * Whitespace is refused before the round-trip: a value that IS `displayIdent`'s
- * own cut output (`<cap chars> [cut: N more characters withheld]`) renders
- * unchanged too (go-to-k/cdkd#4109).
+ * own cut output (`<cap chars> [cut: N more characters withheld, tail
+ * sha256:<hex>]`) is then refused without resting on the marker's tail digest
+ * (go-to-k/cdkd#4109, go-to-k/cdkd#4002).
  */
 function isPlainName(value: string): boolean {
   return (
