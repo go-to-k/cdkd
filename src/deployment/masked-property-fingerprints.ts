@@ -334,7 +334,30 @@ interface Walk {
   /** Nested-stack rows whose passed values are being classified above this walk. */
   stackChain: ReadonlySet<string>;
   /** Shared by every nested-output classification one entry point starts. */
-  budget: { steps: number };
+  shared: NestedShared;
+}
+
+/**
+ * What one entry point ({@link maskedInputFingerprint},
+ * {@link classifyPassedParameters}, {@link nestedStackOutputClass}) learns
+ * about nested-stack outputs, so each row's passed values and each child
+ * output are classified once, however many reads reach them: the work is
+ * linear in the templates, and `steps` is a backstop for a hostile tree only.
+ * Every read is made in template order ({@link inputForms}), so the same
+ * templates spend the same steps, in the same order, on every side.
+ */
+interface NestedShared {
+  steps: number;
+  /** A parent row's passed classes, by logical id. */
+  passed: Map<string, ReadonlyMap<string, PassedParameterClass>>;
+  /** A child output's class, by template identity, output name and passed classes. */
+  outputs: Map<string, NestedOutputClass>;
+  /** A child row's passed classes, by its template identity, that template's passed classes and the row. */
+  rowsPassed: Map<string, ReadonlyMap<string, PassedParameterClass>>;
+}
+
+function newShared(): NestedShared {
+  return { steps: 0, passed: new Map(), outputs: new Map(), rowsPassed: new Map() };
 }
 
 /** `${Name}` / `${Resource.Attr}` placeholders of an `Fn::Sub` string; `${!x}` is a literal. */
@@ -467,7 +490,8 @@ function taintOf(logicalId: string, walk: Walk): Taint {
  */
 function conditionInput(name: string, walk: Walk): boolean | 'secret' | 'unknown' {
   const closure = conditionClosure(name, walk);
-  if (closure !== 'clean') return closure;
+  if (closure.unknown || closure.unread) return 'unknown';
+  if (closure.secret) return 'secret';
   const conditions = walk.sources.conditions;
   if (conditions === undefined || !Object.hasOwn(conditions, name)) return 'unknown';
   if (conditionsAssumedFalse(conditions as Record<string, boolean>).has(name)) return 'unknown';
@@ -476,17 +500,22 @@ function conditionInput(name: string, walk: Walk): boolean | 'secret' | 'unknown
 }
 
 /**
- * What a condition's closure reads, never its verdict: `'secret'` when it reads
+ * What a condition's closure reads, never its verdict: `secret` when it reads
  * a secret parameter, a `{{resolve:...}}` reference, a cross-stack value or an
- * attribute, `'unknown'` when a definition or a parameter input is not known
- * here, else `'clean'`.
+ * attribute; `unknown` when it names a definition it does not declare, or a
+ * resource or undeclared name (fixed by the template); `unread` when a
+ * parameter's input is not known this time.
  */
-function conditionClosure(name: string, walk: Walk): 'clean' | 'secret' | 'unknown' {
+function conditionClosure(
+  name: string,
+  walk: Walk
+): { secret: boolean; unknown: boolean; unread: boolean } {
   const definitions = isPlainObject(walk.sources.template.Conditions)
     ? walk.sources.template.Conditions
     : {};
   let secret = false;
   let unknown = false;
+  let unread = false;
   const seen = new Set<string>();
   const pending = [name];
   const visit = (value: unknown): void => {
@@ -513,7 +542,7 @@ function conditionClosure(name: string, walk: Walk): 'clean' | 'secret' | 'unkno
       }
       const input = walk.sources.parameterInput(ref);
       if (input.kind === 'secret') secret = true;
-      if (input.kind === 'unknown') unknown = true;
+      if (input.kind === 'unknown') unread = true;
     };
     if (keys.length === 1 && keys[0] === 'Ref' && typeof value['Ref'] === 'string') {
       classifyName(value['Ref']);
@@ -550,9 +579,7 @@ function conditionClosure(name: string, walk: Walk): 'clean' | 'secret' | 'unkno
     }
     visit(definitions[current]);
   }
-  if (unknown) return 'unknown';
-  if (secret) return 'secret';
-  return 'clean';
+  return { secret, unknown, unread };
 }
 
 /** Resolves an input node, keeping it as written when its value may be a secret. */
@@ -589,6 +616,20 @@ async function nameInput(name: string, node: unknown, walk: Walk): Promise<Input
 }
 
 /**
+ * The input forms of `values`, IN ORDER, one after another. Never
+ * concurrently: a nested-stack output read spends the walk's shared step
+ * budget and fills its memo ({@link NestedShared}), so the order of the reads
+ * must be the template's, never the order resolutions happen to settle in.
+ * Then the same template and the same resolved inputs give the same verdict
+ * on every side, the deploy's diff pass and its provisioning arms included.
+ */
+async function inputForms(values: readonly unknown[], walk: Walk): Promise<InputForm[]> {
+  const parts: InputForm[] = [];
+  for (const element of values) parts.push(await inputForm(element, walk));
+  return parts;
+}
+
+/**
  * The value an input fingerprint hashes for `value`: the same structure, with
  * each resolvable non-secret input replaced by what it resolved to. Pure
  * functions (`Fn::Join`, `Fn::Base64`, `Fn::Select`, ...) keep their shape, since
@@ -600,14 +641,17 @@ async function inputForm(value: unknown, walk: Walk): Promise<InputForm> {
     return { form: value, concrete: !value.includes(DYNAMIC_REFERENCE_OPEN) };
   }
   if (Array.isArray(value)) {
-    const parts = await Promise.all(value.map((element) => inputForm(element, walk)));
+    const parts = await inputForms(value, walk);
     return { form: parts.map((p) => p.form), concrete: parts.every((p) => p.concrete) };
   }
   if (!isPlainObject(value)) return { form: value, concrete: true };
   const key = intrinsicKey(value);
   if (key === undefined) {
     const entries = Object.keys(value);
-    const parts = await Promise.all(entries.map((k) => inputForm(value[k], walk)));
+    const parts = await inputForms(
+      entries.map((k) => value[k]),
+      walk
+    );
     return {
       form: Object.fromEntries(entries.map((k, i) => [k, parts[i]!.form])),
       concrete: parts.every((p) => p.concrete),
@@ -716,9 +760,9 @@ async function inputForm(value: unknown, walk: Walk): Promise<InputForm> {
 
 function newWalk(
   sources: MaskedInputSources,
-  nested: { stackChain: ReadonlySet<string>; budget: { steps: number } } = {
+  nested: { stackChain: ReadonlySet<string>; shared: NestedShared } = {
     stackChain: new Set(),
-    budget: { steps: 0 },
+    shared: newShared(),
   }
 ): Walk {
   return {
@@ -728,7 +772,7 @@ function newWalk(
     taint: new Map(),
     inProgress: new Set(),
     stackChain: nested.stackChain,
-    budget: nested.budget,
+    shared: nested.shared,
   };
 }
 
@@ -769,7 +813,10 @@ function worseOf(a: NestedOutputClass, b: NestedOutputClass): NestedOutputClass 
 
 /** Templates deeper than this below the parent are not followed (`unknown`). */
 const MAX_NESTED_OUTPUT_DEPTH = 32;
-/** Classification steps one entry point may take before answering `unknown`. */
+/**
+ * Classifications (uncached) one entry point may make before answering
+ * `unknown`. With the memo a real tree spends one per row and per output read.
+ */
 const MAX_NESTED_OUTPUT_STEPS = 10_000;
 
 /** One child template being classified, with what its parameters carry. */
@@ -780,7 +827,14 @@ interface OutputScope {
   chain: readonly string[];
   /** Nested-stack rows of THIS template whose passed values are being classified. */
   rows: ReadonlySet<string>;
-  budget: { steps: number };
+  /** This template's identity and passed classes: the key of its rows' memo. */
+  key: string;
+  shared: NestedShared;
+}
+
+/** A passed-class map as a memo key (in the row's own parameter order). */
+function passedKey(passed: ReadonlyMap<string, PassedParameterClass>): string {
+  return JSON.stringify([...passed.entries()]);
 }
 
 function isNestedStackRow(logicalId: string, walk: Walk): boolean {
@@ -851,12 +905,24 @@ function childParameterInputs(
   return (name) => inputs.get(name) ?? { kind: 'secret' };
 }
 
+/**
+ * `taintOf` answers `unknown` only for a parameter whose input is not known
+ * this time (an undeclared name or an opaque attribute is `tainted`), so that
+ * is `unread` here.
+ */
 function taintClass(taint: Taint): NestedOutputClass {
   return taint === 'clean' ? 'clean' : taint === 'tainted' ? 'secret' : 'unread';
 }
 
-function closureClass(closure: 'clean' | 'secret' | 'unknown'): NestedOutputClass {
-  return closure === 'clean' ? 'clean' : closure === 'secret' ? 'secret' : 'unread';
+/**
+ * A condition's closure: a secret wins, then what the template fixes (an
+ * undeclared condition, a resource or undeclared name), kept as written; a
+ * parameter not read this time is `unread`.
+ */
+function closureClass(closure: ReturnType<typeof conditionClosure>): NestedOutputClass {
+  if (closure.secret) return 'secret';
+  if (closure.unknown) return 'unknown';
+  return closure.unread ? 'unread' : 'clean';
 }
 
 /**
@@ -870,10 +936,34 @@ async function childOutputClass(
   outputName: string,
   passed: ReadonlyMap<string, PassedParameterClass>,
   chain: readonly string[],
-  budget: { steps: number }
+  shared: NestedShared
 ): Promise<NestedOutputClass> {
-  if (++budget.steps > MAX_NESTED_OUTPUT_STEPS) return 'unknown';
   if (loaded === undefined || !isPlainObject(loaded.template)) return 'unknown';
+  const scopeKey = JSON.stringify([loaded.identity, passedKey(passed)]);
+  const memoKey = JSON.stringify([scopeKey, outputName]);
+  const memo = shared.outputs.get(memoKey);
+  if (memo !== undefined) return memo;
+  const outputClass = await classifyChildOutput(
+    loaded,
+    outputName,
+    passed,
+    chain,
+    shared,
+    scopeKey
+  );
+  shared.outputs.set(memoKey, outputClass);
+  return outputClass;
+}
+
+async function classifyChildOutput(
+  loaded: NestedTemplate,
+  outputName: string,
+  passed: ReadonlyMap<string, PassedParameterClass>,
+  chain: readonly string[],
+  shared: NestedShared,
+  scopeKey: string
+): Promise<NestedOutputClass> {
+  if (++shared.steps > MAX_NESTED_OUTPUT_STEPS) return 'unknown';
   if (chain.includes(loaded.identity) || chain.length >= MAX_NESTED_OUTPUT_DEPTH) return 'unknown';
   const template = loaded.template;
   const outputs = isPlainObject(template.Outputs) ? template.Outputs : {};
@@ -892,7 +982,8 @@ async function childOutputClass(
     childTemplate: loaded.childTemplate,
     chain: [...chain, loaded.identity],
     rows: new Set(),
-    budget,
+    key: scopeKey,
+    shared,
   };
   let outputClass: NestedOutputClass = 'clean';
   if (Object.hasOwn(output, 'Condition')) {
@@ -932,16 +1023,22 @@ async function attributeClass(
     if (scope.rows.has(target)) return 'unknown';
     const parameters = rowParameters(walk.resources[target]);
     if (parameters === 'unknown') return 'unknown';
-    // The grandchild's passed values, classified over THIS (the child's)
-    // template by the same taint rules.
-    const inner: OutputScope = { ...scope, rows: new Set([...scope.rows, target]) };
-    const passed = new Map<string, PassedParameterClass>();
-    for (const [name, expression] of Object.entries(parameters)) {
-      const passedClass = await expressionClass(expression, inner);
-      passed.set(
-        name,
-        passedClass === 'clean' ? 'clean' : passedClass === 'unread' ? 'unknown' : 'secret'
-      );
+    const rowKey = JSON.stringify([scope.key, target]);
+    let passed = scope.shared.rowsPassed.get(rowKey);
+    if (passed === undefined) {
+      // The grandchild's passed values, classified over THIS (the child's)
+      // template by the same taint rules.
+      const inner: OutputScope = { ...scope, rows: new Set([...scope.rows, target]) };
+      const classes = new Map<string, PassedParameterClass>();
+      for (const [name, expression] of Object.entries(parameters)) {
+        const passedClass = await expressionClass(expression, inner);
+        classes.set(
+          name,
+          passedClass === 'clean' ? 'clean' : passedClass === 'unread' ? 'unknown' : 'secret'
+        );
+      }
+      scope.shared.rowsPassed.set(rowKey, classes);
+      passed = classes;
     }
     let loaded: NestedTemplate | undefined;
     try {
@@ -954,7 +1051,7 @@ async function attributeClass(
       attribute.slice(NESTED_OUTPUT_PREFIX.length),
       passed,
       scope.chain,
-      scope.budget
+      scope.shared
     );
   }
   if (hasOpaqueAttributes(target, walk)) return 'unknown';
@@ -963,8 +1060,9 @@ async function attributeClass(
 
 /**
  * The class of one expression inside a child template: the worst class of
- * every input it reads. Evaluated in order, never concurrently, so the shared
- * step budget answers the same way every time.
+ * every input it reads. Every read is awaited in turn (no `Promise.all`), as
+ * the parent side's {@link inputForms} is, so the memo and the step budget
+ * are spent in template order.
  */
 async function expressionClass(value: unknown, scope: OutputScope): Promise<NestedOutputClass> {
   if (typeof value === 'string') {
@@ -1025,6 +1123,20 @@ async function expressionClass(value: unknown, scope: OutputScope): Promise<Nest
     case 'Fn::ImportValue':
     case 'Fn::GetStackOutput':
       return 'secret';
+    case 'Fn::FindInMap': {
+      // The value is a leaf of the child's `Mappings`, which the operands
+      // never show: the whole map it names counts, a literal name only.
+      const mapName = Array.isArray(operand) ? operand[0] : undefined;
+      if (typeof mapName !== 'string') return worseOf('unknown', await all([operand]));
+      const mappings = scope.walk.sources.template.Mappings;
+      const map =
+        isPlainObject(mappings) && Object.hasOwn(mappings, mapName) ? mappings[mapName] : undefined;
+      if (!isPlainObject(map)) return 'unknown';
+      return worseOf(
+        carriesSecretValue(map, []) ? 'secret' : 'clean',
+        await all((operand as unknown[]).slice(1))
+      );
+    }
     default:
       return expressionClass(operand, scope);
   }
@@ -1058,13 +1170,17 @@ async function stackOutputClass(
   // A row whose passed values read this row's own outputs is a cycle
   // CloudFormation refuses; it is not followed.
   if (walk.stackChain.has(stackLogicalId)) return 'unknown';
-  if (++walk.budget.steps > MAX_NESTED_OUTPUT_STEPS) return 'unknown';
   const parameters = rowParameters(walk.resources[stackLogicalId]);
   if (parameters === 'unknown') return 'unknown';
-  const passed = await classifyPassed(parameters, walk.sources, {
-    stackChain: new Set([...walk.stackChain, stackLogicalId]),
-    budget: walk.budget,
-  });
+  let passed = walk.shared.passed.get(stackLogicalId);
+  if (passed === undefined) {
+    if (++walk.shared.steps > MAX_NESTED_OUTPUT_STEPS) return 'unknown';
+    passed = await classifyPassed(parameters, walk.sources, {
+      stackChain: new Set([...walk.stackChain, stackLogicalId]),
+      shared: walk.shared,
+    });
+    walk.shared.passed.set(stackLogicalId, passed);
+  }
   let loaded: NestedTemplate | undefined;
   try {
     loaded = loader(stackLogicalId);
@@ -1076,7 +1192,7 @@ async function stackOutputClass(
     attribute.slice(NESTED_OUTPUT_PREFIX.length),
     passed,
     [],
-    walk.budget
+    walk.shared
   );
 }
 
@@ -1145,13 +1261,13 @@ export async function classifyPassedParameters(
   parameters: unknown,
   sources: MaskedInputSources
 ): Promise<Map<string, PassedParameterClass>> {
-  return classifyPassed(parameters, sources, { stackChain: new Set(), budget: { steps: 0 } });
+  return classifyPassed(parameters, sources, { stackChain: new Set(), shared: newShared() });
 }
 
 async function classifyPassed(
   parameters: unknown,
   sources: MaskedInputSources,
-  nested: { stackChain: ReadonlySet<string>; budget: { steps: number } }
+  nested: { stackChain: ReadonlySet<string>; shared: NestedShared }
 ): Promise<Map<string, PassedParameterClass>> {
   const classes = new Map<string, PassedParameterClass>();
   if (!isPlainObject(parameters)) return classes;

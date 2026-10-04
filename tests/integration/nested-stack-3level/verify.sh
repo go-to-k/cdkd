@@ -1096,20 +1096,21 @@ r4565_version_number() { # r4565_version_number <label> <version>
       ;;
   esac
 }
-# r4565_deploy <label> <target suffix> <ggc value>: a --verbose deploy with
-# Step 4d's root value, scanned before it is echoed; prints nothing on
-# success, leaves the output in R4565_OUT.
+# r4565_deploy <label> <target suffix> <ggc value> [deploy flag...]: a
+# --verbose deploy with Step 4d's root value, scanned before it is echoed;
+# prints nothing on success, leaves the output in R4565_OUT.
 r4565_deploy() {
-  local rc
+  local rc label="$1" target="$2" ggc="$3"
+  shift 3
   set +e
-  R4565_OUT=$(CDKD_TEST_4543_INPUT=two CDKD_TEST_4565_TARGET="$2" CDKD_INTEG_GGC_VALUE="$3" \
-    ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes --verbose 2>&1)
+  R4565_OUT=$(CDKD_TEST_4543_INPUT=two CDKD_TEST_4565_TARGET="${target}" CDKD_INTEG_GGC_VALUE="${ggc}" \
+    ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes --verbose "$@" 2>&1)
   rc=$?
   set -e
-  scan_output "cdkd deploy --verbose (#4565 $1)" "${R4565_OUT}"
+  scan_output "cdkd deploy --verbose (#4565 ${label})" "${R4565_OUT}"
   echo "${R4565_OUT}"
   if [[ ${rc} -ne 0 ]]; then
-    echo "FAIL: #4565: the deploy ($1) exited ${rc}" >&2
+    echo "FAIL: #4565: the deploy (${label}) exited ${rc}" >&2
     exit 1
   fi
 }
@@ -1164,7 +1165,12 @@ assert_eq "#4565: an unchanged output leaves Root4565Script's input fingerprint 
   "$(r4565_record "$(fetch_state "${STACK}")" 'maskedPropertyInputFingerprints.Value')" "${R4565_INPUT_ONE}"
 
 # 4e-2, THE SEND: only the child's Target4565 is renamed (replaced).
-r4565_deploy "renamed child target" two "cdkd-3level-ggc-4565"
+# `--force-stateful-recreation`: cdkd counts an SSM parameter as stateful and
+# refuses to replace one (its `Name` is create-only) without the flag. The
+# replacement IS this arm's premise, and the parameter holds only a fixed
+# literal. No later deploy renames it again, so 4e-4 and the destroy need
+# no flag.
+r4565_deploy "renamed child target" two "cdkd-3level-ggc-4565" --force-stateful-recreation
 assert_eq "premise: the #4565 deploy synthesized Target4565's new name" \
   "$(jq -r '.Resources.Target4565.Properties.Name' "cdk.out/$(jq -r '.Resources.Child.Metadata["aws:asset:path"]' "${ROOT_TEMPLATE}")")" "${T4565_NAME_TWO}"
 assert_eq "premise: the root's Root4565Script template text did not change" \

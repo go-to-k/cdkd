@@ -1064,7 +1064,8 @@ the child's template by the rules above, without resolving anything there:
   (the same class the child is handed); one it does not pass reads its
   `Default`; a `NoEcho` parameter is a secret whatever was passed;
 - a `{{resolve:...}}` reference, a cross-stack read, a name the child does
-  not declare, a resource whose definition reads any of these, and an
+  not declare, a resource whose definition reads any of these, an
+  `Fn::FindInMap` over a mapping that holds a reference anywhere, and an
   attribute of a custom resource keep the output as written;
 - an `Fn::If` is clean only when its condition reads only clean inputs and
   both branches are clean, since the child's verdict is not evaluated here;
@@ -1080,6 +1081,11 @@ nor hashed. A clean output's value still takes the checks every input takes:
 a `***`, a reference, or a value whose read recorded a secret is kept as
 written. A child template edit that changes an output's class moves the hash
 once and sends the property once; an unchanged tree sends nothing.
+
+The same rule classifies a value a parent passes to one nested stack from
+another's output: a clean sibling output is now a clean passed value, so a
+masked property in the receiving child that reads it is sent when the
+output's value changes (it used to be kept as written).
 
 So these are NOT sent through the mask: a new value of a `NoEcho` parameter,
 a flip of a condition over one, and a new value of anything above. A hash

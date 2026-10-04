@@ -47,6 +47,11 @@ function loaderOf(children: Record<string, Tree>, prefix = ''): ChildTemplateLoa
 }
 
 const CHILD: CloudFormationTemplate = {
+  Mappings: {
+    // The leaf an output reads is plain; another leaf of the map is a reference.
+    Secrets: { a: { plain: 'p', hidden: '{{resolve:secretsmanager:s}}' } },
+    Plain: { a: { b: 'v' } },
+  },
   Parameters: {
     PassedClean: { Type: 'String' },
     PassedSecret: { Type: 'String' },
@@ -56,11 +61,14 @@ const CHILD: CloudFormationTemplate = {
     DefaultRef: { Type: 'String', Default: '{{resolve:ssm-secure:/d}}' },
     NoDefault: { Type: 'String' },
     HiddenDefault: { Type: 'String', NoEcho: true, Default: 'x' },
+    // `NoEcho` spelled as the string CloudFormation also accepts.
+    HiddenString: { Type: 'String', NoEcho: 'true' as unknown as boolean, Default: 'x' },
   },
   Conditions: {
     CleanCond: { 'Fn::Equals': [{ Ref: 'Defaulted' }, 'dflt'] },
     SecretCond: { 'Fn::Equals': [{ Ref: 'PassedNoEcho' }, 'x'] },
     UnreadCond: { 'Fn::Equals': [{ Ref: 'PassedUnread' }, 'x'] },
+    ResourceCond: { 'Fn::Equals': [{ Ref: 'Target' }, 'x'] },
   },
   Resources: {
     Target: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'n', Value: 'v' } },
@@ -78,6 +86,10 @@ const CHILD: CloudFormationTemplate = {
     },
     Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: 'arn' } },
     Grand: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } },
+    GrandPassingUnread: {
+      Type: 'AWS::CloudFormation::Stack',
+      Properties: { TemplateURL: 'u', Parameters: { G: { Ref: 'PassedUnread' } } },
+    },
     GrandIntrinsic: {
       Type: 'AWS::CloudFormation::Stack',
       Properties: { TemplateURL: 'u', Parameters: { 'Fn::If': ['CleanCond', {}, {}] } },
@@ -135,6 +147,17 @@ const CHILD: CloudFormationTemplate = {
       Value: { 'Fn::Join': ['', [{ Ref: 'PassedUnread' }, { 'Fn::GetAtt': ['Cr', 'Out'] }]] },
     },
     GrandIntrinsicOut: { Value: { 'Fn::GetAtt': ['GrandIntrinsic', 'Outputs.Y'] } },
+    GrandPassedUnread: { Value: { 'Fn::GetAtt': ['GrandPassingUnread', 'Outputs.FromG'] } },
+    GrandStringForm: { Value: { 'Fn::GetAtt': 'Grand.Outputs.Y' } },
+    FromHiddenString: { Value: { Ref: 'HiddenString' } },
+    IfUndeclaredCond: { Value: { 'Fn::If': ['NoSuchCondition', 'a', 'b'] } },
+    IfResourceCond: { Value: { 'Fn::If': ['ResourceCond', 'a', 'b'] } },
+    MapSecret: { Value: { 'Fn::FindInMap': ['Secrets', 'a', 'plain'] } },
+    MapClean: { Value: { 'Fn::FindInMap': ['Plain', 'a', 'b'] } },
+    MapSecretKey: { Value: { 'Fn::FindInMap': ['Plain', { Ref: 'PassedNoEcho' }, 'b'] } },
+    MapDynamicName: { Value: { 'Fn::FindInMap': [{ Ref: 'Defaulted' }, 'a', 'b'] } },
+    MapUndeclared: { Value: { 'Fn::FindInMap': ['Nope', 'a', 'b'] } },
+    MapProto: { Value: { 'Fn::FindInMap': ['__proto__', 'a', 'b'] } },
     MalformedGetAtt: { Value: { 'Fn::GetAtt': 5 } },
     GetAttUndeclared: { Value: { 'Fn::GetAtt': ['Nope', 'Arn'] } },
     RefNonString: { Value: { Ref: ['Target'] } },
@@ -197,6 +220,7 @@ const TREE: Record<string, Tree> = {
       Grand: { template: GRAND },
       GrandPassing: { template: GRAND },
       GrandIntrinsic: { template: GRAND },
+      GrandPassingUnread: { template: GRAND },
     },
   },
 };
@@ -238,7 +262,16 @@ const key = (output: string, stack = 'Child') => JSON.stringify(getAtt(output, s
 
 describe('nestedStackOutputClass: taint over the child template (go-to-k/cdkd#4565)', () => {
   it('a resource, a literal, a pseudo parameter and a clean-resource attribute are clean', async () => {
-    for (const output of ['Arn', 'Name', 'Literal', 'Pseudo', 'FromReadsClean', 'SubVarClean']) {
+    for (const output of [
+      'Arn',
+      'Name',
+      'Literal',
+      'Pseudo',
+      'FromReadsClean',
+      'SubVarClean',
+      'MapClean',
+      'GrandStringForm',
+    ]) {
       expect(await classOf(output), output).toBe('clean');
     }
   });
@@ -280,6 +313,10 @@ describe('nestedStackOutputClass: taint over the child template (go-to-k/cdkd#45
       'GetAttUndeclared',
       'SubVarSecret',
       'SubReference',
+      'FromHiddenString',
+      // The mapping leaf is not in the operands: the whole map counts.
+      'MapSecret',
+      'MapSecretKey',
     ]) {
       expect(await classOf(output), output).toBe('secret');
     }
@@ -316,6 +353,12 @@ describe('nestedStackOutputClass: taint over the child template (go-to-k/cdkd#45
       'NoValue',
       'UnreadAndCustom',
       'GrandIntrinsicOut',
+      // Fixed by the template, not a read that failed this time.
+      'IfUndeclaredCond',
+      'IfResourceCond',
+      'MapDynamicName',
+      'MapUndeclared',
+      'MapProto',
     ]) {
       expect(await classOf(output), output).toBe('unknown');
     }
@@ -382,6 +425,9 @@ describe('nestedStackOutputClass: taint over the child template (go-to-k/cdkd#45
     // `G` is the child's `{Ref: PassedClean}` (clean), `H` its NoEcho parameter.
     expect(await classOf('GrandPassedClean')).toBe('clean');
     expect(await classOf('GrandPassedSecret')).toBe('secret');
+    // The child passes on a value the parent could not read: `unknown` to the
+    // grandchild, so an output reading it is neither compared nor hashed.
+    expect(await classOf('GrandPassedUnread')).toBe('unread');
     // A grandchild the tree does not hold.
     expect(
       await classOf('GrandOut', { loader: loaderOf({ Child: { template: CHILD } }) })
@@ -469,7 +515,8 @@ describe('nestedStackOutputClass: taint over the child template (go-to-k/cdkd#45
     expect(await classOf('FromG', { template, loader: loads })).toBe('secret');
     expect(loads.mock.calls.length).toBeLessThan(5);
 
-    // A child whose rows each pass the next row's output twice: 2^16 paths.
+    // A child whose rows each pass the next row's output twice: 2^16 paths
+    // without the memo, one classification per row and output with it.
     const depth = 16;
     const resources: CloudFormationTemplate['Resources'] = {};
     for (let i = 0; i < depth; i++) {
@@ -488,49 +535,204 @@ describe('nestedStackOutputClass: taint over the child template (go-to-k/cdkd#45
       Resources: resources,
       Outputs: { X: { Value: getAtt('FromG', 'R0') } },
     };
+    const leafTemplate = {
+      ...GRAND,
+      Parameters: { G: { Type: 'String', Default: 'd' }, H: { Type: 'String' } },
+    };
+    const leafLoads = vi.fn(() => ({
+      template: leafTemplate,
+      identity: 'leaf',
+      childTemplate: () => undefined,
+    }));
+    expect(
+      await classOf('X', {
+        loader: () => ({ template: wide, identity: 'wide', childTemplate: leafLoads }),
+      })
+    ).toBe('clean');
+    expect(leafLoads.mock.calls.length).toBeLessThanOrEqual(2 * depth);
+
+    // The same fan-out in the PARENT's rows.
     const parentRows: CloudFormationTemplate = { Resources: {} };
+    const parentResolved: Record<string, unknown> = {};
     for (let i = 0; i < depth; i++) {
       parentRows.Resources[i === 0 ? 'Child' : `S${i}`] = {
         Type: 'AWS::CloudFormation::Stack',
         Properties: {
           TemplateURL: 'u',
           Parameters:
-            i === depth - 1 ? {} : { G: getAtt('FromG', `S${i + 1}`), H: getAtt('FromG', `S${i + 1}`) },
+            i === depth - 1
+              ? {}
+              : { G: getAtt('FromG', `S${i + 1}`), H: getAtt('FromG', `S${i + 1}`) },
         },
       };
+      if (i > 0) parentResolved[key('FromG', `S${i}`)] = 'd';
     }
-    const leafTemplate = { ...GRAND, Parameters: { G: { Type: 'String', Default: 'd' }, H: { Type: 'String' } } };
-    // The same fan-out in the PARENT's rows: the budget stops it (2^16 rows
-    // would be followed without it), and the output is kept as written.
     const parentLoads = vi.fn(() => ({
       template: leafTemplate,
       identity: 'leaf',
       childTemplate: () => undefined,
     }));
     expect(
-      await classOf('FromG', {
-        template: parentRows,
-        loader: parentLoads,
-        resolved: { [key('FromG', `S${depth - 1}`)]: 'd' },
-      })
-    ).toBe('unknown');
-    expect(parentLoads.mock.calls.length).toBeLessThan(20_000);
-    const leaf = { template: { ...GRAND, Parameters: { G: { Type: 'String', Default: 'd' } } }, identity: 'leaf', childTemplate: () => undefined };
-    expect(
-      await classOf('X', {
-        loader: () => ({ template: wide, identity: 'wide', childTemplate: () => leaf }),
-      })
-    ).toBe('unknown');
-    // The same tree, one level shallow enough to finish inside the budget.
-    const narrow: CloudFormationTemplate = {
-      Resources: { R0: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } } },
-      Outputs: { X: { Value: getAtt('FromG', 'R0') } },
-    };
-    expect(
-      await classOf('X', {
-        loader: () => ({ template: narrow, identity: 'narrow', childTemplate: () => leaf }),
-      })
+      await classOf('FromG', { template: parentRows, loader: parentLoads, resolved: parentResolved })
     ).toBe('clean');
+    expect(parentLoads.mock.calls.length).toBeLessThanOrEqual(2 * depth);
+  });
+
+  it('a CDK-shaped sibling chain (6 levels x 10 passed outputs) stays clean, in linear work', async () => {
+    const levels = 6;
+    const width = 10;
+    const template: CloudFormationTemplate = { Resources: {} };
+    const resolved: Record<string, unknown> = {};
+    const outputs: Record<string, unknown> = {};
+    const parameters: Record<string, unknown> = {};
+    for (let j = 0; j < width; j++) {
+      parameters[`P${j}`] = { Type: 'String' };
+      outputs[`O${j}`] = { Value: { Ref: `P${j}` } };
+    }
+    for (let i = 0; i < levels; i++) {
+      const row = i === 0 ? 'Child' : `L${i}`;
+      const passed: Record<string, unknown> = {};
+      for (let j = 0; j < width; j++) {
+        passed[`P${j}`] = i === levels - 1 ? 'literal' : getAtt(`O${j}`, `L${i + 1}`);
+        if (i > 0) resolved[key(`O${j}`, row)] = `v-${i}-${j}`;
+      }
+      template.Resources[row] = {
+        Type: 'AWS::CloudFormation::Stack',
+        Properties: { TemplateURL: 'u', Parameters: passed },
+      };
+    }
+    const loads = vi.fn(() => ({
+      template: { Parameters: parameters, Resources: {}, Outputs: outputs } as CloudFormationTemplate,
+      identity: 'level',
+      childTemplate: () => undefined,
+    }));
+    const s = sources({ template, loader: loads, resolved });
+    expect(await nestedStackOutputClass('Child', 'Outputs.O0', s)).toBe('clean');
+    expect(loads.mock.calls.length).toBeLessThanOrEqual(levels * width);
+    expect(s.resolve.mock.calls.length).toBeLessThanOrEqual(levels * width);
+  });
+
+  it('a chain of child templates whose outputs each read the next level twice stays clean', async () => {
+    // Without the output memo this is 2^20 classifications, past the budget.
+    const level = (i: number): NestedTemplate => ({
+      template:
+        i === 20
+          ? { Resources: {}, Outputs: { X: { Value: 'leaf' }, Y: { Value: 'leaf' } } }
+          : {
+              Resources: { Next: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } } },
+              Outputs: {
+                X: { Value: { 'Fn::Join': ['', [getAtt('X', 'Next'), getAtt('Y', 'Next')]] } },
+                Y: { Value: { 'Fn::Join': ['', [getAtt('X', 'Next'), getAtt('Y', 'Next')]] } },
+              },
+            },
+      identity: `level-${i}`,
+      childTemplate: () => level(i + 1),
+    });
+    expect(await classOf('X', { loader: () => level(0) })).toBe('clean');
+  });
+
+  it('the step budget stops a tree the memo cannot shorten, in the child and in the parent', async () => {
+    const n = 12_000;
+    // A child reading n rows, each its own template: n distinct classifications.
+    const rows: CloudFormationTemplate = { Resources: {} };
+    const reads: unknown[] = [];
+    for (let i = 0; i < n; i++) {
+      rows.Resources[`R${i}`] = { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } };
+      reads.push(getAtt('Y', `R${i}`));
+    }
+    rows.Outputs = { X: { Value: { 'Fn::Join': ['', reads] } } };
+    expect(
+      await classOf('X', {
+        loader: () => ({
+          template: rows,
+          identity: 'rows',
+          childTemplate: (id) => ({ template: GRAND, identity: id, childTemplate: () => undefined }),
+        }),
+      })
+    ).toBe('unknown');
+    // A parent passing n rows' outputs, all one template: n row classifications.
+    const parent: CloudFormationTemplate = { Resources: {} };
+    const parentReads: unknown[] = [];
+    for (let i = 0; i < n; i++) {
+      parent.Resources[`S${i}`] = { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } };
+      parentReads.push(getAtt('Y', `S${i}`));
+    }
+    const classes = await classifyPassedParameters(
+      { P: { 'Fn::Join': ['', parentReads] } },
+      {
+        template: parent,
+        parameterInput: () => ({ kind: 'secret' }),
+        childTemplate: () => ({ template: GRAND, identity: 'g', childTemplate: () => undefined }),
+        resolve: async () => ({ value: 'v' }),
+      }
+    );
+    expect(classes.get('P')).toBe('secret');
+  });
+
+  it('two nested reads in one value give the same hash whatever order their resolutions settle in', async () => {
+    // Read A spends all but one step of the budget, read B two: whichever is
+    // classified LAST is cut off. In template order that is always B.
+    const n = 9_997;
+    const big: CloudFormationTemplate = { Parameters: { Q: { Type: 'String' } }, Resources: {} };
+    const reads: unknown[] = [];
+    for (let i = 0; i < n; i++) {
+      big.Resources[`R${i}`] = { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } };
+      reads.push(getAtt('Y', `R${i}`));
+    }
+    big.Outputs = { X: { Value: { 'Fn::Join': ['', reads] } } };
+    const template: CloudFormationTemplate = {
+      ...PARENT,
+      Resources: {
+        ...PARENT.Resources,
+        Bucket2: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'b2' } },
+        Big: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'u', Parameters: { Q: { Ref: 'Bucket2' } } },
+        },
+      },
+    };
+    const loader: ChildTemplateLoader = (id) =>
+      id === 'Big'
+        ? {
+            template: big,
+            identity: 'big',
+            childTemplate: (row) => ({ template: GRAND, identity: row, childTemplate: () => undefined }),
+          }
+        : loaderOf(TREE)(id);
+    const answers: Record<string, unknown> = {
+      [JSON.stringify({ Ref: 'Bucket' })]: 'b',
+      [JSON.stringify({ Ref: 'Bucket2' })]: 'b2',
+      [key('X', 'Big')]: 'x',
+      [key('Name')]: 'n',
+    };
+    const delayed = (bucket: number, bucket2: number): MaskedInputSources => ({
+      ...sources({ template, loader }),
+      resolve: (node: unknown) => {
+        const k = JSON.stringify(node);
+        const delay =
+          k === JSON.stringify({ Ref: 'Bucket' }) ? bucket : k === JSON.stringify({ Ref: 'Bucket2' }) ? bucket2 : 0;
+        return new Promise((resolve, reject) =>
+          setTimeout(
+            () =>
+              Object.hasOwn(answers, k) ? resolve({ value: answers[k] }) : reject(new Error('no')),
+            delay
+          )
+        );
+      },
+    });
+    const value = script({ 'Fn::Join': ['-', [getAtt('X', 'Big'), getAtt('Name')]] });
+    // The two reads as an array (`Fn::Join`) and as a plain map's members.
+    for (const shape of [value, { A: getAtt('X', 'Big'), B: getAtt('Name') }]) {
+      const slowA = await maskedInputFingerprint(shape, delayed(0, 20));
+      const slowB = await maskedInputFingerprint(shape, delayed(20, 0));
+      expect(slowA).toMatch(/^inputs-sha256:/);
+      expect(slowB).toBe(slowA);
+    }
+    // Control: B is the one cut off (kept as written), A is resolved.
+    const both = sources({ template, loader, resolved: answers });
+    await maskedInputFingerprint(value, both);
+    expect(both.resolve).toHaveBeenCalledWith(getAtt('X', 'Big'));
+    expect(both.resolve).not.toHaveBeenCalledWith(getAtt('Name'));
   });
 
   it('is deterministic: never resolves anything in the child, whatever the resolver answers', async () => {
@@ -562,6 +764,35 @@ describe('maskedInputFingerprint over a nested-stack output (go-to-k/cdkd#4565)'
     expect(one.resolve).toHaveBeenCalledWith(getAtt('Name'));
     // The same value again: the same hash (no churn).
     expect(await maskedInputFingerprint(script(getAtt('Name')), sources({ resolved: { [key('Name')]: 'target-one' } }))).toBe(a);
+  });
+
+  it('the string form of Fn::GetAtt reads it the same way', async () => {
+    const value = script({ 'Fn::GetAtt': 'Child.Outputs.Name' });
+    const one = sources({ resolved: { [JSON.stringify({ 'Fn::GetAtt': 'Child.Outputs.Name' })]: 'one' } });
+    const a = await maskedInputFingerprint(value, one);
+    const b = await maskedInputFingerprint(
+      value,
+      sources({ resolved: { [JSON.stringify({ 'Fn::GetAtt': 'Child.Outputs.Name' })]: 'two' } })
+    );
+    expect(a).toMatch(/^inputs-sha256:/);
+    expect(a).not.toBe(b);
+    expect(one.resolve).toHaveBeenCalledWith({ 'Fn::GetAtt': 'Child.Outputs.Name' });
+  });
+
+  it('a parent condition over a parameter not read this time still makes the value unknown, whatever its verdict', async () => {
+    const template: CloudFormationTemplate = {
+      Parameters: { Unbound: { Type: 'String' } },
+      Conditions: { C: { 'Fn::Equals': [{ Ref: 'Unbound' }, 'x'] } },
+      Resources: {},
+    };
+    expect(
+      await maskedInputFingerprint(script({ 'Fn::If': ['C', 'a', 'b'] }), {
+        template,
+        parameterInput: parameterInputsFor({ template, values: {} }).parameterInput,
+        conditions: { C: true },
+        resolve: () => Promise.reject(new Error('none')),
+      })
+    ).toBeUndefined();
   });
 
   it('an Fn::Sub placeholder reads it the same way', async () => {
@@ -620,6 +851,12 @@ describe('maskedInputFingerprint over a nested-stack output (go-to-k/cdkd#4565)'
       ...PARENT,
       Resources: {
         ...PARENT.Resources,
+        // The row passes only a literal, so nothing but the nested stack's
+        // opacity can taint a resource that reads its output.
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'u', Parameters: { A: 'lit' } },
+        },
         Reader: { Type: 'AWS::SNS::Topic', Properties: { TopicName: getAtt('Name') } },
       },
     };

@@ -373,6 +373,7 @@
         "loggroup-class-guard",
         "loggroup-never-expire-guard",
         "lost-child-after-failed-deploy",
+        "nested-stack-3level",
         "nested-stack-replace-guard",
         "rds-full-stack",
         "recreate-nested-logical-id-collision",

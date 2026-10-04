@@ -1097,6 +1097,84 @@ describe('DeployEngine - a masked property reading a CLEAN nested-stack output i
     expect(sentTo('R')).toHaveLength(0);
   });
 
+  it("a sibling's clean output passed into another child is classified clean: sent once when it moves, skipped when it does not, secret with no assembly", async () => {
+    /** The parent: Child (the producer) and Consumer, a sibling fed its output. */
+    const withConsumer: CloudFormationTemplate = {
+      Resources: {
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'u1', Parameters: { Hidden: 'hidden-value-4565' } },
+        },
+        Consumer: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: {
+            TemplateURL: 'c1',
+            Parameters: { P: { 'Fn::GetAtt': ['Child', 'Outputs.Name'] } },
+          },
+        },
+      },
+    };
+    /** The classes the parent hands the Consumer's engine, with or without the assembly. */
+    const consumerClasses = async (nestedTemplates: Record<string, string>) => {
+      const h = harness({ levels: [['Child'], ['Consumer']], deps: { Consumer: ['Child'] } });
+      let seen: ReadonlyMap<string, string> | undefined;
+      h.provider.create.mockImplementation((id: string) => {
+        if (id === 'Consumer') seen = passedParameterClassesOf(getCurrentResourceSecrets());
+        return Promise.resolve(
+          id === 'Child'
+            ? { physicalId: 'child', attributes: { 'Outputs.Name': 'target-one' } }
+            : { physicalId: id }
+        );
+      });
+      await withNestedStackContext({ nestedTemplates } as never, () =>
+        h.deployTemplate(withConsumer)
+      );
+      return seen!;
+    };
+    const clean = await consumerClasses({ Child: childPath });
+    expect(Object.fromEntries(clean)).toEqual({ P: 'clean' });
+    const noAssembly = await consumerClasses({});
+    expect(Object.fromEntries(noAssembly)).toEqual({ P: 'secret' });
+
+    // The Consumer's own engine, handed those classes and the output's value.
+    const consumerTemplate: CloudFormationTemplate = {
+      Parameters: { P: { Type: 'String' } },
+      Resources: {
+        R: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: '/app/consumer', Type: 'String', Value: script({ Ref: 'P' }) },
+        },
+      },
+    };
+    const consumer = (value: string, classes: ReadonlyMap<string, string>) =>
+      harness({
+        engineOptions: {
+          parameters: { P: value },
+          parentStackInfo: { parentStack: 's', parentLogicalId: 'Consumer', parentRegion: 'us-east-1' },
+          passedParameterClasses: classes,
+        },
+      });
+    for (const [classes, sends] of [
+      [clean, 1],
+      [noAssembly, 0],
+    ] as const) {
+      const first = await consumer('target-one', classes).deployTemplate(consumerTemplate);
+      const moved = consumer('target-two', classes);
+      moved.setState(first);
+      const second = await moved.deployTemplate(consumerTemplate);
+      expect(moved.provider.update).toHaveBeenCalledTimes(sends);
+      if (sends === 1) {
+        expect((moved.provider.update.mock.calls[0]![3] as Record<string, unknown>)['Value']).toBe(
+          Buffer.from('t=target-two;pw=pw-secret-value').toString('base64')
+        );
+      }
+      const same = consumer('target-two', classes);
+      same.setState(second);
+      await same.deployTemplate(consumerTemplate);
+      expect(same.provider.update).not.toHaveBeenCalled();
+    }
+  });
+
   it('cdkd diff recomputes what the deploy stamped from the same assembly: no phantom change', async () => {
     const outputs = { name: 'target-one', hidden: 'h-one' };
     const { deploy } = nestedHarness(outputs);

@@ -537,7 +537,7 @@ export class DeployEngine {
    * The nested-stack templates of the cloud assembly this deploy reads
    * (go-to-k/cdkd#4565), so a masked property reading a clean nested-stack
    * output is resolved alike in the diff pass and the provisioning arms. Set
-   * with {@link fingerprintParameters}, which gates every read of it.
+   * with {@link fingerprintParameters}; reset per `deploy()`.
    */
   /** @internal */
   fingerprintChildTemplates: ChildTemplateLoader | undefined = undefined;
@@ -835,6 +835,7 @@ export class DeployEngine {
     this.perResourceResolvedType = new Map();
     this.fingerprintNoEchoValues = undefined;
     this.fingerprintParameters = undefined;
+    this.fingerprintChildTemplates = undefined;
     this.perResourceInputFingerprints = new Map();
     // Issue #2516: reset with the other per-deploy maps. A reused engine
     // whose next deploy fails before its own attempted bag is recorded would

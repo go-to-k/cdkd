@@ -363,7 +363,9 @@ export async function doDeployWithPrefetch(
     // go-to-k/cdkd#4565: the nested-stack templates one level below this
     // stack, from the assembly the surrounding nested-stack context carries
     // (the top-level run's `StackInfo.nestedTemplates`, or the provider's
-    // index for a child). Read once here, never from inside a fingerprint walk.
+    // index for a child). The loader is built once here, never from inside a
+    // fingerprint walk; each file is read on first use and cached for the
+    // rest of this deploy.
     this.fingerprintChildTemplates = childTemplateLoader(
       getCurrentNestedStackContext()?.nestedTemplates
     );
