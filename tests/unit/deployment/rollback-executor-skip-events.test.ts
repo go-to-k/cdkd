@@ -332,6 +332,50 @@ describe('replayFailedOperations records a ROLLBACK_RESOURCE_SKIPPED event per d
     expect(warns.join('\n')).toContain('this op died mid-flight');
   });
 
+  it('skip-failed-mismatch: a failed CREATE whose recorded id state no longer names (go-to-k/cdkd#4552)', async () => {
+    // No import mark: the CLI hands such an op to this replay. State names
+    // another resource under the id, so the recorded one may be live and
+    // untracked: warned and counted (exit 2), nothing deleted, record kept.
+    const del = vi.fn();
+    const { ctx, events, warns } = makeCtx({ delete: del });
+    const op: FailedOperation = {
+      logicalId: 'F',
+      changeType: 'CREATE',
+      resourceType: 'AWS::SQS::Queue',
+      provisionedBy: 'sdk',
+      physicalId: 'phys-recorded',
+    };
+    const record = res({ physicalId: 'phys-imported' });
+    const state = { F: record };
+    const result = await replayFailedOperations([op], state, 'S', ctx);
+    expect(del).not.toHaveBeenCalled();
+    expect(state.F).toBe(record);
+    expect(result).toMatchObject({ failures: 0, warnings: 1, skipped: 1 });
+    expect(result.remainingFailedOps).toEqual([]);
+    expectOneSkip(events, 'F', 'CREATE', 'other than the one state now tracks');
+    // The event carries no physical id; the warn line names the recorded one.
+    expect(JSON.stringify(skips(events))).not.toContain('phys-recorded');
+    expect(warns.join('\n')).toContain('it recorded phys-recorded');
+  });
+
+  it('control: a failed CREATE whose record is already gone stays a silent no-op', async () => {
+    // The re-run case `skip-failed-mismatch` was split from: no record at all.
+    const del = vi.fn();
+    const { ctx, events, warns } = makeCtx({ delete: del });
+    const op: FailedOperation = {
+      logicalId: 'F',
+      changeType: 'CREATE',
+      resourceType: 'AWS::SQS::Queue',
+      provisionedBy: 'sdk',
+      physicalId: 'phys-recorded',
+    };
+    const result = await replayFailedOperations([op], {}, 'S', ctx);
+    expect(del).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ failures: 0, warnings: 0, skipped: 0 });
+    expect(skips(events)).toEqual([]);
+    expect(warns).toEqual([]);
+  });
+
   it('control: a failed op with nothing to revert is neither a warning nor a skip', async () => {
     const { ctx, events } = makeCtx();
     const op: FailedOperation = {

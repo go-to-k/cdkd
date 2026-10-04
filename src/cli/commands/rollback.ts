@@ -32,6 +32,7 @@ import {
   dropSettledNestedJournals,
   nestedChildStackName,
   displacedOpClause,
+  displacedPhysicalIdShown,
   recordDisplacedSkips,
   type DisplacedOp,
   revertedNestedRowIds,
@@ -551,6 +552,15 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed CREATE recorded no physical id`;
     case 'skip-failed-noop':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed ${safe(op.changeType)} left nothing to revert`;
+    case 'skip-failed-mismatch':
+      // go-to-k/cdkd#4552: named (masked) as `displacedOpLabel` names it —
+      // once the segment pops, this line and the replay's warning are the
+      // only places the recorded resource is ever named.
+      return (
+        `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
+        `— failed CREATE recorded ${displacedPhysicalIdShown(op, getLogger()) ?? 'a physical id'}, ` +
+        `which is not the resource state tracks under this id; not reverted, needs manual attention`
+      );
     case 'skip-failed-absent':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — no previous state available`;
     case 'skip-failed-type-change':

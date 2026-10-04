@@ -252,6 +252,7 @@ export type FailedOpActionKind =
   | 'orphan-failed-create-retain' // ↑ under DeletionPolicy Retain → leave in AWS (#1362)
   | 'skip-failed-unknown' // failed CREATE with nothing recorded — cannot act
   | 'skip-failed-noop' // failed DELETE (resource still in place) / already handled
+  | 'skip-failed-mismatch' // failed CREATE whose recorded physical id state no longer names — warned, nothing deleted (go-to-k/cdkd#4552)
   | 'skip-failed-absent' // failed UPDATE with no previousState / not in state
   | 'skip-failed-type-change'; // failed UPDATE that was a Type change — no in-place revert exists (#2668)
 
