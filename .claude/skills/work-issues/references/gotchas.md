@@ -45,9 +45,11 @@
   renders against whichever repo reads it.
 - **An agent KILLED by a usage limit or a 429 keeps its context — `SendMessage`
   it, never re-dispatch**, and tell it its OWN reviewer subagents died too: only
-  it can resume them (twice in the 2026-10-01 run, every lane at once);
-  **read the TREE and the DIFF first**: it may
-  already have committed, pushed and opened the PR, and **uncommitted changes
+  it can resume them. A HOST RESTART may kill it outright (`SendMessage` first,
+  re-dispatch on its tree only if it cannot answer) and wipes the scratchpad:
+  rebuild any helper kept there (a relaunch exiting 127 is the symptom).
+  **Read the TREE and the DIFF first** (an unpushed commit survives): the agent
+  may already have committed, pushed and opened the PR, and **uncommitted changes
   there may be the round's real fix, not an abandoned probe**; §5-g covers one
   that finished quietly. One killed MID-INTEG also owes, before the resume: no
   `pgrep -fl verify.sh` hit whose cwd (`lsof -a -p <pid> -d cwd`) is inside its

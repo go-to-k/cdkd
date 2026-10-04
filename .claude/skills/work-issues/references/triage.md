@@ -60,10 +60,11 @@ be merged, since this repo SQUASH-merges, so ask by CONTENT
 diff disagrees with `status --porcelain`, the dirty tree wins.
 
 **A file another agent is editing is OFF-LIMITS** — read the "working on this"
-comments. A peer SESSION's open PR holds its whole files; a contributor's fork
-PR with no claim holds only its DIFF's hunks, cross-cutting files included:
-edit outside them, put new tests in new files, and stand down (claim.md) when
-the fix needs its lines (#3613). The contested cross-cutting files:
+comments. An open PR — a peer session's or a fork's — holds its DIFF's hunks,
+their neighbours and code coupled to them, cross-cutting files included; read
+`gh pr diff <N>` before waiting. Edit outside them, put new tests in new files,
+and stand down (claim.md) only when the fix needs those lines (#4516).
+The contested cross-cutting files:
 `src/deployment/{deploy-engine,intrinsic-function-resolver,retry,retryable-errors,rollback-executor}.ts` (and `src/deployment/{deploy-engine,intrinsic-resolver,retryable-errors,rollback-executor}/*.ts`),
 `src/analyzer/{dag-builder,template-parser}.ts`,
 `src/provisioning/{register-providers,provider-registry}.ts`,
@@ -90,7 +91,7 @@ unreached ones stood down with a four-field comment.
 - **Take the LARGEST safe set** — never by forcing a lane into a contested file
   or shortening a verification, and size it against the SHARED account pool.
   RE-TAKE it after every merge, a peer's too: a candidate held at triage frees
-  when its holder merges (re-run §2's `files` query on the held ones).
+  when its holder merges (re-run §2's `files` query, then `gh pr diff`).
 - An old packed body (`Session-fit: <d> — <reason> / Effort: <duration>` on one
   line) is read, not bulk-rewritten: its `Effort:` is an **`Estimate`** and its
   `severity:*` label DERIVED, never `low` by default. Upgrade it to the four-line
