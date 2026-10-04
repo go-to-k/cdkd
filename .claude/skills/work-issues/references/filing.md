@@ -98,8 +98,7 @@ condition a reader can CHECK (`PR #N holds the lines this fix needs`, `the fix b
 ended"). Check it before writing EITHER value, the held-file query above once
 per file the fix edits: one whose needed lines an open PR this session did not
 open holds (triage.md §2) is `next` (a), naming THAT PR (#3959). A PR of THIS run is not
-external input: `now`, queued behind that lane — say so in the lane report
-(#4263 / #4264 were both filed `next` on this run's own #4269 / #4271).
+external input: `now`, queued behind that lane — say so in the lane report.
 
 The `<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
 write from filing whatever sat at that path, and heredoc → file → `--body-file`
@@ -111,5 +110,4 @@ BEFORE the duplicate search. A finding below it (wording, an input no CDK app
 produces, SECURITY.md's out-of-scope paste class) is one line in the PR body
 and is neither filed nor folded into an umbrella. A reviewer's finding meets
 the same bar, and so does the user path a finding ASSUMES: confirm the named
-entry point exists (`cdkd <cmd> --help` for a flag) before filing (#4559 assumed
-a `cdkd deploy --parameters` that does not exist).
+entry point exists (`cdkd <cmd> --help` for a flag) before filing (#4559).
