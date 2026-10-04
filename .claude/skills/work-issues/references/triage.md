@@ -22,7 +22,7 @@ gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
         | [.number, .author_association, .user.login, .created_at, .title] | @tsv'
 ```
 
-**The `backfill-type` exclusion is load-bearing** (go-to-k/cdkd#2949): a
+**The `backfill-type` exclusion is load-bearing** (#2949): a
 slice's `created_at` moves with the coverage map, so §3-0 and rule 7 misread it.
 
 To WORK the campaign, take the umbrella (`gh issue list --label
@@ -34,7 +34,7 @@ claim comment still applies.
 ```bash
 git fetch origin -q                    # REQUIRED before the ref probe below
 git worktree list
-gh pr list --state open --limit 200 --json number,title,headRefName,files,changedFiles  # holds GROW: re-run per claim (#3573)
+gh pr list --state open --limit 200 --json number,title,headRefName,files,changedFiles
 # `files` stops at 100 per PR: where changedFiles is larger, page the rest with
 # `gh api --paginate repos/go-to-k/cdkd/pulls/<N>/files -q '.[].filename'`.
 
@@ -98,17 +98,15 @@ unreached ones stood down with a four-field comment.
   shape when you CLAIM it (§4); if you take a `next`, the claim says why that no
   longer applies ("an integ run" is not a reason).
 
-**Resolve every premise against the tree at CLAIM time**, the issue's OWN record
-included — a comment's "not a hazard", a later thread, a body's "why
-ACCEPTED" or "conditional on #N" (read N's `state`; #2179's had closed) —
-already-done, not-yet-true and WRONG look identical from the title.
-Grep the asserted SYMBOL,
-not the body's paths or line numbers; a body PROPOSING a mechanism has no symbol,
-so resolve its EFFECT — what on `origin/main` already produces it
-(go-to-k/cdkd#2286). On an empty grep, `gh pr list --state all --search <symbol>`
-separates "premise wrong" from "premise on an unmerged branch". A fix choosing
-accept / refuse / replace / update has a CFn premise: `aws cloudformation
-describe-type --type RESOURCE --type-name <T> --query Schema` (`required`,
+**Resolve every premise against the tree at CLAIM time**, the issue's OWN
+record included (its comments; a body's "conditional on #N": read N's `state`,
+#2179's #2012 had closed) — already-done, not-yet-true and WRONG look identical
+from the title. Grep the asserted SYMBOL, not the body's paths or line numbers;
+a body PROPOSING a mechanism has no symbol, so resolve its EFFECT — what on `origin/main` already produces it
+(#2286). On an empty grep, `gh pr list --state all --search <symbol>` separates
+"premise wrong" from "premise on an unmerged branch". A fix choosing accept /
+refuse / replace / update has a CFn premise: `aws cloudformation describe-type
+--type RESOURCE --type-name <T> --query Schema` (`required`,
 `createOnlyProperties`), else a throwaway change set (delete its stack after),
 BEFORE design (#3769).
 

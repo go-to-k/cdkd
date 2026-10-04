@@ -30,12 +30,12 @@ rebase (`mise exec -- markgate status`) — unless main changed code the fixture
 EXERCISES: re-run it on the rebased head (#3726).
 
 - **DECLARE the tree final, in words, to whoever is still editing it** — every
-  scoped touch buys another real-AWS run. The one
-  exception to §8-h's "nits included": a COMMENT-ONLY nit found after the integ
-  may ride this run's next lane on that file, whose integ re-runs anyway, named
-  in that lane's PR body (#3977); with no such lane, fix it here and
-  re-run. Scope the reviewers to the delta and paste its COMMIT MESSAGE into the
-  brief: they read `gh pr diff`, not `git log`.
+  scoped touch buys another real-AWS run. The one exception to §8-h's "nits
+  included": a COMMENT-ONLY nit found after the integ may ride this run's next
+  lane on that file, whose integ re-runs anyway, named in that lane's PR body
+  (#3977); with no such lane, fix it here and re-run. Scope the reviewers to the
+  delta and paste its COMMIT MESSAGE into the brief: they read `gh pr diff`, not
+  `git log`.
 
 ### 8-c. The live-test tiers
 
@@ -65,10 +65,10 @@ tests passing is necessary but NOT sufficient:
 - **A change to what cdkd PRINTS or DECIDES** (a message's text or line split,
   a refuse / adopt outcome) → `grep -rlF --include='*.sh' --include='*.ts'
   --include='*.mjs' --exclude-dir=node_modules '<old text>' tests/integration`
-  (`verify.sh`, `run.sh` and helpers such as `inject-drift.ts` read output; a
-  hit in a top-level helper means every fixture sourcing it) and run each fixture it names before merge, whatever the
-  change's own tier: no vitest run executes them, so a reshaped line leaves a
-  fixture red on `main` until the next lane runs it (#4394).
+  (a hit in a top-level helper means every fixture sourcing it) and run each
+  fixture it names before merge, whatever the change's own tier: no vitest run
+  executes them, so a reshaped line leaves a fixture red on `main` until the
+  next lane runs it (#4394).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
   tests, config) → exempt from the tiers above, never from `/verify-pr` step 9;
   never conclude a CI job cannot fail on your diff from its NAME. Both arms
@@ -122,8 +122,7 @@ test. Two more vacuity shapes:
 - **Every assertion PREDATES your change → the run is somebody else's
   regression net.** `git diff origin/main -- <fixture>`, then add the one that
   could only pass AFTER it, guarded against vacuity — a `NOTE` naming your
-  issue is that slot: make it a `FAIL` before the run (#4548's caught a second
-  sink).
+  issue is that slot: make it a `FAIL` before the run (#4548).
 - **When a fix REMOVES a behaviour, an assertion that it HAPPENS goes
   over-determined, not red.**
 
