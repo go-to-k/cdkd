@@ -4441,6 +4441,24 @@ describe('cdkd drift', () => {
       expect(output).not.toContain('no drift detected here');
     });
 
+    it('names how many nested stacks a nested-only parent covers', async () => {
+      stageNested(
+        [
+          { stackName: 'Parent', region: 'us-east-1' },
+          { stackName: 'Parent~A', region: 'us-east-1' },
+          { stackName: 'Parent~B', region: 'us-east-1' },
+        ],
+        { Parent: ['A', 'B'] }
+      );
+      readQueues();
+
+      const { output } = await runDrift(['Parent']);
+
+      expect(output).toContain(
+        '✓ Parent (us-east-1): no drift detected here — 2 nested stacks, each checked in its own block'
+      );
+    });
+
     it('walks every depth parent-first, and keeps a sibling sharing a name prefix out', async () => {
       stageNested(
         [
@@ -4522,6 +4540,12 @@ describe('cdkd drift', () => {
       );
       expect(warned()).toContain('may still exist in AWS');
       expect(warned()).not.toContain('AWS reports this resource no longer exists');
+      // The run's closing line counts it apart from AWS-confirmed deletions.
+      const closing = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(closing).toContain(
+        "1 nested stack(s) whose state record is gone were not reverted; each is named above."
+      );
+      expect(closing).not.toContain('deleted outside cdkd were not');
       expect(exitSpy).toHaveBeenCalledWith(2);
     });
 

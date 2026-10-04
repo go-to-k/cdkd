@@ -1311,7 +1311,7 @@ async function driftCommand(
               `with a deleted resource in the stack, that run exits 1.`
           );
         }
-        if (!options.dryRun) throw deletedRefusalError(refusedDeleted, mode);
+        if (!options.dryRun) throw deletedRefusalError(reports, mode);
         return;
       }
       // Issue #2208: `No drift detected` is FALSE for a run that did not manage
@@ -1353,7 +1353,7 @@ async function driftCommand(
         // refusal below can; carry the deleted count into its message.
         if (refusedDeleted > 0 && err instanceof PartialFailureError) {
           throw new PartialFailureError(
-            `${err.message} ${deletedRefusalError(refusedDeleted, mode).message}`,
+            `${err.message} ${deletedRefusalError(reports, mode).message}`,
             err
           );
         }
@@ -1361,7 +1361,7 @@ async function driftCommand(
       }
     }
     if (refusedDeleted > 0 && !options.dryRun && outcome !== false) {
-      throw deletedRefusalError(refusedDeleted, mode);
+      throw deletedRefusalError(reports, mode);
     }
   } finally {
     for (const { clients } of stackRegionScopes.values()) clients.destroy();
@@ -1421,11 +1421,27 @@ function refuseDeletedForRemediation(
  * still differs from state — the same "finished, something not done" meaning
  * `--revert`'s per-resource failures already carry.
  */
-function deletedRefusalError(count: number, mode: 'accept' | 'revert'): PartialFailureError {
-  return new PartialFailureError(
-    `${count} resource(s) deleted outside cdkd were not ${mode === 'accept' ? 'accepted' : 'reverted'}; ` +
-      `each is named above.`
-  );
+function deletedRefusalError(
+  reports: StackDriftReport[],
+  mode: 'accept' | 'revert'
+): PartialFailureError {
+  // go-to-k/cdkd#4533: a nested row whose record is gone is counted apart --
+  // `cdkd state orphan` is one way it goes, so it is not "outside cdkd".
+  let deleted = 0;
+  let recordMissing = 0;
+  for (const report of reports) {
+    for (const o of report.outcomes) {
+      if (o.kind !== 'deleted') continue;
+      if (o.nestedStackRecordMissing === true) recordMissing += 1;
+      else deleted += 1;
+    }
+  }
+  const verb = mode === 'accept' ? 'accepted' : 'reverted';
+  const parts = [
+    ...(deleted > 0 ? [`${deleted} resource(s) deleted outside cdkd`] : []),
+    ...(recordMissing > 0 ? [`${recordMissing} nested stack(s) whose state record is gone`] : []),
+  ];
+  return new PartialFailureError(`${parts.join(' and ')} were not ${verb}; each is named above.`);
 }
 
 /**
