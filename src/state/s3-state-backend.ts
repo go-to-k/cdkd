@@ -38,6 +38,7 @@ import {
   displayIdent,
   displaySafe,
   displayStackName,
+  safeMsg,
   STACK_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
@@ -1383,8 +1384,8 @@ export class S3StateBackend {
       // The journal names an imported id only through ops of ANOTHER resource:
       // nothing is set aside, but the id's earlier attempts are superseded.
       this.logger.debug(
-        `Rollback journal for ${this.displayName(stackName)} (${displayIdent(region)}): ` +
-          `${named.size} imported logical id(s) superseded, none marked as imported`
+        safeMsg`Rollback journal for ${this.displayName(stackName)} (${displayIdent(region)}): ` +
+          safeMsg`${named.size} imported logical id(s) superseded, none marked as imported`
       );
     }
     addSupersededIds(journal.segments[journal.segments.length - 1]!, [...named]);
