@@ -5141,3 +5141,43 @@ describe('the create-only drop refusal preview (go-to-k/cdkd#2790)', () => {
     expect(lines.filter((line) => line.includes('CREATE_ONLY_DROP_NEEDS_REPLACEMENT'))).toHaveLength(1);
   });
 });
+
+describe('renderDiffTree - a masked property whose template expression changed (go-to-k/cdkd#4451)', () => {
+  it('labels the row, since both sides read ***', () => {
+    const root: DiffTreeNode = {
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      ccApiRoutes: new Map(),
+      outputChanges: [],
+      adoptedOrphans: [],
+      unreadable: [],
+      unreadableContainers: [],
+      unreadableOrphans: [],
+      blocking: [],
+      children: [],
+      changes: changeMap([
+      {
+        logicalId: 'Ud',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SSM::Parameter',
+        propertyChanges: [
+          {
+            path: 'Value',
+            oldValue: '***',
+            newValue: '***',
+            requiresReplacement: false,
+            maskedExpressionChanged: true,
+          },
+          { path: 'Name', oldValue: 'a', newValue: 'b', requiresReplacement: false },
+        ],
+      },
+      ]),
+    };
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    expect(lines).toContain('      - Value: [template expression changed]');
+    // Only the flagged row carries it.
+    expect(lines).toContain('      - Name:');
+  });
+});

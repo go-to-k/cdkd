@@ -475,11 +475,20 @@ export class SecretsDynamicRefStack extends cdk.Stack {
       // Same gate: the next deploy without the token deletes it.
       // A FIXED name, so verify.sh's cleanup can sweep it and Phase 1b3 can
       // prove it gone: it holds the base64 of a script carrying the password.
+      // Issue #4451: `CDKD_TEST_BASE64_EDIT` edits the script AROUND the
+      // reference. Both sides persist `***`, so only the record's fingerprint
+      // of the unresolved template value tells the diff and the deploy's
+      // no-change skip that it moved; verify.sh asserts the new script reaches
+      // AWS and that an unchanged redeploy sends nothing.
+      const scriptHead =
+        process.env.CDKD_TEST_BASE64_EDIT === 'true'
+          ? '#!/bin/bash\n# edited (issue 4451)\n'
+          : '#!/bin/bash\n';
       new ssm.CfnParameter(this, 'Base64UserDataParam', {
         name: `cdkd-test-dynref-b64-ud-${account}`,
         type: 'String',
         value: cdk.Fn.base64(
-          `#!/bin/bash\nPW={{resolve:secretsmanager:${literalSecretName}:SecretString:password}}\n`
+          `${scriptHead}PW={{resolve:secretsmanager:${literalSecretName}:SecretString:password}}\n`
         ),
       });
     }
