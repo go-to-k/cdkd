@@ -13,6 +13,7 @@ import {
   type ResolverContext,
   isDeliberateResolutionRefusal,
   quotedRender,
+  takeKeptPlaceholdersInsideReferences,
   withoutProducerRegions,
 } from './support.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
@@ -137,6 +138,30 @@ export async function resolveDynamicReferencesWithLogTwin(
   // default -- every internal route -- is the refusing one.
   persistedText = false
 ): Promise<DynamicReferencePass> {
+  // Issue #2166: a placeholder an `Fn::Sub` KEPT now sitting inside a
+  // reference of this string -- assembled by that `Fn::Sub` or by an
+  // enclosing one / an `Fn::Join` -- leaves that reference unevaluable, so the
+  // loop below never looks it up and nothing throws. Reported to the caller
+  // that collects abandoned units (see `noteKeptSubPlaceholder` in sub.ts).
+  if (context?.abandonedResolutions !== undefined) {
+    const bag = context.abandonedResolutions;
+    for (const { placeholder, because } of takeKeptPlaceholdersInsideReferences(bag, value)) {
+      const reason = because instanceof Error ? because.message : String(because);
+      bag.push(
+        this.abandonedUnit(
+          'placeholder',
+          placeholder,
+          new Error(
+            `Fn::Sub kept the placeholder ${placeholder} (${reason}) inside a ` +
+              `{{resolve:...}} reference, so that reference was never resolved`,
+            { cause: because }
+          ),
+          context,
+          value
+        )
+      );
+    }
+  }
   // Match all {{resolve:...}} patterns
   const pattern = /\{\{resolve:([^}]+)\}\}/g;
   let result = value;

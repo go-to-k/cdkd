@@ -144,12 +144,13 @@ const DEPLOY_RESOLVED_REFERENCE_SERVICES: ReadonlySet<string> = new Set([
  * reference the deploy could resolve (issue
  * [#2166](https://github.com/go-to-k/cdkd/issues/2166))?
  *
- * Asked by `resolveSub` of a placeholder it KEPT, on the substituted string.
  * Inside means: the nearest `{{resolve:` opening before the span is not closed
- * before it, a `}}` closes it after the span before any later opening, and the
+ * before it, a `}}` closes it after the span before any later opening, nothing
+ * between the opening and that `}}` is a quote or a line break, and the
  * opening names a resolvable service — or the span IS the service, which no
- * one can classify. The closing `}}` keeps prose that merely mentions the
- * opening (`Use the {{resolve:secretsmanager: prefix`) out.
+ * one can classify. The closing and quote / line-break tests keep prose that
+ * merely mentions the opening (`Use the {{resolve:secretsmanager: prefix`, or
+ * the same followed by a JSON body that has a `}}` of its own) out.
  */
 export function sitsInsideResolvableReference(text: string, start: number, end: number): boolean {
   const OPENING = '{{resolve:';
@@ -163,7 +164,59 @@ export function sitsInsideResolvableReference(text: string, start: number, end: 
   const close = text.indexOf('}}', end);
   if (close < 0) return false;
   const nextOpening = text.indexOf(OPENING, end);
-  return nextOpening < 0 || close < nextOpening;
+  if (nextOpening >= 0 && nextOpening < close) return false;
+  return !/["\r\n]/.test(text.slice(opening, close));
+}
+
+/**
+ * Placeholders `resolveSub` KEPT, per abandoned-unit bag, with why each was
+ * kept and whether it has been reported (issue
+ * [#2166](https://github.com/go-to-k/cdkd/issues/2166)). Keyed by the bag
+ * INSTANCE, which a caller opens per unit it resolves, so one unit's kept
+ * placeholder is never reported against another's reference.
+ */
+const KEPT_PLACEHOLDERS = new WeakMap<
+  AbandonedResolution[],
+  Map<string, { because: unknown; reported: boolean }>
+>();
+
+/** Remember a kept placeholder against `bag`; the first reason wins. */
+export function recordKeptPlaceholder(
+  bag: AbandonedResolution[],
+  placeholder: string,
+  because: unknown
+): void {
+  let kept = KEPT_PLACEHOLDERS.get(bag);
+  if (kept === undefined) {
+    kept = new Map();
+    KEPT_PLACEHOLDERS.set(bag, kept);
+  }
+  if (!kept.has(placeholder)) kept.set(placeholder, { because, reported: false });
+}
+
+/**
+ * The kept placeholders of `bag` that sit inside a resolvable reference in
+ * `text` and were not reported yet, each marked reported as it is returned —
+ * so the nested passes over one assembled string report it once.
+ */
+export function takeKeptPlaceholdersInsideReferences(
+  bag: AbandonedResolution[],
+  text: string
+): Array<{ placeholder: string; because: unknown }> {
+  const kept = KEPT_PLACEHOLDERS.get(bag);
+  if (kept === undefined) return [];
+  const found: Array<{ placeholder: string; because: unknown }> = [];
+  for (const [placeholder, entry] of kept) {
+    if (entry.reported) continue;
+    for (let at = text.indexOf(placeholder); at >= 0; at = text.indexOf(placeholder, at + 1)) {
+      if (sitsInsideResolvableReference(text, at, at + placeholder.length)) {
+        entry.reported = true;
+        found.push({ placeholder, because: entry.because });
+        break;
+      }
+    }
+  }
+  return found;
 }
 
 /**

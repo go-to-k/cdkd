@@ -4951,12 +4951,12 @@ function abandonedScanVerdict(source: unknown, err: unknown): 'count' | 'warn' |
  */
 function abandonedUnitVerdict(entry: AbandonedResolution): 'count' | 'warn' | 'silent' {
   if (!entry.carriedDynamicReference) return 'silent';
-  // Issue #2166: an `Fn::Sub` placeholder KEPT inside a reference names
-  // nothing the template declares, so its error is template-shaped and its
-  // token unfetchable -- both of which would say `warn`. But unlike a
-  // `Default`-less parameter it needs no `--parameters` to clear: fixing the
-  // template does. Counted, so the stack is not printed clean over a
-  // reference nothing resolved.
+  // Issue #2166: an `Fn::Sub` placeholder KEPT inside a reference. Its error
+  // is template-shaped and its token unfetchable -- both of which would say
+  // `warn` -- but the resolver reports only a placeholder naming NOTHING the
+  // template declares (no resource, no parameter), which fixing the template
+  // clears without any `--parameters`. Counted, so the stack is not printed
+  // clean over a reference nothing resolved.
   if (entry.unit === 'placeholder') return 'count';
   if (isTemplateShapeResolutionFailure(entry.error) || !entry.carriedFetchableReference) {
     return 'warn';

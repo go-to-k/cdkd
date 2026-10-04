@@ -1328,6 +1328,47 @@ describe('cdkd scrub counts a deferred reference that goes UNRESOLVED (issue #21
     expect(res).toMatchObject({ unverifiableLeaves: 0 });
   });
 
+  it.each([
+    ['a DECLARED parameter with no Default', { Stage: { Type: 'String' } }, '${Stage}'],
+    [
+      'a defaulted parameter beside a Default-less one, which unbinds every parameter',
+      { Env: { Type: 'String', Default: 'prod' }, Other: { Type: 'String' } },
+      '${Env}',
+    ],
+  ])('CONTROL: %s is kept but NOT counted -- scrub takes no --parameters', async (_l, params, ph) => {
+    // Scrub resolves with `bestEffort`, so these are kept rather than refused.
+    // Counting them would be a `--fail` gate nothing could clear.
+    useState(makeLeakyState(IRELAND_PASSWORD, 'none'));
+
+    const res = await scrub(
+      { 'Fn::Sub': `{{resolve:secretsmanager:${ph}-db:SecretString:password}}` },
+      undefined,
+      undefined,
+      params
+    );
+
+    expect(res).toMatchObject({ unverifiableLeaves: 0 });
+    expect(secretSends).toHaveLength(0);
+  });
+
+  it('the integ arm`s other phase: a deleted foreign SSM parameter is a counted finding', async () => {
+    // `dynamic-ref-cross-region` phase 3h's shape: SSM `ParameterNotFound` from
+    // the region the ARN names.
+    useState(makeLeakyState(IRELAND_PASSWORD, 'outputReads'));
+    prime(
+      PRODUCER_REGION,
+      'GetParameterCommand',
+      Object.assign(new Error(`Parameter ${PRODUCER_SSM_ARN} not found.`), {
+        name: 'ParameterNotFound',
+      })
+    );
+
+    const res = await scrub({ 'Fn::Sub': ['{{resolve:ssm:${A}}}', { A: PRODUCER_SSM_ARN }] });
+
+    expect(ssmSends.map((s) => s.ctorRegion)).toEqual([PRODUCER_REGION]);
+    expect(res).toMatchObject({ unverifiableLeaves: 1 });
+  });
+
   it('a deferred reference whose NAMED region refuses the read stays a counted finding', async () => {
     useState(makeLeakyState(IRELAND_PASSWORD, 'imports'));
     prime(

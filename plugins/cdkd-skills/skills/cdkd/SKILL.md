@@ -192,8 +192,8 @@ cannot bind with template defaults alone — an unresolvable `Ref` / `Fn::GetAtt
 a parameter with no `Default`, or a reference whose own argument holds a
 `${...}` no `Fn::Sub` substitutes — is WARNED but does not fail `--fail`,
 because a gate failure there could not be cleared. An `Fn::Sub` placeholder that
-names nothing the template declares, kept inside a `{{resolve:...}}` reference,
-DOES fail it: fixing the template clears it. So **a green `--dry-run --fail` does not by
+names no resource or parameter of the template, kept inside a `{{resolve:...}}`
+reference, DOES fail it: fixing the template clears it. So **a green `--dry-run --fail` does not by
 itself mean every record was examined**: read the warnings, since a record cdkd
 could not certify may still hold a plaintext written by an older binary.
 

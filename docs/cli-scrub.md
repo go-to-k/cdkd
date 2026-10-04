@@ -491,9 +491,12 @@ cannot rewrite. Five shapes qualify, and all five are also reported in words:
 
   The same finding covers a reference an `Fn::Sub` placeholder left
   unresolvable: `{{resolve:secretsmanager:${Typo}-db:...}}`, where `Typo` names
-  nothing the template declares, keeps its `${Typo}` (the `keeping placeholder`
-  warning), so the reference is never looked up. Declare the variable, fix its
-  name, or escape it as `${!Typo}`, and re-run.
+  nothing the template declares (no resource, no parameter), keeps its
+  `${Typo}` (the `keeping placeholder` warning), so the reference is never
+  looked up — also when the `{{resolve:` around it comes from an enclosing
+  `Fn::Join` or `Fn::Sub`. Declare the variable, fix its name, or escape it as
+  `${!Typo}`, and re-run. A placeholder naming a declared parameter scrub
+  cannot bind gets only the `keeping placeholder` warning, as below.
 
 - a **cross-stack read name holding a secret's value from before a
   rotation**: `N cross-stack read name(s) in <stack> hold a plaintext scrub
@@ -512,7 +515,7 @@ properties bag, and some of those have nothing to do with fetching a reference:
 | --- | --- | --- |
 | The reference itself — deleted parameter, denied secret, missing `JSON_KEY` | exits `1` | Restoring the reference clears it. |
 | An unresolvable `Ref` / `Fn::GetAtt`, or a parameter with no `Default` | warns only | `scrub` resolves with template defaults and takes no `--parameters`, so it cannot bind these. A gate failure could not be cleared. |
-| An `Fn::Sub` placeholder naming nothing the template declares, kept inside the reference | exits `1` | Fixing the template clears it; no `--parameters` is involved. |
+| An `Fn::Sub` placeholder naming no resource or parameter of the template, kept inside the reference | exits `1` | Fixing the template clears it; no `--parameters` is involved. |
 | A reference whose own argument still holds a `${...}` no `Fn::Sub` substitutes | warns only | The token was never fetchable — same reason. |
 
 A failure is scoped to the PROPERTY that caused it — an unresolvable `Ref` in

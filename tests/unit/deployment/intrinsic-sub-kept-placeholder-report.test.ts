@@ -145,6 +145,93 @@ describe('resolveSub reports a placeholder it KEPT inside a reference (issue #21
     expect(abandoned.map((e) => e.subject)).toEqual(['${One}', '${Two}']);
   });
 
+  it('records an undeclared DOTTED placeholder, the GetAtt arm', async () => {
+    await resolver.resolve(
+      { 'Fn::Sub': '{{resolve:secretsmanager:${Missing.Arn}:SecretString:pw}}' },
+      ctx(abandoned)
+    );
+
+    expect(abandoned.map((e) => [e.unit, e.subject])).toEqual([['placeholder', '${Missing.Arn}']]);
+  });
+
+  it.each([
+    ['an inner Fn::Sub in an Fn::Join part', {
+      'Fn::Join': [
+        '',
+        ['{{resolve:secretsmanager:', { 'Fn::Sub': '${Typo}-db' }, ':SecretString:password}}'],
+      ],
+    }],
+    ['an inner Fn::Sub bound into the variable map', {
+      'Fn::Sub': [
+        '{{resolve:secretsmanager:${V}:SecretString:password}}',
+        { V: { 'Fn::Sub': '${Typo}-db' } },
+      ],
+    }],
+  ])('records it ONCE when the opening comes from %s', async (_label, value) => {
+    await resolver.resolve(value, ctx(abandoned));
+
+    expect(abandoned.map((e) => [e.unit, e.subject])).toEqual([['placeholder', '${Typo}']]);
+  });
+
+  it('places a kept placeholder correctly after a bound variable that changed the length', async () => {
+    // An empty value before it: the kept span must not land past the `}}`.
+    await resolver.resolve(
+      { 'Fn::Sub': ['${Pre}{{resolve:ssm:${Typo}}}', { Pre: '' }] },
+      ctx(abandoned)
+    );
+    expect(abandoned.filter((e) => e.unit === 'placeholder').map((e) => e.subject)).toEqual([
+      '${Typo}',
+    ]);
+
+    // A long value before a reference that CLOSES before the kept placeholder.
+    sendMock.mockResolvedValue({ Parameter: { Value: 'v', Type: 'String' } });
+    const later: AbandonedResolution[] = [];
+    await resolver.resolve(
+      { 'Fn::Sub': ['${Long}{{resolve:ssm:/a}} ${Typo}', { Long: 'x'.repeat(40) }] },
+      ctx(later)
+    );
+    expect(later).toEqual([]);
+  });
+
+  it.each([
+    ['prose followed by a JSON body with its own }}', 'Use {{resolve:ssm:${Typo} in {"a":{"b":1}}'],
+    ['prose continuing on the next line', 'Use {{resolve:ssm:${Typo}\nthen x}}'],
+  ])('records NOTHING for %s', async (_label, body) => {
+    await resolver.resolve({ 'Fn::Sub': body }, ctx(abandoned));
+
+    expect(abandoned).toEqual([]);
+  });
+
+  /**
+   * Under `bestEffort` (what `cdkd scrub` resolves with) a placeholder naming a
+   * DECLARED resource or parameter is kept rather than refused, and scrub takes
+   * no `--parameters`: reporting it would be a gate nothing clears.
+   */
+  it.each([
+    ['a parameter with no Default', '${Stage}'],
+    ['a parameter whose Default was not merged', '${Env}'],
+    ['a declared resource', '${Bucket.Arn}'],
+  ])('records NOTHING for %s, under bestEffort', async (_label, placeholder) => {
+    const declaredTemplate = {
+      Parameters: { Stage: { Type: 'String' }, Env: { Type: 'String', Default: 'prod' } },
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+    } as unknown as CloudFormationTemplate;
+
+    await resolver.resolve(
+      { 'Fn::Sub': `{{resolve:secretsmanager:${placeholder}-db:SecretString:password}}` },
+      {
+        template: declaredTemplate,
+        resources: {},
+        parameters: {},
+        bestEffort: true,
+        recordedSecretValues: new Map<string, string>(),
+        abandonedResolutions: abandoned,
+      } as unknown as ResolverContext
+    );
+
+    expect(abandoned).toEqual([]);
+  });
+
   it('DEPLOY PATH: with no bag the result, the warning and the outcome are unchanged', async () => {
     // The deploy engine never opts in. Same input both ways: the only
     // difference the bag may make is the report itself.
@@ -178,6 +265,8 @@ describe('sitsInsideResolvableReference (issue #2166)', () => {
     ['{{resolve:secretsmanager: prose ${X}', false],
     ['${X} {{resolve:ssm:/a}}', false],
     ['{{resolve:ssm:/a}}${X}}}', false],
+    ['{{resolve:ssm:${X} "q"}}', false],
+    ['{{resolve:ssm:${X}\n}}', false],
   ])('%s -> %s', (text, expected) => {
     expect(sitsInsideResolvableReference(...at(text, '${X}'))).toBe(expected);
   });
