@@ -31,6 +31,7 @@ import {
   NESTED_PENDING_PARENT_REASON,
   dropSettledNestedJournals,
   nestedChildStackName,
+  displacedPhysicalIdShown,
   recordDisplacedSkips,
   revertedNestedRowIds,
   withNestedRevertRun,
@@ -510,16 +511,14 @@ function importedOpLabel(op: { logicalId: string; resourceType: string }): strin
   );
 }
 
-function displacedOpLabel(op: {
-  logicalId: string;
-  resourceType: string;
-  physicalId?: string | undefined;
-}): string {
+function displacedOpLabel(op: Parameters<typeof displacedPhysicalIdShown>[0]): string {
   // The op's physical id is named: once the segment pops, this line is the
-  // only place the displaced resource is ever named (security review m4).
+  // only place the displaced resource is ever named (security review m4). It
+  // goes through the replay's per-op masker, as every id the replay prints.
+  const shownId = displacedPhysicalIdShown(op, getLogger());
   const recorded =
-    op.physicalId !== undefined
-      ? `recorded ${displaySafe(op.physicalId)}, which cdkd import has since replaced under this id`
+    shownId !== undefined
+      ? `recorded ${shownId}, which cdkd import has since replaced under this id`
       : `recorded no physical id, and cdkd import has since put another resource under this id`;
   return (
     `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +

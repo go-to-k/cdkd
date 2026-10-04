@@ -338,6 +338,45 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(skips[0]).not.toHaveProperty('physicalId');
   });
 
+  it('a displaced op whose name is secret-derived does not print its physical id (go-to-k/cdkd#4037 masker)', async () => {
+    // The journal holds the reference, not the plaintext; the physical id is
+    // the resolved name, so it is withheld like every id the replay prints.
+    const secretNamed = {
+      ...createOp,
+      physicalId: 'name-from-a-secret',
+      properties: { TopicName: '{{resolve:secretsmanager:app:SecretString:topic}}' },
+    };
+    install({ Topic: topicRecord('imported') }, [
+      { operations: [secretNamed], importedResources: [MARK] },
+    ]);
+
+    await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    const lines = [
+      ...infoLines(),
+      ...(logger['warn'] as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0])),
+    ];
+    expect(lines.some((l) => l.includes(' Topic (') && l.includes(DISPLACED))).toBe(true);
+    expect(lines.some((l) => l.includes('name-from-a-secret'))).toBe(false);
+  });
+
+  it('--revert-failed: a displaced failed CREATE that recorded no physical id says so', async () => {
+    install({ Topic: topicRecord('imported') }, [
+      {
+        operations: [],
+        failedOperations: [{ ...OTHER_FAILED, logicalId: 'Topic' }],
+        importedResources: [MARK],
+      },
+    ]);
+
+    await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(infoLines().some((l) => l.includes(' Topic (') && l.includes('recorded no physical id'))).toBe(
+      true
+    );
+  });
+
   it('--revert-failed: a displaced failed UPDATE is not force-reverted, warns, and stays in the journal', async () => {
     install({ Topic: topicRecord('imported') }, [
       {

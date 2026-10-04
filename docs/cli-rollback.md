@@ -331,7 +331,8 @@ runs none of those segments' operations for that id:
 Failed operations follow the same table under `--revert-failed`, and stay in
 the journal. A displaced operation also records a `ROLLBACK_RESOURCE_SKIPPED`
 event. Its segment is still removed after a run with no failures, so the plan
-line, which names the physical id, is the record to act on. Completed
+line, which names the physical id, is the record to act on. A physical id
+derived from a secret is masked there, as in every other rollback line. Completed
 operations of an id you pass to `--orphan` are not covered: the flag is
 honoured.
 

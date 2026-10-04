@@ -266,6 +266,8 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     expect(events.filter((e) => e['eventType'] === 'ROLLBACK_RESOURCE_SKIPPED')).toEqual([
       expect.objectContaining({ stackName: CHILD, logicalId: 'Q', resourceType: 'AWS::SQS::Queue' }),
     ]);
+    // The warn line names the displaced op's own physical id.
+    expect(h.logger.warn.mock.calls.some((c) => String(c[0]).includes('old-url'))).toBe(true);
   });
 
   it('hands every segment replay ONE record of completed writes (go-to-k/cdkd#4225)', async () => {

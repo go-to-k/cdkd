@@ -57,6 +57,7 @@ import {
   type CompletedOperation,
   type RollbackExecutorContext,
 } from './rollback-executor.js';
+import { createOpMasker } from './rollback-executor/names.js';
 import { RollbackInlinePolicyWriters } from './inline-policy-claims.js';
 import { producerRegionsFromState } from './secret-region-classification.js';
 import { inheritProducerRegions, type ProducerRegionEvidence } from './producer-regions-scope.js';
@@ -110,6 +111,41 @@ export function nestedPendingSnapshot(
       ...(Array.isArray(state.outputReads) && { outputReads: [...state.outputReads] }),
     },
   };
+}
+
+/**
+ * go-to-k/cdkd#4523: a DISPLACED op's physical id as a plan or warn line may
+ * print it — through the same per-op masker every replay line goes through
+ * (`createOpMasker`, go-to-k/cdkd#4037), since a physical id can be derived
+ * from a secret (a name built from a `{{resolve:...}}` value). The journal's
+ * bags hold the reference, not the plaintext, so `addNamed` masks the id
+ * whenever a recorded name is secret-derived. `undefined` when none recorded.
+ */
+export function displacedPhysicalIdShown(
+  op: {
+    logicalId: string;
+    resourceType: string;
+    physicalId?: string | undefined;
+    properties?: Record<string, unknown> | undefined;
+    attemptedProperties?: Record<string, unknown> | undefined;
+    previousState?: { properties?: unknown } | undefined;
+  },
+  logger: Logger
+): string | undefined {
+  if (op.physicalId === undefined) return undefined;
+  const masker = createOpMasker(logger, new Map());
+  for (const properties of [op.properties, op.attemptedProperties, op.previousState?.properties]) {
+    if (properties === undefined) continue;
+    masker.addNamed({
+      resourceType: op.resourceType,
+      properties,
+      logicalId: op.logicalId,
+      physicalIds: [op.physicalId],
+    });
+  }
+  // `displaySafe` strips control characters and never truncates, so a long
+  // ARN is named whole.
+  return displaySafe(String(masker.mask(op.physicalId)));
 }
 
 /**
@@ -624,9 +660,11 @@ export async function revertNestedChildFromJournal(args: {
       warnings += result.warnings + split.displaced.length;
       recordDisplacedSkips(execCtx.recordEvent, childStackName, split.displaced);
       for (const op of split.displaced) {
+        const shownId = displacedPhysicalIdShown(op, logger);
+        const recorded = shownId !== undefined ? safeMsg`${shownId}, which` : 'no physical id, and';
         logger.warn(
-          safeMsg`Nested stack ${childStackName}: ${op.logicalId} recorded a resource cdkd import ` +
-            `has since replaced under this id; not reverted, check that resource by hand`
+          safeMsg`Nested stack ${childStackName}: ${op.logicalId} recorded ${recorded} cdkd import ` +
+            'has since replaced under this id; not reverted, check that resource by hand'
         );
       }
     }
