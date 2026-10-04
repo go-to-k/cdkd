@@ -199,7 +199,6 @@ export function rethrowStructuralSubFailure(
  * first point that can tell. No bag, nothing remembered: deploy is unchanged.
  */
 function noteKeptSubPlaceholder(
-  resolver: IntrinsicFunctionResolver,
   varName: string,
   placeholder: string,
   because: unknown,
@@ -580,7 +579,7 @@ export async function resolveSub(
                 this.displayMasked(this.subPlaceholderWarning(varNameStr, getAttError), context)
               );
               replacement = match[0]; // Keep original placeholder
-              noteKeptSubPlaceholder(this, varNameStr, match[0], getAttError, context);
+              noteKeptSubPlaceholder(varNameStr, match[0], getAttError, context);
             }
           } else {
             // Issue #2270's other half, on the SAME terms as the dotted arm
@@ -596,7 +595,7 @@ export async function resolveSub(
               this.displayMasked(this.subPlaceholderWarning(varNameStr, refError), context)
             );
             replacement = match[0]; // Keep original placeholder
-            noteKeptSubPlaceholder(this, varNameStr, match[0], refError, context);
+            noteKeptSubPlaceholder(varNameStr, match[0], refError, context);
           }
         }
       }
