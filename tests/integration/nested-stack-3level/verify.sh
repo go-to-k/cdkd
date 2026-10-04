@@ -366,6 +366,18 @@ if ! grep -qF "${STACK}" <<<"${DEPLOY_OUT}"; then
   exit 1
 fi
 echo "  OK: the deploy's --verbose output carries no plaintext"
+# #4543: W1Script's version as Step 1 left it. Step 4d compares it with the
+# version just before its own deploy: Step 4c's deploys re-run the child
+# engine with Input4543 unchanged, so an equal version there is the arm's
+# no-churn evidence.
+W1_VERSION_STEP1=$(aws ssm get-parameter --name "${W1_PARAM_NAME}" --region "${AWS_REGION}" \
+  --query 'Parameter.Version' --output text)
+case "${W1_VERSION_STEP1}" in
+  '' | *[!0-9]*)
+    echo "FAIL: premise: ${W1_PARAM_NAME}'s version after Step 1 did not read as a number (${W1_VERSION_STEP1})" >&2
+    exit 1
+    ;;
+esac
 
 # #3156: the grandchild's lines per framed parameter, PRESENT and masked whole
 # -- the whole-value entry the root's carry records reaches the grandchild
@@ -944,6 +956,13 @@ if [[ "$(w1_live Value)" != "${W1_ONE_B64}" ]]; then
 fi
 W1_VERSION_ONE=$(w1_live Version)
 echo "  OK: premise: W1Script is recorded '***' with a bound input fingerprint, and AWS holds INPUT=one (version ${W1_VERSION_ONE})"
+# The no-churn half. Step 4c's three deploys (the changed great-grandchild
+# value, its re-attempt and the control) each made the root's Child row an
+# UPDATE, so the child engine ran with Input4543 unchanged and compared
+# W1Script's input fingerprint each time. Its version is still Step 1's: none
+# of them re-sent it.
+assert_eq "#4543: W1Script was not re-sent by Step 4c's child deploys (version ${W1_VERSION_STEP1})" \
+  "${W1_VERSION_ONE}" "${W1_VERSION_STEP1}"
 
 set +e
 W1_DEPLOY_OUT=$(CDKD_TEST_4543_INPUT=two ${CDKD} deploy ${STACK} \
@@ -989,7 +1008,9 @@ fi
 w1_scan_states "after the new root value"
 echo "  OK: #4543: the new root value reached the child's masked script (version ${W1_VERSION_ONE} -> ${W1_VERSION_TWO}); the input half moved, the text half did not"
 
-# No churn: the same tree with the same new value sends nothing to it.
+# A guard only, NOT churn coverage: with the same new value the root's Child
+# row diffs NO_CHANGE, so the child engine does not run here (the no-churn
+# check is the Step 4c comparison above).
 set +e
 W1_SAME_OUT=$(CDKD_TEST_4543_INPUT=two ${CDKD} deploy ${STACK} \
   --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes 2>&1)
@@ -1001,7 +1022,7 @@ if [[ ${W1_SAME_RC} -ne 0 ]]; then
   echo "FAIL: #4543: the unchanged redeploy with the new root value exited ${W1_SAME_RC}" >&2
   exit 1
 fi
-assert_eq "#4543: an unchanged redeploy does not re-send W1Script" "$(w1_live Version)" "${W1_VERSION_TWO}"
+assert_eq "#4543: an unchanged root redeploy does not touch W1Script" "$(w1_live Version)" "${W1_VERSION_TWO}"
 w1_scan_states "after the unchanged redeploy"
 
 # --------------------------------------------------------------------
