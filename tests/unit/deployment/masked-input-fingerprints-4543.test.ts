@@ -572,3 +572,49 @@ describe('DiffCalculator - a masked property whose resolved input moved (go-to-k
     );
   });
 });
+
+describe('review-round pins (go-to-k/cdkd#4543)', () => {
+  it('a reference cycle fails closed: the input stays as written', async () => {
+    const template: CloudFormationTemplate = {
+      ...BASE,
+      Resources: {
+        // A reads a secret; B reads only A. Walking A meets B, which meets A
+        // in progress: B must not be settled as clean on that partial answer.
+        A: {
+          Type: 'AWS::SNS::Topic',
+          Properties: { TopicName: { 'Fn::Join': ['', [{ Ref: 'B' }, { Ref: 'Hidden' }]] } },
+        },
+        B: { Type: 'AWS::SNS::Topic', Properties: { TopicName: { Ref: 'A' } } },
+      },
+    };
+    const s = sources({ template, resolved: { [ref('A')]: 'a', [ref('B')]: 'b' } });
+    expect(
+      await maskedInputFingerprint(script({ 'Fn::Join': ['', [{ Ref: 'A' }, { Ref: 'B' }]] }), s)
+    ).toBeDefined();
+    expect(s.resolve).not.toHaveBeenCalled();
+  });
+
+  it('an Fn::Sub explicit variable shadows the placeholder of the same name', async () => {
+    // `${P}` names the explicit variable, a literal: the template parameter P
+    // is not read, so its value must not move the hash.
+    const sub = { 'Fn::Base64': { 'Fn::Sub': [`p=\${P};pw=${SECRET}`, { P: 'literal' }] } };
+    const a = await maskedInputFingerprint(sub, sources());
+    const b = await maskedInputFingerprint(
+      sub,
+      sources({ values: { P: 'two', Hidden: 'h', Env: 'dev' } })
+    );
+    expect(a).toBeDefined();
+    expect(b).toBe(a);
+  });
+
+  it('a parent-supplied "null" for a parameter with no Default is supplied too', () => {
+    expect(
+      parameterInputsFor({
+        template: { Parameters: { NoDefault: { Type: 'String' } }, Resources: {} },
+        values: { NoDefault: 'null' },
+        nestedChild: true,
+        supplied: { NoDefault: 'null' },
+      }).parameterInput('NoDefault')
+    ).toEqual({ kind: 'secret' });
+  });
+});

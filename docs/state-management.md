@@ -1021,7 +1021,8 @@ its `Ref`, and these are kept as written:
   `NoEcho` parameter, a cross-stack value or a name the template does not
   declare, directly or through another resource;
 - an input whose resolution read a secret (a `NoEcho` custom resource's
-  `Data`, a redacted `***` read);
+  `Data`, a redacted `***` read), and an attribute holding a secret that the
+  resource it belongs to read in the same deploy;
 - in a nested stack, every parameter value its parent passed other than the
   parameter's `Default`.
 

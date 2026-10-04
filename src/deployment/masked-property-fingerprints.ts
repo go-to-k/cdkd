@@ -171,7 +171,9 @@ export interface MaskedInputSources {
    * resolving any `{{resolve:...}}` reference, returning the value and the bag
    * that resolution recorded secrets into. A throw is an unknown input.
    */
-  resolve(node: unknown): Promise<{ value: unknown; secrets?: RecordedSecretValues }>;
+  resolve(
+    node: unknown
+  ): Promise<{ value: unknown; secrets?: RecordedSecretValues; keepAsWritten?: boolean }>;
 }
 
 /** Raised inside the walk when an input is unknown; caught by its entry points. */
@@ -469,13 +471,13 @@ function conditionInput(name: string, walk: Walk): boolean | 'secret' | 'unknown
 
 /** Resolves an input node, keeping it as written when its value may be a secret. */
 async function resolvedInput(node: unknown, walk: Walk): Promise<InputForm> {
-  let resolved: { value: unknown; secrets?: RecordedSecretValues };
+  let resolved: { value: unknown; secrets?: RecordedSecretValues; keepAsWritten?: boolean };
   try {
     resolved = await walk.sources.resolve(node);
   } catch {
     throw new UnknownInput();
   }
-  if (carriesSecretValue(resolved.value, [resolved.secrets])) {
+  if (resolved.keepAsWritten === true || carriesSecretValue(resolved.value, [resolved.secrets])) {
     return { form: node, concrete: false };
   }
   return { form: resolved.value, concrete: true };
