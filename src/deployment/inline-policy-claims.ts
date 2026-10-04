@@ -166,10 +166,20 @@ export class RollbackInlinePolicyWriters {
     }
   }
 
-  /** How a registered op ended: `completed` settles it, otherwise it failed. */
+  /**
+   * How a registered op ended: `completed` settles it, otherwise it failed.
+   * A completed op settles every earlier entry of its logical id too: its
+   * record is now the one the rollback restored, whatever a newer segment's
+   * op of that id (a skip, an unrecoverable delete) left unsettled.
+   */
   noteOutcome(op: { logicalId: string }, completed: boolean): void {
-    if (completed) this.unsettled.delete(op);
-    else this.unsettled.set(op, { logicalId: op.logicalId, state: 'failed' });
+    if (!completed) {
+      this.unsettled.set(op, { logicalId: op.logicalId, state: 'failed' });
+      return;
+    }
+    for (const [key, entry] of this.unsettled) {
+      if (key === op || entry.logicalId === op.logicalId) this.unsettled.delete(key);
+    }
   }
 
   /**

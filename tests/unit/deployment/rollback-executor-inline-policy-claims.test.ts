@@ -1260,6 +1260,40 @@ describe('a rollback puts back an inline policy its removal took from a record t
     expect(warned()).toContain('the rollback of A has not completed');
   });
 
+  it.each([
+    ['settles', false, 1],
+    ['fails', true, 0],
+  ] as const)(
+    'S10: an older segment\'s op of the holder that %s decides, whatever a newer segment left unsettled',
+    async (_label, olderFails, putBacks) => {
+      // Newest segment: an unrecoverable DELETE of A, which never moves A's
+      // record and so stays unsettled for good. Older segment: A's own
+      // revert, then the removal of `x` that A holds.
+      const { state, ops } = revertOps();
+      const writers = new RollbackInlinePolicyWriters();
+      const deleteOfA: CompletedOperation = {
+        logicalId: 'A',
+        changeType: 'DELETE',
+        resourceType: POLICY,
+        physicalId: 'x',
+        provisionedBy: 'sdk',
+      };
+      await replayRollback([deleteOfA], state, 'S', ctx, { inlinePolicyWriters: writers });
+      if (olderFails) policyProvider.update.mockRejectedValueOnce(new Error('throttled'));
+
+      const result = await replayRollback(ops, state, 'S', ctx, { inlinePolicyWriters: writers });
+
+      expect(policyProvider.create).toHaveBeenCalledTimes(putBacks);
+      if (olderFails) {
+        expect(result.warnings).toBe(1);
+        expect(warned()).toContain('the rollback of A has not completed');
+      } else {
+        expect(result.warnings).toBe(0);
+        expect(holding()).toEqual({ x: 'd0' });
+      }
+    }
+  );
+
   it('S8: a refused or failed put-back records no success event', async () => {
     const state: Record<string, ResourceState> = {
       Old: policyRecord('n', 'docOld'),
