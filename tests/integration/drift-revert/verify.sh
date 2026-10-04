@@ -9,6 +9,8 @@
 #   3. inject drift via direct AWS SDK calls
 #   4. cdkd drift  -> assert exit 1 (drift detected)
 #   5. cdkd drift --revert -y  -> assert exit 0
+#  5b. issue #2102: the live value at a token EMBEDDED in a Glue parameter
+#      survives that revert
 #   6. cdkd drift  -> assert exit 0 (clean)
 #  6b. rewrite the recorded bucket-policy principal to a BOGUS unique id
 #      -> assert exit 1 (a real principal change is still drift)
@@ -84,6 +86,11 @@ fi
 # auto-delete custom resource first runs (during DEPLOY), and nothing in the
 # stack owns it, so destroy leaves it behind (#3885).
 . ../cr-log-groups.sh
+# The template writes a literal `{{resolve:...}}` token (step 5b, issue #2102).
+# Its service resolves nothing, but the S3 version-sweep convention keys on the
+# literal, and a sweep costs nothing next to a disclosure that outlives the run.
+. ../s3-versions.sh
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 
 # Set to 1 only when step 2's deploy failed acquiring the lock (a peer's, or an
 # S3 error on it): this run then created no stack resources, the stack under
@@ -127,6 +134,9 @@ cleanup() {
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
     sweep_bare_iam_names
   fi
+  # NONCURRENT only: on a failed run the current state.json may be the only
+  # record of resources still standing. The success path sweeps everything.
+  s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
   exit "${rc}"
 }
@@ -177,8 +187,46 @@ if [ "${rc}" -ne 1 ]; then
 fi
 echo "[verify] step 4 ok: exit ${rc}"
 
+GLUE_DB="cdkd_drift_revert_db"
+# Issue #2102: the value inject-drift.ts put at the stack's look-alike token's
+# span (`{{resolve:cdkdlookalike:...}}` in `DatabaseInput.Parameters.conn`).
+GLUE_CONN_LIVE="jdbc:mysql://db.internal:3306/app?password=live-value-2102"
+glue_db_field() { # usage: glue_db_field <query>; a failed read fails the caller
+  local out
+  out="$(aws glue get-database --name "${GLUE_DB}" --query "$1" --output text)" || return 1
+  printf '%s' "${out}"
+}
+glue_read_failed() {
+  echo "[verify] FAIL: get-database ${GLUE_DB} ($1) failed" >&2
+  exit 1
+}
+# Precondition: the injection landed, or step 5b's assertion would be vacuous.
+CONN_BEFORE="$(glue_db_field Database.Parameters.conn)" || glue_read_failed Database.Parameters.conn
+if [ "${CONN_BEFORE}" != "${GLUE_CONN_LIVE}" ]; then
+  echo "[verify] FAIL: inject-drift.ts did not set Parameters.conn (got '${CONN_BEFORE}')" >&2
+  exit 1
+fi
+
 echo "[verify] step 5: cdkd drift --revert -y (expect exit 0)"
 ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
+
+# Issue #2102: `--revert` overlays the Glue database's whole `DatabaseInput`
+# (its Description drifted), and `Parameters.conn` EMBEDS a token cdkd cannot
+# resolve. The live value is kept, because the rest of the string is exactly
+# what AWS holds; before the fix the literal token was written over it.
+echo "[verify] step 5b: issue #2102 — the live value at an embedded look-alike token survives --revert"
+DESC_AFTER="$(glue_db_field Database.Description)" || glue_read_failed Database.Description
+CONN_AFTER="$(glue_db_field Database.Parameters.conn)" || glue_read_failed Database.Parameters.conn
+# Non-vacuity: the revert really rewrote this DatabaseInput.
+if [ "${DESC_AFTER}" != "integ-original-description" ]; then
+  echo "[verify] FAIL step 5b: Glue Description='${DESC_AFTER}', expected the reverted 'integ-original-description'" >&2
+  exit 1
+fi
+if [ "${CONN_AFTER}" != "${GLUE_CONN_LIVE}" ]; then
+  echo "[verify] FAIL step 5b: Parameters.conn='${CONN_AFTER}', expected the live '${GLUE_CONN_LIVE}' kept" >&2
+  exit 1
+fi
+echo "[verify] step 5b ok: Description reverted, Parameters.conn kept live"
 
 echo "[verify] step 6: cdkd drift again (expect exit 0)"
 ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
@@ -433,7 +481,6 @@ echo "[verify] step 6f ok: no name drift for the legacy-prefixed role / policy"
 # the destroy, which tolerates the missing database (the Glue delete is
 # not-found idempotent).
 echo "[verify] step 6g: issue #4283 — a resource deleted out of band is reported as deleted"
-GLUE_DB="cdkd_drift_revert_db"
 aws glue delete-database --name "${GLUE_DB}"
 assert_gone "out-of-band delete of Glue database ${GLUE_DB} did not take" \
   aws glue get-database --name "${GLUE_DB}"
@@ -487,4 +534,6 @@ ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 
 trap - EXIT INT TERM
 sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "drift-revert state teardown"
 echo "[verify] PASS"

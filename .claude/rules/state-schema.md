@@ -22,6 +22,7 @@ interface StackState {
   exportNames?: string[];         // v9+: which `outputs` keys are Export.Name aliases — the ONLY names Fn::ImportValue may bind to; undefined = not known, [] = exports nothing
   skippedOutputs?: Record<string, string>; // no bump
   orphans?: StackOrphanRecord[];  // no bump: rollback-orphaned Retain resources the next deploy re-adopts, carrying the discarded ResourceState verbatim
+  conditionVerdicts?: Record<string, { verdict: boolean; fingerprint: string }>; // no bump: deployed verdicts of secret-fed conditions, for `cdkd diff`
   parentStack?: string;           // v6+: nested-stack CHILD records only (undefined = top-level); child key is cdkd/{parentStack}~{parentLogicalId}/{region}/state.json
   parentLogicalId?: string;       // v6+: the child's AWS::CloudFormation::Stack logical id in the parent
   parentRegion?: string;          // v6+: parent's region (equals `region` until cross-region nested stacks ship)
@@ -61,6 +62,10 @@ interface ResourceState {
 `outputs` is keyed by output NAME, and an output carrying `Export:` is ADDITIONALLY aliased under its export name in the same bag (`src/deployment/outputs-export-alias.ts`) — so before v9 nothing said which keys were exports.
 
 Every reader goes through ONE predicate, `importableOutputKeys(state)` in `src/types/state.ts`: `exportNames` intersected with the bag when the record carries it, every key when it does not. The discriminator is the FIELD, not `version` — `undefined` means NOT KNOWN and keeps the legacy rule so no cross-stack reference breaks on upgrade; `[]` means KNOWN to export nothing. A save that RE-RESOLVES outputs writes the set, `[]` included — unlike `imports` / `outputReads`, an empty array is NOT omitted. A save that CARRIES a bag forward spreads `exportNamesCarriedFrom(previous)`.
+
+## `conditionVerdicts` (no bump)
+
+The verdict a deploy computed for each condition `cdkd diff` reads but cannot evaluate, because its closure reaches a secret-fed parameter. Each entry's `fingerprint` hashes the condition's definitions and the parameter inputs they read, a secret-fed one as its `{{resolve:...}}` expression; the diff reuses the verdict ONLY on an equal fingerprint and otherwise takes FALSE. Writer, reader and the fingerprint's input all live in `src/deployment/condition-verdicts.ts`: change one side there or not at all. Absent or malformed means no record (`readRecordedConditionVerdicts`). A fresh-built save that omits it only costs the diff the verdict; a spreading writer may carry it, because none of them changes a definition or an input.
 
 ## `outputs`
 
