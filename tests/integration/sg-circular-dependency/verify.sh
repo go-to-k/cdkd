@@ -1123,6 +1123,9 @@ if printf '%s\n' "${STALE_OUT}" | grep -qF "could not be read"; then
   exit 1
 fi
 echo "    OK: a completed op's bag did not count as evidence"
+# The journal must SURVIVE the refused deploy: that attempt journaled nothing,
+# so its clean auto-rollback may not settle (pop) the seeded segment, which is
+# an older attempt's record (the #4522 review's B1). A 404 here is that bug.
 if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
   echo "FAIL: could not read the rollback journal after the STALE arm's refused deploy: ${ADOPT_JOURNAL}" >&2
   exit 1
