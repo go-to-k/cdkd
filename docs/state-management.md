@@ -130,7 +130,8 @@ below. Without that declaration the state file still carries the value.
 That purge is conditional on `s3:ListBucketVersions` and
 `s3:DeleteObjectVersion` on the state bucket — as is every other
 noncurrent-version purge cdkd runs (the rollback journal and the bootstrap
-marker below, and the transient CFn template upload) — see
+marker below, the transient CFn template upload, and the `deployments/` event
+store) — see
 [Bucket Policy with Least Privilege](#recommended-bucket-policy-with-least-privilege)
 — older recommended policies did not grant either. It fails soft by design, because it
 runs on a cleanup path that must never abort the operation it follows: without
@@ -2764,7 +2765,8 @@ this policy that is:
   Remove it and everything still works; you simply stop being told. Nothing
   fails without it.
 
-**Five kinds of object need those two version actions, not one.** The set has grown
+**Six kinds of object need those two version actions, not one** — the five in
+this table and the `deployments/**` event store below it. The set has grown
 over time, and the ordinary
 commands are now in it:
 
@@ -2782,16 +2784,19 @@ feature, and it is swept by an ordinary `cdkd destroy`. `state.json` is
 deliberately NOT in this table — its previous versions are the state-recovery
 capability versioning is enabled for.
 
-**Two other key families are not in the table either, and for neither reason.**
-`state.json` is a deliberate exemption; these are simply not purged, so their
+**The `deployments/**` event store needs the two version actions as well.**
+Every path that deletes from it — the writer's self-bounding prune,
+`cdkd events prune`, and `cdkd destroy --purge-events` — also purges the
+noncurrent versions of the keys it deletes. Each run's stream is re-written in
+full per flush, so one run leaves one version per flush, and the repo classes
+this content as sensitive: see
+[Deleting a run stream also purges its earlier versions](deployment-events.md#deleting-a-run-stream-also-purges-its-earlier-versions)
+for what that purge does not reach.
+
+**One other key family is not in the table either, and for neither reason.**
+`state.json` is a deliberate exemption; this one is simply not purged, so its
 previous versions accumulate and stay readable:
 
-- `deployments/**` — the deployment-event store. Its deletes carry no version
-  id on every path (the writer's self-bounding prune, `cdkd events prune`, and
-  `cdkd destroy --purge-events`), and each run's stream is re-written in full
-  per flush, so one run leaves one version per flush. The repo classes this
-  content as sensitive, so this matters: see
-  [Deleting a run stream does not remove its earlier versions](deployment-events.md#deleting-a-run-stream-does-not-remove-its-earlier-versions).
 - `_index/{region}/exports.json` — the exports index, which holds resolved
   Output values. `cdkd deploy` rewrites it, and so does `cdkd scrub`, one entry
   at a time, for the stacks that run scrubbed; each such write leaves the
@@ -2802,7 +2807,7 @@ previous versions accumulate and stay readable:
 **Without the two grants, nothing fails — and that is the point to
 understand.** The purge runs on a cleanup path and must never abort the
 operation it follows, so it logs a warning and the deploy, diff, rollback,
-destroy, `cdkd import`, `cdkd export` or `cdkd gc` run still succeeds. What does not
+destroy, `cdkd import`, `cdkd export`, `cdkd gc` or `cdkd events prune` run still succeeds. What does not
 happen is the removal: the value stays retrievable by anyone who can read the
 state bucket with a `VersionId`. The warning counts KEYS, names them, names
 WHICH object it failed on, and spells the two actions exactly as above:
@@ -2929,8 +2934,8 @@ Your options, none of which cdkd can take for you:
 - **Purge the destination bucket yourself**, with the same
   `list-object-versions` + `delete-object --version-id` pass.
 - **Narrow the replication rule.** cdkd purges under four top-level prefixes,
-  and a rule that covers any of them is in scope: `cdkd/` (the rollback journal
-  and `lock.json`), `cdkd-bootstrap/` (the marker), `custom-resource-responses/`
+  and a rule that covers any of them is in scope: `cdkd/` (the rollback journal,
+  `lock.json` and the `deployments/` event store), `cdkd-bootstrap/` (the marker), `custom-resource-responses/`
   (the handler's full cfn-response, `Data` included — the most secret-dense of
   the four), and `cdkd-migrate-tmp/` (the transient CloudFormation template).
   **`cdkd/` is a DEFAULT, not a constant** — it is `--state-prefix`, so a

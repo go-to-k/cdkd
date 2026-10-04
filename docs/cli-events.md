@@ -62,11 +62,13 @@ The store self-bounds to the newest 20 runs at write time, and `cdkd destroy` /
 so an object listing of the bucket is never empty after a teardown alone.
 `cdkd events prune '<stack>'` is the explicit purge.
 
-It empties the LISTING, not the bucket: the state bucket is versioned and the
-delete carries no version id, so earlier versions of the pruned keys survive
-and stay readable with a `VersionId`. Pruning is therefore not a remediation
-for a run that quoted a secret — see
-[Deleting a run stream does not remove its earlier versions](deployment-events.md#deleting-a-run-stream-does-not-remove-its-earlier-versions).
+The state bucket is versioned, so a prune also deletes the noncurrent
+versions of the keys it removes, not just the current objects. That needs
+`s3:ListBucketVersions` and `s3:DeleteObjectVersion`; without them the prune
+still succeeds and a warning prints before the `Pruned` line. Pruning is still
+not a remediation for a run that quoted a secret — see
+[Deleting a run stream also purges its earlier versions](deployment-events.md#deleting-a-run-stream-also-purges-its-earlier-versions)
+for what it does not reach.
 
 ```bash
 cdkd events prune MyStack                   # keep the newest 20 (default)

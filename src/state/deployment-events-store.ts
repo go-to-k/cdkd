@@ -98,6 +98,57 @@ function deploymentsDirPrefix(prefix: string, stackName: string, region: string)
 }
 
 /**
+ * What a surviving `deployments/` version contains, for the purge's warnings
+ * (`objectDescription`). Error messages are recorded verbatim past a bounded
+ * secret mask (`docs/deployment-events.md`), which is why the purge exists.
+ */
+export const DEPLOYMENT_EVENTS_OBJECT_DESCRIPTION =
+  'deployment-event streams and their index, whose recorded error messages can quote values the secret mask does not catch';
+
+/**
+ * Delete `keys` under a stack's `deployments/` prefix AND purge their
+ * noncurrent versions (issue [#2624](https://github.com/go-to-k/cdkd/issues/2624)).
+ *
+ * `deleteRawObjects` sends no `VersionId`, so on the versioned state bucket it
+ * only writes delete markers, and a stream is re-PUT in full on every flush,
+ * so each run leaves one readable version per flush. Every delete in this
+ * module goes through here so that "pruned" / "purged" means the bodies are
+ * gone, not just hidden from a listing. That includes the writer's own
+ * self-bounding prune: a stream it removes is no longer CURRENT, so no later
+ * `cdkd events prune --all` can find it to purge it.
+ *
+ * The purge runs in a `finally`, after a failed delete too: it removes only
+ * entries with `IsLatest === false`, so a key whose delete failed keeps its
+ * current version and loses only its history (the `deleteRollbackJournal` /
+ * `cdkd gc` precedent). It never throws and owns its own warning (missing
+ * `s3:ListBucketVersions` / `s3:DeleteObjectVersion`, replication), so the
+ * delete's outcome is what reaches the caller. On an UNVERSIONED bucket the
+ * listing returns only current `'null'` versions, so it deletes nothing.
+ *
+ * With several keys, `listPrefix` makes it ONE version walk of the prefix
+ * instead of one per key. A single key (the writer's usual one stale stream,
+ * or a lone index) keeps the per-key walk, which lists only that key's
+ * versions rather than every retained run's flush history. Either way the
+ * purge acts only on `keys`, so retained and concurrent runs' streams are
+ * never touched.
+ */
+async function deleteAndPurgeEventObjects(
+  backend: S3StateBackend,
+  keys: string[],
+  dirPrefix: string
+): Promise<void> {
+  if (keys.length === 0) return;
+  try {
+    await backend.deleteRawObjects(keys);
+  } finally {
+    await backend.purgeNoncurrentVersions(keys, {
+      ...(keys.length > 1 && { listPrefix: dirPrefix }),
+      objectDescription: DEPLOYMENT_EVENTS_OBJECT_DESCRIPTION,
+    });
+  }
+}
+
+/**
  * Parse the wall-clock time encoded in a run id's leading timestamp
  * (e.g. `20260613T012345678Z-1a2b3c4d`) back to epoch milliseconds.
  * Returns `null` for any id that does not start with the canonical
@@ -136,8 +187,9 @@ export interface DeploymentEventsPruneOptions {
   keep?: number;
   /** Delete runs older than this many milliseconds. */
   olderThanMs?: number;
-  /** Delete EVERY run + the index. Clears the object LISTING; on a versioned
-   *  bucket the deleted keys' earlier versions survive (issue #2624). */
+  /** Delete EVERY run + the index, and purge the earlier versions of the keys
+   *  deleted (issue #2624). A stream already behind a delete marker is not
+   *  listed, so its versions are not reached. */
   all?: boolean;
   /** Clock injection for the age cutoff (tests); defaults to `new Date()`. */
   now?: Date;
@@ -420,7 +472,10 @@ export class DeploymentEventsStore implements DeploymentEventRecorder {
       return runId !== null && runId < cutoff;
     });
     if (stale.length === 0) return;
-    await this.backend.deleteRawObjects(stale);
+    // Purged as well as deleted, though this is housekeeping rather than a
+    // user-requested purge: once deleted here a stream is no longer listed, so
+    // an explicit `--all` later could never reach its versions (issue #2624).
+    await deleteAndPurgeEventObjects(this.backend, stale, dirPrefix);
     this.logger.debug(
       `Pruned ${stale.length} superseded deployment-event stream(s) for ` +
         `${this.stackName} (${this.region})`
@@ -584,10 +639,8 @@ export class DeploymentEventsReader {
    * window and rewrites (or removes) `index.json` to match.
    *
    * Retention semantics (see {@link DeploymentEventsPruneOptions}):
-   *   - `all`        — delete every run + the index. Clears the LISTING only:
-   *                    this deletes by key with no `VersionId`, so on a
-   *                    versioned bucket every earlier version survives
-   *                    (issue #2624).
+   *   - `all`        — delete every run + the index, and purge their earlier
+   *                    versions on a versioned bucket (issue #2624).
    *   - `keep N`     — retain the newest N runs, delete the rest.
    *   - `olderThanMs`— delete runs whose run-id timestamp is older than the
    *                    cutoff; a run id with no parseable timestamp is kept.
@@ -630,7 +683,7 @@ export class DeploymentEventsReader {
       // one -- a concurrent prune deleting the index between our listing and
       // our delete -- reports the peer's removal as ours, a true claim about
       // the bucket with only the attribution off.
-      await this.backend.deleteRawObjects([...toDelete, indexKey]);
+      await deleteAndPurgeEventObjects(this.backend, [...toDelete, indexKey], dirPrefix);
       return { deletedRunIds: runIdsDesc, remainingRunIds: [], indexDeleted: indexExisted };
     }
 
@@ -659,59 +712,52 @@ export class DeploymentEventsReader {
       deploymentEventsKey(this.backend.prefix, stackName, region, id)
     );
     const remainingRunIds = runIdsDesc.filter((id) => !deletedSet.has(id));
-    // Rewrite the index BEFORE deleting the streams: if the delete fails
-    // mid-way (and throws), the index already points only at survivors, so
-    // a partial delete leaves the index over-pruned rather than dangling at
-    // gone streams. The reverse order would risk the index naming deleted
-    // streams; either way the reader tolerates the transient skew (it falls
-    // back to key enumeration), and the next prune re-converges.
-    const indexDeleted = await this.rewriteIndexAfterPrune(
-      indexKey,
-      stackName,
-      region,
-      deletedSet,
-      remainingRunIds.length === 0,
-      indexExisted
-    );
-    await this.backend.deleteRawObjects(deleteKeys);
-    return { deletedRunIds: candidates, remainingRunIds, indexDeleted };
+    const noRunsRemain = remainingRunIds.length === 0;
+    // With no runs left the index is deleted TOGETHER with the streams, in one
+    // delete-and-purge, as the `--all` arm does: one version walk, one warning.
+    if (noRunsRemain) {
+      await deleteAndPurgeEventObjects(this.backend, [...deleteKeys, indexKey], dirPrefix);
+      return { deletedRunIds: candidates, remainingRunIds, indexDeleted: indexExisted };
+    }
+    // When runs remain, rewrite the index BEFORE deleting the streams: if the
+    // delete fails mid-way (and throws), the index already points only at
+    // survivors, so a partial delete leaves the index over-pruned rather than
+    // dangling at gone streams. The reverse order would risk the index naming
+    // deleted streams; either way the reader tolerates the transient skew (it
+    // falls back to key enumeration), and the next prune re-converges.
+    await this.rewriteIndexAfterPrune(indexKey, stackName, region, deletedSet);
+    await deleteAndPurgeEventObjects(this.backend, deleteKeys, dirPrefix);
+    return { deletedRunIds: candidates, remainingRunIds, indexDeleted: false };
   }
 
   /**
-   * Drop the pruned run ids from `index.json`, or delete the index entirely
-   * when no `.jsonl` streams remain. A corrupt / unreadable index is left
+   * Drop the pruned run ids from `index.json` (the caller deletes the index
+   * itself when no runs remain). A corrupt / unreadable index is left
    * untouched (the `.jsonl` files are the source of truth; `cdkd events`
-   * falls back to key enumeration). Returns whether an index that EXISTED
-   * (`indexExisted`, from the caller's listing) was deleted.
+   * falls back to key enumeration).
    */
   private async rewriteIndexAfterPrune(
     indexKey: string,
     stackName: string,
     region: string,
-    deletedRunIds: Set<string>,
-    noRunsRemain: boolean,
-    indexExisted: boolean
-  ): Promise<boolean> {
-    if (noRunsRemain) {
-      await this.backend.deleteRawObjects([indexKey]);
-      return indexExisted;
-    }
+    deletedRunIds: Set<string>
+  ): Promise<void> {
     let raw: string | null;
     try {
       raw = await this.backend.getRawObject(indexKey);
     } catch {
-      return false;
+      return;
     }
-    if (raw === null) return false;
+    if (raw === null) return;
     let parsed: Partial<DeploymentRunIndexFile>;
     try {
       parsed = JSON.parse(raw) as Partial<DeploymentRunIndexFile>;
     } catch {
-      return false; // corrupt index — leave as-is
+      return; // corrupt index — leave as-is
     }
-    if (!Array.isArray(parsed.runs)) return false;
+    if (!Array.isArray(parsed.runs)) return;
     const remaining = parsed.runs.filter((r) => !deletedRunIds.has(r.runId));
-    if (remaining.length === parsed.runs.length) return false; // nothing to rewrite
+    if (remaining.length === parsed.runs.length) return; // nothing to rewrite
     const file: DeploymentRunIndexFile = {
       indexVersion: DEPLOYMENT_EVENTS_INDEX_VERSION,
       stackName,
@@ -720,6 +766,6 @@ export class DeploymentEventsReader {
       lastModified: Date.now(),
     };
     await this.backend.putRawObject(indexKey, JSON.stringify(file, null, 2));
-    return false;
+    return;
   }
 }

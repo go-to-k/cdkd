@@ -131,19 +131,21 @@ export function orderConsumersBeforeProducers(
  *
  * Purges the stack's deployment-event history (the post-mortem `deployments/`
  * store cdkd keeps by default) ONLY after a clean, non-interrupted destroy, so
- * a plain object listing of the state bucket comes back empty. Deliberately
+ * the deleted event keys' earlier versions go too. Deliberately
  * skipped on a failed / interrupted destroy — those events ARE the post-mortem
  * the user wants on the retry — and a no-op when `--purge-events` was not
  * passed.
  *
- * "Empty" is bounded, and this used to say "the state bucket returns fully
- * empty" without the bound (issue
- * [#2624](https://github.com/go-to-k/cdkd/issues/2624)). The purge routes
- * through `DeploymentEventsReader.pruneRuns` -> `deleteRawObjects`, which sends
- * `DeleteObjects` with no `VersionId`: on the versioned state bucket that
- * writes DELETE MARKERS and leaves every earlier version of those keys readable
- * with a `VersionId`. The log line below states that rather than claiming a
- * removal that did not happen.
+ * On the versioned state bucket a delete by key only writes DELETE MARKERS,
+ * so `DeploymentEventsReader.pruneRuns` also purges the earlier versions of
+ * every key it deletes (issue
+ * [#2624](https://github.com/go-to-k/cdkd/issues/2624)). That purge is
+ * fail-soft and prints its own warning before the log line below when it
+ * cannot finish or the bucket is replicated, which is why the line defers to
+ * "a warning above". The line is scoped to "the deleted keys" because a
+ * stream already behind a delete marker (pruned before this purge existed, or
+ * by a purge that warned) is not listed and so not reached; purging those
+ * needs a version-listing API on `S3StateBackend` (issue #2624).
  *
  * MUST be called AFTER the run's `eventRecorder.finalize()` (which writes this
  * run's own events + index): purging first would just be re-created by the
@@ -176,9 +178,8 @@ export async function purgeEventsAfterDestroy(
     // those writes did not land.
     if (purge.deletedRunIds.length > 0 || purge.indexDeleted) {
       logger.info(
-        `  Purged deployment-event history for ${displaySafe(stackName)} (${displaySafe(region)}). Where the state ` +
-          `bucket is versioned — which bootstrapping with cdkd enables — earlier versions of those ` +
-          `keys survive and stay readable with GetObject and a VersionId.`
+        `  Purged deployment-event history for ${displaySafe(stackName)} (${displaySafe(region)}) ` +
+          `and the earlier versions of the deleted keys, unless a warning above says otherwise.`
       );
     }
     return purge;
@@ -985,10 +986,9 @@ async function destroyCommand(
       }
 
       // Issue [#885] — --purge-events: after a CLEAN destroy, also delete this
-      // stack's deployment-event history so an object LISTING of the state
-      // bucket comes back empty (the bucket is versioned, so earlier versions
-      // of those keys survive — the helper's own doc comment carries the
-      // bound). Runs AFTER the recorder finalizes (see the helper's contract).
+      // stack's deployment-event history, the deleted keys' earlier versions included
+      // (issue #2624; the helper's doc comment carries the fail-soft bound).
+      // Runs AFTER the recorder finalizes (see the helper's contract).
       //
       // PER-STACK answers, because the question the helper asks — "are these
       // events the post-mortem for a retry?" — is per-stack: it is about THIS
@@ -1142,9 +1142,8 @@ export function createDestroyCommand(): Command {
     .option(
       '--purge-events',
       "After a clean destroy, also delete the stack's deployment-event history " +
-        '(issue #808 store) so an object listing of the state bucket comes back empty. Where ' +
-        'the state bucket is versioned — which bootstrapping with cdkd enables — earlier versions of ' +
-        'those keys survive and stay readable with GetObject and a VersionId. By default ' +
+        '(issue #808 store), purging the earlier versions of those keys on a versioned state ' +
+        'bucket too unless a warning says otherwise. By default ' +
         'events survive destroy as post-mortem context. ' +
         'Skipped when the destroy fails or is interrupted (those events aid the retry). ' +
         // TWO corrections here, and the second overturned the first.
