@@ -582,18 +582,21 @@ protect.
 ### A reference built from a parameter
 
 A parameter is resolved from today's template: its `Default`, or for an
-SSM-typed parameter the value Parameter Store holds now. A nested stack's
-parameters are bound to what its parent passes, so it is affected only through
-its parent's own parameters. If the deploy used a different value, scrub looks
-up a DIFFERENT reference than the deploy resolved and cannot tell — the
-plaintext the deploy wrote can stay in state while the stack prints clean. Two
-things cause it:
+SSM-typed parameter the value Parameter Store holds now; a value a nested
+stack's parent passes is resolved the same way from the parent's parameters. If
+the deploy used a different value, scrub cannot tell, and the plaintext the
+deploy wrote can stay in state while the stack prints clean. Three things cause
+it:
 
-- the parameter's `Default` changed (or was removed) after the last deploy;
-- an SSM-typed parameter's value changed after the last deploy.
+- the parameter's `Default` changed after the last deploy, so scrub looks up a
+  DIFFERENT reference than the deploy resolved;
+- an SSM-typed parameter's value changed after the last deploy, with the same
+  effect;
+- the parameter's `Default` was removed after the last deploy, so scrub cannot
+  resolve the reference at all and only warns `keeping placeholder`.
 
 This holds for any reference built from a parameter, in the stack's own region
-too. There is no flag for it: in either case, inspect the record with
+too. There is no flag for it: in any of these cases, inspect the record with
 `cdkd state show` rather than trusting a clean result.
 
 ### Which `Fn::If` branch scrub selects
@@ -603,8 +606,8 @@ values**. `scrub` takes no `--parameters`, so it has nothing else to evaluate
 a `Conditions` entry with, and a condition it cannot evaluate reads as false.
 
 When a parameter's `Default` or SSM value changed after the last deploy, that
-means scrub can pick a branch the deploy never took. In a RESOURCE position a cross-stack read on
-that branch still refuses, so the stack can be refused over a producer that
+means scrub can pick a branch the deploy never took. In a RESOURCE position a
+cross-stack read on that branch still refuses, so the stack can be refused over a producer that
 legitimately does not exist for the parameters it was actually deployed with.
 
 An output position is spared this: `state.outputs` records what the deploy
@@ -944,9 +947,9 @@ These keys are **kept**:
   and lists as an export (a literal name that collides with another output is
   exempt, since a deploy never publishes it; on a record with no export list,
   or one listing anything but names, an intrinsic name matching a declared
-  output name proves nothing). Otherwise — a parameterized name whose `Default` or
-  SSM value changed after the last deploy, one that does not resolve here, or an export the last deploy
-  did not write — scrub cannot tell that alias from a deleted one, keeps the
+  output name proves nothing). Otherwise — a parameterized name whose
+  `Default` or SSM value changed after the last deploy, one that does not
+  resolve here, or an export the last deploy did not write — scrub cannot tell that alias from a deleted one, keeps the
   key, and warns: `... were LEFT as they are`. Such a key's value can still be
   printed by `cdkd diff`, so the stack is not reported clean and `--fail` exits
   `1`; a deploy rewrites the outputs;
