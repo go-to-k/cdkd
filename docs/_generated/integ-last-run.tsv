@@ -195,14 +195,14 @@ legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 list-parameters	2026-09-27T08:48:52Z	PASS	100	verify.sh	maintainer merge-gate run of PR #3779; rc ok, orph clean
 local-ecs-service-connect	2026-10-04T07:04:58Z	PASS	25	verify.sh	cdk-local 0.149.8; rerun: run1 public.ecr.aws toomanyrequests on pull; docker clean
-local-invoke	2026-10-04T07:04:58Z	PASS	45	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
-local-invoke-agentcore	2026-10-04T07:04:58Z	PASS	135	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
+local-invoke	2026-10-04T11:29:20Z	PASS	35	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
+local-invoke-agentcore	2026-10-04T11:29:20Z	PASS	105	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-invoke-agentcore-from-state	2026-10-04T07:04:58Z	PASS	110	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-invoke-buildkit	2026-10-04T07:04:58Z	PASS	40	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-invoke-container	2026-10-04T07:04:58Z	PASS	25	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-invoke-dotnet	2026-10-04T07:04:58Z	PASS	40	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
-local-invoke-from-cfn-stack	2026-10-04T07:04:58Z	PASS	95	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
-local-invoke-from-cfn-stack-multi-stack	2026-10-04T07:04:58Z	PASS	120	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
+local-invoke-from-cfn-stack	2026-10-04T11:29:20Z	PASS	110	verify.sh	cdk-local 0.149.8; rc ok, step 7 (#3240 no-permission --role-arn) ok, docker clean, orph clean
+local-invoke-from-cfn-stack-multi-stack	2026-10-04T11:29:20Z	PASS	116	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-invoke-from-state	2026-10-04T07:04:58Z	PASS	125	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-invoke-java	2026-10-04T07:04:58Z	PASS	35	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-invoke-layers	2026-10-04T07:04:58Z	PASS	15	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
@@ -210,20 +210,20 @@ local-invoke-provided	2026-10-04T07:04:58Z	PASS	40	verify.sh	cdk-local 0.149.8; 
 local-invoke-python	2026-10-04T07:04:58Z	PASS	40	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-invoke-ruby	2026-10-04T07:04:58Z	PASS	40	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-invoke-stage	2026-10-04T07:04:58Z	PASS	20	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
-local-run-task	2026-10-04T07:04:58Z	PASS	20	verify.sh	cdk-local 0.149.8; rerun: run1 public.ecr.aws toomanyrequests on pull; docker clean
+local-run-task	2026-10-04T11:29:20Z	PASS	20	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-run-task-awsvpc	2026-10-04T07:04:58Z	PASS	15	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-run-task-cdkd-assets	2026-10-04T07:04:58Z	PASS	20	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-run-task-from-state	2026-10-04T07:04:58Z	PASS	206	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-run-task-multi-container	2026-10-04T07:04:58Z	PASS	15	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
-local-start-agentcore	2026-10-04T07:04:58Z	PASS	15	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
-local-start-alb	2026-10-04T07:04:58Z	PASS	20	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
+local-start-agentcore	2026-10-04T11:29:20Z	PASS	15	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
+local-start-alb	2026-10-04T11:29:20Z	PASS	20	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-start-alb-from-state	2026-10-04T07:04:58Z	PASS	211	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
-local-start-api	2026-10-04T07:04:58Z	PASS	25	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
+local-start-api	2026-10-04T11:29:20Z	PASS	25	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-start-api-container	2026-10-04T07:04:58Z	PASS	10	verify.sh	cdk-local 0.149.8; rerun after fixture grep fix (-> became to, #4252); docker clean
 local-start-api-rest-v1-non-proxy	2026-10-04T07:04:58Z	PASS	15	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-start-api-websocket	2026-10-04T07:11:35Z	PASS	105	verify.sh	cdk-local 0.149.8; after HOST_ARCHITECTURE (all 5 fns arm64 in synth); docker clean
-local-start-cloudfront	2026-10-04T07:04:58Z	PASS	10	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
-local-start-service	2026-10-04T07:04:58Z	PASS	110	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
+local-start-cloudfront	2026-10-04T11:29:20Z	PASS	10	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
+local-start-service	2026-10-04T11:29:20Z	PASS	106	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-start-service-watch-fast	2026-10-04T07:04:58Z	PASS	171	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 log-pipeline	2026-07-31T07:44:41Z	PASS	95	standard	issue #1326 removalPolicy fix verified: stream deleted on destroy, 0 orphans
 loggroup-class-guard	2026-10-02T09:33:03Z	PASS	115	verify.sh	rc ok, orph clean (#4414)
