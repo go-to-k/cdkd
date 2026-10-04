@@ -42,8 +42,10 @@ import type { LockManager } from '../state/lock-manager.js';
 import type { Logger } from '../types/config.js';
 import type { ResourceState, StackOrphanRecord, StackState } from '../types/state.js';
 import {
+  isMarkFor,
   journalOpPhysicalId,
   retainedOldPhysicalId,
+  type ImportedResourceMark,
   splitImportedOps,
   type JournalOpIdentitySource,
   type RollbackJournalSegment,
@@ -164,13 +166,19 @@ export type DisplacedOp = JournalOpIdentitySource & {
 
 /**
  * go-to-k/cdkd#4523: what a DISPLACED op left behind, as one clause naming the
- * resource to check (masked, {@link displacedPhysicalIdShown}). A replacement
- * whose NEW resource the import adopted, while its OLD one was kept alive,
- * names the old one; every other displaced op names its own.
+ * resource to check (masked, {@link displacedPhysicalIdShown}). Decided from
+ * the segment's `marks`, not the op alone: only when the import adopted the
+ * op's OWN (new) resource while its OLD one was kept alive is the old one
+ * named. Every other displaced op — an import of the old resource back
+ * included — names its own resource, the one left running.
  */
-export function displacedOpClause(op: DisplacedOp, logger: Logger): string {
+export function displacedOpClause(
+  op: DisplacedOp,
+  marks: readonly ImportedResourceMark[],
+  logger: Logger
+): string {
   const retainedOld = retainedOldPhysicalId(op);
-  if (retainedOld !== undefined) {
+  if (retainedOld !== undefined && marks.some((m) => isMarkFor(m, op))) {
     const shownOld = displacedPhysicalIdShown(op, logger, retainedOld);
     return (
       `replaced ${shownOld} but kept it (UpdateReplacePolicy: Retain); cdkd import adopted the ` +
@@ -696,7 +704,8 @@ export async function revertNestedChildFromJournal(args: {
       recordDisplacedSkips(execCtx.recordEvent, childStackName, split.displaced);
       for (const op of split.displaced) {
         logger.warn(
-          safeMsg`Nested stack ${childStackName}: ${op.logicalId} ${displacedOpClause(op, logger)}; ` +
+          safeMsg`Nested stack ${childStackName}: ${op.logicalId} ` +
+            safeMsg`${displacedOpClause(op, segment.importedResources ?? [], logger)}; ` +
             'not reverted, check that resource by hand'
         );
       }

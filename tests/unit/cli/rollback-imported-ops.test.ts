@@ -450,6 +450,9 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
   it.each([
     ['the import put the OLD resource back: names the replacement', 'old-phys', false, 'new-phys'],
     ['the import took the NEW resource while the old was RETAINED: names the old', 'new-phys', true, 'old-phys'],
+    // Spec W1: the clause is decided from the MARK. The old resource imported
+    // back under a RETAIN replacement still names the replacement left running.
+    ['the import put the RETAINED old resource back: names the replacement', 'old-phys', true, 'new-phys'],
   ])('a replacement UPDATE where %s', async (_what, importedId, retained, named) => {
     install({ Topic: { ...topicRecord('imported'), physicalId: importedId } }, [
       { operations: [replacementOp(retained)], importedResources: [{ ...MARK, physicalId: importedId }] },
@@ -462,6 +465,8 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(thrown).toBeInstanceOf(Error);
     expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(false);
     expect(infoLines().some((l) => l.includes(' Topic (') && l.includes(named) && l.includes('check that resource by hand'))).toBe(true);
+    // "adopted the replacement" only when the import really took the new one.
+    expect(infoLines().some((l) => l.includes('adopted the replacement'))).toBe(importedId === 'new-phys');
   });
 
   it('a replacement UPDATE whose NEW resource the import took, old NOT retained, is adopted silently', async () => {

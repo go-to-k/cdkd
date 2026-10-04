@@ -65,7 +65,7 @@ import {
   type StackOrphanRecord,
   type LockInfo,
 } from '../../types/state.js';
-import { splitImportedOps } from '../../types/rollback-journal.js';
+import { splitImportedOps, type ImportedResourceMark } from '../../types/rollback-journal.js';
 import type { S3StateBackend, StackStateRef } from '../../state/s3-state-backend.js';
 import { isLockInfoExpired } from '../../state/lock-manager.js';
 import {
@@ -512,13 +512,17 @@ function importedOpLabel(op: { logicalId: string; resourceType: string }): strin
   );
 }
 
-function displacedOpLabel(op: DisplacedOp): string {
+function displacedOpLabel(
+  op: DisplacedOp,
+  segment: { importedResources?: readonly ImportedResourceMark[] }
+): string {
   // The resource to check is named: once the segment pops, this line is the
   // only place it is ever named (security review m4). It goes through the
   // replay's per-op masker, as every id the replay prints.
   return (
     `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
-    `— ${displacedOpClause(op, getLogger())}; not reverted, check that resource by hand`
+    `— ${displacedOpClause(op, segment.importedResources ?? [], getLogger())}; ` +
+    `not reverted, check that resource by hand`
   );
 }
 
@@ -942,7 +946,7 @@ export async function rollbackCommand(
           logger.info(importedOpLabel(op));
         }
         for (const op of [...failedOps.displaced, ...completedOps.displaced]) {
-          logger.info(displacedOpLabel(op));
+          logger.info(displacedOpLabel(op, segment));
         }
         // #1198: the segment's FAILED in-flight op(s) come first (they are
         // the newest work of the failed deploy).
@@ -1164,7 +1168,7 @@ export async function rollbackCommand(
             ...completedSplit.displaced,
             ...splitImportedOps(segment.failedOperations ?? [], segment).displaced,
           ];
-          for (const op of displaced) logger.warn(displacedOpLabel(op).trim());
+          for (const op of displaced) logger.warn(displacedOpLabel(op, segment).trim());
           recordDisplacedSkips(ctx.recordEvent, stackName, displaced);
           // Issue #3754: what the nested-stack rows' child replays reported
           // (completed rows, skipped ops), read once the segment has replayed.
@@ -1573,7 +1577,7 @@ async function previewNestedChildRevert(
       // go-to-k/cdkd#4523: the child replay leaves an imported id's ops alone.
       const childOps = splitImportedOps(segments[s]!.operations, segments[s]!);
       for (const op of childOps.imported) lines.push(`    ${importedOpLabel(op)}`);
-      for (const op of childOps.displaced) lines.push(`    ${displacedOpLabel(op)}`);
+      for (const op of childOps.displaced) lines.push(`    ${displacedOpLabel(op, segments[s]!)}`);
       const childPlan = planRollback(childOps.replay, view, new Set<string>());
       for (const item of childPlan) lines.push(`    ${actionLabel(item, skipFinalSnapshot)}`);
       applyPlanToPreview(childPlan, view, skipFinalSnapshot);
