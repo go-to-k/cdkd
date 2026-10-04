@@ -110,4 +110,6 @@ with NO body.
 BEFORE the duplicate search. A finding below it (wording, an input no CDK app
 produces, SECURITY.md's out-of-scope paste class) is one line in the PR body
 and is neither filed nor folded into an umbrella. A reviewer's finding meets
-the same bar.
+the same bar, and so does the user path a finding ASSUMES: confirm the named
+entry point exists (`cdkd <cmd> --help` for a flag) before filing (#4559 assumed
+a `cdkd deploy --parameters` that does not exist).
