@@ -2,9 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import {
+  REFUSED_FINGERPRINT,
   markWrittenFromDeployedTemplate,
   maskedPropertyFingerprint,
 } from '../../../src/deployment/masked-property-fingerprints.js';
+import { recordFreshNoEchoValuesIn } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 
@@ -236,7 +238,12 @@ describe('DeployEngine - an edit around a secret reference inside Fn::Base64 is 
 describe('DeployEngine - a rollback-orphaned record this deploy created keeps its fingerprints (go-to-k/cdkd#4451)', () => {
   // The rollback moves the in-memory CREATE record into `orphans`, so the
   // save meets the bag this deploy wrote there rather than in `resources`.
-  function persistOrphan(bag: Record<string, unknown>, resolvedType: string): StackState {
+  function persistOrphan(
+    bag: Record<string, unknown>,
+    resolvedType: string,
+    templateProps: Record<string, unknown> = PROPS,
+    secrets: Map<string, string> = new Map()
+  ): StackState {
     const engine = new DeployEngine(
       {} as never,
       {} as never,
@@ -246,9 +253,9 @@ describe('DeployEngine - a rollback-orphaned record this deploy created keeps it
       { dryRun: false },
       'us-east-1'
     );
-    engine.perResourceTemplateProps.set('R', PROPS);
+    engine.perResourceTemplateProps.set('R', templateProps);
     engine.perResourceResolvedType.set('R', resolvedType);
-    engine.perResourceSecrets.set('R', new Map());
+    engine.perResourceSecrets.set('R', secrets);
     const state: StackState = {
       version: 10,
       stackName: 's',
@@ -276,6 +283,19 @@ describe('DeployEngine - a rollback-orphaned record this deploy created keeps it
     );
     expect(saved.orphans![0]!.state.maskedPropertyFingerprints).toEqual({
       Value: maskedPropertyFingerprint(PROPS.Value),
+    });
+  });
+
+  it('refuses a hash to an orphan whose template holds a needle of the resource (R1)', () => {
+    const literal = { ...PROPS, Value: base64Value('pw-secret-value;') };
+    const saved = persistOrphan(
+      markWrittenFromDeployedTemplate({ Name: '/app/ud', Type: 'String', Value: '***' }),
+      'AWS::SSM::Parameter',
+      literal,
+      new Map([['pw-secret-value', '{{resolve:ssm-secure:/app/pw}}']])
+    );
+    expect(saved.orphans![0]!.state.maskedPropertyFingerprints).toEqual({
+      Value: REFUSED_FINGERPRINT,
     });
   });
 
@@ -316,6 +336,46 @@ describe('DeployEngine - review-round pins (go-to-k/cdkd#4451)', () => {
       Value: maskedPropertyFingerprint(EDITED.Value),
     });
     await h.deploy(EDITED);
+    expect(h.provider.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a hash to a masked property whose template holds the secret it resolves as a literal (R1)', async () => {
+    // The script literally spells the plaintext the reference resolves to.
+    const literal = { ...PROPS, Value: base64Value('pw-secret-value;') };
+    const h = harness();
+    const created = await h.deploy(literal);
+    expect(created.resources['R']!.properties['Value']).toBe('***');
+    expect(created.resources['R']!.maskedPropertyFingerprints).toEqual({
+      Value: REFUSED_FINGERPRINT,
+    });
+    // ...and an edit to it is compared as before #4451 (not sent).
+    await h.deploy({ ...PROPS, Value: base64Value('echo B;pw-secret-value;') });
+    expect(h.provider.update).not.toHaveBeenCalled();
+  });
+
+  it('the AWS-confirmed NoEcho skip does not fire when a masked expression moved (R2)', async () => {
+    const FRESH = 'fresh-noecho-token-0001';
+    const props = (value: unknown) => ({ ...PROPS, Value: value, Description: FRESH });
+    const h = harness();
+    // Every provisioning resolution supplies `Description` as a fresh NoEcho
+    // value (a handler's `Data`), so the record holds `***` there.
+    h.onResolve((resolved, secrets) => {
+      if (secrets !== undefined && resolved !== null && typeof resolved === 'object') {
+        if ((resolved as Record<string, unknown>)['Description'] === FRESH) {
+          recordFreshNoEchoValuesIn(FRESH, secrets);
+        }
+      }
+    });
+    await h.deploy(props(PROPS.Value));
+    // The fresh value sits on a create-only-shaped path AWS confirms holding,
+    // which fills the confirmed-NoEcho skip's path set.
+    h.onDiff((changes) => {
+      const row = changes.get('R')?.propertyChanges?.find((pc) => pc.path === 'Description');
+      if (row) row.requiresReplacement = true;
+    });
+    h.provider.readCurrentState.mockResolvedValue({ Description: FRESH });
+    await h.deploy(props(base64Value('echo B\npw=')));
+    expect(h.provider.create).toHaveBeenCalledTimes(1);
     expect(h.provider.update).toHaveBeenCalledTimes(1);
   });
 
@@ -371,12 +431,15 @@ interface Harness {
   deployTemplate(template: CloudFormationTemplate): Promise<StackState>;
   /** Runs on every REAL diff result before the engine reads it. */
   onDiff(hook: (changes: Map<string, ResourceChange>) => void): void;
+  /** Runs on every PROVISIONING resolution, with the pass's secrets bag. */
+  onResolve(hook: (resolved: unknown, secrets: Map<string, string> | undefined) => void): void;
   setState(state: StackState): void;
   lastChange(): ResourceChange | undefined;
   provider: {
     create: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
     import: ReturnType<typeof vi.fn>;
+    readCurrentState: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -404,6 +467,9 @@ function harness(): Harness {
   const real = new DiffCalculator();
   let last: Map<string, ResourceChange> | undefined;
   let onDiff: ((changes: Map<string, ResourceChange>) => void) | undefined;
+  let onResolve:
+    | ((resolved: unknown, secrets: Map<string, string> | undefined) => void)
+    | undefined;
   const diff = {
     calculateDiff: vi.fn(async (...args: unknown[]) => {
       last = await (
@@ -419,7 +485,22 @@ function harness(): Harness {
         [...c.values()].filter((x) => x.changeType === t)
       ),
   };
-  const makeEngine = (noRollback: boolean): DeployEngine =>
+  const makeEngine = (noRollback: boolean): DeployEngine => {
+    const engine = buildEngine(noRollback);
+    // The PROVISIONING resolutions only: the diff pass binds
+    // `skipDynamicReferences`.
+    const resolver = (engine as unknown as { resolver: { resolve: Function } }).resolver;
+    const resolve = resolver.resolve.bind(resolver) as (v: unknown, c: unknown) => Promise<unknown>;
+    resolver.resolve = async (value: unknown, context: Record<string, unknown>) => {
+      const resolved = await resolve(value, context);
+      if (context['skipDynamicReferences'] !== true) {
+        onResolve?.(resolved, context['recordedSecretValues'] as Map<string, string> | undefined);
+      }
+      return resolved;
+    };
+    return engine;
+  };
+  const buildEngine = (noRollback: boolean): DeployEngine =>
     new DeployEngine(
       {
         getState,
@@ -460,6 +541,9 @@ function harness(): Harness {
     },
     onDiff(hook) {
       onDiff = hook;
+    },
+    onResolve(hook) {
+      onResolve = hook;
     },
     saved: () => state!,
     saveCount: () => saveState.mock.calls.length,
