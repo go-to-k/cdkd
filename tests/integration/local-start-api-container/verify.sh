@@ -115,7 +115,7 @@ echo "    HTTP API v2: ${PORT_HTTP}"
 
 # Assert the route table contains the GET / route.
 echo "==> Asserting discovered route"
-if ! grep -E 'GET[[:space:]]+/[[:space:]]+->' "${LOG_FILE}" >/dev/null; then
+if ! grep -E 'GET[[:space:]]+/[[:space:]]+to[[:space:]]' "${LOG_FILE}" >/dev/null; then
   echo "FAIL: route table did not include GET /. Log:"
   cat "${LOG_FILE}"
   exit 1

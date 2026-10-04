@@ -173,6 +173,8 @@ class SecretBearingChild extends cdk.NestedStack {
       sharedReferenceB: string;
       embedReferenceA: string;
       embedReferenceB: string;
+      multiReferenceA: string;
+      multiReferenceB: string;
       stageParamDescription: string;
     },
     props?: cdk.NestedStackProps
@@ -636,6 +638,23 @@ class SecretBearingChild extends cdk.NestedStack {
     });
     embedOutputB.overrideLogicalId('ChildEmbedOutputB');
 
+    // THE #4527 PAIR's producer, on its OWN JSON key (`multi`), so neither
+    // `EmbedSecretPair` nor this arm's answer depends on the other. The parent
+    // embeds each beside TWO pseudo parameters (`MultiUnknownSecretPair`).
+    const multiOutputA = new cdk.CfnOutput(this, 'ChildMultiOutputA', {
+      value: names.multiReferenceA,
+      description:
+        'cdkd nested-stack-secret integ - read embedded beside two unknown parts, default stage (issue #4527)',
+    });
+    multiOutputA.overrideLogicalId('ChildMultiOutputA');
+
+    const multiOutputB = new cdk.CfnOutput(this, 'ChildMultiOutputB', {
+      value: names.multiReferenceB,
+      description:
+        'cdkd nested-stack-secret integ - the SIBLING, same plaintext, different expression (issue #4527)',
+    });
+    multiOutputB.overrideLogicalId('ChildMultiOutputB');
+
     this.stageOutput = cdk.Token.asString(
       (this.nestedStackResource as cdk.CfnResource).getAtt('Outputs.ChildSecretOutput')
     );
@@ -709,6 +728,10 @@ export class NestedStackSecretStack extends cdk.Stack {
     // one. Kept in sync with verify.sh's secret JSON.
     const embedReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:embed::}}`;
     const embedReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:embed:AWSCURRENT:}}`;
+    // THE #4527 PAIR, on its OWN JSON key (`multi`). Kept in sync with
+    // verify.sh's secret JSON.
+    const multiReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:multi::}}`;
+    const multiReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:multi:AWSCURRENT:}}`;
     // THE #2291 PAIR. Same two-spellings-one-value trick, on a THIRD JSON key
     // so its plaintext is its own: sharing `stage` or `shared` would drag
     // `StageParam` / `SubSecretPair` into this collapse, which is exactly how
@@ -800,6 +823,8 @@ export class NestedStackSecretStack extends cdk.Stack {
         sharedReferenceB,
         embedReferenceA,
         embedReferenceB,
+        multiReferenceA,
+        multiReferenceB,
         stageParamDescription,
       },
       {
@@ -923,5 +948,60 @@ export class NestedStackSecretStack extends cdk.Stack {
       ]),
     });
     ((embedSecretPair.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('EmbedSecretPair');
+
+    // THE #4527 ARM -- `EmbedSecretPair` with each read beside TWO parts whose
+    // text the template cannot state (`AWS::Region`, `AWS::AccountId`), and
+    // the second under an `Fn::If`. The #2298 template parse aligns at most
+    // ONE such part and never reads an `Fn::If`, so both leaves fell to the
+    // plaintext-keyed value scan and each persisted the SURVIVOR's expression
+    // inside its frame; only the resolver's own span for each read positions
+    // them. ONE resource, for the reason `SubSecretPair` gives.
+    const multiOn = new cdk.CfnCondition(this, 'MultiOn', {
+      expression: cdk.Fn.conditionEquals('on', 'on'),
+    });
+    multiOn.overrideLogicalId('MultiOn');
+    const multiUnknownSecretPair = new ssm.StringParameter(this, 'MultiUnknownSecretPair', {
+      parameterName: `cdkd-nested-parent-multipair-${account}`,
+      stringValue: cdk.Fn.sub(
+        'jdbc:mysql://${AWS::Region}.${AWS::AccountId}.host/?pw=${Child.Outputs.ChildMultiOutputA}'
+      ),
+      description: cdk.Fn.conditionIf(
+        multiOn.logicalId,
+        cdk.Fn.join('/', [
+          cdk.Aws.REGION,
+          cdk.Aws.ACCOUNT_ID,
+          cdk.Fn.getAtt('Child', 'Outputs.ChildMultiOutputB').toString(),
+        ]),
+        'none'
+      ).toString(),
+    });
+    const multiPairCfn = multiUnknownSecretPair.node.defaultChild as ssm.CfnParameter;
+    multiPairCfn.overrideLogicalId('MultiUnknownSecretPair');
+    // The SWAPPED arrangement on two tag values of the SAME resource: B in the
+    // `Fn::Sub` spelling, A under the `Fn::If`. With the two above, each
+    // spelling carries each expression, so reverting either half of the fix
+    // (the `${Res.Attr}` span, the object-read span) leaves one leaf on the
+    // value scan whichever expression it kept. Tag-legal characters only.
+    multiPairCfn.addPropertyOverride('Tags', {
+      MultiSwapSub: {
+        'Fn::Sub': '${AWS::Region}.${AWS::AccountId}:pw=${Child.Outputs.ChildMultiOutputB}',
+      },
+      MultiSwapIf: {
+        'Fn::If': [
+          'MultiOn',
+          {
+            'Fn::Join': [
+              '/',
+              [
+                { Ref: 'AWS::Region' },
+                { Ref: 'AWS::AccountId' },
+                { 'Fn::GetAtt': ['Child', 'Outputs.ChildMultiOutputA'] },
+              ],
+            ],
+          },
+          'none',
+        ],
+      },
+    });
   }
 }

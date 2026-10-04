@@ -78,9 +78,11 @@ import {
   clearCrossAccountCredentialsCache,
 } from '../../../src/utils/role-arn.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { AmiContextProvider } from '../../../src/synthesis/context-providers/ami-provider.js';
 import { AssetPublisher } from '../../../src/assets/asset-publisher.js';
+
+const providerClasses = await loadProviderClasses();
 
 const EXPLICIT = {
   accessKeyId: 'AKIDEXPLICIT3588',
@@ -191,7 +193,7 @@ describe('routed sites carry the explicit credentials', () => {
     const clients = new AwsClients({ region: 'eu-west-1', credentials: EXPLICIT });
     await runWithStackAwsClients(clients, async () => {
       const registry = new ProviderRegistry();
-      registerAllProviders(registry);
+      registerAllProviders(registry, providerClasses);
       const provider = registry.getProvider('AWS::StepFunctions::StateMachine');
       await provider.delete(
         'Machine',
@@ -207,7 +209,7 @@ describe('routed sites carry the explicit credentials', () => {
     const clients = new AwsClients({ region: 'eu-west-1', credentials: EXPLICIT });
     const state = await runWithStackAwsClients(clients, async () => {
       const registry = new ProviderRegistry();
-      registerAllProviders(registry);
+      registerAllProviders(registry, providerClasses);
       return registry
         .getProvider('AWS::S3Tables::TableBucket')
         .readCurrentState!(

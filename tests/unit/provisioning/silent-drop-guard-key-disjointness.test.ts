@@ -97,7 +97,7 @@ describe('silent-drop keys are disjoint from what other layers read (#2750)', ()
    * `vp run gen:property-coverage` derives `createOnlyDrops` from, which is
    * what the narrowing actually consults.
    */
-  it('the narrowing never removes a create-only property (#2790 is the residual)', () => {
+  it('the record narrowing never removes a create-only property', () => {
     const violations: string[] = [];
     let typesRead = 0;
     let dropsChecked = 0;
@@ -192,8 +192,9 @@ describe('silent-drop keys are disjoint from what other layers read (#2750)', ()
         'next deploy, which the create-only fallback classifies as a ' +
         'REPLACEMENT, so an upgrade deploy over an unchanged template would ' +
         'destroy and re-create the resource and cascade to its dependents. ' +
-        'The exclusion lives in `removableSilentDrops`; go-to-k/cdkd#2790 ' +
-        'carries the residual it leaves.'
+        'The exclusion lives in `removableSilentDrops`; the comparison side ' +
+        'decides per deploy in `withoutUnwrittenSilentDropProperties` ' +
+        '(go-to-k/cdkd#2790).'
     ).toEqual([]);
   });
 });

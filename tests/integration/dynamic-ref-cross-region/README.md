@@ -41,13 +41,14 @@ with its own region — so a region boundary is now also a cache boundary.
    region A and a `SecureString` in region B, asserting both types. This is the
    #1957 arm — secret-ness is decided by the parameter's TYPE (issue #1901), so
    a lookup answered by the wrong region misclassifies as well as mis-resolves,
-   and a misclassified value is persisted in PLAINTEXT.
+   and a misclassified value is persisted in PLAINTEXT. A FOURTH name swaps
+   those types (`SecureString` in region A, `String` in region B) for step 9.
 4. Deploys THREE stacks in ONE cdkd process — one per region, plus the
    region-A-only `CdkdDynamicRefAssembledSecretStack` that step 8 scrubs. The
-   two regional ones each declare FOUR SSM parameters: the `String` echo, the `SecureString` echo, a THIRD
+   two regional ones each declare FIVE SSM parameters: the `String` echo, the `SecureString` echo, a THIRD
    that repeats the `SecureString` reference EMBEDDED in a longer string and
    `DependsOn` the second — so it always resolves on a cache HIT — and the
-   mixed-type echo.
+   mixed-type echo and its reversed twin.
 5. Asserts each region's echo parameters carry ITS OWN region's values — for
    every arm — with a dedicated failure message for the leak shape (region B
    holding region A's value / secret).
@@ -76,14 +77,23 @@ with its own region — so a region boundary is now also a cache boundary.
    evidence is on record those classify `ambiguous` and refuse before the
    assembled leaf is reached, and the arm would silently measure the wrong
    refusal in both polarities.
-9. Destroys all three stacks, asserts all nine echo parameters and all three
+9. Runs `cdkd diff` over both regional stacks in ONE process and asserts the
+   reversed mixed-type echo shows no change in either. Stacks are diffed in
+   assembly order, so region A pins that name as a `SecureString` before region
+   B asks; the payload order is asserted, because reversed the arm could not
+   fail. This is the issue
+   [#4105](https://github.com/go-to-k/cdkd/issues/4105) arm.
+10. Destroys all three stacks, asserts all eleven echo parameters and all three
    state records are gone (tri-state gone probes), then deletes the seeded
    parameters.
 
 Pre-fix for #1933, step 5 fails on the second stack. Pre-fix for #1957, step 7
 leaves region B's plaintext in `state.json`. Pre-fix for #2157, step 8 exits 2
 with `SCRUB_SECRET_REFERENCE_UNCLASSIFIABLE` and the seeded plaintext survives —
-unbypassably, since scrub has no flag that overrides a refusal.
+unbypassably, since scrub has no flag that overrides a refusal. Pre-fix for
+#4105, step 9 reports region B's reversed echo as changed: region A's
+`SecureString` verdict, keyed by the token text alone, made region B skip its
+own lookup and compare the token against the public value in its state.
 
 ## Run
 

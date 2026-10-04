@@ -35,12 +35,57 @@
 #                  as unchanged and it never reached AWS. Identical operation to
 #                  phase 2; the only difference is the recorded bag, which is
 #                  what makes the pair a clean A/B.
-#   6 destroy
+#   7 subnet   -- go-to-k/cdkd#2790: a VPC + subnet join the stack, the subnet
+#                  carrying AvailabilityZoneId -- a CREATE-ONLY silent drop --
+#                  deployed WITH --prefer-sdk-route. The record keeps it.
+#   8 subnettag -- an ordinary in-place change (the Name tag), same flag. The
+#                  NEGATIVE CONTROL: a flag-ful redeploy over that record must
+#                  not replace the subnet.
+#   9 subnettag again with NO flag -- THE #2790 ARM. AWS never held the value,
+#                  and applying it needs a replacement, so the deploy must
+#                  REFUSE, leaving the subnet as it was. Before the fix it
+#                  diffed NO_CHANGE and reported success.
+#  10 subnettag with --recreate-via-cc-api <subnet> -- the opt-in the refusal
+#                  names: the subnet is re-created through Cloud Control with
+#                  the AZ id applied.
+#   6 destroy (runs last)
 #
 # See lib/sdk-to-cc-autoroute-stack.ts for why AWS::CloudWatch::Alarm and why
 # EvaluationWindow specifically.
 
 set -euo pipefail
+
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
@@ -59,15 +104,30 @@ ALARM_NAME="${STACK}-alarm"
 # the stack root; reading it is what keeps that from being load-bearing.)
 LOGICAL_ID=""
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+# The go-to-k/cdkd#2790 subnet, resolved from its phase's synth template.
+SUBNET_LOGICAL_ID=""
+# What verify.sh's cleanup sweeps a VPC by; lib/ tags the VPC and subnet with
+# the stack name, so the sweep reaches only this stack's leftovers.
+FIXTURE_TAG_VALUE="${STACK}"
 
 record() { # usage: record <jq-expression-over-the-resource-object>
+  record_of "${LOGICAL_ID}" "$1"
+}
+
+record_of() { # usage: record_of <logical-id> <jq-expression-over-the-resource-object>
   local json key
   json=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
   [ -n "${json}" ] || { echo "FAIL: state.json unreadable at ${STATE_KEY}" >&2; exit 1; }
-  key=$(printf '%s' "${json}" | jq -r --arg p "${LOGICAL_ID}" \
+  key=$(printf '%s' "${json}" | jq -r --arg p "$1" \
     '.resources | keys[] | select(startswith($p))' | head -1)
-  [ -n "${key}" ] || { echo "FAIL: no state resource whose logical id starts with ${LOGICAL_ID}" >&2; exit 1; }
-  printf '%s' "${json}" | jq -r --arg k "${key}" ".resources[\$k] | $1"
+  [ -n "${key}" ] || { echo "FAIL: no state resource whose logical id starts with $1" >&2; exit 1; }
+  printf '%s' "${json}" | jq -r --arg k "${key}" ".resources[\$k] | $2"
+}
+
+# The live subnet's AZ id, read from EC2 rather than from cdkd's record.
+subnet_az_id() { # usage: subnet_az_id <subnet-id>
+  aws ec2 describe-subnets --subnet-ids "$1" --region "${REGION}" \
+    --query 'Subnets[0].AvailabilityZoneId' --output text
 }
 
 # The alarm's own ARN, needed for tagging. `describe-alarms` is the reader
@@ -115,6 +175,22 @@ cleanup() {
   set +eu
   [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   aws cloudwatch delete-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  # The go-to-k/cdkd#2790 VPC + subnet, found by the tag lib/ puts on them.
+  local vpc_id subnet_id
+  for vpc_id in $(aws ec2 describe-vpcs --region "${REGION}" \
+    --filters "Name=tag:cdkd-integ-fixture,Values=${FIXTURE_TAG_VALUE}" \
+    --query 'Vpcs[].VpcId' --output text 2>/dev/null); do
+    case "${vpc_id}" in
+      vpc-?*) ;;
+      *) echo "WARN: teardown sweep refused: unexpected VPC id '${vpc_id}'" >&2; continue ;;
+    esac
+    for subnet_id in $(aws ec2 describe-subnets --region "${REGION}" \
+      --filters "Name=vpc-id,Values=${vpc_id}" \
+      --query 'Subnets[].SubnetId' --output text 2>/dev/null); do
+      aws ec2 delete-subnet --region "${REGION}" --subnet-id "${subnet_id}" >/dev/null 2>&1
+    done
+    aws ec2 delete-vpc --region "${REGION}" --vpc-id "${vpc_id}" >/dev/null 2>&1
+  done
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1 || true
@@ -149,6 +225,29 @@ if (!cov || !cov.silentDrop || !cov.silentDrop.has('EvaluationWindow')) process.
   exit 1
 fi
 echo "    OK: EvaluationWindow is still a silent-drop (premise holds)"
+# go-to-k/cdkd#2790's phases rest on AvailabilityZoneId being a CREATE-ONLY
+# silent drop for AWS::EC2::Subnet. A provider wiring it ends that premise.
+if ! (cd "${REPO_ROOT}" && node --input-type=module -e "
+const mod = await import('./src/provisioning/property-coverage.generated.ts');
+const table = Object.values(mod).find((v) => v instanceof Map);
+const cov = table && table.get('AWS::EC2::Subnet');
+if (!cov || !cov.createOnlyDrops || !cov.createOnlyDrops.has('AvailabilityZoneId')) process.exit(1);
+"); then
+  echo "FAIL: AWS::EC2::Subnet.AvailabilityZoneId is no longer a create-only silent drop --" >&2
+  echo "      phases 7-10 would test nothing. Move them to another type's create-only drop." >&2
+  exit 1
+fi
+echo "    OK: AvailabilityZoneId is still a create-only silent drop (premise holds)"
+
+# Any available AZ of the region: the SDK route drops the id and lets EC2 pick,
+# so phase 10's readback is the only place the value is checked against AWS.
+AZ_ID=$(aws ec2 describe-availability-zones --region "${REGION}" \
+  --filters "Name=state,Values=available" "Name=zone-type,Values=availability-zone" \
+  --query 'AvailabilityZones[-1].ZoneId' --output text)
+case "${AZ_ID}" in
+  ""|None) echo "FAIL: could not resolve an AZ id in ${REGION}" >&2; exit 1 ;;
+esac
+echo "    OK: phases 7-10 use AZ id ${AZ_ID}"
 
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
@@ -210,6 +309,28 @@ META_URP=$(jq -r --arg k "${LOGICAL_ID}" '.Resources[$k].UpdateReplacePolicy // 
 jq -e '.Properties.EvaluationWindow.WallClockWindow.Timezone == "UTC"' <<<"${META_REST}" >/dev/null || {
   echo "FAIL: the allowmeta template does not carry EvaluationWindow; phase 4b would not exercise the allow-listed drop" >&2; exit 1; }
 echo "    OK: allowmeta differs from allowdrop by UpdateReplacePolicy alone"
+
+# Phases 7-10's premise: the subnet carries the AZ id, and `subnettag` differs
+# from `subnet` in the subnet's Tags alone.
+if ! SYNTH_OUT=$(env CDKD_TEST_PHASE=subnet CDKD_TEST_AZ_ID="${AZ_ID}" node "${LOCAL_DIST}" synth --region "${REGION}" 2>&1); then
+  printf '%s\n' "${SYNTH_OUT}" >&2
+  echo "FAIL: subnet-phase synth failed" >&2
+  exit 1
+fi
+SUBNET_LOGICAL_ID=$(jq -r '.Resources | to_entries[] | select(.value.Type == "AWS::EC2::Subnet") | .key' "${TEMPLATE}" | head -1)
+[ -n "${SUBNET_LOGICAL_ID}" ] || { echo "FAIL: no AWS::EC2::Subnet in the subnet-phase template" >&2; exit 1; }
+jq -e --arg k "${SUBNET_LOGICAL_ID}" --arg az "${AZ_ID}" '.Resources[$k].Properties.AvailabilityZoneId == $az' "${TEMPLATE}" >/dev/null || {
+  echo "FAIL: the subnet does not carry AvailabilityZoneId ${AZ_ID}; phases 7-10 would test nothing" >&2; exit 1; }
+SUBNET_REST=$(jq -cS --arg k "${SUBNET_LOGICAL_ID}" '.Resources[$k] | del(.Properties.Tags)' "${TEMPLATE}")
+if ! SYNTH_OUT=$(env CDKD_TEST_PHASE=subnettag CDKD_TEST_AZ_ID="${AZ_ID}" node "${LOCAL_DIST}" synth --region "${REGION}" 2>&1); then
+  printf '%s\n' "${SYNTH_OUT}" >&2
+  echo "FAIL: subnettag-phase synth failed" >&2
+  exit 1
+fi
+SUBNETTAG_REST=$(jq -cS --arg k "${SUBNET_LOGICAL_ID}" '.Resources[$k] | del(.Properties.Tags)' "${TEMPLATE}")
+[ "${SUBNET_REST}" = "${SUBNETTAG_REST}" ] || {
+  echo "FAIL: subnet and subnettag differ in more than the subnet's Tags; phase 8 would not be an ordinary in-place change" >&2; exit 1; }
+echo "==> #2790 resource under test: ${SUBNET_LOGICAL_ID}"
 
 echo "==> Phase 1: Deploy with handled properties only (SDK route expected)"
 env CDKD_TEST_PHASE=base \
@@ -493,8 +614,104 @@ WITNESS_AGAIN=$(aws cloudwatch list-tags-for-resource --resource-arn "$(alarm_ar
 [ "${WITNESS_AGAIN}" = "1" ] || { echo "FAIL: the unmanaged tag is gone (tags=${WITNESS_AGAIN}, expected 1); the re-route applied EvaluationWindow by REPLACING the alarm rather than updating it in place" >&2; exit 1; }
 echo "    OK: re-routed to Cloud Control, the property landed, and the alarm was not replaced"
 
+echo "==> Phase 7: go-to-k/cdkd#2790 -- a create-only drop accepted with --prefer-sdk-route"
+env CDKD_TEST_PHASE=subnet CDKD_TEST_AZ_ID="${AZ_ID}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    --prefer-sdk-route "AWS::EC2::Subnet:AvailabilityZoneId" --yes
+SUBNET_P0=$(record_of "${SUBNET_LOGICAL_ID}" '.physicalId')
+case "${SUBNET_P0}" in
+  subnet-?*) ;;
+  *) echo "FAIL: the subnet record has no subnet id (physicalId=${SUBNET_P0})" >&2; exit 1 ;;
+esac
+VPC_ID=$(aws ec2 describe-subnets --subnet-ids "${SUBNET_P0}" --region "${REGION}" \
+  --query 'Subnets[0].VpcId' --output text)
+case "${VPC_ID}" in
+  vpc-?*) ;;
+  *) echo "FAIL: could not read the subnet's VPC (VpcId=${VPC_ID})" >&2; exit 1 ;;
+esac
+SUBNET_LAYER0=$(record_of "${SUBNET_LOGICAL_ID}" '.provisionedBy')
+[ "${SUBNET_LAYER0}" = "sdk" ] || { echo "FAIL: --prefer-sdk-route did not keep the subnet on its SDK provider (provisionedBy=${SUBNET_LAYER0}); the record below is not the one #2790 is about" >&2; exit 1; }
+# The PREMISE of the arm: the record keeps the create-only drop it never wrote.
+SUBNET_REC_AZ=$(record_of "${SUBNET_LOGICAL_ID}" '.properties.AvailabilityZoneId // "ABSENT"')
+[ "${SUBNET_REC_AZ}" = "${AZ_ID}" ] || { echo "FAIL: the record holds AvailabilityZoneId=${SUBNET_REC_AZ}, expected ${AZ_ID}; a create-only drop is no longer kept in the record and phase 9 tests nothing" >&2; exit 1; }
+# ...and names it as EVIDENCE that it was never sent: only a named key is
+# refused, so without this phase 9 would see NO_CHANGE.
+SUBNET_EVIDENCE=$(record_of "${SUBNET_LOGICAL_ID}" '(.acceptedCreateOnlyDrops // []) | any(.[]?; . == "AvailabilityZoneId")')
+[ "${SUBNET_EVIDENCE}" = "true" ] || { echo "FAIL: the record does not name AvailabilityZoneId in acceptedCreateOnlyDrops; the SDK-route create wrote no #2790 evidence" >&2; exit 1; }
+# Where EC2 put the SDK-created subnet. The SDK route drops the AZ id, so EC2
+# picks; when it happens to pick ${AZ_ID}, phase 10's AZ readback cannot tell
+# a written id from a coincidence, and says so rather than passing silently.
+SUBNET_P0_AZ=$(subnet_az_id "${SUBNET_P0}")
+case "${SUBNET_P0_AZ}" in
+  ""|None) echo "FAIL: could not read subnet ${SUBNET_P0}'s AZ id" >&2; exit 1 ;;
+esac
+echo "    OK: subnet ${SUBNET_P0} on the SDK route (in ${SUBNET_P0_AZ}), record keeps AvailabilityZoneId"
+
+echo "==> Phase 8: NEGATIVE CONTROL -- a flag-ful redeploy over that record does not replace"
+env CDKD_TEST_PHASE=subnettag CDKD_TEST_AZ_ID="${AZ_ID}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    --prefer-sdk-route "AWS::EC2::Subnet:AvailabilityZoneId" --yes
+SUBNET_P1=$(record_of "${SUBNET_LOGICAL_ID}" '.physicalId')
+[ "${SUBNET_P1}" = "${SUBNET_P0}" ] || { echo "FAIL: the flag-ful redeploy REPLACED the subnet (${SUBNET_P0} -> ${SUBNET_P1}); keeping the drop on both sides of the diff is what must prevent that" >&2; exit 1; }
+NAME_TAG=$(aws ec2 describe-subnets --subnet-ids "${SUBNET_P0}" --region "${REGION}" \
+  --query "Subnets[0].Tags[?Key=='Name'].Value | [0]" --output text)
+[ "${NAME_TAG}" = "${STACK}-subnettag" ] || { echo "FAIL: the tag change did not reach AWS (Name=${NAME_TAG}); the phase changed nothing and proves nothing" >&2; exit 1; }
+echo "    OK: tag updated in place, subnet not replaced"
+
+echo "==> Phase 9: THE #2790 ARM -- the same template with NO flag must refuse"
+# Before the fix the record and the template held the same AvailabilityZoneId,
+# the diff called it NO_CHANGE, and the deploy reported success with the
+# property never written. `if` rather than `!`: the deploy is EXPECTED to fail.
+if REFUSE_OUT=$(env CDKD_TEST_PHASE=subnettag CDKD_TEST_AZ_ID="${AZ_ID}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1); then
+  printf '%s\n' "${REFUSE_OUT}" >&2
+  echo "FAIL: the flag-less deploy SUCCEEDED. go-to-k/cdkd#2790: AvailabilityZoneId was never written, applying it needs a replacement, and the deploy must refuse rather than report success." >&2
+  exit 1
+fi
+printf '%s\n' "${REFUSE_OUT}" >&2
+REFUSE_PLAIN=$(printf '%s' "${REFUSE_OUT}" | sed $'s/\033\[[0-9;]*m//g')
+grep -qF "${SUBNET_LOGICAL_ID} (AWS::EC2::Subnet): AvailabilityZoneId is create-only, and the state record holds it" <<<"${REFUSE_PLAIN}" || {
+  echo "FAIL: the deploy failed, but not with the #2790 refusal; read the output above" >&2; exit 1; }
+grep -qF -- "--prefer-sdk-route does not cover AvailabilityZoneId" <<<"${REFUSE_PLAIN}" || {
+  echo "FAIL: the refusal does not name AvailabilityZoneId as the key routing the subnet to Cloud Control" >&2; exit 1; }
+grep -qF -- "--recreate-via-cc-api ${SUBNET_LOGICAL_ID}" <<<"${REFUSE_PLAIN}" || {
+  echo "FAIL: the refusal does not name --recreate-via-cc-api ${SUBNET_LOGICAL_ID}, the opt-in phase 10 takes" >&2; exit 1; }
+SUBNET_P2=$(record_of "${SUBNET_LOGICAL_ID}" '.physicalId')
+[ "${SUBNET_P2}" = "${SUBNET_P0}" ] || { echo "FAIL: the refused deploy changed the subnet's record (${SUBNET_P0} -> ${SUBNET_P2})" >&2; exit 1; }
+SUBNET_LAYER2=$(record_of "${SUBNET_LOGICAL_ID}" '.provisionedBy')
+[ "${SUBNET_LAYER2}" = "sdk" ] || { echo "FAIL: the refused deploy moved the subnet's record to ${SUBNET_LAYER2}" >&2; exit 1; }
+LIVE_AFTER_REFUSAL=$(aws ec2 describe-subnets --subnet-ids "${SUBNET_P0}" --region "${REGION}" \
+  --query 'Subnets[0].SubnetId' --output text)
+[ "${LIVE_AFTER_REFUSAL}" = "${SUBNET_P0}" ] || { echo "FAIL: subnet ${SUBNET_P0} is gone after the refusal (${LIVE_AFTER_REFUSAL}); the refusal must come before the delete" >&2; exit 1; }
+echo "    OK: refused, naming AvailabilityZoneId and the opt-in; the subnet is untouched"
+
+echo "==> Phase 10: the opt-in -- --recreate-via-cc-api applies the property"
+env CDKD_TEST_PHASE=subnettag CDKD_TEST_AZ_ID="${AZ_ID}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    --recreate-via-cc-api "${SUBNET_LOGICAL_ID}" --yes
+SUBNET_P3=$(record_of "${SUBNET_LOGICAL_ID}" '.physicalId')
+case "${SUBNET_P3}" in
+  subnet-?*) ;;
+  *) echo "FAIL: the recreated subnet's record has no subnet id (physicalId=${SUBNET_P3})" >&2; exit 1 ;;
+esac
+[ "${SUBNET_P3}" != "${SUBNET_P0}" ] || { echo "FAIL: --recreate-via-cc-api kept subnet ${SUBNET_P0}; nothing was re-created" >&2; exit 1; }
+SUBNET_LAYER3=$(record_of "${SUBNET_LOGICAL_ID}" '.provisionedBy')
+[ "${SUBNET_LAYER3}" = "cc-api" ] || { echo "FAIL: the recreate did not land on Cloud Control (provisionedBy=${SUBNET_LAYER3})" >&2; exit 1; }
+LIVE_AZ=$(subnet_az_id "${SUBNET_P3}")
+[ "${LIVE_AZ}" = "${AZ_ID}" ] || { echo "FAIL: the recreated subnet is in ${LIVE_AZ}, expected ${AZ_ID}: AvailabilityZoneId did not reach AWS" >&2; exit 1; }
+if [ "${SUBNET_P0_AZ}" = "${AZ_ID}" ]; then
+  echo "    NOTE: EC2 placed the SDK-created subnet in ${AZ_ID} already, so this AZ readback does not discriminate on this run (phase 9's refusal still does)"
+fi
+assert_gone "the old subnet ${SUBNET_P0} survived the recreate" \
+  aws ec2 describe-subnets --subnet-ids "${SUBNET_P0}" --region "${REGION}"
+echo "    OK: re-created on Cloud Control in ${AZ_ID}; the old subnet is gone"
+
 echo "==> Phase 6: Destroy + gone-probe"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_gone "subnet ${SUBNET_P3} survived destroy" \
+  aws ec2 describe-subnets --subnet-ids "${SUBNET_P3}" --region "${REGION}"
+assert_gone "VPC ${VPC_ID} survived destroy" \
+  aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
 GONE=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
   --query 'length(MetricAlarms)' --output text)
 # describe-alarms returns an EMPTY LIST for a missing
@@ -504,4 +721,4 @@ GONE=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${
 [ "${GONE}" = "0" ] || { echo "FAIL: alarm ${ALARM_NAME} survived destroy (found ${GONE})" >&2; exit 1; }
 echo "    OK: destroyed clean"
 
-echo "PASS: sdk-to-cc-autoroute (auto-route observed on a live SDK-created resource)"
+echo "PASS: sdk-to-cc-autoroute (auto-route observed on a live SDK-created resource; a never-written create-only drop refused)"

@@ -765,7 +765,8 @@
         "replacement-rename-onto-holder",
         "rollback-replay-cc-generated-name",
         "scheduler-custom-group",
-        "sdk-ccapi-crossref"
+        "sdk-ccapi-crossref",
+        "sdk-to-cc-autoroute"
       ]
     },
     {
@@ -1779,6 +1780,7 @@
     "--alarm-names",
     "--alarm-types",
     "--all",
+    "--allocation-id",
     "--api-id",
     "--api-key",
     "--application-id",

@@ -231,7 +231,11 @@ object is deleted on the next **successful deploy**, after a **clean
 automatic rollback** settles it to a failed-only segment instead of
 deleting it (`operations: []` plus the failed op records, `reason:
 auto-rollback-clean`) so `cdkd rollback --revert-failed` works in the
-default deploy flow too. A **nested stack** (`{Parent}~{Child}`) differs:
+default deploy flow too. An automatic rollback is clean only with no failed
+AND no skipped op: one that left an op unreverted (a `ROLLBACK_RESOURCE_SKIPPED`
+event) keeps the full segment, and an attempt that wrote no segment of its
+own (nothing completed, and its only failures creates refused before
+anything was applied, or a segment write that failed) settles nothing, leaving older segments as they are. A **nested stack** (`{Parent}~{Child}`) differs:
 its successful deploy appends a `nested-pending-parent` segment instead of
 deleting the journal, and the journal is deleted when its **top-level** stack's
 deploy succeeds; the parent's rollback replays it to revert the child (see
@@ -1421,6 +1425,7 @@ interface ResourceState {
   provisionedBy?: 'sdk' | 'cc-api'             // v7+: provisioning layer (absent = SDK legacy default)
   observedBaselineRefused?: true               // v10+: `cdkd import` declined to capture a baseline
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution' // optional, no bump: only the first survives an in-place UPDATE
+  acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
 }
 ```
 
@@ -1432,7 +1437,10 @@ has no wiring for is likewise absent whenever
 [`--prefer-sdk-route`](cli-deploy-safety.md#the-override) kept the
 resource on the SDK route (that flag is the opt-in to the property not being
 written at all) — unless the property is create-only, which cdkd keeps in the
-record because removing it would classify the next deploy as a replacement.
+record because removing it would classify the next deploy as a replacement,
+and names in `acceptedCreateOnlyDrops`. That name is what lets a later deploy
+without the flag refuse the replacement instead of reporting no change
+([`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](cli-deploy-safety.md#create-only-drop-needs-replacement)).
 One key is never sent: a nested stack's `AWS::CloudFormation::Stack` row
 carries `cdkd:PendingChildDeletes` while its child stack (or one below it)
 still holds a DELETE cdkd skipped, so the next `cdkd deploy` re-runs that

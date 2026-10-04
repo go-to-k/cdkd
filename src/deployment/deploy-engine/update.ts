@@ -2,11 +2,25 @@ import { childLostWithRecreatedParent, survivesParent } from '../child-of-recrea
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import {
+  findActionableSilentDrops,
+  unwrittenCreateOnlyReplacement,
   withoutAcceptedSilentDropProperties,
-  withoutSilentDropProperties,
+  withoutUnwrittenSilentDropProperties,
 } from '../../provisioning/property-coverage.js';
+import { CdkdError } from '../../utils/error-handler.js';
+import { markNonRetryable } from '../retryable-errors.js';
+import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
+import {
+  recordedProtectionEvidence,
+  recordedProtectionNote,
+} from '../../provisioning/recorded-protection.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
-import { type PropertyChange, type ResourceChange, type ResourceState } from '../../types/state.js';
+import {
+  acceptedCreateOnlyDropsOf,
+  type PropertyChange,
+  type ResourceChange,
+  type ResourceState,
+} from '../../types/state.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
@@ -91,10 +105,10 @@ export async function provisionUpdate(
   // today — every key either reads is `handled` for its own type, fenced
   // by `tests/unit/provisioning/silent-drop-guard-key-disjointness.test.ts`
   // — but "inert today" is not a reason to widen a guard's input.
-  const currentPropsAsWritten =
-    currentResource.provisionedBy === 'cc-api'
-      ? currentProps
-      : withoutSilentDropProperties(resourceType, currentProps);
+  //
+  // Bound BELOW, once the resolved bag exists: a create-only drop stays in
+  // it only while this deploy still accepts it (issue #2790), which is a
+  // question about the desired side.
 
   // Resolve intrinsic functions in properties
   const context = this.buildResolverContext(
@@ -271,6 +285,27 @@ export async function provisionUpdate(
           currentResource.properties
         )
       : desiredForSkipCheck;
+  // The allow set the diff narrowed by; a test double without the getter
+  // reads as the flag-less deploy, as `cdkd diff` does. The diff decided
+  // "accepted" over its best-effort resolution, this over the full one: an
+  // UNRECOGNIZED key still behind an intrinsic there can answer differently
+  // here, and then the diff carries no replacement row for the #2790 refusal
+  // below to see. That needs a schema-unknown key behind an intrinsic on a
+  // type with a create-only drop.
+  const allowedForRecord = allowedSilentDrops ?? new Set<string>();
+  // The create-only drops this record PROVES were never sent (#2790); the
+  // diff reads the same field, so both decide on the same evidence.
+  const createOnlyEvidence = acceptedCreateOnlyDropsOf(currentResource);
+  const currentPropsAsWritten =
+    currentResource.provisionedBy === 'cc-api'
+      ? currentProps
+      : withoutUnwrittenSilentDropProperties(
+          resourceType,
+          currentProps,
+          desiredForSkipCheck,
+          allowedForRecord,
+          createOnlyEvidence
+        );
   // The metadata-only arm both no-change skips share: refresh the record's
   // template attributes and call no provider.
   const applyAttributeOnlyUpdate = (
@@ -522,6 +557,67 @@ export async function provisionUpdate(
   const needsReplacement =
     propertyDrivenReplacement || recreateFlagged || lostWithParent !== undefined;
 
+  // Issue #2790: a replacement driven ONLY by create-only properties an
+  // earlier deploy accepted dropping (`--prefer-sdk-route`) and
+  // the template still asks for unchanged. AWS never held them, and the only
+  // thing that moved is that the flag went away — so destroying and
+  // re-creating the resource is not something cdkd does on its own. Refused
+  // before anything is deleted; `--replace` or `--recreate-via-cc-api` opts
+  // in, and the stateful guard still applies on that path.
+  //
+  // Any OTHER replacement-requiring change lets it through: that replacement
+  // happens anyway, and its create applies these properties too.
+  if (
+    propertyDrivenReplacement &&
+    !typeChanged &&
+    !recreateFlagged &&
+    lostWithParent === undefined &&
+    this.options.replace !== true &&
+    currentResource.provisionedBy !== 'cc-api'
+  ) {
+    const unwritten = unwrittenCreateOnlyReplacement(
+      resourceType,
+      currentProps,
+      desiredForSkipCheck,
+      allowedForRecord,
+      createOnlyEvidence,
+      (change.propertyChanges ?? []).filter((pc) => pc.requiresReplacement).map((pc) => pc.path)
+    );
+    if (unwritten.length > 0) {
+      // Marked refused-before-applying: nothing was sent, so the journal
+      // must not record this resolved bag as an attempt a `--revert-failed`
+      // or a later create would act on.
+      throw markRefusedBeforeApplying(
+        markNonRetryable(
+          new CdkdError(
+            unwrittenCreateOnlyRefusal({
+              logicalId,
+              resourceType,
+              unwritten,
+              routeDriving: findActionableSilentDrops(
+                resourceType,
+                desiredForSkipCheck,
+                allowedForRecord,
+                currentProps
+              ).map(({ property }) => property),
+              nested: this.options.parentStackInfo !== undefined,
+              // Issue #2610: the replacement's delete never clears a
+              // deletion protection, so the remedy says so where the record
+              // shows one -- as the stateful guard does.
+              protectionEvidence: recordedProtectionEvidence(
+                resourceType,
+                currentProps,
+                currentResource.observedProperties,
+                this.stackRegion
+              ),
+            }),
+            'CREATE_ONLY_DROP_NEEDS_REPLACEMENT'
+          )
+        )
+      );
+    }
+  }
+
   // The label `provisionResource` chose left ceilings out; one that
   // stood (the value moved, or it is a fresh `NoEcho` value AWS could
   // not confirm unchanged) turns this into a replacement, so say so.
@@ -652,5 +748,65 @@ export async function provisionUpdate(
       updateSecrets,
       reattach: lostChild?.mode === 'reattach',
     })
+  );
+}
+
+/**
+ * The text of the issue #2790 refusal. Exported for its unit test.
+ *
+ * It states only what holds in every case it fires on: the record holds the
+ * key, the SDK provider never writes it, and this deploy routes the resource
+ * through Cloud Control. It does NOT claim this deploy's flags omit the key,
+ * since a sibling drop the flags do not cover routes the resource just the
+ * same.
+ *
+ * `routeDriving` is every key that sends the resource to Cloud Control on this
+ * deploy. Keeping the resource on its SDK provider needs ALL of them, and the
+ * unwritten ones, allow-listed, since the route is per resource, so the
+ * keep-dropping remedy names the union. `nested` drops `--recreate-via-cc-api`,
+ * which cannot address a resource inside a nested stack's child.
+ * `protectionEvidence` is `recordedProtectionEvidence`'s answer for the record.
+ *
+ * @internal
+ */
+export function unwrittenCreateOnlyRefusal(input: {
+  logicalId: string;
+  resourceType: string;
+  unwritten: readonly string[];
+  routeDriving: readonly string[];
+  nested: boolean;
+  protectionEvidence?: string | undefined;
+}): string {
+  const { logicalId, resourceType, unwritten, routeDriving, nested, protectionEvidence } = input;
+  const one = unwritten.length === 1;
+  const list = unwritten.join(', ');
+  const keep = [...new Set([...unwritten, ...routeDriving])]
+    .sort((a, b) => a.localeCompare(b))
+    .map((property) => `${resourceType}:${property}`)
+    .join(',');
+  // `--recreate-via-cc-api` deletes the old resource first; `--replace` takes
+  // the property-driven path, which creates the new one first. A NAME
+  // collision there is retried delete-first under `--replace`, but any other
+  // unique value the old one still holds (a subnet's CIDR block) collides.
+  // Inside a nested child only `--replace` reaches the resource.
+  const replaceFlags = nested
+    ? '--replace (which creates the new resource before deleting the old one, so a ' +
+      'resource holding a unique value other than its name, such as a CIDR block, collides)'
+    : `--recreate-via-cc-api ${logicalId}, which deletes the old resource first ` +
+      '(--replace also works, but creates the new one first, so a resource holding a ' +
+      'unique value other than its name, such as a CIDR block, collides)';
+  const routed = [...routeDriving].sort((a, b) => a.localeCompare(b)).join(', ');
+  return (
+    `${logicalId} (${resourceType}): ${list} ${one ? 'is' : 'are'} create-only, and the ` +
+    `state record holds ${one ? 'it' : 'them'} although this type's SDK provider never ` +
+    `writes ${one ? 'it' : 'them'}, so AWS does not. This deploy routes the resource through ` +
+    `Cloud Control (--prefer-sdk-route does not cover ${routed}), and applying a create-only ` +
+    `property means replacing the resource, which cdkd does not do on its own. This ` +
+    `resource was not changed. To replace it and apply ${list}, re-run with ${replaceFlags}; a ` +
+    `stateful resource also needs --force-stateful-recreation.` +
+    (protectionEvidence !== undefined
+      ? ` ${recordedProtectionNote(protectionEvidence, nested ? '--replace' : `--recreate-via-cc-api ${logicalId} or --replace`)}`
+      : '') +
+    ` To keep dropping ${one ? 'it' : 'them'}, re-run with --prefer-sdk-route ${keep}.`
   );
 }

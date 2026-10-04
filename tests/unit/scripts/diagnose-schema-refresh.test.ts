@@ -90,6 +90,7 @@ import {
   renderName,
   sdkModelsMember,
   sdkVersionLag,
+  readProviderRegistrationSource,
 } from '../../../scripts/diagnose-schema-refresh.mjs';
 // The OTHER reader of `bogusTolerated`, imported so the confluence case below
 // asserts against the real oracle rather than a restatement of it: the #3005
@@ -384,10 +385,9 @@ describe('parseDeclaredProperties', () => {
 });
 
 describe('mapTypesToProviderFiles', () => {
-  const REAL_REGISTER = join(REPO_ROOT, 'src/provisioning/register-providers.ts');
 
   it('resolves both registration shapes against the REAL registration file', () => {
-    const map = mapTypesToProviderFiles(readFileSync(REAL_REGISTER, 'utf8'));
+    const map = mapTypesToProviderFiles(readProviderRegistrationSource(REPO_ROOT));
     expect(map.size).toBeGreaterThan(100);
     // Registered from a shared local (`const route53Provider = new Route53Provider()`).
     expect(map.get('AWS::Route53::RecordSet')).toBe(
@@ -1830,7 +1830,7 @@ describe('clientsForType', () => {
     // A floor AND a ceiling. Zero hedged rows would mean the flag stopped
     // discriminating; a large number would mean the name test broke.
     const map = mapTypesToProviderFiles(
-      readFileSync(join(REPO_ROOT, 'src/provisioning/register-providers.ts'), 'utf8')
+      readProviderRegistrationSource(REPO_ROOT)
     );
     let hedged = 0;
     let settled = 0;
@@ -3130,7 +3130,7 @@ describe('--changelog-out, through the shipped binary', () => {
       expect(
         parseCcFallbackOptOuts(
           mapTypesToProviderFiles(
-            readFileSync(join(REPO_ROOT, 'src/provisioning/register-providers.ts'), 'utf8')
+            readProviderRegistrationSource(REPO_ROOT)
           )
         ).optedOut.has('AWS::DynamoDB::Table'),
         'the probe type’s provider now declines the CC fallback; it is refused, not routed'
@@ -3404,7 +3404,7 @@ describe('parseStickyCcMigrationExempt', () => {
 describe('the unroutable-type sources', () => {
   it('reads the CC-fallback opt-outs off the real provider sources', () => {
     const providerFiles = mapTypesToProviderFiles(
-      readFileSync(join(REPO_ROOT, 'src/provisioning/register-providers.ts'), 'utf8')
+      readProviderRegistrationSource(REPO_ROOT)
     );
     const { optedOut, unreadable } = parseCcFallbackOptOuts(providerFiles);
     // Anchored on two providers that declare it, and on the COMPLEMENT — the

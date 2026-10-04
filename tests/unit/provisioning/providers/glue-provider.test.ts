@@ -81,6 +81,7 @@ import {
 import {
   isMarkedNonRetryable,
   isNameCollisionErrorFrom,
+  isRetryableTransientError,
 } from '../../../../src/deployment/retryable-errors.js';
 
 describe('GlueProvider import', () => {
@@ -1652,17 +1653,19 @@ describe('Glue CatalogId move refusal (issue #3756)', () => {
   });
 });
 
-// Issue #3750: a Table rename is now a create-first REPLACEMENT, so a table
-// already holding the new name surfaces as a CreateTable AlreadyExistsException.
-// It must NOT read as a name collision to the engine, whose remedy (`--replace`)
-// would delete the managed table first and then collide with the holder again.
-describe('Glue CreateTable name collision (issue #3750)', () => {
+// Issue #3932: an occupied table address (CreateTable `AlreadyExistsException`)
+// must reach the engine as a name collision. Whether the old table holds it is
+// the engine's holder proof (`replacement-name-holder`), which refuses
+// `--replace` for a rename and lets a same-address replacement delete first.
+// Issue #3750's wrap reworded it, so a same-address replacement had no
+// `--replace` recovery.
+describe('Glue CreateTable name collision (issues #3750, #3932)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGlueSend.mockReset();
   });
 
-  it('reports an occupied table name without the collision signal the engine reads', async () => {
+  it('relays an occupied table name so the engine classifies it as a collision', async () => {
     const aws = new AlreadyExistsException({ message: 'Table already exists.', $metadata: {} });
     mockGlueSend.mockRejectedValueOnce(aws);
 
@@ -1674,17 +1677,15 @@ describe('Glue CreateTable name collision (issue #3750)', () => {
       .catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(Error);
-    const message = (error as Error).message;
-    expect(message).toContain("a table named 'taken' is present in database 'mydb'");
-    expect(message).toContain('revert the change that planned it');
-    // The engine never takes its delete-first path for this error, so a
-    // --replace remedy would loop: none is offered.
-    expect(message).not.toContain('--replace');
-    expect(isNameCollisionErrorFrom(error, 'MyTable')).toBe(false);
-    // The AWS error stays in the chain for the retry classifiers; the
-    // collision classifier credits its prose only when the top level relays it.
+    expect((error as Error).message).toBe(
+      'Failed to create Glue Table MyTable: Table already exists.'
+    );
+    expect(isNameCollisionErrorFrom(error, 'MyTable')).toBe(true);
+    // Anchored on the logical id: another resource's create cannot claim it.
+    expect(isNameCollisionErrorFrom(error, 'OtherTable')).toBe(false);
     expect((error as Error).cause).toBe(aws);
-    expect(isMarkedNonRetryable(error)).toBe(true);
+    // Not retried in place: a create-first collision is the engine's to answer.
+    expect(isRetryableTransientError(error, (error as Error).message)).toBe(false);
   });
 
   it('keeps any other CreateTable failure wrapped with its cause', async () => {

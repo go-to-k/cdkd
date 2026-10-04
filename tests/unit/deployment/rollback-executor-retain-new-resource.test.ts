@@ -148,6 +148,9 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       // Exit code 2: a live resource cdkd no longer tracks is exactly what
       // the warnings counter is for.
       expect(result.warnings).toBe(1);
+      // go-to-k/cdkd#3338: a survivor is not a SKIP — the op was reverted, so
+      // the automatic rollback may still settle its journal segment.
+      expect(result.skipped).toBe(0);
       const warnText = warns.join('\n');
       expect(warnText).toContain('phys-new');
       expect(warnText).toContain('UpdateReplacePolicy: Retain');

@@ -223,8 +223,9 @@ function parameterPlaceholderParts(
  *
  * TWO READINGS, the resolver's first. {@link positionByRecordedParameterSpans}
  * reads the spans the RESOLVER recorded while it substituted each parameter
- * (issue #4446), which answers any number of unknown parts and an `Fn::If`
- * selecting an `Fn::Sub` / `Fn::Join`. Where this pass kept no usable record,
+ * (issue #4446) and placed each cross-stack read (issue #4527), which answers
+ * any number of unknown parts and an `Fn::If` selecting an `Fn::Sub` /
+ * `Fn::Join`. Where this pass kept no usable record,
  * the TEMPLATE parse below aligns the source against the leaf instead:
  *
  * AT MOST ONE UNKNOWN PART (a pseudo parameter, an intrinsic, an unassociated
@@ -368,17 +369,19 @@ function acceptedPlaceholderRendering(
  * The template parse refuses whatever it cannot align: two or more parts whose
  * text the template cannot state, and every source other than `Fn::Sub` /
  * `Fn::Join` (an `Fn::If` selecting one). The resolver states WHERE each
- * parameter `Ref` landed while it substituted it
- * (`IntrinsicLeafResolution.parameterSpans`, through every nesting and an
- * `Fn::If`'s selected branch), so nothing here re-implements the rendering and
- * nothing is searched for.
+ * parameter `Ref` and each cross-stack read (issue #4527) landed while it
+ * substituted it (`IntrinsicLeafResolution.parameterSpans`, through every
+ * nesting and an `Fn::If`'s selected branch), so nothing here re-implements
+ * the rendering and nothing is searched for.
  *
  * - The record must describe THIS leaf: its `output` equals `bag`, and its
  *   spans are ascending, non-overlapping and inside it; anything else refuses.
- * - Each span is certified exactly as a whole `{Ref: <Param>}` leaf over its
- *   text would be ({@link certifiedExpressionForLeaf} over that parameter's
- *   association), which is what `redactParametersForDiff` renders. A span that
- *   is not certified stays as text.
+ * - Each span is certified exactly as a whole leaf of its reference over its
+ *   text would be ({@link certifiedExpressionForLeaf} over the association
+ *   recorded under the span's key: a `{Ref: <Param>}`, an `Fn::ImportValue` /
+ *   `Fn::GetStackOutput` / `Fn::GetAtt`), which is what
+ *   `redactParametersForDiff` and `positionByCrossStackSource` render. A span
+ *   that is not certified stays as text.
  * - Every other stretch of `bag` (a GAP: literal text, a pseudo parameter, an
  *   attribute, an uncertified parameter) is kept VERBATIM and must be one the
  *   value scan leaves alone ON ITS OWN, for the reason the template arm keeps
@@ -405,15 +408,14 @@ function positionByRecordedParameterSpans(
   let persisted = '';
   const gaps: string[] = [];
   const certified: Array<readonly [number, number]> = [];
-  for (const { start, length, parameter } of recorded) {
+  for (const { start, length, key } of recorded) {
     // The upper bound is load-bearing: `slice` clamps, so an overlong span
     // whose clamped text IS a plaintext would certify text the record never
     // described (pinned by the "overlong span" case).
     if (!(start >= previousEnd && length > 0 && start + length <= bag.length)) return undefined;
     previousEnd = start + length;
     const text = bag.slice(start, start + length);
-    const key = crossStackSourceKey({ Ref: parameter });
-    const association = key === undefined ? undefined : associations.get(key);
+    const association = associations.get(key);
     if (association === undefined || typeof association === 'symbol') continue;
     const expression = certifiedExpressionForLeaf(secrets, association, text);
     if (expression === undefined) continue;

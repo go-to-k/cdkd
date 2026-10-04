@@ -13,9 +13,10 @@ every site? A residue is `next` only on external input
 loaded) — then file an umbrella naming every site, and say which this lane DID
 close. **NOT external input**: an umbrella already owning the population, "a
 different shape", a scope-creep trip, or a file shared with another code path —
-each is a SEPARATE PR, still `now`. A file an open PR this session did not open
-holds IS (a), and is not this PR's to edit: before a sweep touches a file the
-claim did not name, ask LIVE (#4273):
+each is a SEPARATE PR, still `now`. Lines an open PR this session did not open
+holds (triage.md §2) ARE (a), and are not this PR's to edit: before a sweep
+touches a file the claim did not name, ask LIVE, then read the hit's
+`gh pr diff` (#4273):
 
 ```bash
 # <file> is the REPO-RELATIVE path (exact match). `files` stops at 100 per PR,
@@ -92,11 +93,11 @@ gh issue create -t 'fix(provider): ...' \
 ```
 
 **A `next` reason must still be true when someone reads it.** Write it as a
-condition a reader can CHECK (`PR #N holds this file`, `the fix belongs in
+condition a reader can CHECK (`PR #N holds the lines this fix needs`, `the fix belongs in
 <repo>`), never as a state of the lane ("the files are cold", "the session
 ended"). Check it before writing EITHER value, the held-file query above once
-per file the fix edits: one an open PR this session did not open holds (a fork
-PR, its hunks) is `next` (a), naming THAT PR (#3959). A PR of THIS run is not
+per file the fix edits: one whose needed lines an open PR this session did not
+open holds (triage.md §2) is `next` (a), naming THAT PR (#3959). A PR of THIS run is not
 external input: `now`, queued behind that lane — say so in the lane report
 (#4263 / #4264 were both filed `next` on this run's own #4269 / #4271).
 

@@ -35,6 +35,16 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
   attempted properties (9999999) → `cdkd rollback --force --revert-failed`
   → Marker back to v1, the failed queue force-reverted to retention 3600,
   journal gone, exit 0.
+- **Phase S (a skipped op on the automatic path, issue
+  [#3338](https://github.com/go-to-k/cdkd/issues/3338))**: deploy with
+  `WITH_SKIP_PAIR=true` (a `SkipBucket` holding one object, no
+  `autoDeleteObjects`, and a `SkipDoomed` parameter depending on it) → deploy
+  without the pair and WITH the automatic rollback: `SkipDoomed`'s DELETE
+  completes, `SkipBucket`'s fails, and the rollback cannot undo the completed
+  DELETE → assert the run's `ROLLBACK_RESOURCE_SKIPPED` event for `SkipDoomed`
+  and that the journal kept the full `auto-rollback-started` segment → `cdkd
+  rollback --force` exits 2, records the skip again and clears the journal →
+  empty the bucket and deploy plainly to converge.
 - **Phase 2 (initialDeploy path)**: first-ever failing `--no-rollback` deploy
   of a second stack → `cdkd rollback --force` deletes the created parameter AND
   removes `state.json` entirely.
@@ -50,4 +60,4 @@ flips the always-present `RevertQueue`'s retention to the out-of-range value so
 the failure lands on an UPDATE (the `--revert-failed` target). See
 `lib/rollback-command-stack.ts` for the env-gated resource set
 (`MARKER_VALUE` / `WITH_EXTRA` / `REPLACE_SUFFIX` / `INJECT_FAIL` /
-`INJECT_UPDATE_FAIL`).
+`INJECT_UPDATE_FAIL` / `WITH_SKIP_PAIR`).

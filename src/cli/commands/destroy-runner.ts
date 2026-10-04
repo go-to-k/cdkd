@@ -37,7 +37,10 @@ import {
   computeImplicitDeleteEdges,
 } from '../../analyzer/implicit-delete-deps.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
-import { registerAllProviders } from '../../provisioning/register-providers.js';
+import {
+  loadProviderClasses,
+  registerAllProviders,
+} from '../../provisioning/register-providers.js';
 import {
   PROTECTION_PROPERTY_BY_TYPE,
   isProtectionValueActive,
@@ -458,6 +461,9 @@ export async function runDestroyForStack(
   state: StackState,
   ctx: DestroyRunnerContext
 ): Promise<DestroyRunnerResult> {
+  // Awaited first, so provider construction below stays synchronous once the
+  // stack client scope / globals are set (see `loadProviderClasses`).
+  const providerClasses = await loadProviderClasses();
   const logger = getLogger();
   const result: DestroyRunnerResult = {
     stackName,
@@ -985,7 +991,7 @@ export async function runDestroyForStack(
       setAwsClients(destroyAwsClients);
 
       destroyProviderRegistry = new ProviderRegistry();
-      registerAllProviders(destroyProviderRegistry);
+      registerAllProviders(destroyProviderRegistry, providerClasses);
       destroyProviderRegistry.setCustomResourceResponseBucket(ctx.stateBucket);
       if (ctx.allowUnsupportedTypes?.length) {
         destroyProviderRegistry.allowUnsupportedTypes(ctx.allowUnsupportedTypes);

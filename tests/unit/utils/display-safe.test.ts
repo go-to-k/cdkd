@@ -7,6 +7,9 @@
  */
 import { describe, expect, it } from 'vite-plus/test';
 import {
+  AWS_MESSAGE_MAX_CODE_POINTS,
+  cutMarker,
+  displayAwsMessage,
   displayIdent,
   displaySafe,
   IDENT_MAX_CODE_POINTS,
@@ -194,7 +197,7 @@ describe('displayIdent (issues #3064 / #3092)', () => {
     const atCap = 'A'.repeat(IDENT_MAX_CODE_POINTS);
     expect(displayIdent(atCap)).toBe(atCap);
     const over = 'A'.repeat(IDENT_MAX_CODE_POINTS + 45);
-    expect(displayIdent(over)).toBe(`${atCap} [cut: 45 more characters withheld]`);
+    expect(displayIdent(over)).toBe(`${atCap} [cut: 45 more characters withheld, tail sha256:ac752ced452069c55c7567a0717b8761]`);
     // The cut is measured AFTER sanitizing, so a value padded with invisibles
     // to sneak under the cap is measured by what it renders as -- and since
     // issue #3164 it is also QUOTED, because sanitization was not the identity
@@ -264,7 +267,7 @@ describe('displayIdent maxCodePoints option (issue #3164)', () => {
   it('defaults to IDENT_MAX_CODE_POINTS when no option is given', () => {
     const over = 'A'.repeat(IDENT_MAX_CODE_POINTS + 3);
     expect(displayIdent(over)).toBe(
-      `${'A'.repeat(IDENT_MAX_CODE_POINTS)} [cut: 3 more characters withheld]`
+      `${'A'.repeat(IDENT_MAX_CODE_POINTS)} [cut: 3 more characters withheld, tail sha256:cb1ad2119d8fafb69566510ee712661f]`
     );
   });
 
@@ -276,7 +279,7 @@ describe('displayIdent maxCodePoints option (issue #3164)', () => {
   it('NARROWS the cut when a caller passes a smaller cap', () => {
     // The floor half: without it, only the widening direction is watched.
     expect(displayIdent('ABCDEFGH', { maxCodePoints: 3 })).toBe(
-      'ABC [cut: 5 more characters withheld]'
+      'ABC [cut: 5 more characters withheld, tail sha256:b0114036cd9b98ee5bfe692b6beeb9fe]'
     );
   });
 
@@ -284,10 +287,10 @@ describe('displayIdent maxCodePoints option (issue #3164)', () => {
     // A slice with a negative length cuts from the END and reports a nonsense
     // withheld count; zero leaves nothing at all. Both are floored to 1.
     expect(displayIdent('ABCDEFGH', { maxCodePoints: -5 })).toBe(
-      'A [cut: 7 more characters withheld]'
+      'A [cut: 7 more characters withheld, tail sha256:1766c972e1b52e28af81dfd043f44219]'
     );
     expect(displayIdent('ABCDEFGH', { maxCodePoints: 0 })).toBe(
-      'A [cut: 7 more characters withheld]'
+      'A [cut: 7 more characters withheld, tail sha256:1766c972e1b52e28af81dfd043f44219]'
     );
   });
 
@@ -298,10 +301,10 @@ describe('displayIdent maxCodePoints option (issue #3164)', () => {
     // lifts it to 1, while an unfloored `slice(0, 0.5)` yields the empty
     // string and the render collapses to `""`.
     expect(displayIdent('ABCDEFGH', { maxCodePoints: 0.5 })).toBe(
-      'A [cut: 7 more characters withheld]'
+      'A [cut: 7 more characters withheld, tail sha256:1766c972e1b52e28af81dfd043f44219]'
     );
     expect(displayIdent('ABCDEFGH', { maxCodePoints: 3.9 })).toBe(
-      'ABC [cut: 5 more characters withheld]'
+      'ABC [cut: 5 more characters withheld, tail sha256:b0114036cd9b98ee5bfe692b6beeb9fe]'
     );
   });
 
@@ -309,7 +312,7 @@ describe('displayIdent maxCodePoints option (issue #3164)', () => {
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
       const over = 'A'.repeat(IDENT_MAX_CODE_POINTS + 3);
       expect(displayIdent(over, { maxCodePoints: bad })).toBe(
-        `${'A'.repeat(IDENT_MAX_CODE_POINTS)} [cut: 3 more characters withheld]`
+        `${'A'.repeat(IDENT_MAX_CODE_POINTS)} [cut: 3 more characters withheld, tail sha256:cb1ad2119d8fafb69566510ee712661f]`
       );
     }
   });
@@ -325,7 +328,7 @@ describe('displayIdent maxCodePoints option (issue #3164)', () => {
     // 419, not 420: the withheld count is measured against the SANITIZED text,
     // whose trailing space the trim removed.
     expect(displayIdent(spoof, { maxCodePoints: 20 })).toBe(
-      '"X (us-east-1) X (us-" [cut: 399 more characters withheld]'
+      '"X (us-east-1) X (us-" [cut: 399 more characters withheld, tail sha256:630cb481296e5a1e306045ab50eee812]'
     );
   });
 
@@ -365,7 +368,7 @@ describe('displayIdent listMember option (go-to-k/cdkd#3179)', () => {
 
   it('keeps the cap and the cut marker outside the quotes', () => {
     expect(displayIdent(`${'a'.repeat(5)},${'b'.repeat(5)}`, { maxCodePoints: 7, listMember: true })).toBe(
-      '"aaaaa,b" [cut: 4 more characters withheld]'
+      '"aaaaa,b" [cut: 4 more characters withheld, tail sha256:81cc5b17018674b401b42f35ba07bb79]'
     );
   });
 });
@@ -443,5 +446,57 @@ describe('SAFE_MSG_ALTERED_CHAR is exactly the set of characters safeMsg changes
       }
     }
     expect(mismatches).toEqual([]);
+  });
+});
+
+describe('the cut marker names the withheld tail (go-to-k/cdkd#4002)', () => {
+  it('spells the bare marker without a tail, and appends a 128-bit digest with one', () => {
+    expect(cutMarker(3)).toBe('[cut: 3 more characters withheld]');
+    // Literal digest, computed outside this code (`printf xyz | shasum -a 256`).
+    expect(cutMarker(3, 'xyz')).toBe(
+      '[cut: 3 more characters withheld, tail sha256:3608bca1e44ea6c4d268eb6db0226026]'
+    );
+  });
+
+  it('renders two cut values sharing the kept prefix AND the length apart', () => {
+    // Before the digest these two rendered byte-identically: the collapse
+    // go-to-k/cdkd#3164 closed below the cap, reopened above it.
+    const prefix = 'P'.repeat(IDENT_MAX_CODE_POINTS);
+    const a = displayIdent(`${prefix}${'a'.repeat(20)}`);
+    const b = displayIdent(`${prefix}${'a'.repeat(19)}b`);
+    expect(a.startsWith(`${prefix} [cut: 20 more characters withheld, tail sha256:`)).toBe(true);
+    expect(b.startsWith(`${prefix} [cut: 20 more characters withheld, tail sha256:`)).toBe(true);
+    expect(a).not.toBe(b);
+    // The same at the stack-name cap, which is the one a nested name uses.
+    const stackPrefix = 'S'.repeat(STACK_REF_MAX_CODE_POINTS);
+    const opts = { maxCodePoints: STACK_REF_MAX_CODE_POINTS };
+    expect(displayIdent(`${stackPrefix}xy`, opts)).not.toBe(displayIdent(`${stackPrefix}yx`, opts));
+  });
+
+  it('digests only the WITHHELD tail, so it shows nothing of the value and is stable', () => {
+    const tail = 'T'.repeat(30);
+    const one = displayIdent(`${'a'.repeat(IDENT_MAX_CODE_POINTS)}${tail}`);
+    const two = displayIdent(`${'b'.repeat(IDENT_MAX_CODE_POINTS)}${tail}`);
+    // Same tail, same digest: the kept text is not hashed in.
+    expect(one.slice(one.indexOf(' [cut: '))).toBe(two.slice(two.indexOf(' [cut: ')));
+    expect(one.slice(one.indexOf(' [cut: '))).toBe(` ${cutMarker(30, tail)}`);
+    expect(one).not.toContain(tail);
+  });
+
+  it('keeps a value forged to END in a cut marker from rendering as itself', () => {
+    // A self-consistent forge would need the digest of a tail that contains
+    // that same digest, so `displayIdent` is no longer the identity on it.
+    const prefix = 'a'.repeat(IDENT_MAX_CODE_POINTS);
+    const tail = ` ${cutMarker(70, 'x'.repeat(70))}`;
+    const forged = `${prefix}${tail}`;
+    expect(displayIdent(forged)).not.toBe(forged);
+    expect(displayIdent(forged)).toBe(`${prefix} ${cutMarker(tail.length, tail)}`);
+  });
+
+  it('gives free-form AWS text the bare marker, with no digest', () => {
+    const message = `${'m'.repeat(AWS_MESSAGE_MAX_CODE_POINTS)}${'s'.repeat(10)}`;
+    expect(displayAwsMessage(message)).toBe(
+      `${'m'.repeat(AWS_MESSAGE_MAX_CODE_POINTS)} [cut: 10 more characters withheld]`
+    );
   });
 });

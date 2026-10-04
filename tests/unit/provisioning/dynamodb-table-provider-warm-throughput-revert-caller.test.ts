@@ -80,6 +80,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
+  loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
 }));
 

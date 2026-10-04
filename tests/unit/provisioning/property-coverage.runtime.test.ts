@@ -11,6 +11,9 @@
  *   - `findAcceptedSilentDrops` / `withoutSilentDropProperties` /
  *     `withoutAcceptedSilentDropProperties` (the #2750 record- and diff-side
  *     narrowings: what the SDK route actually writes)
+ *   - `withoutUnwrittenSilentDropProperties` / `findUnwrittenCreateOnlyDrops`
+ *     (go-to-k/cdkd#2790: the record's COMPARISON side, and the create-only
+ *     drops a flag-less deploy cannot apply without a replacement)
  *   - `unsupportedPropertyIssueUrl` (1-click GitHub issue link)
  *
  * The throw-based `ProviderRegistry.validateResourceProperties` tests were
@@ -28,8 +31,10 @@ import {
   findSilentDropProperties,
   getPropertyCoverage,
   unsupportedPropertyIssueUrl,
+  findUnwrittenCreateOnlyDrops,
   withoutAcceptedSilentDropProperties,
   withoutSilentDropProperties,
+  withoutUnwrittenSilentDropProperties,
 } from '../../../src/provisioning/property-coverage.js';
 
 describe('getPropertyCoverage', () => {
@@ -278,7 +283,7 @@ describe('findAcceptedSilentDrops (#2750)', () => {
 
 /**
  * The same, restricted to a drop that is NOT create-only. The two `without*`
- * helpers deliberately KEEP a create-only drop (#2750 / go-to-k/cdkd#2790), so
+ * helpers deliberately KEEP a create-only drop (#2750), so
  * a case asserting removal must not be handed one — `pickSilentDropFixture`'s
  * first entry happens to be `AWS::ApiGateway::Deployment.DeploymentCanarySettings`,
  * which is exactly that.
@@ -356,11 +361,11 @@ describe('withoutSilentDropProperties (#2750, the RECORD side)', () => {
   });
 
   /**
-   * The one exclusion, and it is what stops the narrowing being destructive
-   * rather than merely incomplete: removing a CREATE-ONLY drop makes it read as
-   * an ADDITION on the next deploy, which classifies as a REPLACEMENT of a
-   * resource nobody touched. go-to-k/cdkd#2790 carries the residual that leaves
-   * (for those keys the property still does not reach AWS).
+   * The one exclusion, and it is what stops the WRITTEN record being
+   * destructive: removing a CREATE-ONLY drop makes it read as an ADDITION on
+   * the next flag-ful deploy, which classifies as a REPLACEMENT of a resource
+   * nobody touched. The COMPARISON side decides per deploy instead
+   * (`withoutUnwrittenSilentDropProperties`, go-to-k/cdkd#2790).
    */
   it('KEEPS a create-only silent drop', () => {
     const fx = pickCreateOnlyDropFixture();
@@ -497,5 +502,121 @@ describe('unrecognized keys and the narrowings (issue #3713)', () => {
     expect(findAcceptedSilentDrops(fx.resourceType, bag, allow, { [UNKNOWN]: 'v' })).toEqual([
       fx.property,
     ]);
+  });
+});
+
+/**
+ * go-to-k/cdkd#2790. `AWS::EC2::Subnet` is the pair
+ * `tests/integration/sdk-to-cc-autoroute/` deploys: `AvailabilityZoneId` is a
+ * CREATE-ONLY silent drop, `EnableDns64` a plain one.
+ */
+describe('the record COMPARISON side and its create-only drops (#2790)', () => {
+  const TYPE = 'AWS::EC2::Subnet';
+  const CREATE_ONLY = 'AvailabilityZoneId';
+  const PLAIN = 'EnableDns64';
+  const ALLOW = new Set([`${TYPE}:${CREATE_ONLY}`]);
+  const NONE = new Set<string>();
+  const WRITTEN = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24' };
+  const RECORD = { ...WRITTEN, [CREATE_ONLY]: 'use1-az1' };
+  // What an SDK-route deploy that accepted the drop records beside it.
+  const EVIDENCE = new Set([CREATE_ONLY]);
+  const NO_EVIDENCE = new Set<string>();
+
+  it('PREMISE: the fixture keys are classified as this block assumes', () => {
+    const cov = getPropertyCoverage(TYPE);
+    if (!cov) throw new Error(`${TYPE} lost its property-coverage record`);
+    expect(cov.createOnlyDrops.has(CREATE_ONLY)).toBe(true);
+    expect(cov.silentDrop.has(PLAIN)).toBe(true);
+    expect(cov.createOnlyDrops.has(PLAIN)).toBe(false);
+    for (const key of Object.keys(WRITTEN)) expect(cov.handled.has(key)).toBe(true);
+  });
+
+  describe('withoutUnwrittenSilentDropProperties', () => {
+    it('KEEPS a create-only drop this deploy still accepts, by reference', () => {
+      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, RECORD, ALLOW, EVIDENCE)).toBe(RECORD);
+    });
+
+    it('removes a create-only drop once the deploy no longer accepts it', () => {
+      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, RECORD, NONE, EVIDENCE)).toEqual(WRITTEN);
+    });
+
+    it('removes it when the template no longer declares it, allow set or not', () => {
+      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, WRITTEN, ALLOW, EVIDENCE)).toEqual(WRITTEN);
+    });
+
+    it('removes it when a SIBLING drop is un-allowed, since the resource then routes', () => {
+      const desired = { ...RECORD, [PLAIN]: true };
+      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, desired, ALLOW, EVIDENCE)).toEqual(WRITTEN);
+    });
+
+    it('removes a plain drop even while it is allowed', () => {
+      const record = { ...WRITTEN, [PLAIN]: true };
+      const allow = new Set([`${TYPE}:${PLAIN}`]);
+      expect(withoutUnwrittenSilentDropProperties(TYPE, record, record, allow, EVIDENCE)).toEqual(WRITTEN);
+    });
+
+    /**
+     * The B1 population: an imported record, a record with no `provisionedBy`
+     * that Cloud Control created, or one an older binary wrote. Each holds the
+     * key with no evidence it was dropped, so AWS is presumed to hold it.
+     */
+    it('KEEPS a create-only drop the record does not name, by reference', () => {
+      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, RECORD, NONE, NO_EVIDENCE)).toBe(
+        RECORD
+      );
+      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, WRITTEN, NONE, NO_EVIDENCE)).toBe(
+        RECORD
+      );
+    });
+
+    it('returns the input by reference when the record holds no drop', () => {
+      expect(withoutUnwrittenSilentDropProperties(TYPE, WRITTEN, RECORD, NONE, EVIDENCE)).toBe(WRITTEN);
+    });
+  });
+
+  describe('findUnwrittenCreateOnlyDrops', () => {
+    it('names a recorded create-only drop the template asks for unchanged, with no flag', () => {
+      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, RECORD, NONE, EVIDENCE)).toEqual([CREATE_ONLY]);
+    });
+
+    it('is empty when the record does not name the key (imported, legacy, older binary)', () => {
+      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, RECORD, NONE, NO_EVIDENCE)).toEqual([]);
+      expect(
+        findUnwrittenCreateOnlyDrops(TYPE, RECORD, RECORD, NONE, new Set(['SomethingElse']))
+      ).toEqual([]);
+    });
+
+    it('is empty while the deploy accepts the drop', () => {
+      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, RECORD, ALLOW, EVIDENCE)).toEqual([]);
+    });
+
+    it('is empty when the template CHANGED the value: that replacement is a template edit', () => {
+      const desired = { ...RECORD, [CREATE_ONLY]: 'use1-az2' };
+      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, desired, NONE, EVIDENCE)).toEqual([]);
+    });
+
+    it('is empty when the template no longer declares it', () => {
+      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, WRITTEN, NONE, EVIDENCE)).toEqual([]);
+    });
+
+    it('is empty when the record never held it (an ordinary addition)', () => {
+      expect(findUnwrittenCreateOnlyDrops(TYPE, WRITTEN, RECORD, NONE, EVIDENCE)).toEqual([]);
+    });
+
+    it('never names a PLAIN drop: applying one needs no replacement', () => {
+      const record = { ...WRITTEN, [PLAIN]: true };
+      expect(findUnwrittenCreateOnlyDrops(TYPE, record, record, NONE, EVIDENCE)).toEqual([]);
+    });
+
+    it('names it when the allow set covers it but a sibling drop routes the resource', () => {
+      const desired = { ...RECORD, [PLAIN]: true };
+      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, desired, ALLOW, EVIDENCE)).toEqual([CREATE_ONLY]);
+    });
+
+    it('counts a recorded dynamic-reference expression as unchanged: the refusal destroys nothing', () => {
+      const record = { ...WRITTEN, [CREATE_ONLY]: '{{resolve:ssm:/az-id}}' };
+      const desired = { ...WRITTEN, [CREATE_ONLY]: 'use1-az1' };
+      expect(findUnwrittenCreateOnlyDrops(TYPE, record, desired, NONE, EVIDENCE)).toEqual([CREATE_ONLY]);
+    });
   });
 });

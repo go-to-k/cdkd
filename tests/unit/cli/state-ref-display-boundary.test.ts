@@ -111,6 +111,7 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   })),
 }));
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
+  loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
 }));
 
@@ -123,11 +124,7 @@ vi.mock('node:readline/promises', () => ({
 }));
 
 import { createStateCommand } from '../../../src/cli/commands/state.js';
-import {
-  IDENT_MAX_CODE_POINTS,
-  STACK_REF_MAX_CODE_POINTS,
-  UNRENDERABLE,
-} from '../../../src/utils/display-safe.js';
+import { IDENT_MAX_CODE_POINTS, STACK_REF_MAX_CODE_POINTS, UNRENDERABLE, cutMarker } from '../../../src/utils/display-safe.js';
 
 interface Ref {
   stackName: string;
@@ -532,7 +529,7 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
 
     expect(rendered.endsWith(' (us-east-1)')).toBe(true);
     // One code point over the cap, so exactly one is withheld.
-    expect(rendered).toContain('[cut: 1 more characters withheld]');
+    expect(rendered).toContain(cutMarker(1, 'b'));
     expect(rendered.startsWith(`A${'b'.repeat(STACK_REF_MAX_CODE_POINTS - 1)} [cut:`)).toBe(true);
   });
 
@@ -562,7 +559,7 @@ describe('every state-list / prompt reference renders its own boundary (issue #3
     const rendered = await SITES[0]!.render({ stackName: 'ProdStack', region: longRegion });
 
     expect(rendered.startsWith('ProdStack (')).toBe(true);
-    expect(rendered).toContain('[cut: 10 more characters withheld]');
+    expect(rendered).toContain(cutMarker(10, 'z'.repeat(10)));
   });
 
   it('renders a value with nothing printable left as UNRENDERABLE, not as an empty gap', async () => {

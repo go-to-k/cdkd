@@ -25,7 +25,13 @@ import {
   isArn,
   DEPLOY_VOICE,
 } from './holder-probe.js';
-import { CASE_INSENSITIVE_NAME_TYPES, ownEntry, SENT_NAME_REWRITTEN } from './name-keys.js';
+import {
+  ASCII_CASE_INSENSITIVE_NAME_TYPES,
+  CASE_INSENSITIVE_NAME_TYPES,
+  NO_PHYSICAL_ID_NAME_PROOF,
+  ownEntry,
+  SENT_NAME_REWRITTEN,
+} from './name-keys.js';
 import { reverseReplacementTrustsGeneratedName } from './rewritten.js';
 import type { ReplacementNameChange } from './deploy-name.js';
 
@@ -212,8 +218,10 @@ function rewrittenNameHolds(
  *   same key is the same name, or — for the name alone — when its physical id
  *   names it (the deploy side's rule: equal, a final segment after `|`, or
  *   after `:` / `/` in an ARN or URL; plus the ELBv2 ARN's name segment), the
- *   proof for a generated name, which a recorded bag never holds. Names
- *   compare exactly, except for `CASE_INSENSITIVE_NAME_TYPES`. Every scope
+ *   proof for a generated name, which a recorded bag never holds — never for
+ *   a type in `NO_PHYSICAL_ID_NAME_PROOF`. Names compare exactly, except for
+ *   `CASE_INSENSITIVE_NAME_TYPES` and the ASCII-only
+ *   `ASCII_CASE_INSENSITIVE_NAME_TYPES`. Every scope
  *   value must be exactly equal (absent on both sides counts as equal, and an
  *   ARN against a bare value is undecided).
  * - `AWS::Route53::RecordSet` compares the zone and the DNS name; then a CNAME
@@ -382,36 +390,47 @@ function holderVerdict(
     ? `${v.create} named no ${labels}, and the cdkd naming rule generates ` +
       `${r.shown(namePath.join('.'))} ${r.quoted(wantName)} for it`
     : `${v.create} asked for ${r.shown(namePath.join('.'))} ${r.quoted(wantName)}`;
-  const same = CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType)
-    ? (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
-    : (a: string, b: string): boolean => a === b;
+  const asciiFold = ASCII_CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType);
   const inCase = CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType)
     ? (value: string): string => value.toLowerCase()
-    : (value: string): string => value;
-  // A record and a read-back that name the holder DIFFERENTLY (renamed out
-  // of band, or a drifted record) cannot say which name it holds now: the
-  // physical id would still name the recorded one. Undecided, in both
-  // directions.
-  const drifted = newKey.name.find((path) => {
-    const recordedName = valueAt(recorded, path);
-    const observedName = valueAt(observed, path);
-    return (
-      recordedName !== undefined && observedName !== undefined && !same(recordedName, observedName)
-    );
+    : asciiFold
+      ? (value: string): string => value.replace(/[A-Z]/g, (c) => c.toLowerCase())
+      : (value: string): string => value;
+  const same = (a: string, b: string): boolean => inCase(a) === inCase(b);
+  // The FIRST path the holder answers on is its name, as a provider's `??`
+  // reads it: one it holds unreadably (a redacted name) leaves the name
+  // unknown — only the physical id can still prove it — and a later path must
+  // not stand in for it, nor be read for drift (Glue's read-back fills the
+  // top-level `Name` a create with `TableInput.Name` never sends).
+  const namePathHeld = newKey.name.find((path) => {
+    const h = heldAt(recorded, observed, path);
+    return h.value !== undefined || h.unreadable;
   });
-  if (drifted !== undefined) {
+  // A record and a read-back that name the holder DIFFERENTLY on that path
+  // (renamed out of band, or a drifted record) cannot say which name it holds
+  // now: the physical id would still name the recorded one. Undecided, in both
+  // directions.
+  const recordedName = namePathHeld && valueAt(recorded, namePathHeld);
+  const observedName = namePathHeld && valueAt(observed, namePathHeld);
+  if (
+    namePathHeld !== undefined &&
+    recordedName !== undefined &&
+    observedName !== undefined &&
+    !same(recordedName, observedName)
+  ) {
     return unproven(
       `${wanted}, and the records of ${newResource} disagree on its ` +
-        `${r.shown(drifted.join('.'))} (recorded ${r.quoted(valueAt(recorded, drifted) ?? '')}, ` +
-        `read back ${r.quoted(valueAt(observed, drifted) ?? '')}), so cdkd cannot show which name ` +
-        `it holds`
+        `${r.shown(namePathHeld.join('.'))} (recorded ${r.quoted(recordedName)}, ` +
+        `read back ${r.quoted(observedName)}), so cdkd cannot show which name it holds`
     );
   }
-  const held = newKey.name.map((path) => heldAt(recorded, observed, path));
-  const haveName = held.find((h) => h.value !== undefined)?.value;
+  const haveName =
+    namePathHeld === undefined ? undefined : heldAt(recorded, observed, namePathHeld).value;
   const nameHeld =
     (haveName !== undefined && same(haveName, wantName)) ||
-    (physicalId !== '' && holderIdNames(inCase(physicalId), inCase(wantName)));
+    (physicalId !== '' &&
+      !NO_PHYSICAL_ID_NAME_PROOF.has(newResourceType) &&
+      holderIdNames(inCase(physicalId), inCase(wantName)));
   if (!nameHeld) {
     return haveName !== undefined && !generatedName
       ? elsewhere(`${wanted}, while ${newResource} holds ${r.quoted(haveName)}`)
@@ -545,9 +564,10 @@ export function renderNameHeldElsewhere(change: ReplacementNameChange): string {
 /**
  * True when `value` has no whitespace and `displayIdent` renders it unchanged:
  * only characters that are literal inside double quotes. The whitespace test
- * comes FIRST because the round-trip alone admits a value that ends in
- * `displayIdent`'s own cut marker (`<1152 plain characters> [cut: N more
- * characters withheld]` renders as itself). The cap is the stack-ref one, so a
+ * comes FIRST, so a value that IS `displayIdent`'s own cut output
+ * (`<1152 plain characters> [cut: N more characters withheld, tail
+ * sha256:<hex>]`) is refused without resting on the marker's tail digest
+ * (go-to-k/cdkd#4002). The cap is the stack-ref one, so a
  * long ARN physical id is not cut.
  */
 export function isPlainName(value: string): boolean {

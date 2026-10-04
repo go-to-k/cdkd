@@ -2335,7 +2335,7 @@ fall back for a reason other than missing handlers (`NestedStackProvider`).
 ### Workflow when adding a new provider
 
 1. Add the provider as usual — see [Provider Implementation Examples](provider-development.md#provider-implementation-examples).
-2. Register the new resource type in `src/provisioning/register-providers.ts`.
+2. Re-export the class from `src/provisioning/provider-classes.ts` and register the new resource type in `src/provisioning/register-providers.ts`.
 3. Refresh the CFn schema fixture:
    ```bash
    node scripts/refresh-cfn-schemas.mjs --only-missing

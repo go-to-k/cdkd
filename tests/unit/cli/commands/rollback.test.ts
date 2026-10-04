@@ -8,6 +8,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 vi.mock('../../../../src/provisioning/register-providers.js', () => ({
+  loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
 }));
 
@@ -79,7 +80,7 @@ vi.mock('../../../../src/cli/commands/state.js', async () => {
   };
 });
 
-import { displayIdent, displayStackName } from '../../../../src/utils/display-safe.js';
+import { displayIdent, displayStackName, cutMarker } from '../../../../src/utils/display-safe.js';
 import {
   backendErrorText,
   rerunRollback,
@@ -1704,7 +1705,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
 
     expect(row).toBeDefined();
     expect(row).not.toContain(long);
-    expect(row).toContain(`${'A'.repeat(255)} [cut: 45 more characters withheld] (AWS::S3::Bucket)`);
+    expect(row).toContain(`${'A'.repeat(255)} ${cutMarker(45, 'A'.repeat(45))} (AWS::S3::Bucket)`);
   });
 
   it('the failed-operation label cannot inject a row', async () => {

@@ -3,6 +3,7 @@ import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js
 import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../types/resource.js';
 import type { ResourceChange, ResourceState } from '../../types/state.js';
+import { acceptedCreateOnlyDropsField } from './record-shape.js';
 import { displayAwsMessage, displaySafe } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
@@ -17,6 +18,7 @@ import {
 } from '../replacement-name-holder.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { markNonRetryable } from '../retryable-errors.js';
+import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import {
   type RecordedSecretValues,
   createSecretMasker,
@@ -180,14 +182,22 @@ export async function provisionCreate(
   const dependencies = this.extractAllDependencies(template, logicalId);
   const templateAttrs = this.extractTemplateAttributes(template, logicalId);
 
+  const recordedProperties = this.propertiesToRecord(
+    resolvedProps,
+    result,
+    resourceType,
+    createDecision.provisionedBy
+  );
   stateResources[logicalId] = {
     physicalId: result.physicalId,
     resourceType,
-    properties: this.propertiesToRecord(
-      resolvedProps,
-      result,
+    properties: recordedProperties,
+    // #2790: the evidence that a kept create-only key never reached AWS.
+    ...acceptedCreateOnlyDropsField(
+      recordedProperties,
       resourceType,
-      createDecision.provisionedBy
+      createDecision.provisionedBy,
+      'new-resource'
     ),
     // The REAL attribute values, deliberately: this in-memory record is
     // what `Fn::GetAtt` serves to dependents in this same run, and
@@ -286,12 +296,17 @@ async function refuseTakenCreateName(
   const adoptsText =
     `its create API hands back or overwrites an existing resource of that name instead of ` +
     `refusing it`;
+  // Marked refused-before-applying (go-to-k/cdkd#4356): every arm refuses
+  // BEFORE the create call, so nothing was created, and the deploy then
+  // journals no failed op the rollback could misdescribe.
   const refuse = (message: string, cause?: unknown): never => {
     throw markNonRetryable(
-      new CdkdError(
-        maskName(message),
-        'NAMED_CREATE_COLLISION',
-        cause instanceof Error ? cause : undefined
+      markRefusedBeforeApplying(
+        new CdkdError(
+          maskName(message),
+          'NAMED_CREATE_COLLISION',
+          cause instanceof Error ? cause : undefined
+        )
       )
     );
   };

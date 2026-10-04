@@ -6,9 +6,6 @@ import {
 } from '../stale-attribute-heal.js';
 import {
   dynamicReferenceTokens,
-  recordSecretExpression,
-  forgetSecretExpression,
-  isRecordedSecretExpression,
   clearRecordedSecretExpressions,
   errorCauseChain,
   type DynamicReferenceSubstitution,
@@ -921,11 +918,16 @@ export interface NamedRequestMasks {
  * path is the other consumer: one set in the LEAF module means the redactor can
  * answer with no caller threading it, and the resolver reaches it along an
  * import edge it already has — the reverse would close a cycle.
+ *
+ * The resolver no longer reads or writes it through this facade (issue
+ * [#4105](https://github.com/go-to-k/cdkd/issues/4105)): `pinSecretVerdict`
+ * files each verdict under the resolver's SCOPE (region + credential
+ * identity) and `isKnownSecret` reads only that scope, since another region's
+ * `SecureString` under the same parameter name says nothing about this one.
+ * Only `clear` is left here: an unscoped `add` / `delete` would write the
+ * bare set behind the scoped half's back.
  */
 export const recordedSecretExpressions = {
-  has: (expression: string): boolean => isRecordedSecretExpression(expression),
-  add: (expression: string): void => recordSecretExpression(expression),
-  delete: (expression: string): void => forgetSecretExpression(expression),
   clear: (): void => clearRecordedSecretExpressions(),
 };
 

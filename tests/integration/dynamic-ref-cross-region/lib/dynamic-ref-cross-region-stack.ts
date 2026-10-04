@@ -27,6 +27,14 @@ export interface DynamicRefCrossRegionStackProps extends cdk.StackProps {
    */
   readonly mixedTypeSourceParameterName: string;
   /**
+   * The mixed-type name with the types SWAPPED: a `SecureString` in region A
+   * and a plain `String` in region B (issue
+   * [#4105](https://github.com/go-to-k/cdkd/issues/4105)). Region A's stack is
+   * processed first in one command, so its `SecureString` verdict exists
+   * before region B asks about the same name.
+   */
+  readonly mixedTypeReversedSourceParameterName: string;
+  /**
    * The FULL ARN of the OTHER region's copy of `sourceParameterName` (issue
    * [#2134](https://github.com/go-to-k/cdkd/issues/2134)). Set on region A's
    * stack only, so "foreign" is unambiguous.
@@ -174,6 +182,22 @@ export class DynamicRefCrossRegionStack extends cdk.Stack {
       value: `{{resolve:ssm:${props.mixedTypeSourceParameterName}}}`,
       description:
         'Echoes a name that is String in region A and SecureString in region B (cdkd issue #1957)',
+    });
+
+    // THE VERDICT-SCOPE arm (issue #4105). The reverse of the one above:
+    // `SecureString` in region A, plain `String` in region B. `cdkd diff` walks
+    // the stacks in assembly order, so region A's comparison pass pins the
+    // name as a SecureString first. The secret verdict was keyed by the token
+    // text alone, so region B's comparison pass then SKIPPED its lookup and
+    // compared the unresolved token against the public value in its state: a
+    // phantom change on every diff. The arm above cannot show it, because
+    // there the SecureString region is processed SECOND.
+    new ssm.CfnParameter(this, 'MixedTypeReversedEchoParameter', {
+      type: 'String',
+      name: `${this.stackName}-mixed-rev-echo`,
+      value: `{{resolve:ssm:${props.mixedTypeReversedSourceParameterName}}}`,
+      description:
+        'Echoes a name that is SecureString in region A and String in region B (cdkd issue #4105)',
     });
   }
 }

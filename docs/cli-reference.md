@@ -526,7 +526,7 @@ collapse it into the general `1` bucket.
 | `cdkd deploy` | Resources left **unaddressed** — a skipped DELETE, or a replacement's surviving predecessor. Suppressible with `--allow-unaddressed`. |
 | `cdkd state refresh-observed` | Per-resource read-back failures, and resources AWS reports as not found (deleted outside cdkd); the affected resources keep their previous baseline. |
 | `cdkd publish-assets` | Per-stack asset publish failures. |
-| `cdkd rollback` | Per-op failures, or ops skipped with a warning. The journal is kept so the run can be repeated. |
+| `cdkd rollback` | Per-op failures, which keep the journal so the run can be repeated; ops skipped with a warning, each recorded as a `ROLLBACK_RESOURCE_SKIPPED` event; or reverted ops that left an untracked resource behind (a retained new copy, a failed delete of one) or were not fully reversed (a re-create that returned the live new resource), recorded as a `ROLLBACK_RESOURCE_SUCCEEDED` event with a `reason`. |
 | `cdkd drift` | Nothing drifted, but at least one comparison did not happen for a reason you can act on — cdkd **refused to compare** a secret-bearing property, a read failed, an import refused a baseline, a recorded baseline holds a mask cdkd could not certify, or a state row is unreadable. With `--accept` / `--revert`: the run refused at least one resource deleted outside cdkd (or, for `--revert`, left one not reverted). |
 
 For `cdkd drift`, whether re-running clears it depends on the cause — a refused
@@ -583,6 +583,10 @@ checks cache entries with a checksum, not a signature, so a directory other
 users can write to is not a safe place for code cdkd loads. A relative
 `XDG_CACHE_HOME` is ignored, since it would point into the current project.
 With no home directory, the cache stays off.
+
+Each cdkd version caches into its own subdirectory, and the first run of a new
+version deletes the others', so the cache holds one version at a time instead
+of growing with every upgrade.
 
 | To | Set |
 | --- | --- |

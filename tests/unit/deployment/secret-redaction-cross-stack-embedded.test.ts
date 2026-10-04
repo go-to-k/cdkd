@@ -9,8 +9,10 @@ import {
   crossStackSourceKey,
   recordCrossStackExpression,
   clearRecordedSecretExpressions,
+  intrinsicLeafResolutionOf,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { wholeReferenceSpans } from '../../../src/deployment/intrinsic-resolver/string-functions.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';
@@ -114,6 +116,14 @@ function buildContext(recordedSecretValues: RecordedSecretValues): ResolverConte
         properties: {},
         attributes: { 'Outputs.CurrentPw': EXPR_CURRENT, 'Outputs.PreviousPw': EXPR_PREVIOUS },
       },
+      // A SAME-stack resource: its attributes get a span (every `Fn::GetAtt`
+      // is keyed) but no association, so they must stay text.
+      Db: {
+        physicalId: 'db-4527',
+        resourceType: 'AWS::RDS::DBInstance',
+        properties: {},
+        attributes: { 'Endpoint.Address': 'db.internal', 'Endpoint.Port': '3306' },
+      },
     } as unknown as ResolverContext['resources'],
   };
 }
@@ -133,10 +143,13 @@ const WHOLE = {
  */
 async function persist(
   resolver: IntrinsicFunctionResolver,
-  source: Record<string, unknown>
+  source: Record<string, unknown>,
+  conditions?: Record<string, boolean>
 ): Promise<{ resolved: Record<string, unknown>; redacted: Record<string, unknown> }> {
   const secrets: RecordedSecretValues = new Map();
-  const resolved = (await resolver.resolve(source, buildContext(secrets))) as Record<
+  const context = buildContext(secrets);
+  if (conditions !== undefined) context.conditions = conditions;
+  const resolved = (await resolver.resolve(source, context)) as Record<
     string,
     unknown
   >;
@@ -244,6 +257,209 @@ describe('secret-redaction - cross-stack secret EMBEDDED in a leaf (issue #2298)
     });
     expect(redacted['Embedded']).toBe(`${REGION}/${EXPR_CURRENT}`);
     expect(redacted['Sibling']).toBe(EXPR_PREVIOUS);
+  });
+
+  // Issue #4527: TWO OR MORE parts beside the read whose text the template
+  // cannot state (pseudo parameters, same-stack intrinsics), and an `Fn::If`
+  // selecting such a leaf. The template parse aligns at most one unknown part
+  // and never reads an `Fn::If`, so these fell to the value scan; the
+  // resolver's own span for the read answers them. Both arrangements again,
+  // so one of them persists the sibling's expression without the fix.
+  describe.each(STAGES)('beside two or more unknown parts, embedded = %s (issue #4527)', (stage) => {
+    const own = EXPR_OF[stage];
+    const sibling = OTHER[stage];
+    const host = `${REGION}.111122223333`;
+
+    it('Fn::Sub with two pseudo parameters and a nested-stack output placeholder', async () => {
+      const { resolved, redacted } = await persist(resolver, {
+        Embedded: {
+          'Fn::Sub': `jdbc:mysql://\${AWS::Region}.\${AWS::AccountId}.host/?pw=\${Child.Outputs.${stage}Pw}`,
+        },
+        Sibling: WHOLE.getAtt(sibling),
+      });
+      expect(resolved['Embedded']).toBe(`jdbc:mysql://${host}.host/?pw=${SHARED}`);
+      expect(redacted['Embedded']).toBe(`jdbc:mysql://${host}.host/?pw=${own}`);
+      expect(redacted['Sibling']).toBe(EXPR_OF[sibling]);
+    });
+
+    it('the issue probe: two pseudo parameters adjacent to the read', async () => {
+      const { redacted } = await persist(resolver, {
+        Embedded: { 'Fn::Sub': `\${AWS::Region}.\${AWS::AccountId}/\${Child.Outputs.${stage}Pw}` },
+        Sibling: WHOLE.getAtt(sibling),
+      });
+      expect(redacted['Embedded']).toBe(`${host}/${own}`);
+    });
+
+    it('Fn::Join over two pseudo-parameter Refs and an Fn::ImportValue', async () => {
+      const { redacted } = await persist(resolver, {
+        Embedded: {
+          'Fn::Join': [
+            '',
+            [
+              { Ref: 'AWS::Region' },
+              '.',
+              { Ref: 'AWS::AccountId' },
+              '/pw=',
+              WHOLE.importValue(stage),
+            ],
+          ],
+        },
+        Sibling: WHOLE.importValue(sibling),
+      });
+      expect(redacted['Embedded']).toBe(`${host}/pw=${own}`);
+      expect(redacted['Sibling']).toBe(EXPR_OF[sibling]);
+    });
+
+    it('Fn::Join over two pseudo parameters and an Fn::GetStackOutput', async () => {
+      const { redacted } = await persist(resolver, {
+        Embedded: {
+          'Fn::Join': [':', [{ Ref: 'AWS::Region' }, { Ref: 'AWS::AccountId' }, WHOLE.stackOutput(stage)]],
+        },
+        Sibling: WHOLE.stackOutput(sibling),
+      });
+      expect(redacted['Embedded']).toBe(`${REGION}:111122223333:${own}`);
+      expect(redacted['Sibling']).toBe(EXPR_OF[sibling]);
+    });
+
+    it('2-arg Fn::Sub binding the read beside two pseudo parameters', async () => {
+      const { redacted } = await persist(resolver, {
+        Embedded: {
+          'Fn::Sub': ['${AWS::Region}.${AWS::AccountId}/${V}', { V: WHOLE.importValue(stage) }],
+        },
+        Sibling: WHOLE.importValue(sibling),
+      });
+      expect(redacted['Embedded']).toBe(`${host}/${own}`);
+      expect(redacted['Sibling']).toBe(EXPR_OF[sibling]);
+    });
+
+    it('an Fn::If selecting an embedding Fn::Sub', async () => {
+      const { redacted } = await persist(
+        resolver,
+        {
+          Embedded: {
+            'Fn::If': ['IsProd', { 'Fn::Sub': `pw=\${Child.Outputs.${stage}Pw}` }, 'none'],
+          },
+          Sibling: WHOLE.getAtt(sibling),
+        },
+        { IsProd: true }
+      );
+      expect(redacted['Embedded']).toBe(`pw=${own}`);
+      expect(redacted['Sibling']).toBe(EXPR_OF[sibling]);
+    });
+
+    it('an Fn::If selecting an Fn::Join over two pseudo parameters and the read', async () => {
+      const { redacted } = await persist(
+        resolver,
+        {
+          Embedded: {
+            'Fn::If': [
+              'IsProd',
+              {
+                'Fn::Join': [
+                  '/',
+                  [{ Ref: 'AWS::Region' }, { Ref: 'AWS::AccountId' }, WHOLE.getAtt(stage)],
+                ],
+              },
+              'none',
+            ],
+          },
+          Sibling: WHOLE.getAtt(sibling),
+        },
+        { IsProd: true }
+      );
+      expect(redacted['Embedded']).toBe(`${REGION}/111122223333/${own}`);
+      expect(redacted['Sibling']).toBe(EXPR_OF[sibling]);
+    });
+
+    it('beside two SAME-stack attributes, whose spans have no association', async () => {
+      const { resolved, redacted } = await persist(resolver, {
+        Embedded: {
+          'Fn::Join': [
+            ':',
+            [
+              { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] },
+              { 'Fn::GetAtt': ['Db', 'Endpoint.Port'] },
+              WHOLE.importValue(stage),
+            ],
+          ],
+        },
+        Sibling: WHOLE.importValue(sibling),
+      });
+      expect(resolved['Embedded']).toBe(`db.internal:3306:${SHARED}`);
+      expect(redacted['Embedded']).toBe(`db.internal:3306:${own}`);
+      expect(redacted['Sibling']).toBe(EXPR_OF[sibling]);
+    });
+
+    it('a whole leaf that is an Fn::If selecting the read itself', async () => {
+      // The `Fn::If` lends the read's own record now that it has one, so the
+      // span arm answers it with the read's association, as a whole leaf of
+      // the read would be.
+      const { redacted } = await persist(
+        resolver,
+        {
+          Embedded: { 'Fn::If': ['IsProd', WHOLE.importValue(stage), 'none'] },
+          Sibling: WHOLE.importValue(sibling),
+        },
+        { IsProd: true }
+      );
+      expect(redacted['Embedded']).toBe(own);
+      expect(redacted['Sibling']).toBe(EXPR_OF[sibling]);
+    });
+
+    it('an Fn::Join part that is an Fn::If selecting the read itself', async () => {
+      const { redacted } = await persist(
+        resolver,
+        {
+          Embedded: {
+            'Fn::Join': [
+              '/',
+              [
+                { Ref: 'AWS::Region' },
+                { Ref: 'AWS::AccountId' },
+                { 'Fn::If': ['IsProd', WHOLE.importValue(stage), 'none'] },
+              ],
+            ],
+          },
+          Sibling: WHOLE.importValue(sibling),
+        },
+        { IsProd: true }
+      );
+      expect(redacted['Embedded']).toBe(`${REGION}/111122223333/${own}`);
+      expect(redacted['Sibling']).toBe(EXPR_OF[sibling]);
+    });
+  });
+
+  it('records the read\'s span under its own key, the one the association store uses', async () => {
+    const secrets: RecordedSecretValues = new Map();
+    const leaf = { 'Fn::Sub': '${AWS::Region}.${AWS::AccountId}/${Child.Outputs.CurrentPw}' };
+    const resolved = await resolver.resolve(leaf, buildContext(secrets));
+    const record = intrinsicLeafResolutionOf(secrets, leaf);
+    expect(record?.output).toBe(resolved);
+    expect(record?.parameterSpans).toEqual([
+      {
+        start: `${REGION}.111122223333/`.length,
+        length: SHARED.length,
+        key: crossStackSourceKey({ 'Fn::GetAtt': 'Child.Outputs.CurrentPw' }),
+      },
+    ]);
+  });
+
+  describe('wholeReferenceSpans', () => {
+    const IMPORT = { 'Fn::ImportValue': 'Producer:CurrentPw' };
+
+    it('spans the whole value under the raw intrinsic\'s key', () => {
+      expect(wholeReferenceSpans(IMPORT, 'abc')).toEqual([
+        { start: 0, length: 3, key: crossStackSourceKey(IMPORT) },
+      ]);
+    });
+
+    it.each([
+      ['an empty value', IMPORT, ''],
+      ['a non-string value', IMPORT, ['a', 'b']],
+      ['a source with no key (a non-literal attribute name)', { 'Fn::GetAtt': ['Child', { Ref: 'X' }] }, 'abc'],
+    ])('places no span for %s', (_label, source, value) => {
+      expect(wholeReferenceSpans(source as Record<string, unknown>, value)).toEqual([]);
+    });
   });
 
   describe('what it will NOT certify (each falls to the value scan)', () => {

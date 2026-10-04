@@ -11,12 +11,14 @@
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';
+
+const providerClasses = await loadProviderClasses();
 
 function realRegistry(): ProviderRegistry {
   const registry = new ProviderRegistry();
-  registerAllProviders(registry);
+  registerAllProviders(registry, providerClasses);
   return registry;
 }
 

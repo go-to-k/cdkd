@@ -749,7 +749,9 @@ export function logTwinOfProduct(
  * Record the `Fn::Join` / `Fn::Sub` / `Fn::If` object `source`'s own
  * resolution under the pass bag the nested-stack carry reads (issues
  * [#3156](https://github.com/go-to-k/cdkd/issues/3156),
- * [#3306](https://github.com/go-to-k/cdkd/issues/3306)). The key is the
+ * [#3306](https://github.com/go-to-k/cdkd/issues/3306)), or a parameter
+ * `{Ref}`'s / cross-stack read's whole-value span record (issues #4446,
+ * #4527). The key is the
  * object `resolveValue` dispatched on, and a context with no bag has no pass
  * to scope it to.
  */

@@ -40,7 +40,10 @@ import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/a
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 import { updatePartialMessage, updatePartialReason } from '../../deployment/update-outcome.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
-import { registerAllProviders } from '../../provisioning/register-providers.js';
+import {
+  loadProviderClasses,
+  registerAllProviders,
+} from '../../provisioning/register-providers.js';
 import {
   calculateResourceDrift,
   equalModuloMask,
@@ -1043,6 +1046,9 @@ async function driftCommand(
     concurrency?: number;
   }
 ): Promise<void> {
+  // Awaited first, so provider construction below stays synchronous once the
+  // stack client scope / globals are set (see `loadProviderClasses`).
+  const providerClasses = await loadProviderClasses();
   const logger = getLogger();
   if (options.verbose) {
     logger.setLevel('debug');
@@ -1114,7 +1120,7 @@ async function driftCommand(
         });
         scope = runWithStackAwsClients(clients, () => {
           const registry = new ProviderRegistry();
-          registerAllProviders(registry);
+          registerAllProviders(registry, providerClasses);
           registry.setCustomResourceResponseBucket(bucket);
           // PR J: the CC API fallback for a type whose SDK provider has no
           // `readCurrentState`, once per region rather than per stack.
@@ -3933,7 +3939,19 @@ export function buildReadCurrentStateContext(
       attributes: res.attributes ?? {},
     };
   }
-  return { siblings };
+  // go-to-k/cdkd#4447: the read resource's own recorded attributes, through
+  // the same readability gate as a sibling's.
+  const own: unknown = (state.resources ?? {})[excludedLogicalId];
+  const ownAttributesValue = isReadableResourceEntry(own)
+    ? (own as { attributes?: unknown }).attributes
+    : undefined;
+  const ownAttributes =
+    typeof ownAttributesValue === 'object' &&
+    ownAttributesValue !== null &&
+    !Array.isArray(ownAttributesValue)
+      ? (ownAttributesValue as Record<string, unknown>)
+      : undefined;
+  return { siblings, ...(ownAttributes && { attributes: ownAttributes }) };
 }
 
 /**

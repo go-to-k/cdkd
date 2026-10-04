@@ -90,6 +90,16 @@ export class VpcNatGatewayStack extends cdk.Stack {
       tags: [{ key: 'Name', value: 'cdkd-vpc-nat-gateway-drain' }],
     });
 
+    // Issue #4447: an UNASSOCIATED Elastic IP for the drift arm in `verify.sh`,
+    // which releases it out of band and expects `cdkd drift` to report it
+    // `deleted`. The NAT's own EIP cannot serve: AWS refuses to release an
+    // address a NAT gateway holds. Kept out of every route and association so
+    // releasing it touches nothing else in the stack.
+    new ec2.CfnEIP(this, 'DriftProbeEip', {
+      domain: 'vpc',
+      tags: [{ key: 'Name', value: 'cdkd-vpc-nat-gateway-drift-probe' }],
+    });
+
     new cdk.CfnOutput(this, 'VpcId', {
       value: vpc.vpcId,
       description: 'VPC ID (NAT Gateway lives in the public subnet of this VPC)',

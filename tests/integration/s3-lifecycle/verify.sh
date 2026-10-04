@@ -16,7 +16,7 @@
 #      of that name. go-to-k/cdkd#4344's pre-create name lookup must REFUSE
 #      (`NAMED_CREATE_COLLISION`, "already holds that name", nothing created),
 #      leave the planted bucket untouched, and leave no state record holding
-#      it. Neither arm may touch a name the fixture itself reuses -- an earlier
+#      it, nor a rollback-journal failed op for it (go-to-k/cdkd#4356). Neither arm may touch a name the fixture itself reuses -- an earlier
 #      version planted the stack's own bucket name cross-region and poisoned it
 #      for phase 1 too.
 #   0. The same lookup against a PER-RUN UNIQUE bucket this account owns in
@@ -402,7 +402,34 @@ elif ! grep -qF '(404)' <<<"${SR_STATE_STDERR}" && ! grep -qF 'NoSuchKey' <<<"${
   echo "FAIL phase 0b: could not read s3://${STATE_BUCKET}/${STATE_KEY} to check it: ${SR_STATE_STDERR}" >&2
   exit 1
 fi
-echo "    OK: refused (rc=${SR_RC}), ${SR_ARM_BUCKET} untouched, no state record holds XrArmBucket"
+
+# go-to-k/cdkd#4356: the refused create is NOT journaled as a failed op. It was
+# refused before anything was applied, so its only effect on the journal was
+# `cdkd rollback --revert-failed` advising to delete "it" by hand -- i.e. the
+# bucket that refused it, someone else's -- and the clean automatic rollback
+# keeping a failed-only segment for it with a "may be partially applied" note.
+# Absent journal is fine; a present one must not name the arm.
+SR_JOURNAL_ERR="$(mktemp)"
+set +e
+SR_JOURNAL="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - 2>"${SR_JOURNAL_ERR}")"
+SR_JOURNAL_RC=$?
+set -e
+SR_JOURNAL_STDERR="$(cat "${SR_JOURNAL_ERR}")"
+rm -f "${SR_JOURNAL_ERR}"
+if [ "${SR_JOURNAL_RC}" -eq 0 ]; then
+  SR_JOURNAL_ARM="$(printf '%s' "${SR_JOURNAL}" | jq -r '[.segments[]? | (.failedOperations // [])[] | select(.logicalId == "XrArmBucket")] | length')" || {
+    echo "FAIL phase 0b: could not parse s3://${STATE_BUCKET}/${JOURNAL_KEY} as JSON" >&2
+    exit 1
+  }
+  if [ "${SR_JOURNAL_ARM}" != "0" ]; then
+    echo "FAIL phase 0b: the rollback journal records the refused XrArmBucket create as a failed op (${SR_JOURNAL_ARM}x)" >&2
+    exit 1
+  fi
+elif ! grep -qF '(404)' <<<"${SR_JOURNAL_STDERR}" && ! grep -qF 'NoSuchKey' <<<"${SR_JOURNAL_STDERR}"; then
+  echo "FAIL phase 0b: could not read s3://${STATE_BUCKET}/${JOURNAL_KEY} to check it: ${SR_JOURNAL_STDERR}" >&2
+  exit 1
+fi
+echo "    OK: refused (rc=${SR_RC}), ${SR_ARM_BUCKET} untouched, no state record holds XrArmBucket, no journal record of it"
 
 echo "==> Phase 0b teardown"
 cleanup

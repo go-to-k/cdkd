@@ -2304,7 +2304,8 @@ MyAlarm (AWS::CloudWatch::Alarm): routing via Cloud Control API (cdkd's SDK Prov
 So if the field is genuinely missing from AWS, the auto-route did not fire.
 Three reasons:
 
-1. **You passed `--prefer-sdk-route <Type>:<Prop>`.** That flag
+1. **You passed
+   [`--prefer-sdk-route <Type>:<Prop>`](cli-deploy-safety.md#the-override).** That flag
    means "keep this resource on the SDK provider and accept the drop" — it is
    the opt-in to exactly this outcome.
 2. **The property is not in cdkd's committed CloudFormation schema snapshot,
@@ -2329,14 +2330,25 @@ cdkd state show MyStack    # ProvisionedBy: sdk | cc-api
 
 `sdk` means one of the three causes applies. For case 1, dropping the flag is
 enough: cdkd records only what the SDK provider actually sent, so the property
-is a genuine addition on the next deploy and the auto-route delivers it — unless
-the property is create-only, which cdkd keeps in the record because applying one
-to a live resource needs a replacement. See
-[Deploy: safety & compatibility flags](cli-deploy-safety.md#the-override) for how
-to recreate it deliberately and what that costs. For
+is a genuine addition on the next deploy and the auto-route delivers it. For
 case 2, change the value so the next deploy routes the resource through Cloud
 Control, or use `--recreate-via-cc-api <LogicalId>` to put it there
 deliberately.
+
+The case 1 exception is a create-only property. cdkd keeps it in the record,
+because applying one to a live resource needs a replacement, so the deploy
+without the flag refuses with `CREATE_ONLY_DROP_NEEDS_REPLACEMENT` rather than
+replacing the resource on its own. The refusal names the remedies:
+
+- `--recreate-via-cc-api <LogicalId>` or `--replace` replaces the resource with
+  the property applied; inside a nested stack only `--replace` reaches it.
+- `--force-stateful-recreation` is also required for a stateful type.
+- `--prefer-sdk-route` with the `<Type>:<Prop>,...` list the refusal prints keeps
+  dropping the property; that list can name more than your original flag did.
+
+See
+[`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](cli-deploy-safety.md#create-only-drop-needs-replacement)
+for what each remedy does and costs.
 
 `cc-api` means the resource is on the layer that forwards the whole property
 map, so the absence is not cdkd dropping the field.
@@ -2547,7 +2559,7 @@ cdkd uses a multi-layered approach to prevent orphaned resources:
 
 4. **Post-rollback state save**: After rollback completes (or is skipped with `--no-rollback`), state is saved again to reflect the rolled-back resource state.
 
-5. **Rollback journal**: On a `--no-rollback` failure, a Ctrl+C interruption, or before an automatic rollback, cdkd writes a `rollback-journal.json` sibling of `state.json` recording exactly which operations completed. This is what lets the standalone `cdkd rollback` command revert the deploy later (see below). The journal is deleted on the next successful deploy and by `cdkd destroy`. After a **clean automatic rollback** it is settled to a failed-only segment instead of deleted: the completed ops are already reverted, but the failed resource's pre-op record is kept so `cdkd rollback --revert-failed` can still revert a possibly-half-applied resource; the next successful deploy clears it. A nested stack's successful deploy keeps its journal until the top-level stack's deploy succeeds, so a failure of the parent can revert the child from it.
+5. **Rollback journal**: On a `--no-rollback` failure, a Ctrl+C interruption, or before an automatic rollback, cdkd writes a `rollback-journal.json` sibling of `state.json` recording exactly which operations completed. This is what lets the standalone `cdkd rollback` command revert the deploy later (see below). The journal is deleted on the next successful deploy and by `cdkd destroy`. After a **clean automatic rollback** it is settled to a failed-only segment instead of deleted: the completed ops are already reverted, but the failed resource's pre-op record is kept so `cdkd rollback --revert-failed` can still revert a possibly-half-applied resource; the next successful deploy clears it. An automatic rollback that skipped an operation it could not revert (recorded as a `ROLLBACK_RESOURCE_SKIPPED` event, see `cdkd events`) is not clean and keeps the full journal. A nested stack's successful deploy keeps its journal until the top-level stack's deploy succeeds, so a failure of the parent can revert the child from it.
 
 ### A warning that a KMS key, Cognito user pool or AppSync API may be an orphan
 
@@ -2795,11 +2807,18 @@ cdkd rollback MyStack --stack-region us-west-2
 The prompt refuses a non-interactive stdin rather than hanging, so CI needs one
 of the confirmation flags.
 
-- **Exit `2`** means the rollback was partial — one or more ops failed
-  best-effort or were skipped with a warning (e.g. a resource whose physical
-  id changed after a later fix-forward attempt, or an unrecoverable DELETE).
-  The rollback journal is **kept** so you can re-run `cdkd rollback` — replay
-  is idempotent (already-reverted resources are skipped).
+- **Exit `2`** means the rollback was partial. When one or more ops failed
+  best-effort, the rollback journal is **kept** so you can re-run `cdkd
+  rollback` — replay is idempotent (already-reverted resources are skipped).
+  An op skipped with a warning (e.g. a resource whose physical id changed
+  after a later fix-forward attempt, or an unrecoverable DELETE) would be
+  skipped again by a re-run, so its segment is cleared and the skip is
+  recorded as a `ROLLBACK_RESOURCE_SKIPPED` event (`cdkd events`). A
+  reverted op that left a resource cdkd no longer tracks (a new copy retained
+  by `UpdateReplacePolicy: Retain`, or one whose delete failed) exits `2` too;
+  its `ROLLBACK_RESOURCE_SUCCEEDED` event carries the survivor's id and a
+  `reason`. So does a reverse-replacement whose re-create returned the live
+  new resource (not fully reversed), whose event carries a `reason` only.
 - Use `--orphan <logicalId>` (repeatable) to leave a specific resource alone
   during the revert (mirrors `cdk rollback --orphan`).
 - **Secret dynamic references need live access at rollback time.** A resource

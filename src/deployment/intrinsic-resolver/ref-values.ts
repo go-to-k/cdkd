@@ -1,7 +1,7 @@
 import { displayIdent } from '../../utils/display-safe.js';
 import { SECRET_MASK, carriesSecretMask } from '../secret-redaction.js';
 import { isDynamicReferenceString } from '../secret-redaction/rules.js';
-import { parseWebACLArn } from '../../provisioning/providers/wafv2-provider.js';
+import { parseWebACLArn } from '../../provisioning/providers/wafv2-arn.js';
 import {
   COMPOSITE_ID_SEPARATOR,
   canonicalizeRoute53QueryName,
@@ -898,9 +898,11 @@ export function buildUnknownIntrinsicError(key: string): Error {
   // and none of those can start a substitution without a `$` or a backtick. (Percent-encoding
   // is itself a mask-evading transform, so if `key` were ever in the SECRET
   // class this would be too -- it is not, being a structural operand.)
-  // Whitespace FIRST: the round-trip alone admits a key ending in
-  // `displayIdent`'s own cut marker (255 plain characters then
-  // ` [cut: 35 more characters withheld]` renders as itself).
+  // Whitespace FIRST: a key that IS `displayIdent`'s own cut output (255
+  // plain characters then ` [cut: N more characters withheld, tail
+  // sha256:<hex>]`) is then refused without resting on the marker's tail
+  // digest, the only thing keeping the round-trip from admitting it
+  // (go-to-k/cdkd#4002).
   const shown =
     !/\s/.test(key) && displayIdent(key) === key
       ? `"${key}"`
