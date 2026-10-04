@@ -1008,10 +1008,11 @@ the field existed. A hash the first deploy under this version filled in for a
 resource it did not change is checked by the next deploy that resolves it.
 The check is a plain text match, so a short secret that also occurs as
 ordinary text in the property (a word in a script) costs that property its
-hash too, and edits to it are not seen through the mask. For the same reason a change that leaves the property's
-template text as it was (a new parameter value, a `Ref` to a resource that
-was replaced, a condition that flipped) is not seen through the mask yet,
-although CloudFormation would update the resource.
+hash too, and edits to it are not seen through the mask. Because only
+template text is hashed, a change that leaves the property's template text as
+it was (a new parameter value, a `Ref` to a resource that was replaced, a
+condition that flipped) is not seen through the mask yet, although
+CloudFormation would update the resource.
 
 - **Written** by the save of a deploy that created, updated or replaced the
   resource, from the template it deployed. A failed update keeps the previous
