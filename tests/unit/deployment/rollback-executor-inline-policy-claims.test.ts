@@ -24,6 +24,10 @@ import {
 import { RollbackInlinePolicyWriters } from '../../../src/deployment/inline-policy-claims.js';
 import type { InlinePolicyClaimed } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import {
+  recordLogOnlyValue,
+  type RecordedSecretValues,
+} from '../../../src/deployment/secret-redaction.js';
 
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/deployment/retry.js')>();
@@ -1174,6 +1178,26 @@ describe('a rollback puts back an inline policy its removal took from a record t
     expect(state['New']).toBeUndefined();
     expect(warned()).toContain('could not put back the inline policy Old records on its role');
     expect(warned()).toContain('AccessDenied: iam:PutRolePolicy');
+  });
+
+  it('a put-back failure line masks the holder\'s log-only needle', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+    const needles: RecordedSecretValues = new Map();
+    recordLogOnlyValue(needles, 'noecho-plaintext-value');
+    const needleCtx: RollbackExecutorContext = {
+      ...ctx,
+      logOnlyNeedlesFor: (logicalId) => (logicalId === 'Old' ? needles : undefined),
+    };
+    policyProvider.create.mockRejectedValueOnce(new Error('rejected noecho-plaintext-value'));
+
+    await replayRollback([createOp('New', state['New']!)], state, 'S', needleCtx);
+
+    expect(warned()).toContain('could not put back the inline policy Old');
+    expect(warned()).not.toContain('noecho-plaintext-value');
   });
 
   it('a put-back the registry would not route to the SDK provider is not sent', async () => {
