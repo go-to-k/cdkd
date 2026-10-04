@@ -43,6 +43,7 @@ import {
   parentSuppliedValues,
   readRecordedConditionVerdicts,
 } from '../condition-verdicts.js';
+import { backfillMaskedPropertyFingerprints } from '../masked-property-fingerprints.js';
 import { withProducerRegions } from '../producer-regions-scope.js';
 import { promoteRecreateTargets, recreateTargetIdsFor } from '../recreate-target-promotion.js';
 import { refuseStatefulReplacedReaders } from '../recreate-target-readers.js';
@@ -271,6 +272,13 @@ export async function doDeployWithPrefetch(
     // 1-pre. Issue #3468: read every REASON-LESS baseline refusal before
     // anything in this deploy can take a readback. See the method's doc.
     this.stampReasonlessParameterRefusals(currentState.resources, template);
+    // go-to-k/cdkd#4451: a record an older cdkd wrote has no fingerprint for a
+    // property it holds as `***`; take today's template's, which is what this
+    // deploy's unchanged comparison concludes AWS holds anyway, so the deploy
+    // sends what it sent before and the next edit is seen. Saved by the
+    // no-change path too.
+    let maskedFingerprintsBackfilled =
+      backfillMaskedPropertyFingerprints(currentState.resources, template) > 0;
 
     // 1a. Auto-refresh observedProperties for any state entry that lacks it
     // (state written by an older binary / direct edit). Fires
@@ -415,6 +423,10 @@ export async function doDeployWithPrefetch(
     // `template` object as the first pass.
     if (Object.keys(orphanPlan.adopted).length > 0) {
       this.stampReasonlessParameterRefusals(currentState.resources, template);
+      // The same re-read for go-to-k/cdkd#4451's backfill.
+      if (backfillMaskedPropertyFingerprints(currentState.resources, template) > 0) {
+        maskedFingerprintsBackfilled = true;
+      }
     }
     // The no-change save below is gated on a fixed list of triggers, and
     // adoption trips none of them (issue #2934). Without this, a deploy whose
@@ -865,6 +877,7 @@ export async function doDeployWithPrefetch(
 
         if (
           observedRefresh ||
+          maskedFingerprintsBackfilled ||
           conditionVerdictsChanged ||
           outputsChanged ||
           exportSetChanged ||

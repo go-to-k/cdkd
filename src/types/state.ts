@@ -781,6 +781,26 @@ export interface ResourceState {
    * values.
    */
   acceptedCreateOnlyDrops?: string[] | undefined;
+
+  /**
+   * Per top-level property `properties` holds as the secret mask `***`, a
+   * `sha256:<hex>` over the UNRESOLVED template value it was written from
+   * (go-to-k/cdkd#4451). Optional, no schema bump.
+   *
+   * The mask identifies nothing, so without it an edit around a secret
+   * reference inside one `Fn::Base64` (EC2 `UserData`) compared `***` with
+   * `***` and was never sent. The diff and the deploy's no-change skip treat a
+   * property whose template hash moved as changed; a rotated secret behind an
+   * unchanged template leaves it equal. Only template text is hashed, never a
+   * resolved value, so it is no oracle for the secret.
+   *
+   * ABSENT (or malformed, read through `maskedPropertyFingerprintsOf`) keeps
+   * the pre-#4451 comparison, and a deploy backfills it from the template it
+   * deploys. Writers: the save rebuilds it for a record this deploy wrote
+   * through `propertiesToRecord`; every writer that spreads a record carries
+   * it. Helpers: `src/deployment/masked-property-fingerprints.ts`.
+   */
+  maskedPropertyFingerprints?: Record<string, string> | undefined;
 }
 
 /**

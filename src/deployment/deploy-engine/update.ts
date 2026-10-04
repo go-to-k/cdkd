@@ -38,6 +38,7 @@ import {
   recordNestedStackParameterExpressions,
   redactSecretsForState,
 } from '../secret-redaction.js';
+import { movedMaskedProperties } from '../masked-property-fingerprints.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -270,6 +271,14 @@ export async function provisionUpdate(
       : undefined;
   const lostWithParent = lostChild?.mode === 'recreate' ? lostChild.parent : undefined;
   const suppliesFreshMaskOnlyValue = carriesFreshNoEchoValue(resolvedProps, updateSecrets);
+  // go-to-k/cdkd#4451: a property the record holds as `***` whose UNRESOLVED
+  // template value moved since it was written. Its redacted value compares
+  // `***` with `***` whatever the edit (the text around a secret reference
+  // inside one `Fn::Base64`, or the reference's target), so neither skip
+  // below may fire for it. A record with no fingerprint (an older cdkd's)
+  // reads as unmoved, the comparison it always had.
+  const movedMasked = new Set(movedMaskedProperties(currentResource, desiredProps));
+  const maskedEditMoved = movedMasked.size > 0;
   const desiredForSkipCheck = redactSecretsForState(
     markSameGenerationBag({ ...resolvedProps }),
     updateSecrets,
@@ -330,6 +339,7 @@ export async function provisionUpdate(
   if (
     !typeChanged &&
     !suppliesFreshMaskOnlyValue &&
+    !maskedEditMoved &&
     lostChild === undefined &&
     this.recreateDirectionFor(stackName, logicalId) === undefined &&
     keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten)
@@ -418,9 +428,12 @@ export async function provisionUpdate(
       }
       // The non-NoEcho half first, unchanged: a moved leaf keeps the
       // replacement whatever AWS holds at the masked ones.
+      // A masked property whose template moved (go-to-k/cdkd#4451) moved,
+      // whatever its two `***` say.
       const moved =
+        movedMasked.has(pc.path) ||
         keyOrderFreeJson(desiredForSkipCheckAsWritten[pc.path]) !==
-        keyOrderFreeJson(currentPropsAsWritten[pc.path]);
+          keyOrderFreeJson(currentPropsAsWritten[pc.path]);
       // A propagated CEILING whose value MOVED is kept, unless the type's
       // own conditional rule reads the move as in place (issue #4134) --
       // the same predicate the diff applies to a template edit. A
@@ -498,6 +511,7 @@ export async function provisionUpdate(
   if (
     noEchoHeldPaths.size > 0 &&
     !typeChanged &&
+    !maskedEditMoved &&
     lostChild === undefined &&
     this.recreateDirectionFor(stackName, logicalId) === undefined &&
     keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten) &&

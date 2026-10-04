@@ -27,6 +27,7 @@ import {
   refuseMalformedResourceProperties,
 } from '../state/malformed-resources-bag.js';
 import { SECRET_MASK, splitGetAttStringForm } from '../deployment/secret-redaction.js';
+import { movedMaskedProperties } from '../deployment/masked-property-fingerprints.js';
 import { AWS_NO_VALUE } from '../deployment/intrinsic-function-resolver.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../provisioning/masked-retry-logger.js';
 import { safeMsg } from '../utils/display-safe.js';
@@ -595,6 +596,34 @@ export class DiffCalculator {
           desiredPropsForCompare,
           maskForLog
         );
+        // go-to-k/cdkd#4451: a property the record holds as `***` compares
+        // equal to a template that resolves to `***` whatever the edit around
+        // the secret reference. The record's fingerprint of the UNRESOLVED
+        // template value it was written from says whether that edit happened.
+        // Only a property both compared sides still hold equal is added; a
+        // record with no fingerprint (an older cdkd's) adds nothing.
+        const reported = new Set(propertyChanges.map((pc) => pc.path));
+        for (const key of movedMaskedProperties(currentResource, rawDesiredProps)) {
+          if (reported.has(key)) continue;
+          if (!Object.hasOwn(currentPropsForCompare, key)) continue;
+          if (!Object.hasOwn(desiredPropsForCompare, key)) continue;
+          const oldValue = currentPropsForCompare[key];
+          const newValue = desiredPropsForCompare[key];
+          propertyChanges.push({
+            path: key,
+            oldValue,
+            newValue,
+            requiresReplacement: await this.maskedEditRequiresReplacement(
+              desiredResource.Type,
+              key,
+              oldValue,
+              newValue
+            ),
+          });
+          this.logger.debug(
+            `${logicalId}: ${key} is recorded masked and its template expression changed (go-to-k/cdkd#4451)`
+          );
+        }
 
         // Schema v5+ template-attribute diff: `DeletionPolicy` /
         // `UpdateReplacePolicy` may change without any property change. cdkd
@@ -1517,6 +1546,29 @@ export class DiffCalculator {
     }
 
     return changes;
+  }
+
+  /**
+   * Whether an edit only the masked-property fingerprint sees
+   * (go-to-k/cdkd#4451) needs a replacement. The registry decides where it has
+   * a rule; otherwise only a property that is itself create-only per the CFn
+   * schema does. A NESTED create-only path under it is not taken: the two
+   * `***` values cannot say which part of the property moved, and a
+   * replacement guessed from that would destroy a resource an in-place update
+   * serves.
+   */
+  private async maskedEditRequiresReplacement(
+    resourceType: string,
+    key: string,
+    oldValue: unknown,
+    newValue: unknown
+  ): Promise<boolean> {
+    if (this.replacementRules.requiresReplacement(resourceType, key, oldValue, newValue)) {
+      return true;
+    }
+    if (this.replacementRules.isClassified(resourceType, key)) return false;
+    const createOnlyPaths = await getCreateOnlyPropertyPaths(resourceType);
+    return createOnlyPaths.some((path) => path.length === 1 && path[0] === key);
   }
 
   private static readonly INTRINSIC_KEYS = INTRINSIC_KEYS;

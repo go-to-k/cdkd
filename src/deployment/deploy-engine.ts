@@ -14,6 +14,7 @@ import {
   hasMaskableValues,
   type RecordedSecretValues,
 } from './secret-redaction.js';
+import { withMaskedPropertyFingerprints } from './masked-property-fingerprints.js';
 import {
   isInlinePolicyClaimedByCompletedWriter,
   type InlinePolicyWrite,
@@ -870,7 +871,7 @@ export class DeployEngine {
       // not resolved this deploy there is none, and `scrubResourceRecord` falls
       // back to the record's own `properties` for the observed bag (#1900).
       const templateProps = this.perResourceTemplateProps.get(logicalId);
-      resources[logicalId] = scrubResourceRecord(
+      const scrubbed = scrubResourceRecord(
         // Issue #1852: merged BEFORE the scrub, so a healed value enters the
         // same pass a provider-recorded attribute does. That pass has no needles
         // for an UNCHANGED record (nothing resolved for it this deploy), so what
@@ -883,6 +884,15 @@ export class DeployEngine {
         // UNCHANGED one). `scrubResourceRecord` then falls back to the record's
         // own already-redacted properties as the observed bag's source, which is
         // the #1900 path — so do NOT "simplify" this to `templateProps!`.
+        templateProps
+      );
+      // go-to-k/cdkd#4451: the masked properties' template fingerprints, read
+      // off the SCRUBBED bag (only it holds `***`), and rebuilt only for a
+      // record this deploy wrote; a failed update keeps the previous bag and
+      // its previous fingerprints.
+      resources[logicalId] = withMaskedPropertyFingerprints(
+        scrubbed,
+        record.properties,
         templateProps
       );
     }
