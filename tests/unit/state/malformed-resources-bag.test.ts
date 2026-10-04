@@ -85,14 +85,7 @@ import {
   type RenderedStateContainer,
   producerRecordKey,
 } from '../../../src/state/malformed-resources-bag.js';
-import {
-  IDENT_MAX_CODE_POINTS,
-  STACK_REF_MAX_CODE_POINTS,
-  UNRENDERABLE,
-  displayIdent,
-  displaySafe,
-  truncateCodePoints,
-} from '../../../src/utils/display-safe.js';
+import { IDENT_MAX_CODE_POINTS, STACK_REF_MAX_CODE_POINTS, UNRENDERABLE, displayIdent, displaySafe, truncateCodePoints, cutMarker } from '../../../src/utils/display-safe.js';
 // For the "offers no destructive command" invariant below: the command names are
 // DERIVED from the real Commander tree, never hand-listed.
 import { buildProgram } from '../../../src/cli/program.js';
@@ -2163,7 +2156,7 @@ describe('the entry-level text', () => {
     for (const forge of FORGERIES) expect(message).not.toContain(forge);
     // At CloudFormation's 255, not a region's 128: a legitimate 129-to-255-
     // character CDK id cut shorter names a row the record does not hold.
-    expect(message).toContain(`${'z'.repeat(255)} [cut: 4745 more characters withheld]`);
+    expect(message).toContain(`${'z'.repeat(255)} ${cutMarker(4745, 'z'.repeat(4745))}`);
     expect(message).not.toContain('z'.repeat(256));
     // A logical id with nothing renderable left takes the stand-in too, not an
     // empty pair of quotes naming nothing. Its own fixture, because the stack
@@ -5386,7 +5379,7 @@ describe('the malformed-properties texts (issue go-to-k/cdkd#3191)', () => {
       // `Prod...` is a legal logical id, so the `...` tail the pre-review
       // renderer emitted was indistinguishable from content.
       const text = build('S', 'us-east-1', ['B'.repeat(IDENT_MAX_CODE_POINTS + 7)]);
-      expect(text).toContain('[cut: 7 more characters withheld]');
+      expect(text).toContain(cutMarker(7, 'B'.repeat(7)));
       expect(text).not.toContain('B...');
     });
 

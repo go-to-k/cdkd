@@ -81,6 +81,7 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { cutMarker } from '../../../src/utils/display-safe.js';
 
 const NESTED = 'AWS::CloudFormation::Stack';
 
@@ -4775,7 +4776,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
     renderDiffTree(node, true, (m) => lines.push(m));
     const preview = lines.join('\n');
     expect(preview).toContain(
-      `could not be read: "Bucket", Queue, ${'L'.repeat(255)} [cut: 4745 more characters withheld].`
+      `could not be read: "Bucket", Queue, ${'L'.repeat(255)} ${cutMarker(4745, 'L'.repeat(4745))}.`
     );
     expect(preview).not.toContain('L'.repeat(256));
   });

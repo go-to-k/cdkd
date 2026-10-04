@@ -363,7 +363,7 @@ describe('cdkd export puts no state or template value inside its own quotes (go-
     );
   });
 
-  it("describes a name that ends in displayIdent's own cut marker, which round-trips unchanged", async () => {
+  it("describes a name that ends in displayIdent's pre-digest cut marker (go-to-k/cdkd#4002)", async () => {
     const forged = `${'a'.repeat(STACK_REF_MAX_CODE_POINTS)} [cut: 35 more characters withheld]`;
     const message = await refusal(async () => cdkd2cfnStackName(forged));
     expect(message).toContain(`cdkd stack name ${NOT_SHOWN} maps`);
