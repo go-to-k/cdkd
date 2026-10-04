@@ -325,8 +325,13 @@ runs none of those segments' operations for that id:
 
 | The operation recorded | The rollback | Plan line |
 | --- | --- | --- |
-| The resource the import adopted (same physical id and type; for a DELETE, the record it removed; for a replacement, the new or the old resource) | Leaves it alone | `adopted by cdkd import after this deploy, left as it is` |
+| The resource the import adopted (same physical id and type; for a DELETE, the record it removed) | Leaves it alone | `adopted by cdkd import after this deploy, left as it is` |
 | Another resource under the id (another physical id or type) | Leaves it alone, warns, exits 2 | `recorded <its physical id>, which cdkd import has since replaced under this id; not reverted, check that resource by hand` |
+| A replacement whose new resource the import adopted, while the old one was kept (`UpdateReplacePolicy: Retain`) | Leaves it alone, warns, exits 2 | `replaced <old physical id> but kept it ...; not reverted, check that resource by hand` |
+
+For a replacement, only its new resource counts as what it recorded. If the
+import put the old resource back, the operation is reported as above, naming
+the replacement, which is left running.
 
 Failed operations follow the same table, with or without `--revert-failed`.
 They are left unreverted. If the segment is kept for a re-run, the re-run

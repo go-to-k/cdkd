@@ -3,6 +3,7 @@ import {
   ROLLBACK_JOURNAL_VERSION,
   parseRollbackJournal,
   isMarkFor,
+  retainedOldPhysicalId,
   splitImportedOps,
   UnknownRollbackJournalVersionError,
   type RollbackJournal,
@@ -547,19 +548,28 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
     expect(splitImportedOps(ops, {})).toEqual({ replay: ops, imported: [], displaced: [] });
   });
 
-  it('isMarkFor reads a DELETE by its previous record, and a replacement UPDATE by its OLD resource too', () => {
+  it('isMarkFor reads a DELETE by its previous record, and a replacement only by its OWN resource', () => {
     const mark = { logicalId: 'B', physicalId: 'b', resourceType: 'T' };
     // A DELETE carries no physicalId: its identity is the record it removed.
     expect(isMarkFor(mark, { logicalId: 'B', resourceType: 'T', changeType: 'DELETE', previousState: { physicalId: 'b' } })).toBe(true);
     expect(isMarkFor(mark, { logicalId: 'B', resourceType: 'T', changeType: 'DELETE', previousState: { physicalId: 'x' } })).toBe(false);
     // Only a DELETE falls back to the previous record for its OWN id.
     expect(isMarkFor(mark, { logicalId: 'B', resourceType: 'T', changeType: 'CREATE', previousState: { physicalId: 'b' } })).toBe(false);
-    // A replacement UPDATE names both the new and the OLD resource.
-    const replacement = { logicalId: 'B', resourceType: 'T', changeType: 'UPDATE', physicalId: 'new', previousState: { physicalId: 'b', resourceType: 'T' } };
-    expect(isMarkFor(mark, replacement)).toBe(true);
+    // A replacement UPDATE is its NEW resource only: the old one is not adopted.
+    const replacement = { logicalId: 'B', resourceType: 'T', changeType: 'UPDATE', physicalId: 'new', previousState: { physicalId: 'b' } };
+    expect(isMarkFor(mark, replacement)).toBe(false);
     expect(isMarkFor({ ...mark, physicalId: 'new' }, replacement)).toBe(true);
-    // ...each under ITS type: the old resource of a Type change is the old type.
-    expect(isMarkFor(mark, { ...replacement, previousState: { physicalId: 'b', resourceType: 'Old' } })).toBe(false);
+  });
+
+  it('retainedOldPhysicalId names a replacement\'s kept OLD resource only', () => {
+    const replacement = { logicalId: 'B', resourceType: 'T', changeType: 'UPDATE', physicalId: 'new', previousState: { physicalId: 'old' } };
+    expect(retainedOldPhysicalId({ ...replacement, oldResourceRetained: true })).toBe('old');
+    expect(retainedOldPhysicalId({ ...replacement, oldResourceRetained: false })).toBeUndefined();
+    // A journal that predates the verdict falls back to the recorded policy.
+    expect(retainedOldPhysicalId({ ...replacement, previousState: { physicalId: 'old', updateReplacePolicy: 'Retain' } })).toBe('old');
+    // In place (same id), or not an UPDATE: nothing kept.
+    expect(retainedOldPhysicalId({ ...replacement, physicalId: 'old', oldResourceRetained: true })).toBeUndefined();
+    expect(retainedOldPhysicalId({ ...replacement, changeType: 'CREATE', oldResourceRetained: true })).toBeUndefined();
   });
 
   it('refuses a non-string runId, which a nested revert selects segments by', () => {

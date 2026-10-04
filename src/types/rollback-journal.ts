@@ -194,8 +194,11 @@ export function splitImportedOps<T extends JournalOpIdentitySource>(
   for (const op of ops) {
     const ofId = except.has(op.logicalId) ? [] : marks.filter((m) => m.logicalId === op.logicalId);
     if (ofId.length === 0) replay.push(op);
-    else if (ofId.some((m) => isMarkFor(m, op))) imported.push(op);
-    else displaced.push(op);
+    // A replacement that KEPT its old resource left a second resource behind:
+    // adopting the new one must not silence it (see `retainedOldPhysicalId`).
+    else if (ofId.some((m) => isMarkFor(m, op)) && retainedOldPhysicalId(op) === undefined) {
+      imported.push(op);
+    } else displaced.push(op);
   }
   return { replay, imported, displaced };
 }
@@ -207,7 +210,10 @@ export interface JournalOpIdentitySource {
   changeType?: string | undefined;
   physicalId?: string | undefined;
   previousResourceType?: string | undefined;
-  previousState?: { physicalId?: unknown; resourceType?: unknown } | undefined;
+  oldResourceRetained?: boolean | undefined;
+  previousState?:
+    | { physicalId?: unknown; resourceType?: unknown; updateReplacePolicy?: unknown }
+    | undefined;
 }
 
 /**
@@ -222,41 +228,34 @@ export function journalOpPhysicalId(op: JournalOpIdentitySource): string | undef
 }
 
 /**
- * Every (physical id, type) the op can be said to have recorded: its own
- * resource ({@link journalOpPhysicalId}), and for an UPDATE whose previous
- * record names ANOTHER physical id (a replacement) the OLD resource too — an
- * import that put the old resource back is adopting what the op replaced.
+ * The OLD resource a completed replacement UPDATE KEPT alive
+ * (`oldResourceRetained`, or `UpdateReplacePolicy: Retain` on a journal that
+ * predates that verdict), when it names one other than the op's own. An import
+ * of the op's NEW resource leaves this one running and untracked, so the op is
+ * reported (displaced), naming it, rather than adopted silently.
  */
-function journalOpIdentities(
-  op: JournalOpIdentitySource
-): Array<{ physicalId: string; resourceType: string }> {
-  const out: Array<{ physicalId: string; resourceType: string }> = [];
-  const own = journalOpPhysicalId(op);
-  if (own !== undefined) out.push({ physicalId: own, resourceType: op.resourceType });
+export function retainedOldPhysicalId(op: JournalOpIdentitySource): string | undefined {
+  if (op.changeType !== 'UPDATE') return undefined;
   const prev = op.previousState?.physicalId;
-  if (op.changeType === 'UPDATE' && typeof prev === 'string' && prev !== '' && prev !== own) {
-    const prevType = op.previousState?.resourceType;
-    out.push({
-      physicalId: prev,
-      resourceType:
-        typeof prevType === 'string' && prevType !== ''
-          ? prevType
-          : (op.previousResourceType ?? op.resourceType),
-    });
-  }
-  return out;
+  if (typeof prev !== 'string' || prev === '' || prev === journalOpPhysicalId(op)) return undefined;
+  const retained = op.oldResourceRetained ?? op.previousState?.updateReplacePolicy === 'Retain';
+  return retained ? prev : undefined;
 }
 
 /**
- * Does `mark` name a resource `op` recorded (see {@link journalOpIdentities}):
- * logical id, physical id and type?
+ * Does `mark` name the resource `op` itself recorded ({@link journalOpPhysicalId}):
+ * logical id, physical id and type? A replacement's OLD resource is
+ * deliberately NOT an identity: an import that put the old resource back
+ * leaves the replacement's NEW one running, so the op is reported (displaced,
+ * naming the new id) rather than adopted silently.
  */
 export function isMarkFor(mark: ImportedResourceMark, op: JournalOpIdentitySource): boolean {
+  const own = journalOpPhysicalId(op);
   return (
+    own !== undefined &&
     mark.logicalId === op.logicalId &&
-    journalOpIdentities(op).some(
-      (id) => id.physicalId === mark.physicalId && id.resourceType === mark.resourceType
-    )
+    mark.physicalId === own &&
+    mark.resourceType === op.resourceType
   );
 }
 

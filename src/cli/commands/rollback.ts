@@ -31,8 +31,9 @@ import {
   NESTED_PENDING_PARENT_REASON,
   dropSettledNestedJournals,
   nestedChildStackName,
-  displacedPhysicalIdShown,
+  displacedOpClause,
   recordDisplacedSkips,
+  type DisplacedOp,
   revertedNestedRowIds,
   withNestedRevertRun,
   type NestedRevertRun,
@@ -511,18 +512,13 @@ function importedOpLabel(op: { logicalId: string; resourceType: string }): strin
   );
 }
 
-function displacedOpLabel(op: Parameters<typeof displacedPhysicalIdShown>[0]): string {
-  // The op's physical id is named: once the segment pops, this line is the
-  // only place the displaced resource is ever named (security review m4). It
-  // goes through the replay's per-op masker, as every id the replay prints.
-  const shownId = displacedPhysicalIdShown(op, getLogger());
-  const recorded =
-    shownId !== undefined
-      ? `recorded ${shownId}, which cdkd import has since replaced under this id`
-      : `recorded no physical id, and cdkd import has since put another resource under this id`;
+function displacedOpLabel(op: DisplacedOp): string {
+  // The resource to check is named: once the segment pops, this line is the
+  // only place it is ever named (security review m4). It goes through the
+  // replay's per-op masker, as every id the replay prints.
   return (
     `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
-    `— ${recorded}; not reverted, check that resource by hand`
+    `— ${displacedOpClause(op, getLogger())}; not reverted, check that resource by hand`
   );
 }
 

@@ -43,6 +43,7 @@ import type { Logger } from '../types/config.js';
 import type { ResourceState, StackOrphanRecord, StackState } from '../types/state.js';
 import {
   journalOpPhysicalId,
+  retainedOldPhysicalId,
   splitImportedOps,
   type JournalOpIdentitySource,
   type RollbackJournalSegment,
@@ -127,16 +128,10 @@ export function nestedPendingSnapshot(
  * whenever a recorded name is secret-derived. `undefined` when none recorded.
  */
 export function displacedPhysicalIdShown(
-  op: JournalOpIdentitySource & {
-    properties?: Record<string, unknown> | undefined;
-    attemptedProperties?: Record<string, unknown> | undefined;
-    previousState?:
-      | { properties?: unknown; physicalId?: unknown; resourceType?: unknown }
-      | undefined;
-  },
-  logger: Logger
+  op: DisplacedOp,
+  logger: Logger,
+  physicalId: string | undefined = journalOpPhysicalId(op)
 ): string | undefined {
-  const physicalId = journalOpPhysicalId(op);
   if (physicalId === undefined) return undefined;
   const masker = createOpMasker(logger, new Map());
   for (const properties of [op.properties, op.attemptedProperties, op.previousState?.properties]) {
@@ -151,6 +146,41 @@ export function displacedPhysicalIdShown(
   // `displaySafe` strips control characters and never truncates, so a long
   // ARN is named whole.
   return displaySafe(String(masker.mask(physicalId)));
+}
+
+/** A journal op as the displaced-op lines read it. */
+export type DisplacedOp = JournalOpIdentitySource & {
+  properties?: Record<string, unknown> | undefined;
+  attemptedProperties?: Record<string, unknown> | undefined;
+  previousState?:
+    | {
+        properties?: unknown;
+        physicalId?: unknown;
+        resourceType?: unknown;
+        updateReplacePolicy?: unknown;
+      }
+    | undefined;
+};
+
+/**
+ * go-to-k/cdkd#4523: what a DISPLACED op left behind, as one clause naming the
+ * resource to check (masked, {@link displacedPhysicalIdShown}). A replacement
+ * whose NEW resource the import adopted, while its OLD one was kept alive,
+ * names the old one; every other displaced op names its own.
+ */
+export function displacedOpClause(op: DisplacedOp, logger: Logger): string {
+  const retainedOld = retainedOldPhysicalId(op);
+  if (retainedOld !== undefined) {
+    const shownOld = displacedPhysicalIdShown(op, logger, retainedOld);
+    return (
+      `replaced ${shownOld} but kept it (UpdateReplacePolicy: Retain); cdkd import adopted the ` +
+      `replacement, so ${shownOld} is left untracked`
+    );
+  }
+  const shownId = displacedPhysicalIdShown(op, logger);
+  return shownId !== undefined
+    ? `recorded ${shownId}, which cdkd import has since replaced under this id`
+    : 'recorded no physical id, and cdkd import has since put another resource under this id';
 }
 
 /**
@@ -665,13 +695,8 @@ export async function revertNestedChildFromJournal(args: {
       warnings += result.warnings + split.displaced.length;
       recordDisplacedSkips(execCtx.recordEvent, childStackName, split.displaced);
       for (const op of split.displaced) {
-        const shownId = displacedPhysicalIdShown(op, logger);
-        const recorded =
-          shownId !== undefined
-            ? safeMsg`${shownId}, which cdkd import has since replaced under this id`
-            : 'no physical id, and cdkd import has since put another resource under this id';
         logger.warn(
-          safeMsg`Nested stack ${childStackName}: ${op.logicalId} recorded ${recorded}; ` +
+          safeMsg`Nested stack ${childStackName}: ${op.logicalId} ${displacedOpClause(op, logger)}; ` +
             'not reverted, check that resource by hand'
         );
       }

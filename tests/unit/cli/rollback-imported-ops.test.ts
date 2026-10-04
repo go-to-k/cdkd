@@ -432,27 +432,41 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(infoLines().some((l) => l.includes(DISPLACED) && l.includes(prevId))).toBe(displacedExpected);
   });
 
-  // V2: a replacement UPDATE (old -> new) where the import put the OLD
-  // resource back: adopting what the op replaced, silent like main's
-  // skip-already-done, not a displaced warning.
-  it('a replacement UPDATE whose OLD resource the import adopted is left alone silently', async () => {
-    install({ Topic: { ...topicRecord('imported'), physicalId: 'old-phys' } }, [
-      {
-        operations: [
-          {
-            logicalId: 'Topic',
-            changeType: 'UPDATE',
-            resourceType: TOPIC,
-            physicalId: 'new-phys',
-            properties: topicRecord('deployed').properties,
-            previousResourceType: TOPIC,
-            oldResourceRetained: false,
-            previousState: { ...topicRecord('pre-deploy'), physicalId: 'old-phys' },
-            provisionedBy: 'sdk',
-          },
-        ],
-        importedResources: [{ ...MARK, physicalId: 'old-phys' }],
-      },
+  // V2 / security m5: a replacement UPDATE (old -> new). Whichever resource
+  // the import took, the OTHER one is left running untracked, so the op is
+  // reported (displaced), naming the one to check — never adopted silently.
+  const replacementOp = (oldResourceRetained: boolean) => ({
+    logicalId: 'Topic',
+    changeType: 'UPDATE',
+    resourceType: TOPIC,
+    physicalId: 'new-phys',
+    properties: topicRecord('deployed').properties,
+    previousResourceType: TOPIC,
+    oldResourceRetained,
+    previousState: { ...topicRecord('pre-deploy'), physicalId: 'old-phys' },
+    provisionedBy: 'sdk',
+  });
+
+  it.each([
+    ['the import put the OLD resource back: names the replacement', 'old-phys', false, 'new-phys'],
+    ['the import took the NEW resource while the old was RETAINED: names the old', 'new-phys', true, 'old-phys'],
+  ])('a replacement UPDATE where %s', async (_what, importedId, retained, named) => {
+    install({ Topic: { ...topicRecord('imported'), physicalId: importedId } }, [
+      { operations: [replacementOp(retained)], importedResources: [{ ...MARK, physicalId: importedId }] },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    expect(provider.create).not.toHaveBeenCalled();
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(thrown).toBeInstanceOf(Error);
+    expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(false);
+    expect(infoLines().some((l) => l.includes(' Topic (') && l.includes(named) && l.includes('check that resource by hand'))).toBe(true);
+  });
+
+  it('a replacement UPDATE whose NEW resource the import took, old NOT retained, is adopted silently', async () => {
+    install({ Topic: { ...topicRecord('imported'), physicalId: 'new-phys' } }, [
+      { operations: [replacementOp(false)], importedResources: [{ ...MARK, physicalId: 'new-phys' }] },
     ]);
 
     const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
@@ -460,7 +474,6 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(thrown).toBeUndefined();
     expect(provider.create).not.toHaveBeenCalled();
     expect(provider.delete).not.toHaveBeenCalled();
-    expect(infoLines().some((l) => l.includes(DISPLACED))).toBe(false);
     expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(true);
   });
 
