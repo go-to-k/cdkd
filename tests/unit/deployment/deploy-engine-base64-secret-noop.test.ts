@@ -353,6 +353,32 @@ describe('DeployEngine - review-round pins (go-to-k/cdkd#4451)', () => {
     expect(h.provider.update).not.toHaveBeenCalled();
   });
 
+  it('refuses a hash to a masked property whose template spells a NoEcho parameter value, at create and at the backfill (R4)', async () => {
+    const NOECHO = 'noecho-param-value-42';
+    const template = (value: unknown): CloudFormationTemplate => ({
+      Parameters: { P: { Type: 'String', NoEcho: true, Default: NOECHO } },
+      Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: { ...PROPS, Value: value } } },
+    });
+    const spelled = base64Value(`p=${NOECHO};pw=`);
+    const h = harness();
+    const created = await h.deployTemplate(template(spelled));
+    expect(created.resources['R']!.maskedPropertyFingerprints).toEqual({
+      Value: REFUSED_FINGERPRINT,
+    });
+    // The backfill of a field-less record refuses it as well.
+    const { maskedPropertyFingerprints: _dropped, ...legacy } = created.resources['R']!;
+    h.setState({ ...created, resources: { R: legacy } });
+    const backfilled = await h.deployTemplate(template(spelled));
+    expect(backfilled.resources['R']!.maskedPropertyFingerprints).toEqual({
+      Value: REFUSED_FINGERPRINT,
+    });
+    // Control: a template not spelling it is hashed.
+    const plain = await harness().deployTemplate(template(PROPS.Value));
+    expect(plain.resources['R']!.maskedPropertyFingerprints).toEqual({
+      Value: maskedPropertyFingerprint(PROPS.Value),
+    });
+  });
+
   it('the AWS-confirmed NoEcho skip does not fire when a masked expression moved (R2)', async () => {
     const FRESH = 'fresh-noecho-token-0001';
     const props = (value: unknown) => ({ ...PROPS, Value: value, Description: FRESH });

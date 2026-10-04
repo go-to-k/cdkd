@@ -174,15 +174,22 @@ export function markWrittenFromDeployedTemplate<T extends object>(bag: T): T {
  * The save-time stamp: `scrubbed` (the persisted, redacted record) with its
  * fingerprints rebuilt from `templateProps` when `writtenBag` (the in-memory
  * record's `properties`, before the scrub) was written by this deploy.
- * Otherwise `scrubbed` unchanged, carrying whatever field it had.
+ * Otherwise `scrubbed` unchanged, carrying whatever field it had, except
+ * that an entry whose template text holds a needle of `secrets` (the
+ * resource's own resolution) or of `noEchoParameterValues` (the stack's
+ * `NoEcho` parameters) becomes {@link REFUSED_FINGERPRINT}.
  */
 export function withMaskedPropertyFingerprints(
   scrubbed: ResourceState,
   writtenBag: unknown,
   templateProps: Record<string, unknown> | undefined,
-  secrets?: RecordedSecretValues
+  secrets?: RecordedSecretValues,
+  noEchoParameterValues?: RecordedSecretValues
 ): ResourceState {
   if (templateProps === undefined) return scrubbed;
+  const corpora = [secrets, noEchoParameterValues].filter(
+    (corpus): corpus is RecordedSecretValues => corpus !== undefined
+  );
   const written =
     writtenBag !== null &&
     typeof writtenBag === 'object' &&
@@ -197,13 +204,14 @@ export function withMaskedPropertyFingerprints(
     if (previous === undefined || previous === null || typeof previous !== 'object') {
       return scrubbed;
     }
-    if (secrets === undefined) return scrubbed;
+    if (corpora.length === 0) return scrubbed;
     fingerprints = { ...(previous as Record<string, string>) };
   }
-  if (fingerprints !== undefined && secrets !== undefined) {
+  if (fingerprints !== undefined && corpora.length > 0) {
     const refused = Object.keys(fingerprints).filter(
       (key) =>
-        Object.hasOwn(templateProps, key) && templateCarriesNeedle(templateProps[key], secrets)
+        Object.hasOwn(templateProps, key) &&
+        corpora.some((corpus) => templateCarriesNeedle(templateProps[key], corpus))
     );
     if (refused.length > 0) {
       fingerprints = Object.fromEntries(
@@ -226,7 +234,10 @@ export function withMaskedPropertyFingerprints(
  * describes, which is exactly what the unchanged comparison of this same
  * deploy concludes for it, so this deploy sends what it sent before and the
  * next edit is seen. An existing entry, a {@link REFUSED_FINGERPRINT}
- * included, is kept.
+ * included, is kept. A property whose template text holds a `NoEcho`
+ * parameter's value (`noEchoParameterValues`, known before anything resolves)
+ * gets {@link REFUSED_FINGERPRINT}; one holding a value only a resolution
+ * yields is checked by the first save that holds that resource's needles.
  *
  * Only a record whose field is absent or a plain object (a malformed one keeps
  * the old comparison and is left alone), whose logical id the template defines
@@ -235,7 +246,8 @@ export function withMaskedPropertyFingerprints(
  */
 export function backfillMaskedPropertyFingerprints(
   resources: Record<string, ResourceState>,
-  template: CloudFormationTemplate | undefined
+  template: CloudFormationTemplate | undefined,
+  noEchoParameterValues?: RecordedSecretValues
 ): number {
   const declared = template?.Resources;
   if (declared === undefined || declared === null) return 0;
@@ -262,7 +274,15 @@ export function backfillMaskedPropertyFingerprints(
       definition.Properties ?? {}
     );
     if (fingerprints === undefined) continue;
-    const added = Object.entries(fingerprints).filter(([key]) => !Object.hasOwn(existing, key));
+    const templateProps = definition.Properties ?? {};
+    const added = Object.entries(fingerprints)
+      .filter(([key]) => !Object.hasOwn(existing, key))
+      .map(([key, value]): [string, string] =>
+        noEchoParameterValues !== undefined &&
+        templateCarriesNeedle(templateProps[key], noEchoParameterValues)
+          ? [key, REFUSED_FINGERPRINT]
+          : [key, value]
+      );
     if (added.length === 0) continue;
     resources[logicalId] = {
       ...record,

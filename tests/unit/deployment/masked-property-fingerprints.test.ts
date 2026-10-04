@@ -298,3 +298,63 @@ describe('backfillMaskedPropertyFingerprints - per property (Q1)', () => {
     expect(backfillMaskedPropertyFingerprints(resources, template)).toBe(0);
   });
 });
+
+describe('backfillMaskedPropertyFingerprints - a NoEcho parameter value as a template literal (R4)', () => {
+  const NOECHO = 'noecho-param-value-42';
+  const template = {
+    Resources: {
+      R: {
+        Type: 'AWS::SSM::Parameter',
+        Properties: { Name: '/app/ud', Value: SCRIPT, Other: `x=${NOECHO}` },
+      },
+    },
+  };
+  const legacy = (): Record<string, ResourceState> => ({
+    R: { ...record(), properties: { Name: '/app/ud', Value: '***', Other: '***' } },
+  });
+
+  it('refuses a hash to the property holding it, and hashes the rest', () => {
+    const corpus = new Map<string, string>();
+    recordLogOnlyValue(corpus, NOECHO);
+    const resources = legacy();
+    expect(backfillMaskedPropertyFingerprints(resources, template, corpus)).toBe(1);
+    expect(resources['R']!.maskedPropertyFingerprints).toEqual({
+      Value: maskedPropertyFingerprint(SCRIPT),
+      Other: REFUSED_FINGERPRINT,
+    });
+  });
+
+  it('hashes it when no NoEcho value occurs in its text', () => {
+    const corpus = new Map<string, string>();
+    recordLogOnlyValue(corpus, 'another-noecho-value-7');
+    const resources = legacy();
+    backfillMaskedPropertyFingerprints(resources, template, corpus);
+    expect(resources['R']!.maskedPropertyFingerprints!['Other']).toBe(
+      maskedPropertyFingerprint(`x=${NOECHO}`)
+    );
+  });
+
+  it('the save refuses it too, for a stamped record and a carried entry', () => {
+    const corpus = new Map<string, string>();
+    recordLogOnlyValue(corpus, NOECHO);
+    const props = template.Resources.R.Properties;
+    const scrubbed = legacy()['R']!;
+    expect(
+      withMaskedPropertyFingerprints(
+        scrubbed,
+        markWrittenFromDeployedTemplate({ Name: '/app/ud' }),
+        props,
+        new Map(),
+        corpus
+      ).maskedPropertyFingerprints!['Other']
+    ).toBe(REFUSED_FINGERPRINT);
+    const carried = {
+      ...scrubbed,
+      maskedPropertyFingerprints: { Other: maskedPropertyFingerprint(props.Other) },
+    };
+    expect(
+      withMaskedPropertyFingerprints(carried, { Name: '/app/ud' }, props, undefined, corpus)
+        .maskedPropertyFingerprints
+    ).toEqual({ Other: REFUSED_FINGERPRINT });
+  });
+});

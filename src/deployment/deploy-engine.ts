@@ -516,6 +516,13 @@ export class DeployEngine {
   /** @internal */
   perResourceResolvedType = new Map<string, string>();
   /**
+   * The stack's `NoEcho` parameter values, set once parameters resolve
+   * (go-to-k/cdkd#4451): a masked property whose template text holds one is
+   * refused a fingerprint at the save. Reset per `deploy()`.
+   */
+  /** @internal */
+  fingerprintNoEchoValues: RecordedSecretValues | undefined = undefined;
+  /**
    * Resolved secrets recorded while resolving the stack OUTPUTS (a `CfnOutput`
    * whose Value resolves a `{{resolve:...}}` reference). Separate from the
    * per-resource maps for the same anti-cross-contamination reason. Reset per
@@ -800,6 +807,7 @@ export class DeployEngine {
     // map's whole job is to answer "do those needles describe THIS record",
     // and a reused engine carrying last deploy's answer is the #2516 class.
     this.perResourceResolvedType = new Map();
+    this.fingerprintNoEchoValues = undefined;
     // Issue #2516: reset with the other per-deploy maps. A reused engine
     // whose next deploy fails before its own attempted bag is recorded would
     // otherwise journal the PREVIOUS run's bag against today's template and
@@ -895,7 +903,8 @@ export class DeployEngine {
         scrubbed,
         record.properties,
         templateProps,
-        secrets
+        secrets,
+        this.fingerprintNoEchoValues
       );
     }
     // `outputs` is also secret-bearing: a `CfnOutput` whose Value resolves a
@@ -958,7 +967,8 @@ export class DeployEngine {
           ),
           entry.state.properties,
           orphanTemplateProps,
-          sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined
+          sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined,
+          sameResource ? this.fingerprintNoEchoValues : undefined
         ),
       };
     });
