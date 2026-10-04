@@ -519,7 +519,7 @@ function displacedOpLabel(op: {
   // only place the displaced resource is ever named (security review m4).
   const recorded =
     op.physicalId !== undefined
-      ? `recorded ${safe(op.physicalId)}, which cdkd import has since replaced under this id`
+      ? `recorded ${displaySafe(op.physicalId)}, which cdkd import has since replaced under this id`
       : `recorded no physical id, and cdkd import has since put another resource under this id`;
   return (
     `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
