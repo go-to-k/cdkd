@@ -23,8 +23,9 @@ live fixture's directory, and stage only its own test files, since the
 integ's ledger row lands in the same tree (#4302). A lane REPORTS
 `mise exec -- markgate status integ-destroy --explain`'s line, never "integ
 not needed": comment-only edits count (#3873). Bare `markgate` can resolve to
-a stale PATH copy that dies `unknown hash "diff"` (#4477). The gate's `hash: diff` stales on a rebase only when main changed
-a scoped file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
+a stale PATH copy that dies `unknown hash "diff"` (#4477).
+The gate's `hash: diff` stales on a rebase only when main changed a scoped
+file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
 rebase (`mise exec -- markgate status`) — unless main changed code the fixture
 EXERCISES: re-run it on the rebased head (#3726).
 
@@ -106,14 +107,14 @@ done'
 ```
 
 Run it UNNARROWED on the FINAL diff: a lane's file list is a hint, stale after
-a fix round. `R=$B` reverts, refusing a tree with uncommitted edits (the restore reads
-`HEAD`, so it would destroy them); the same loop with `R=HEAD` restores — run
+a fix round. `R=$B` reverts, refusing a tree with uncommitted edits (the
+restore reads `HEAD`, so it would destroy them); the same loop with `R=HEAD` restores — run
 it once; `git status --porcelain` must then be EMPTY. For §8-c's hook / CI BEFORE tree, replace
 `src/` with the changed command's own paths. A file NEW in the PR stays,
 unimported by pre-fix code; one the fix DELETED or moved is restored by hand.
 The pre-fix run can mint resources the fixture's sweep cannot name: scan the
-account by stack prefix and resource family too. Probe each HALF of a multi-part fix separately, and add a NEGATIVE
-CONTROL. Where the fix SKIPS something, give the fixture a second, ORDINARY
+account by stack prefix and resource family too. Probe each HALF of a
+multi-part fix separately, and add a NEGATIVE CONTROL. Where the fix SKIPS something, give the fixture a second, ORDINARY
 difference — a phase redeploying a byte-identical template diffs as `NO_CHANGE`
 and never reads the flag under test. Two more vacuity shapes:
 
