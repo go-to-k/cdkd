@@ -1003,9 +1003,8 @@ CloudFormation does. Only template text is hashed: a secret appears there as
 its reference and a `NoEcho` parameter as its `Ref`, so the hash says nothing
 about a value. For the same reason a change that leaves the property's
 template text as it was (a new parameter value, a `Ref` to a resource that
-was replaced, a condition that flipped) is not seen through the mask yet
-([#4543](https://github.com/go-to-k/cdkd/issues/4543)), although
-CloudFormation would update the resource.
+was replaced, a condition that flipped) is not seen through the mask yet,
+although CloudFormation would update the resource.
 
 - **Written** by the save of a deploy that created, updated or replaced the
   resource, from the template it deployed. A failed update keeps the previous
