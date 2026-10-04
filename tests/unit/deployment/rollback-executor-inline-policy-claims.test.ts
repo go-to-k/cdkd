@@ -291,9 +291,9 @@ describe('a rollback keeps an inline policy name another revert of it has put ba
     // A was REPLACED x -> y with UpdateReplacePolicy: Retain, so its rollback
     // re-adopts the retained `x` and deletes the new `y`. B's rename y -> x
     // reversed first and re-created `y`, which A's delete must leave.
-    // Known limit (go-to-k/cdkd#4408): B's reversal deleted `x`, which B's new
-    // copy had overwritten, and the re-adopt writes nothing, so A's record
-    // names an `x` the role no longer holds.
+    // go-to-k/cdkd#4408: B's reversal deleted `x`, which B's new copy had
+    // overwritten, and the re-adopt writes nothing; the end of the replay
+    // puts A's recorded document back under `x`.
     const state: Record<string, ResourceState> = {
       A: policyRecord('y', 'docA'),
       B: policyRecord('x', 'docB'),
@@ -311,7 +311,7 @@ describe('a rollback keeps an inline policy name another revert of it has put ba
     expect(readoptDelete[1]).toBe('y');
     expect(asked(readoptDelete[4])?.('role', ROLE_PHYS, 'y')).toBe(true);
     expect(held.get('y')).toBe('docB');
-    expect(held.has('x'), 'known limit go-to-k/cdkd#4408: fixed, update this case').toBe(false);
+    expect(held.get('x')).toBe('docA');
   });
 
   it('a revert routed through Cloud Control under an sdk record is no writer', async () => {
@@ -651,6 +651,10 @@ describe('a rollback keeps an inline policy name another revert of it has put ba
   });
 
   it('CONTROL: separate calls with no shared record do not see each other\'s writes', async () => {
+    // The second call's delete of `x` is not told A's revert put it back. A's
+    // record still holds `x`, so the end of that replay puts A's document
+    // back (go-to-k/cdkd#4408): the shared record keeps the name, and the
+    // put-back repairs a removal it could not prevent.
     const state: Record<string, ResourceState> = {
       A: policyRecord('x', 'docA'),
       B: policyRecord('x', 'docB'),
@@ -677,7 +681,10 @@ describe('a rollback keeps an inline policy name another revert of it has put ba
       ctx
     );
 
-    expect(holding()).toEqual({ y: 'docB' });
+    const deleteOfX = policyProvider.delete.mock.calls.find((c) => c[1] === 'x')!;
+    expect(asked(deleteOfX[4])?.('role', ROLE_PHYS, 'x')).toBe(false);
+    expect(policyProvider.create.mock.calls.filter((c) => c[0] === 'A')).toHaveLength(1);
+    expect(holding()).toEqual({ x: 'docA', y: 'docB' });
   });
 });
 
@@ -755,5 +762,337 @@ describe('RollbackInlinePolicyWriters (go-to-k/cdkd#4225)', () => {
     const record = { ...policyRecord('n', 'docP'), provisionedBy: 'cc-api' as const };
     writers.record('P', 'create', record, false, 'sdk');
     expect(ask(writers, { P: record })).toBe(false);
+  });
+});
+
+describe('a rollback puts back an inline policy its removal took from a record that still holds it (go-to-k/cdkd#4408)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    held = new Map();
+  });
+
+  const warned = (): string =>
+    (silentLogger.warn as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0])).join('\n');
+
+  it('a rolled-back CREATE that took an old policy\'s name leaves the old document under it', async () => {
+    // Deploy: Old (name `n`) is dropped, New takes `n` on the same role. New's
+    // create put its document under `n`; a later failure stopped the deploy
+    // before Old's DELETE. The rollback deletes New, which removes `n`.
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+
+    const result = await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(result.failures).toBe(0);
+    expect(result.warnings).toBe(0);
+    expect(state['New']).toBeUndefined();
+    // Before the fix the role ended up without `n` while Old's record lists it.
+    expect(holding()).toEqual({ n: 'docOld' });
+    expect(policyProvider.create).toHaveBeenCalledTimes(1);
+    expect(policyProvider.create.mock.calls[0]!.slice(0, 3)).toEqual([
+      'Old',
+      POLICY,
+      { PolicyName: 'n', PolicyDocument: 'docOld', Roles: [ROLE_PHYS] },
+    ]);
+    expect((silentLogger.info as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toContain(
+      '  Rollback: put back the inline policy Old records on its role, which this rollback had removed'
+    );
+  });
+
+  it('puts back the role\'s own Policies entry of that name, with the role\'s document', async () => {
+    const docRole = { Version: '2012-10-17', Statement: [{ Effect: 'Allow', Action: 's3:GetObject' }] };
+    const state: Record<string, ResourceState> = {
+      R: { ...roleRecord([]), properties: { Policies: [{ PolicyName: 'N', PolicyDocument: docRole }] } },
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+
+    await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(policyProvider.create).toHaveBeenCalledTimes(1);
+    // The holder's spellings, its document as recorded (the provider
+    // serializes it as the role provider does).
+    expect(policyProvider.create.mock.calls[0]![2]).toEqual({
+      PolicyName: 'N',
+      PolicyDocument: docRole,
+      Roles: [ROLE_PHYS],
+    });
+  });
+
+  it('a PARTIAL swap reversed without --revert-failed puts the sibling\'s name back', async () => {
+    // Deploy: A renamed x -> y, overwriting B's `y`; B's rename y -> x then
+    // failed, so only A's op is replayed. A's reversal re-creates `x` and
+    // deletes its copy `y`, which B's record still lists.
+    const state: Record<string, ResourceState> = {
+      A: policyRecord('y', 'docA'),
+      B: policyRecord('y', 'docB'),
+    };
+    put('y', 'docA');
+
+    const result = await replayRollback(
+      [updateOp('A', policyRecord('x', 'docA'), policyRecord('y', 'docA'))],
+      state,
+      'S',
+      ctx
+    );
+
+    expect(result.failures).toBe(0);
+    expect(holding()).toEqual({ x: 'docA', y: 'docB' });
+  });
+
+  it('a --revert-failed delete of a failed CREATE puts the old document back too', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+    const failed = [
+      {
+        logicalId: 'New',
+        changeType: 'CREATE',
+        resourceType: POLICY,
+        physicalId: 'n',
+        attemptedProperties: state['New']!.properties,
+        provisionedBy: 'sdk',
+      },
+    ] as FailedOperation[];
+
+    const result = await replayFailedOperations(failed, state, 'S', ctx);
+
+    expect(result.failures).toBe(0);
+    expect(holding()).toEqual({ n: 'docOld' });
+  });
+
+  it('a removal no record holds yet is put back by a later replay over the same bag', async () => {
+    // Newest segment: New's CREATE took `n`; nothing records `n` once it is
+    // deleted. Older segment: Old's replacement n -> m kept the old copy
+    // (Retain), so its re-adopt points Old back at `n` and writes nothing.
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('m', 'docOld'),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+    put('m', 'docOld');
+    const writers = new RollbackInlinePolicyWriters();
+
+    await replayRollback([createOp('New', state['New']!)], state, 'S', ctx, { inlinePolicyWriters: writers });
+    expect(holding()).toEqual({ m: 'docOld' });
+    await replayRollback(
+      [{ ...updateOp('Old', policyRecord('n', 'docOld'), state['Old']!), oldResourceRetained: true }],
+      state,
+      'S',
+      ctx,
+      { inlinePolicyWriters: writers }
+    );
+
+    expect(holding()).toEqual({ n: 'docOld' });
+  });
+
+  it('CONTROL: without the shared record, the later replay knows of no removal', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('m', 'docOld'),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+    put('m', 'docOld');
+
+    await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+    await replayRollback(
+      [{ ...updateOp('Old', policyRecord('n', 'docOld'), state['Old']!), oldResourceRetained: true }],
+      state,
+      'S',
+      ctx
+    );
+
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(holding()).toEqual({});
+  });
+
+  it('CONTROL: a name no record holds stays removed', async () => {
+    const state: Record<string, ResourceState> = { New: policyRecord('n', 'docNew') };
+    put('n', 'docNew');
+
+    const result = await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(result.warnings).toBe(0);
+    expect(holding()).toEqual({});
+  });
+
+  it('CONTROL: a name a completed revert kept is not removed, so nothing is put back', async () => {
+    // P's revert re-attaches `n`; New's delete is told it is claimed.
+    const state: Record<string, ResourceState> = {
+      P: policyRecord('n', 'docP', []),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+
+    await replayRollback(
+      [createOp('New', state['New']!), updateOp('P', policyRecord('n', 'docP'), state['P']!)],
+      state,
+      'S',
+      ctx
+    );
+
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(holding()).toEqual({ n: 'docP' });
+  });
+
+  it('two records holding the name with different documents: neither is put back, and it warns', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      R: roleRecord([{ PolicyName: 'n', PolicyDocument: 'docRole' }]),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+
+    const result = await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(holding()).toEqual({});
+    expect(result.warnings).toBe(1);
+    expect(warned()).toContain('recorded by Old, R with different documents');
+    expect(warned()).toContain("'cdkd drift <stack> --revert'");
+  });
+
+  it('CONTROL: two records holding the name with the SAME document put it back once', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      R: roleRecord([{ PolicyName: 'n', PolicyDocument: 'docOld' }]),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+
+    const result = await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(policyProvider.create).toHaveBeenCalledTimes(1);
+    expect(result.warnings).toBe(0);
+    expect(holding()).toEqual({ n: 'docOld' });
+  });
+
+  it.each([
+    ['a secret reference', { Statement: [{ Resource: '{{resolve:secretsmanager:arn:aws:secretsmanager:us-east-1:111122223333:secret:s}}' }] }],
+    ['the mask', { Statement: [{ Resource: '***' }] }],
+    ['no document', undefined],
+    ['an empty string', ''],
+  ])('a recorded document holding %s is not put back, and it warns', async (_label, document) => {
+    const state: Record<string, ResourceState> = {
+      Old: { ...policyRecord('n', 'docOld'), properties: { PolicyName: 'n', PolicyDocument: document, Roles: [ROLE_PHYS] } },
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+
+    const result = await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(holding()).toEqual({});
+    expect(result.warnings).toBe(1);
+    expect(warned()).toContain('recorded document is absent or redacted');
+  });
+
+  it('a failed put warns and fails nothing', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+    policyProvider.create.mockRejectedValueOnce(new Error('AccessDenied: iam:PutRolePolicy'));
+
+    const result = await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(result.failures).toBe(0);
+    expect(result.warnings).toBe(1);
+    expect(state['New']).toBeUndefined();
+    expect(warned()).toContain('could not put back the inline policy Old records on its role');
+    expect(warned()).toContain('AccessDenied: iam:PutRolePolicy');
+  });
+
+  it('a put-back the registry would not route to the SDK provider is not sent', async () => {
+    const ccCtx: RollbackExecutorContext = {
+      ...ctx,
+      providerRegistry: {
+        getProviderFor: ({ resourceType }: { resourceType: string }) => ({
+          provider: resourceType === ROLE ? roleProvider : policyProvider,
+          provisionedBy: 'cc-api',
+        }),
+      } as unknown as RollbackExecutorContext['providerRegistry'],
+    };
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+
+    const result = await replayRollback([createOp('New', state['New']!)], state, 'S', ccCtx);
+
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(result.warnings).toBe(1);
+  });
+
+  it('the put-back logs logical ids, never a policy or principal name', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('secret-derived-name', 'docOld'),
+      New: policyRecord('secret-derived-name', 'docNew'),
+    };
+    put('secret-derived-name', 'docNew');
+    policyProvider.create.mockRejectedValueOnce(new Error('denied'));
+
+    await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(warned()).not.toContain('secret-derived-name');
+    expect(policyProvider.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('RollbackInlinePolicyWriters.takeHeldRemovals (go-to-k/cdkd#4408)', () => {
+  const remove = (writers: RollbackInlinePolicyWriters, principal: string, policyName: string): boolean =>
+    writers.claimedFor(POLICY, 'Remover', {})!('role', principal, policyName);
+
+  it('hands out a removal once, and only while a record holds its name there', () => {
+    const writers = new RollbackInlinePolicyWriters();
+    expect(remove(writers, ROLE_PHYS, 'n')).toBe(false);
+    expect(writers.takeHeldRemovals({})).toEqual([]);
+    const state = { Old: policyRecord('N', 'docOld', ['ROLE-PHYS']) };
+    expect(writers.takeHeldRemovals(state)).toEqual([
+      {
+        kind: 'role',
+        holders: [{ logicalId: 'Old', principal: 'ROLE-PHYS', policyName: 'N', document: 'docOld' }],
+      },
+    ]);
+    expect(writers.takeHeldRemovals(state)).toEqual([]);
+  });
+
+  it('notes nothing for a claimed name, or a value outside IAM\'s name charset', () => {
+    const writers = new RollbackInlinePolicyWriters();
+    const p = policyRecord('n', 'docP');
+    writers.record('P', 'create', p, false, 'sdk');
+    expect(writers.claimedFor(POLICY, 'Remover', { P: p })!('role', ROLE_PHYS, 'n')).toBe(true);
+    expect(remove(writers, '***', 'n')).toBe(false);
+    expect(remove(writers, ROLE_PHYS, '{{resolve:secretsmanager:s}}')).toBe(false);
+    const state = {
+      P: p,
+      Masked: { ...policyRecord('n', 'd'), properties: { PolicyDocument: 'd', Roles: ['***'] } },
+    };
+    expect(writers.takeHeldRemovals(state)).toEqual([]);
+  });
+
+  it('a record of another kind, principal or name holds nothing', () => {
+    const writers = new RollbackInlinePolicyWriters();
+    remove(writers, ROLE_PHYS, 'n');
+    const state: Record<string, ResourceState> = {
+      OtherName: policyRecord('m', 'd'),
+      OtherRole: policyRecord('n', 'd', ['other-role']),
+      AsGroup: { ...policyRecord('n', 'd', []), properties: { PolicyDocument: 'd', Groups: [ROLE_PHYS] } },
+      GroupNamedLikeRole: {
+        physicalId: ROLE_PHYS,
+        resourceType: 'AWS::IAM::Group',
+        properties: { Policies: [{ PolicyName: 'n', PolicyDocument: 'd' }] },
+      },
+      Managed: { physicalId: 'n', resourceType: 'AWS::IAM::ManagedPolicy', properties: { Roles: [ROLE_PHYS] } },
+    };
+    expect(writers.takeHeldRemovals(state)).toEqual([]);
   });
 });

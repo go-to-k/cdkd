@@ -57,6 +57,7 @@ import {
 } from './secret-redaction.js';
 import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
 import { RollbackInlinePolicyWriters } from './inline-policy-claims.js';
+import { restoreHeldInlinePolicies } from './rollback-executor/replay-inline-policy-restore.js';
 import {
   type CompletedOperation,
   type RollbackExecutorContext,
@@ -270,6 +271,11 @@ async function replayRollbackUnbound(
       );
     }
   }
+
+  // go-to-k/cdkd#4408: an inline policy a removal above took off a principal
+  // while a record still holds it there goes back, with that record's
+  // document. Interrupted too: what ran is final for this replay.
+  await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, ctx, result);
 
   ctx.logger.info('Rollback completed. Some resources may remain if deletion failed.');
   ctx.recordEvent?.({ eventType: 'ROLLBACK_FINISHED', stackName });
@@ -1033,6 +1039,8 @@ async function replayFailedOperationsUnbound(
       });
     }
   }
+  // go-to-k/cdkd#4408: as at the end of `replayRollback`.
+  await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, ctx, result);
   if (emitEnvelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_FINISHED', stackName });
   result.remainingFailedOps = failedOps.filter((op) => pending.has(op));
   return result;

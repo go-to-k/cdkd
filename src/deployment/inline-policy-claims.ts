@@ -55,10 +55,6 @@ export function isInlinePolicyClaimedByCompletedWriter(
   policyName: string
 ): boolean {
   const { selfLogicalId, writers, changes, stateResources } = args;
-  // Only a value in IAM's name charset matches: a mask or a redacted
-  // reference names no principal or policy, even if the query spells it too.
-  const same = (a: unknown, b: string): boolean =>
-    typeof a === 'string' && IAM_NAME.test(a) && a.toLowerCase() === b.toLowerCase();
   for (const [lid, write] of writers) {
     if (lid === selfLogicalId || !Object.hasOwn(stateResources, lid)) continue;
     const record = stateResources[lid]!;
@@ -68,14 +64,14 @@ export function isInlinePolicyClaimedByCompletedWriter(
     if (record.provisionedBy === 'cc-api') continue;
     const props = record.properties ?? {};
     if (record.resourceType === 'AWS::IAM::Policy') {
-      if (!same(record.physicalId, policyName)) continue;
+      if (!sameIamName(record.physicalId, policyName)) continue;
       const listed = props[POLICY_LIST_FIELDS[kind]];
-      if (Array.isArray(listed) && listed.some((p) => same(p, principal))) return true;
+      if (Array.isArray(listed) && listed.some((p) => sameIamName(p, principal))) return true;
       continue;
     }
     if (!Object.hasOwn(PRINCIPAL_KINDS, record.resourceType)) continue;
     if (PRINCIPAL_KINDS[record.resourceType] !== kind) continue;
-    if (!same(record.physicalId, principal)) continue;
+    if (!sameIamName(record.physicalId, principal)) continue;
     if (write !== 'create' && !ownPoliciesChange(changes.get(lid))) continue;
     const policies = props['Policies'];
     if (!Array.isArray(policies)) continue;
@@ -84,7 +80,7 @@ export function isInlinePolicyClaimedByCompletedWriter(
         typeof entry === 'object' &&
         entry !== null &&
         !Array.isArray(entry) &&
-        same((entry as Record<string, unknown>)['PolicyName'], policyName)
+        sameIamName((entry as Record<string, unknown>)['PolicyName'], policyName)
     );
     if (declares) return true;
   }
@@ -98,7 +94,9 @@ export function isInlinePolicyClaimedByCompletedWriter(
  * `x -> y` and B `y -> x` on one role) let the second revert remove the name
  * the first one had just restored.
  *
- * One instance spans a whole replay, failed-op reverts included. It records
+ * One instance per state bag's rollback, shared by every replay over that bag
+ * (each segment's failed-op reverts, its completed ops, older segments); a
+ * nested child's revert has its own. It records
  * each op whose provider write COMPLETED — a revert as `'update'`, a reverse
  * replacement's re-create as `'create'` — together with the state record that
  * write produced, and the predicate {@link claimedFor} hands out reads it
@@ -116,11 +114,26 @@ export function isInlinePolicyClaimedByCompletedWriter(
  *   differ there (`policiesChanged`).
  * - A write whose ACTUAL route was Cloud Control is not recorded (see
  *   {@link RollbackInlinePolicyWriters.record}).
+ *
+ * go-to-k/cdkd#4408: every `false` it answers is a removal that proceeds, and
+ * it notes each one. A removal can take a name off a principal while a record
+ * that wrote nothing in this rollback still holds it there: the deploy's new
+ * policy took an old policy's name and the rollback deletes it, a swap's
+ * reversal deletes a copy whose name a sibling still records, or a re-adopted
+ * retained copy whose name a sibling's reversal deleted. Keeping the name
+ * instead would keep the remover's document, owned by no record (fail-open),
+ * so the removal proceeds and {@link takeHeldRemovals} hands the replay each
+ * removed name a record still holds, for it to put that record's document back.
  */
 export class RollbackInlinePolicyWriters {
   private readonly entries = new Map<
     string,
     { write: InlinePolicyWrite; record: ResourceState; policiesChanged: boolean }
+  >();
+  /** The removals this rollback let proceed, keyed case-insensitively. */
+  private readonly removals = new Map<
+    string,
+    { kind: InlinePolicyPrincipalKind; principal: string; policyName: string }
   >();
 
   /**
@@ -183,14 +196,127 @@ export class RollbackInlinePolicyWriters {
           });
         }
       }
-      return isInlinePolicyClaimedByCompletedWriter(
+      const claimed = isInlinePolicyClaimedByCompletedWriter(
         { selfLogicalId: logicalId, writers, changes, stateResources },
         kind,
         principal,
         policyName
       );
+      // A value outside IAM's name charset names nothing to put back.
+      if (!claimed && IAM_NAME.test(principal) && IAM_NAME.test(policyName)) {
+        this.removals.set(removalKey(kind, principal, policyName), { kind, principal, policyName });
+      }
+      return claimed;
     };
   }
+
+  /**
+   * go-to-k/cdkd#4408: the removals this rollback let proceed whose name a
+   * record of `stateResources` holds on that principal NOW, each with every
+   * such record ({@link inlinePolicyHolders}). Read at the end of a replay,
+   * when each record is the one the rollback leaves. Each is handed out once;
+   * a removal no record holds yet stays for a later replay over the same bag
+   * (an older segment can re-adopt the record that holds it).
+   */
+  takeHeldRemovals(stateResources: Record<string, ResourceState>): HeldInlinePolicyRemoval[] {
+    const held: HeldInlinePolicyRemoval[] = [];
+    for (const [key, { kind, principal, policyName }] of this.removals) {
+      const holders = inlinePolicyHolders(stateResources, kind, principal, policyName);
+      if (holders.length === 0) continue;
+      this.removals.delete(key);
+      held.push({ kind, holders });
+    }
+    return held;
+  }
+}
+
+/** A removed inline policy name, and the records that hold it on that principal. */
+export interface HeldInlinePolicyRemoval {
+  kind: InlinePolicyPrincipalKind;
+  /** Never empty. */
+  holders: InlinePolicyHolder[];
+}
+
+/** One record's claim to an inline policy name on a principal. */
+export interface InlinePolicyHolder {
+  logicalId: string;
+  /** The principal and the policy name, spelled as this record spells them. */
+  principal: string;
+  policyName: string;
+  /** The document the record holds under that name, as recorded. */
+  document: unknown;
+}
+
+/**
+ * go-to-k/cdkd#4408: every record of `stateResources` that holds the inline
+ * policy `policyName` on `principal`, by the record-reading rules of
+ * {@link isInlinePolicyClaimedByCompletedWriter} without its writer and route
+ * rules: an `AWS::IAM::Policy` whose physical id is the name and whose list
+ * for `kind` names the principal, and a role / group / user of that kind whose
+ * physical id is the principal, once per `Policies` entry of that name. What
+ * a record holds is what cdkd state says the principal holds, whoever wrote
+ * it last.
+ */
+export function inlinePolicyHolders(
+  stateResources: Record<string, ResourceState>,
+  kind: InlinePolicyPrincipalKind,
+  principal: string,
+  policyName: string
+): InlinePolicyHolder[] {
+  const holders: InlinePolicyHolder[] = [];
+  for (const [logicalId, record] of Object.entries(stateResources)) {
+    if (record === null || typeof record !== 'object') continue;
+    const props = record.properties ?? {};
+    if (record.resourceType === 'AWS::IAM::Policy') {
+      if (!sameIamName(record.physicalId, policyName)) continue;
+      const listed = props[POLICY_LIST_FIELDS[kind]];
+      const named = Array.isArray(listed)
+        ? (listed as unknown[]).find((p) => sameIamName(p, principal))
+        : undefined;
+      if (typeof named !== 'string') continue;
+      holders.push({
+        logicalId,
+        principal: named,
+        policyName: record.physicalId,
+        document: props['PolicyDocument'],
+      });
+      continue;
+    }
+    if (!Object.hasOwn(PRINCIPAL_KINDS, record.resourceType)) continue;
+    if (PRINCIPAL_KINDS[record.resourceType] !== kind) continue;
+    if (!sameIamName(record.physicalId, principal)) continue;
+    const policies = props['Policies'];
+    if (!Array.isArray(policies)) continue;
+    for (const entry of policies as unknown[]) {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
+      const name = (entry as Record<string, unknown>)['PolicyName'];
+      if (!sameIamName(name, policyName)) continue;
+      holders.push({
+        logicalId,
+        principal: record.physicalId,
+        policyName: name as string,
+        document: (entry as Record<string, unknown>)['PolicyDocument'],
+      });
+    }
+  }
+  return holders;
+}
+
+/**
+ * Only a value in IAM's name charset matches: a mask or a redacted reference
+ * names no principal or policy, even if the query spells it too. Names compare
+ * case-insensitively, as IAM compares them on one principal.
+ */
+function sameIamName(a: unknown, b: string): boolean {
+  return typeof a === 'string' && IAM_NAME.test(a) && a.toLowerCase() === b.toLowerCase();
+}
+
+function removalKey(
+  kind: InlinePolicyPrincipalKind,
+  principal: string,
+  policyName: string
+): string {
+  return JSON.stringify([kind, principal.toLowerCase(), policyName.toLowerCase()]);
 }
 
 /** IAM's role / group / user / inline policy name charset. */
