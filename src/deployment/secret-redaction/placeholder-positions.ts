@@ -7,10 +7,16 @@ import { certifiedExpressionForLeaf } from './certified-positions.js';
 
 /**
  * A part of a {@link parameterPlaceholderParts} source: literal text, a
- * parameter `Ref`, or {@link UNKNOWN_PART} for a part whose text the template
- * cannot state.
+ * reference the association store can answer (its {@link crossStackSourceKey}),
+ * or {@link UNKNOWN_PART} for a part whose text the template cannot state.
  */
-type PlaceholderPart = string | { readonly parameter: string } | typeof UNKNOWN_PART;
+type PlaceholderPart = string | { readonly key: string } | typeof UNKNOWN_PART;
+
+/** A keyed part, or UNKNOWN when the reference has no literal key. */
+function keyedPart(source: Record<string, unknown>): PlaceholderPart {
+  const key = crossStackSourceKey(source);
+  return key === undefined ? UNKNOWN_PART : { key };
+}
 
 /**
  * How many parts one leaf's source may expand to, and how deep its nested
@@ -51,6 +57,9 @@ function pushPlaceholderPart(
  * - a nested `Fn::Sub` / `Fn::Join` contributes its own parts, recursively
  *   (`{'Fn::Join': ['', ['x-', {'Fn::Sub': '${A}'}]]}`), since the string it
  *   resolves to is exactly those parts concatenated;
+ * - an `Fn::ImportValue` / `Fn::GetStackOutput` / `Fn::GetAtt` is keyed as
+ *   that reference (issue #2298): the resolver records a cross-stack read
+ *   under the key of the RAW intrinsic it resolved, embedded or not;
  * - anything else is ONE {@link UNKNOWN_PART}.
  *
  * Nothing here is trusted: the caller accepts only a reassembly equal to the
@@ -68,19 +77,20 @@ function appendValuePlaceholderParts(
   if (isPlainObject(value) && Object.keys(value).length === 1) {
     const ref = value['Ref'];
     if (typeof ref === 'string' && ref !== '') {
-      return pushPlaceholderPart(out, { parameter: ref }, budget);
+      return pushPlaceholderPart(out, keyedPart({ Ref: ref }), budget);
     }
     if (depth >= MAX_PLACEHOLDER_DEPTH) {
       budget.exhausted = true;
       return;
     }
     if (appendParameterPlaceholderParts(value, out, budget, depth + 1)) return;
+    return pushPlaceholderPart(out, keyedPart(value), budget);
   }
   pushPlaceholderPart(out, UNKNOWN_PART, budget);
 }
 
 /**
- * An `Fn::Sub` / `Fn::Join` source in order, as literal text, parameter `Ref`s
+ * An `Fn::Sub` / `Fn::Join` source in order, as literal text, keyed references
  * and {@link UNKNOWN_PART}s, appended to `out`; `false` (nothing appended) for
  * a source of any other shape.
  *
@@ -90,9 +100,10 @@ function appendValuePlaceholderParts(
  *   BINDS (`Object.hasOwn`, the resolver's own test over its null-prototype
  *   copy, so `${constructor}` is not bound) contributes its value's parts
  *   ({@link appendValuePlaceholderParts}) — CDK's `Fn.sub('x-${V}', {V: param})`.
- *   A dotted `${Res.Attr}` is UNKNOWN; any other name is a parameter
- *   candidate, pseudo parameters included — no writer records an association
- *   for one, so it ends up UNKNOWN too.
+ *   A dotted `${Res.Attr}` is keyed as the `Fn::GetAtt` `resolveSub` hands
+ *   the bare name to (a nested-stack output, issue #2298); any other name is a
+ *   parameter candidate, pseudo parameters included. A key no writer recorded
+ *   (a same-stack attribute, a pseudo parameter) ends up UNKNOWN.
  * - `Fn::Join`: a string delimiter and an array, each element contributing
  *   {@link appendValuePlaceholderParts}.
  *
@@ -146,8 +157,9 @@ function appendParameterPlaceholderParts(
       else if (name === '') pushPlaceholderPart(out, hit[0], budget);
       else if (Object.hasOwn(variables, name)) {
         appendValuePlaceholderParts(variables[name], out, budget, depth);
-      } else if (name.includes('.')) pushPlaceholderPart(out, UNKNOWN_PART, budget);
-      else pushPlaceholderPart(out, { parameter: name }, budget);
+      } else if (name.includes('.')) {
+        pushPlaceholderPart(out, keyedPart({ 'Fn::GetAtt': name }), budget);
+      } else pushPlaceholderPart(out, keyedPart({ Ref: name }), budget);
     }
     pushPlaceholderPart(out, template.slice(cursor), budget);
     return true;
@@ -173,10 +185,16 @@ function parameterPlaceholderParts(
 /**
  * Position a leaf whose SOURCE is an `Fn::Sub` / `Fn::Join` over a nested-stack
  * child's own PARAMETERS, placeholder by placeholder (issue
- * [#2320](https://github.com/go-to-k/cdkd/issues/2320)).
+ * [#2320](https://github.com/go-to-k/cdkd/issues/2320)), and over CROSS-STACK
+ * references embedded in text (issue
+ * [#2298](https://github.com/go-to-k/cdkd/issues/2298)).
  *
- * The EMBEDDING twin of `positionByCrossStackSource` (`certified-positions.ts`)'s `{Ref: <Param>}`
- * arm. Before it, a leaf such as `Fn::Sub 'x${A}'` could only be redacted by the
+ * The EMBEDDING twin of `positionByCrossStackSource` (`certified-positions.ts`),
+ * for every spelling it keys: a `${Param}`, a `${Child.Outputs.X}`, or an
+ * `Fn::ImportValue` / `Fn::GetStackOutput` / `Fn::GetAtt` element or bound
+ * variable. The writer records each such read WHOLE-TOKEN under the key of the
+ * raw intrinsic it resolved, so the embedded part has its own association even
+ * though the leaf does not; nothing keys the partial leaf itself. Before it, a leaf such as `Fn::Sub 'x${A}'` could only be redacted by the
  * plaintext-keyed value scan, which reads ONE expression per plaintext —
  * whichever parameter the resource resolved LAST. The DIFF side
  * (`redactParametersForDiff`) answers per PARAMETER, so a resource holding this
@@ -184,10 +202,10 @@ function parameterPlaceholderParts(
  * persisted `B`'s expression on the embedded leaf while the desired side held
  * `A`'s: an UPDATE on every deploy, a REPLACEMENT on a create-only property.
  *
- * Each parameter placeholder is answered EXACTLY as a whole `{Ref: <Param>}`
- * leaf over the same value would be — the same association row, the same
+ * Each keyed placeholder is answered EXACTLY as a whole leaf of that reference
+ * over the same value would be — the same association row, the same
  * {@link certifiedExpressionForLeaf} — so the leaf persists what the diff side
- * renders: the template's literals with each parameter's own expression in its
+ * renders: the template's literals with each reference's own expression in its
  * place. A placeholder with no certified association is UNKNOWN.
  *
  * THE RENDERING IS CHECKED, NOT TRUSTED. Nothing here reproduces the
@@ -204,7 +222,7 @@ function parameterPlaceholderParts(
  * the TEMPLATE parse below aligns the source against the leaf instead:
  *
  * AT MOST ONE UNKNOWN PART (a pseudo parameter, an intrinsic, an unassociated
- * parameter). Every other part has fixed text, so the unknown span is whatever
+ * reference). Every other part has fixed text, so the unknown span is whatever
  * lies between the fixed prefix and the fixed suffix — unambiguous, and so are
  * adjacent placeholders with equal values (`${A}${B}`), because no span is
  * SEARCHED for. That span is kept verbatim, and the arm refuses when the
@@ -212,8 +230,8 @@ function parameterPlaceholderParts(
  * the remainder more than one way, and refuse.
  *
  * Refuses (falls to the next arm, then the value scan) when the bag holds no
- * association at all — every non-nested pass — when no parameter placeholder
- * is certified, and when the persisted string would still hold a needle the
+ * association at all — a pass that read no secret across a stack boundary —
+ * when no placeholder is certified, and when the persisted string would still hold a needle the
  * value scan rewrites (a recorded plaintext in the template's own literal text
  * or in the unknown span, a containment needle), or when a recorded needle
  * crosses a certified span's edge on the resolved leaf, so this arm never
@@ -252,8 +270,7 @@ export function positionByParameterPlaceholders(
       let expression: string | undefined;
       let plaintext = '';
       if (part !== UNKNOWN_PART) {
-        const key = crossStackSourceKey({ Ref: part.parameter });
-        const association = key === undefined ? undefined : associations.get(key);
+        const association = associations.get(part.key);
         if (association !== undefined && typeof association !== 'symbol') {
           plaintext = association.plaintext;
           expression = certifiedExpressionForLeaf(secrets, association, plaintext);
@@ -273,7 +290,7 @@ export function positionByParameterPlaceholders(
     side[0] += rendered;
     side[1] += persisted;
   }
-  // No test discriminates this floor: with no parameter part, the reassembly
+  // No test discriminates this floor: with no keyed part, the reassembly
   // below makes this arm's answer the value scan's own. It keeps the arm from
   // pre-empting the skeleton / frame arms on a source it holds no evidence for.
   if (certified === 0) return undefined;
