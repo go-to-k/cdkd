@@ -51,7 +51,7 @@ import {
 import { deleteEc2VolumeDirect } from './ec2-volume-delete.js';
 import type { EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../utils/logger.js';
-import { ProvisioningError } from '../utils/error-handler.js';
+import { AccountIdUnavailableError, ProvisioningError } from '../utils/error-handler.js';
 import {
   isAmbiguousCcHandlerErrorCode,
   isThrottlingError,
@@ -3140,17 +3140,17 @@ export class CloudControlProvider implements ResourceProvider {
    * `undefined` when it must not be built (issue
    * [#1730](https://github.com/go-to-k/cdkd/issues/1730)).
    *
-   * `getAccountInfo` falls back to a hardcoded `123456789012` when STS cannot
-   * answer, and an ARN built from it is structurally valid with no wildcard in
-   * any field — so `isPlaceholderArn` (issue #1681) cannot catch it and every
-   * downstream consumer receives a confidently wrong value that is then
-   * RECORDED into state as the resource's `Fn::GetAtt` answer.
+   * `getAccountInfo` REFUSES when STS cannot name the account and
+   * `AWS_ACCOUNT_ID` is unset. This runs AFTER the resource was created, inside
+   * `enrichResourceAttributes`, so letting that refusal escape would fail a
+   * create that already succeeded in AWS — and `cleanupFailedCreateRemnant`
+   * does not run for it, so the resource would be orphaned.
    *
    * Omitting the attribute is the honest answer and mirrors
-   * `AppSyncProvider.childImportAttributes`: the resolver's own
-   * `guardedPhysicalIdFallback` then hard-fails an `*Arn` read with a message
-   * naming the cause, instead of a green deploy shipping an ARN for someone
-   * else's account, and the record heals on the resource's next update.
+   * `AppSyncProvider.childImportAttributes`: the resolver then refuses an
+   * `Fn::GetAtt` on it with a message naming the cause, instead of a green
+   * deploy recording a value cdkd could not build, and the record heals on the
+   * resource's next update. Any OTHER failure propagates as before.
    */
   private async accountInfoForSynthesizedArn(
     resourceType: string,
@@ -3166,17 +3166,17 @@ export class CloudControlProvider implements ResourceProvider {
     // call inherited whichever region the FIRST caller cached, which was wrong
     // in a different way; passing the client's region is the answer that is
     // right under both.
-    const accountInfo = await getAccountInfo(await this.cloudControlClient.config.region());
-    if (accountInfo.fabricated) {
+    const region = await this.cloudControlClient.config.region();
+    try {
+      return await getAccountInfo(region);
+    } catch (error) {
+      if (!(error instanceof AccountIdUnavailableError)) throw error;
       this.logger.warn(
-        `Not enriching ${resourceType} ${attributeName} for ${physicalId}: STS did not report ` +
-          `this deploy's account id, so the value would be built from a placeholder account and ` +
-          `would be indistinguishable from a real one. Fix the credentials (or set ` +
-          `AWS_ACCOUNT_ID) and deploy again — the record heals on the next update.`
+        `Not enriching ${resourceType} ${attributeName} for ${physicalId}: ${error.message} ` +
+          `The resource itself is unaffected; the record heals on its next update.`
       );
       return undefined;
     }
-    return accountInfo;
   }
 
   /**

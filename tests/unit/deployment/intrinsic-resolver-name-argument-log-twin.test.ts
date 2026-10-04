@@ -180,12 +180,12 @@ const lookupBehaviour = vi.hoisted(() => ({
   sent: [] as string[],
 }));
 /** STS: the real account, or an answer with no account (a FABRICATED id). */
-const stsBehaviour = vi.hoisted(() => ({ fabricated: false }));
+const stsBehaviour = vi.hoisted(() => ({ noAccount: false }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => withRegionOf({
     sts: {
-      send: vi.fn(async () => (stsBehaviour.fabricated ? {} : { Account: '210987654321' })),
+      send: vi.fn(async () => (stsBehaviour.noAccount ? {} : { Account: '210987654321' })),
     },
     ec2: {
       send: vi.fn(async (command: { constructor: { name: string } }) => {
@@ -493,7 +493,7 @@ beforeEach(() => {
   lookupBehaviour.ssmType = undefined;
   lookupBehaviour.secretAnswer = undefined;
   lookupBehaviour.sent.length = 0;
-  stsBehaviour.fabricated = false;
+  stsBehaviour.noAccount = false;
   resetAccountInfoCache();
 });
 
@@ -658,16 +658,19 @@ describe('issue #3150: Fn::GetAtt attribute names', () => {
     expect(message).not.toContain(PIN);
   });
 
-  it('the fabricated-account refusal', async () => {
-    stsBehaviour.fabricated = true;
+  it('the unknown-account refusal (issue #1730)', async () => {
+    // Reached only through an arm that builds with the account, so the name
+    // is the literal `Arn`, assembled whole from a secret fragment.
+    stsBehaviour.noAccount = true;
     const message = await messageOf(
-      { 'Fn::GetAtt': ['Res', sub('Attr${P}')] },
-      makeContext({ resources: queue({ physicalId: 'queue-123456789012-x' }) })
+      { 'Fn::GetAtt': ['Res', sub('${P}', 'arn')] },
+      makeContext({
+        resources: queue({ physicalId: 'https://sqs.us-east-1.amazonaws.com/1/q' }),
+      })
     );
     expect(message).toMatch(
-      /^Cannot resolve Fn::GetAtt \[Res, Attr\*\*\*\] for AWS::SQS::Queue: STS did not report/
+      /^Cannot resolve Fn::GetAtt \[Res, \*\*\*\] for AWS::SQS::Queue: the value embeds this deploy's account id\./
     );
-    expect(message).not.toContain(PIN);
   });
 
   describe('behind a literal attribute-name check, reached by assembling the literal', () => {

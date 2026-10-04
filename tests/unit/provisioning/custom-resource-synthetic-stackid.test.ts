@@ -58,7 +58,10 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: () => Promise.resolve('https://s3.example.com/presigned-url'),
 }));
 
-import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';
+import {
+  CustomResourceProvider,
+  customResourceRetryDelays,
+} from '../../../src/provisioning/providers/custom-resource-provider.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
 import {
   disarmInterruptWatchForTests,
@@ -249,38 +252,158 @@ describe('CustomResourceProvider synthetic StackId (issue #1866)', () => {
     expect(stackId).not.toContain('000000000000');
   });
 
-  it('falls back to the ALL-ZERO placeholder — not 123456789012 — when STS cannot answer', async () => {
+  it('REFUSES before invoking the handler when STS cannot answer (issue #1730)', async () => {
     // `StackId` is a REQUIRED member of the request, so omission (the Cloud
-    // Control enrichment answer) is unavailable. Between two wrong strings the
-    // honest one is the one a handler cannot mistake for a live account:
-    // `getAccountInfo`'s own fallback id is shaped exactly like a real one.
+    // Control enrichment answer) is unavailable, and every stand-in account is
+    // a wrong string a handler may act on. The create fails BEFORE the handler
+    // runs, so nothing is created.
     mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
     configuredRegion = 'ap-northeast-1';
     const provider = makeProvider();
 
-    await provider.create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN });
-
-    const stackId = String(sentRequests()[0]?.['StackId']);
-    expect(stackId).toBe(
-      'arn:aws:cloudformation:ap-northeast-1:000000000000:stack/cdkd-CrResource/cdkd'
-    );
-    expect(stackId).not.toContain('123456789012');
-    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-      'STS did not report this deploy'
-    );
+    await expect(
+      provider.create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN })
+    ).rejects.toThrow(/Cannot determine the AWS account id/);
+    expect(sentRequests()).toEqual([]);
   });
 
-  it('does not warn about a placeholder account when STS answered', async () => {
-    // Polarity for the case above — a warning on every ordinary deploy would
-    // train users to ignore the one that matters.
+  it('an UPDATE that cannot resolve the account fails before invoking the handler', async () => {
+    mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
+    const provider = makeProvider();
+
+    await expect(
+      provider.update(
+        'CrResource',
+        'phys-123',
+        'Custom::CrResource',
+        { ServiceToken: SERVICE_TOKEN, Value: 'new' },
+        { ServiceToken: SERVICE_TOKEN, Value: 'old' }
+      )
+    ).rejects.toThrow(/Cannot determine the AWS account id/);
+    expect(sentRequests()).toEqual([]);
+  });
+
+  it('uses an operator AWS_ACCOUNT_ID when STS cannot answer', async () => {
+    mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
+    process.env['AWS_ACCOUNT_ID'] = '444455556666';
     configuredRegion = 'ap-northeast-1';
     const provider = makeProvider();
 
     await provider.create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN });
 
-    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
-      'STS did not report this deploy'
+    expect(String(sentRequests()[0]?.['StackId'])).toBe(
+      'arn:aws:cloudformation:ap-northeast-1:444455556666:stack/cdkd-CrResource/cdkd'
     );
+  });
+
+  describe('a DELETE re-asks for the account before giving up (issue #1730)', () => {
+    // A Delete that is never sent is reported `skipped`, but the same destroy
+    // deletes the backing Lambda and the next destroy drops the record, so a
+    // transient STS blip would orphan whatever the handler manages. The
+    // lookup is never cached, so asking again can recover.
+    const realSleep = customResourceRetryDelays.sleep;
+    const slept: number[] = [];
+
+    beforeEach(() => {
+      slept.length = 0;
+      customResourceRetryDelays.sleep = (ms: number) => {
+        slept.push(ms);
+        return Promise.resolve();
+      };
+    });
+
+    afterEach(() => {
+      customResourceRetryDelays.sleep = realSleep;
+    });
+
+    it('recovers when STS answers on a later attempt, and SENDS the Delete', async () => {
+      mockStsSend
+        .mockImplementationOnce(() => Promise.reject(new Error('STS is unreachable')))
+        .mockImplementationOnce(() => Promise.reject(new Error('STS is unreachable')))
+        .mockImplementation(() => Promise.resolve({ Account: '111122223333' }));
+      const provider = makeProvider();
+
+      const outcome = await provider.delete('CrResource', 'phys-123', 'Custom::CrResource', {
+        ServiceToken: SERVICE_TOKEN,
+      });
+
+      expect(outcome).not.toMatchObject({ outcome: 'skipped' });
+      const requests = sentRequests();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.['RequestType']).toBe('Delete');
+      expect(String(requests[0]?.['StackId'])).toContain(':111122223333:stack/cdkd-CrResource/');
+      expect(mockStsSend).toHaveBeenCalledTimes(3);
+      expect(slept.reduce((a, b) => a + b, 0)).toBe(2_000 + 5_000);
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'the Delete request cannot be sent until the account is known'
+      );
+    });
+
+    it('still failing after the bounded retries: reported skipped, never deleted', async () => {
+      // Delete's catch must keep the record: a `Delete` the handler never
+      // received proves nothing was cleaned up.
+      mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
+      const provider = makeProvider();
+
+      const outcome = await provider.delete('CrResource', 'phys-123', 'Custom::CrResource', {
+        ServiceToken: SERVICE_TOKEN,
+      });
+
+      expect(outcome).toMatchObject({ outcome: 'skipped' });
+      expect(sentRequests()).toEqual([]);
+      // One first ask plus three re-asks, on the documented schedule.
+      expect(mockStsSend).toHaveBeenCalledTimes(4);
+      expect(slept.reduce((a, b) => a + b, 0)).toBe(2_000 + 5_000 + 10_000);
+    });
+
+    it('does NOT re-ask on a failure other than the unknown account', async () => {
+      const resolverModule = await import(
+        '../../../src/deployment/intrinsic-function-resolver.js'
+      );
+      const spy = vi
+        .spyOn(resolverModule, 'getAccountInfo')
+        .mockRejectedValue(new Error('unexpected failure'));
+      try {
+        const provider = makeProvider();
+        const outcome = await provider.delete('CrResource', 'phys-123', 'Custom::CrResource', {
+          ServiceToken: SERVICE_TOKEN,
+        });
+        expect(outcome).toMatchObject({ outcome: 'skipped' });
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(slept).toEqual([]);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('a CREATE does not re-ask: its refusal fails before anything exists', async () => {
+      mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
+      const provider = makeProvider();
+
+      await expect(
+        provider.create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN })
+      ).rejects.toThrow(/Cannot determine the AWS account id/);
+      expect(mockStsSend).toHaveBeenCalledTimes(1);
+      expect(slept).toEqual([]);
+    });
+
+    it('an UPDATE does not re-ask either: only a Delete has a record to lose', async () => {
+      mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
+      const provider = makeProvider();
+
+      await expect(
+        provider.update(
+          'CrResource',
+          'phys-123',
+          'Custom::CrResource',
+          { ServiceToken: SERVICE_TOKEN, Value: 'new' },
+          { ServiceToken: SERVICE_TOKEN, Value: 'old' }
+        )
+      ).rejects.toThrow(/Cannot determine the AWS account id/);
+      expect(mockStsSend).toHaveBeenCalledTimes(1);
+      expect(slept).toEqual([]);
+      expect(sentRequests()).toEqual([]);
+    });
   });
 
   it('pins the region at CONSTRUCTION, so a mid-flight bag swap cannot leak in', async () => {

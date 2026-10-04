@@ -201,6 +201,7 @@ CHILD_PIN_JOIN_PARAM="cdkd-nested-child-pinjoin-${ACCOUNT_ID}"
 PARENT_CONSUMER_PARAM="cdkd-nested-parent-consumer-${ACCOUNT_ID}"
 PARENT_SUB_PARAM="cdkd-nested-parent-sub-${ACCOUNT_ID}"
 PARENT_SUBPAIR_PARAM="cdkd-nested-parent-subpair-${ACCOUNT_ID}"
+PARENT_EMBEDPAIR_PARAM="cdkd-nested-parent-embedpair-${ACCOUNT_ID}"
 
 # The two secret plaintexts, and the expressions they must be persisted as.
 # `prodstage2087` is deliberately UNUSUAL rather than a word like `production`:
@@ -239,6 +240,10 @@ MIXED_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:mixed:AWSCURR
 SPANS_PW_VALUE="spanspw4446"
 SPANS_EXPR_A="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:spans::}}"
 SPANS_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:spans:AWSCURRENT:}}"
+# The #2298 pair. Its OWN JSON key (`embed`), for the reason `mixed` has one.
+EMBED_PW_VALUE="embedpw2298"
+EMBED_EXPR_A="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:embed::}}"
+EMBED_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:embed:AWSCURRENT:}}"
 # The #2327 LIST-typed pair. A FOURTH JSON key, so its plaintext is its own for
 # the reason every arm above states. Two spellings that resolve IDENTICALLY,
 # neither a substring of the other (one ends `list::}}`, the other
@@ -373,7 +378,7 @@ esac
 # The pre-existing three are inner-only -- `UNRELATED_LITERAL` legitimately
 # CONTAINS `SECRET_STAGE_VALUE`, which the #2087 assertion above requires, so
 # they must never be compared against each other.
-CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE MIXED_PW_VALUE SPANS_PW_VALUE LIST_PW_VALUE LIST_PUBLIC_VALUE PIN_FRAMED_VALUE PIN_JOIN_FRAMED_VALUE PIN_SSM_FRAMED_VALUE"
+CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE MIXED_PW_VALUE SPANS_PW_VALUE EMBED_PW_VALUE LIST_PW_VALUE LIST_PUBLIC_VALUE PIN_FRAMED_VALUE PIN_JOIN_FRAMED_VALUE PIN_SSM_FRAMED_VALUE"
 CDKD_ALL_LITERALS="SECRET_STAGE_VALUE SECURE_PW_VALUE UNRELATED_LITERAL ${CDKD_2270_LITERALS}"
 for mine_name in ${CDKD_2270_LITERALS}; do
   mine="${!mine_name}"
@@ -419,7 +424,7 @@ diag_output() {
   # The BARE 2-character pin is in this regex on purpose, unlike in the FAIL
   # scans: here a false match only withholds diagnostics (the safe direction),
   # while there it would fail a green run on ordinary text.
-  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_JOIN_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_SSM_VALUE}" <<<"${text}"; then
+  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${EMBED_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_JOIN_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_SSM_VALUE}" <<<"${text}"; then
     echo "      output: <WITHHELD - it carries a resolved secret, which is itself the bug>" >&2
     return 0
   fi
@@ -473,6 +478,11 @@ assert_child_state_carries_no_plaintext() { # $1 = label, $2 = child state json
   fi
   if grep -qF "${SPANS_PW_VALUE}" <<<"${scan}"; then
     echo "FAIL: ${label}: the child's state.json carries the resolved #4446 spans plaintext" >&2
+    exit 1
+  fi
+  # The #2298 pair resolves inside the CHILD, like the shared pair above.
+  if grep -qF "${EMBED_PW_VALUE}" <<<"${scan}"; then
+    echo "FAIL: ${label}: the child's state.json carries the resolved #2298 embed plaintext" >&2
     exit 1
   fi
   # The #2327 pair is handed down the same way, and its leaves are ARRAYS -- a
@@ -534,7 +544,7 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
   # resolver now masks a sub-floor secret on that line by position (issue
   # #3100), so the exception is gone (issue #3113) and the line itself is
   # asserted masked below.
-  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${text}"; then
+  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${EMBED_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${text}"; then
     echo "FAIL: ${label}: --verbose printed a resolved secret plaintext" >&2
     exit 1
   fi
@@ -595,8 +605,8 @@ cleanup() {
              "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_HANDOFF_MIXED_PARAM}" "${CHILD_PIN_PARAM}" \
              "${CHILD_HANDOFF_SPANS_PARAM}" "${CHILD_HANDOFF_SPANS_IF_PARAM}" \
              "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" "${PARENT_CONSUMER_PARAM}" \
-             "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" "${SECURE_PARAM_NAME}" \
-             "${PIN_SSM_PARAM_NAME}"; do
+             "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" "${PARENT_EMBEDPAIR_PARAM}" \
+             "${SECURE_PARAM_NAME}" "${PIN_SSM_PARAM_NAME}"; do
       aws ssm delete-parameter --name "${p}" --region "${REGION}" >/dev/null 2>&1
     done
     # The #2327 arm's rule. No targets, so a plain delete suffices; `--force` is
@@ -650,7 +660,7 @@ cleanup
 # --- Out-of-band secret + SecureString parameter ---------------------------
 echo "==> Creating the secretsmanager secret and the SecureString SSM parameter out of band"
 aws secretsmanager create-secret --name "${SECRET_NAME}" \
-  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\",\"mixed\":\"${MIXED_PW_VALUE}\",\"spans\":\"${SPANS_PW_VALUE}\",\"list\":\"${LIST_PW_VALUE}\",\"pin\":\"${PIN_VALUE}\",\"pintwin\":\"${PIN_VALUE}\",\"pinjoin\":\"${PIN_JOIN_VALUE}\"}" \
+  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\",\"mixed\":\"${MIXED_PW_VALUE}\",\"spans\":\"${SPANS_PW_VALUE}\",\"embed\":\"${EMBED_PW_VALUE}\",\"list\":\"${LIST_PW_VALUE}\",\"pin\":\"${PIN_VALUE}\",\"pintwin\":\"${PIN_VALUE}\",\"pinjoin\":\"${PIN_JOIN_VALUE}\"}" \
   --region "${REGION}" >/dev/null
 aws ssm put-parameter --name "${SECURE_PARAM_NAME}" --type SecureString \
   --value "${SECURE_PW_VALUE}" --overwrite --region "${REGION}" >/dev/null
@@ -834,6 +844,35 @@ assert_eq "the child's shared output A is its own expression" \
   "$(jq_state "${CHILD_STATE}" '.outputs.ChildSharedOutputA')" "${SHARED_EXPR_A}"
 assert_eq "the child's shared output B is its own expression" \
   "$(jq_state "${CHILD_STATE}" '.outputs.ChildSharedOutputB')" "${SHARED_EXPR_B}"
+
+# --- #2298: the same collapse with each read EMBEDDED in text ----------------
+# `SubSecretPair` keys each leaf WHOLE. A leaf that embeds the read
+# (`jdbc:...password=${Child.Outputs.X}`, or an `Fn::Join` element) has no
+# whole-leaf key, so both fell to the plaintext-keyed value scan and each
+# persisted the SURVIVOR's expression inside its frame. Both leaves of ONE
+# resource, both embedded, so the collapse shows whichever expression survived.
+echo "==> #2298: two EMBEDDED secret reads of ONE resource keep their OWN expressions"
+assert_eq "the child's embed output A is its own expression" \
+  "$(jq_state "${CHILD_STATE}" '.outputs.ChildEmbedOutputA')" "${EMBED_EXPR_A}"
+assert_eq "the child's embed output B is its own expression" \
+  "$(jq_state "${CHILD_STATE}" '.outputs.ChildEmbedOutputB')" "${EMBED_EXPR_B}"
+# The premise: both live leaves embed the SAME plaintext.
+assert_eq "the LIVE EmbedSecretPair Value embeds the resolved embed secret" \
+  "$(aws ssm get-parameter --name "${PARENT_EMBEDPAIR_PARAM}" --region "${REGION}" \
+    --query 'Parameter.Value' --output text)" \
+  "jdbc:mysql://db:3306/app?password=${EMBED_PW_VALUE}"
+assert_eq "the LIVE EmbedSecretPair Description embeds the SAME resolved secret" \
+  "$(aws ssm describe-parameters --region "${REGION}" \
+    --parameter-filters "Key=Name,Values=${PARENT_EMBEDPAIR_PARAM}" \
+    --query 'Parameters[0].Description' --output text)" \
+  "pw=${EMBED_PW_VALUE}"
+# THE DISCRIMINATOR: each leaf's frame around ITS OWN expression.
+assert_eq "EmbedSecretPair.Value persists the DEFAULT-stage expression in its frame" \
+  "$(jq_state "${PARENT_STATE}" '.resources.EmbedSecretPair.properties.Value')" \
+  "jdbc:mysql://db:3306/app?password=${EMBED_EXPR_A}"
+assert_eq "EmbedSecretPair.Description persists the AWSCURRENT-spelled expression in its frame" \
+  "$(jq_state "${PARENT_STATE}" '.resources.EmbedSecretPair.properties.Description')" \
+  "pw=${EMBED_EXPR_B}"
 
 # --- #2291: two child PARAMETERS resolving to ONE plaintext ------------------
 # The PARAMETER-BORNE twin of the round-3 arm above, and the one it cannot see.
@@ -1183,7 +1222,7 @@ assert_eq "the parent's nested-stack row keeps SubFloorPinSsm as its FRAMED expr
   "$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.SubFloorPinSsm')" \
   "port:{{resolve:ssm:${PIN_SSM_PARAM_NAME}}}"
 
-if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${PARENT_STATE}"; then
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${EMBED_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${PARENT_STATE}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext" >&2
   exit 1
 fi
@@ -1322,7 +1361,7 @@ if [ "${DIFF_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: cdkd diff --recursive --fail exited 0"
-if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${DIFF_OUT}"; then
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${EMBED_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${DIFF_OUT}"; then
   echo "FAIL: the diff output printed a resolved secret plaintext" >&2
   exit 1
 fi
@@ -1531,7 +1570,7 @@ if [ "${PIN_JOIN_STATE3}" = "${PIN_JOIN_FRAMED_VALUE}" ]; then
   exit 1
 fi
 assert_eq "PinJoinParam is STILL the framed expression after the UPDATE" "${PIN_JOIN_STATE3}" "${PIN_JOIN_FRAMED_EXPR}"
-if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${PARENT_STATE3}"; then
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${EMBED_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${PARENT_STATE3}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext after the update" >&2
   exit 1
 fi
@@ -1566,16 +1605,18 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 # 2026-08-28 while adding the #2327 arm; nine since the #2745 arm's `PinParam`;
 # ten since the #3079 arm's `PinTwinParam`; eleven since the #3062 arm's
 # `PinJoinParam`; twelve since the #2320 arm's `HandoffMixed`; fourteen since
-# the #4446 arm's `HandoffSpans` / `HandoffSpansIf`.
+# the #4446 arm's `HandoffSpans` / `HandoffSpansIf`; fifteen since the #2298
+# arm's `EmbedSecretPair`.
 for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
          "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_HANDOFF_MIXED_PARAM}" "${CHILD_PIN_PARAM}" \
          "${CHILD_HANDOFF_SPANS_PARAM}" "${CHILD_HANDOFF_SPANS_IF_PARAM}" \
          "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" \
-         "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}"; do
+         "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" \
+         "${PARENT_EMBEDPAIR_PARAM}"; do
   assert_gone "SSM parameter '${p}' still exists after destroy" \
     aws ssm get-parameter --name "${p}" --region "${REGION}"
 done
-echo "    OK: all fourteen stack-owned SSM parameters are gone"
+echo "    OK: all fifteen stack-owned SSM parameters are gone"
 
 # The #2327 arm's rule is the one non-SSM resource this stack owns, so its
 # destroy is asserted on its own terms rather than inferred from the loop above.

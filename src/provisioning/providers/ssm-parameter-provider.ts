@@ -163,20 +163,18 @@ export class SSMParameterProvider implements ResourceProvider {
    *    "the create response carries no ARN": `AppSyncProvider.buildAppSyncArn`
    *    and the four `CloudControlProvider` enrichment sites (KMS key, ECR
    *    repository x2, Kinesis stream) all construct through the same
-   *    `getAccountInfo` + `derivePartitionAndUrlSuffix` + `fabricated`-refusal
-   *    pair this method reuses.
+   *    `getAccountInfo` + `derivePartitionAndUrlSuffix` pair this method
+   *    reuses.
    *
    * The PARTITION is DERIVED, never hardcoded `arn:aws:` — that hardcoding is an
    * active bug class here (#1794 / #1815), and on a `cn-` / `us-gov-` deploy it
    * would record an ARN naming a partition the parameter is not in.
    *
-   * The `fabricated`-account guard (#1730 / #1746) is honored by REFUSING rather
-   * than by substituting: `getAccountInfo` catches its own STS failure and
-   * answers the placeholder `123456789012`, which carries no wildcard and is
-   * therefore invisible to `isPlaceholderArn`, so a fabricated id must yield NO
-   * attribute instead of a plausible-looking wrong one. Returning `undefined`
-   * degrades to exactly the pre-fix behavior — the resolver's shape guard fails
-   * LOUDLY on the name-shaped physicalId — never to a silently wrong value.
+   * When STS cannot name the account, `getAccountInfo` REJECTS (issue #1730)
+   * and this yields NO attribute rather than one built from a wrong account.
+   * Returning `undefined` degrades to exactly the pre-fix behavior — the
+   * resolver's shape guard fails LOUDLY on the name-shaped physicalId — never
+   * to a silently wrong value.
    *
    * DEGRADATION ON THE UPDATE PATH is a DELIBERATE trade-off, not one this
    * design avoids. An update result's `attributes` REPLACE the state record's
@@ -198,13 +196,12 @@ export class SSMParameterProvider implements ResourceProvider {
    * `*Arn` shape-guard failure, which is exactly the pre-fix behavior, and the
    * resource's next UPDATE re-records it (as does the deploy engine's re-read
    * on a `Fn::GetAtt` miss, issue #1852). A loud missing value beats a quiet
-   * wrong one — the same reasoning the `fabricated`-account arm above applies.
+   * wrong one — the same reasoning the unknown-account arm above applies.
    *
    * Two honest bounds on that "next update re-records it". `getAccountInfo`
    * caches a SUCCESSFUL identity for the process, so within one deploy only a run
-   * whose FIRST `GetCallerIdentity` fails degrades at all — but the 10s
-   * fabricated-answer TTL then covers every parameter created in that window
-   * rather than a random subset. And a plain re-deploy does NOT heal it: a
+   * whose `GetCallerIdentity` calls fail degrades at all — a failure is never
+   * cached, so each parameter asks again. And a plain re-deploy does NOT heal it: a
    * resource whose resolved properties equal its state record is skipped with no
    * provider call, so healing needs a real property change (issue
    * [#1852](https://github.com/go-to-k/cdkd/issues/1852), which also covers the
@@ -215,14 +212,14 @@ export class SSMParameterProvider implements ResourceProvider {
    * parameter, so a throw would surface as a failed create over a missing
    * ATTRIBUTE — leaving an orphan that makes the next deploy hit
    * `ParameterAlreadyExists` (the issue #376 class), and the cleanup that exists
-   * for that is deliberately out of reach by then. `getAccountInfo` catches its
-   * own STS failure, but `config.region()` is a resolver that can reject, so the
-   * whole body is wrapped: an unexpected failure degrades to "no Arn recorded"
-   * exactly as the fabricated-account arm does.
+   * for that is deliberately out of reach by then. `getAccountInfo` rejects when
+   * STS cannot name the account, and `config.region()` is a resolver that can
+   * reject, so the whole body is wrapped: either failure degrades to "no Arn
+   * recorded".
    */
   private async buildParameterArn(name: string, mask: MaskerFn): Promise<string | undefined> {
     try {
-      return await this.buildParameterArnUnguarded(name, mask);
+      return await this.buildParameterArnUnguarded(name);
     } catch (error) {
       this.logger.warn(
         mask(
@@ -252,23 +249,11 @@ export class SSMParameterProvider implements ResourceProvider {
    * import RECORDED it, so the fix belongs at the import boundary — where
    * `import()` now refuses it — and not here. Do not re-add it.
    */
-  private async buildParameterArnUnguarded(
-    name: string,
-    mask: MaskerFn
-  ): Promise<string | undefined> {
+  private async buildParameterArnUnguarded(name: string): Promise<string | undefined> {
     const region = await this.ssmClient.config.region();
+    // REJECTS when STS cannot name the account (issue #1730); the caller's
+    // catch warns and records no `Arn`.
     const accountInfo = await getAccountInfo(region);
-    if (accountInfo.fabricated) {
-      this.logger.warn(
-        mask(
-          `Cannot determine the AWS account (STS is unreachable, and the resolved account id is ` +
-            `a placeholder), so the Arn attribute for SSM parameter ${displaySafe(mask(name))} would be fabricated ` +
-            `and is NOT recorded. An Fn::GetAtt on it will fail until a later deploy resolves ` +
-            `the account.`
-        )
-      );
-      return undefined;
-    }
     // Derived locally through the closed region -> partition mapping the repo
     // already uses for `${AWS::Partition}`. `accountInfo.partition` derives
     // through the SAME helper since issue #1730, so the two agree; deriving here

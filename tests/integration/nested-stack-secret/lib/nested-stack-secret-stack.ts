@@ -171,6 +171,8 @@ class SecretBearingChild extends cdk.NestedStack {
       plainOutputValue: string;
       sharedReferenceA: string;
       sharedReferenceB: string;
+      embedReferenceA: string;
+      embedReferenceB: string;
       stageParamDescription: string;
     },
     props?: cdk.NestedStackProps
@@ -617,6 +619,23 @@ class SecretBearingChild extends cdk.NestedStack {
     });
     sharedOutputB.overrideLogicalId('ChildSharedOutputB');
 
+    // THE #2298 PAIR's producer: the `shared` trick on its OWN JSON key
+    // (`embed`), so `SubSecretPair`'s answer never depends on this arm. The
+    // parent EMBEDS each in surrounding text (`EmbedSecretPair`).
+    const embedOutputA = new cdk.CfnOutput(this, 'ChildEmbedOutputA', {
+      value: names.embedReferenceA,
+      description:
+        'cdkd nested-stack-secret integ - embedded-read secret output, default stage (issue #2298)',
+    });
+    embedOutputA.overrideLogicalId('ChildEmbedOutputA');
+
+    const embedOutputB = new cdk.CfnOutput(this, 'ChildEmbedOutputB', {
+      value: names.embedReferenceB,
+      description:
+        'cdkd nested-stack-secret integ - the SIBLING, same plaintext, different expression (issue #2298)',
+    });
+    embedOutputB.overrideLogicalId('ChildEmbedOutputB');
+
     this.stageOutput = cdk.Token.asString(
       (this.nestedStackResource as cdk.CfnResource).getAtt('Outputs.ChildSecretOutput')
     );
@@ -686,6 +705,10 @@ export class NestedStackSecretStack extends cdk.Stack {
     // `ChildSharedOutputA` for why a parameter-borne pair cannot work.
     const sharedReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:shared::}}`;
     const sharedReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:shared:AWSCURRENT:}}`;
+    // THE #2298 PAIR, on its OWN JSON key (`embed`), for the reason `mixed` has
+    // one. Kept in sync with verify.sh's secret JSON.
+    const embedReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:embed::}}`;
+    const embedReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:embed:AWSCURRENT:}}`;
     // THE #2291 PAIR. Same two-spellings-one-value trick, on a THIRD JSON key
     // so its plaintext is its own: sharing `stage` or `shared` would drag
     // `StageParam` / `SubSecretPair` into this collapse, which is exactly how
@@ -775,6 +798,8 @@ export class NestedStackSecretStack extends cdk.Stack {
         plainOutputValue: 'plainout2270',
         sharedReferenceA,
         sharedReferenceB,
+        embedReferenceA,
+        embedReferenceB,
         stageParamDescription,
       },
       {
@@ -879,5 +904,24 @@ export class NestedStackSecretStack extends cdk.Stack {
       description: cdk.Fn.sub('${Child.Outputs.ChildSharedOutputB}'),
     });
     ((subSecretPair.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('SubSecretPair');
+
+    // THE #2298 ARM -- `SubSecretPair`'s collapse with each read EMBEDDED in
+    // surrounding text, the shape `SubSecretPair` deliberately avoids. Such a
+    // leaf is not one reference, so no whole-leaf key exists for it and both
+    // fell to the plaintext-keyed value scan: each persisted the SURVIVOR's
+    // expression inside its frame. Both leaves are embedded, and in the two
+    // spellings (`Fn::Sub` placeholder, `Fn::Join` element), so a collapse is
+    // visible whichever expression the scan kept. ONE resource, for the reason
+    // `SubSecretPair` gives.
+    const embedSecretPair = new ssm.StringParameter(this, 'EmbedSecretPair', {
+      parameterName: `cdkd-nested-parent-embedpair-${account}`,
+      stringValue: cdk.Fn.sub('jdbc:mysql://db:3306/app?password=${Child.Outputs.ChildEmbedOutputA}'),
+      // Raw `Fn::GetAtt` so the template carries the `Fn::Join` element spelling.
+      description: cdk.Fn.join('', [
+        'pw=',
+        cdk.Fn.getAtt('Child', 'Outputs.ChildEmbedOutputB').toString(),
+      ]),
+    });
+    ((embedSecretPair.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('EmbedSecretPair');
   }
 }
