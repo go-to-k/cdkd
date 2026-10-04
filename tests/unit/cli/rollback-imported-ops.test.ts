@@ -102,7 +102,7 @@ const OTHER_FAILED = {
 };
 
 /** The mark `cdkd import` writes for the topic it adopted. */
-const MARK = { logicalId: 'Topic', physicalId: NAME };
+const MARK = { logicalId: 'Topic', physicalId: NAME, resourceType: TOPIC };
 
 let backend: Record<string, ReturnType<typeof vi.fn>>;
 
@@ -333,6 +333,84 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
       expect(infoLines().some((l) => l.includes('no longer names'))).toBe(updates === 0);
     }
   );
+
+  it.each([
+    ['ANOTHER resource the import adopted (skip-mismatch)', 'old-phys', 0],
+    ['the same resource (control: reverted)', NAME, 1],
+  ])('a completed in-place UPDATE recorded against %s', async (_what, opPhysicalId, updates) => {
+    // A deploy changed `opPhysicalId` in place; the record now names NAME (an
+    // `import --force` of another resource). Only when they agree may the
+    // revert push the pre-deploy bag onto the record's resource.
+    install({ Topic: topicRecord('imported') }, [
+      {
+        operations: [
+          {
+            logicalId: 'Topic',
+            changeType: 'UPDATE',
+            resourceType: TOPIC,
+            physicalId: opPhysicalId,
+            properties: topicRecord('deployed').properties,
+            previousResourceType: TOPIC,
+            previousState: { ...topicRecord('pre-deploy'), physicalId: opPhysicalId },
+            provisionedBy: 'sdk',
+          },
+        ],
+      },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    expect(provider.update).toHaveBeenCalledTimes(updates);
+    expect(infoLines().some((l) => l.includes('physical id changed'))).toBe(updates === 0);
+    // The mismatch warns and exits non-zero; the control is clean.
+    expect(thrown instanceof Error).toBe(updates === 0);
+  });
+
+  it('a mark of the NEW type does not cover an op of the OLD type under the same id and name', async () => {
+    // A Type change under a stable logical id and a name-based physical id:
+    // the journal's CREATE made the OLD-type resource; the import adopted a
+    // NEW-type one of the same name. The CREATE is not the imported resource,
+    // so it is not set aside as one.
+    const OLD = 'AWS::SQS::Queue';
+    install({ Topic: topicRecord('imported') }, [
+      {
+        operations: [{ ...createOp, resourceType: OLD }],
+        importedResources: [MARK],
+      },
+    ]);
+
+    await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(false);
+    // The CREATE replays: its OLD-type resource is deleted, routed on the op's type.
+    expect(provider.delete).toHaveBeenCalledTimes(1);
+    expect(provider.delete.mock.calls[0]!.slice(0, 3)).toEqual(['Topic', NAME, OLD]);
+  });
+
+  it('--revert-failed: a failed Type-change UPDATE keeps its type-change skip whatever physical id it recorded', async () => {
+    install({ Topic: topicRecord('imported') }, [
+      {
+        operations: [],
+        failedOperations: [
+          {
+            logicalId: 'Topic',
+            changeType: 'UPDATE',
+            resourceType: TOPIC,
+            physicalId: 'old-phys',
+            previousResourceType: 'AWS::SQS::Queue',
+            attemptedProperties: topicRecord('attempted').properties,
+            previousState: { ...topicRecord('pre-deploy'), physicalId: 'old-phys', resourceType: 'AWS::SQS::Queue' },
+            provisionedBy: 'sdk',
+          },
+        ],
+      },
+    ]);
+
+    await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+
+    expect(provider.update).not.toHaveBeenCalled();
+    expect(infoLines().some((l) => l.includes('failed Type change is a replacement'))).toBe(true);
+  });
 
   it('--orphan on an imported id is honoured: the record is dropped from state, nothing is deleted', async () => {
     install({ Topic: topicRecord('imported') }, [{ operations: [createOp], importedResources: [MARK] }]);

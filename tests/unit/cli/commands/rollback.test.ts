@@ -2958,7 +2958,7 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
       reason: 'nested-pending-parent',
       initialDeploy: false,
       operations: [{ logicalId: 'Db', changeType: 'CREATE', resourceType: 'AWS::SQS::Queue', physicalId: 'db-1' }],
-      ...(imported && { importedResources: [{ logicalId: 'Db', physicalId: 'db-1' }] }),
+      ...(imported && { importedResources: [{ logicalId: 'Db', physicalId: 'db-1', resourceType: 'AWS::SQS::Queue' }] }),
     });
     const planLines = async (imported: boolean): Promise<string[]> => {
       info.mockClear();
@@ -3191,14 +3191,14 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
           ? parentJournalWith([
               {
                 ...failedChildSegment(),
-                ...(rowImported && { importedResources: [{ logicalId: 'Child', physicalId: 'arn:child' }] }),
+                ...(rowImported && { importedResources: [{ logicalId: 'Child', physicalId: 'arn:child', resourceType: 'AWS::CloudFormation::Stack' }] }),
               },
             ])
           : {
               ...childFailureJournal,
               segments: childFailureJournal.segments.map((seg) => ({
                 ...seg,
-                ...(childOpsImported && { importedResources: [{ logicalId: 'X', physicalId: 'x' }] }),
+                ...(childOpsImported && { importedResources: [{ logicalId: 'X', physicalId: 'x', resourceType: 'AWS::SQS::Queue' }] }),
               })),
             }
       ),

@@ -320,18 +320,23 @@ almost certainly not what you want exported; roll back or re-deploy first.
 
 Before it writes state, `cdkd import` marks each resource it adopts on every
 journal segment that holds an operation for it. A resource is matched on its
-logical id and on the physical id the import records. The rollback leaves
+logical id, on the physical id the import records, and on its resource type.
+The rollback leaves
 those operations alone, failed ones included under `--revert-failed`, and the
 plan lists each one as `adopted by cdkd import after this deploy, left as it
 is`.
 
 Two cases still go through the ordinary replay:
 
-- An operation of the same logical id that recorded a different physical
-  resource, for example an auto-named resource the deploy created before you
-  imported another one under that id. A completed operation plans and warns
-  as usual. A failed one is not reverted under `--revert-failed`, because the
-  record now names another resource.
+- An operation of the same logical id that recorded a different resource: a
+  different physical id (for example an auto-named resource the deploy
+  created before you imported another one under that id), or a different
+  resource type.
+  - A completed operation on a different physical id is not applied to the
+    imported resource: the plan shows it as `physical id changed, needs
+    manual attention`, and the rollback exits 2.
+  - A failed one is not reverted under `--revert-failed`, for the same reason.
+  - An operation on a different resource type replays as usual.
 - An id you pass to `--orphan`, which is honoured.
 
 The mark matters for a resource with an explicit name, whose physical id is

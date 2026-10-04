@@ -230,7 +230,7 @@ describe('revertNestedChildFromJournal (#3754)', () => {
             { logicalId: 'Q', resourceType: 'AWS::SQS::Queue', changeType: 'UPDATE', physicalId: 'q-url' },
             { logicalId: 'Keep', resourceType: 'AWS::SQS::Queue', changeType: 'UPDATE', physicalId: 'k-url' },
           ] as RollbackJournalSegment['operations'],
-          importedResources: [{ logicalId: 'Q', physicalId: 'q-url' }],
+          importedResources: [{ logicalId: 'Q', physicalId: 'q-url', resourceType: 'AWS::SQS::Queue' }],
         }),
         // A newer segment of the same run carries no mark: its Q op replays.
         seg('run-1', ['Q']),

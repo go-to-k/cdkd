@@ -2627,7 +2627,7 @@ describe('cdkd import', () => {
       expect(mockMarkRollbackJournalImported).toHaveBeenCalledTimes(1);
       // The mark carries the physical id this run records, not just the id.
       expect(mockMarkRollbackJournalImported).toHaveBeenCalledWith('OnlyOne', 'us-east-1', [
-        { logicalId: 'MyBucket', physicalId: 'b' },
+        { logicalId: 'MyBucket', physicalId: 'b', resourceType: 'AWS::S3::Bucket' },
       ]);
       expect(mockSaveState).toHaveBeenCalledTimes(1);
       expect(mockMarkRollbackJournalImported.mock.invocationCallOrder[0]).toBeLessThan(
@@ -2883,6 +2883,27 @@ describe('cdkd import', () => {
         },
       });
     }
+
+    // go-to-k/cdkd#4523: the PRESERVED records are not this run's imports, so
+    // they are never marked on the rollback journal — only the listed one is.
+    it('marks only the imported row on the rollback journal, not the preserved ones', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({ state: existingState(), etag: '"existing-etag"' });
+      mockHasProvider.mockReturnValue(true);
+      const bucketImport = vi.fn(async () => ({ physicalId: 'b', attributes: {} }));
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket') return { import: bucketImport };
+        return { import: vi.fn(async () => null) };
+      });
+
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=b', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      expect(mockMarkRollbackJournalImported).toHaveBeenCalledTimes(1);
+      expect(mockMarkRollbackJournalImported.mock.calls[0]![2]).toEqual([
+        { logicalId: 'MyBucket', physicalId: 'b', resourceType: 'AWS::S3::Bucket' },
+      ]);
+    });
 
     it('selective merge preserves unlisted existing resources without --force', async () => {
       mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
@@ -5312,14 +5333,15 @@ describe('cdkd import', () => {
           // Exactly the rows this walk imported, each with the physical id it
           // records: `ChildNoImpl` is absent.
           expect(markFor('P~Child')?.[2]).toEqual([
-            { logicalId: 'ChildBucket', physicalId: 'phys' },
+            { logicalId: 'ChildBucket', physicalId: 'phys', resourceType: 'AWS::S3::Bucket' },
             {
               logicalId: 'Grandchild',
               physicalId: 'arn:cdkd-local:us-east-1:123456789012:nested-stack/P~Child/Grandchild',
+              resourceType: 'AWS::CloudFormation::Stack',
             },
           ]);
           expect(markFor('P~Child~Grandchild')?.[2]).toEqual([
-            { logicalId: 'GrandchildBucket', physicalId: 'phys' },
+            { logicalId: 'GrandchildBucket', physicalId: 'phys', resourceType: 'AWS::S3::Bucket' },
           ]);
           // Marked before the child's own state write.
           const childMark = mockMarkRollbackJournalImported.mock.calls.findIndex((c) => c[0] === 'P~Child');

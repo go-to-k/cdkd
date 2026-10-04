@@ -259,7 +259,7 @@ aws ssm put-parameter --name "${R_NAME}" --type String --value hand-made --regio
 aws s3 cp "s3://${STATE_BUCKET}/${R_JOURNAL_KEY}" "${WORK}/r-journal.json" --region "${REGION}" >/dev/null
 R_MARKED="$(python3 -c '
 import json, sys
-want = {"logicalId": "Named", "physicalId": sys.argv[2]}
+want = {"logicalId": "Named", "physicalId": sys.argv[2], "resourceType": "AWS::SSM::Parameter"}
 print(any(want in seg.get("importedResources", []) for seg in json.load(open(sys.argv[1]))["segments"]))' \
   "${WORK}/r-journal.json" "${R_NAME}")"
 # Recorded, not exited on: step R3 then shows what the rollback does, which

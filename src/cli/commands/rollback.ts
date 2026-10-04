@@ -1204,6 +1204,10 @@ export async function rollbackCommand(
                         // ROLLBACK_STARTED — accepted cosmetic ordering (the
                         // events stream is informational; the reader derives
                         // nothing from envelope position).
+                        // The REPLAYED list, not `segment.operations`: an
+                        // all-imported segment hands replayRollback nothing,
+                        // and it then emits no envelope (cosmetic ordering
+                        // only, unpinned on purpose).
                         emitEnvelope: completedOps.length === 0,
                         // Same reason as the sibling replay below: `afterOp`
                         // saves per op, so a record appended only after this

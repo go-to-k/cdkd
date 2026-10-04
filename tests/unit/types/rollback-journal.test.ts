@@ -502,9 +502,9 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
     );
   });
 
-  // go-to-k/cdkd#4523: the ids `cdkd import` adopted after the segment.
+  // go-to-k/cdkd#4523: the resources `cdkd import` adopted after the segment.
   it('round-trips importedResources', () => {
-    const marks = [{ logicalId: 'Bucket', physicalId: 'my-bucket' }];
+    const marks = [{ logicalId: 'Bucket', physicalId: 'my-bucket', resourceType: 'AWS::S3::Bucket' }];
     expect(
       parseRollbackJournal(body({ importedResources: marks }), 'S').segments[0]
     ).toMatchObject({ importedResources: marks });
@@ -513,27 +513,32 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
   it.each([
     ['a string', 'Bucket'],
     ['an array holding a bare id', ['Bucket']],
-    ['a mark without a physical id', [{ logicalId: 'Bucket' }]],
-    ['a mark with a non-string physical id', [{ logicalId: 'Bucket', physicalId: 7 }]],
+    ['a mark without a physical id', [{ logicalId: 'Bucket', resourceType: 'T' }]],
+    ['a mark with a non-string physical id', [{ logicalId: 'Bucket', physicalId: 7, resourceType: 'T' }]],
+    ['a mark without a resource type', [{ logicalId: 'Bucket', physicalId: 'b' }]],
   ])('refuses importedResources as %s, which would leave nothing alone', (_what, value) => {
     expect(() => parseRollbackJournal(body({ importedResources: value }), 'S')).toThrow(
-      /segments\[0\]\.importedResources must be an array of \{ logicalId, physicalId \} strings when present/
+      /segments\[0\]\.importedResources must be an array of \{ logicalId, physicalId, resourceType \} strings when present/
     );
   });
 
-  it('splitImportedOps sets aside only ops of the SAME logical AND physical id', () => {
+  it('splitImportedOps sets aside only ops of the SAME logical id, physical id AND type', () => {
+    const T1 = 'AWS::Old::Type';
+    const T2 = 'AWS::New::Type';
     const ops = [
-      { logicalId: 'A', physicalId: 'a' },
-      { logicalId: 'B', physicalId: 'b' },
+      { logicalId: 'A', physicalId: 'a', resourceType: T2 },
+      { logicalId: 'B', physicalId: 'b', resourceType: T2 },
       // Same logical id, another physical resource: NOT the imported one.
-      { logicalId: 'B', physicalId: 'b-old' },
+      { logicalId: 'B', physicalId: 'b-old', resourceType: T2 },
+      // Same logical AND physical id, the OLD type of a Type change: NOT it either.
+      { logicalId: 'B', physicalId: 'b', resourceType: T1 },
       // No physical id recorded (a failed create): never set aside.
-      { logicalId: 'B' },
+      { logicalId: 'B', resourceType: T2 },
     ];
-    const segment = { importedResources: [{ logicalId: 'B', physicalId: 'b' }] };
+    const segment = { importedResources: [{ logicalId: 'B', physicalId: 'b', resourceType: T2 }] };
     expect(splitImportedOps(ops, segment)).toEqual({
-      replay: [{ logicalId: 'A', physicalId: 'a' }, { logicalId: 'B', physicalId: 'b-old' }, { logicalId: 'B' }],
-      imported: [{ logicalId: 'B', physicalId: 'b' }],
+      replay: [ops[0], ops[2], ops[3], ops[4]],
+      imported: [ops[1]],
     });
     // `--orphan B` keeps it in the replay.
     expect(splitImportedOps(ops, segment, new Set(['B'])).imported).toEqual([]);

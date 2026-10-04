@@ -1186,7 +1186,7 @@ function stackShown(stackName: string): string {
 
 /**
  * go-to-k/cdkd#4523: before the import's state write, mark the resources it
- * adopts (logical id + the physical id this run records) on the stack's
+ * adopts (logical id, the physical id this run records, and the type) on the stack's
  * rollback journal, so a later `cdkd rollback` leaves the journal's ops of
  * exactly those resources alone. Without it, a kept segment's completed
  * CREATE of an explicitly named resource matches the imported record's
@@ -1206,10 +1206,15 @@ async function recordImportOnRollbackJournal(
   logger: ReturnType<typeof getLogger>
 ): Promise<void> {
   const marks = logicalIds.flatMap((logicalId) => {
-    const physicalId = hasOwnKey(resources, logicalId)
-      ? resources[logicalId]?.physicalId
-      : undefined;
-    return typeof physicalId === 'string' && physicalId !== '' ? [{ logicalId, physicalId }] : [];
+    const record = hasOwnKey(resources, logicalId) ? resources[logicalId] : undefined;
+    const physicalId = record?.physicalId;
+    const resourceType = record?.resourceType;
+    return typeof physicalId === 'string' &&
+      physicalId !== '' &&
+      typeof resourceType === 'string' &&
+      resourceType !== ''
+      ? [{ logicalId, physicalId, resourceType }]
+      : [];
   });
   let marked: string[];
   try {

@@ -130,8 +130,9 @@ export interface RollbackJournalSegment {
   supersededLogicalIds?: string[];
   /**
    * go-to-k/cdkd#4523: the resources `cdkd import` adopted AFTER this segment
-   * was recorded, as the logical id AND the physical id the import wrote. An
-   * op of this segment naming both describes the resource the import put in
+   * was recorded, as the logical id, the physical id the import wrote, and the
+   * resource type. An op of this segment naming all three describes the
+   * resource the import put in
    * state, so the replay leaves it alone: a completed CREATE of an explicitly
    * named resource would otherwise match the imported record's physical id and
    * DELETE it. An op of the same logical id that recorded ANOTHER physical id
@@ -143,10 +144,16 @@ export interface RollbackJournalSegment {
   importedResources?: ImportedResourceMark[];
 }
 
-/** One `cdkd import` adoption recorded on a journal segment (go-to-k/cdkd#4523). */
+/**
+ * One `cdkd import` adoption recorded on a journal segment (go-to-k/cdkd#4523).
+ * `resourceType` is part of the identity: two types can share a name-based
+ * physical id, so a Type change under a stable logical id must not let an
+ * import of the NEW type cover an op of the OLD one.
+ */
 export interface ImportedResourceMark {
   logicalId: string;
   physicalId: string;
+  resourceType: string;
 }
 
 /** On-disk shape of `rollback-journal.json`. */
@@ -170,20 +177,33 @@ export interface RollbackJournal {
  * `except` holds logical ids the user named explicitly (`--orphan`): those are
  * never set aside, so the flag is honoured on an imported id too.
  */
-export function splitImportedOps<T extends { logicalId: string; physicalId?: string | undefined }>(
+export function splitImportedOps<
+  T extends { logicalId: string; physicalId?: string | undefined; resourceType: string },
+>(
   ops: readonly T[],
   segment: Pick<RollbackJournalSegment, 'importedResources'>,
   except: ReadonlySet<string> = new Set()
 ): { replay: T[]; imported: T[] } {
   const marks = segment.importedResources ?? [];
   const isImported = (op: T): boolean =>
-    !except.has(op.logicalId) &&
-    op.physicalId !== undefined &&
-    marks.some((m) => m.logicalId === op.logicalId && m.physicalId === op.physicalId);
+    !except.has(op.logicalId) && op.physicalId !== undefined && marks.some((m) => isMarkFor(m, op));
   const replay: T[] = [];
   const imported: T[] = [];
   for (const op of ops) (isImported(op) ? imported : replay).push(op);
   return { replay, imported };
+}
+
+/** Does `mark` name the very resource `op` recorded: logical id, physical id and type? */
+export function isMarkFor(
+  mark: ImportedResourceMark,
+  op: { logicalId: string; physicalId?: string | undefined; resourceType: string }
+): boolean {
+  return (
+    op.physicalId !== undefined &&
+    mark.logicalId === op.logicalId &&
+    mark.physicalId === op.physicalId &&
+    mark.resourceType === op.resourceType
+  );
 }
 
 /** Thrown when a journal's `journalVersion` is newer than this binary knows. */
@@ -479,12 +499,13 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
             typeof m === 'object' &&
             m !== null &&
             typeof (m as Record<string, unknown>)['logicalId'] === 'string' &&
-            typeof (m as Record<string, unknown>)['physicalId'] === 'string'
+            typeof (m as Record<string, unknown>)['physicalId'] === 'string' &&
+            typeof (m as Record<string, unknown>)['resourceType'] === 'string'
         ))
     ) {
       refuseMalformed(
         shownStack,
-        `segments[${s}].importedResources must be an array of { logicalId, physicalId } strings when present.`
+        `segments[${s}].importedResources must be an array of { logicalId, physicalId, resourceType } strings when present.`
       );
     }
     // Issue #3754: `runId` is what a nested revert SELECTS segments by, so a
