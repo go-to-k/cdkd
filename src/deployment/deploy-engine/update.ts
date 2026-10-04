@@ -793,9 +793,9 @@ export function unwrittenCreateOnlyRefusal(input: {
   const replaceFlags = nested
     ? '--replace (which creates the new resource before deleting the old one, so a ' +
       'resource holding a unique value such as a fixed name or CIDR block collides)'
-    : `--recreate-via-cc-api ${logicalId}, which deletes the old resource first (--replace ` +
-      `also works, but creates the new one first, so a resource holding a unique value ` +
-      `such as a fixed name or CIDR block collides)`;
+    : `--recreate-via-cc-api ${logicalId}, which deletes the old resource first ` +
+      '(--replace also works, but creates the new one first, so a resource holding a ' +
+      'unique value such as a fixed name or CIDR block collides)';
   const routed = [...routeDriving].sort((a, b) => a.localeCompare(b)).join(', ');
   return (
     `${logicalId} (${resourceType}): ${list} ${one ? 'is' : 'are'} create-only, and the ` +
