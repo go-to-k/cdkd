@@ -605,9 +605,14 @@ describe('GlueProvider AWS::Glue::Table (issue #2177)', () => {
     expect(allLines()).toContain(`${SECRET_MASK}|${SECRET_MASK}`);
   });
 
-  it('masks both names and a secret catalog id in the name-collision refusal', async () => {
+  // Issue #3932: the occupied-address error is relayed through the shared
+  // masked wrap, so a name AWS quotes back in it is masked like any other.
+  it('masks both names and a secret catalog id AWS quotes in a relayed name collision', async () => {
     answerGlue({
-      CreateTableCommand: new AlreadyExistsException({ message: 'exists', $metadata: {} }),
+      CreateTableCommand: new AlreadyExistsException({
+        message: `Table ${SHORT2} already exists in ${SHORT} of catalog ${SHORT_CATALOG}.`,
+        $metadata: {},
+      }),
     });
     const error = await caught(
       provider.create(
@@ -618,8 +623,9 @@ describe('GlueProvider AWS::Glue::Table (issue #2177)', () => {
       )
     );
     expectMessageMasked(error);
-    expect((error as Error).message).toContain(
-      `a table named '${SECRET_MASK}' is present in database '${SECRET_MASK}' (Data Catalog ${SECRET_MASK})`
+    expect((error as Error).message).toBe(
+      `Failed to create Glue Table Tbl: Table ${SECRET_MASK} already exists in ${SECRET_MASK} ` +
+        `of catalog ${SECRET_MASK}.`
     );
   });
 

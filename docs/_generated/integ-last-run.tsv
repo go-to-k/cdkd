@@ -113,7 +113,7 @@ efs-immutable-replacement	2026-10-03T13:51:11Z	PASS	75	verify.sh	rc ok, orph cle
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
 efs-standalone	2026-10-03T13:51:11Z	PASS	166	verify.sh	rc ok, orph clean; #4438 regression
 elasticache-replicationgroup-getatt	2026-10-03T06:06:22Z	PASS	806	verify.sh	rc ok, orph clean (#4497)
-elbv2-same-name-replacement	2026-10-02T19:41:51Z	PASS	100	verify.sh	rc ok, orph clean (#4464)
+elbv2-same-name-replacement	2026-10-04T09:21:25Z	PASS	80	verify.sh	rc ok, orph clean (#3932)
 emr-cluster	2026-10-03T04:11:52Z	PASS	663	verify.sh	rc ok, orph clean (#4283 PR #4449)
 emr-instance-configs	2026-10-02T07:20:09Z	PASS	968	verify.sh	PR #4391 (#2080 EMR create latch, orphan-report rename) @a7306c55f; rc ok, orph clean; fixture GetAtt InstanceGroupId (aws-cdk-lib 2.272 dropped attrId)
 emr-instance-fleets	2026-10-02T13:48:51Z	PASS	1408	verify.sh	#1160 PR #4432: phase 2b ResizeSpecifications removal warned + kept 25; pre-fix probe red at phase 2b; rc ok, orph clean
@@ -138,8 +138,8 @@ full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness r
 gc-custom-asset-names	2026-09-29T16:32:35Z	PASS	280	verify.sh	rc ok, orph clean; eu-west-1, custom names round-trip through the #4114 marker validation
 getatt-fallback-guard	2026-10-03T05:59:55Z	PASS	185	verify.sh	rc ok, orph clean (#4497)
 getstackoutput-crossregion	2026-10-02T23:48:01Z	PASS	105	verify.sh	rc ok, orph clean (#4475)
-glue-securityconfig-replace	2026-10-01T03:22:05Z	PASS	60	verify.sh	rc ok, orph clean (#4257)
-glue-update-hardening	2026-10-03T04:15:52Z	PASS	237	verify.sh	rc ok, orph clean (#4283 PR #4449)
+glue-securityconfig-replace	2026-10-04T09:21:25Z	PASS	65	verify.sh	rc ok, orph clean (#3932)
+glue-update-hardening	2026-10-04T09:21:25Z	PASS	275	verify.sh	rc ok, orph clean, #3932 phases 2c/2b/2f; reverted-fix runs RED at 2c step 2 and (2c bypassed) at 2f
 healthimaging-stateful-update-fallback	2026-10-02T09:33:03Z	PASS	226	verify.sh	rc ok, orph clean (#4414)
 iam-access-key	2026-10-03T13:19:14Z	PASS	76	verify.sh	rc ok, orph clean; #4461 regression
 iam-managed-policy	2026-10-03T13:19:14Z	PASS	65	verify.sh	rc ok, orph clean; #4461 regression
@@ -242,7 +242,7 @@ nested-required-preflight	2026-09-23T18:43:53Z	PASS	53	verify.sh	rc ok, orph cle
 nested-stack	2026-10-04T03:21:48Z	PASS	65	verify.sh	rc ok, orph clean (#4521 lazy provider classes)
 nested-stack-3level	2026-10-04T01:59:33Z	PASS	320	verify.sh	rc ok, orph clean (#1989 PR #4524)
 nested-stack-deep	2026-10-04T03:21:48Z	PASS	105	verify.sh	rc ok, orph clean (#4521; first run failed on the pre-#4252 arrow grep, fixed here)
-nested-stack-replace-guard	2026-09-25T14:59:50Z	PASS	55	verify.sh	rc ok, orph clean; pre-fix probe red at the fixture's own assertion
+nested-stack-replace-guard	2026-10-04T09:21:25Z	PASS	65	verify.sh	rc ok, orph clean (#3932)
 nested-stack-rollback	2026-10-02T13:42:45Z	PASS	110	verify.sh	rc ok, orph clean (#4436)
 nested-stack-secret	2026-10-04T06:42:40Z	PASS	236	verify.sh	rc ok, orph clean (#4105)
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
@@ -271,10 +271,10 @@ redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clea
 remove-protection	2026-10-04T07:12:53Z	PASS	2098	verify.sh	rc ok, orph clean (#3338/#4356)
 remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
-replace-squatter-refusal	2026-10-02T19:43:34Z	PASS	100	verify.sh	rc ok, orph clean (#4464)
+replace-squatter-refusal	2026-10-04T09:21:25Z	PASS	80	verify.sh	rc ok, orph clean (#3932)
 replacement-fanout	2026-10-02T19:56:58Z	PASS	85	verify.sh	rc ok, orph clean (#4464)
 replacement-immutable-name	2026-10-02T19:47:13Z	PASS	216	verify.sh	rc ok, orph clean (#4464)
-replacement-rename-onto-holder	2026-10-02T19:53:02Z	PASS	771	verify.sh	rc ok, orph clean (#4464)
+replacement-rename-onto-holder	2026-10-04T09:21:25Z	PASS	641	verify.sh	rc ok, orph clean (#3932)
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
 rollback-command	2026-10-04T07:34:38Z	PASS	245	verify.sh	rc ok, orph clean (#3338/#4356, after main merge)
@@ -284,7 +284,7 @@ rollback-explicit-name-rewrite	2026-10-04T07:12:53Z	PASS	186	verify.sh	rc ok, or
 rollback-failure-injection	2026-10-04T07:34:38Z	PASS	420	verify.sh	rc ok, orph clean (#3338/#4356, after main merge)
 rollback-nested-cross-region-secret	2026-10-02T13:40:55Z	PASS	245	verify.sh	rc ok, orph clean (#4436)
 rollback-replacement-retain	2026-10-04T07:12:53Z	PASS	66	verify.sh	rc ok, orph clean (#3338/#4356)
-rollback-replay-cc-generated-name	2026-10-02T13:26:58Z	PASS	155	verify.sh	rc ok, orph clean (#4436)
+rollback-replay-cc-generated-name	2026-10-04T09:21:25Z	PASS	165	verify.sh	rc ok, orph clean (#3932)
 rollback-replay-effective-props	2026-10-04T03:41:19Z	PASS	246	verify.sh	rc ok, orph clean (#4484)
 rollback-sqs-cooldown	2026-10-04T07:12:53Z	PASS	161	verify.sh	rc ok, orph clean (#3338/#4356)
 route53	2026-10-03T08:35:52Z	PASS	386	verify.sh	rc ok, orph clean (#4283 PR #4449 rebased head)

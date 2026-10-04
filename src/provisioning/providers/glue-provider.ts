@@ -41,7 +41,6 @@ import {
   TagResourceCommand,
   UntagResourceCommand,
   EntityNotFoundException,
-  AlreadyExistsException,
   CrawlerRunningException,
   ConcurrentModificationException,
   type DatabaseInput,
@@ -1560,36 +1559,15 @@ export class GlueProvider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
-      // On a replacement, the table holding this name is almost never the one
-      // being replaced: a rename, a `DatabaseName` or a `CatalogId` change all
-      // move the address (issue #3750). Only a change to the top-level `Name`
-      // CDK does not emit can keep it. So the engine's create-first collision
-      // arm must not see a name collision here: its remedy, `--replace`,
-      // deletes the managed table FIRST and, for a third-party holder, then
-      // collides again. Its classifier credits AWS's prose only when the
-      // top-level message relays it too, and does not list
-      // `AlreadyExistsException` by name, so this wrapper — whose message avoids
-      // the words it matches — keeps the AWS error as `cause` safely.
-      // No `--replace` remedy either: this wrapper is exactly what keeps the
-      // engine's delete-first path from engaging, so the flag would change
-      // nothing. (Interpolated names can still carry the matched words; that
-      // template-controlled residual is #3757's class.)
-      if (error instanceof AlreadyExistsException) {
-        throw markNonRetryable(
-          new ProvisioningError(
-            `Failed to create Glue Table ${logicalId}: a table named '${v(tableName)}' is ` +
-              `present in database '${v(databaseName)}' (${describeCatalog(catalogId, log.mask)}), so ` +
-              `cdkd did not create it and left that table untouched. Choose a TableInput.Name ` +
-              `no table holds, or remove that table yourself if it is unwanted. If it is the ` +
-              `table this resource already manages, the planned replacement keeps its address: ` +
-              `revert the change that planned it.`,
-            resourceType,
-            logicalId,
-            undefined,
-            error
-          )
-        );
-      }
+      // An `AlreadyExistsException` (an occupied table address) is relayed
+      // like any other failure, so the engine's collision classifier sees it
+      // (issue #3932). Who holds the address is the engine's question, not
+      // this provider's: a rename, a `DatabaseName` or a `CatalogId` change
+      // moves it (#3750), and the engine's holder proof
+      // (`replacement-name-holder/name-keys.ts`, keyed by the name and scoped
+      // by `DatabaseName` and `CatalogId`) refuses `--replace` for those, while
+      // a replacement that keeps the address — a top-level `Name` change —
+      // takes the `--replace` delete-first recovery.
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
         log.mask,

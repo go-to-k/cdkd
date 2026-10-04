@@ -37,8 +37,9 @@
 #      REPLACEMENT, as in CloudFormation; it once went in place and rewrote an
 #      unmanaged table holding the new name. Asserted by planting such a
 #      decoy: a plain deploy stops at the stateful guard, a consented one
-#      collides with the decoy, both leaving it untouched, and without the
-#      decoy `--force-stateful-recreation` performs the rename.
+#      collides with the decoy and `--replace` is refused there (issue #3932:
+#      the old table does not hold the new name), all leaving it untouched,
+#      and without the decoy `--force-stateful-recreation` performs the rename.
 #   9. Database `CatalogId` move (issue #3756). `CatalogId` is not createOnly
 #      on a Database, so the move diffs as an in-place UPDATE aimed at another
 #      account's catalog; a plain deploy must be REFUSED, the database intact.
@@ -65,6 +66,12 @@
 #      untag-all-then-retag from the new diff (that is pinned by unit tests);
 #      the arm proves the update's tag calls reach AWS through the `:*`-less
 #      ARN. The Job's map diff was already correct: a regression guard.
+#  14. A Table replacement that KEEPS its address (issue #3932): adding the
+#      top-level `Name` (createOnly) collides with the table itself. Without
+#      `--replace` the engine names the collision and offers `--replace`; with
+#      it the table is deleted first and re-created (a new CreateTime). Before
+#      the fix the provider reworded the collision, so neither deploy reached
+#      the engine's collision handling and no flag could perform it.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -721,12 +728,13 @@ if [ "${RENAME_RC}" -eq 0 ]; then
   printf '%s\n' "${RENAME_OUT}" >&2
   exit 1
 fi
-# The provider reports the occupied name itself, and the engine must NOT turn it
-# into its create-first collision advice, whose --replace remedy would delete
-# the managed table first and then fail on the decoy again (#3750).
-if ! printf '%s' "${RENAME_OUT}" | grep -F "a table named '${RENAME_TO}' is present in database '${TABLE_DB_NAME}'" >/dev/null \
-  || printf '%s' "${RENAME_OUT}" | grep -F "the create-first attempt collided" >/dev/null; then
-  echo "FAIL: the consented replacement failed, but not on the provider's report of the decoy's name" >&2
+# The engine's holder proof names the decoy as another resource (#3932): the
+# old table holds '${RENAME_FROM}', so --replace could not free the name, and
+# the refusal must not offer it as the way out.
+if ! printf '%s' "${RENAME_OUT}" | grep -F "RenameTable (AWS::Glue::Table) requires replacement, but the create-first attempt collided:" >/dev/null \
+  || ! printf '%s' "${RENAME_OUT}" | grep -F "so another resource holds the colliding name" >/dev/null \
+  || ! printf '%s' "${RENAME_OUT}" | grep -F "Underlying collision: Failed to create Glue Table RenameTable:" >/dev/null; then
+  echo "FAIL: the consented replacement failed, but not on the engine's refusal naming the decoy as another holder" >&2
   printf '%s\n' "${RENAME_OUT}" >&2
   exit 1
 fi
@@ -735,6 +743,31 @@ assert_rename_not_applied 'consented deploy with the decoy present' || {
   exit 1
 }
 echo "    OK: the replacement's CREATE met the decoy; decoy and '${RENAME_FROM}' untouched"
+
+# Step 2b: --replace must be refused on the same collision, nothing deleted:
+# deleting '${RENAME_FROM}' first would destroy it and collide with the decoy
+# again (#3932 keeps the #3750 protection through the holder proof).
+set +e
+RENAME_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --replace --force-stateful-recreation --yes 2>&1)"
+RENAME_RC=$?
+set -e
+if [ "${RENAME_RC}" -eq 0 ]; then
+  echo "FAIL: --replace performed the rename although an unmanaged table holds '${RENAME_TO}'" >&2
+  printf '%s\n' "${RENAME_OUT}" >&2
+  exit 1
+fi
+if ! printf '%s' "${RENAME_OUT}" | grep -F "RenameTable (AWS::Glue::Table) requires replacement, but the create-first attempt collided:" >/dev/null \
+  || ! printf '%s' "${RENAME_OUT}" | grep -F -- "--replace was NOT applied and nothing was deleted" >/dev/null; then
+  echo "FAIL: --replace with the decoy present failed, but not on the holder-proof refusal" >&2
+  printf '%s\n' "${RENAME_OUT}" >&2
+  exit 1
+fi
+assert_rename_not_applied '--replace with the decoy present' || {
+  echo "FAIL: --replace with the decoy present: the unmanaged decoy '${RENAME_TO}' could not be read (gone?)" >&2
+  exit 1
+}
+echo "    OK: --replace refused on the decoy; decoy and '${RENAME_FROM}' untouched"
 
 # Step 3: without the decoy, the consented replacement renames the table
 # (create '${RENAME_TO}', then delete '${RENAME_FROM}').
@@ -827,6 +860,67 @@ if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r '.resour
 fi
 assert_resource_link 'dbinput-refused'
 echo "    OK: malformed TargetDatabase refused; '${LINK_DB_NAME}' and its state record untouched"
+
+# --- Phase 2f: a Table replacement that KEEPS its address (#3932) ------
+# CDKD_TEST_TOPLEVEL_NAME adds the top-level `Name` (createOnly) equal to
+# TableInput.Name, so the replacement's create-first CreateTable collides with
+# '${RENAME_TO}' ITSELF. Before #3932 the provider reworded that collision, the
+# engine never saw one, and both deploys below failed on the provider's
+# "revert the change that planned it" with no flag able to perform it.
+echo "==> Phase 2f: a same-address Table replacement (top-level Name)"
+table_create_time() {
+  aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_TO}" \
+    --region "${REGION}" --query 'Table.CreateTime' --output text
+}
+CREATE_TIME_BEFORE=$(table_create_time)
+
+# Step 1: without --replace the engine names the collision and offers --replace.
+set +e
+SAME_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true CDKD_TEST_TOPLEVEL_NAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force-stateful-recreation --yes 2>&1)"
+SAME_RC=$?
+set -e
+if [ "${SAME_RC}" -eq 0 ]; then
+  echo "FAIL: the same-address replacement deployed without --replace (its create-first must collide)" >&2
+  printf '%s\n' "${SAME_OUT}" >&2
+  exit 1
+fi
+if ! printf '%s' "${SAME_OUT}" | grep -F "RenameTable (AWS::Glue::Table) requires replacement, but the create-first attempt collided with the existing resource:" >/dev/null \
+  || ! printf '%s' "${SAME_OUT}" | grep -F -- "re-run with \`cdkd deploy --replace\`" >/dev/null; then
+  echo "FAIL: the same-address replacement failed, but not on the engine's collision advice offering --replace (#3932)" >&2
+  printf '%s\n' "${SAME_OUT}" >&2
+  exit 1
+fi
+if [ "$(table_create_time)" != "${CREATE_TIME_BEFORE}" ]; then
+  echo "FAIL: '${RENAME_TO}' was re-created by a deploy that was refused" >&2
+  exit 1
+fi
+if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r '.resources.RenameTable.properties | has("Name")')" != "false" ]; then
+  echo "FAIL: state records the top-level Name after the refused deploy" >&2
+  exit 1
+fi
+echo "    OK: the collision reached the engine, which offered --replace; '${RENAME_TO}' untouched"
+
+# Step 2: with --replace the old table holds the address, so it is deleted
+# first and re-created.
+CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true CDKD_TEST_TOPLEVEL_NAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --replace --force-stateful-recreation --yes
+if [ "$(table_create_time)" = "${CREATE_TIME_BEFORE}" ]; then
+  echo "FAIL: '${RENAME_TO}' keeps its CreateTime ${CREATE_TIME_BEFORE}: --replace did not re-create it" >&2
+  exit 1
+fi
+if [ "$(aws glue get-table --database-name "${TABLE_DB_NAME}" --name "${RENAME_TO}" --region "${REGION}" \
+  --query 'Table.Description' --output text)" != "managed by cdkd" ]; then
+  echo "FAIL: '${RENAME_TO}' is not the managed table after the same-address replacement" >&2
+  exit 1
+fi
+SAME_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet)
+if [ "$(printf '%s' "${SAME_STATE}" | jq -r '.resources.RenameTable.physicalId // empty')" != "${TABLE_DB_NAME}|${RENAME_TO}" ] \
+  || [ "$(printf '%s' "${SAME_STATE}" | jq -r '.resources.RenameTable.properties.Name // empty')" != "${RENAME_TO}" ]; then
+  echo "FAIL: state does not record RenameTable as '${TABLE_DB_NAME}|${RENAME_TO}' with its top-level Name after --replace" >&2
+  exit 1
+fi
+echo "    OK: --replace deleted '${RENAME_TO}' first and re-created it under the same address"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
