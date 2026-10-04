@@ -285,6 +285,11 @@ export interface DeploymentEvent {
    *
    * `ROLLBACK_RESOURCE_SKIPPED`: why the replay declined the op
    * (go-to-k/cdkd#3338), for the same reason.
+   *
+   * Also `ROLLBACK_RESOURCE_SUCCEEDED` with no `physicalId`: an inline policy
+   * the rollback put back onto a role / group / user from the record of the
+   * resource this event names (go-to-k/cdkd#4408). Fixed prose naming only
+   * the principal kind, never a policy or principal name.
    */
   reason?: string;
   /** Failure events: extracted error metadata (never properties). */

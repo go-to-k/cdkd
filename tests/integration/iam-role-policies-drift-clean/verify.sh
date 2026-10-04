@@ -23,9 +23,9 @@
 #      Default Policy sibling.
 #   2. Run `cdkd drift` (twice) and assert NO drift on any AWS::IAM::Role.
 #   2b. Rename an inline policy in place (go-to-k/cdkd#4152).
-#   2c-rollback. The 2c hand-off (minus its delete-beside-create pair) with a
-#       failing queue after it: the rollback must leave every name with its
-#       FIRST owner (go-to-k/cdkd#4225).
+#   2c-rollback. The 2c hand-off with a failing queue after it: the rollback
+#       must leave every name with its FIRST owner (go-to-k/cdkd#4225), the
+#       name a rolled-back create took over included (go-to-k/cdkd#4408).
 #   2c. Hand inline policy names between resources on the role in ONE deploy
 #       (go-to-k/cdkd#4156): a swap of two policies' names, a delete beside a
 #       create of the same name, and a rename away from a name the role's own
@@ -296,8 +296,9 @@ first_owner_mismatch() { # -> prints every name not held by its FIRST owner; emp
 # rollback then reverses them newest-first: SwapB before SwapA, ToRolePolicy
 # before the role. Before the fix SwapA's reversal removed `swap-y`, which
 # SwapB's had just put back, and the role's revert removed `to-role`, which
-# ToRolePolicy's had just put back. The delete-beside-create pair is left out
-# of this deploy (go-to-k/cdkd#4408).
+# ToRolePolicy's had just put back. The deploy fails before HandoffOld's
+# delete, so the rollback deletes HandoffNew, which removes the name HandoffOld
+# still records; before go-to-k/cdkd#4408 the role was left without it.
 echo "==> Phase 2c-rollback: a failed hand-off deploy must roll every name back to its first owner"
 ROLLBACK_LOG="$(mktemp)"
 set +e
@@ -326,6 +327,14 @@ for lid in SwapA SwapB ToRolePolicy; do
 done
 if ! grep -qE 'Rollback: WorkerRole[0-9A-Fa-f]* restored successfully' "${ROLLBACK_LOG}"; then
   echo "FAIL: the rollback ran but logged no revert of the role's own Policies (WorkerRole...)" >&2
+  exit 1
+fi
+if ! grep -q 'Rollback: HandoffNew deleted successfully' "${ROLLBACK_LOG}"; then
+  echo "FAIL: the rollback ran but logged no delete of HandoffNew; its create did not complete before the failure, or the rollback wording drifted" >&2
+  exit 1
+fi
+if ! grep -q 'Rollback: put back the inline policy HandoffOld records on its role' "${ROLLBACK_LOG}"; then
+  echo "FAIL: the rollback deleted HandoffNew but did not put back HandoffOld's inline policy (go-to-k/cdkd#4408)" >&2
   exit 1
 fi
 rm -f "${ROLLBACK_LOG}"
