@@ -54,8 +54,11 @@ interface ResourceState {
   provisionedBy?: 'sdk' | 'cc-api';         // v7+: routing layer (absent = pre-v7 = SDK-managed; NOT pinned — routing re-decides)
   observedBaselineRefused?: true;           // v10+: import refused a baseline; no writer may synthesize one from `properties`
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution'; // no bump: only the first survives an in-place UPDATE
+  acceptedCreateOnlyDrops?: string[];       // no bump: create-only keys in `properties` the SDK route was told to drop (#2790)
 }
 ```
+
+`acceptedCreateOnlyDrops` is EVIDENCE, read only through `acceptedCreateOnlyDropsOf` (malformed = absent = none): the #2790 refusal fires only for a key it names, since an imported or pre-v7 record holds create-only keys AWS does hold. An SDK-route create or replacement rebuilds it, an in-place update only carries entries still in `properties` (`acceptedCreateOnlyDropsField`), Cloud Control clears it, a spreading writer keeps it.
 
 ## `exportNames` (v9+)
 

@@ -151,8 +151,10 @@ export class SdkToCcAutorouteStack extends cdk.Stack {
       const azId = process.env.CDKD_TEST_AZ_ID;
       if (!azId) throw new Error(`phase ${phase} needs CDKD_TEST_AZ_ID (set by verify.sh)`);
       // The tag is what verify.sh's cleanup sweeps by, should a run die before
-      // destroy.
-      const fixtureTag = { key: 'cdkd-integ-fixture', value: 'sdk-to-cc-autoroute' };
+      // destroy. The STACK name, not a fixture-wide constant: the sweep must
+      // never reach another stack's VPC, and this stack's state key already
+      // makes one run per stack name per account the unit of ownership.
+      const fixtureTag = { key: 'cdkd-integ-fixture', value: this.stackName };
       const vpc = new ec2.CfnVPC(this, 'CreateOnlyVpc', {
         cidrBlock: '10.42.0.0/16',
         tags: [fixtureTag],

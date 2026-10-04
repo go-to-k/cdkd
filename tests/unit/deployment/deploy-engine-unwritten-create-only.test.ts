@@ -138,9 +138,12 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
       recorded?: Record<string, unknown>;
       desired?: Record<string, unknown>;
       changes?: PropertyChange[];
-      provisionedBy?: 'sdk' | 'cc-api';
+      /** `null` is a record with NO `provisionedBy` (pre-v7). */
+      provisionedBy?: 'sdk' | 'cc-api' | null;
+      /** The record's `acceptedCreateOnlyDrops`; `null` omits it. */
+      evidence?: string[] | null;
     } = {}
-  ): Promise<void> {
+  ): Promise<Record<string, Record<string, unknown>>> {
     const recorded = opts.recorded ?? DECLARED;
     const desired = opts.desired ?? DECLARED;
     const change: ResourceChange = {
@@ -158,9 +161,12 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
         properties: recorded,
         attributes: {},
         dependencies: [],
-        provisionedBy: opts.provisionedBy ?? 'sdk',
+        ...(opts.provisionedBy !== null && { provisionedBy: opts.provisionedBy ?? 'sdk' }),
+        ...(opts.evidence !== null && {
+          acceptedCreateOnlyDrops: opts.evidence ?? [CREATE_ONLY],
+        }),
       },
-    };
+    } as Record<string, Record<string, unknown>>;
     const template: CloudFormationTemplate = {
       Resources: { MySubnet: { Type: TYPE, Properties: desired } },
     };
@@ -176,6 +182,7 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
       }
     ).provisionResource.bind(engine);
     await provisionResource('MySubnet', change, stateResources, 'MyStack', template);
+    return stateResources;
   }
 
   async function refusal(
@@ -339,6 +346,7 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
             attributes: {},
             dependencies: [],
             provisionedBy: 'sdk',
+            acceptedCreateOnlyDrops: ['SnapshotIdentifier'],
           },
         },
         'MyStack',
@@ -353,13 +361,60 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
     expect(callOrder).toEqual([]);
   });
 
+  describe('a record with NO evidence is not refused, and skips as NO_CHANGE (B1)', () => {
+    it.each([
+      ['an imported record (provisionedBy sdk, no marker)', { evidence: null }],
+      ['a legacy record with no provisionedBy', { evidence: null, provisionedBy: null }],
+      ['an older-binary record (no marker)', { evidence: null, provisionedBy: 'sdk' as const }],
+      ['a record naming a different key', { evidence: ['Ipv6Native'] }],
+    ])('%s', async (_label, opts) => {
+      await provision(makeEngine(), opts);
+      expect(callOrder).toEqual([]);
+    });
+  });
+
+  describe('the evidence field across a replacement (update-replace.ts)', () => {
+    it('is cleared when the replacement lands on Cloud Control', async () => {
+      const records = await provision(makeEngine({ replace: true }));
+      expect(callOrder).toContain('create');
+      expect(records['MySubnet']!['provisionedBy']).toBe('cc-api');
+      expect(records['MySubnet']).not.toHaveProperty('acceptedCreateOnlyDrops', [CREATE_ONLY]);
+      expect(JSON.parse(JSON.stringify(records['MySubnet']))).not.toHaveProperty(
+        'acceptedCreateOnlyDrops'
+      );
+    });
+
+    it('is REBUILT when an SDK-route replacement keeps the drop again', async () => {
+      allowed = new Set([`${TYPE}:${CREATE_ONLY}`]);
+      const desired = { ...DECLARED, CidrBlock: '10.0.1.0/24' };
+      const engine = makeEngine();
+      (
+        engine as unknown as { providerRegistry: { getProviderFor: ReturnType<typeof vi.fn> } }
+      ).providerRegistry.getProviderFor.mockReturnValue({ provider, provisionedBy: 'sdk' });
+      const records = await provision(engine, {
+        desired,
+        evidence: null,
+        changes: [
+          {
+            path: 'CidrBlock',
+            oldValue: '10.0.0.0/24',
+            newValue: '10.0.1.0/24',
+            requiresReplacement: true,
+          },
+        ],
+      });
+      expect(callOrder).toContain('create');
+      expect(records['MySubnet']!['acceptedCreateOnlyDrops']).toEqual([CREATE_ONLY]);
+    });
+  });
+
   it('inside a nested child, names only --replace', async () => {
     const err = await refusal(
       makeEngine({
         parentStackInfo: { parentStack: 'P', parentLogicalId: 'C', parentRegion: 'us-east-1' },
       })
     );
-    expect(err!.cause?.message).toContain('re-run with --replace;');
+    expect(err!.cause?.message).toContain('re-run with --replace (which creates the new resource');
     expect(err!.cause?.message).not.toContain('--recreate-via-cc-api');
   });
 });

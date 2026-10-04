@@ -3,7 +3,7 @@ import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import {
   findActionableSilentDrops,
-  findUnwrittenCreateOnlyDrops,
+  unwrittenCreateOnlyReplacement,
   withoutAcceptedSilentDropProperties,
   withoutUnwrittenSilentDropProperties,
 } from '../../provisioning/property-coverage.js';
@@ -15,7 +15,12 @@ import {
   recordedProtectionNote,
 } from '../../provisioning/recorded-protection.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
-import { type PropertyChange, type ResourceChange, type ResourceState } from '../../types/state.js';
+import {
+  acceptedCreateOnlyDropsOf,
+  type PropertyChange,
+  type ResourceChange,
+  type ResourceState,
+} from '../../types/state.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
@@ -288,6 +293,9 @@ export async function provisionUpdate(
   // below to see. That needs a schema-unknown key behind an intrinsic on a
   // type with a create-only drop.
   const allowedForRecord = allowedSilentDrops ?? new Set<string>();
+  // The create-only drops this record PROVES were never sent (#2790); the
+  // diff reads the same field, so both decide on the same evidence.
+  const createOnlyEvidence = acceptedCreateOnlyDropsOf(currentResource);
   const currentPropsAsWritten =
     currentResource.provisionedBy === 'cc-api'
       ? currentProps
@@ -295,7 +303,8 @@ export async function provisionUpdate(
           resourceType,
           currentProps,
           desiredForSkipCheck,
-          allowedForRecord
+          allowedForRecord,
+          createOnlyEvidence
         );
   // The metadata-only arm both no-change skips share: refresh the record's
   // template attributes and call no provider.
@@ -566,16 +575,15 @@ export async function provisionUpdate(
     this.options.replace !== true &&
     currentResource.provisionedBy !== 'cc-api'
   ) {
-    const unwritten = findUnwrittenCreateOnlyDrops(
+    const unwritten = unwrittenCreateOnlyReplacement(
       resourceType,
       currentProps,
       desiredForSkipCheck,
-      allowedForRecord
+      allowedForRecord,
+      createOnlyEvidence,
+      (change.propertyChanges ?? []).filter((pc) => pc.requiresReplacement).map((pc) => pc.path)
     );
-    const replacing = (change.propertyChanges ?? [])
-      .filter((pc) => pc.requiresReplacement)
-      .map((pc) => pc.path);
-    if (unwritten.length > 0 && replacing.every((path) => unwritten.includes(path))) {
+    if (unwritten.length > 0) {
       // Marked refused-before-applying: nothing was sent, so the journal
       // must not record this resolved bag as an attempt a `--revert-failed`
       // or a later create would act on.
@@ -777,9 +785,17 @@ export function unwrittenCreateOnlyRefusal(input: {
     .sort((a, b) => a.localeCompare(b))
     .map((property) => `${resourceType}:${property}`)
     .join(',');
+  // `--recreate-via-cc-api` deletes the old resource first; `--replace` takes
+  // the property-driven path, which creates the new one first and so collides
+  // where the new one must hold a unique value the old one still holds (a
+  // subnet's CIDR block, a fixed name). Inside a nested child only `--replace`
+  // reaches the resource.
   const replaceFlags = nested
-    ? '--replace'
-    : `--recreate-via-cc-api ${logicalId} (or --replace, which covers every such replacement in the deploy)`;
+    ? '--replace (which creates the new resource before deleting the old one, so a ' +
+      'resource holding a unique value such as a fixed name or CIDR block collides)'
+    : `--recreate-via-cc-api ${logicalId}, which deletes the old resource first (--replace ` +
+      `also works, but creates the new one first, so a resource holding a unique value ` +
+      `such as a fixed name or CIDR block collides)`;
   const routed = [...routeDriving].sort((a, b) => a.localeCompare(b)).join(', ');
   return (
     `${logicalId} (${resourceType}): ${list} ${one ? 'is' : 'are'} create-only, and the ` +

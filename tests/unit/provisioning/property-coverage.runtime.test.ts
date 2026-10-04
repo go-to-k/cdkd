@@ -518,6 +518,9 @@ describe('the record COMPARISON side and its create-only drops (#2790)', () => {
   const NONE = new Set<string>();
   const WRITTEN = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24' };
   const RECORD = { ...WRITTEN, [CREATE_ONLY]: 'use1-az1' };
+  // What an SDK-route deploy that accepted the drop records beside it.
+  const EVIDENCE = new Set([CREATE_ONLY]);
+  const NO_EVIDENCE = new Set<string>();
 
   it('PREMISE: the fixture keys are classified as this block assumes', () => {
     const cov = getPropertyCoverage(TYPE);
@@ -530,69 +533,90 @@ describe('the record COMPARISON side and its create-only drops (#2790)', () => {
 
   describe('withoutUnwrittenSilentDropProperties', () => {
     it('KEEPS a create-only drop this deploy still accepts, by reference', () => {
-      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, RECORD, ALLOW)).toBe(RECORD);
+      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, RECORD, ALLOW, EVIDENCE)).toBe(RECORD);
     });
 
     it('removes a create-only drop once the deploy no longer accepts it', () => {
-      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, RECORD, NONE)).toEqual(WRITTEN);
+      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, RECORD, NONE, EVIDENCE)).toEqual(WRITTEN);
     });
 
     it('removes it when the template no longer declares it, allow set or not', () => {
-      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, WRITTEN, ALLOW)).toEqual(WRITTEN);
+      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, WRITTEN, ALLOW, EVIDENCE)).toEqual(WRITTEN);
     });
 
     it('removes it when a SIBLING drop is un-allowed, since the resource then routes', () => {
       const desired = { ...RECORD, [PLAIN]: true };
-      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, desired, ALLOW)).toEqual(WRITTEN);
+      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, desired, ALLOW, EVIDENCE)).toEqual(WRITTEN);
     });
 
     it('removes a plain drop even while it is allowed', () => {
       const record = { ...WRITTEN, [PLAIN]: true };
       const allow = new Set([`${TYPE}:${PLAIN}`]);
-      expect(withoutUnwrittenSilentDropProperties(TYPE, record, record, allow)).toEqual(WRITTEN);
+      expect(withoutUnwrittenSilentDropProperties(TYPE, record, record, allow, EVIDENCE)).toEqual(WRITTEN);
+    });
+
+    /**
+     * The B1 population: an imported record, a record with no `provisionedBy`
+     * that Cloud Control created, or one an older binary wrote. Each holds the
+     * key with no evidence it was dropped, so AWS is presumed to hold it.
+     */
+    it('KEEPS a create-only drop the record does not name, by reference', () => {
+      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, RECORD, NONE, NO_EVIDENCE)).toBe(
+        RECORD
+      );
+      expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, WRITTEN, NONE, NO_EVIDENCE)).toBe(
+        RECORD
+      );
     });
 
     it('returns the input by reference when the record holds no drop', () => {
-      expect(withoutUnwrittenSilentDropProperties(TYPE, WRITTEN, RECORD, NONE)).toBe(WRITTEN);
+      expect(withoutUnwrittenSilentDropProperties(TYPE, WRITTEN, RECORD, NONE, EVIDENCE)).toBe(WRITTEN);
     });
   });
 
   describe('findUnwrittenCreateOnlyDrops', () => {
     it('names a recorded create-only drop the template asks for unchanged, with no flag', () => {
-      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, RECORD, NONE)).toEqual([CREATE_ONLY]);
+      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, RECORD, NONE, EVIDENCE)).toEqual([CREATE_ONLY]);
+    });
+
+    it('is empty when the record does not name the key (imported, legacy, older binary)', () => {
+      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, RECORD, NONE, NO_EVIDENCE)).toEqual([]);
+      expect(
+        findUnwrittenCreateOnlyDrops(TYPE, RECORD, RECORD, NONE, new Set(['SomethingElse']))
+      ).toEqual([]);
     });
 
     it('is empty while the deploy accepts the drop', () => {
-      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, RECORD, ALLOW)).toEqual([]);
+      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, RECORD, ALLOW, EVIDENCE)).toEqual([]);
     });
 
     it('is empty when the template CHANGED the value: that replacement is a template edit', () => {
       const desired = { ...RECORD, [CREATE_ONLY]: 'use1-az2' };
-      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, desired, NONE)).toEqual([]);
+      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, desired, NONE, EVIDENCE)).toEqual([]);
     });
 
     it('is empty when the template no longer declares it', () => {
-      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, WRITTEN, NONE)).toEqual([]);
+      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, WRITTEN, NONE, EVIDENCE)).toEqual([]);
     });
 
     it('is empty when the record never held it (an ordinary addition)', () => {
-      expect(findUnwrittenCreateOnlyDrops(TYPE, WRITTEN, RECORD, NONE)).toEqual([]);
+      expect(findUnwrittenCreateOnlyDrops(TYPE, WRITTEN, RECORD, NONE, EVIDENCE)).toEqual([]);
     });
 
     it('never names a PLAIN drop: applying one needs no replacement', () => {
       const record = { ...WRITTEN, [PLAIN]: true };
-      expect(findUnwrittenCreateOnlyDrops(TYPE, record, record, NONE)).toEqual([]);
+      expect(findUnwrittenCreateOnlyDrops(TYPE, record, record, NONE, EVIDENCE)).toEqual([]);
     });
 
     it('names it when the allow set covers it but a sibling drop routes the resource', () => {
       const desired = { ...RECORD, [PLAIN]: true };
-      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, desired, ALLOW)).toEqual([CREATE_ONLY]);
+      expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, desired, ALLOW, EVIDENCE)).toEqual([CREATE_ONLY]);
     });
 
     it('counts a recorded dynamic-reference expression as unchanged: the refusal destroys nothing', () => {
       const record = { ...WRITTEN, [CREATE_ONLY]: '{{resolve:ssm:/az-id}}' };
       const desired = { ...WRITTEN, [CREATE_ONLY]: 'use1-az1' };
-      expect(findUnwrittenCreateOnlyDrops(TYPE, record, desired, NONE)).toEqual([CREATE_ONLY]);
+      expect(findUnwrittenCreateOnlyDrops(TYPE, record, desired, NONE, EVIDENCE)).toEqual([CREATE_ONLY]);
     });
   });
 });

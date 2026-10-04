@@ -1,7 +1,12 @@
 import type { DeployEngine } from '../deploy-engine.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { findUnrewrittenAssetReferences } from '../../assets/asset-redirect.js';
-import { withoutSilentDropProperties } from '../../provisioning/property-coverage.js';
+import {
+  findSilentDropProperties,
+  getPropertyCoverage,
+  withoutSilentDropProperties,
+} from '../../provisioning/property-coverage.js';
+import { acceptedCreateOnlyDropsOf, type ResourceState } from '../../types/state.js';
 import type { CloudFormationTemplate, EffectivePropertiesResult } from '../../types/resource.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markSameGenerationBag } from '../secret-redaction.js';
@@ -184,4 +189,43 @@ export function extractTemplateAttributes(
     deletionPolicy: resource?.DeletionPolicy,
     updateReplacePolicy: resource?.UpdateReplacePolicy,
   };
+}
+
+/**
+ * The `acceptedCreateOnlyDrops` field a record writer spreads beside
+ * `properties` (issue [#2790](https://github.com/go-to-k/cdkd/issues/2790)) —
+ * the EVIDENCE that a create-only key in the record never reached AWS.
+ *
+ * - `'new-resource'` (an SDK-route CREATE or REPLACEMENT): every create-only
+ *   silent drop `recordedProperties` holds. On the SDK route each one was
+ *   allow-listed (an un-allowed drop routes to Cloud Control) and the resource
+ *   was built without it.
+ * - `'in-place'` (an SDK-route UPDATE of the same physical resource): only the
+ *   `previous` record's entries still present. An update cannot set a
+ *   create-only key, so it proves nothing new — and asserting one here would
+ *   brand a key an imported resource DOES hold.
+ * - Cloud Control (`provisionedBy: 'cc-api'`): none; it sends the full bag.
+ *
+ * Always returns the key, `undefined` when empty, so spreading it over a
+ * rebuilt record clears a stale value and `JSON.stringify` omits it.
+ */
+export function acceptedCreateOnlyDropsField(
+  recordedProperties: Record<string, unknown>,
+  resourceType: string,
+  provisionedBy: 'sdk' | 'cc-api',
+  mode: 'new-resource' | 'in-place',
+  previous?: Pick<ResourceState, 'acceptedCreateOnlyDrops'>
+): { acceptedCreateOnlyDrops: string[] | undefined } {
+  if (provisionedBy !== 'sdk') return { acceptedCreateOnlyDrops: undefined };
+  const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops;
+  if (createOnly === undefined || createOnly.size === 0) {
+    return { acceptedCreateOnlyDrops: undefined };
+  }
+  const carried = mode === 'in-place' ? acceptedCreateOnlyDropsOf(previous) : undefined;
+  const names = findSilentDropProperties(resourceType, recordedProperties)
+    .map(({ property }) => property)
+    .filter(
+      (property) => createOnly.has(property) && (carried === undefined || carried.has(property))
+    );
+  return { acceptedCreateOnlyDrops: names.length > 0 ? names : undefined };
 }

@@ -55,9 +55,16 @@ describe('DiffCalculator — an unwritten create-only drop (#2790)', () => {
     expect(cov.createOnlyDrops.has(PLAIN)).toBe(false);
   });
 
+  /**
+   * `evidence` is the record's `acceptedCreateOnlyDrops`: what an SDK-route
+   * deploy that accepted the drop writes. `null` is the B1 population —
+   * an imported record, a record with no `provisionedBy` that Cloud Control
+   * created, or one an older binary wrote.
+   */
   function stateWith(
     properties: Record<string, unknown>,
-    provisionedBy: 'sdk' | 'cc-api' = 'sdk'
+    provisionedBy: 'sdk' | 'cc-api' | null = 'sdk',
+    evidence: string[] | null = [CREATE_ONLY]
   ): StackState {
     return {
       version: 7,
@@ -69,7 +76,8 @@ describe('DiffCalculator — an unwritten create-only drop (#2790)', () => {
           resourceType: TYPE,
           properties,
           attributes: {},
-          provisionedBy,
+          ...(provisionedBy !== null && { provisionedBy }),
+          ...(evidence !== null && { acceptedCreateOnlyDrops: evidence }),
         },
       },
       outputs: {},
@@ -134,6 +142,38 @@ describe('DiffCalculator — an unwritten create-only drop (#2790)', () => {
   it('leaves a cc-api record alone: Cloud Control DID write the key', async () => {
     const change = await diff(stateWith(DECLARED, 'cc-api'), templateWith(DECLARED), new Set());
     expect(change.changeType).toBe('NO_CHANGE');
+  });
+
+  describe('a record with NO evidence keeps the pre-#2790 NO_CHANGE (B1)', () => {
+    it('an imported record (provisionedBy sdk, full template bag, no marker)', async () => {
+      const change = await diff(stateWith(DECLARED, 'sdk', null), templateWith(DECLARED), new Set());
+      expect(change.changeType).toBe('NO_CHANGE');
+    });
+
+    it('a legacy record with no provisionedBy that Cloud Control may have created', async () => {
+      const change = await diff(
+        stateWith(DECLARED, null, null),
+        templateWith(DECLARED),
+        new Set()
+      );
+      expect(change.changeType).toBe('NO_CHANGE');
+    });
+
+    it('a record whose evidence names a DIFFERENT key', async () => {
+      const change = await diff(
+        stateWith(DECLARED, 'sdk', ['Ipv6Native']),
+        templateWith(DECLARED),
+        new Set()
+      );
+      expect(change.changeType).toBe('NO_CHANGE');
+    });
+
+    it('removing the key from the template still replaces: AWS may hold it', async () => {
+      const change = await diff(stateWith(DECLARED, 'sdk', null), templateWith(WRITTEN), new Set());
+      expect(change.propertyChanges?.map((pc) => [pc.path, pc.requiresReplacement])).toEqual([
+        [CREATE_ONLY, true],
+      ]);
+    });
   });
 
   it('does not replace when the template REMOVES a key AWS never held', async () => {

@@ -8,6 +8,7 @@ import type {
   AttributeChange,
   ResourceState,
 } from '../types/state.js';
+import { acceptedCreateOnlyDropsOf } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
 import { ReplacementRulesRegistry } from './replacement-rules.js';
 import { TemplateParser } from './template-parser.js';
@@ -516,16 +517,18 @@ export class DiffCalculator {
                 currentResource.properties
               )
             : resolvedDesiredProps;
-        // A create-only drop stays on the record side only while THIS deploy
-        // accepts it, so a flag removed since reads it as an addition, which
-        // is a replacement the engine refuses unless opted into (issue
-        // #2790). No allow set (`cdkd diff`) is the flag-less deploy.
+        // A create-only drop the record names in `acceptedCreateOnlyDrops`
+        // stays on the record side only while THIS deploy accepts it, so a
+        // flag removed since reads it as an addition, which is a replacement
+        // the engine refuses unless opted into (issue #2790). No allow set
+        // (`cdkd diff`) is the flag-less deploy.
         const currentAfterDrops = sdkRouted
           ? withoutUnwrittenSilentDropProperties(
               desiredResource.Type,
               currentResource.properties,
               resolvedDesiredProps,
-              allowedUnsupportedProperties ?? new Set<string>()
+              allowedUnsupportedProperties ?? new Set<string>(),
+              acceptedCreateOnlyDropsOf(currentResource)
             )
           : currentResource.properties;
 

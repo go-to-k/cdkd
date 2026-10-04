@@ -106,8 +106,9 @@ LOGICAL_ID=""
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # The go-to-k/cdkd#2790 subnet, resolved from its phase's synth template.
 SUBNET_LOGICAL_ID=""
-# What verify.sh's cleanup sweeps a VPC by; lib/ tags the VPC and subnet with it.
-FIXTURE_TAG_VALUE="sdk-to-cc-autoroute"
+# What verify.sh's cleanup sweeps a VPC by; lib/ tags the VPC and subnet with
+# the stack name, so the sweep reaches only this stack's leftovers.
+FIXTURE_TAG_VALUE="${STACK}"
 
 record() { # usage: record <jq-expression-over-the-resource-object>
   record_of "${LOGICAL_ID}" "$1"
@@ -633,6 +634,10 @@ SUBNET_LAYER0=$(record_of "${SUBNET_LOGICAL_ID}" '.provisionedBy')
 # The PREMISE of the arm: the record keeps the create-only drop it never wrote.
 SUBNET_REC_AZ=$(record_of "${SUBNET_LOGICAL_ID}" '.properties.AvailabilityZoneId // "ABSENT"')
 [ "${SUBNET_REC_AZ}" = "${AZ_ID}" ] || { echo "FAIL: the record holds AvailabilityZoneId=${SUBNET_REC_AZ}, expected ${AZ_ID}; a create-only drop is no longer kept in the record and phase 9 tests nothing" >&2; exit 1; }
+# ...and names it as EVIDENCE that it was never sent: only a named key is
+# refused, so without this phase 9 would see NO_CHANGE.
+SUBNET_EVIDENCE=$(record_of "${SUBNET_LOGICAL_ID}" '(.acceptedCreateOnlyDrops // []) | any(.[]?; . == "AvailabilityZoneId")')
+[ "${SUBNET_EVIDENCE}" = "true" ] || { echo "FAIL: the record does not name AvailabilityZoneId in acceptedCreateOnlyDrops; the SDK-route create wrote no #2790 evidence" >&2; exit 1; }
 # Where EC2 put the SDK-created subnet. The SDK route drops the AZ id, so EC2
 # picks; when it happens to pick ${AZ_ID}, phase 10's AZ readback cannot tell
 # a written id from a coincidence, and says so rather than passing silently.

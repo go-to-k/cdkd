@@ -357,8 +357,9 @@ export function withoutAcceptedSilentDropProperties(
  * next deploy, and `createOnlyChangeRequiresReplacement` classifies an added
  * create-only path as a REPLACEMENT — a flag-ful redeploy over an unchanged
  * template would DELETE and re-CREATE the resource. So the RECORD keeps it,
- * and the comparison decides per deploy whether this deploy still accepts the
- * drop: {@link withoutUnwrittenSilentDropProperties} removes it only when it
+ * names it in `ResourceState.acceptedCreateOnlyDrops`, and the comparison
+ * decides per deploy whether this deploy still accepts the drop:
+ * {@link withoutUnwrittenSilentDropProperties} removes a NAMED key only when it
  * does not, and the engine then refuses the replacement that implies unless it
  * was opted into ({@link findUnwrittenCreateOnlyDrops}, issue
  * [#2790](https://github.com/go-to-k/cdkd/issues/2790)).
@@ -407,15 +408,21 @@ function excludeCreateOnly(resourceType: string, names: string[]): string[] {
  * deploy that no longer does: the record then claims a value AWS never held,
  * the template asks for the same value, the diff calls it NO_CHANGE and the
  * property never reaches AWS while the deploy reports success. So a create-only
- * drop stays only while this deploy ACCEPTS it — the
- * {@link findAcceptedSilentDrops} answer the desired side is narrowed by, so
- * the two sides keep it together and a flag-ful redeploy stays quiet. Once the
- * deploy does not accept it, it reads as an addition, which is a replacement
- * the engine refuses unless opted into ({@link findUnwrittenCreateOnlyDrops}).
+ * drop the record NAMES in `acceptedCreateOnlyDrops` (`evidence`) stays only
+ * while this deploy ACCEPTS it — the {@link findAcceptedSilentDrops} answer the
+ * desired side is narrowed by, so the two sides keep it together and a
+ * flag-ful redeploy stays quiet. Once the deploy does not accept it, it reads
+ * as an addition, which is a replacement the engine refuses unless opted into
+ * ({@link findUnwrittenCreateOnlyDrops}).
  *
- * The same rule also stops a never-written create-only key from forcing a
- * replacement when the template REMOVES it: AWS never held it, so there is
- * nothing to take away.
+ * A create-only drop the record does NOT name is kept on both sides, as before
+ * #2790: without that evidence AWS is presumed to hold it. A `cdkd import`
+ * record carries the template's full bag on the SDK route, and a record with no
+ * `provisionedBy` may have been created by Cloud Control, so treating every
+ * kept key as unwritten would refuse their unchanged deploys forever.
+ *
+ * The same rule stops a NAMED key from forcing a replacement when the template
+ * REMOVES it: AWS never held it, so there is nothing to take away.
  *
  * `allowedKeys` is this deploy's allow set; `cdkd diff` has none and passes an
  * empty one, since its preview is the flag-less deploy. Returns the input
@@ -425,7 +432,8 @@ export function withoutUnwrittenSilentDropProperties(
   resourceType: string,
   recordedProperties: Record<string, unknown>,
   desiredProperties: Record<string, unknown> | undefined,
-  allowedKeys: ReadonlySet<string>
+  allowedKeys: ReadonlySet<string>,
+  evidence: ReadonlySet<string>
 ): Record<string, unknown> {
   const drops = findSilentDropProperties(resourceType, recordedProperties);
   if (drops.length === 0) return recordedProperties;
@@ -435,7 +443,10 @@ export function withoutUnwrittenSilentDropProperties(
   );
   const removable = drops
     .map(({ property }) => property)
-    .filter((property) => createOnly?.has(property) !== true || !accepted.has(property));
+    .filter(
+      (property) =>
+        createOnly?.has(property) !== true || (evidence.has(property) && !accepted.has(property))
+    );
   if (removable.length === 0) return recordedProperties;
   const narrowed = { ...recordedProperties };
   for (const property of removable) delete narrowed[property];
@@ -449,9 +460,10 @@ export function withoutUnwrittenSilentDropProperties(
  * {@link withoutUnwrittenSilentDropProperties} removes that turn an unchanged
  * template into a REPLACEMENT.
  *
- * Each is a property the SDK route never wrote (an earlier deploy accepted the
- * drop with `--allow-unsupported-properties`), so applying it means creating
- * the resource again. The engine refuses a replacement driven only by these
+ * Each is a property the record NAMES in `acceptedCreateOnlyDrops`
+ * (`evidence`): the SDK route that wrote the record was told to drop it, so it
+ * never reached AWS and applying it means creating the resource again. A key
+ * the record does not name is presumed to be in AWS and is never returned. The engine refuses a replacement driven only by these
  * keys unless the user opted into it, because without one the only change
  * here is that a flag went away.
  *
@@ -463,10 +475,11 @@ export function findUnwrittenCreateOnlyDrops(
   resourceType: string,
   recordedProperties: Record<string, unknown>,
   desiredProperties: Record<string, unknown>,
-  allowedKeys: ReadonlySet<string>
+  allowedKeys: ReadonlySet<string>,
+  evidence: ReadonlySet<string>
 ): string[] {
   const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops;
-  if (createOnly === undefined || createOnly.size === 0) return [];
+  if (createOnly === undefined || createOnly.size === 0 || evidence.size === 0) return [];
   const accepted = new Set(
     findAcceptedSilentDrops(resourceType, desiredProperties, allowedKeys, recordedProperties)
   );
@@ -475,10 +488,43 @@ export function findUnwrittenCreateOnlyDrops(
     .filter(
       (property) =>
         createOnly.has(property) &&
+        evidence.has(property) &&
         !accepted.has(property) &&
         Object.hasOwn(desiredProperties, property) &&
         sameJsonValue(recordedProperties[property], desiredProperties[property], 'unchanged')
     );
+}
+
+/**
+ * The ONE predicate behind the #2790 refusal, shared by `cdkd deploy` (which
+ * refuses) and `cdkd diff` (which says the deploy will), so the two cannot
+ * disagree about which rows it covers.
+ *
+ * It fires when every path the change wants to REPLACE for is one of
+ * {@link findUnwrittenCreateOnlyDrops}' keys: the only reason left is that a
+ * flag went away. Returns those keys, or `[]` when it does not fire. Any other
+ * replacement-requiring path means the replacement happens anyway, and its
+ * create applies the property too. The route gate (a `cc-api` record) and the
+ * opt-ins (`--replace`, a recreate target) are the caller's.
+ */
+export function unwrittenCreateOnlyReplacement(
+  resourceType: string,
+  recordedProperties: Record<string, unknown>,
+  desiredProperties: Record<string, unknown>,
+  allowedKeys: ReadonlySet<string>,
+  evidence: ReadonlySet<string>,
+  replacingPaths: readonly string[]
+): string[] {
+  if (replacingPaths.length === 0) return [];
+  const unwritten = findUnwrittenCreateOnlyDrops(
+    resourceType,
+    recordedProperties,
+    desiredProperties,
+    allowedKeys,
+    evidence
+  );
+  if (unwritten.length === 0) return [];
+  return replacingPaths.every((path) => unwritten.includes(path)) ? unwritten : [];
 }
 
 /**
