@@ -486,6 +486,15 @@ export function addRecordNames(
   }
 }
 
+/**
+ * The `ROLLBACK_RESOURCE_SKIPPED` reason of every arm whose
+ * {@link requireRestorableBaseline} answered `false` (go-to-k/cdkd#3338): the
+ * one shape it declines rather than refuses.
+ */
+export const ABSENT_BASELINE_SKIP_CAUSE =
+  'Its recorded previous state has no `properties` bag, so there is nothing to restore it ' +
+  'to; the rollback left the resource exactly as it is.';
+
 export function requireRestorableBaseline(
   bag: unknown,
   logger: RollbackExecutorContext['logger'],

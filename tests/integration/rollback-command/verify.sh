@@ -32,6 +32,20 @@
 #     F2. `cdkd rollback --force --revert-failed`: exit 0. Marker back to v1
 #         AND the failed RevertQueue is force-reverted (retention 3600),
 #         journal gone.
+#   PHASE S (a SKIPPED rollback op on the automatic path, go-to-k/cdkd#3338):
+#     S1. Deploy with WITH_SKIP_PAIR=true (clean): SkipBucket + SkipDoomed.
+#         Put one object into SkipBucket (no autoDeleteObjects).
+#     S2. Deploy WITHOUT the pair and WITHOUT --no-rollback: SkipDoomed's DELETE
+#         completes, SkipBucket's DELETE fails (not empty), and the automatic
+#         rollback meets a completed DELETE it cannot undo. Asserts the run's
+#         ROLLBACK_RESOURCE_SKIPPED event for SkipDoomed (operation DELETE, a
+#         reason), and that the journal KEPT the full segment (reason
+#         auto-rollback-started, operations naming SkipDoomed) rather than the
+#         pre-fix failed-only `auto-rollback-clean` one with `operations: []`.
+#     S3. `cdkd rollback --force`: exit 2 (the skip again), journal gone, and
+#         the rollback run records the skip too.
+#     S4. Empty SkipBucket and deploy plainly: SkipBucket deleted, state back to
+#         3 resources, journal gone.
 #   PHASE 2 (initialDeploy rollback):
 #     4. First-ever deploy of a second stack with INJECT_FAIL + --no-rollback:
 #        exit non-zero, journal present, InitMarker created.
@@ -93,6 +107,7 @@ REVERT_QUEUE_NAME="${STACK}-revert-queue"
 FAILING_QUEUE_NAME="${STACK}-failing-queue"
 INIT_MARKER_NAME="${INIT_STACK}-marker"
 INIT_FAILING_QUEUE_NAME="${INIT_STACK}-failing-queue"
+SKIP_DOOMED_NAME="${STACK}-skip-doomed"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/rollback-command"
@@ -117,6 +132,11 @@ JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
 LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
 INIT_STATE_KEY="cdkd/${INIT_STACK}/${REGION}/state.json"
 INIT_JOURNAL_KEY="cdkd/${INIT_STACK}/${REGION}/rollback-journal.json"
+
+# PHASE S's bucket name carries the account (S3 names are global); the stack
+# lower-cases its own name into it.
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+SKIP_BUCKET_NAME="$(printf '%s' "${STACK}" | tr '[:upper:]' '[:lower:]')-skip-${ACCOUNT_ID}-${REGION}"
 
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
@@ -144,7 +164,7 @@ aggressive_cleanup() {
   (
   set +eu
   local name q_url
-  for name in "${MARKER_NAME}" "${EXTRA_NAME}" "${REPLACE_A_NAME}" "${REPLACE_B_NAME}" "${INIT_MARKER_NAME}"; do
+  for name in "${MARKER_NAME}" "${EXTRA_NAME}" "${REPLACE_A_NAME}" "${REPLACE_B_NAME}" "${INIT_MARKER_NAME}" "${SKIP_DOOMED_NAME}"; do
     aws ssm delete-parameter --name "${name}" --region "${REGION}" >/dev/null 2>&1 || true
   done
   for name in "${FAILING_QUEUE_NAME}" "${REVERT_QUEUE_NAME}" "${INIT_FAILING_QUEUE_NAME}"; do
@@ -154,6 +174,9 @@ aggressive_cleanup() {
       aws sqs delete-queue --queue-url "${q_url}" --region "${REGION}" >/dev/null 2>&1 || true
     fi
   done
+  # PHASE S's bucket holds an object on purpose; empty it before the delete.
+  aws s3 rm "s3://${SKIP_BUCKET_NAME}" --recursive >/dev/null 2>&1 || true
+  aws s3api delete-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   )
 }
 
@@ -540,6 +563,137 @@ fi
 echo "[verify] step F2 ok: Marker back to v1, RevertQueue force-reverted to 3600, journal gone"
 
 # ---------------------------------------------------------------------------
+# PHASE S: a SKIPPED rollback op on the automatic path (go-to-k/cdkd#3338)
+# ---------------------------------------------------------------------------
+echo "[verify] step S1: deploy ${STACK} with WITH_SKIP_PAIR=true (clean)"
+WITH_SKIP_PAIR=true ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
+if ! aws ssm get-parameter --name "${SKIP_DOOMED_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "[verify] FAIL: ${SKIP_DOOMED_NAME} missing after the WITH_SKIP_PAIR deploy"
+  exit 1
+fi
+aws s3api head-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}"
+# The object that makes the bucket's DELETE fail: no autoDeleteObjects, so cdkd
+# refuses a non-empty bucket the way CloudFormation's DELETE_FAILED does.
+aws s3api put-object --bucket "${SKIP_BUCKET_NAME}" --key keep.txt --region "${REGION}" >/dev/null
+echo "[verify] step S1 ok: SkipBucket (holding keep.txt) + SkipDoomed deployed"
+
+echo "[verify] step S2: deploy ${STACK} WITHOUT the pair, automatic rollback (expect FAILURE on SkipBucket's DELETE)"
+set +e
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-skip.log 2>&1
+SKIP_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-skip.log || true
+if [ "${SKIP_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: the pair-removal deploy unexpectedly SUCCEEDED (SkipBucket was not empty)"
+  exit 1
+fi
+# PREMISE: the op the rollback skips really happened — SkipDoomed's DELETE
+# completed — and SkipBucket's really failed. Without both, the arm below
+# asserts about a run that never reached the skip.
+assert_gone "${SKIP_DOOMED_NAME} still exists — its DELETE never completed, so no rollback op was skipped" \
+  aws ssm get-parameter --name "${SKIP_DOOMED_NAME}" --region "${REGION}"
+aws s3api head-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}"
+echo "[verify]   premise ok: SkipDoomed deleted, SkipBucket still there"
+
+echo "[verify] step S2a: assert the journal KEPT the segment naming the skipped op"
+if ! SKIP_JOURNAL="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - 2>/dev/null)"; then
+  echo "[verify] FAIL: no rollback journal after an automatic rollback that skipped an op"
+  echo "         (the pre-#3338 path settled it; with no failed op it would be gone entirely)"
+  exit 1
+fi
+# Each capture is guarded: under `set -e` a failed substitution would end the
+# script with no FAIL line naming what broke.
+if ! SKIP_SEG_REASON="$(printf '%s' "${SKIP_JOURNAL}" | jq -r '.segments[-1].reason')" \
+  || ! SKIP_SEG_OPS="$(printf '%s' "${SKIP_JOURNAL}" | jq -c '[(.segments[-1].operations // [])[] | select((.logicalId | startswith("SkipDoomed"))) | .changeType]')"; then
+  echo "[verify] FAIL: could not parse the rollback journal s3://${STATE_BUCKET}/${JOURNAL_KEY}"
+  exit 1
+fi
+if [ "${SKIP_SEG_REASON}" != "auto-rollback-started" ] || [ "${SKIP_SEG_OPS}" != '["DELETE"]' ]; then
+  echo "[verify] FAIL: the newest journal segment is reason=${SKIP_SEG_REASON} ops(SkipDoomed)=${SKIP_SEG_OPS};"
+  echo "         expected the full auto-rollback-started segment naming SkipDoomed's DELETE. A settled"
+  echo "         'auto-rollback-clean' segment with no operations is the pre-#3338 shape: the record of"
+  echo "         the op the rollback could not revert was deleted."
+  printf '%s\n' "${SKIP_JOURNAL}" | jq '.segments[-1] | {reason, operations: [.operations[] | {logicalId, changeType}]}' | sed 's/^/  /'
+  exit 1
+fi
+echo "[verify]   ok: journal kept the auto-rollback-started segment with SkipDoomed's DELETE"
+
+echo "[verify] step S2b: assert the failed deploy's run recorded ROLLBACK_RESOURCE_SKIPPED for SkipDoomed"
+if ! SKIP_RUNS_JSON="$(${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --format json)" \
+  || ! SKIP_RUN_ID="$(printf '%s' "${SKIP_RUNS_JSON}" | jq -r '.runs[0].runId')" \
+  || ! SKIP_RUN_CMD="$(printf '%s' "${SKIP_RUNS_JSON}" | jq -r '.runs[0].command')"; then
+  echo "[verify] FAIL: could not read the run listing from 'cdkd events ${STACK} --format json'"
+  exit 1
+fi
+if [ "${SKIP_RUN_CMD}" != "deploy" ] || [ -z "${SKIP_RUN_ID}" ] || [ "${SKIP_RUN_ID}" = "null" ]; then
+  echo "[verify] FAIL: newest run is not the failed deploy (command=${SKIP_RUN_CMD} runId=${SKIP_RUN_ID})"
+  exit 1
+fi
+if ! SKIP_EVENTS_JSON="$(${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --run "${SKIP_RUN_ID}" --format json)"; then
+  echo "[verify] FAIL: could not read run ${SKIP_RUN_ID}'s events"
+  exit 1
+fi
+# Guard against a vacuous read: the run must have reached its rollback at all.
+if ! printf '%s' "${SKIP_EVENTS_JSON}" | jq -e '[.[] | select(.eventType == "ROLLBACK_FINISHED")] | length == 1' >/dev/null; then
+  echo "[verify] FAIL: run ${SKIP_RUN_ID} has no single ROLLBACK_FINISHED — the automatic rollback did not run"
+  printf '%s\n' "${SKIP_EVENTS_JSON}" | sed 's/^/  /'
+  exit 1
+fi
+if ! printf '%s' "${SKIP_EVENTS_JSON}" | jq -e '[.[] | select(.eventType == "ROLLBACK_RESOURCE_SKIPPED" and (.logicalId | startswith("SkipDoomed")) and .operation == "DELETE" and ((.reason // "") | length) > 0 and (has("physicalId") | not))] | length == 1' >/dev/null; then
+  echo "[verify] FAIL: run ${SKIP_RUN_ID} has no ROLLBACK_RESOURCE_SKIPPED for SkipDoomed (DELETE, with a reason, no physicalId)"
+  printf '%s\n' "${SKIP_EVENTS_JSON}" | jq '[.[] | select(.eventType | startswith("ROLLBACK_"))]' | sed 's/^/  /'
+  exit 1
+fi
+echo "[verify] step S2 ok: skip recorded as an event, journal kept"
+
+echo "[verify] step S3: cdkd rollback ${STACK} --force (expect exit 2: the skip again)"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-skip-rb.log 2>&1
+S3_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-skip-rb.log || true
+if [ "${S3_RC}" -ne 2 ]; then
+  echo "[verify] FAIL: the rollback of a skipped op exited ${S3_RC} (expected 2, partial)"
+  exit 1
+fi
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the rollback replayed the skipped op"
+  exit 1
+fi
+if ! S3_RUNS_JSON="$(${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --format json)" \
+  || ! S3_RUN_ID="$(printf '%s' "${S3_RUNS_JSON}" | jq -r '.runs[0].runId')" \
+  || ! S3_RUN_CMD="$(printf '%s' "${S3_RUNS_JSON}" | jq -r '.runs[0].command')"; then
+  echo "[verify] FAIL: could not read the run listing after the rollback"
+  exit 1
+fi
+if [ "${S3_RUN_CMD}" != "rollback" ]; then
+  echo "[verify] FAIL: newest run is not the rollback (command=${S3_RUN_CMD})"
+  exit 1
+fi
+if ! ${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --run "${S3_RUN_ID}" --format json \
+  | jq -e '[.[] | select(.eventType == "ROLLBACK_RESOURCE_SKIPPED" and (.logicalId | startswith("SkipDoomed")))] | length == 1' >/dev/null; then
+  echo "[verify] FAIL: the rollback run ${S3_RUN_ID} has no ROLLBACK_RESOURCE_SKIPPED for SkipDoomed"
+  exit 1
+fi
+echo "[verify] step S3 ok: rollback exited 2, recorded the skip, cleared the journal"
+
+echo "[verify] step S4: empty SkipBucket and deploy plainly (SkipBucket deleted)"
+aws s3 rm "s3://${SKIP_BUCKET_NAME}" --recursive >/dev/null
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
+assert_gone "SkipBucket ${SKIP_BUCKET_NAME} still exists after the converging deploy" \
+  aws s3api head-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}"
+S4_COUNT="$(state_resource_count "${STATE_KEY}")"
+if [ "${S4_COUNT}" != "3" ]; then
+  echo "[verify] FAIL: after the converging deploy state records ${S4_COUNT} resource(s) (expected 3)"
+  exit 1
+fi
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal present after the converging deploy succeeded"
+  exit 1
+fi
+echo "[verify] step S4 ok: SkipBucket gone, state has 3 resources, journal gone"
+
+# ---------------------------------------------------------------------------
 # PHASE 2: first-ever failing deploy → cdkd rollback deletes state.json
 # ---------------------------------------------------------------------------
 echo "[verify] step 5: first-ever deploy of ${INIT_STACK} with INJECT_FAIL --no-rollback (expect FAILURE)"
@@ -588,6 +742,8 @@ assert_gone "state.json still present after destroy" aws s3api head-object --buc
 assert_gone "Marker ${MARKER_NAME} still exists after destroy" aws ssm get-parameter --name "${MARKER_NAME}" --region "${REGION}"
 assert_gone "ReplaceParam ${REPLACE_A_NAME} still exists after destroy" aws ssm get-parameter --name "${REPLACE_A_NAME}" --region "${REGION}"
 assert_gone "RevertQueue ${REVERT_QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${REVERT_QUEUE_NAME}" --region "${REGION}"
+assert_gone "SkipDoomed ${SKIP_DOOMED_NAME} still exists after destroy" aws ssm get-parameter --name "${SKIP_DOOMED_NAME}" --region "${REGION}"
+assert_gone "SkipBucket ${SKIP_BUCKET_NAME} still exists after destroy" aws s3api head-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}"
 echo "[verify] step 7a ok: destroy clean"
 
 echo "[verify] step 8: cleanup — remove the events sidecars so the integ leaves nothing behind"

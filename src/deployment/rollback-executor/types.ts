@@ -319,10 +319,20 @@ export interface RollbackReplayResult {
   /** Provider delete/update threw (best-effort caught). Blocks segment pop. */
   failures: number;
   /**
-   * Skips that carry a warning (physical-id mismatch, absent-on-update,
-   * unrecoverable DELETE). Do NOT block segment pop, but map to exit 2.
+   * Outcomes that carry a warning: the skips counted in {@link skipped}, plus
+   * a reverted op that left a survivor (a retained or undeletable new copy).
+   * Do NOT block segment pop, but map to exit 2.
    */
   warnings: number;
+  /**
+   * The ops the replay DECLINED and left exactly as the failed deploy left
+   * them (physical-id mismatch, absent record or baseline, unrecoverable
+   * DELETE), each also counted in {@link warnings} and recorded as a
+   * `ROLLBACK_RESOURCE_SKIPPED` event (go-to-k/cdkd#3338). The automatic
+   * rollback keeps its journal segment when this is non-zero: dropping it
+   * would delete the record of an op that was never reverted.
+   */
+  skipped: number;
   interrupted: boolean;
   /**
    * Resources this replay left in AWS under `DeletionPolicy: Retain` and

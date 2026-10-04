@@ -115,6 +115,13 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  *   of this block did, and it described an unreachable state.
  * - `ROLLBACK_*` — deploy-failure rollback phase (started / per-resource
  *   outcome / finished).
+ * - `ROLLBACK_RESOURCE_SKIPPED` — a rollback op the replay DECLINED and left
+ *   exactly as the failed deploy left it (go-to-k/cdkd#3338): a deleted
+ *   resource it cannot re-create, a record or baseline that is missing, a
+ *   physical id a later attempt changed. The rollback's twin of
+ *   `RESOURCE_SKIPPED`: nothing FAILED, so no `error`; the cause is in
+ *   `reason`. Without it a skip left only a warn line, and the automatic
+ *   rollback's `ROLLBACK_FINISHED` named nothing that was not reverted.
  */
 export type DeploymentEventType =
   | 'RUN_STARTED'
@@ -128,6 +135,7 @@ export type DeploymentEventType =
   | 'ROLLBACK_STARTED'
   | 'ROLLBACK_RESOURCE_SUCCEEDED'
   | 'ROLLBACK_RESOURCE_FAILED'
+  | 'ROLLBACK_RESOURCE_SKIPPED'
   | 'ROLLBACK_FINISHED';
 
 /**
@@ -268,9 +276,15 @@ export interface DeploymentEvent {
    * otherwise succeeded (issue
    * [#2598](https://github.com/go-to-k/cdkd/issues/2598)) — the policy that
    * retained it, the delete that failed, or the orphan flag. Paired with
-   * `physicalId` above and set on exactly the same arms; a rollback runs
-   * during an already-failing deploy, so the log line these sentences also go
-   * to is the least likely thing the user still has.
+   * `physicalId` above and set on the same arms, plus one without it: a
+   * reverse-replacement whose re-create adopted the live new resource, so the
+   * replacement was not fully reversed (go-to-k/cdkd#3338) — that resource is
+   * the one state records. A rollback runs during an already-failing deploy,
+   * so the log line these sentences also go to is the least likely thing the
+   * user still has.
+   *
+   * `ROLLBACK_RESOURCE_SKIPPED`: why the replay declined the op
+   * (go-to-k/cdkd#3338), for the same reason.
    */
   reason?: string;
   /** Failure events: extracted error metadata (never properties). */
