@@ -52,8 +52,8 @@ tests passing is necessary but NOT sufficient:
   **`/run-integ <name>`** — never raw `cdkd deploy` / `cdkd destroy`, the
   bypass being not those NAMES but **any real-AWS work outside a fixture**.
   `/pick-integ` picks the fixture(s); never one it marks maintainer-only (no
-  `verify.sh` or `run.sh`, so no agent can run it) — run its check on EVERY
-  name you report, picked there or not.
+  `verify.sh` / `run.sh` to run) — run its check on EVERY name you report,
+  picked there or not.
 - **Non-deletion source change** → still live-test the fixed path end to end
   (deploy → the redeploy that reproduced the bug → destroy). A lane barred from
   real-AWS RUNS still WRITES the arm; the parent runs it. "No fixture can reach
@@ -65,10 +65,10 @@ tests passing is necessary but NOT sufficient:
 - **A change to what cdkd PRINTS or DECIDES** (a message's text or line split,
   a refuse / adopt outcome) → `grep -rlF --include='*.sh' --include='*.ts'
   --include='*.mjs' --exclude-dir=node_modules '<old text>' tests/integration`
-  (a hit in a top-level helper means every fixture sourcing it) and run each
-  fixture it names before merge, whatever the change's own tier: no vitest run
-  executes them, so a reshaped line leaves a fixture red on `main` until the
-  next lane runs it (#4394).
+  (`.ts` / `.mjs` helpers read output; a top-level helper's hit means every
+  fixture sourcing it) and run each fixture it names before merge, whatever the
+  change's own tier: no vitest run executes them, so a reshaped line leaves a
+  fixture red on `main` until the next lane runs it (#4394).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
   tests, config) → exempt from the tiers above, never from `/verify-pr` step 9;
   never conclude a CI job cannot fail on your diff from its NAME. Both arms
