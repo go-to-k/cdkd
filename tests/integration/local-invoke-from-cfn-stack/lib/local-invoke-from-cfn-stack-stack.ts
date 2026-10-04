@@ -4,6 +4,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -47,5 +48,17 @@ export class LocalInvokeFromCfnStackStack extends cdk.Stack {
       },
       timeout: cdk.Duration.seconds(10),
     });
+
+    // Issue #3240: a role with NO permissions, assumable from this account,
+    // passed as `--role-arn`. `--from-cfn-stack` must read the stack with the
+    // CALLER's credentials, so the deployed table name still resolves; before
+    // the fix the read ran as this role and failed with AccessDenied. The name
+    // is CloudFormation-generated (unique per stack) and the role is deleted
+    // with the stack (IAM roles default to DESTROY).
+    const noPermissionRole = new iam.Role(this, 'NoPermissionRole', {
+      assumedBy: new iam.AccountRootPrincipal(),
+      description: 'cdkd integ local-invoke-from-cfn-stack: a --role-arn with no permissions',
+    });
+    new cdk.CfnOutput(this, 'NoPermissionRoleArn', { value: noPermissionRole.roleArn });
   }
 }

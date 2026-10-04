@@ -29,8 +29,10 @@ table cdkd's own S3-endpoint and region tables are compared against.
 ## Other dependencies worth knowing
 
 - `cdk-local` — the local-emulation engine. `src/cli/commands/local-state-source.ts`
-  is a shim injecting the S3-backed `--from-state` factory through cdk-local's
-  `extraStateProviders` hook.
+  injects the S3-backed `--from-state` factory through cdk-local's
+  `extraStateProviders` hook, and rebinds the PRIVATE client getters of its
+  `CfnLocalStateProvider` — so a caret bump can trip `cfnProviderShapeDrift`
+  ([local-engine-role-leak.md](local-engine-role-leak.md)).
 - `yaml` — the CFn-aware codec behind `cdkd export` / `import
   --migrate-from-cloudformation`, preserving `!Ref` / `!GetAtt` / `!Sub`
   shorthand on round-trip (`src/cli/yaml-cfn.ts`).

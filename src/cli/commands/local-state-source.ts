@@ -16,17 +16,34 @@
  * cdkd-specific `createLocalStateProvider` that injects the
  * S3-backed `--from-state` factory via `cdk-local`'s
  * `extraStateProviders` hook.
+ *
+ * It also owns the `--role-arn` identity of what the engine reads for a
+ * workload (issue [#3240](https://github.com/go-to-k/cdkd/issues/3240)):
+ * {@link bindCallerIdentityClients} keeps `--from-cfn-stack` on the caller for
+ * the four commands that call {@link createLocalStateProvider}, and
+ * {@link warnEngineRoleExposure} warns on the four engine commands that cannot
+ * be fixed from here.
  */
 
+import { BedrockAgentCoreControlClient } from '@aws-sdk/client-bedrock-agentcore-control';
+import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
+import { LambdaClient } from '@aws-sdk/client-lambda';
+import { SSMClient } from '@aws-sdk/client-ssm';
+import type { Command } from 'commander';
 import {
+  CfnLocalStateProvider as CfnLocalStateProviderBase,
   createLocalStateProvider as createLocalStateProviderBase,
+  isCfnFlagPresent as isCfnFlagPresentBase,
   type ExtraStateProviders,
   type LocalStateProvider,
   type LocalStateProviderFactory,
   type LocalStateSourceOptions as LocalStateSourceOptionsBase,
 } from 'cdk-local';
 import { S3LocalStateProvider } from '../../local/s3-local-state-provider.js';
+import { awsClientDefaults, getAssumedRoleCredentials } from '../../utils/aws-client-defaults.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { getLogger } from '../../utils/logger.js';
+import { isIamRoleArn } from '../../utils/role-arn.js';
 
 export {
   CfnLocalStateProvider,
@@ -203,10 +220,378 @@ export function createLocalStateProvider(
   // closed-shape (so unknown property accesses are TS errors, not
   // `unknown` reads). The cast is semantically safe — cdkd's interface
   // has every base field cdk-local reads.
-  return createLocalStateProviderBase(
+  const provider = createLocalStateProviderBase(
     options as unknown as LocalStateSourceOptionsBase,
     cdkdStackName,
     synthRegion,
     cdkdExtraStateProviders
+  );
+  if (provider instanceof CfnLocalStateProviderBase) {
+    bindCallerIdentityClients(provider, options.profile);
+  } else if (isCfnFlagPresentBase(options) && cannotLeaveUnbound(options.profile)) {
+    // `--from-cfn-stack` was asked for but the dispatcher returned something
+    // that is not the class cdkd knows how to rebind: whatever it is builds its
+    // own clients, which resolve the role.
+    throw new Error(
+      cfnProviderRefusal(['a --from-cfn-stack provider that is not CfnLocalStateProvider'])
+    );
+  }
+  return provider;
+}
+
+/**
+ * True when an unbound `--from-cfn-stack` provider would resolve the ROLE: a
+ * role is published and no profile (flag or exported `AWS_PROFILE`) steers the
+ * provider's own clients to the caller.
+ */
+function cannotLeaveUnbound(profile: string | undefined): boolean {
+  if (getAssumedRoleCredentials() === undefined) return false;
+  return !(profile || process.env['AWS_PROFILE']);
+}
+
+function cfnProviderRefusal(drift: readonly string[]): string {
+  return (
+    `--from-cfn-stack cannot run under --role-arn with this cdk-local version: it has ` +
+    `${drift.join(', ')}, so cdkd cannot make it read the stack with your own credentials ` +
+    `instead of the role's. Pass --profile <name> (your own profile), or use the cdk-local ` +
+    `version this cdkd release ships with (go-to-k/cdkd#3240).`
+  );
+}
+
+/**
+ * The lazily-built client slots of cdk-local's `CfnLocalStateProvider`, as the
+ * compiled class actually carries them. TypeScript marks every one `private`;
+ * at runtime they are ordinary members, which is what makes the rebinding in
+ * {@link bindCallerIdentityClients} possible at all.
+ */
+interface CfnProviderClientSlots {
+  disposed: boolean;
+  region: string;
+  client?: CloudFormationClient;
+  lambdaClient?: LambdaClient;
+  ssmClient?: SSMClient;
+  agentCoreControlClient?: BedrockAgentCoreControlClient;
+  getClient: () => CloudFormationClient;
+  getLambdaClient: () => LambdaClient;
+  getSsmClient: () => SSMClient;
+  getAgentCoreControlClient: () => BedrockAgentCoreControlClient;
+}
+
+/** The four getters every `CfnLocalStateProvider` read goes through. */
+export const CFN_PROVIDER_CLIENT_GETTERS = [
+  'getClient',
+  'getLambdaClient',
+  'getSsmClient',
+  'getAgentCoreControlClient',
+] as const;
+
+/** The instance slots those getters fill, which the provider's `dispose()` destroys. */
+export const CFN_PROVIDER_CLIENT_SLOTS = [
+  'client',
+  'lambdaClient',
+  'ssmClient',
+  'agentCoreControlClient',
+] as const;
+
+/**
+ * Every member the reviewed `CfnLocalStateProvider` prototype chain carries
+ * (cdk-local 0.149.8). An ALLOWLIST, so any method a release adds — a new
+ * reader that might build a client of its own — is drift.
+ */
+export const CFN_PROVIDER_PROTOTYPE_MEMBERS = [
+  'constructor',
+  ...CFN_PROVIDER_CLIENT_GETTERS,
+  'resolveTemplateSsmParameters',
+  'resolveDeployedFunctionEnv',
+  'resolveLambdaExecutionRoleArn',
+  'resolveAgentCoreRuntimeRoleArn',
+  'load',
+  'getLastLoadError',
+  'buildCrossStackResolver',
+  'dispose',
+] as const;
+
+/**
+ * Every way the installed `CfnLocalStateProvider` has drifted from the shape
+ * {@link bindCallerIdentityClients} reviewed and rebinds, or `[]` when it matches.
+ *
+ * - a known getter MISSING (renamed or removed: the provider builds its own
+ *   client again);
+ * - any prototype member, anywhere on the chain below `Object.prototype`, that
+ *   is not on {@link CFN_PROVIDER_PROTOTYPE_MEMBERS} (a new method, possibly a
+ *   new reader with a client of its own);
+ * - a client slot or the `region` field that is not an own member (renamed:
+ *   `dispose()` would not destroy the clients built here, or the region the
+ *   rebound clients use is gone);
+ * - an own instance property ending in `Client` that is not a known slot (a
+ *   client cached somewhere this module does not rebind).
+ *
+ * WHAT IT CANNOT SEE: it checks the SHAPE, not what a method does. A client
+ * built inline inside an EXISTING method, or cached at module level in the
+ * bundle, keeps every name the same and is undetectable here.
+ */
+export function cfnProviderShapeDrift(provider: object): string[] {
+  const proto = Object.getPrototypeOf(provider) as Record<string, unknown> | null;
+  const allowed: readonly string[] = CFN_PROVIDER_PROTOTYPE_MEMBERS;
+  const slots: readonly string[] = CFN_PROVIDER_CLIENT_SLOTS;
+  const drift: string[] = [];
+  for (const name of CFN_PROVIDER_CLIENT_GETTERS) {
+    if (typeof proto?.[name] !== 'function') drift.push(`no ${name}()`);
+  }
+  for (
+    let p: object | null = proto;
+    p !== null && p !== Object.prototype;
+    p = Object.getPrototypeOf(p)
+  ) {
+    for (const name of Object.getOwnPropertyNames(p)) {
+      if (!allowed.includes(name)) drift.push(`an unknown ${name}()`);
+    }
+  }
+  for (const slot of CFN_PROVIDER_CLIENT_SLOTS) {
+    if (!Object.hasOwn(provider, slot)) drift.push(`no ${slot} slot`);
+  }
+  if (
+    typeof (provider as { region?: unknown }).region !== 'string' ||
+    !Object.hasOwn(provider, 'region')
+  ) {
+    drift.push('no region field');
+  }
+  for (const name of Object.getOwnPropertyNames(provider)) {
+    if (/Client$/.test(name) && !slots.includes(name)) drift.push(`an unknown ${name} slot`);
+  }
+  return drift;
+}
+
+/**
+ * Make `--from-cfn-stack` read the deployed stack as the CALLER, never as a
+ * `--role-arn` role (issue [#3240](https://github.com/go-to-k/cdkd/issues/3240),
+ * channel 4).
+ *
+ * cdk-local builds the provider's CloudFormation / Lambda / SSM /
+ * BedrockAgentCoreControl clients from the region and `--profile` alone, so
+ * after `applyRoleArnIfSet` overwrote the `AWS_*` triple they resolve the ROLE.
+ * What they read lands in the emulated workload: the SSM client calls
+ * `GetParameters` with `WithDecryption: true` and the plaintext of a
+ * SecureString is baked into the container's environment, and the Lambda client
+ * reads the deployed function's environment. A SecureString the caller cannot
+ * read was handed to the local code through the deploy role.
+ *
+ * cdk-local's options carry no credentials key, so the seam is the provider's
+ * own lazy getters: each is shadowed by an own property that builds the same
+ * client, in the provider's own `region`, through
+ * `awsClientDefaults({ ignoreAssumedRole: true })` and stores it in the SAME
+ * slot, so the provider's `dispose()` still destroys it. The result is exactly
+ * what passing the caller's `--profile` already gave.
+ *
+ * ON UPSTREAM DRIFT. `cdk-local` is a caret dependency and these members are
+ * private upstream. When {@link cfnProviderShapeDrift} reports anything, this
+ * throws if an unbound provider would resolve the role (a role published, no
+ * profile flag or exported `AWS_PROFILE`), and otherwise leaves the provider
+ * unbound, since its own clients then resolve the caller. That is a shape
+ * check, not a proof: see the limit recorded on {@link cfnProviderShapeDrift}.
+ */
+export function bindCallerIdentityClients(
+  provider: CfnLocalStateProviderBase,
+  profile: string | undefined
+): void {
+  const drift = cfnProviderShapeDrift(provider);
+  if (drift.length > 0) {
+    if (!cannotLeaveUnbound(profile)) return;
+    throw new Error(cfnProviderRefusal(drift));
+  }
+  const slots = provider as unknown as CfnProviderClientSlots;
+  const live = (): void => {
+    if (slots.disposed) throw new Error('CfnLocalStateProvider used after dispose()');
+  };
+  const config = (): { region: string; profile?: string } => ({
+    region: slots.region,
+    ...(profile && { profile }),
+  });
+  // `ignoreAssumedRole` on all four -- each reads a value the emulated workload
+  // receives (decrypted SecureStrings, the deployed function's environment, the
+  // physical ids its intrinsics resolve to, the role `--assume-role` assumes for
+  // it), so it must resolve the caller's identity, never `--role-arn`'s. The
+  // profile goes to the helper AND the client, so a profile wins on both paths.
+  slots.getClient = () => {
+    live();
+    return (slots.client ??= new CloudFormationClient({
+      ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+      ...config(),
+    }));
+  };
+  slots.getLambdaClient = () => {
+    live();
+    return (slots.lambdaClient ??= new LambdaClient({
+      ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+      ...config(),
+    }));
+  };
+  slots.getSsmClient = () => {
+    live();
+    return (slots.ssmClient ??= new SSMClient({
+      ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+      ...config(),
+    }));
+  };
+  slots.getAgentCoreControlClient = () => {
+    live();
+    return (slots.agentCoreControlClient ??= new BedrockAgentCoreControlClient({
+      ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
+      ...config(),
+    }));
+  };
+}
+
+/**
+ * One way a `cdkd local` ENGINE command (`start-service` / `start-alb` /
+ * `start-cloudfront` / `start-agentcore`) hands the workload something resolved
+ * as `--role-arn`'s role.
+ *
+ * `flagOnly` marks the channel an exported `AWS_PROFILE` does NOT close: the
+ * engine gates it on its own `--profile` option value, not on the SDK chain.
+ */
+export interface EngineRoleChannel {
+  readonly what: string;
+  readonly flagOnly: boolean;
+}
+
+/** The role's credential triple copied into the named containers. */
+export function engineCredentialTripleChannel(containers: string): EngineRoleChannel {
+  return {
+    what: `the role's AWS credentials are copied into ${containers}, so that code runs as the role`,
+    flagOnly: true,
+  };
+}
+
+/** ECS task `secrets` fetched with the role and injected as plaintext. */
+export const ENGINE_ECS_SECRETS_CHANNEL: EngineRoleChannel = {
+  what: "ECS task secrets are fetched with the role and injected as plaintext into the container's environment",
+  flagOnly: false,
+};
+
+/**
+ * `--assume-role` / `--assume-task-role` for the workload: cdk-local's STS client
+ * is built from `{region, profile}`, so the role makes the AssumeRole call and
+ * the container can receive a role the caller could not assume.
+ */
+export const ENGINE_ASSUME_ROLE_CHANNEL: EngineRoleChannel = {
+  what: 'the role --assume-role / --assume-task-role assumes for the container is assumed BY the --role-arn role, so the container can receive a role you could not assume yourself',
+  flagOnly: false,
+};
+
+/**
+ * `--from-cfn-stack`: the engine builds its own provider from `{region, profile}`.
+ * `alsoReads` names what THIS command's engine reads through it beyond the
+ * stack itself (start-cloudfront's S3 origins and KeyValueStore entries).
+ */
+export function engineFromCfnStackChannel(alsoReads?: string): EngineRoleChannel {
+  return {
+    what:
+      "--from-cfn-stack reads the deployed stack, including SecureString parameters decrypted into the container's environment" +
+      (alsoReads ? `, and ${alsoReads}` : ''),
+    flagOnly: false,
+  };
+}
+
+/** `${AWS::AccountId}` resolved through an STS hop answered by the role. */
+export const ENGINE_ACCOUNT_ID_CHANNEL: EngineRoleChannel = {
+  what: "${AWS::AccountId} resolves to the role's account in the container's environment, secret references and image URIs",
+  flagOnly: false,
+};
+
+/**
+ * Warn at startup when an engine command runs under `--role-arn` /
+ * `CDKD_ROLE_ARN` with no profile selected (issue
+ * [#3240](https://github.com/go-to-k/cdkd/issues/3240)).
+ *
+ * cdk-local's `runEcsServiceEmulator` and the CloudFront / AgentCore serve
+ * engines assume the role themselves and build every client from the region and
+ * `--profile` alone, and their options carry no credentials key, so the fix is
+ * upstream (go-to-k/cdk-local#783). The one lever cdkd has — patching
+ * `CfnLocalStateProvider.prototype` so the engine's own providers rebind too —
+ * is rejected: it reaches only `--from-cfn-stack`, rewrites a class cdkd does
+ * not own for every provider in the process, and would need the caller's
+ * identity captured before the engine's assume, outside cdkd's own role
+ * bookkeeping. Until upstream lands, this makes the escalation visible instead
+ * of silent. `--from-cfn-stack` and `--assume-role` are channels only when their
+ * flag is set, so they are appended here rather than listed by each command.
+ *
+ * Installed as a `preAction` hook, after the root program's own hook has
+ * mirrored `--profile` into `AWS_PROFILE` — so the FLAG is read from the parsed
+ * options and the environment separately.
+ */
+export function warnEngineRoleExposure(
+  cmd: Command,
+  commandName: string,
+  channels: readonly EngineRoleChannel[],
+  fromCfnStackChannel: EngineRoleChannel = engineFromCfnStackChannel()
+): Command {
+  cmd.hook('preAction', (_thisCommand, actionCommand) => {
+    const options = actionCommand.optsWithGlobals<{
+      roleArn?: string;
+      profile?: string;
+      fromCfnStack?: string | boolean;
+      assumeRole?: unknown;
+      assumeTaskRole?: unknown;
+    }>();
+    const message = engineRoleExposureWarning(commandName, channels, fromCfnStackChannel, {
+      roleArn: options.roleArn || process.env['CDKD_ROLE_ARN'],
+      profileFlag: options.profile,
+      envProfile: process.env['AWS_PROFILE'],
+      fromCfnStack: isCfnFlagPresentBase(options),
+      // `--assume-role` / `--assume-task-role` in any form but `--no-assume-role`
+      // (false): explicit ARN, bare `true`, or a per-Lambda map.
+      assumesForWorkload:
+        isAssumeRequested(options.assumeRole) || isAssumeRequested(options.assumeTaskRole),
+    });
+    if (message !== undefined) getLogger().warn(message);
+  });
+  return cmd;
+}
+
+/** True for any `--assume-role` / `--assume-task-role` value except absent or `--no-assume-role`. */
+export function isAssumeRequested(value: unknown): boolean {
+  // Absent (`undefined`) and `--no-assume-role` (`false`) both fall to the last line.
+  if (typeof value === 'string') return value !== '';
+  if (value !== null && typeof value === 'object') return Object.keys(value).length > 0;
+  return value === true;
+}
+
+/**
+ * The warning text {@link warnEngineRoleExposure} prints, or `undefined` when
+ * nothing reaches the role. Pure so every arm is testable without a parse.
+ */
+export function engineRoleExposureWarning(
+  commandName: string,
+  channels: readonly EngineRoleChannel[],
+  fromCfnStackChannel: EngineRoleChannel,
+  input: {
+    roleArn: string | undefined;
+    profileFlag: string | undefined;
+    envProfile: string | undefined;
+    fromCfnStack: boolean;
+    assumesForWorkload: boolean;
+  }
+): string | undefined {
+  // A malformed ARN is refused by the engine before anything is assumed, so
+  // nothing reaches the role and a warning would only precede that refusal.
+  if (!input.roleArn || !isIamRoleArn(input.roleArn) || input.profileFlag) return undefined;
+  const all: EngineRoleChannel[] = [
+    ...channels,
+    ...(input.assumesForWorkload ? [ENGINE_ASSUME_ROLE_CHANNEL] : []),
+    ...(input.fromCfnStack ? [fromCfnStackChannel] : []),
+  ];
+  const envProfileSet = !!input.envProfile;
+  const open = envProfileSet ? all.filter((c) => c.flagOnly) : all;
+  if (open.length === 0) return undefined;
+  const why = envProfileSet
+    ? 'is set, and the exported AWS_PROFILE does not cover what follows (only the --profile flag does)'
+    : 'is set and no profile is selected';
+  return (
+    `cdkd local ${commandName}: --role-arn ${why}, so the local emulation engine resolves ` +
+    `these AS THE ROLE and hands them to your local code: ${open.map((c) => c.what).join('; ')}. ` +
+    'Pass --profile <name> with your own profile to keep them on your identity, or do not pass ' +
+    'a role whose permissions you would not give the code in the container. Tracked as ' +
+    'go-to-k/cdkd#3240 (upstream go-to-k/cdk-local#783).'
   );
 }

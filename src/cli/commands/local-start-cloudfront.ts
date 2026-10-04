@@ -3,7 +3,12 @@ import {
   createLocalStartCloudFrontCommand as createCdkLocalStartCloudFrontCommand,
   getEmbedConfig,
 } from 'cdk-local';
-import { cdkdExtraStateProviders } from './local-state-source.js';
+import {
+  cdkdExtraStateProviders,
+  engineCredentialTripleChannel,
+  engineFromCfnStackChannel,
+  warnEngineRoleExposure,
+} from './local-state-source.js';
 import { adoptDeprecatedRegionFlag } from '../region-options.js';
 
 /**
@@ -127,6 +132,12 @@ export function createLocalStartCloudFrontCommand(): Command {
   );
 
   refuseUnwiredCdkdStateFlags(cmd);
+  warnEngineRoleExposure(
+    cmd,
+    'start-cloudfront',
+    [engineCredentialTripleChannel('the Function URL and Lambda@Edge containers')],
+    engineFromCfnStackChannel("a deployed S3 origin's objects and KeyValueStore entries")
+  );
 
   return adoptDeprecatedRegionFlag(cmd);
 }
