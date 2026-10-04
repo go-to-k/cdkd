@@ -64,7 +64,7 @@ cross-region-concurrent-stacks	2026-10-03T04:18:45Z	PASS	208	verify.sh	rc ok, or
 cross-region-state-bucket	2026-10-03T07:02:29Z	PASS	32	verify.sh	rc ok, orph clean (#4283 PR #4449)
 cross-stack-cfn-fallback	2026-10-02T23:48:50Z	PASS	150	verify.sh	rc ok, orph clean (#4475)
 cross-stack-references	2026-10-03T09:48:51Z	PASS	40	std-flow	rc ok, orph clean (#4505)
-cross-stack-secret-import	2026-10-04T06:12:13Z	PASS	370	verify.sh	rc ok, orph clean (#4527)
+cross-stack-secret-import	2026-10-04T06:42:40Z	PASS	381	verify.sh	rc ok, orph clean (#4105)
 custom-resource-getatt-data	2026-10-03T06:00:30Z	PASS	110	verify.sh	rc ok, orph clean (#4497)
 custom-resource-masked-service-token	2026-09-28T21:40:21Z	PASS	156	verify.sh	rc ok, orph clean; #3938 + #3976 refusal + #3960 seeded arms; pre-#3976 probe RED at R1
 custom-resource-noecho-nested	2026-10-03T13:11:36Z	PASS	896	verify.sh	rc ok, orph clean; #4474 deploy/diff/destroy --all over 4 top-level stacks (two earlier runs voided by a peer machine destroying the fixture mid-run)
@@ -88,7 +88,7 @@ drift-revert	2026-10-04T06:12:13Z	PASS	311	verify.sh	rc ok, orph clean (#4527)
 drift-revert-arrays	2026-10-03T18:30:14Z	PASS	190	verify.sh	rc ok, orph clean
 drift-revert-vpc	2026-10-04T05:31:47Z	PASS	376	verify.sh	rc ok, orph clean (#4002)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
-dynamic-ref-cross-region	2026-10-03T10:48:51Z	PASS	175	verify.sh	rc ok, orph clean (#4508)
+dynamic-ref-cross-region	2026-10-04T06:42:40Z	PASS	206	verify.sh	rc ok, orph clean, #4105 reversed mixed-type arm; reverted-fix run RED at phase 3f
 dynamodb-autoscaling	2026-10-03T04:27:36Z	PASS	83	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-globaltable	2026-10-03T06:36:56Z	PASS	1543	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -244,7 +244,7 @@ nested-stack-3level	2026-10-04T01:59:33Z	PASS	320	verify.sh	rc ok, orph clean (#
 nested-stack-deep	2026-10-04T03:21:48Z	PASS	105	verify.sh	rc ok, orph clean (#4521; first run failed on the pre-#4252 arrow grep, fixed here)
 nested-stack-replace-guard	2026-09-25T14:59:50Z	PASS	55	verify.sh	rc ok, orph clean; pre-fix probe red at the fixture's own assertion
 nested-stack-rollback	2026-10-02T13:42:45Z	PASS	110	verify.sh	rc ok, orph clean (#4436)
-nested-stack-secret	2026-10-04T06:12:13Z	PASS	225	verify.sh	rc ok, orph clean, #4527 MultiUnknownSecretPair arm; reverted-fix run RED at MultiUnknownSecretPair.Description
+nested-stack-secret	2026-10-04T06:42:40Z	PASS	236	verify.sh	rc ok, orph clean (#4105)
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 noecho-parameter-masking	2026-10-03T10:36:00Z	PASS	121	verify.sh	rc ok, orph clean (#4508)
