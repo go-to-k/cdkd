@@ -1025,16 +1025,18 @@ parameter as its `Ref`, and these are kept as written:
   `NoEcho` parameter, a cross-stack value or a name the template does not
   declare, directly or through another resource;
 - an `Fn::GetAtt` on a custom resource or a nested stack, whose attributes
-  may be `NoEcho` (its physical id is hashed);
+  may be `NoEcho` (its physical id is hashed), and one whose attribute NAME is
+  built from any of these;
 - an input whose resolution read a secret (a `NoEcho` custom resource's
   `Data`, a redacted `***` read), and an attribute that the save redacts
   because the resource it belongs to read that secret in the same deploy;
-- in a nested stack, a parameter value its parent passed (other than the
-  parameter's `Default`) that the PARENT built from any of the above. The
-  parent classifies each expression in its stack row's `Parameters` by these
-  same rules and hands the result to the child; a value built only from
-  non-secret inputs (a `Ref` to a parent resource, say) enters the child's
-  hash like any input.
+- in a nested stack, a parameter value its parent passed that the PARENT
+  built from any of the above, or did not classify (an older parent record, a
+  rollback) unless it equals the parameter's `Default`. The parent classifies
+  each expression in its stack row's `Parameters` by these same rules and
+  hands the result to the child; a value built only from non-secret inputs (a
+  `Ref` to a parent resource, say) enters the child's hash like any input. One
+  the parent could not read this time is not compared at all.
 
 So these are NOT sent through the mask: a new value of a `NoEcho` parameter,
 a flip of a condition over one, and a new value of anything above. A hash

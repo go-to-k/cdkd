@@ -222,3 +222,64 @@ describe('cdkd diff keeps an input its resolution recorded a secret for as writt
     }
   });
 });
+
+describe('cdkd diff never hashes a physical-id fallback (go-to-k/cdkd#4543 G10)', () => {
+  it('an attribute it cannot read is an unknown input: no comparison, no fallback warning', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    const GETATT = { 'Fn::GetAtt': ['A', 'NotAnAttribute'] };
+    const value = {
+      'Fn::Base64': { 'Fn::Join': ['', [GETATT, ';pw=', '{{resolve:secretsmanager:app-pw}}']] },
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        A: { Type: 'AWS::SNS::Topic', Properties: {} },
+        R: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'n', Type: 'String', Value: value } },
+      },
+    };
+    // What the deploy stamped when the attribute DID resolve.
+    const stamped = await maskedInputFingerprint(value, {
+      template,
+      parameterInput: () => ({ kind: 'unknown' }),
+      resolve: () => Promise.resolve({ value: 'the-real-attribute' }),
+    });
+    const state: StackState = {
+      stackName: 'S',
+      region: 'us-east-1',
+      resources: {
+        A: {
+          physicalId: 'arn:aws:sns:us-east-1:1:a',
+          resourceType: 'AWS::SNS::Topic',
+          properties: {},
+        },
+        R: {
+          physicalId: 'n',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Name: 'n', Type: 'String', Value: '***' },
+          maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(value) },
+          maskedPropertyInputFingerprints: { Value: stamped! },
+        },
+      },
+      outputs: {},
+      version: 10,
+      lastModified: 0,
+    };
+    const warnsBefore = warn.mock.calls.length;
+    const backend = { getState: async () => null } as unknown as S3StateBackend;
+    // Only the fingerprint pass is observed: the ordinary diff resolution of
+    // the property may still guess and warn as it always did.
+    const result = await computeStackDiff(state, template, 'us-east-1', 'S', backend, new DiffCalculator(), {
+      previewMaskedInputs: true,
+    });
+    const row = result.changes.get('R')!;
+    expect(row.propertyChanges?.some((pc) => pc.maskedExpressionChanged === true) ?? false).toBe(
+      false
+    );
+    const fallbackWarnings = warn.mock.calls
+      .slice(warnsBefore)
+      .filter((call) => String(call[0]).includes('NotAnAttribute'));
+    // The ordinary resolution warns at most once; the fingerprint pass adds none.
+    expect(fallbackWarnings.length).toBeLessThanOrEqual(1);
+  });
+});

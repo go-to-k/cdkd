@@ -723,6 +723,7 @@ describe('classifyPassedParameters (go-to-k/cdkd#4543)', () => {
         Tainted: { Ref: 'Named' },
         Imported: { 'Fn::ImportValue': { Ref: 'Hidden' } },
         Unknown: { Ref: 'Unresolvable' },
+        UnboundParam: { 'Fn::Join': ['', [{ Ref: 'Missing' }]] },
         Opaque: { 'Fn::GetAtt': ['Cr', 'Out'] },
       },
       sources({
@@ -733,6 +734,7 @@ describe('classifyPassedParameters (go-to-k/cdkd#4543)', () => {
             Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: 'arn' } },
             Unresolvable: { Type: 'AWS::SNS::Topic', Properties: {} },
           },
+          Parameters: { ...BASE.Parameters, Missing: { Type: 'String' } },
         },
         resolved: { [node]: 'bucket-1', [ref('AWS::Region')]: 'us-east-1' },
       })
@@ -746,30 +748,49 @@ describe('classifyPassedParameters (go-to-k/cdkd#4543)', () => {
       Reference: 'secret',
       Tainted: 'secret',
       Imported: 'secret',
-      Unknown: 'secret',
+      // Could not be read this time: neither vouched for nor withheld.
+      Unknown: 'unknown',
+      UnboundParam: 'unknown',
       Opaque: 'secret',
     });
     expect(Object.fromEntries(await classifyPassedParameters(undefined, sources()))).toEqual({});
   });
 
-  it('a child honours only the parent CLEAN class for a supplied non-Default value', () => {
+  it('a child honours the parent class for a supplied value, a Default-equal one included', () => {
     const template: CloudFormationTemplate = {
-      Parameters: { A: { Type: 'String' }, B: { Type: 'String' }, C: { Type: 'String' } },
+      Parameters: {
+        A: { Type: 'String' },
+        B: { Type: 'String' },
+        C: { Type: 'String' },
+        Pw: { Type: 'String', Default: 'changeme' },
+        AtDefault: { Type: 'String', Default: 'd' },
+        Unread: { Type: 'String' },
+      },
       Resources: {},
     };
+    const values = { A: 'a', B: 'b', C: 'c', Pw: 'changeme', AtDefault: 'd', Unread: 'u' };
     const { parameterInput } = parameterInputsFor({
       template,
-      values: { A: 'a', B: 'b', C: 'c' },
+      values,
       nestedChild: true,
-      supplied: { A: 'a', B: 'b', C: 'c' },
+      supplied: values,
       passedClasses: new Map([
         ['A', 'clean'],
         ['B', 'secret'],
+        // The parent passed a secret that happens to equal the Default: still
+        // secret, or the hash would confirm the equality.
+        ['Pw', 'secret'],
+        ['Unread', 'unknown'],
       ]),
     });
     expect(parameterInput('A')).toEqual({ kind: 'value', value: 'a' });
     expect(parameterInput('B')).toEqual({ kind: 'secret' });
     expect(parameterInput('C')).toEqual({ kind: 'secret' });
+    expect(parameterInput('Pw')).toEqual({ kind: 'secret' });
+    // Not classified, equal to the Default (template text): a value.
+    expect(parameterInput('AtDefault')).toEqual({ kind: 'value', value: 'd' });
+    // Classified unknown: not compared.
+    expect(parameterInput('Unread')).toEqual({ kind: 'unknown' });
   });
 });
 
@@ -823,6 +844,10 @@ describe('pins on the concrete check (go-to-k/cdkd#4543 review)', () => {
           Type: 'AWS::SNS::Topic',
           Properties: { TopicName: { 'Fn::GetAtt': ['Cr', 'Out'] } },
         },
+        ReadsCrSub: {
+          Type: 'AWS::SNS::Topic',
+          Properties: { TopicName: { 'Fn::Sub': 'n-${Cr.Out}' } },
+        },
       },
     };
     for (const value of [
@@ -831,6 +856,7 @@ describe('pins on the concrete check (go-to-k/cdkd#4543 review)', () => {
       { 'Fn::GetAtt': ['Nested', 'Outputs.X'] },
       { 'Fn::Sub': '${Cr.Out}' },
       { Ref: 'ReadsCr' },
+      { Ref: 'ReadsCrSub' },
     ]) {
       const s = sources({ template, resolved: {} });
       expect(await maskedInputFingerprint(script(value), s), JSON.stringify(value)).toBeDefined();

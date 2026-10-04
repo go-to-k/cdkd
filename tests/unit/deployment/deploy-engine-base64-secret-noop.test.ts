@@ -652,7 +652,7 @@ describe('DeployEngine - a resolved input behind unchanged template text is sent
     const PARENT = { parentStack: 'Parent', parentLogicalId: 'Child', parentRegion: 'us-east-1' };
     const child = (
       supplied: string,
-      classes?: ReadonlyMap<string, 'clean' | 'secret'>,
+      classes?: ReadonlyMap<string, 'clean' | 'secret' | 'unknown'>,
       extra: Parameters<typeof harness>[0] = {}
     ) =>
       harness({
@@ -670,9 +670,14 @@ describe('DeployEngine - a resolved input behind unchanged template text is sent
       const first = await child('one', CLEAN).deployTemplate(withParameter('d'));
       const h2 = child('two', CLEAN);
       h2.setState(first);
-      await h2.deployTemplate(withParameter('d'));
+      const second = await h2.deployTemplate(withParameter('d'));
       expect(h2.provider.update).toHaveBeenCalledTimes(1);
       expect(sentValue(h2, 0)).toBe(Buffer.from('b=two;pw=pw-secret-value').toString('base64'));
+      // ...and the next deploy with the same value sends nothing.
+      const h3 = child('two', CLEAN);
+      h3.setState(second);
+      await h3.deployTemplate(withParameter('d'));
+      expect(h3.provider.update).not.toHaveBeenCalled();
     });
 
     it('a value the parent classified SECRET, or did not classify, stays out of the hash', async () => {
@@ -683,7 +688,25 @@ describe('DeployEngine - a resolved input behind unchanged template text is sent
         const second = await h2.deployTemplate(withParameter('d'));
         expect(h2.provider.update).not.toHaveBeenCalled();
         expect(fps(second.resources['R']!)).toEqual(fps(first.resources['R']!));
+        // An input fingerprint was stamped (the value is held as `{Ref: P}`).
+        expect(first.resources['R']!.maskedPropertyInputFingerprints!['Value']).toMatch(
+          /^inputs-sha256:/
+        );
       }
+    });
+
+    it('a value the parent could not read (UNKNOWN) is neither compared nor stamped, so a later read does not resend', async () => {
+      const UNKNOWN = new Map([['P', 'unknown' as const]]);
+      const first = await child('one', UNKNOWN).deployTemplate(withParameter('d'));
+      expect(first.resources['R']!.maskedPropertyInputFingerprints).toBeUndefined();
+      // The parent reads it this time (clean): re-baselined, nothing sent.
+      const h2 = child('one', CLEAN);
+      h2.setState(first);
+      const second = await h2.deployTemplate(withParameter('d'));
+      expect(h2.provider.update).not.toHaveBeenCalled();
+      expect(second.resources['R']!.maskedPropertyInputFingerprints!['Value']).toMatch(
+        /^inputs-sha256:/
+      );
     });
 
     it('a child resource reading a CLEAN parent-passed value is replaced, and the masked reader of it is sent', async () => {
