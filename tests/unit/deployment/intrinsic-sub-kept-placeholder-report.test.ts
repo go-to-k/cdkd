@@ -190,7 +190,9 @@ describe('resolveSub reports a placeholder it KEPT inside a reference (issue #21
   });
 
   it('places a kept placeholder correctly after a bound variable that changed the length', async () => {
-    // An empty value before it: the kept span must not land past the `}}`.
+    // No position arithmetic is left to pin (the report searches the assembled
+    // string); this guards its reintroduction. An empty value before it: the
+    // kept span must not land past the `}}`.
     await resolver.resolve(
       { 'Fn::Sub': ['${Pre}{{resolve:ssm:${Typo}}}', { Pre: '' }] },
       ctx(abandoned)
@@ -227,6 +229,7 @@ describe('resolveSub reports a placeholder it KEPT inside a reference (issue #21
     ['a parameter with no Default', '${Stage}'],
     ['a parameter whose Default was not merged', '${Env}'],
     ['a declared resource', '${Bucket.Arn}'],
+    ['a declared resource on the Ref arm', '${Bucket}'],
   ])('records NOTHING for %s, under bestEffort', async (_label, placeholder) => {
     const declaredTemplate = {
       Parameters: { Stage: { Type: 'String' }, Env: { Type: 'String', Default: 'prod' } },
