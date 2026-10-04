@@ -419,21 +419,29 @@ The same `sdk-to-cc-autoroute` fixture measures it on an `AWS::EC2::Subnet`'s
 #### `CREATE_ONLY_DROP_NEEDS_REPLACEMENT`
 
 The deploy refuses when the ONLY thing asking for a replacement is a
-create-only property the record holds, that the SDK provider never wrote, and
-that the template still asks for unchanged. This resource is not touched, and
-the error names:
+create-only property that an earlier `--prefer-sdk-route` deploy kept off AWS,
+and that the template still asks for unchanged. That happens when the flag is
+removed, and also when another silent-drop property it does not cover is added,
+since one uncovered property routes the whole resource through Cloud Control.
+cdkd knows a property was kept off AWS only when the deploy that created the
+resource recorded it so; an imported resource's create-only properties, and
+those of a record an older cdkd wrote, are taken to be in AWS and never refused.
+
+The refusal comes when the deploy reaches that resource. This resource is not
+touched, but other resources of the same deploy may already have changed, and
+they roll back as for any failure. The error names:
 
 | Remedy | What it does |
 | --- | --- |
-| `--recreate-via-cc-api <LogicalId>` | Re-creates the resource through Cloud Control with the property applied |
-| `--replace` | Replaces every such resource in the deploy, nested stacks included, creating the new one first |
+| `--recreate-via-cc-api <LogicalId>` | Deletes the resource, then re-creates it through Cloud Control with the property applied |
+| `--replace` | Replaces every such resource in the deploy, nested stacks included; creates the new one first, so it collides where the resource holds a unique value (a fixed name, a subnet's CIDR block) |
 | `--force-stateful-recreation` | Also required for a stateful type |
 | `--prefer-sdk-route <Type>:<Prop>,...` | Keeps the resource on its SDK provider and keeps dropping the property |
 
 A replacement something else in the template already requires goes ahead and
 applies the property too, and a template that removes such a property does not
 replace the resource. `cdkd diff` previews the flag-less deploy, so it shows
-the replacement.
+the replacement and says the deploy refuses it.
 
 Reach for the flag when the auto-routed **update** cannot deliver the property,
 which is a narrower case:
