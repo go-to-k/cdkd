@@ -799,7 +799,10 @@ export async function executeDeployment(
             // A failed journal write already warned that nothing was kept.
             (autoRollbackJournaled ? ` The rollback journal keeps them.` : '')
         );
+        // Only over a segment THIS attempt wrote: otherwise nothing was kept,
+        // and `--revert-failed` would act on an OLDER attempt's record.
         if (
+          autoRollbackJournaled &&
           this.options.parentStackInfo === undefined &&
           failedOperations.some((op) => op.changeType !== 'DELETE')
         ) {

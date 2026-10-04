@@ -476,6 +476,53 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     }
   });
 
+  it('auto-rollback that SKIPS an op after its segment write FAILED claims no kept record', async () => {
+    // Same shape as the hint case: A's UPDATE revert is skipped, B's CREATE
+    // fails. The `auto-rollback-started` write is rejected, so nothing of this
+    // attempt is in the journal.
+    const aChange = {
+      logicalId: 'A',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::S3::Bucket',
+      desiredProperties: { p: 'new' },
+      currentProperties: {},
+      propertyChanges: [{ path: 'p', requiresReplacement: false }],
+    } as unknown as ResourceChange;
+    const prevA = {
+      physicalId: 'phys-A',
+      resourceType: 'AWS::S3::Bucket',
+      attributes: {},
+      dependencies: [],
+    } as unknown as ResourceState;
+    const engine = buildEngine({
+      changes: new Map([
+        ['A', aChange],
+        ['B', makeChange('B')],
+      ]),
+      deps: { A: [], B: ['A'] },
+      failOn: new Set(['B']),
+      noRollback: false,
+      currentEtag: 'e0',
+      currentResources: { A: prevA },
+    });
+    const provider = (
+      engine as unknown as {
+        providerRegistry: { getProviderFor: () => { provider: { update: ReturnType<typeof vi.fn> } } };
+      }
+    ).providerRegistry.getProviderFor().provider;
+    provider.update.mockResolvedValue({ physicalId: 'phys-A', wasReplaced: false });
+    journal.appendRollbackJournalSegment.mockRejectedValueOnce(new Error('S3 down'));
+
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+    expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+    const warns = (getLogger().warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    // It reached the skip warning, which then claims nothing was kept.
+    expect(warns.some((m) => m.includes('could not revert 1 operation(s)'))).toBe(true);
+    expect(warns.some((m) => m.includes('The rollback journal keeps them.'))).toBe(false);
+    expect(warns.some((m) => m.includes('--revert-failed'))).toBe(false);
+  });
+
   it('a pop failure during journal settling leaves the full segment in place (best-effort)', async () => {
     const changes = new Map([
       ['A', makeChange('A')],
