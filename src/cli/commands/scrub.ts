@@ -6070,7 +6070,8 @@ export interface ScrubStackResult {
    * stack is scrubbed, but a real secret sitting after the failing token in
    * the same leaf recorded no needle, so the record must not be reported
    * clean. Refusing instead would refuse healthy stacks — see
-   * `abandonedScanVerdict`.
+   * `abandonedScanVerdict`. Also counts a reference an `Fn::Sub` placeholder
+   * left unresolvable, which throws nothing (issue #2166).
    */
   unverifiableLeaves: number;
   /**

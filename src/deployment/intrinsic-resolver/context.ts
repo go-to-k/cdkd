@@ -257,7 +257,8 @@ export function selectIndexPosition(value: unknown): number | undefined {
  * (#3181); a `key` is one entry of an object property bag or of an `Fn::Sub`
  * variable map (#3218), whose failure needs no dynamic reference at all — the
  * issue's own repro fails on a `Ref` — and therefore never reaches the token
- * loop.
+ * loop. A third, `placeholder` (#2166), records a reference nothing threw for:
+ * see {@link AbandonedResolution.unit}.
  *
  * STRUCTURED, for the reason its sibling below records at length: a consumer
  * forced to recover structure out of a human string couples to a spelling, and

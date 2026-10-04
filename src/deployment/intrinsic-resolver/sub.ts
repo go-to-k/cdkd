@@ -643,9 +643,10 @@ export async function resolveSub(
   // that reference unevaluable — no token forms, or one naming `${...}` — so
   // nothing below looks it up and nothing throws. Reported to a caller that
   // collects abandoned units (`cdkd scrub`, which counts it rather than
-  // printing the stack clean over a reference it never resolved). The
-  // placeholder is a name the template declares nowhere, so fixing the
-  // template clears it. No bag, no report: deploy keeps the warn-and-keep.
+  // printing the stack clean over a reference it never resolved). A kept
+  // placeholder names nothing this run can bind -- a declared resource or
+  // unbound parameter refuses instead -- so fixing the template clears it.
+  // No bag, no report: deploy keeps the warn-and-keep unchanged.
   if (context?.abandonedResolutions !== undefined) {
     for (const placeholder of kept) {
       if (!sitsInsideResolvableReference(result, placeholder.start, placeholder.end)) continue;
