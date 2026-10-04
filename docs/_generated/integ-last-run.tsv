@@ -174,6 +174,8 @@ kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#42
 kinesis-stream-mode-switch	2026-10-03T04:24:24Z	PASS	102	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 lambda	2026-10-04T02:52:14Z	PASS	105	verify.sh	rc ok, orph clean (#1730)
+lambda	2026-10-04T02:04:42Z	PASS	110	verify.sh	rc ok, orph clean (#4521)
+lambda	2026-10-04T02:22:40Z	PASS	111	verify.sh	rc ok, orph clean (#4521 compile cache)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
