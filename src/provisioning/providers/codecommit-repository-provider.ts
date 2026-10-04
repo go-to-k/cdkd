@@ -20,7 +20,6 @@ import {
 } from '@aws-sdk/client-codecommit';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import AdmZip from 'adm-zip';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
@@ -1421,6 +1420,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     }
     const zipBytes = await obj.Body.transformToByteArray();
 
+    // Imported on use: every provider module is evaluated at startup, and only
+    // a `Code`-seeded repository create needs a zip reader.
+    const { default: AdmZip } = await import('adm-zip');
     const zip = new AdmZip(Buffer.from(zipBytes));
     const putFiles: PutFileEntry[] = [];
     for (const entry of zip.getEntries()) {

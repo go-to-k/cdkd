@@ -1147,7 +1147,8 @@ export const strictGetattOption = new Option(
  * scoped to the one cause.
  *
  * The flag suppresses only the EXIT CODE. The summary rows
- * (`Skipped (not deleted)` / `of which left an orphaned predecessor`), the
+ * (`Skipped (not deleted)` / `of which left an orphaned predecessor` /
+ * `Left an orphaned predecessor in a nested stack`), the
  * per-resource warnings, and the `RunCounts.skipped` figure in `cdkd events`
  * are all emitted unchanged, so a run that used it still says in its log that
  * a resource survived.
