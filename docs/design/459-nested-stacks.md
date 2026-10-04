@@ -47,6 +47,8 @@ deploys cleanly via `cdkd deploy`. Specifically:
   basis (each child has its own state file, so `cdkd drift <child-state-key>`
   already works once the state is written), but a `cdkd drift <parent>`
   invocation that recursively shows every child's drift is deferred.
+  (Landed in [#4533](https://github.com/go-to-k/cdkd/issues/4533):
+  `cdkd drift <parent>` now checks every nested stack below it.)
 - **No real CloudFormation rollback-on-failure semantics** — CFn's
   contract is "if any nested-stack resource fails, the parent rollback
   cascades into every child." cdkd's per-resource partial-state-save
