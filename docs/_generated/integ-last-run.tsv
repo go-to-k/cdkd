@@ -84,11 +84,11 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-10-04T16:44:59Z	PASS	105	verify.sh	rc ok, orph clean (#2080 PR #4557)
 docdb-neptune	2026-10-03T05:35:39Z	PASS	5713	verify.sh	rc ok, orph clean (#4283 PR #4449)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-04T17:04:46Z	PASS	311	verify.sh	rc ok, orph clean (#4408)
+drift-revert	2026-10-04T17:56:15Z	PASS	310	verify.sh	rc ok, orph clean (#4533)
 drift-revert-arrays	2026-10-04T10:29:43Z	PASS	185	verify.sh	rc ok, orph clean (#4476)
-drift-revert-vpc	2026-10-04T17:04:46Z	PASS	370	verify.sh	rc ok, orph clean (#4408)
+drift-revert-vpc	2026-10-04T17:56:15Z	PASS	356	verify.sh	rc ok, orph clean (#4533)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
-dynamic-ref-cross-region	2026-10-04T06:42:40Z	PASS	206	verify.sh	rc ok, orph clean, #4105 reversed mixed-type arm; reverted-fix run RED at phase 3f
+dynamic-ref-cross-region	2026-10-04T17:26:35Z	PASS	220	verify.sh	rc ok, orph clean; phase 3g kept-placeholder finding + 3h failed-lookup arm (#2166 PR #4556)
 dynamodb-autoscaling	2026-10-03T04:27:36Z	PASS	83	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-globaltable	2026-10-03T06:36:56Z	PASS	1543	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -173,7 +173,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kinesis-stream-mode-switch	2026-10-03T04:24:24Z	PASS	102	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-04T17:04:46Z	PASS	120	verify.sh	rc ok, orph clean (#4408)
+lambda	2026-10-04T17:26:35Z	PASS	120	verify.sh	rc ok, orph clean (#2166 PR #4556)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
@@ -239,7 +239,7 @@ multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 sta
 multi-resource	2026-10-03T09:39:45Z	PASS	65	std-flow	rc ok, orph clean (#4505)
 multi-stack-deps	2026-10-03T09:41:05Z	PASS	80	std-flow	rc ok, orph clean (#4505)
 nested-required-preflight	2026-09-23T18:43:53Z	PASS	53	verify.sh	rc ok, orph clean (#1802)
-nested-stack	2026-10-04T03:21:48Z	PASS	65	verify.sh	rc ok, orph clean (#4521 lazy provider classes)
+nested-stack	2026-10-04T17:56:15Z	PASS	75	verify.sh	rc ok, orph clean (#4533)
 nested-stack-3level	2026-10-04T01:59:33Z	PASS	320	verify.sh	rc ok, orph clean (#1989 PR #4524)
 nested-stack-deep	2026-10-04T03:21:48Z	PASS	105	verify.sh	rc ok, orph clean (#4521; first run failed on the pre-#4252 arrow grep, fixed here)
 nested-stack-replace-guard	2026-10-04T09:21:25Z	PASS	65	verify.sh	rc ok, orph clean (#3932)
@@ -306,12 +306,12 @@ schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
 schema-v8-to-v9-migration	2026-09-24T15:24:57Z	FAIL	138	verify.sh	stale fixture: v9 phase expects state.version 9, binary writes 10; AWS clean (#3658, tooling-backlog row)
 schema-v9-to-v10-migration	2026-09-29T06:42:58Z	PASS	215	verify.sh	rc ok, orph clean, rebased head (#4059)
-scrub-nested-child	2026-10-03T20:21:35Z	PASS	161	verify.sh	rc ok, orph clean (#4479; pre-fix probe red at phase 1b)
+scrub-nested-child	2026-10-04T17:26:35Z	PASS	145	verify.sh	rc ok, orph clean (#2166 PR #4556)
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-10-04T06:31:24Z	PASS	225	verify.sh	rc ok, orph clean (#2790 PR #4516 phases 7-10)
 secret-derived-immutable-names	2026-10-04T12:10:42Z	PASS	115	verify.sh	rc ok, orph clean (#3869 pre-rotation FilterName absent from update log)
 secrets-array-nested	2026-10-03T18:30:14Z	PASS	425	verify.sh	rc ok, orph clean
-secrets-dynamic-ref	2026-10-04T15:13:49Z	PASS	626	verify.sh	rc ok, orph clean (#4451)
+secrets-dynamic-ref	2026-10-04T17:26:35Z	PASS	641	verify.sh	rc ok, orph clean (#2166 PR #4556)
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
 secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
 serverless-api	2026-10-02T07:20:09Z	PASS	61	verify.sh	PR #4391 (#2080 EMR create latch, orphan-report rename) @a7306c55f; rc ok, orph clean
@@ -327,7 +327,7 @@ sns-subscription-filter	2026-10-03T04:28:51Z	PASS	52	verify.sh	rc ok, orph clean
 sns-subscription-update	2026-09-17T17:34:54Z	PASS	372	verify.sh	issue 3329: fixture armed with a Fn::GetAtt Arn Output + attributes.Arn assertions, phase 1 under --strict-getatt; both followed the phase-2 replacement (GUID changed). destroy 3 deleted 0 errors, 0 orphans (only deployments/ history remains, by design)
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-09-27T12:27:25Z	PASS	80	verify.sh	rc ok, orph clean (#3861)
-ssm-secure-dynamic-ref	2026-10-04T15:13:49Z	PASS	116	verify.sh	rc ok, orph clean (#4451)
+ssm-secure-dynamic-ref	2026-10-04T17:26:35Z	PASS	120	verify.sh	rc ok, orph clean (#2166 PR #4556)
 stack-copy-create-tokens	2026-10-03T13:51:11Z	PASS	1923	verify.sh	rc ok, orph clean; #4438 nonce + ledger: RETAIN redeploy creates new, orphan rotates, kill -9 resume
 stack-lock-renewal	2026-10-01T10:51:21Z	PASS	426	verify.sh	rc ok, orph clean (PR #4311 stack-lock guard)
 stage-assets	2026-10-03T13:11:36Z	PASS	196	verify.sh	rc ok, orph clean; #4474 Phase 2h stack selection

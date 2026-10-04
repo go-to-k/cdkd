@@ -1,6 +1,10 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
-import { type ResolverContext, isUnboundTemplateParameter } from './support.js';
+import {
+  type ResolverContext,
+  isUnboundTemplateParameter,
+  recordKeptPlaceholder,
+} from './support.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { type IntrinsicLeafResolution } from '../secret-redaction.js';
 import {
@@ -172,6 +176,43 @@ export function rethrowStructuralSubFailure(
   if (context.bestEffort) return;
   if (!this.subPlaceholderNamesADeclaredTemplateEntity(varName, context)) return;
   throw error;
+}
+
+/**
+ * Remember a placeholder `resolveSub` KEPT, for the dynamic-reference pass to
+ * report if it ends up inside a `{{resolve:...}}` reference (issue
+ * [#2166](https://github.com/go-to-k/cdkd/issues/2166)). A kept placeholder
+ * there leaves the reference unevaluable — no token forms, or one naming
+ * `${...}` — so nothing looks it up and nothing throws, and a caller that
+ * collects abandoned units (`cdkd scrub`) would otherwise print the stack
+ * clean over a reference it never resolved.
+ *
+ * Only a head the template declares NOWHERE — no resource, no parameter — is
+ * remembered, since only that one is cleared by fixing the
+ * template. Under `bestEffort` (scrub) a declared resource or an unbound or
+ * un-merged parameter is kept too, and scrub takes no `--parameters`, so
+ * reporting those would be a `--fail` gate nothing can clear.
+ *
+ * Remembered rather than reported here because the `{{resolve:` opening can
+ * come from an enclosing intrinsic: an inner `Fn::Sub` bound into a variable
+ * map, or one part of an `Fn::Join`. The pass over the ASSEMBLED string is the
+ * first point that can tell. No bag, nothing remembered: deploy is unchanged.
+ */
+function noteKeptSubPlaceholder(
+  varName: string,
+  placeholder: string,
+  because: unknown,
+  context: ResolverContext
+): void {
+  if (context.abandonedResolutions === undefined) return;
+  const firstDot = varName.indexOf('.');
+  const head = firstDot >= 0 ? varName.slice(0, firstDot) : varName;
+  for (const declared of [context.template?.Resources, context.template?.Parameters]) {
+    if (declared !== undefined && declared !== null && typeof declared === 'object') {
+      if (Object.hasOwn(declared, head)) return;
+    }
+  }
+  recordKeptPlaceholder(context.abandonedResolutions, placeholder, because);
 }
 
 /**
@@ -538,6 +579,7 @@ export async function resolveSub(
                 this.displayMasked(this.subPlaceholderWarning(varNameStr, getAttError), context)
               );
               replacement = match[0]; // Keep original placeholder
+              noteKeptSubPlaceholder(varNameStr, match[0], getAttError, context);
             }
           } else {
             // Issue #2270's other half, on the SAME terms as the dotted arm
@@ -553,6 +595,7 @@ export async function resolveSub(
               this.displayMasked(this.subPlaceholderWarning(varNameStr, refError), context)
             );
             replacement = match[0]; // Keep original placeholder
+            noteKeptSubPlaceholder(varNameStr, match[0], refError, context);
           }
         }
       }

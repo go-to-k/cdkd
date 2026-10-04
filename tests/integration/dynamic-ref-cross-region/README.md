@@ -83,7 +83,17 @@ with its own region — so a region boundary is now also a cache boundary.
    B asks; the payload order is asserted, because reversed the arm could not
    fail. This is the issue
    [#4105](https://github.com/go-to-k/cdkd/issues/4105) arm.
-10. Destroys all three stacks, asserts all eleven echo parameters and all three
+10. Re-scrubs `CdkdDynamicRefAssembledSecretStack` under `--dry-run --fail`
+   twice, asserting each run exits `1` with an `ABANDONED` finding and prints
+   no `No plaintext secrets found` line — the issue
+   [#2166](https://github.com/go-to-k/cdkd/issues/2166) arms. First with
+   `CDKD_IT_DYNREF_KEPT_PLACEHOLDER=1`, which spells the reference with an
+   `Fn::Sub` placeholder no variable binds, so it is kept and the reference is
+   never looked up; then with region B's `SecureString` deleted out of band
+   (and put back after), so the deferred lookup genuinely fails. The second is
+   a regression net: a failed lookup has been a counted finding since
+   [#3181](https://github.com/go-to-k/cdkd/issues/3181).
+11. Destroys all three stacks, asserts all eleven echo parameters and all three
    state records are gone (tri-state gone probes), then deletes the seeded
    parameters.
 
@@ -93,7 +103,8 @@ with `SCRUB_SECRET_REFERENCE_UNCLASSIFIABLE` and the seeded plaintext survives �
 unbypassably, since scrub has no flag that overrides a refusal. Pre-fix for
 #4105, step 9 reports region B's reversed echo as changed: region A's
 `SecureString` verdict, keyed by the token text alone, made region B skip its
-own lookup and compare the token against the public value in its state.
+own lookup and compare the token against the public value in its state. Pre-fix
+for #2166, step 10's first run prints the stack clean and exits `0`.
 
 ## Run
 

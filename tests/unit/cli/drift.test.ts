@@ -4189,6 +4189,456 @@ describe('cdkd drift', () => {
     });
   });
 
+  describe('a parent drifts its nested stacks with it (go-to-k/cdkd#4533)', () => {
+    const NESTED_ROW = 'AWS::CloudFormation::Stack';
+    // A record per name; `Parent` holds one nested row per direct child named
+    // in `children`, and every `~` record holds one queue.
+    const stageNested = (
+      refs: Array<{ stackName: string; region?: string }>,
+      children: Record<string, string[]> = { Parent: ['Child'] }
+    ): void => {
+      mockListStacks.mockResolvedValueOnce(refs);
+      mockGetState.mockImplementation(async (name: string, region: string) => {
+        if (!refs.some((r) => r.stackName === name && r.region === region)) return null;
+        const resources: Record<string, ResourceState> = {};
+        for (const child of children[name] ?? []) {
+          resources[child] = makeResource({
+            physicalId: `arn:cdkd-local:cloudformation:${region}:000000000000:stack/${name}~${child}/x`,
+            resourceType: NESTED_ROW,
+            properties: {},
+          });
+        }
+        if (name.includes('~')) {
+          resources['Queue'] = makeResource({
+            physicalId: `https://sqs/${name}`,
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: name },
+          });
+        }
+        const st = makeState(resources);
+        return { ...st, state: { ...st.state, stackName: name, region } };
+      });
+    };
+    // The queue under `deletedIn` reads back as gone; every other queue matches.
+    const readQueues = (deletedIn?: string): void => {
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::SQS::Queue'
+          ? {
+              readCurrentState: async (physicalId: string) =>
+                physicalId === `https://sqs/${deletedIn}`
+                  ? RESOURCE_NOT_FOUND
+                  : { QueueName: physicalId.slice('https://sqs/'.length) },
+            }
+          : {}
+      );
+    };
+    // The stacks the HUMAN report has a block for, in order. Not `getState`'s
+    // calls: a nested record's producer-region evidence reads its ancestors too.
+    const reportedStacks = (output: string): string[] =>
+      [...output.matchAll(/^\s*(?:✓|⚠) (\S+) \(([^)]+)\):/gm)].map((m) => `${m[1]}@${m[2]}`);
+    const jsonStacks = (output: string): string[] =>
+      (JSON.parse(output) as Array<{ stack: string; region: string }>).map(
+        (r) => `${r.stack}@${r.region}`
+      );
+    const warned = (): string => warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+
+    afterEach(() => {
+      mockGetState.mockReset();
+      mockRegistryGetProvider.mockReset();
+    });
+
+    it('reports a resource deleted inside a nested stack and exits 1 when the PARENT is named', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      readQueues('Parent~Child');
+
+      const { output } = await runDrift(['Parent']);
+
+      expect(reportedStacks(output)).toEqual(['Parent@us-east-1', 'Parent~Child@us-east-1']);
+      // A parent holding only nested rows: covered, not "NOTHING was compared".
+      expect(output).toContain(
+        '✓ Parent (us-east-1): no drift detected here — 1 nested stack, each checked in its own block'
+      );
+      expect(output).not.toContain('NOTHING was compared');
+      expect(output).toContain('Parent~Child (us-east-1): drift detected on 1 resource');
+      expect(output).toContain('  - Queue (AWS::SQS::Queue) — DELETED outside cdkd');
+      // The nested row is covered by the child's own block: no `drift unknown`.
+      expect(output).not.toContain(`? Child (${NESTED_ROW})`);
+      expect(output).not.toContain('drift unknown');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('a clean parent and child exit 0, the nested row reported skipped in --json', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      readQueues();
+
+      const { output, error } = await runDrift(['Parent', '--json']);
+
+      expect(error).toBeUndefined();
+      const reports = JSON.parse(output) as Array<Record<string, unknown>>;
+      expect(reports.map((r) => r['stack'])).toEqual(['Parent', 'Parent~Child']);
+      expect(reports[0]!['skipped']).toEqual([{ logicalId: 'Child', type: NESTED_ROW }]);
+      expect(reports[0]!['notSupported']).toEqual([]);
+      expect(reports[1]!['clean']).toEqual([
+        { logicalId: 'Queue', type: 'AWS::SQS::Queue', referencesUnresolved: false },
+      ]);
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('naming only the child is unchanged: the parent is not read', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      readQueues('Parent~Child');
+
+      const { output } = await runDrift(['Parent~Child']);
+
+      expect(reportedStacks(output)).toEqual(['Parent~Child@us-east-1']);
+      expect(output).toContain('  - Queue (AWS::SQS::Queue) — DELETED outside cdkd');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it("reports a nested row whose own record is gone as DELETED, naming the record, exit 1", async () => {
+      stageNested([{ stackName: 'Parent', region: 'us-east-1' }]);
+      readQueues();
+
+      const { output } = await runDrift(['Parent']);
+
+      expect(output).toContain('Parent (us-east-1): drift detected on 1 resource');
+      expect(output).toContain(
+        `  - Child (${NESTED_ROW}) — RECORD MISSING: its nested stack's own state record ` +
+          'Parent~Child is not in state.'
+      );
+      // `cdkd state orphan` is one way the record goes: cdkd, not "outside cdkd".
+      expect(output).not.toContain(`Child (${NESTED_ROW}) — DELETED outside cdkd`);
+      // No AWS read stands behind it, so it must not say AWS answered.
+      expect(output).not.toContain('AWS reports it does not exist');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+
+      exitSpy.mockClear();
+      stageNested([{ stackName: 'Parent', region: 'us-east-1' }]);
+      const json = await runDrift(['Parent', '--json']);
+      const [report] = JSON.parse(json.output) as Array<Record<string, unknown>>;
+      expect(report!['deleted']).toEqual([
+        { logicalId: 'Child', type: NESTED_ROW, nestedStackRecordMissing: true },
+      ]);
+      expect(report!['notSupported']).toEqual([]);
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('--all reports each record once', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      readQueues();
+
+      const { output } = await runDrift(['--all', '--json']);
+
+      expect(jsonStacks(output)).toEqual(['Parent@us-east-1', 'Parent~Child@us-east-1']);
+      const reports = JSON.parse(output) as Array<Record<string, unknown>>;
+      expect(reports[0]!['skipped']).toEqual([{ logicalId: 'Child', type: NESTED_ROW }]);
+    });
+
+    it('naming the parent AND the child reports the child once', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      readQueues();
+
+      const { output } = await runDrift(['Parent~Child', 'Parent', '--json']);
+
+      expect(jsonStacks(output)).toEqual(['Parent~Child@us-east-1', 'Parent@us-east-1']);
+    });
+
+    it('with no name, one parent and its nested stacks are the single stack in state', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      readQueues('Parent~Child');
+
+      const { output } = await runDrift([]);
+
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+        'Multiple stacks found'
+      );
+      expect(reportedStacks(output)).toEqual(['Parent@us-east-1', 'Parent~Child@us-east-1']);
+      expect(output).toContain('  - Queue (AWS::SQS::Queue) — DELETED outside cdkd');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('with no name, two top-level stacks are still ambiguous, and their nested records are not listed', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+        { stackName: 'Other', region: 'us-east-1' },
+      ]);
+      errorSpy.mockClear();
+
+      await runDrift([]);
+
+      const message = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(message).toContain(
+        'Multiple stacks found in state: Parent (us-east-1), Other (us-east-1).'
+      );
+      expect(mockGetState).not.toHaveBeenCalled();
+    });
+
+    it('with no name, a nested record whose parent record is gone is a stack of its own', async () => {
+      stageNested([{ stackName: 'Parent~Child', region: 'us-east-1' }]);
+      readQueues();
+
+      const { output, error } = await runDrift([]);
+
+      expect(error).toBeUndefined();
+      expect(reportedStacks(output)).toEqual(['Parent~Child@us-east-1']);
+    });
+
+    it('with no name, such a record is listed beside another top-level stack', async () => {
+      stageNested([
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+        { stackName: 'Other', region: 'us-east-1' },
+      ]);
+      errorSpy.mockClear();
+
+      await runDrift([]);
+
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'Multiple stacks found in state: Parent~Child (us-east-1), Other (us-east-1).'
+      );
+    });
+
+    it('a parent with its own resource keeps the ordinary summary beside a covered nested row', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      const base = mockGetState.getMockImplementation()!;
+      mockGetState.mockImplementation(async (name: string, region: string) => {
+        const got = await base(name, region);
+        if (got && name === 'Parent') {
+          got.state.resources['Own'] = makeResource({
+            physicalId: 'https://sqs/Own',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'Own' },
+          });
+        }
+        return got;
+      });
+      readQueues();
+
+      const { output } = await runDrift(['Parent']);
+
+      expect(output).toContain('✓ Parent (us-east-1): no drift detected (1 resource checked, 0 unsupported)');
+      expect(output).not.toContain('no drift detected here');
+    });
+
+    it('a parent with a nested row and a Custom Resource keeps the NOTHING-compared warning', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      const base = mockGetState.getMockImplementation()!;
+      mockGetState.mockImplementation(async (name: string, region: string) => {
+        const got = await base(name, region);
+        if (got && name === 'Parent') {
+          got.state.resources['Deploy'] = makeResource({
+            physicalId: 'cr-1',
+            resourceType: 'Custom::CDKBucketDeployment',
+            properties: {},
+          });
+        }
+        return got;
+      });
+      readQueues();
+
+      const { output } = await runDrift(['Parent']);
+
+      // The Custom Resource is never compared, so this block's own claim stays the warning.
+      expect(output).toContain(
+        '⚠ Parent (us-east-1): no drift detected, but NOTHING was compared — 0 of 2 resources checked (0 unsupported, 2 skipped)'
+      );
+      expect(output).not.toContain('no drift detected here');
+    });
+
+    it('names how many nested stacks a nested-only parent covers', async () => {
+      stageNested(
+        [
+          { stackName: 'Parent', region: 'us-east-1' },
+          { stackName: 'Parent~A', region: 'us-east-1' },
+          { stackName: 'Parent~B', region: 'us-east-1' },
+        ],
+        { Parent: ['A', 'B'] }
+      );
+      readQueues();
+
+      const { output } = await runDrift(['Parent']);
+
+      expect(output).toContain(
+        '✓ Parent (us-east-1): no drift detected here — 2 nested stacks, each checked in its own block'
+      );
+    });
+
+    it('walks every depth parent-first, and keeps a sibling sharing a name prefix out', async () => {
+      stageNested(
+        [
+          { stackName: 'Parent~B', region: 'us-east-1' },
+          { stackName: 'Parent~A~G', region: 'us-east-1' },
+          { stackName: 'Parent', region: 'us-east-1' },
+          { stackName: 'Parent~A', region: 'us-east-1' },
+          { stackName: 'Parent~AB', region: 'us-east-1' },
+          { stackName: 'ParentX', region: 'us-east-1' },
+          { stackName: 'ParentX~A', region: 'us-east-1' },
+        ],
+        { Parent: ['A', 'AB', 'B'], 'Parent~A': ['G'] }
+      );
+      readQueues();
+
+      const { output } = await runDrift(['Parent', '--json']);
+
+      expect(jsonStacks(output)).toEqual([
+        'Parent@us-east-1',
+        'Parent~A@us-east-1',
+        'Parent~A~G@us-east-1',
+        'Parent~AB@us-east-1',
+        'Parent~B@us-east-1',
+      ]);
+      const reports = JSON.parse(output) as Array<Record<string, unknown>>;
+      expect(reports[1]!['skipped']).toEqual([{ logicalId: 'G', type: NESTED_ROW }]);
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it("takes only the parent's region: a same-named child elsewhere is neither read nor counted", async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent', region: 'eu-west-1' },
+        { stackName: 'Parent~Child', region: 'eu-west-1' },
+      ]);
+      readQueues();
+
+      const { output } = await runDrift(['Parent', '--stack-region', 'us-east-1', '--json']);
+
+      expect(jsonStacks(output)).toEqual(['Parent@us-east-1']);
+      const [report] = JSON.parse(output) as Array<Record<string, unknown>>;
+      // The us-east-1 parent's own child record is the one that is missing.
+      expect(report!['deleted']).toEqual([
+        { logicalId: 'Child', type: NESTED_ROW, nestedStackRecordMissing: true },
+      ]);
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('--revert reverts a drifted resource inside a nested stack named through its parent', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      const update = vi.fn(async () => ({ physicalId: 'https://sqs/Parent~Child', wasReplaced: false }));
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::SQS::Queue'
+          ? { readCurrentState: async () => ({ QueueName: 'changed' }), update }
+          : {}
+      );
+
+      await runDrift(['Parent', '--revert', '--yes']);
+
+      expect(update).toHaveBeenCalledTimes(1);
+      // The revert runs under the CHILD's own lock, as naming it would.
+      expect(mockAcquireLock.mock.calls.map((c) => (c as unknown[]).slice(0, 2))).toEqual([
+        ['Parent~Child', 'us-east-1'],
+      ]);
+    });
+
+    it('--revert refuses a nested row whose record is gone, without claiming AWS answered', async () => {
+      stageNested([{ stackName: 'Parent', region: 'us-east-1' }]);
+      readQueues();
+
+      await runDrift(['Parent', '--revert', '--yes']);
+
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(warned()).toContain(
+        `Child (${NESTED_ROW}): NOT reverted — its nested stack's own state record Parent~Child is not in state.`
+      );
+      // An interrupted `--migrate-from-cloudformation` import leaves this shape
+      // with the resources live: the remedy names that route BEFORE any
+      // untracked-resource advice, and never tells the user to delete them.
+      expect(warned()).toContain(
+        "If the parent was imported with 'cdkd import --migrate-from-cloudformation' and that " +
+          'import stopped part-way, its nested stacks were not recorded yet: re-run that import ' +
+          'with --force, which rebuilds the parent record from the stack and then records them.'
+      );
+      expect(warned()).toContain('may still exist in AWS');
+      expect(warned()).not.toMatch(/delete them/);
+      expect(warned()).not.toContain('AWS reports this resource no longer exists');
+      // The run's closing line counts it apart from AWS-confirmed deletions.
+      const closing = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(closing).toContain(
+        "1 nested stack(s) whose state record is gone were not reverted; each is named above."
+      );
+      expect(closing).not.toContain('deleted outside cdkd were not');
+      expect(exitSpy).toHaveBeenCalledWith(2);
+    });
+
+    it('--accept refuses a nested row whose record is gone, writing nothing', async () => {
+      stageNested([{ stackName: 'Parent', region: 'us-east-1' }]);
+      readQueues();
+
+      await runDrift(['Parent', '--accept', '--yes']);
+
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(warned()).toContain(
+        `Child (${NESTED_ROW}): NOT accepted — its nested stack's own state record Parent~Child is not in state.`
+      );
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        '1 nested stack(s) whose state record is gone were not accepted; each is named above.'
+      );
+      expect(exitSpy).toHaveBeenCalledWith(2);
+    });
+
+    it('the closing line names both kinds when a run refuses both', async () => {
+      // `Parent~A` is checked and its queue is gone in AWS; `Parent~B`'s record is gone.
+      stageNested(
+        [
+          { stackName: 'Parent', region: 'us-east-1' },
+          { stackName: 'Parent~A', region: 'us-east-1' },
+        ],
+        { Parent: ['A', 'B'] }
+      );
+      readQueues('Parent~A');
+
+      await runDrift(['Parent', '--revert', '--yes']);
+
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        '1 resource(s) deleted outside cdkd and 1 nested stack(s) whose state record is gone ' +
+          'were not reverted; each is named above.'
+      );
+      expect(exitSpy).toHaveBeenCalledWith(2);
+    });
+
+    it('--accept writes a drifted nested resource into the CHILD record, reached through its parent', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::SQS::Queue' ? { readCurrentState: async () => ({ QueueName: 'changed' }) } : {}
+      );
+
+      await runDrift(['Parent', '--accept', '--yes']);
+
+      expect(mockSaveState.mock.calls.map((c) => c.slice(0, 2))).toEqual([
+        ['Parent~Child', 'us-east-1'],
+      ]);
+    });
+  });
+
   describe('a resource deleted outside cdkd (go-to-k/cdkd#4283)', () => {
     const stageDeleted = (extra: Record<string, ResourceState> = {}): void => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
