@@ -509,11 +509,12 @@ describe('toCloudControlIdentifier', () => {
     }, 120_000);
 
     it('describes a physical id forged to end in displayIdent’s own cut marker', () => {
-      // 2048 plain characters (the ARN cap) plus the 35-character marker for 35
-      // withheld characters: `displayIdent` cuts it to exactly itself, so the
-      // round-trip alone admits it and the whitespace test refuses it.
+      // 2048 plain characters (the ARN cap) plus the pre-go-to-k/cdkd#4002
+      // marker for 35 withheld characters: `displayIdent` cut it to exactly
+      // itself until the marker carried a digest of the withheld tail, and the
+      // whitespace test refuses it either way.
       const forged = `${'a'.repeat(2048)} [cut: 35 more characters withheld]`;
-      expect(displayIdent(forged, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })).toBe(forged);
+      expect(displayIdent(forged, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })).not.toBe(forged);
       const message = refusal({ ...base, physicalId: forged, properties: { A: 'a' } });
       expect(message).toContain('so the supplied id (not shown: it is not a plain identifier) cannot be placed');
     });

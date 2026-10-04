@@ -29,7 +29,7 @@ import {
   splitCompositePhysicalId,
   submitImportChangeSet,
 } from '../../../src/cli/commands/export.js';
-import { AWS_MESSAGE_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
+import { AWS_MESSAGE_MAX_CODE_POINTS, cutMarker } from '../../../src/utils/display-safe.js';
 import { spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
@@ -62,7 +62,7 @@ describe('composite physical-id refusals render the recorded id with its own bou
   it('caps a planted multi-kilobyte id and says how much it withheld', () => {
     const forged = 'z'.repeat(5000);
     expect(() => splitCompositePhysicalId('AWS::ApiGateway::Method', forged)).toThrow(
-      `[cut: ${5000 - 2048} more characters withheld]`
+      cutMarker(5000 - 2048, 'z'.repeat(5000 - 2048))
     );
   });
 });
@@ -554,7 +554,9 @@ describe('preDeletedLine renders the recorded physical id with its own boundary'
     for (const unit of ['\u2028', '\u{1F600}']) {
       const line = preDeletedLine(unit.repeat(3000));
       const shown = line.slice('✓ deleted '.length);
-      expect(shown).toMatch(/^"[ -~]*" \[cut: \d+ more characters withheld\]$/);
+      expect(shown).toMatch(
+        /^"[ -~]*" \[cut: \d+ more characters withheld, tail sha256:[0-9a-f]{32}\]$/
+      );
       expect(shown.indexOf('" [cut:')).toBeLessThanOrEqual(2048 + 1);
       // The cut lands between escapes, never inside one.
       expect(shown.slice(0, shown.indexOf('" [cut:'))).toMatch(/^"(?:\\u[0-9a-f]{4})*$/);
@@ -564,13 +566,13 @@ describe('preDeletedLine renders the recorded physical id with its own boundary'
   it('renders a plain id of exactly the cap bare, and one past it cut', () => {
     expect(preDeletedLine('a'.repeat(2048))).toBe(`✓ deleted ${'a'.repeat(2048)}`);
     expect(preDeletedLine('a'.repeat(2049))).toBe(
-      `✓ deleted "${'a'.repeat(2048)}" [cut: 1 more characters withheld]`
+      `✓ deleted "${'a'.repeat(2048)}" ${cutMarker(1, 'a')}`
     );
   });
 
   it('caps a planted multi-kilobyte id', () => {
     expect(preDeletedLine('z'.repeat(3000))).toContain(
-      `[cut: ${3000 - 2048} more characters withheld]`
+      cutMarker(3000 - 2048, 'z'.repeat(3000 - 2048))
     );
   });
 });

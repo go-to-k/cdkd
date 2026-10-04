@@ -15,9 +15,10 @@ import {
  */
 describe('import refusal display helpers', () => {
   it('isPlainImportValue refuses a value that spells displayIdent\'s own cut marker', () => {
-    // 2048 plain characters and then a self-consistent cut marker: the marker
-    // is 35 characters long and says 35 were withheld, so `displayIdent`
-    // renders the value unchanged and only the whitespace test refuses it.
+    // 2048 plain characters and then a pre-go-to-k/cdkd#4002 cut marker that
+    // was self-consistent (35 characters long, saying 35 were withheld) until
+    // the marker carried a digest of the withheld tail; the whitespace test
+    // refuses it either way.
     const marker = ' [cut: 35 more characters withheld]';
     expect(marker).toHaveLength(35);
     const spoof = `${'a'.repeat(2048)}${marker}`;

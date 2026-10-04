@@ -11,6 +11,7 @@ import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError, ccAlreadyExistsError } from '../_aws-sdk-error.js';
+import { cutMarker } from '../../../src/utils/display-safe.js';
 
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/deployment/retry.js')>();
@@ -553,7 +554,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     const line = lines.find((l) => l.includes('already reverted'));
     expect(line).toBeDefined();
     expect(line).not.toContain(long);
-    expect(line).toContain(`Rollback: ${'B'.repeat(255)} [cut: 45 more characters withheld] already reverted`);
+    expect(line).toContain(`Rollback: ${'B'.repeat(255)} ${cutMarker(45, 'B'.repeat(45))} already reverted`);
   });
 
   it('the #3203 refusal messages: the logicalId reaches them as a helper PARAMETER too', async () => {

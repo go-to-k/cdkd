@@ -14,6 +14,7 @@ import { Command } from 'commander';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import {
   STACK_REF_MAX_CODE_POINTS,
+  cutMarker,
   displayAwsMessage,
   displayIdent,
   displaySafe,
@@ -3773,10 +3774,11 @@ export interface CdkdStateStackTree {
  * A state-record or template value for a sentence that quotes it: `'value'`
  * when it is empty, or has no whitespace and `displayIdent` renders it
  * unchanged, and `(not shown: it is not a plain identifier)` otherwise
- * (go-to-k/cdkd#3950). The whitespace test comes first because the round-trip
- * alone admits a value that ends in `displayIdent`'s own cut marker
- * (`<1152 plain characters> [cut: N more characters withheld]` renders as
- * itself). A non-string is never plain.
+ * (go-to-k/cdkd#3950). The whitespace test comes first, so a value that IS
+ * `displayIdent`'s own cut output (`<1152 plain characters> [cut: N more
+ * characters withheld, tail sha256:<hex>]`) is refused without resting on the
+ * marker's tail digest, the only thing that keeps the round-trip from
+ * admitting it (go-to-k/cdkd#4002). A non-string is never plain.
  *
  * These messages wrapped a stack name, a logical id or a record value in a
  * hand-written `'...'`, raw or through a sanitize-and-cap helper
@@ -3877,7 +3879,9 @@ function safeDetail(value: unknown): string {
   const safe = displaySafe(value instanceof Error ? value.message : value, { asciiOnly: true });
   if (!safe) return UNRENDERABLE;
   const { text, truncated } = truncateCodePoints(safe, STACK_REF_MAX_CODE_POINTS);
-  return truncated ? `${text} [cut: ${safe.length - text.length} more characters withheld]` : text;
+  // No tail digest: a message is not an identity, and its tail can hold an
+  // echoed payload a bounded masker missed (`cutMarker`).
+  return truncated ? `${text} ${cutMarker(safe.length - text.length)}` : text;
 }
 
 /**
@@ -3932,8 +3936,8 @@ const RECORD_VALUE_PLAIN = /^[A-Za-z0-9:_@./+=,~$|#*-]+$/;
  * legitimate id may be UTF-8 (a CloudWatch `AlarmName`, a Step Functions
  * state-machine name), and this is the plan an operator confirms a migration
  * from, so two distinct ids must never print as the same text. The cap bounds
- * the ESCAPED payload; the cut counts withheld code points, in `displayIdent`'s
- * marker shape.
+ * the ESCAPED payload; the cut counts withheld code points and digests them,
+ * in `displayIdent`'s marker (`cutMarker`).
  */
 function showRecordValue(value: unknown): string {
   const cap = { maxCodePoints: RECORD_VALUE_MAX_CODE_POINTS };
@@ -3968,7 +3972,12 @@ function showRecordValue(value: unknown): string {
     kept += 1;
   }
   const withheld = codePoints.length - kept;
-  return withheld === 0 ? `"${body}"` : `"${body}" [cut: ${withheld} more characters withheld]`;
+  // The digest is over the RAW withheld code points, which this renderer keeps
+  // recoverable rather than blanking, so two distinct ids stay distinct past
+  // the cap too (go-to-k/cdkd#4002).
+  return withheld === 0
+    ? `"${body}"`
+    : `"${body}" ${cutMarker(withheld, codePoints.slice(kept).join(''))}`;
 }
 
 /**
