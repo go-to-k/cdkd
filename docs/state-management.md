@@ -1001,9 +1001,14 @@ reference, or a retarget of the reference, is shown and sent. A secret rotated
 behind an unchanged template leaves it equal and sends nothing, as
 CloudFormation does. Only template text is hashed: a secret appears there as
 its reference and a `NoEcho` parameter as its `Ref`, so the hash says nothing
-about a value. A property whose template text holds a resolved secret's value
-as a literal is the exception: it gets no hash and is compared as before the
-field existed. For the same reason a change that leaves the property's
+about a value. A property whose template text holds, as a literal, a value
+the same resource resolved as a secret is the exception: once a deploy
+resolves that resource, the property gets no hash and is compared as before
+the field existed. A hash the first deploy under this version filled in for a
+resource it did not change is checked by the next deploy that resolves it.
+The check is a plain text match, so a short secret that also occurs as
+ordinary text in the property (a word in a script) costs that property its
+hash too, and edits to it are not seen through the mask. For the same reason a change that leaves the property's
 template text as it was (a new parameter value, a `Ref` to a resource that
 was replaced, a condition that flipped) is not seen through the mask yet,
 although CloudFormation would update the resource.
