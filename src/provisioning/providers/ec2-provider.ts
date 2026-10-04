@@ -6759,7 +6759,13 @@ export class EC2Provider implements ResourceProvider {
 
     const result: Record<string, unknown> = {};
     if (addr.Domain !== undefined) result['Domain'] = addr.Domain;
-    if (addr.InstanceId !== undefined) result['InstanceId'] = addr.InstanceId;
+    // Right after cdkd's own write, an `InstanceId` the template does not
+    // declare is another resource's association (an `AWS::EC2::EIPAssociation`
+    // can land before this capture read, or not), so baselining it would depend
+    // on timing and later read as drift that `--revert` re-associates.
+    if (addr.InstanceId !== undefined && (!afterOwnWrite || properties?.['InstanceId'] != null)) {
+      result['InstanceId'] = addr.InstanceId;
+    }
     if (addr.NetworkBorderGroup !== undefined) {
       result['NetworkBorderGroup'] = addr.NetworkBorderGroup;
     }

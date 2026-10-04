@@ -47,7 +47,7 @@ export const CC_API_FALLBACK_DENY_LIST: Record<string, string> = {
   // about it. The child's resources are compared as their own
   // `<parent>~<child>` stack (issue #4447).
   'AWS::CloudFormation::Stack':
-    'CC API returns runtime stack state (outputs/status), not the template parameters cdkd state stores',
+    'cdkd deploys nested stacks itself: no CloudFormation stack exists, and the physicalId is a cdkd-local placeholder ARN',
 
   // AWS::EC2::LaunchTemplate: `LaunchTemplateData` ships with deeply
   // structured sub-objects that CC API normalizes into a versioned shape

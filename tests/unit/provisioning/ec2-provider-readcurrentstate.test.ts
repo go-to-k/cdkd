@@ -1747,6 +1747,56 @@ describe('EC2Provider.readCurrentState', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    describe('InstanceId right after cdkd’s own write (afterOwnWrite)', () => {
+      const associated = {
+        Addresses: [
+          { AllocationId: ALLOC, PublicIp: IP, Domain: 'vpc', InstanceId: 'i-0123456789abcdef0' },
+        ],
+      };
+
+      it('omits an association the template does not declare from the capture', async () => {
+        mockSend.mockResolvedValueOnce(associated);
+
+        const result = bagOf(
+          await provider.readCurrentState(
+            PHYSICAL,
+            'Eip',
+            'AWS::EC2::EIP',
+            { Domain: 'vpc' },
+            { afterOwnWrite: true }
+          )
+        );
+
+        expect(result).toEqual({ Domain: 'vpc' });
+      });
+
+      it('keeps a declared InstanceId in the capture', async () => {
+        mockSend.mockResolvedValueOnce(associated);
+
+        const result = bagOf(
+          await provider.readCurrentState(
+            PHYSICAL,
+            'Eip',
+            'AWS::EC2::EIP',
+            { Domain: 'vpc', InstanceId: 'i-0123456789abcdef0' },
+            { afterOwnWrite: true }
+          )
+        );
+
+        expect(result).toEqual({ Domain: 'vpc', InstanceId: 'i-0123456789abcdef0' });
+      });
+
+      it('reports an undeclared association on every other read', async () => {
+        mockSend.mockResolvedValueOnce(associated);
+
+        const result = bagOf(
+          await provider.readCurrentState(PHYSICAL, 'Eip', 'AWS::EC2::EIP', { Domain: 'vpc' })
+        );
+
+        expect(result).toEqual({ Domain: 'vpc', InstanceId: 'i-0123456789abcdef0' });
+      });
+    });
+
     describe('Tags right after cdkd’s own write (afterOwnWrite, #4112)', () => {
       const declaredTags = [{ Key: 'Name', Value: 'Stack/Vpc/PublicSubnet1' }];
       const untagged = { Addresses: [{ AllocationId: ALLOC, PublicIp: IP, Domain: 'vpc' }] };

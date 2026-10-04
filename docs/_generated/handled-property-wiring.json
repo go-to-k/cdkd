@@ -6850,6 +6850,8 @@
             "create",
             "createEip",
             "createRoute",
+            "readCurrentState",
+            "readEipCurrentState",
             "update",
             "updateEip",
             "updateRoute"
