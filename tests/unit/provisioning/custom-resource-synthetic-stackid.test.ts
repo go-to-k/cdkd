@@ -386,6 +386,24 @@ describe('CustomResourceProvider synthetic StackId (issue #1866)', () => {
       expect(mockStsSend).toHaveBeenCalledTimes(1);
       expect(slept).toEqual([]);
     });
+
+    it('an UPDATE does not re-ask either: only a Delete has a record to lose', async () => {
+      mockStsSend.mockImplementation(() => Promise.reject(new Error('STS is unreachable')));
+      const provider = makeProvider();
+
+      await expect(
+        provider.update(
+          'CrResource',
+          'phys-123',
+          'Custom::CrResource',
+          { ServiceToken: SERVICE_TOKEN, Value: 'new' },
+          { ServiceToken: SERVICE_TOKEN, Value: 'old' }
+        )
+      ).rejects.toThrow(/Cannot determine the AWS account id/);
+      expect(mockStsSend).toHaveBeenCalledTimes(1);
+      expect(slept).toEqual([]);
+      expect(sentRequests()).toEqual([]);
+    });
   });
 
   it('pins the region at CONSTRUCTION, so a mid-flight bag swap cannot leak in', async () => {
