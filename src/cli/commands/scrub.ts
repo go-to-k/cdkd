@@ -4668,7 +4668,8 @@ function isRegionAmbiguousRefusal(err: unknown): boolean {
  * verbatim (`isUnboundTemplateParameter` returns false once `Default` is
  * present), so `{{resolve:ssm-secure:${P}}}` assembles to
  * `{{resolve:ssm-secure:}}` and refuses here — while the same stack deploys
- * fine under `--parameters P=/real/name`. The failure is fail-CLOSED (a
+ * fine through the AWS CDK CLI (`cdk deploy --parameters P=/real/name`); cdkd
+ * deploy takes no `--parameters`. The failure is fail-CLOSED (a
  * refusal, never a silent clean run) and the shape is a rare one, so it is
  * accepted rather than worked around; go-to-k/cdkd#3160 carries it alongside
  * the sibling class, which needs a countable unverifiable-leaf finding rather
