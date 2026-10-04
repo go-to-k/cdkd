@@ -8630,7 +8630,10 @@ export function createDriftCommand(): Command {
         'reference its state records could not be attributed to a region. Pass --accept to update cdkd ' +
         'state from AWS, or --revert to push cdkd state values back into AWS.'
     )
-    .argument('[stacks...]', 'Stack name(s) to check (physical CloudFormation names)')
+    .argument(
+      '[stacks...]',
+      'Stack name(s) to check (physical CloudFormation names), each with its nested stacks'
+    )
     .option('--all', 'Check every stack in the state bucket', false)
     .option('--json', 'Output as JSON', false)
     .option(

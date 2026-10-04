@@ -133,11 +133,13 @@ Every resource ends in exactly one of five states.
 A **clean** verdict never means anything except compared-and-matched.
 
 A **deleted** resource is drift and exits `1`. Except for a
-[nested stack's row](#nested-stacks), it is reported only on AWS's own answer that the resource is not there (a not-found error, or a status such as
-an ECS cluster's `INACTIVE` that the service keeps listing for a while after a
+[nested stack's row](#nested-stacks), it is reported only on AWS's own answer
+that the resource is not there (a not-found error, or a status such as an ECS
+cluster's `INACTIVE` that the service keeps listing for a while after a
 delete). An access-denied or throttled read is never reported as deleted, and
 neither is a read that cannot tell. A deleted resource of a type cdkd has no
-reader for still reads as **drift unknown**. See [JSON output](#json-output) for the `--json` shape change.
+reader for still reads as **drift unknown**. See [JSON output](#json-output)
+for the `--json` shape change.
 
 ### Nested stacks
 
