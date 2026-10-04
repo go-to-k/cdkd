@@ -61,7 +61,6 @@ async function stateStampedAt(value: string): Promise<StackState> {
   const fingerprint = await maskedInputFingerprint(VALUE, {
     template,
     parameterInput: parameterInputsFor({ template, values: { P: value } }).parameterInput,
-    corpora: [],
     resolve: () => Promise.reject(new Error('no node to resolve')),
   });
   return {

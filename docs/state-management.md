@@ -1011,13 +1011,23 @@ each NON-SECRET input replaced by what it resolved to: a parameter's value, a
 cross-stack read, and the branch an evaluated condition selects. So an edit to
 the script around the reference, a retarget of the reference, a new parameter
 value, a replaced resource's new name and a flipped condition are all sent.
-Secrets stay in their template form and never reach the hash: a
+Secrets stay in their template form and never reach the hash, decided by
+where an input comes from, never by comparing its value with a secret: a
 `{{resolve:...}}` reference is hashed as the reference, a `NoEcho` parameter as
-its `Ref`, a condition that reads a `NoEcho` parameter or a reference as its
-whole `Fn::If`, and an input whose resolved value carries a secret (a value
-containing one, a redacted `***` read, a resource whose own definition reads a
-secret) as written. So a new value of a `NoEcho` parameter, or a flip of a
-condition over one, is NOT sent through the mask: CloudFormation would update
+its `Ref`, and these are kept as written:
+- a condition that reads a `NoEcho` parameter, a reference, a cross-stack
+  value or an attribute (as its whole `Fn::If`);
+- a `Ref` / `Fn::GetAtt` to a resource whose own definition reads a secret, a
+  `NoEcho` parameter, a cross-stack value or a name the template does not
+  declare, directly or through another resource;
+- an input whose resolution read a secret (a `NoEcho` custom resource's
+  `Data`, a redacted `***` read);
+- in a nested stack, every parameter value its parent passed other than the
+  parameter's `Default`.
+
+So a new value of a `NoEcho` parameter, a flip of a
+condition over one, or a new value a parent passes to a nested stack, is NOT
+sent through the mask: CloudFormation would update
 the resource, but a hash that moved with the value would let anyone holding
 the state file test guesses of it. Change the property's template text, or
 replace the resource, to push one.
@@ -1055,10 +1065,8 @@ hash too, and edits to it are not seen through the mask.
 - **`cdkd diff`** compares the input fingerprint for the stack it was given.
   The entry also carries the text fingerprint, which `cdkd diff` compares for
   a nested child and wherever it cannot bind an input (a parameter it cannot
-  resolve): the child's deploy treats a value its parent supplied as
-  secret-derived when the child inherits secrets, which the preview cannot
-  tell. So there a template edit shows, but an input change shows only when
-  the deploy sends it.
+  resolve). So there a template edit shows, but an input change shows only
+  when the deploy sends it.
 - **Nested stacks.** A nested child is deployed only when its parent row
   changed, which is usually because the child's own template changed. So the
   first deploy that reaches a child last deployed by an older cdkd is, most

@@ -286,12 +286,8 @@ export async function provisionUpdate(
   // resolved non-secret inputs, read here against THIS deploy's state, so a
   // `Ref` to a resource the deploy just replaced (the diff saw the old one)
   // moves it too.
-  const fingerprintSources = this.maskedInputSources(
-    template!,
-    stateResources,
-    conditions,
-    stackName
-  );
+  const fingerprintSources =
+    template && this.maskedInputSources(template, stateResources, conditions, stackName);
   const fingerprints = fingerprintSources && inputFingerprinter(desiredProps, fingerprintSources);
   const movedMasked = new Set(
     await movedMaskedProperties(currentResource, desiredProps, fingerprints)

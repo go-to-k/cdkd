@@ -104,12 +104,8 @@ export async function provisionCreate(
   this.perResourceTemplateProps.set(logicalId, desiredProps);
   // go-to-k/cdkd#4543: the input fingerprint of each property the save may
   // record as the mask, resolved against this deploy's state.
-  const fingerprintSources = this.maskedInputSources(
-    template!,
-    stateResources,
-    conditions,
-    stackName
-  );
+  const fingerprintSources =
+    template && this.maskedInputSources(template, stateResources, conditions, stackName);
   if (fingerprintSources !== undefined) {
     this.perResourceInputFingerprints.set(
       logicalId,

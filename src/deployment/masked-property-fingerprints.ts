@@ -51,7 +51,6 @@
 import { createHash } from 'node:crypto';
 import {
   carriesSecretMask,
-  hasMaskableValues,
   MIN_NEEDLE_LENGTH,
   printingCorpusOf,
   SECRET_MASK,
@@ -143,8 +142,8 @@ export function maskedPropertyFingerprint(templateValue: unknown): string {
  * What a template parameter contributes to an input fingerprint:
  * - `value`: its bound value, which is hashed;
  * - `secret`: it stays `{Ref: P}` (a `NoEcho` parameter, a value carrying a
- *   `{{resolve:...}}` reference or the mask, a value derived from a secret a
- *   nested child inherited);
+ *   `{{resolve:...}}` reference or the mask, a value a nested child's parent
+ *   supplied);
  * - `unknown`: this side cannot say what the deploy binds (an unbound
  *   parameter of `cdkd diff`), so no input fingerprint is computed.
  */
@@ -173,11 +172,6 @@ export interface MaskedInputSources {
    * that resolution recorded secrets into. A throw is an unknown input.
    */
   resolve(node: unknown): Promise<{ value: unknown; secrets?: RecordedSecretValues }>;
-  /**
-   * Stack-wide secret corpora a resolved value is screened against: the
-   * stack's `NoEcho` parameter values and a nested child's inherited secrets.
-   */
-  corpora: ReadonlyArray<RecordedSecretValues | undefined>;
 }
 
 /** Raised inside the walk when an input is unknown; caught by its entry points. */
@@ -190,12 +184,17 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 const DYNAMIC_REFERENCE_OPEN = '{{resolve:';
 
 /**
- * Whether a RESOLVED value may be, or be derived from, a secret: it carries a
- * `{{resolve:...}}` reference (the diff side never resolves one), the mask (a
- * redacted attribute read), or any needle of the per-node bag or of a
- * stack-wide corpus, at ANY length. No floor: a short secret embedded in a
- * value is exactly what must not be hashed, and a false positive only keeps
- * the input in its template form.
+ * Whether a value carries a `{{resolve:...}}` reference (the diff side never
+ * resolves one), the mask (a redacted attribute read), or any needle of
+ * `corpora` at ANY length.
+ *
+ * For an input node the only corpus is the bag ITS OWN resolution recorded
+ * into: the node read a secret (a `NoEcho` custom resource's `Data`, a
+ * recovered cross-stack output), which is provenance. A STACK-WIDE corpus
+ * (the `NoEcho` values, a child's inherited secrets) is deliberately not
+ * consulted: whether an unrelated input happens to CONTAIN a secret would
+ * then decide the hash, and the hash would answer that question for anyone
+ * holding the state file (and move when the secret rotates).
  */
 function carriesSecretValue(
   value: unknown,
@@ -223,28 +222,26 @@ function scalarText(value: unknown): string {
 /**
  * How every declared parameter enters an input fingerprint, and the bound
  * values of the non-secret ones (what an input node is resolved against).
+ * Decided by PROVENANCE, never by comparing the value with a secret (see
+ * `carriesSecretValue`).
  *
  * `secret`: a `NoEcho` parameter; a value carrying a `{{resolve:...}}`
- * reference or the mask; and, in a nested child holding inherited secrets, a
- * value containing any needle of them at any length or one the parent
- * SUPPLIED other than the `Default` (the inherited corpus can miss a short
- * ancestor secret embedded in it, the rule `parentSuppliedValues` in
- * `condition-verdicts.ts` applies for the same reason). `unknown`: a
+ * reference or the mask; and, in a nested child (`nestedChild`), every value
+ * the parent SUPPLIED other than the `Default`. A parent can pass a resolved
+ * secret, or a value embedding one, as a plain parameter, and the inherited
+ * corpus can miss a short ancestor secret: the rule `parentSuppliedValues` in
+ * `condition-verdicts.ts` applies for the same reason. `unknown`: a
  * parameter with no bound value, or one named in `unbound`.
  */
 export function parameterInputsFor(args: {
   template: CloudFormationTemplate;
   values: Readonly<Record<string, unknown>> | undefined;
   unbound?: ReadonlySet<string>;
-  inheritedSecrets?: RecordedSecretValues | undefined;
+  nestedChild?: boolean;
   supplied?: Readonly<Record<string, unknown>> | undefined;
 }): { parameterInput: (name: string) => ParameterInput; bound: Record<string, unknown> } {
   const declared = isPlainObject(args.template.Parameters) ? args.template.Parameters : {};
   const values = args.values ?? {};
-  const inherited =
-    args.inheritedSecrets !== undefined && hasMaskableValues(args.inheritedSecrets)
-      ? args.inheritedSecrets
-      : undefined;
   const inputs = new Map<string, ParameterInput>();
   const bound: Record<string, unknown> = {};
   for (const name of Object.keys(declared)) {
@@ -257,8 +254,8 @@ export function parameterInputsFor(args: {
     const noEcho =
       isPlainObject(definition) &&
       (definition['NoEcho'] === true || definition['NoEcho'] === 'true');
-    let secret = noEcho || carriesSecretValue(value, [inherited]);
-    if (!secret && inherited !== undefined && args.supplied !== undefined) {
+    let secret = noEcho || carriesSecretValue(value, []);
+    if (!secret && args.nestedChild === true && args.supplied !== undefined) {
       if (Object.hasOwn(args.supplied, name)) {
         const fallback = isPlainObject(definition) ? definition['Default'] : undefined;
         if (fallback === undefined || scalarText(fallback) !== scalarText(args.supplied[name])) {
@@ -292,6 +289,7 @@ interface Walk {
   resources: Record<string, unknown>;
   parameters: Record<string, unknown>;
   taint: Map<string, Taint>;
+  inProgress: Set<string>;
 }
 
 /** `${Name}` / `${Resource.Attr}` placeholders of an `Fn::Sub` string; `${!x}` is a literal. */
@@ -331,9 +329,10 @@ function getAttTarget(operand: unknown): string | undefined {
 function taintOf(logicalId: string, walk: Walk): Taint {
   const cached = walk.taint.get(logicalId);
   if (cached !== undefined) return cached;
-  // A reference cycle is a template CloudFormation refuses; reading an
-  // in-progress entry as clean only ends the walk.
-  walk.taint.set(logicalId, 'clean');
+  // A reference cycle is a template CloudFormation refuses; an in-progress
+  // entry reads as tainted (fail closed) and is never cached as a verdict.
+  if (walk.inProgress.has(logicalId)) return 'tainted';
+  walk.inProgress.add(logicalId);
   let unknown = false;
   const nameTaint = (name: string): Taint => {
     if (name.startsWith('AWS::')) return 'clean';
@@ -378,6 +377,7 @@ function taintOf(logicalId: string, walk: Walk): Taint {
   const definition = walk.resources[logicalId];
   const properties = isPlainObject(definition) ? definition['Properties'] : undefined;
   const result: Taint = visit(properties) ? 'tainted' : unknown ? 'unknown' : 'clean';
+  walk.inProgress.delete(logicalId);
   walk.taint.set(logicalId, result);
   return result;
 }
@@ -412,17 +412,39 @@ function conditionInput(name: string, walk: Walk): boolean | 'secret' | 'unknown
       pending.push(value['Condition']);
       return;
     }
-    if (keys.length === 1 && keys[0] === 'Ref' && typeof value['Ref'] === 'string') {
-      const ref = value['Ref'];
+    const classifyName = (ref: string): void => {
       if (ref.startsWith('AWS::')) return;
       if (!Object.hasOwn(walk.parameters, ref)) {
+        // A resource (CloudFormation allows none here) or an undeclared name.
         unknown = true;
         return;
       }
       const input = walk.sources.parameterInput(ref);
       if (input.kind === 'secret') secret = true;
       if (input.kind === 'unknown') unknown = true;
+    };
+    if (keys.length === 1 && keys[0] === 'Ref' && typeof value['Ref'] === 'string') {
+      classifyName(value['Ref']);
       return;
+    }
+    // Every other way a condition can read a value is classified as strictly
+    // as `taintOf` reads a resource: a verdict over a secret is one bit of it.
+    const key = keys.length === 1 ? keys[0] : undefined;
+    if (key === 'Fn::ImportValue' || key === 'Fn::GetStackOutput' || key === 'Fn::GetAtt') {
+      secret = true;
+      return;
+    }
+    if (key === 'Fn::Sub') {
+      const operand = value['Fn::Sub'];
+      const text = Array.isArray(operand) ? operand[0] : operand;
+      const vars = Array.isArray(operand) && isPlainObject(operand[1]) ? operand[1] : {};
+      if (typeof text === 'string') {
+        for (const name of subPlaceholders(text)) {
+          if (Object.hasOwn(vars, name)) continue;
+          if (name.includes('.') && !name.startsWith('AWS::')) secret = true;
+          else classifyName(name);
+        }
+      }
     }
     Object.values(value).forEach(visit);
   };
@@ -453,7 +475,7 @@ async function resolvedInput(node: unknown, walk: Walk): Promise<InputForm> {
   } catch {
     throw new UnknownInput();
   }
-  if (carriesSecretValue(resolved.value, [resolved.secrets, ...walk.sources.corpora])) {
+  if (carriesSecretValue(resolved.value, [resolved.secrets])) {
     return { form: node, concrete: false };
   }
   return { form: resolved.value, concrete: true };
@@ -597,6 +619,7 @@ export async function maskedInputFingerprint(
     resources: isPlainObject(sources.template.Resources) ? sources.template.Resources : {},
     parameters: isPlainObject(sources.template.Parameters) ? sources.template.Parameters : {},
     taint: new Map(),
+    inProgress: new Set(),
   };
   let form: unknown;
   try {

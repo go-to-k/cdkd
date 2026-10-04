@@ -14,7 +14,6 @@ import {
   type MaskedInputSources,
 } from '../../../src/deployment/masked-property-fingerprints.js';
 import { recordAssumedConditions } from '../../../src/deployment/assumed-conditions.js';
-import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 /**
@@ -32,7 +31,6 @@ interface Fixture {
   values?: Record<string, unknown>;
   conditions?: Record<string, boolean>;
   resolved?: Record<string, unknown>;
-  corpora?: MaskedInputSources['corpora'];
   /** Secrets a node's resolution records into its own bag, by node JSON. */
   recorded?: Record<string, string>;
 }
@@ -65,7 +63,6 @@ function sources(f: Fixture = {}): MaskedInputSources & { resolve: ReturnType<ty
     template,
     parameterInput,
     conditions: f.conditions ?? { IsProd: false, HiddenSet: false },
-    corpora: f.corpora ?? [],
     resolve: vi.fn((node: unknown) => {
       const key = JSON.stringify(node);
       const resolved = f.resolved ?? {};
@@ -116,8 +113,7 @@ describe('parameterInputsFor', () => {
     ).toEqual({ kind: 'unknown' });
   });
 
-  it('in a nested child holding inherited secrets: a needle at any length, and a parent-supplied value', () => {
-    const inherited = new Map([['ab', '{{resolve:secretsmanager:s}}']]);
+  it('in a nested child: every value the parent supplied other than the Default', () => {
     const child: CloudFormationTemplate = {
       Parameters: {
         Embeds: { Type: 'String' },
@@ -130,14 +126,23 @@ describe('parameterInputsFor', () => {
     const { parameterInput } = parameterInputsFor({
       template: child,
       values: { Embeds: 'xaby', Supplied: 'other', AtDefault: 'default', Own: 'own' },
-      inheritedSecrets: inherited,
+      nestedChild: true,
       supplied: { Embeds: 'xaby', Supplied: 'other', AtDefault: 'default' },
     });
     expect(parameterInput('Embeds')).toEqual({ kind: 'secret' });
     expect(parameterInput('Supplied')).toEqual({ kind: 'secret' });
     expect(parameterInput('AtDefault')).toEqual({ kind: 'value', value: 'default' });
     expect(parameterInput('Own')).toEqual({ kind: 'value', value: 'own' });
-    // Without inherited secrets a supplied value is an ordinary input.
+    // A supplied value with no Default to equal is supplied too.
+    expect(
+      parameterInputsFor({
+        template: { Parameters: { NoDefault: { Type: 'String' } }, Resources: {} },
+        values: { NoDefault: 'plain' },
+        nestedChild: true,
+        supplied: { NoDefault: 'plain' },
+      }).parameterInput('NoDefault')
+    ).toEqual({ kind: 'secret' });
+    // Outside a nested child (`cdkd deploy`'s own parameters) it is an input.
     expect(
       parameterInputsFor({
         template: child,
@@ -216,15 +221,11 @@ describe('maskedInputFingerprint', () => {
     }
   });
 
-  it('keeps a resolved value carrying a secret as written: a corpus needle at ANY length, the bag a node recorded, the mask, a reference', async () => {
+  it('keeps a resolved value carrying a secret as written: the bag the node itself recorded into (any length), the mask, a reference', async () => {
     const node = ref('Bucket');
-    const kept = await maskedInputFingerprint(script({ Ref: 'Bucket' }), sources());
-    expect(kept).toBeUndefined(); // unresolvable here: the control below resolves it
-    const noEcho = new Map<string, string>();
-    recordLogOnlyValue(noEcho, 'xy');
     const cases: Fixture[] = [
-      { resolved: { [node]: 'bucket-xy-1' }, corpora: [noEcho] },
       { resolved: { [node]: 'bucket-2' }, recorded: { [node]: 'cket-2' } },
+      { resolved: { [node]: 'bucket-3' }, recorded: { [node]: 't' } },
       { resolved: { [node]: '***' } },
       { resolved: { [node]: 'a{{resolve:secretsmanager:s}}' } },
     ];
@@ -241,6 +242,64 @@ describe('maskedInputFingerprint', () => {
     ).not.toBe(asWritten);
   });
 
+  it('never depends on a NoEcho value the property does not read, even one an input happens to contain', async () => {
+    // A stack-wide screen would keep `Bucket` as written for one value and
+    // resolve it for the other: the hash would answer "does a secret occur in
+    // this physical id?" and move when the secret does.
+    const at = (hidden: string) =>
+      maskedInputFingerprint(
+        script({ Ref: 'Bucket' }),
+        sources({
+          resolved: { [ref('Bucket')]: 'vpc-0abc1234' },
+          values: { P: 'one', Hidden: hidden, Env: 'dev' },
+        })
+      );
+    expect(await at('abc1')).toBe(await at('wxyz'));
+  });
+
+  it('keeps a Ref to a resource reading a secret through GetAtt, a cross-stack read, a Sub placeholder or an undeclared name as written', async () => {
+    const template: CloudFormationTemplate = {
+      ...BASE,
+      Resources: {
+        ...BASE.Resources,
+        ByGetAtt: { Type: 'AWS::SNS::Topic', Properties: { TopicName: { 'Fn::GetAtt': ['Named', 'Arn'] } } },
+        ByImport: { Type: 'AWS::SNS::Topic', Properties: { TopicName: { 'Fn::ImportValue': 'x' } } },
+        ByOutput: {
+          Type: 'AWS::SNS::Topic',
+          Properties: { TopicName: { 'Fn::GetStackOutput': { StackName: 's', OutputName: 'o' } } },
+        },
+        BySub: { Type: 'AWS::SNS::Topic', Properties: { TopicName: { 'Fn::Sub': 'n-${Hidden}' } } },
+        BySubAttr: { Type: 'AWS::SNS::Topic', Properties: { TopicName: { 'Fn::Sub': 'n-${Named.Arn}' } } },
+        ByShellVar: { Type: 'AWS::SNS::Topic', Properties: { TopicName: { 'Fn::Sub': 'n-${HOME}' } } },
+      },
+    };
+    for (const target of ['ByGetAtt', 'ByImport', 'ByOutput', 'BySub', 'BySubAttr', 'ByShellVar']) {
+      const s = sources({ template, resolved: { [ref(target)]: 'a' } });
+      const a = await maskedInputFingerprint(script({ Ref: target }), s);
+      const b = await maskedInputFingerprint(
+        script({ Ref: target }),
+        sources({ template, resolved: { [ref(target)]: 'b' } })
+      );
+      expect(a, target).toBeDefined();
+      expect(b, target).toBe(a);
+      expect(s.resolve, target).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps AWS::NoValue as written and resolves a pseudo parameter', async () => {
+    const value = script({ 'Fn::Join': ['-', [{ Ref: 'AWS::Region' }, { Ref: 'AWS::NoValue' }]] });
+    const east = await maskedInputFingerprint(
+      value,
+      sources({ resolved: { [ref('AWS::Region')]: 'us-east-1' } })
+    );
+    const west = await maskedInputFingerprint(
+      value,
+      sources({ resolved: { [ref('AWS::Region')]: 'us-west-2' } })
+    );
+    expect(east).toBeDefined();
+    expect(west).not.toBe(east);
+  });
+
   it('takes the branch an evaluated condition selects, and moves when it flips', async () => {
     const value = script({ 'Fn::If': ['IsProd', 'big', 'small'] });
     const dev = await maskedInputFingerprint(value, sources({ conditions: { IsProd: false } }));
@@ -252,12 +311,50 @@ describe('maskedInputFingerprint', () => {
     expect(dev).not.toBe(prod);
   });
 
-  it('keeps an Fn::If on a condition over a NoEcho parameter whole: a flip of it is one bit of the secret', async () => {
-    const value = script({ 'Fn::If': ['HiddenSet', 'big', 'small'] });
-    const t = await maskedInputFingerprint(value, sources({ conditions: { HiddenSet: true } }));
-    const f = await maskedInputFingerprint(value, sources({ conditions: { HiddenSet: false } }));
-    expect(t).toBeDefined();
-    expect(f).toBe(t);
+  it('keeps an Fn::If on a condition over a secret whole, whichever way the condition reads it: a flip of it is one bit of the secret', async () => {
+    const template: CloudFormationTemplate = {
+      ...BASE,
+      Conditions: {
+        ...BASE.Conditions,
+        ViaRef: { 'Fn::Equals': [{ Ref: 'Hidden' }, 'x'] },
+        ViaChain: { 'Fn::Not': [{ Condition: 'ViaRef' }] },
+        ViaReference: { 'Fn::Equals': ['{{resolve:secretsmanager:s}}', 'x'] },
+        ViaSub: { 'Fn::Equals': [{ 'Fn::Sub': '${Hidden}' }, 'x'] },
+        ViaSubAttr: { 'Fn::Equals': [{ 'Fn::Sub': '${Named.Arn}' }, 'x'] },
+        ViaImport: { 'Fn::Equals': [{ 'Fn::ImportValue': 'shared' }, 'x'] },
+        ViaOutput: {
+          'Fn::Equals': [{ 'Fn::GetStackOutput': { StackName: 's', OutputName: 'o' } }, 'x'],
+        },
+        ViaGetAtt: { 'Fn::Equals': [{ 'Fn::GetAtt': ['Bucket', 'Arn'] }, 'x'] },
+      },
+    };
+    for (const name of [
+      'ViaRef',
+      'ViaChain',
+      'ViaReference',
+      'ViaSub',
+      'ViaSubAttr',
+      'ViaImport',
+      'ViaOutput',
+      'ViaGetAtt',
+    ]) {
+      const value = script({ 'Fn::If': [name, 'big', 'small'] });
+      const t = await maskedInputFingerprint(value, sources({ template, conditions: { [name]: true } }));
+      const f = await maskedInputFingerprint(value, sources({ template, conditions: { [name]: false } }));
+      expect(t, name).toBeDefined();
+      expect(f, name).toBe(t);
+    }
+    // Control: a condition over a plain parameter through Fn::Sub moves.
+    const plain: CloudFormationTemplate = {
+      ...BASE,
+      Conditions: { ViaPlainSub: { 'Fn::Equals': [{ 'Fn::Sub': '${P}' }, 'x'] } },
+    };
+    const value = script({ 'Fn::If': ['ViaPlainSub', 'big', 'small'] });
+    expect(
+      await maskedInputFingerprint(value, sources({ template: plain, conditions: { ViaPlainSub: true } }))
+    ).not.toBe(
+      await maskedInputFingerprint(value, sources({ template: plain, conditions: { ViaPlainSub: false } }))
+    );
   });
 
   it('is undefined for an unknown input: an unbound parameter, a missing or assumed verdict, a failed resolution', async () => {
@@ -302,12 +399,15 @@ describe('maskedInputFingerprint', () => {
       script(node),
       sources({ resolved: { [JSON.stringify(node)]: 'v2' } })
     );
-    const secretResult = await maskedInputFingerprint(
-      script(node),
-      sources({ resolved: { [JSON.stringify(node)]: 'plain' }, recorded: { [JSON.stringify(node)]: 'plain' } })
-    );
+    // A result the node's own resolution recorded as a secret is kept as
+    // written: two such results hash alike.
+    const secretResult = (value: string) =>
+      maskedInputFingerprint(
+        script(node),
+        sources({ resolved: { [JSON.stringify(node)]: value }, recorded: { [JSON.stringify(node)]: value } })
+      );
     expect(clean).not.toBe(moved);
-    expect(secretResult).not.toBe(clean);
+    expect(await secretResult('plain-1')).toBe(await secretResult('plain-2'));
     // An operand reading a NoEcho parameter is never resolved.
     const s = sources();
     await maskedInputFingerprint(script({ 'Fn::ImportValue': { Ref: 'Hidden' } }), s);

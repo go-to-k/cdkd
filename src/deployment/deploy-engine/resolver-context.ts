@@ -203,7 +203,6 @@ export function maskedInputSources(
     template,
     parameterInput: parameters.parameterInput,
     conditions,
-    corpora: [this.fingerprintNoEchoValues, this.options.inheritedSecrets],
     resolve: async (node: unknown) => {
       const context = {
         ...this.buildResolverContext(

@@ -1922,9 +1922,6 @@ export async function computeStackDiff(
         template: effectiveTemplate,
         parameterInput: classified.parameterInput,
         conditions,
-        corpora: [
-          noEchoParameterValueSeed(template.Parameters, mergedParameters, undefined, parameters),
-        ],
         resolve: async (node: unknown) => {
           const secrets: RecordedSecretValues = new Map();
           const value = await intrinsicResolver.resolve(structuredClone(node), {

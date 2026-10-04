@@ -90,7 +90,6 @@ const inputFp = (value: unknown): Promise<string | undefined> =>
   maskedInputFingerprint(value, {
     template: { Resources: {} },
     parameterInput: () => ({ kind: 'unknown' }),
-    corpora: [],
     resolve: () => Promise.reject(new Error('no input to resolve')),
   });
 const encoded = Buffer.from('pw=pw-secret-value').toString('base64');
@@ -620,6 +619,67 @@ describe('DeployEngine - a resolved input behind unchanged template text is sent
     expect(h.provider.update).toHaveBeenCalledTimes(1);
   });
 
+  it('in a nested child, a value the parent supplied stays out of the hash (the deploy wires it)', async () => {
+    const child = (supplied: string) =>
+      harness({
+        engineOptions: {
+          parameters: { P: supplied },
+          parentStackInfo: { parentStack: 'Parent', parentLogicalId: 'Child', parentRegion: 'us-east-1' },
+        },
+      });
+    // Two engines, one state: the second deploy is the parent passing a new value.
+    const h1 = child('one');
+    const first = await h1.deployTemplate(withParameter('d'));
+    const h2 = child('two');
+    h2.setState(first);
+    const second = await h2.deployTemplate(withParameter('d'));
+    expect(h2.provider.update).not.toHaveBeenCalled();
+    expect(second.resources['R']!.maskedPropertyFingerprints).toEqual(
+      first.resources['R']!.maskedPropertyFingerprints
+    );
+    // Control: the same supplied values on a top-level stack are inputs.
+    const top1 = harness({ engineOptions: { parameters: { P: 'one' } } });
+    const topFirst = await top1.deployTemplate(withParameter('d'));
+    const top2 = harness({ engineOptions: { parameters: { P: 'two' } } });
+    top2.setState(topFirst);
+    await top2.deployTemplate(withParameter('d'));
+    expect(top2.provider.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('cdkd diff recomputes exactly what the deploy stamped (Number parameter, Ref to a clean resource)', async () => {
+    const template: CloudFormationTemplate = {
+      Parameters: { Port: { Type: 'Number', Default: '8080' } },
+      Resources: {
+        A: { Type: 'AWS::SNS::Topic', Properties: { TopicName: 'a-topic' } },
+        R: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: '/app/ud',
+            Type: 'String',
+            Value: script({ 'Fn::Join': [':', [{ Ref: 'Port' }, { Ref: 'A' }]] }),
+          },
+        },
+      },
+    };
+    const h = harness({ levels: [['A'], ['R']], deps: { R: ['A'] }, physicalIdFromName: true });
+    h.provider.import.mockResolvedValue(null);
+    const deployed = await h.deployTemplate(template);
+    expect(deployed.resources['R']!.maskedPropertyFingerprints!['Value']).toMatch(/^inputs-sha256:/);
+    const { computeStackDiff } = await import('../../../src/cli/commands/diff-recursive.js');
+    const backend = { getState: async () => null } as never;
+    const diffOf = async (t: CloudFormationTemplate) =>
+      (
+        await computeStackDiff(deployed, t, 'us-east-1', 's', backend, new DiffCalculator(), {
+          previewMaskedInputs: true,
+        })
+      ).changes.get('R')!.changeType;
+    expect(await diffOf(template)).toBe('NO_CHANGE');
+    // Control: the same comparison sees a new Default.
+    expect(
+      await diffOf({ ...template, Parameters: { Port: { Type: 'Number', Default: '9090' } } })
+    ).toBe('UPDATE');
+  });
+
   it('a layout-1 fingerprint whose TEXT moved is still sent, as #4451 sent it', async () => {
     const h = harness();
     const created = await h.deployTemplate(withParameter('one'));
@@ -639,8 +699,10 @@ describe('DeployEngine - a resolved input behind unchanged template text is sent
     (edited.Resources['R']!.Properties as Record<string, unknown>)['Value'] = script({
       'Fn::Join': ['-', [{ Ref: 'P' }, 'x']],
     });
-    await h.deployTemplate(edited);
+    const after = await h.deployTemplate(edited);
     expect(h.provider.update).toHaveBeenCalledTimes(1);
+    // ...and the write stamps the input form.
+    expect(after.resources['R']!.maskedPropertyFingerprints!['Value']).toMatch(/^inputs-sha256:/);
   });
 });
 
@@ -672,6 +734,7 @@ function harness(
     levels?: string[][];
     deps?: Record<string, string[]>;
     physicalIdFromName?: boolean;
+    engineOptions?: Record<string, unknown>;
   } = {}
 ): Harness {
   const provider = {
@@ -754,7 +817,7 @@ function harness(
         validateResourceTypes: vi.fn(),
         validateResourceProperties: vi.fn(),
       } as never,
-      { dryRun: false, noRollback },
+      { dryRun: false, noRollback, ...options.engineOptions },
       'us-east-1'
     );
   return {
