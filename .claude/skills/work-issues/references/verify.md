@@ -30,7 +30,7 @@ rebase (`mise exec -- markgate status`) — unless main changed code the fixture
 EXERCISES: re-run it on the rebased head (#3726).
 
 - **DECLARE the tree final, in words, to whoever is still editing it** — every
-  scoped touch buys another real-AWS run, comment-only deltas included. The one
+  scoped touch buys another real-AWS run. The one
   exception to §8-h's "nits included": a COMMENT-ONLY nit found after the integ
   may ride this run's next lane on that file, whose integ re-runs anyway, named
   in that lane's PR body (#3977); with no such lane, fix it here and
@@ -121,7 +121,9 @@ test. Two more vacuity shapes:
 
 - **Every assertion PREDATES your change → the run is somebody else's
   regression net.** `git diff origin/main -- <fixture>`, then add the one that
-  could only pass AFTER it, guarded against vacuity.
+  could only pass AFTER it, guarded against vacuity — a `NOTE` naming your
+  issue is that slot: make it a `FAIL` before the run (#4548's caught a second
+  sink).
 - **When a fix REMOVES a behaviour, an assertion that it HAPPENS goes
   over-determined, not red.**
 

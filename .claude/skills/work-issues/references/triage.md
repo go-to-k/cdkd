@@ -98,9 +98,11 @@ unreached ones stood down with a four-field comment.
   shape when you CLAIM it (§4); if you take a `next`, the claim says why that no
   longer applies ("an integ run" is not a reason).
 
-**Resolve every premise against the tree at CLAIM time**, a COMMENT's "not a
-hazard" included (go-to-k/cdkd#3760's was wrong) — already-done, not-yet-true
-and WRONG look identical from the title. Grep the asserted SYMBOL,
+**Resolve every premise against the tree at CLAIM time**, the issue's OWN record
+included — a comment's "not a hazard", a later thread, a body's "why
+ACCEPTED" or "conditional on #N" (read N's `state`; #2179's had closed) —
+already-done, not-yet-true and WRONG look identical from the title.
+Grep the asserted SYMBOL,
 not the body's paths or line numbers; a body PROPOSING a mechanism has no symbol,
 so resolve its EFFECT — what on `origin/main` already produces it
 (go-to-k/cdkd#2286). On an empty grep, `gh pr list --state all --search <symbol>`
