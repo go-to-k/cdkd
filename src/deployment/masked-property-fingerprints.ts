@@ -328,7 +328,9 @@ function intrinsicKey(value: Record<string, unknown>): string | undefined {
 /**
  * Types whose attributes are handler- or child-defined, and so may be a
  * `NoEcho` value (a custom resource's `Data`, a nested stack's output): an
- * `Fn::GetAtt` on one is kept as written whatever it resolves to.
+ * `Fn::GetAtt` on one is kept as written whatever it resolves to. A parent
+ * reading a nested stack's output is therefore not sent when only that output
+ * moves (go-to-k/cdkd#4565).
  */
 const OPAQUE_ATTRIBUTE_TYPES = new Set([
   'AWS::CloudFormation::CustomResource',

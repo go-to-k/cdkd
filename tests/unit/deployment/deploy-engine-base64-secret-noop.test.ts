@@ -680,19 +680,67 @@ describe('DeployEngine - a resolved input behind unchanged template text is sent
       expect(h3.provider.update).not.toHaveBeenCalled();
     });
 
-    it('a value the parent classified SECRET, or did not classify, stays out of the hash', async () => {
-      for (const classes of [SECRET, undefined]) {
-        const first = await child('one', classes).deployTemplate(withParameter('d'));
-        const h2 = child('two', classes);
+    it('a value the parent classified SECRET stays out of the hash', async () => {
+      const first = await child('one', SECRET).deployTemplate(withParameter('d'));
+      const h2 = child('two', SECRET);
+      h2.setState(first);
+      const second = await h2.deployTemplate(withParameter('d'));
+      expect(h2.provider.update).not.toHaveBeenCalled();
+      expect(fps(second.resources['R']!)).toEqual(fps(first.resources['R']!));
+      // An input fingerprint was stamped (the value is held as `{Ref: P}`).
+      expect(first.resources['R']!.maskedPropertyInputFingerprints!['Value']).toMatch(
+        /^inputs-sha256:/
+      );
+    });
+
+    it('a passed value the parent did not classify is neither hashed nor compared, a Default-equal one included', async () => {
+      // `withParameter('d')` declares `P` with Default `d`: the passed `d`
+      // equals it, and is still not hashed (that would confirm the equality).
+      for (const supplied of ['one', 'd']) {
+        const first = await child(supplied, undefined).deployTemplate(withParameter('d'));
+        expect(first.resources['R']!.maskedPropertyInputFingerprints).toBeUndefined();
+        expect(first.resources['R']!.maskedPropertyFingerprints!['Value']).toMatch(/^sha256:/);
+        const h2 = child('two', undefined);
         h2.setState(first);
         const second = await h2.deployTemplate(withParameter('d'));
         expect(h2.provider.update).not.toHaveBeenCalled();
         expect(fps(second.resources['R']!)).toEqual(fps(first.resources['R']!));
-        // An input fingerprint was stamped (the value is held as `{Ref: P}`).
-        expect(first.resources['R']!.maskedPropertyInputFingerprints!['Value']).toMatch(
-          /^inputs-sha256:/
-        );
       }
+    });
+
+    it('a rollback replay with no class sends nothing on the input, and the next classified deploy does not resend', async () => {
+      // Deploy N: classified clean at `one`, stamped.
+      const stamped = await child('one', CLEAN).deployTemplate(withParameter('d'));
+      const bound = stamped.resources['R']!.maskedPropertyInputFingerprints!['Value'];
+      expect(bound).toMatch(/^inputs-sha256:/);
+      // The rollback replay of the child: no class, so the input is unknown.
+      const replay = child('zero', undefined);
+      replay.setState(stamped);
+      const replayed = await replay.deployTemplate(withParameter('d'));
+      expect(replay.provider.update).not.toHaveBeenCalled();
+      // Nothing derived from the unclassified value was stamped.
+      expect(replayed.resources['R']!.maskedPropertyInputFingerprints?.['Value']).toBe(bound);
+      // The next classified deploy at the stamped value: no extra send.
+      const next = child('one', CLEAN);
+      next.setState(replayed);
+      await next.deployTemplate(withParameter('d'));
+      expect(next.provider.update).not.toHaveBeenCalled();
+    });
+
+    it('a parameter the parent does not pass binds the Default and is hashed', async () => {
+      // The parent passes nothing, with no class map: `P` binds its Default.
+      const unpassed = () =>
+        harness({ engineOptions: { parameters: {}, parentStackInfo: PARENT } });
+      const first = await unpassed().deployTemplate(withParameter('d1'));
+      expect(first.resources['R']!.maskedPropertyInputFingerprints!['Value']).toMatch(
+        /^inputs-sha256:/
+      );
+      const h2 = unpassed();
+      h2.setState(first);
+      await h2.deployTemplate(withParameter('d2'));
+      // A new Default behind unchanged property text is an input the child hashes: sent.
+      expect(h2.provider.update).toHaveBeenCalledTimes(1);
+      expect(sentValue(h2, 0)).toBe(Buffer.from('b=d2;pw=pw-secret-value').toString('base64'));
     });
 
     it('a value the parent could not read (UNKNOWN) is neither compared nor stamped, so a later read does not resend', async () => {

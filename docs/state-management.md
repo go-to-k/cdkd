@@ -1027,9 +1027,9 @@ parameter as its `Ref`, and these are kept as written:
   declare, directly or through another resource;
 - an `Fn::GetAtt` on a custom resource or a nested stack, whose attributes
   may be `NoEcho` (its physical id is hashed), and one whose attribute NAME is
-  built from any of these. So a new nested-stack output a parent reads
-  (`Outputs.X`) is not sent yet
-  ([#4565](https://github.com/go-to-k/cdkd/issues/4565));
+  built from any of these. So a new value of a nested-stack output a parent
+  reads (`Outputs.X`) behind an unchanged template is not sent through the
+  mask yet;
 - an input whose resolution read a secret (a `NoEcho` custom resource's
   `Data`, a redacted `***` read), and an attribute that the save redacts
   because the resource it belongs to read that secret in the same deploy;
