@@ -3176,6 +3176,38 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
   });
 
+  // go-to-k/cdkd#4523: the refusal's advice is `--revert-failed`, which never
+  // replays an imported failed row nor an imported child op — so neither
+  // triggers it.
+  it.each([
+    ['the failed nested row was imported', true, false],
+    ['every child op of the run was imported', false, true],
+  ])('does NOT refuse when %s', async (_what, rowImported, childOpsImported) => {
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockImplementation(async (name: string) => (name === 'S' ? parentState : null)),
+      loadRollbackJournal: vi.fn().mockImplementation(async (name: string) =>
+        name === 'S'
+          ? parentJournalWith([
+              {
+                ...failedChildSegment(),
+                ...(rowImported && { importedResources: [{ logicalId: 'Child', physicalId: 'arn:child' }] }),
+              },
+            ])
+          : {
+              ...childFailureJournal,
+              segments: childFailureJournal.segments.map((seg) => ({
+                ...seg,
+                ...(childOpsImported && { importedResources: [{ logicalId: 'X', physicalId: 'x' }] }),
+              })),
+            }
+      ),
+    });
+
+    const error = await rollbackCommand('S', { ...baseOpts }).catch((e: unknown) => e);
+    expect(String((error as Error | undefined)?.message ?? '')).not.toContain('Re-run with --revert-failed');
+  });
+
   it('the refusal describes a child whose name carries a payload logical id, beside --revert-failed (go-to-k/cdkd#4214)', async () => {
     for (const { value: payload } of PASTE_PAYLOADS) {
       installSetup({

@@ -92,6 +92,15 @@ const createOp = {
   provisionedBy: 'sdk',
 };
 
+/** A failed CREATE of another resource, with no physical id (its outcome unknown). */
+const OTHER_FAILED = {
+  logicalId: 'Other',
+  changeType: 'CREATE',
+  resourceType: TOPIC,
+  attemptedProperties: { TopicName: 'other' },
+  provisionedBy: 'sdk',
+};
+
 /** The mark `cdkd import` writes for the topic it adopted. */
 const MARK = { logicalId: 'Topic', physicalId: NAME };
 
@@ -171,7 +180,7 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
       true
     );
     // ...and the plan does not ALSO promise its delete.
-    expect(infoLines().some((l) => l.includes('Topic') && l.includes('delete'))).toBe(false);
+    expect(infoLines().some((l) => l.includes(' Topic (') && l.includes('delete'))).toBe(false);
     // The segment is still consumed: nothing in it is left to replay.
     expect(backend['popRollbackJournalSegment']).toHaveBeenCalledTimes(1);
   });
@@ -228,16 +237,19 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
       provisionedBy: 'sdk',
     };
     install({ Topic: topicRecord('imported') }, [
-      { operations: [], failedOperations: [failedCreate], importedResources: [MARK] },
+      // `Other` (no physical id: outcome unknown) keeps the failed-op plan and
+      // replay REACHED, so an unfiltered list would show Topic there too.
+      { operations: [], failedOperations: [failedCreate, OTHER_FAILED], importedResources: [MARK] },
     ]);
 
-    const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+    await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
 
-    expect(thrown).toBeUndefined();
     expect(provider.delete).not.toHaveBeenCalled();
-    expect(backend['setRollbackJournalFailedOperations']).not.toHaveBeenCalled();
-    expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(true);
-    expect(infoLines().some((l) => l.includes('Topic') && l.includes('delete'))).toBe(false);
+    expect(infoLines().some((l) => l.includes('Topic') && l.includes('adopted by cdkd import'))).toBe(
+      true
+    );
+    expect(infoLines().some((l) => l.includes('Other'))).toBe(true);
+    expect(infoLines().some((l) => l.includes(' Topic (') && l.includes('delete'))).toBe(false);
   });
 
   it('without --revert-failed, an imported failed op is not offered to --revert-failed', async () => {
@@ -253,6 +265,7 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
             attemptedProperties: topicRecord('deployed').properties,
             provisionedBy: 'sdk',
           },
+          OTHER_FAILED,
         ],
         importedResources: [MARK],
       },
@@ -263,7 +276,9 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(infoLines().some((l) => l.includes('Topic') && l.includes('adopted by cdkd import'))).toBe(
       true
     );
-    expect(infoLines().some((l) => l.includes('pass --revert-failed'))).toBe(false);
+    // The offer is printed (for Other), just never for the imported Topic.
+    expect(infoLines().some((l) => l.includes('Other') && l.includes('pass --revert-failed'))).toBe(true);
+    expect(infoLines().some((l) => l.includes(' Topic (') && l.includes('pass --revert-failed'))).toBe(false);
   });
 
   it('an op of the same logical id that recorded ANOTHER physical id still warns (security review)', async () => {
