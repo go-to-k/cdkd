@@ -66,9 +66,9 @@ The user provides an AWS resource type like `AWS::SES::EmailIdentity`.
      IAM. If tag lookup is impractical, document that limitation in
      the method's doc comment and rely on `--resource` overrides.
 
-6. **Register the provider** in `src/provisioning/register-providers.ts`:
-   - Add import for the new provider
-   - Add `registry.register('AWS::Service::Resource', new ServiceResourceProvider())` in `registerAllProviders()`
+6. **Register the provider**:
+   - Re-export the class from `src/provisioning/provider-classes.ts` (`export { ServiceResourceProvider } from './providers/{service}-{resource}-provider.js';`) — never import it statically in `register-providers.ts` or anywhere else (#4521)
+   - In `registerAllProviders()` (`src/provisioning/register-providers.ts`), add the class to the `const { ... } = classes` destructure and add `registry.register('AWS::Service::Resource', new ServiceResourceProvider())`
 
 7. **Create test file** at `tests/unit/provisioning/providers/{service}-{resource}-provider.test.ts`:
    - Mock the AWS SDK client

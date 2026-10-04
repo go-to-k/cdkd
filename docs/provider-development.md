@@ -809,14 +809,19 @@ export class ProviderRegistry {
 
 ### Registration Location
 
-Register in `src/provisioning/register-providers.ts`:
+Provider classes are re-exported from `src/provisioning/provider-classes.ts`,
+which is loaded on demand: a provider module evaluates its `@aws-sdk/client-*`
+package, so nothing imports one statically (that would put the client on every
+command's startup path). Registration is in `src/provisioning/register-providers.ts`:
 
 ```typescript
-import { ProviderRegistry } from './provider-registry.js';
-import { IAMRoleProvider } from './providers/iam-role-provider.js';
-// ... (see register-providers.ts for full list of provider imports)
+// provider-classes.ts
+export { IAMRoleProvider } from './providers/iam-role-provider.js';
+// ... one re-export per provider class
 
-export function registerAllProviders(registry: ProviderRegistry): void {
+// register-providers.ts
+export function registerAllProviders(registry: ProviderRegistry, classes: ProviderClasses): void {
+  const { IAMRoleProvider, IAMPolicyProvider, S3BucketProvider, EC2Provider /* ... */ } = classes;
   registry.register('AWS::IAM::Role', new IAMRoleProvider());
   registry.register('AWS::IAM::Policy', new IAMPolicyProvider());
   registry.register('AWS::S3::Bucket', new S3BucketProvider());
@@ -834,7 +839,9 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 ```
 
 The registry is **not a singleton**: each command builds its own and passes it
-in — `const registry = new ProviderRegistry(); registerAllProviders(registry);`
+in, with the classes loaded once per process —
+`const providerClasses = await loadProviderClasses();` first, then
+`const registry = new ProviderRegistry(); registerAllProviders(registry, providerClasses);`
 (see `src/cli/commands/deploy.ts`). So a provider is registered in exactly one
 place, `registerAllProviders`, and never from module scope.
 
@@ -1244,14 +1251,20 @@ export class AwsClients {
 
 ### Step 5: Register Provider
 
-Register in `src/provisioning/register-providers.ts` within the `registerAllProviders()` function:
+Re-export the class from `src/provisioning/provider-classes.ts`, then register it
+in `registerAllProviders()` (`src/provisioning/register-providers.ts`):
 
 ```typescript
-import { XxxResourceProvider } from './providers/xxx-resource-provider.js';
+// provider-classes.ts
+export { XxxResourceProvider } from './providers/xxx-resource-provider.js';
 
-// Add to registerAllProviders()
+// register-providers.ts: add XxxResourceProvider to the `const { ... } = classes`
+// destructure, then
 registry.register('AWS::Xxx::Resource', new XxxResourceProvider());
 ```
+
+Do not import the provider module statically anywhere: it would put its SDK
+client back on every command's startup path, and a unit test fails on it.
 
 ### Step 5b: Refresh CFn schema fixture (issue #391)
 

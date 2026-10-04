@@ -35,7 +35,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vite-plus/test';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import {
   classifyCoverage,
   fixtureFilename,
@@ -46,12 +46,14 @@ import {
   loadSchemaFixture,
 } from './_property-coverage-utils.js';
 
+const providerClasses = await loadProviderClasses();
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const BACKFILL_PATH = join(__dirname, '..', '..', 'fixtures', 'cfn-schemas', '_todo-backfill.json');
 
 const registry = new ProviderRegistry();
-registerAllProviders(registry);
+registerAllProviders(registry, providerClasses);
 const registeredTypes = registry.getRegisteredTypes().sort();
 
 // Dev-time generator: when `CDKD_GENERATE_BACKFILL=true`, the test computes

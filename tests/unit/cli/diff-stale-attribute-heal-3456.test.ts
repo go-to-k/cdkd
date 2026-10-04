@@ -114,6 +114,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
+  loadProviderClasses: vi.fn(async () => ({})),
   // Records which registry was populated, and in which AWS scope: a provider
   // takes its clients at construction, which `registerAllProviders` does.
   registerAllProviders: vi.fn((registry: { builtIn?: string }) => {

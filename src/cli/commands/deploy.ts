@@ -64,7 +64,10 @@ import { DagBuilder } from '../../analyzer/dag-builder.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { inferCrossStackStackDeps } from '../../analyzer/cross-stack-deps.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
-import { registerAllProviders } from '../../provisioning/register-providers.js';
+import {
+  loadProviderClasses,
+  registerAllProviders,
+} from '../../provisioning/register-providers.js';
 import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import {
@@ -155,6 +158,9 @@ async function deployCommand(
     resourceTimeout?: ResourceTimeoutOption;
   }
 ): Promise<void> {
+  // Awaited first, so provider construction below stays synchronous once the
+  // stack client scope / globals are set (see `loadProviderClasses`).
+  const providerClasses = await loadProviderClasses();
   const logger = getLogger();
 
   if (options.verbose) {
@@ -816,7 +822,7 @@ async function deployCommand(
       });
       const stackLockManager = new LockManager(stateS3Client.s3, stateConfig);
       const stackProviderRegistry = new ProviderRegistry();
-      registerAllProviders(stackProviderRegistry);
+      registerAllProviders(stackProviderRegistry, providerClasses);
       stackProviderRegistry.setCustomResourceResponseBucket(stateBucket);
       if (options.allowUnsupportedTypes?.length) {
         stackProviderRegistry.allowUnsupportedTypes(options.allowUnsupportedTypes);

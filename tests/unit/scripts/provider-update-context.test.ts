@@ -43,9 +43,11 @@ import {
   findViolations,
   runSelfProbes,
 } from '../../../scripts/check-provider-update-context.ts';
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import type { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
+
+const providerClasses = await loadProviderClasses();
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../..');
 const SCRIPT = join(REPO_ROOT, 'scripts/check-provider-update-context.ts');
@@ -263,7 +265,7 @@ describe('provider UpdateContext fence — the runtime witness', () => {
       registered.set(provider.constructor.name, provider);
     },
   } as unknown as ProviderRegistry;
-  registerAllProviders(recorder);
+  registerAllProviders(recorder, providerClasses);
 
   const staticVerdicts = new Map(report.classes.map((c) => [c.name, c.verdict]));
 

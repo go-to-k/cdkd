@@ -1420,8 +1420,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     }
     const zipBytes = await obj.Body.transformToByteArray();
 
-    // Imported on use: every provider module is evaluated at startup, and only
-    // a `Code`-seeded repository create needs a zip reader.
+    // Imported on use: every provider module is evaluated whenever a command
+    // registers providers, and only a `Code`-seeded repository create needs a
+    // zip reader.
     const { default: AdmZip } = await import('adm-zip');
     const zip = new AdmZip(Buffer.from(zipBytes));
     const putFiles: PutFileEntry[] = [];

@@ -21,7 +21,10 @@ import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
-import { registerAllProviders } from '../../provisioning/register-providers.js';
+import {
+  loadProviderClasses,
+  registerAllProviders,
+} from '../../provisioning/register-providers.js';
 import { refusesFinalSnapshot } from '../../provisioning/final-snapshot.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import {
@@ -548,6 +551,9 @@ export async function rollbackCommand(
   stackArg: string | undefined,
   options: RollbackOptions
 ): Promise<void> {
+  // Awaited first, so provider construction below stays synchronous once the
+  // stack client scope / globals are set (see `loadProviderClasses`).
+  const providerClasses = await loadProviderClasses();
   const logger = getLogger();
   if (options.verbose) {
     logger.setLevel('debug');
@@ -648,7 +654,7 @@ export async function rollbackCommand(
 
     // 2. Register providers (exactly like deploy / destroy).
     const providerRegistry = new ProviderRegistry();
-    registerAllProviders(providerRegistry);
+    registerAllProviders(providerRegistry, providerClasses);
     providerRegistry.setCustomResourceResponseBucket(setup.bucket);
 
     // Interrupt handling, registered BEFORE the lock acquisition below

@@ -15,7 +15,7 @@ import {
   ProviderRegistry,
   STICKY_CC_MIGRATION_EXEMPT,
 } from '../../../src/provisioning/provider-registry.js';
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import {
@@ -23,9 +23,11 @@ import {
   SDK_PROVIDER_NON_PROVISIONABLE_TYPES,
 } from '../../../src/provisioning/unsupported-types.js';
 
+const providerClasses = await loadProviderClasses();
+
 describe('coverage ccRouteUnavailable matches NON_PROVISIONABLE, disableCcApiFallback OR a cc-broken exemption', () => {
   const registry = new ProviderRegistry();
-  registerAllProviders(registry);
+  registerAllProviders(registry, providerClasses);
   const providers = (registry as unknown as { providers: Map<string, ResourceProvider> })
     .providers;
 
