@@ -18,7 +18,6 @@ apigw-stage-throttling	2026-08-11T04:51:55Z	PASS	420	verify.sh	SDK-routed Stage 
 apigw-usage-plan-key	2026-07-26T19:16:39Z	PASS	84	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 appconfig	2026-08-10T05:29:23Z	PASS	69	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 appsync	2026-10-04T02:52:14Z	PASS	190	verify.sh	rc ok, orph clean (#1730)
-appsync	2026-10-04T02:01:00Z	PASS	191	verify.sh	rc ok, orph clean (#4521)
 asset-auto-create	2026-09-29T16:32:35Z	PASS	176	verify.sh	rc ok, orph clean; fixture-chosen region (#4114 final build)
 asset-bootstrap	2026-09-29T16:32:35Z	PASS	166	verify.sh	rc ok, orph clean; eu-west-1 (#4114 final build)
 asset-migration	2026-09-29T16:32:35Z	PASS	646	verify.sh	rc 0 in eu-west-1, 0 orphans (#4114 final build)
@@ -126,10 +125,8 @@ eventbridge-input-transformer	2026-08-10T04:16:05Z	PASS	53	verify.sh	0810 stalen
 eventbridge-pipes	2026-10-03T09:34:47Z	PASS	175	verify.sh	rc ok, orph clean (#4423)
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
-eventsourcemapping-race	2026-10-03T04:26:17Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
-export	2026-10-04T02:52:14Z	PASS	241	verify.sh	rc ok, orph clean (#1730)
 eventsourcemapping-race	2026-10-03T19:15:22Z	PASS	100	verify.sh	rc ok, orph clean (#2080 PR #4515)
-export	2026-10-03T13:19:14Z	PASS	236	verify.sh	rc ok, orph clean; #4461 regression
+export	2026-10-04T02:52:14Z	PASS	241	verify.sh	rc ok, orph clean (#1730)
 export-nested-stack	2026-10-03T06:56:28Z	PASS	201	verify.sh	rc ok, orph clean (#4283 PR #4449)
 fallback-recreate-children	2026-10-03T13:19:14Z	PASS	105	verify.sh	rc ok, orph clean; #4461 regression
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
@@ -177,7 +174,6 @@ kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#42
 kinesis-stream-mode-switch	2026-10-03T04:24:24Z	PASS	102	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 lambda	2026-10-04T02:52:14Z	PASS	105	verify.sh	rc ok, orph clean (#1730)
-lambda	2026-10-04T02:04:42Z	PASS	110	verify.sh	rc ok, orph clean (#4521)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
