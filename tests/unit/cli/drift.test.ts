@@ -3442,6 +3442,47 @@ describe('cdkd drift', () => {
         expect(mockSaveState).not.toHaveBeenCalled();
       });
 
+      it('leaves a CHANGED attribute masked when it equals an over-broad needle', async () => {
+        // The keep restores only a value state already holds in the clear; a
+        // value that differs from the record stays masked (fails safe).
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Bucket1: makeResource({
+              physicalId: 'phys-b',
+              resourceType: 'AWS::S3::Bucket',
+              properties: {
+                VersioningConfiguration: { Status: 'Enabled' },
+                Tags: [{ Key: 'Owner', Value: '***' }],
+              },
+              observedProperties: {
+                VersioningConfiguration: { Status: 'Enabled' },
+                Tags: [{ Key: 'Owner', Value: '***' }],
+              },
+              attributes: { BucketName: 'old-name' },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({
+            VersioningConfiguration: { Status: 'Suspended' },
+            Tags: [{ Key: 'Owner', Value: 'shared-name-value' }],
+          }),
+          update: async () => ({
+            physicalId: 'phys-b',
+            wasReplaced: false,
+            attributes: { BucketName: 'shared-name-value' },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Bucket1']!.attributes).toEqual({ BucketName: '***' });
+      });
+
       it('warns and keeps the revert counted when the identity cannot be built', async () => {
         infoSpy.mockClear();
         mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
