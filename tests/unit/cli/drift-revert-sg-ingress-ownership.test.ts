@@ -306,6 +306,22 @@ describe('drift --revert on a standalone SG ingress rule matched by identity (go
     expect(writes()).toEqual([]);
   });
 
+  it('does not touch a rule a sibling declares under another recorded id (#4492)', async () => {
+    // The twin records a DIFFERENT id, so only the identity-holder check
+    // (not the same-id check) can refuse the bind.
+    stubEc2(OUR_ID, 'first');
+    mockGetState.mockResolvedValue(
+      stackState({
+        First: ingressRecord('first', 'sgr-0dddddddddddddddd'),
+        Second: ingressRecord('second', OUR_ID),
+      })
+    );
+
+    await revert();
+
+    expect(writes()).toEqual([]);
+  });
+
   it('does not touch a rule two sibling records share (#4492)', async () => {
     stubEc2(OUR_ID, 'first');
     mockGetState.mockResolvedValue(

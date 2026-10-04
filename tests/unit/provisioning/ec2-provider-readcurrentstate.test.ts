@@ -1637,6 +1637,29 @@ describe('EC2Provider.readCurrentState', () => {
         expect(mockSend).toHaveBeenCalledTimes(1);
       });
 
+      it('keeps undefined when a sibling declares the same rule under ANOTHER recorded id (#4492)', async () => {
+        // Isolates the identity-holder arm: the twin's id differs, so the
+        // same-id arm cannot be what refuses it.
+        mockSend.mockResolvedValueOnce(edited);
+
+        const result = bagOf(
+          await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, {
+            ...own,
+            siblings: {
+              Twin: {
+                resourceType: TYPE,
+                physicalId: PHYS,
+                properties: { ...declared, Description: 'edited in the console' },
+                attributes: { Id: 'sgr-0ffffffffffffffff' },
+              },
+            },
+          })
+        );
+
+        expect(result).toBeUndefined();
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
       it('keeps undefined when a sibling records the same rule id under another spelling (#4492)', async () => {
         mockSend.mockResolvedValueOnce(edited);
 
