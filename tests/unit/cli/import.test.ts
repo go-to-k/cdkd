@@ -155,11 +155,14 @@ const mockGetState = vi.fn<
   ) => Promise<{ state: unknown; etag: string; migrationPending?: boolean } | null>
 >();
 const mockSaveState = vi.fn<(...args: unknown[]) => Promise<string>>();
+// go-to-k/cdkd#4523: the import marks its ids on the rollback journal first.
+const mockMarkRollbackJournalImported = vi.fn<(...args: unknown[]) => Promise<string[]>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     verifyBucketExists: mockVerifyBucketExists,
     getState: mockGetState,
     saveState: mockSaveState,
+    markRollbackJournalImported: mockMarkRollbackJournalImported,
   })),
 }));
 
@@ -313,6 +316,8 @@ describe('cdkd import', () => {
     mockGetState.mockResolvedValue(null);
     mockSaveState.mockReset();
     mockSaveState.mockResolvedValue('"new-etag"');
+    mockMarkRollbackJournalImported.mockReset();
+    mockMarkRollbackJournalImported.mockResolvedValue([]);
     mockAcquireLock.mockReset();
     mockAcquireLock.mockResolvedValue(true);
     mockReleaseLock.mockReset();
@@ -2597,6 +2602,66 @@ describe('cdkd import', () => {
     );
   });
 
+  describe('the rollback journal records the import (go-to-k/cdkd#4523)', () => {
+    const twoBuckets = () =>
+      template({
+        MyBucket: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/MyBucket' } },
+        Missing: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/Missing' } },
+      });
+    const provide = () => {
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async (input: { logicalId: string }) =>
+          input.logicalId === 'MyBucket' ? { physicalId: 'b', attributes: {} } : null
+        ),
+      });
+    };
+
+    it('marks only the IMPORTED ids, before the state write', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('OnlyOne', twoBuckets())] });
+      provide();
+      mockMarkRollbackJournalImported.mockResolvedValue(['MyBucket']);
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      expect(mockMarkRollbackJournalImported).toHaveBeenCalledTimes(1);
+      // The mark carries the physical id this run records, not just the id.
+      expect(mockMarkRollbackJournalImported).toHaveBeenCalledWith('OnlyOne', 'us-east-1', [
+        { logicalId: 'MyBucket', physicalId: 'b', resourceType: 'AWS::S3::Bucket' },
+      ]);
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      expect(mockMarkRollbackJournalImported.mock.invocationCallOrder[0]).toBeLessThan(
+        mockSaveState.mock.invocationCallOrder[0]!
+      );
+    });
+
+    it('refuses, writing no state, when the journal cannot be marked', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('OnlyOne', twoBuckets())] });
+      provide();
+      mockMarkRollbackJournalImported.mockRejectedValue(new Error('AccessDenied on the journal'));
+
+      await expect(runImport(['import', '--app', 'x', '--yes'])).rejects.toThrow('process.exit-mock');
+
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      const errors = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+      expect(errors).toContain('state was NOT written');
+      expect(errors).toContain('AccessDenied on the journal');
+      // The lock is still released.
+      expect(mockReleaseLock).toHaveBeenCalled();
+    });
+
+    it('a dry run marks nothing', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('OnlyOne', twoBuckets())] });
+      provide();
+
+      await runImport(['import', '--app', 'x', '--yes', '--dry-run']);
+
+      expect(mockMarkRollbackJournalImported).not.toHaveBeenCalled();
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+  });
+
   describe('--record-resource-mapping', () => {
     let tmpDir: string;
 
@@ -2818,6 +2883,27 @@ describe('cdkd import', () => {
         },
       });
     }
+
+    // go-to-k/cdkd#4523: the PRESERVED records are not this run's imports, so
+    // they are never marked on the rollback journal — only the listed one is.
+    it('marks only the imported row on the rollback journal, not the preserved ones', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({ state: existingState(), etag: '"existing-etag"' });
+      mockHasProvider.mockReturnValue(true);
+      const bucketImport = vi.fn(async () => ({ physicalId: 'b', attributes: {} }));
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket') return { import: bucketImport };
+        return { import: vi.fn(async () => null) };
+      });
+
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=b', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      expect(mockMarkRollbackJournalImported).toHaveBeenCalledTimes(1);
+      expect(mockMarkRollbackJournalImported.mock.calls[0]![2]).toEqual([
+        { logicalId: 'MyBucket', physicalId: 'b', resourceType: 'AWS::S3::Bucket' },
+      ]);
+    });
 
     it('selective merge preserves unlisted existing resources without --force', async () => {
       mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
@@ -5177,6 +5263,9 @@ describe('cdkd import', () => {
             JSON.stringify({
               Resources: {
                 ChildBucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+                // go-to-k/cdkd#4523: a row this walk does NOT import (no
+                // provider), which must not be marked on the child's journal.
+                ChildNoImpl: { Type: 'AWS::SQS::Queue', Properties: {} },
                 Grandchild: {
                   Type: 'AWS::CloudFormation::Stack',
                   Properties: { TemplateURL: 'x' },
@@ -5191,7 +5280,9 @@ describe('cdkd import', () => {
           mockSynthesize.mockResolvedValue({
             stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
           });
-          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          mockHasProvider.mockImplementation(
+            (t: string) => t !== 'AWS::CloudFormation::Stack' && t !== 'AWS::SQS::Queue'
+          );
           mockGetProvider.mockReturnValue({
             import: vi.fn(async () => ({ physicalId: 'phys', attributes: {} })),
           });
@@ -5235,6 +5326,29 @@ describe('cdkd import', () => {
           expect(saveCalls).toContain('P');
           expect(saveCalls).toContain('P~Child');
           expect(saveCalls).toContain('P~Child~Grandchild');
+          // go-to-k/cdkd#4523: each child's own journal is marked with what
+          // that child imported, before its state write.
+          const markFor = (stack: string) =>
+            mockMarkRollbackJournalImported.mock.calls.find((c) => c[0] === stack);
+          // Exactly the rows this walk imported, each with the physical id it
+          // records: `ChildNoImpl` is absent.
+          expect(markFor('P~Child')?.[2]).toEqual([
+            { logicalId: 'ChildBucket', physicalId: 'phys', resourceType: 'AWS::S3::Bucket' },
+            {
+              logicalId: 'Grandchild',
+              physicalId: 'arn:cdkd-local:us-east-1:123456789012:nested-stack/P~Child/Grandchild',
+              resourceType: 'AWS::CloudFormation::Stack',
+            },
+          ]);
+          expect(markFor('P~Child~Grandchild')?.[2]).toEqual([
+            { logicalId: 'GrandchildBucket', physicalId: 'phys', resourceType: 'AWS::S3::Bucket' },
+          ]);
+          // Marked before the child's own state write.
+          const childMark = mockMarkRollbackJournalImported.mock.calls.findIndex((c) => c[0] === 'P~Child');
+          const childSave = mockSaveState.mock.calls.findIndex((c) => (c as unknown[])[0] === 'P~Child');
+          expect(mockMarkRollbackJournalImported.mock.invocationCallOrder[childMark]!).toBeLessThan(
+            mockSaveState.mock.invocationCallOrder[childSave]!
+          );
 
           // Region is propagated parent → child → grandchild.
           const grandSave = mockSaveState.mock.calls.find(

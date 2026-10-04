@@ -1260,6 +1260,37 @@ describe('a rollback puts back an inline policy its removal took from a record t
     expect(warned()).toContain('the rollback of A has not completed');
   });
 
+  it('S1: a --revert-failed CREATE whose recorded id A no longer names settles (go-to-k/cdkd#4552)', async () => {
+    // `skip-failed-mismatch`: the failed CREATE recorded another resource, so
+    // A's record is not the failed op's and stands, as on the no-op it was
+    // split from. B's delete then removes `x`, which A holds: put back.
+    const state: Record<string, ResourceState> = {
+      A: policyRecord('x', 'd0'),
+      B: policyRecord('x', 'dB'),
+    };
+    put('x', 'dB');
+    const writers = new RollbackInlinePolicyWriters();
+    const failed = [
+      {
+        logicalId: 'A',
+        changeType: 'CREATE',
+        resourceType: POLICY,
+        physicalId: 'other-x',
+        provisionedBy: 'sdk',
+      },
+    ] as FailedOperation[];
+
+    const failedResult = await replayFailedOperations(failed, state, 'S', ctx, {
+      inlinePolicyWriters: writers,
+    });
+    await replayRollback([createOp('B', state['B']!)], state, 'S', ctx, { inlinePolicyWriters: writers });
+
+    expect(failedResult.warnings).toBe(1);
+    expect(policyProvider.delete).toHaveBeenCalledTimes(1);
+    expect(policyProvider.create).toHaveBeenCalledTimes(1);
+    expect(holding()).toEqual({ x: 'd0' });
+  });
+
   it.each([
     ['settles', false, 1],
     ['fails', true, 0],

@@ -116,7 +116,9 @@ deploy attempted), and `--revert-failed` opts into acting on it:
 | --- | --- |
 | UPDATE | Force-reverted to its pre-deploy properties. The journal records the *attempted* properties, so patch-based providers generate a real undo diff. |
 | UPDATE that changed the resource's `Type` | Skipped with a warning; it was a replacement in flight, and there is no in-place revert of one. |
-| CREATE that recorded a physical id | Deleted, honouring its `DeletionPolicy` — see [DeletionPolicy on a rolled-back CREATE](#deletionpolicy-on-a-rolled-back-create). |
+| CREATE that recorded a physical id, which state still records | Deleted, honouring its `DeletionPolicy` — see [DeletionPolicy on a rolled-back CREATE](#deletionpolicy-on-a-rolled-back-create). |
+| CREATE that recorded a physical id, with no state record left | Nothing to do — already cleaned up (a re-run). |
+| CREATE that recorded a physical id other than the one state now records under its logical id | Skipped with a warning (exit `2`); nothing is deleted. The resource it recorded may still exist, untracked: the plan line names it (`recorded <its physical id>, which is not the resource state tracks under this id; not reverted, needs manual attention`). Reached when another resource took the id without an import mark, such as a `cdkd import` by an older cdkd, or when a newer segment's reverted replacement re-created the resource under a new physical id (the recorded one is then usually already gone); a marked import is reported as in [Interaction with `cdkd import`](#interaction-with-cdkd-import). |
 | CREATE that recorded no physical id | Skipped with a warning; there is nothing addressable to act on. A CREATE cdkd refused before anything was applied (another resource already holds its explicit name) is not journaled at all. |
 | DELETE | Nothing to do — the resource is still in place. |
 
@@ -325,6 +327,47 @@ in-flight, so `Retain` does not delete what the policy says to keep and
 `cdkd export` refuses — behind a confirmation gate — to hand a stack over to
 CloudFormation while a rollback journal exists. The half-deployed state is
 almost certainly not what you want exported; roll back or re-deploy first.
+
+## Interaction with `cdkd import`
+
+Before it writes state, `cdkd import` marks each resource it adopts (its
+logical id, the physical id it records, and its resource type) on every
+journal segment that holds an operation for that logical id. The rollback then
+runs none of those segments' operations for that id:
+
+| The operation recorded | The rollback | Plan line |
+| --- | --- | --- |
+| The resource the import adopted (same physical id and type; for a DELETE, the record it removed) | Leaves it alone | `adopted by cdkd import after this deploy, left as it is` |
+| Another resource under the id (another physical id or type) | Leaves it alone, warns, exits 2 | `recorded <its physical id>, which cdkd import has since replaced under this id; not reverted, check that resource by hand` |
+| A replacement (including a Type change that kept its name) whose new resource the import adopted, while the old one was kept or may have been (no verdict recorded, as on a failed operation) | Leaves it alone, warns, exits 2 | `replaced <old physical id> but kept it ...` or `... and may have kept it ...`; `not reverted, check that resource by hand` |
+
+For a replacement, only its new resource counts as what it recorded. If the
+import put the old resource back, the operation is reported as above, naming
+the replacement, which is left running.
+
+Failed operations follow the same table, with or without `--revert-failed`.
+They are left unreverted. If the segment is kept for a re-run, the re-run
+lists them again; a run with no failures removes the segment as usual. A
+displaced operation also records a `ROLLBACK_RESOURCE_SKIPPED` event. Once
+its segment is removed, the plan line, which names the physical id, is the
+record to act on. A physical id
+derived from a secret is masked there, as in every other rollback line. Completed
+operations of an id you pass to `--orphan` are not covered: the flag is
+honoured.
+
+The mark matters for a resource with an explicit name, whose physical id is
+that name. A resource re-created by hand under the same name and imported
+would otherwise match the journal's CREATE, and the rollback would delete it.
+
+Segments that later deploys add carry no mark, and their operations replay as
+usual. If the import cannot read or write the journal, it refuses and writes
+no state.
+
+A cdkd older than the mark wrote none. Under `--revert-failed`, a failed
+CREATE whose physical id such an import replaced is still left alone with a
+warning, and the run exits 2 (see
+[`--revert-failed`](#revert-failed-revert-the-resource-whose-operation-failed-mid-deploy));
+the plan line then cannot say that an import caused it.
 
 ## Exit codes
 

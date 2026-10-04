@@ -128,6 +128,38 @@ export interface RollbackJournalSegment {
    * ADDITIVE, no `journalVersion` bump: an older binary ignores it.
    */
   supersededLogicalIds?: string[];
+  /**
+   * go-to-k/cdkd#4523: the resources `cdkd import` adopted AFTER this segment
+   * was recorded — the logical id, the physical id the import wrote, and the
+   * resource type — written onto every segment holding an op of that logical
+   * id. The replay runs NONE of this segment's ops of a marked id:
+   *
+   *   - an op naming the same physical id and type described the resource the
+   *     import put in state (ADOPTED): left alone silently. A completed CREATE
+   *     of an explicitly named resource would otherwise DELETE it;
+   *   - any other op of the id described a resource the import DISPLACED from
+   *     the record: left alone with a warning (the run exits 2), since every
+   *     replay of it would act on, or rewrite, the imported record.
+   *
+   * A segment a later deploy pushes does not carry the mark, and replays
+   * normally. Evidence-keyed on purpose: no generic physical-id or type guard
+   * in the classifiers, which also see reverse-replacement chains that re-id a
+   * resource with no import involved.
+   * ADDITIVE, no `journalVersion` bump: an older binary ignores it.
+   */
+  importedResources?: ImportedResourceMark[];
+}
+
+/**
+ * One `cdkd import` adoption recorded on a journal segment (go-to-k/cdkd#4523).
+ * `resourceType` is part of the identity: two types can share a name-based
+ * physical id, so a Type change under a stable logical id must not let an
+ * import of the NEW type cover an op of the OLD one.
+ */
+export interface ImportedResourceMark {
+  logicalId: string;
+  physicalId: string;
+  resourceType: string;
 }
 
 /** On-disk shape of `rollback-journal.json`. */
@@ -136,6 +168,105 @@ export interface RollbackJournal {
   stackName: string;
   region: string;
   segments: RollbackJournalSegment[];
+}
+
+/**
+ * go-to-k/cdkd#4523: split a segment's completed or failed ops by the
+ * segment's import marks ({@link RollbackJournalSegment.importedResources}):
+ * `imported` (the op recorded the very resource the import adopted),
+ * `displaced` (another op of a marked logical id), and `replay` (the rest).
+ * Neither of the first two is replayed; a caller reports `displaced` as a
+ * warning. Every site that plans or replays a JOURNAL segment's ops goes
+ * through this first.
+ *
+ * `except` holds logical ids the user named explicitly (`--orphan`): those are
+ * never set aside, so the flag is honoured on an imported id too.
+ */
+export function splitImportedOps<T extends JournalOpIdentitySource>(
+  ops: readonly T[],
+  segment: Pick<RollbackJournalSegment, 'importedResources'>,
+  except: ReadonlySet<string> = new Set()
+): { replay: T[]; imported: T[]; displaced: T[] } {
+  const marks = segment.importedResources ?? [];
+  const replay: T[] = [];
+  const imported: T[] = [];
+  const displaced: T[] = [];
+  for (const op of ops) {
+    const ofId = except.has(op.logicalId) ? [] : marks.filter((m) => m.logicalId === op.logicalId);
+    if (ofId.length === 0) replay.push(op);
+    // A replacement that KEPT its old resource left a second resource behind:
+    // adopting the new one must not silence it (see `retainedOldPhysicalId`).
+    else if (ofId.some((m) => isMarkFor(m, op)) && retainedOldPhysicalId(op) === undefined) {
+      imported.push(op);
+    } else displaced.push(op);
+  }
+  return { replay, imported, displaced };
+}
+
+/** What a journal op carries that names a resource — completed and failed ops alike. */
+export interface JournalOpIdentitySource {
+  logicalId: string;
+  resourceType: string;
+  changeType?: string | undefined;
+  physicalId?: string | undefined;
+  previousResourceType?: string | undefined;
+  oldResourceRetained?: boolean | undefined;
+  previousState?: { physicalId?: unknown; resourceType?: unknown } | undefined;
+}
+
+/**
+ * The physical id the op's OWN record names: `physicalId`, or — for a DELETE,
+ * which carries none — the id of the record it deleted (or kept, under
+ * `DeletionPolicy: Retain`). `undefined` when the op names no resource.
+ */
+export function journalOpPhysicalId(op: JournalOpIdentitySource): string | undefined {
+  if (op.physicalId !== undefined) return op.physicalId;
+  const prev = op.previousState?.physicalId;
+  return op.changeType === 'DELETE' && typeof prev === 'string' && prev !== '' ? prev : undefined;
+}
+
+/**
+ * The OLD resource a replacement UPDATE may have KEPT alive, when it is a
+ * resource other than the op's own: another physical id, or the same
+ * name-based id under another TYPE (a Type change that kept its name). An
+ * import of the op's NEW resource leaves this one running and untracked, so
+ * the op is reported (displaced), naming it, rather than adopted silently.
+ *
+ * Only an explicit `oldResourceRetained: false` — the verdict a current binary
+ * stamps on every completed UPDATE — says the old resource is gone. A FAILED
+ * op never carries the verdict, and `previousState.updateReplacePolicy` is the
+ * stale pre-#2603 read (a deploy that ADDS Retain records it absent), so an
+ * absent verdict counts as kept: the op warns instead of adopting silently.
+ */
+export function retainedOldPhysicalId(op: JournalOpIdentitySource): string | undefined {
+  if (op.changeType !== 'UPDATE') return undefined;
+  const prev = op.previousState?.physicalId;
+  if (typeof prev !== 'string' || prev === '') return undefined;
+  const prevType = op.previousState?.resourceType;
+  const oldType =
+    op.previousResourceType ??
+    (typeof prevType === 'string' && prevType !== '' ? prevType : undefined);
+  const distinct =
+    prev !== journalOpPhysicalId(op) || (oldType !== undefined && oldType !== op.resourceType);
+  if (!distinct) return undefined;
+  return op.oldResourceRetained !== false ? prev : undefined;
+}
+
+/**
+ * Does `mark` name the resource `op` itself recorded ({@link journalOpPhysicalId}):
+ * logical id, physical id and type? A replacement's OLD resource is
+ * deliberately NOT an identity: an import that put the old resource back
+ * leaves the replacement's NEW one running, so the op is reported (displaced,
+ * naming the new id) rather than adopted silently.
+ */
+export function isMarkFor(mark: ImportedResourceMark, op: JournalOpIdentitySource): boolean {
+  const own = journalOpPhysicalId(op);
+  return (
+    own !== undefined &&
+    mark.logicalId === op.logicalId &&
+    mark.physicalId === own &&
+    mark.resourceType === op.resourceType
+  );
 }
 
 /** Thrown when a journal's `journalVersion` is newer than this binary knows. */
@@ -419,6 +550,25 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
       refuseMalformed(
         shownStack,
         `segments[${s}].supersededLogicalIds must be an array of strings when present.`
+      );
+    }
+    // go-to-k/cdkd#4523: a malformed mark would leave nothing alone, and the
+    // replay would delete what was imported, so it is refused like the above.
+    if (
+      seg['importedResources'] !== undefined &&
+      (!Array.isArray(seg['importedResources']) ||
+        !seg['importedResources'].every(
+          (m: unknown) =>
+            typeof m === 'object' &&
+            m !== null &&
+            typeof (m as Record<string, unknown>)['logicalId'] === 'string' &&
+            typeof (m as Record<string, unknown>)['physicalId'] === 'string' &&
+            typeof (m as Record<string, unknown>)['resourceType'] === 'string'
+        ))
+    ) {
+      refuseMalformed(
+        shownStack,
+        `segments[${s}].importedResources must be an array of { logicalId, physicalId, resourceType } strings when present.`
       );
     }
     // Issue #3754: `runId` is what a nested revert SELECTS segments by, so a

@@ -107,6 +107,7 @@ import {
   recordAfterRollbackUpdate,
 } from './rollback-executor/replay-retry.js';
 import type { ReplayOpScope } from './rollback-executor/replay-scope.js';
+import { safeMsg } from '../utils/display-safe.js';
 import {
   replayDelete,
   replayOrphanFlag,
@@ -610,7 +611,8 @@ async function replayFailedOperationsUnbound(
     // the one a Snapshot refusal is about. Undefined on the UPDATE arm.
     let createRollbackRoute: 'sdk' | 'cc-api' | undefined;
     // go-to-k/cdkd#4408: the op completed when it replaced or dropped the
-    // record, or found nothing applied (`skip-failed-noop`).
+    // record, or found nothing applied (`skip-failed-noop`), or left a record
+    // that is not its own (`skip-failed-mismatch`).
     const recordBefore = ownRecord(stateResources, op.logicalId);
     try {
       addRecordNames(opMasker, op, stateResources[op.logicalId]);
@@ -619,6 +621,24 @@ async function replayFailedOperationsUnbound(
           logger.info(
             `  Rollback: failed ${safe(op.changeType)} of ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
               `left nothing to revert, skipping`
+          );
+          break;
+        }
+
+        case 'skip-failed-mismatch': {
+          // go-to-k/cdkd#4552: the failed CREATE may have provisioned the
+          // resource it recorded, which state no longer tracks. Nothing is
+          // deleted (state names another resource here); the recorded one is
+          // named, masked, since once the op leaves the journal this line is
+          // the only place it appears. The event, like every skip event,
+          // carries no physical id.
+          logger.warn(
+            safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it recorded ${mask(String(op.physicalId))}, which is not the resource state tracks under this id; manual attention may be required`
+          );
+          recordRollbackSkip(
+            skipScope,
+            op,
+            'The failed CREATE recorded a physical id other than the one state now tracks under this logical id, so the rollback left it as it is; manual attention may be required.'
           );
           break;
         }
@@ -1068,7 +1088,11 @@ async function replayFailedOperationsUnbound(
     }
     inlinePolicyWriters.noteOutcome(
       op,
-      action === 'skip-failed-noop' || ownRecord(stateResources, op.logicalId) !== recordBefore
+      // `skip-failed-mismatch` (go-to-k/cdkd#4552) settles like the no-op it
+      // was split from: the record is not the failed op's, so it stands.
+      action === 'skip-failed-noop' ||
+        action === 'skip-failed-mismatch' ||
+        ownRecord(stateResources, op.logicalId) !== recordBefore
     );
   }
   // go-to-k/cdkd#4408: no put-back here — the caller's `replayRollback` of
