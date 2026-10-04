@@ -4719,10 +4719,9 @@ function isNamelessDynamicReferenceFailure(err: unknown): boolean {
 // exists for the ORDINARY failure the comment beside it names — a `Ref` to
 // something not in state — and that throw is not a dynamic-reference failure
 // however many `{{resolve:...}}` leaves the same bag happens to carry. The
-// population is not exotic: `scrubStack` catches `resolveParameters` wholesale
-// and carries on with an EMPTY parameter bag, so ONE parameter with no
-// `Default` makes every `{Ref: <param>}` in the stack throw — including refs
-// to parameters that do have one. Counting those would red `--dry-run --fail`,
+// population is not exotic: `scrubStack` takes no `--parameters`, so every
+// `{Ref: <param>}` to a parameter with no `Default` throws (since issue #2166
+// the defaulted ones are still bound, one by one). Counting those would red `--dry-run --fail`,
 // the documented STANDING CI gate, on stacks that are entirely healthy and
 // with no way for the operator to clear it. That is the same outcome
 // go-to-k/cdkd#3160 gives as the reason NOT to widen into a refusal.
@@ -4951,9 +4950,10 @@ function abandonedScanVerdict(source: unknown, err: unknown): 'count' | 'warn' |
  */
 function abandonedUnitVerdict(entry: AbandonedResolution): 'count' | 'warn' | 'silent' {
   if (!entry.carriedDynamicReference) return 'silent';
-  // Issue #2166: an `Fn::Sub` placeholder KEPT inside a reference. Its error
-  // is template-shaped and its token unfetchable -- both of which would say
-  // `warn` -- but the resolver reports only a placeholder naming NOTHING the
+  // Issue #2166: an `Fn::Sub` placeholder KEPT inside a reference. Asked
+  // FIRST because the tests below would not reliably say `count` for it -- its
+  // token is unfetchable, and its error may read as template-shaped -- while
+  // the resolver reports only a placeholder naming NOTHING the
   // template declares (no resource, no parameter), which fixing the template
   // clears without any `--parameters`. Counted, so the stack is not printed
   // clean over a reference nothing resolved.
@@ -5072,9 +5072,8 @@ function isTemplateShapeResolutionFailure(err: unknown): boolean {
  *
  * Deliberately just these THREE, not every shape failure the resolver can
  * raise. They are the ones that fire EN MASSE on a healthy stack:
- * `resolveParameters` is caught wholesale by `scrubStack`, so one
- * `Default`-less parameter empties the whole bag and every `{Ref: <param>}`
- * throws; and `resolveGetAtt` refuses on the same condition as `resolveRef`,
+ * scrub takes no `--parameters`, so every `{Ref: <param>}` to a
+ * `Default`-less parameter throws; and `resolveGetAtt` refuses on the same condition as `resolveRef`,
  * which a branch adding a not-yet-deployed resource hits for every
  * `Fn::GetAtt` to it. A rarer shape failure (an `Fn::Select` over a
  * non-array, say) is a genuine template defect, and counting a leaf whose
@@ -5972,6 +5971,49 @@ function makeCrossStackPrePass(deps: {
   };
 }
 
+/**
+ * Bind every template parameter that carries a `Default`, each resolved ALONE
+ * (issue [#2166](https://github.com/go-to-k/cdkd/issues/2166)).
+ *
+ * The fallback for a TOP-LEVEL stack whose whole-bag `resolveParameters`
+ * failed: scrub takes no `--parameters`, so a `Default`-less parameter fails
+ * that call, and before this every defaulted sibling was left unbound with it.
+ * One call per parameter, through the same `resolveParameters`, so a binding
+ * here is exactly what the whole-bag call would have produced for it; a
+ * parameter whose own resolution fails stays unbound. A nested child never
+ * reaches this: it refuses on the whole-bag failure instead.
+ */
+async function bindDefaultedParametersOneByOne(
+  resolver: IntrinsicFunctionResolver,
+  template: CloudFormationTemplate,
+  shownStack: string,
+  logger: { debug: (message: string) => void }
+): Promise<Record<string, unknown>> {
+  const bound = nullPrototypeRecord<unknown>();
+  const declared = template.Parameters;
+  if (declared === undefined || declared === null || typeof declared !== 'object') return bound;
+  for (const [name, definition] of Object.entries(declared)) {
+    if (definition === null || typeof definition !== 'object' || !('Default' in definition)) {
+      continue;
+    }
+    try {
+      const one = await resolver.resolveParameters({
+        ...template,
+        Parameters: { [name]: definition },
+      });
+      if (Object.hasOwn(one, name)) bound[name] = one[name];
+    } catch (err) {
+      // No context and no bag here, so nothing to mask beyond the stack name
+      // the caller already rendered; the parameter stays unbound.
+      logger.debug(
+        `Parameter ${displayIdent(name)} of ${shownStack} left unbound: ` +
+          `${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  return bound;
+}
+
 /** What one stack's scrub found. */
 export interface ScrubStackResult {
   /**
@@ -6616,6 +6658,17 @@ export async function scrubStack(
       // does not also require remembering this line.
       logger.debug(
         `Parameter resolution skipped for ${shownStack}: ${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
+      );
+      // Issue #2166: the whole-bag call fails on the FIRST `Default`-less
+      // parameter, which left every DEFAULTED sibling unbound too, so a
+      // `{{resolve:...}}` assembled from one was kept unresolved and recorded
+      // no needle. Bind each parameter that CAN be bound on its own; a
+      // `Default`-less one stays unbound and is judged per leaf, as before.
+      parameters = await bindDefaultedParametersOneByOne(
+        resolver,
+        stack.template,
+        shownStack,
+        logger
       );
     }
     // Issue #2133: the ONE resolve context every resolution in this function

@@ -495,8 +495,15 @@ cannot rewrite. Five shapes qualify, and all five are also reported in words:
   `${Typo}` (the `keeping placeholder` warning), so the reference is never
   looked up — also when the `{{resolve:` around it comes from an enclosing
   `Fn::Join` or `Fn::Sub`. Declare the variable, fix its name, or escape it as
-  `${!Typo}`, and re-run. A placeholder naming a declared parameter scrub
-  cannot bind gets only the `keeping placeholder` warning, as below.
+  `${!Typo}`, and re-run.
+
+  A placeholder naming a DECLARED parameter with no `Default` (scrub takes no
+  `--parameters`, so it cannot bind one), or a declared resource, is different:
+  it gets only the `keeping placeholder` warning. No `ABANDONED` line is
+  printed, `--fail` does not count it, and the stack can still print
+  `No plaintext secrets found`
+  ([#4559](https://github.com/go-to-k/cdkd/issues/4559)). A parameter that
+  has a `Default` is bound even when another parameter of the stack has none.
 
 - a **cross-stack read name holding a secret's value from before a
   rotation**: `N cross-stack read name(s) in <stack> hold a plaintext scrub
@@ -674,6 +681,13 @@ abandoned scan (see Exit codes above): the stack is not summarised clean and `--
 `SCRUB_CROSS_REGION_SECRET_UNRESOLVED` refusal a complete reference gets,
 because the failure belongs to one assembled value, and refusing would strand
 every other secret in the stack.
+
+**Known residual: a placeholder scrub cannot bind still leaves the stack
+summarised CLEAN.** When the `Fn::Sub` placeholder inside such a reference
+names a declared parameter with no `Default`, or a declared resource, the
+reference is never looked up and the only sign is the `keeping placeholder`
+warning ([#4559](https://github.com/go-to-k/cdkd/issues/4559)). Run
+`cdkd scrub --verbose` when a stack you expect findings from reports clean.
 
 ### A read cdkd declines by design is a finding, not a refusal
 

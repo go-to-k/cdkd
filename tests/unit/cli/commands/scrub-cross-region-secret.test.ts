@@ -1328,27 +1328,43 @@ describe('cdkd scrub counts a deferred reference that goes UNRESOLVED (issue #21
     expect(res).toMatchObject({ unverifiableLeaves: 0 });
   });
 
-  it.each([
-    ['a DECLARED parameter with no Default', { Stage: { Type: 'String' } }, '${Stage}'],
-    [
-      'a defaulted parameter beside a Default-less one, which unbinds every parameter',
-      { Env: { Type: 'String', Default: 'prod' }, Other: { Type: 'String' } },
-      '${Env}',
-    ],
-  ])('CONTROL: %s is kept but NOT counted -- scrub takes no --parameters', async (_l, params, ph) => {
-    // Scrub resolves with `bestEffort`, so these are kept rather than refused.
-    // Counting them would be a `--fail` gate nothing could clear.
+  it('CONTROL: a DECLARED parameter with no Default is kept but NOT counted -- scrub takes no --parameters', async () => {
+    // Scrub resolves with `bestEffort`, so it is kept rather than refused.
+    // Counting it would be a `--fail` gate nothing could clear (#4559 tracks
+    // making it visible some other way).
     useState(makeLeakyState(IRELAND_PASSWORD, 'none'));
 
     const res = await scrub(
-      { 'Fn::Sub': `{{resolve:secretsmanager:${ph}-db:SecretString:password}}` },
+      { 'Fn::Sub': '{{resolve:secretsmanager:${Stage}-db:SecretString:password}}' },
       undefined,
       undefined,
-      params
+      { Stage: { Type: 'String' } }
     );
 
     expect(res).toMatchObject({ unverifiableLeaves: 0 });
     expect(secretSends).toHaveLength(0);
+  });
+
+  it('a DEFAULTED parameter beside a Default-less sibling is still bound, so its reference resolves', async () => {
+    // The whole-bag `resolveParameters` fails on `Other`. Before the
+    // per-parameter fallback that left `Env` unbound too: the reference was
+    // kept unresolved, nothing was fetched, and the plaintext the record holds
+    // for it was never rewritten.
+    useState(makeLeakyState(TOKYO_PASSWORD, 'none'));
+
+    const res = await scrub(
+      { 'Fn::Sub': '{{resolve:secretsmanager:${Env}-db:SecretString:password}}' },
+      undefined,
+      undefined,
+      { Env: { Type: 'String', Default: 'prod' }, Other: { Type: 'String' } }
+    );
+
+    expect(secretSends.map((send) => (send.input as { SecretId?: string }).SecretId)).toEqual([
+      'prod-db',
+    ]);
+    expect(res).toMatchObject({ recordsChanged: 1, unverifiableLeaves: 0 });
+    const saved = stateBackend.saveState.mock.calls[0]![2] as StackState;
+    expect(JSON.stringify(saved)).not.toContain(TOKYO_PASSWORD);
   });
 
   it('the integ arm`s other phase: a deleted foreign SSM parameter is a counted finding', async () => {

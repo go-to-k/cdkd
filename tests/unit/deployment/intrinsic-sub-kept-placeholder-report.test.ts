@@ -280,6 +280,7 @@ describe('sitsInsideResolvableReference (issue #2166)', () => {
     ['{{resolve:ssm-secure:/a/${X}/b}}', true],
     ['{{resolve:${X}:name}}', true],
     ['{{resolve:ssm:/a}} then {{resolve:ssm:${X}', false],
+    ['{{resolve:ssm:${X} then {{resolve:ssm:/b}}', false],
     ['{{resolve:foo:${X}}}', false],
     ['{{resolve:secretsmanager: prose ${X}', false],
     ['${X} {{resolve:ssm:/a}}', false],

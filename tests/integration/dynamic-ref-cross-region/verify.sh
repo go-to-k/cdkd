@@ -976,7 +976,9 @@ run_unresolved_scrub() {
 # clean: exit 1 (a `--fail` FINDING, not the exit-2 refusal), the ABANDONED
 # finding present, and neither clean line. The positive marker is the sentinel
 # for the negative one, so reworded output cannot make the absence pass.
-assert_unresolved_finding() {
+# Refuse log $1 (phase label $2) if it carries either SecureString plaintext.
+# Runs BEFORE anything prints the log, per this file's scratch-file rule.
+assert_log_has_no_plaintext() {
   local log="$1" label="$2"
   for secret_needle in "${EXPECTED_SECURE_B}" "${EXPECTED_SECURE_A}"; do
     if grep -F -q "${secret_needle}" "${log}"; then
@@ -984,6 +986,10 @@ assert_unresolved_finding() {
       return 1
     fi
   done
+}
+assert_unresolved_finding() {
+  local log="$1" label="$2"
+  assert_log_has_no_plaintext "${log}" "${label}"
   if [ "${SCRUB_UNRESOLVED_RC}" -ne 1 ] || ! grep -qF "ABANDONED" "${log}" \
     || grep -qF "No plaintext secrets found" "${log}"; then
     sed 's/^/    /' "${log}" >&2 || true
@@ -1005,6 +1011,7 @@ echo "==> Phase 3g: an Fn::Sub placeholder KEPT inside the reference is a findin
 # writes nothing, so the deployed record and phase 3h are unaffected.
 SCRUB_G_LOG="$(mktemp)"
 CDKD_IT_DYNREF_KEPT_PLACEHOLDER=1 run_unresolved_scrub "${SCRUB_G_LOG}"
+assert_log_has_no_plaintext "${SCRUB_G_LOG}" "phase 3g"
 # PREMISE: the toggle reached the synth. Without the warning this phase would
 # be scrubbing the ordinary template, where a clean result is correct.
 if ! grep -qF "keeping placeholder" "${SCRUB_G_LOG}"; then
