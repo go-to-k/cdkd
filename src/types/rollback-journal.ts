@@ -130,15 +130,21 @@ export interface RollbackJournalSegment {
   supersededLogicalIds?: string[];
   /**
    * go-to-k/cdkd#4523: the resources `cdkd import` adopted AFTER this segment
-   * was recorded, as the logical id, the physical id the import wrote, and the
-   * resource type. An op of this segment naming all three describes the
-   * resource the import put in
-   * state, so the replay leaves it alone: a completed CREATE of an explicitly
-   * named resource would otherwise match the imported record's physical id and
-   * DELETE it. An op of the same logical id that recorded ANOTHER physical id
-   * is not covered, and replays (or warns) as before. Written by the import
-   * onto every segment holding such an op; a segment a later deploy pushes
-   * does not carry it, and replays normally.
+   * was recorded — the logical id, the physical id the import wrote, and the
+   * resource type — written onto every segment holding an op of that logical
+   * id. The replay runs NONE of this segment's ops of a marked id:
+   *
+   *   - an op naming the same physical id and type described the resource the
+   *     import put in state (ADOPTED): left alone silently. A completed CREATE
+   *     of an explicitly named resource would otherwise DELETE it;
+   *   - any other op of the id described a resource the import DISPLACED from
+   *     the record: left alone with a warning (the run exits 2), since every
+   *     replay of it would act on, or rewrite, the imported record.
+   *
+   * A segment a later deploy pushes does not carry the mark, and replays
+   * normally. Evidence-keyed on purpose: no generic physical-id or type guard
+   * in the classifiers, which also see reverse-replacement chains that re-id a
+   * resource with no import involved.
    * ADDITIVE, no `journalVersion` bump: an older binary ignores it.
    */
   importedResources?: ImportedResourceMark[];
@@ -165,14 +171,13 @@ export interface RollbackJournal {
 }
 
 /**
- * go-to-k/cdkd#4523: split a segment's completed or failed ops into the ones
- * the replay runs and the ones it leaves alone because `cdkd import` adopted
- * the very resource they recorded — same logical id, same physical id — after
- * the segment was recorded ({@link RollbackJournalSegment.importedResources}).
- * `classifyRollbackOp` cannot tell such an op from a live one: an explicitly
- * named resource keeps its physical id, so a completed CREATE classifies
- * `delete` against the imported record. Every site that plans or replays a
- * JOURNAL segment's ops goes through this first.
+ * go-to-k/cdkd#4523: split a segment's completed or failed ops by the
+ * segment's import marks ({@link RollbackJournalSegment.importedResources}):
+ * `imported` (the op recorded the very resource the import adopted),
+ * `displaced` (another op of a marked logical id), and `replay` (the rest).
+ * Neither of the first two is replayed; a caller reports `displaced` as a
+ * warning. Every site that plans or replays a JOURNAL segment's ops goes
+ * through this first.
  *
  * `except` holds logical ids the user named explicitly (`--orphan`): those are
  * never set aside, so the flag is honoured on an imported id too.
@@ -183,14 +188,18 @@ export function splitImportedOps<
   ops: readonly T[],
   segment: Pick<RollbackJournalSegment, 'importedResources'>,
   except: ReadonlySet<string> = new Set()
-): { replay: T[]; imported: T[] } {
+): { replay: T[]; imported: T[]; displaced: T[] } {
   const marks = segment.importedResources ?? [];
-  const isImported = (op: T): boolean =>
-    !except.has(op.logicalId) && op.physicalId !== undefined && marks.some((m) => isMarkFor(m, op));
   const replay: T[] = [];
   const imported: T[] = [];
-  for (const op of ops) (isImported(op) ? imported : replay).push(op);
-  return { replay, imported };
+  const displaced: T[] = [];
+  for (const op of ops) {
+    const ofId = except.has(op.logicalId) ? [] : marks.filter((m) => m.logicalId === op.logicalId);
+    if (ofId.length === 0) replay.push(op);
+    else if (ofId.some((m) => isMarkFor(m, op))) imported.push(op);
+    else displaced.push(op);
+  }
+  return { replay, imported, displaced };
 }
 
 /** Does `mark` name the very resource `op` recorded: logical id, physical id and type? */

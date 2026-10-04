@@ -522,27 +522,28 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
     );
   });
 
-  it('splitImportedOps sets aside only ops of the SAME logical id, physical id AND type', () => {
+  it('splitImportedOps: adopted = same logical id, physical id AND type; any other op of a marked id is displaced', () => {
     const T1 = 'AWS::Old::Type';
     const T2 = 'AWS::New::Type';
     const ops = [
       { logicalId: 'A', physicalId: 'a', resourceType: T2 },
       { logicalId: 'B', physicalId: 'b', resourceType: T2 },
-      // Same logical id, another physical resource: NOT the imported one.
+      // Same logical id, another physical resource: displaced.
       { logicalId: 'B', physicalId: 'b-old', resourceType: T2 },
-      // Same logical AND physical id, the OLD type of a Type change: NOT it either.
+      // Same logical AND physical id, the OLD type of a Type change: displaced.
       { logicalId: 'B', physicalId: 'b', resourceType: T1 },
-      // No physical id recorded (a failed create): never set aside.
+      // No physical id recorded (a failed create): displaced too.
       { logicalId: 'B', resourceType: T2 },
     ];
     const segment = { importedResources: [{ logicalId: 'B', physicalId: 'b', resourceType: T2 }] };
     expect(splitImportedOps(ops, segment)).toEqual({
-      replay: [ops[0], ops[2], ops[3], ops[4]],
+      replay: [ops[0]],
       imported: [ops[1]],
+      displaced: [ops[2], ops[3], ops[4]],
     });
-    // `--orphan B` keeps it in the replay.
-    expect(splitImportedOps(ops, segment, new Set(['B'])).imported).toEqual([]);
-    expect(splitImportedOps(ops, {})).toEqual({ replay: ops, imported: [] });
+    // `--orphan B` keeps every op of B in the replay.
+    expect(splitImportedOps(ops, segment, new Set(['B'])).replay).toEqual(ops);
+    expect(splitImportedOps(ops, {})).toEqual({ replay: ops, imported: [], displaced: [] });
   });
 
   it('refuses a non-string runId, which a nested revert selects segments by', () => {

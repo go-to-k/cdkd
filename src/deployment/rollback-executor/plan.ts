@@ -322,13 +322,6 @@ export function classifyRollbackOp(
     const retained = op.oldResourceRetained ?? op.previousState!.updateReplacePolicy === 'Retain';
     return retained ? 'reverse-replacement-readopt' : 'reverse-replacement';
   }
-  // go-to-k/cdkd#4523: an in-place revert writes to `current.physicalId`, so a
-  // record that now names ANOTHER resource (one `cdkd import --force` adopted
-  // under this id) must not receive the old resource's pre-deploy bag — the
-  // same verdict the CREATE arm above reaches on a changed physical id.
-  if (op.physicalId !== undefined && current.physicalId !== op.physicalId) {
-    return 'skip-mismatch';
-  }
   if (op.previousState && deepEqual(current.properties, op.previousState.properties)) {
     // Already reverted (idempotent re-run).
     return 'skip-already-done';
@@ -386,15 +379,8 @@ export function classifyFailedOp(
   // force-revert below is an in-place `update()` routed on `op.resourceType` —
   // the NEW type — against the OLD resource's physical id. There is no in-place
   // revert of a replacement; say so instead of aiming one type's update at
-  // another type's resource. Checked FIRST, so its warning survives whatever
-  // physical id the op recorded.
+  // another type's resource.
   if (isTypeChangeOp(op)) return 'skip-failed-type-change';
-  // go-to-k/cdkd#4523: the force-revert below writes to `current.physicalId`,
-  // so a record that now names ANOTHER resource (one `cdkd import` adopted
-  // under this id) must not receive the failed op's pre-deploy bag — the same
-  // guard the CREATE arm above applies.
-  if (op.physicalId !== undefined && current.physicalId !== op.physicalId)
-    return 'skip-failed-noop';
   return 'revert-failed-update';
 }
 

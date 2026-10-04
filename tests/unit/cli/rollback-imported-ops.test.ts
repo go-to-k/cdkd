@@ -281,135 +281,96 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(infoLines().some((l) => l.includes(' Topic (') && l.includes('pass --revert-failed'))).toBe(false);
   });
 
-  it('an op of the same logical id that recorded ANOTHER physical id still warns (security review)', async () => {
-    // The deploy created an auto-named `old-auto-name`; the user then imported a
-    // DIFFERENT resource under the id. The mark names only the imported one, so
-    // the journal's CREATE keeps its "physical id changed" warning and the
-    // non-zero exit instead of reading as adopted.
-    install({ Topic: topicRecord('imported') }, [
-      {
-        operations: [{ ...createOp, physicalId: 'old-auto-name' }],
-        importedResources: [MARK],
-      },
-    ]);
+  // An op of a MARKED id that recorded another resource was DISPLACED by the
+  // import: never replayed (each replay would act on, or rewrite, the imported
+  // record), reported as a warning, and the run exits non-zero.
+  const DISPLACED = 'cdkd import has since replaced';
+  const inPlaceUpdate = (physicalId: string) => ({
+    logicalId: 'Topic',
+    changeType: 'UPDATE',
+    resourceType: TOPIC,
+    physicalId,
+    properties: topicRecord('deployed').properties,
+    previousResourceType: TOPIC,
+    previousState: { ...topicRecord('pre-deploy'), physicalId },
+    provisionedBy: 'sdk',
+  });
+  const failedUpdate = (physicalId: string) => ({
+    logicalId: 'Topic',
+    changeType: 'UPDATE',
+    resourceType: TOPIC,
+    physicalId,
+    attemptedProperties: topicRecord('attempted').properties,
+    previousState: { ...topicRecord('pre-deploy'), physicalId },
+    provisionedBy: 'sdk',
+  });
+
+  it.each([
+    ['a CREATE of another physical id', { ...createOp, physicalId: 'old-auto-name' }],
+    // Security m3: a Type change under a stable id and a name-based physical
+    // id — the OLD-type CREATE must not delete (and drop from state) anything.
+    ['a CREATE of the OLD type under the same name', { ...createOp, resourceType: 'AWS::SQS::Queue' }],
+    // Orchestrator T1: an in-place revert would push the old bag onto Q.
+    ['an in-place UPDATE of another physical id', inPlaceUpdate('old-phys')],
+  ])('a displaced op is left alone with a warning: %s', async (_what, op) => {
+    install({ Topic: topicRecord('imported') }, [{ operations: [op], importedResources: [MARK] }]);
 
     const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
 
     expect(provider.delete).not.toHaveBeenCalled();
+    expect(provider.update).not.toHaveBeenCalled();
+    expect(backend['saveState']).not.toHaveBeenCalled();
+    expect(infoLines().some((l) => l.includes(' Topic (') && l.includes(DISPLACED))).toBe(true);
     expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(false);
-    expect(infoLines().some((l) => l.includes('physical id changed'))).toBe(true);
     expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain('skipped');
   });
 
-  it.each([
-    ['ANOTHER resource the import adopted', 'old-phys', 0],
-    ['the same resource (control)', NAME, 1],
-  ])(
-    '--revert-failed: a failed UPDATE recorded against %s',
-    async (_what, opPhysicalId, updates) => {
-      // A deploy's UPDATE of Topic failed on `opPhysicalId`; the record now
-      // names NAME. Only when they agree may the force-revert write to it.
-      install({ Topic: topicRecord('imported') }, [
-        {
-          operations: [],
-          failedOperations: [
-            {
-              logicalId: 'Topic',
-              changeType: 'UPDATE',
-              resourceType: TOPIC,
-              physicalId: opPhysicalId,
-              attemptedProperties: topicRecord('attempted').properties,
-              previousState: { ...topicRecord('pre-deploy'), physicalId: opPhysicalId },
-              provisionedBy: 'sdk',
-            },
-          ],
-        },
-      ]);
-
-      await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
-
-      expect(provider.update).toHaveBeenCalledTimes(updates);
-      // The plan says why the mismatched op is skipped.
-      expect(infoLines().some((l) => l.includes('no longer names'))).toBe(updates === 0);
-    }
-  );
-
-  it.each([
-    ['ANOTHER resource the import adopted (skip-mismatch)', 'old-phys', 0],
-    ['the same resource (control: reverted)', NAME, 1],
-  ])('a completed in-place UPDATE recorded against %s', async (_what, opPhysicalId, updates) => {
-    // A deploy changed `opPhysicalId` in place; the record now names NAME (an
-    // `import --force` of another resource). Only when they agree may the
-    // revert push the pre-deploy bag onto the record's resource.
+  it('--revert-failed: a displaced failed UPDATE is not force-reverted, warns, and stays in the journal', async () => {
     install({ Topic: topicRecord('imported') }, [
       {
-        operations: [
-          {
-            logicalId: 'Topic',
-            changeType: 'UPDATE',
-            resourceType: TOPIC,
-            physicalId: opPhysicalId,
-            properties: topicRecord('deployed').properties,
-            previousResourceType: TOPIC,
-            previousState: { ...topicRecord('pre-deploy'), physicalId: opPhysicalId },
-            provisionedBy: 'sdk',
-          },
-        ],
-      },
-    ]);
-
-    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
-
-    expect(provider.update).toHaveBeenCalledTimes(updates);
-    expect(infoLines().some((l) => l.includes('physical id changed'))).toBe(updates === 0);
-    // The mismatch warns and exits non-zero; the control is clean.
-    expect(thrown instanceof Error).toBe(updates === 0);
-  });
-
-  it('a mark of the NEW type does not cover an op of the OLD type under the same id and name', async () => {
-    // A Type change under a stable logical id and a name-based physical id:
-    // the journal's CREATE made the OLD-type resource; the import adopted a
-    // NEW-type one of the same name. The CREATE is not the imported resource,
-    // so it is not set aside as one.
-    const OLD = 'AWS::SQS::Queue';
-    install({ Topic: topicRecord('imported') }, [
-      {
-        operations: [{ ...createOp, resourceType: OLD }],
+        operations: [],
+        failedOperations: [failedUpdate('old-phys'), OTHER_FAILED],
         importedResources: [MARK],
       },
     ]);
 
-    await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+    const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
 
-    expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(false);
-    // The CREATE replays: its OLD-type resource is deleted, routed on the op's type.
-    expect(provider.delete).toHaveBeenCalledTimes(1);
-    expect(provider.delete.mock.calls[0]!.slice(0, 3)).toEqual(['Topic', NAME, OLD]);
+    expect(provider.update).not.toHaveBeenCalled();
+    expect(infoLines().some((l) => l.includes(' Topic (') && l.includes(DISPLACED))).toBe(true);
+    expect(thrown).toBeInstanceOf(Error);
+    // `Other` is handled (stripped); the displaced Topic op is kept.
+    const kept = backend['setRollbackJournalFailedOperations']!.mock.calls[0]![2] as Array<{
+      logicalId: string;
+    }>;
+    expect(kept.map((o) => o.logicalId)).toEqual(['Topic']);
   });
 
-  it('--revert-failed: a failed Type-change UPDATE keeps its type-change skip whatever physical id it recorded', async () => {
-    install({ Topic: topicRecord('imported') }, [
-      {
-        operations: [],
-        failedOperations: [
-          {
-            logicalId: 'Topic',
-            changeType: 'UPDATE',
-            resourceType: TOPIC,
-            physicalId: 'old-phys',
-            previousResourceType: 'AWS::SQS::Queue',
-            attemptedProperties: topicRecord('attempted').properties,
-            previousState: { ...topicRecord('pre-deploy'), physicalId: 'old-phys', resourceType: 'AWS::SQS::Queue' },
-            provisionedBy: 'sdk',
-          },
-        ],
-      },
+  // WITHOUT an import mark, a physical id that differs from the record is NOT
+  // evidence of an import: a newer segment's reverse-replacement of an
+  // AUTO-NAMED resource re-ids it, and the older in-place op must still revert.
+  it('no mark: an in-place UPDATE whose id a reverse-replacement changed is still reverted', async () => {
+    install({ Topic: { ...topicRecord('deployed'), physicalId: 'p3' } }, [
+      { operations: [inPlaceUpdate('p1')] },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    expect(thrown).toBeUndefined();
+    expect(provider.update).toHaveBeenCalledTimes(1);
+    expect(provider.update.mock.calls[0]![1]).toBe('p3');
+  });
+
+  it('no mark: --revert-failed still force-reverts a failed UPDATE whose id a reverse-replacement changed', async () => {
+    install({ Topic: { ...topicRecord('deployed'), physicalId: 'p3' } }, [
+      { operations: [], failedOperations: [failedUpdate('p1')] },
     ]);
 
     await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
 
-    expect(provider.update).not.toHaveBeenCalled();
-    expect(infoLines().some((l) => l.includes('failed Type change is a replacement'))).toBe(true);
+    expect(provider.update).toHaveBeenCalledTimes(1);
+    expect(infoLines().some((l) => l.includes(DISPLACED))).toBe(false);
   });
 
   it('--orphan on an imported id is honoured: the record is dropped from state, nothing is deleted', async () => {

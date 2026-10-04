@@ -20,7 +20,6 @@ import type { StateBackendConfig } from '../types/config.js';
 import {
   ROLLBACK_JOURNAL_VERSION,
   parseRollbackJournal,
-  isMarkFor,
   type ImportedResourceMark,
   type RollbackJournal,
   type RollbackJournalSegment,
@@ -38,7 +37,6 @@ import {
   displayIdent,
   displaySafe,
   displayStackName,
-  safeMsg,
   STACK_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
@@ -1340,14 +1338,13 @@ export class S3StateBackend {
 
   /**
    * go-to-k/cdkd#4523: record that `cdkd import` adopted `marks` (logical id,
-   * the physical id it wrote, and the type). Each segment holding a completed
-   * or failed op of the SAME logical id, physical id AND type gets that mark
-   * in `importedResources`, which the replay leaves alone; an op of the id
-   * that recorded another physical id or type stays unmarked. The newest
-   * segment also supersedes every imported id ANY segment names (matched or
-   * not), since an import records
-   * the resource just as a completed op does. Returns the logical ids marked;
-   * no journal, or no segment naming one, writes nothing. Throws on a read or
+   * the physical id it wrote, and the type). Every segment holding a completed
+   * or failed op of a marked logical id gets that mark in `importedResources`
+   * (the replay then runs none of the segment's ops of the id: the matching
+   * ones are adopted, the rest displaced — see `splitImportedOps`). The newest
+   * segment also supersedes every marked id, since an import records the
+   * resource just as a completed op does. Returns the logical ids marked; no
+   * journal, or no segment naming one, writes nothing. Throws on a read or
    * write failure — the caller refuses the import rather than leave the
    * journal free to delete it.
    */
@@ -1359,36 +1356,23 @@ export class S3StateBackend {
     if (marks.length === 0) return [];
     const journal = await this.loadRollbackJournal(stackName, region);
     if (!journal) return [];
-    const ids = new Set(marks.map((m) => m.logicalId));
-    const named = new Set<string>();
     const marked = new Set<string>();
     for (const segment of journal.segments) {
-      const ops = [...segment.operations, ...(segment.failedOperations ?? [])];
-      for (const op of ops) if (ids.has(op.logicalId)) named.add(op.logicalId);
-      const hits = marks.filter((m) => ops.some((op) => isMarkFor(m, op)));
+      const named = new Set(
+        [...segment.operations, ...(segment.failedOperations ?? [])].map((op) => op.logicalId)
+      );
+      const hits = marks.filter((m) => named.has(m.logicalId));
       if (hits.length === 0) continue;
+      // A re-import replaces the id's earlier mark: the record names the
+      // NEW resource now.
       const kept = (segment.importedResources ?? []).filter(
-        (k) =>
-          !hits.some(
-            (m) =>
-              m.logicalId === k.logicalId &&
-              m.physicalId === k.physicalId &&
-              m.resourceType === k.resourceType
-          )
+        (k) => !hits.some((m) => m.logicalId === k.logicalId)
       );
       segment.importedResources = [...kept, ...hits.map((m) => ({ ...m }))];
       for (const m of hits) marked.add(m.logicalId);
     }
-    if (named.size === 0) return [];
-    if (marked.size === 0) {
-      // The journal names an imported id only through ops of ANOTHER resource:
-      // nothing is set aside, but the id's earlier attempts are superseded.
-      this.logger.debug(
-        safeMsg`Rollback journal for ${this.displayName(stackName)} (${displayIdent(region)}): ` +
-          safeMsg`${named.size} imported logical id(s) superseded, none marked as imported`
-      );
-    }
-    addSupersededIds(journal.segments[journal.segments.length - 1]!, [...named]);
+    if (marked.size === 0) return [];
+    addSupersededIds(journal.segments[journal.segments.length - 1]!, [...marked]);
     await this.putRawObject(
       this.getRollbackJournalKey(stackName, region),
       JSON.stringify(journal, null, 2)

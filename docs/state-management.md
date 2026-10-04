@@ -207,11 +207,10 @@ ids of its completed ops on the nearest older
 segment (`supersededLogicalIds`, additive, no `journalVersion` bump), so the
 attempt a reverted adoption consumed does not count again. `cdkd import` writes the
 journal too: before its state write, it records each resource it adopts, as its
-logical id, physical id and type, on every segment holding an op of that resource
-(`importedResources`, additive, no `journalVersion` bump). It also supersedes, on
-the newest segment, every imported logical id any segment names, whether or not an
-op of that id matched the imported resource. `cdkd rollback` then leaves those ops
-alone ([`cdkd rollback`](cli-rollback.md#interaction-with-cdkd-import)). A failed op refused because the
+logical id, physical id and type, on every segment holding an op of that logical id
+(`importedResources`, additive, no `journalVersion` bump), and supersedes each
+marked id on the newest segment. `cdkd rollback` then runs none of a marked
+segment's ops of that id. It warns about any op that recorded another resource ([`cdkd rollback`](cli-rollback.md#interaction-with-cdkd-import)). A failed op refused because the
 resource it met belongs to someone else, or whose write AWS provably did not
 apply (one send answered with a 4xx or a throttle), is recorded WITHOUT its
 attempted properties, so it is never read back as an attempt; any other

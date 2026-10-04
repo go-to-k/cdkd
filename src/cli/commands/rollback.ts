@@ -495,14 +495,25 @@ function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string
 }
 
 /**
- * go-to-k/cdkd#4523: the plan line for a journal op the replay leaves alone
- * because `cdkd import` adopted its logical id after the segment was recorded
- * (`splitImportedOps`). Completed and failed ops share it.
+ * go-to-k/cdkd#4523: the plan lines for journal ops the replay leaves alone
+ * because `cdkd import` adopted their logical id after the segment was
+ * recorded (`splitImportedOps`). Completed and failed ops share them. An
+ * ADOPTED op recorded the very resource the import put in state; a DISPLACED
+ * one recorded another, which the import replaced in the record — it is
+ * counted as a warning, since nothing reverts it.
  */
 function importedOpLabel(op: { logicalId: string; resourceType: string }): string {
   return (
     `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
     `— adopted by cdkd import after this deploy, left as it is`
+  );
+}
+
+function displacedOpLabel(op: { logicalId: string; resourceType: string }): string {
+  return (
+    `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
+    `— recorded a resource cdkd import has since replaced under this id; not reverted, ` +
+    `check that resource by hand`
   );
 }
 
@@ -530,15 +541,6 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
     case 'skip-failed-unknown':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed CREATE recorded no physical id`;
     case 'skip-failed-noop':
-      // go-to-k/cdkd#4523: a failed UPDATE reaches this kind only when the
-      // state record names ANOTHER physical resource (e.g. one `cdkd import`
-      // adopted), so say that rather than "nothing to revert".
-      if (op.changeType === 'UPDATE') {
-        return (
-          `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) — failed ` +
-          `UPDATE was on a resource the state record no longer names; check that resource by hand`
-        );
-      }
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed ${safe(op.changeType)} left nothing to revert`;
     case 'skip-failed-absent':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — no previous state available`;
@@ -934,6 +936,9 @@ export async function rollbackCommand(
         for (const op of [...failedOps.imported, ...completedOps.imported]) {
           logger.info(importedOpLabel(op));
         }
+        for (const op of [...failedOps.displaced, ...completedOps.displaced]) {
+          logger.info(displacedOpLabel(op));
+        }
         // #1198: the segment's FAILED in-flight op(s) come first (they are
         // the newest work of the failed deploy).
         if (failedOps.replay.length > 0) {
@@ -1143,12 +1148,17 @@ export async function rollbackCommand(
           if (interrupted) break;
           const segment = journal.segments[journal.segments.length - 1]!;
           // go-to-k/cdkd#4523: the plan above listed these as left alone; the
-          // replay below never sees them.
-          const completedOps = splitImportedOps(
-            segment.operations,
-            segment,
-            orphanLogicalIds
-          ).replay;
+          // replay below never sees them. A DISPLACED op (another resource the
+          // import replaced under the id) is a warning: nothing reverts it.
+          const completedSplit = splitImportedOps(segment.operations, segment, orphanLogicalIds);
+          const completedOps = completedSplit.replay;
+          const displaced = [
+            ...completedSplit.displaced,
+            ...(options.revertFailed
+              ? splitImportedOps(segment.failedOperations ?? [], segment).displaced
+              : []),
+          ];
+          for (const op of displaced) logger.warn(displacedOpLabel(op).trim());
           // Issue #3754: what the nested-stack rows' child replays reported
           // (completed rows, skipped ops), read once the segment has replayed.
           let nestedRun: NestedRevertRun | undefined;
@@ -1229,7 +1239,11 @@ export async function rollbackCommand(
                     // failure paths too so partial progress is never lost.
                     // Best-effort: on a strip failure the re-run merely
                     // re-attempts the revert.
-                    const remaining = [...failedOps.imported, ...failedResult.remainingFailedOps];
+                    const remaining = [
+                      ...failedOps.imported,
+                      ...failedOps.displaced,
+                      ...failedResult.remainingFailedOps,
+                    ];
                     // NOT after a declined divergent rewrite (go-to-k/cdkd#3370):
                     // the handled ops' state rows were never saved, so stripping
                     // them would leave the record describing work the journal no
@@ -1290,7 +1304,7 @@ export async function rollbackCommand(
           totalFailures += result.failures;
           // A nested row whose child replay skipped ops reports `partial`,
           // which the executor counts as restored; count the skips here.
-          totalWarnings += result.warnings + (nestedRun?.warnings ?? 0);
+          totalWarnings += result.warnings + (nestedRun?.warnings ?? 0) + displaced.length;
           // Before the pop, and before the interrupt check so a Ctrl-C landing
           // in the same segment does not relabel this stop.
           if (declinedDivergentRewrite) break;
@@ -1552,6 +1566,7 @@ async function previewNestedChildRevert(
       // go-to-k/cdkd#4523: the child replay leaves an imported id's ops alone.
       const childOps = splitImportedOps(segments[s]!.operations, segments[s]!);
       for (const op of childOps.imported) lines.push(`    ${importedOpLabel(op)}`);
+      for (const op of childOps.displaced) lines.push(`    ${displacedOpLabel(op)}`);
       const childPlan = planRollback(childOps.replay, view, new Set<string>());
       for (const item of childPlan) lines.push(`    ${actionLabel(item, skipFinalSnapshot)}`);
       applyPlanToPreview(childPlan, view, skipFinalSnapshot);

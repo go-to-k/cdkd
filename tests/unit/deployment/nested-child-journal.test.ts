@@ -240,6 +240,27 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     await h.run('run-1');
 
     expect(replay.calls.map((c) => c.ops)).toEqual([['Q'], ['Keep']]);
+    // Adopted, not displaced: no warning, and the row settles.
+    expect(h.scope.warnings).toBe(0);
+  });
+
+  it('an op of a marked id that recorded ANOTHER resource is displaced: not replayed, counted as a warning', async () => {
+    const h = harness({
+      segments: [
+        seg('run-1', [], {
+          operations: [
+            { logicalId: 'Q', resourceType: 'AWS::SQS::Queue', changeType: 'UPDATE', physicalId: 'old-url' },
+          ] as RollbackJournalSegment['operations'],
+          importedResources: [{ logicalId: 'Q', physicalId: 'q-url', resourceType: 'AWS::SQS::Queue' }],
+        }),
+      ],
+    });
+
+    await h.run('run-1');
+
+    expect(replay.calls.map((c) => c.ops)).toEqual([[]]);
+    expect(h.scope.warnings).toBe(1);
+    expect(h.scope.settled.has('Child')).toBe(false);
   });
 
   it('hands every segment replay ONE record of completed writes (go-to-k/cdkd#4225)', async () => {

@@ -558,6 +558,10 @@ export async function revertNestedChildFromJournal(args: {
       // the parent's, under the prefix flag it records; a segment an older cdkd
       // wrote keeps the enclosing scope (the parent replay's).
       const skipPrefix = segment.skipPrefix ?? getCurrentSkipPrefix();
+      // go-to-k/cdkd#4523: an id `cdkd import` adopted after the segment was
+      // recorded is left alone; an op of it that recorded ANOTHER resource
+      // (displaced by the import) is a warning, since nothing reverts it.
+      const split = splitImportedOps(segment.operations, segment);
       const result = await withNestedStackContext(childCtx, () =>
         withSkipPrefix(skipPrefix, () =>
           withStackName(childStackName, () =>
@@ -566,9 +570,7 @@ export async function revertNestedChildFromJournal(args: {
             withCreateTokenLedger(ledgerForStack(ctx.stateBackend, childStackName, region), () =>
               withNestedRevertRun(runId, async (inner) => {
                 const replayed = await replayRollback(
-                  // go-to-k/cdkd#4523: an id `cdkd import` adopted after the
-                  // segment was recorded is left alone.
-                  splitImportedOps(segment.operations, segment).replay,
+                  split.replay,
                   stateResources,
                   childStackName,
                   execCtx,
@@ -586,7 +588,7 @@ export async function revertNestedChildFromJournal(args: {
         )
       );
       failures += result.failures;
-      warnings += result.warnings;
+      warnings += result.warnings + split.displaced.length;
     }
     restoring = failures === 0;
     await save();

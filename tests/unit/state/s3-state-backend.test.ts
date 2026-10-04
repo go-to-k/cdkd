@@ -2262,7 +2262,7 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
     const opAt = (logicalId: string, physicalId: string) => ({ ...op(logicalId), physicalId });
     const BUCKET = { logicalId: 'Bucket', physicalId: 'my-bucket', resourceType: 'AWS::X::Y' };
 
-    it('markRollbackJournalImported marks every segment holding an op of the SAME resource, and supersedes the id on the newest', async () => {
+    it('markRollbackJournalImported marks every segment holding an op of the id, and supersedes the id on the newest', async () => {
       s3Client.send.mockResolvedValueOnce({
         Body: rawBody({
           journalVersion: 1,
@@ -2290,18 +2290,20 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
       expect(marked).toEqual(['Bucket']);
       const [oldest, failedSeg, otherPhys, otherType, newest] = putBody().segments;
       expect(oldest.importedResources).toEqual([BUCKET]);
-      // A FAILED op names the resource too.
+      // A FAILED op names the id too.
       expect(failedSeg.importedResources).toEqual([BUCKET]);
-      // The id with another physical id keeps replaying (or warning) as before.
-      expect(otherPhys).not.toHaveProperty('importedResources');
-      expect(otherType).not.toHaveProperty('importedResources');
+      // An op of the id that recorded ANOTHER physical id or type carries the
+      // same mark: the replay reads it as displaced, not adopted.
+      expect(otherPhys.importedResources).toEqual([BUCKET]);
+      expect(otherType.importedResources).toEqual([BUCKET]);
+      // Names no imported id: no mark, so its ops replay as before.
       expect(newest).not.toHaveProperty('importedResources');
       expect(newest.supersededLogicalIds).toEqual(['Bucket']);
     });
 
-    it('markRollbackJournalImported supersedes an id the journal names only through ANOTHER resource, marking nothing', async () => {
-      // A failed CREATE recorded no physical id, so no mark can match it; the
-      // import still records the resource, so its earlier attempt is spent.
+    it('markRollbackJournalImported marks a segment that names the id only through a failed CREATE with no physical id', async () => {
+      // The op can never match the imported resource, but the segment still
+      // names the id: it is marked (the op reads as displaced) and superseded.
       s3Client.send.mockResolvedValueOnce({
         Body: rawBody({
           journalVersion: 1,
@@ -2312,11 +2314,26 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
       });
       s3Client.send.mockResolvedValueOnce({});
 
-      expect(await backend.markRollbackJournalImported('S', 'us-east-1', [BUCKET])).toEqual([]);
+      expect(await backend.markRollbackJournalImported('S', 'us-east-1', [BUCKET])).toEqual(['Bucket']);
 
       const [only] = putBody().segments;
-      expect(only).not.toHaveProperty('importedResources');
+      expect(only.importedResources).toEqual([BUCKET]);
       expect(only.supersededLogicalIds).toEqual(['Bucket']);
+    });
+
+    it('markRollbackJournalImported: a re-import of the id REPLACES its earlier mark', async () => {
+      const OLD = { ...BUCKET, physicalId: 'first-import' };
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [{ ...segment('interrupted', [opAt('Bucket', 'my-bucket')]), importedResources: [OLD] }],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+      await backend.markRollbackJournalImported('S', 'us-east-1', [BUCKET]);
+      expect(putBody().segments[0].importedResources).toEqual([BUCKET]);
     });
 
     it('markRollbackJournalImported does not duplicate a mark on a re-import', async () => {
