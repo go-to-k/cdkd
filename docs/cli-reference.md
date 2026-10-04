@@ -580,8 +580,9 @@ compiling each module again. An upgraded cdkd never runs stale cached code.
 The cache lives in your own cache directory, `$XDG_CACHE_HOME/cdkd/compile-cache`
 or `~/.cache/cdkd/compile-cache`, never in the shared OS temp directory: Node
 checks cache entries with a checksum, not a signature, so a directory other
-users can write to is not a safe place for code cdkd loads. With no home
-directory, the cache stays off.
+users can write to is not a safe place for code cdkd loads. A relative
+`XDG_CACHE_HOME` is ignored, since it would point into the current project.
+With no home directory, the cache stays off.
 
 | To | Set |
 | --- | --- |

@@ -16,6 +16,13 @@ describe('compileCacheDirectory', () => {
     expect(compileCacheDirectory({ XDG_CACHE_HOME: '' }, () => '/home/u')).toBe(expected);
   });
 
+  // A relative value would resolve against the cwd — a cloned repository.
+  it('ignores a relative $XDG_CACHE_HOME', () => {
+    expect(compileCacheDirectory({ XDG_CACHE_HOME: '.cache' }, () => '/home/u')).toBe(
+      join('/home/u', '.cache', 'cdkd', 'compile-cache')
+    );
+  });
+
   // Never a shared location: with no home there is no cache at all.
   it('answers undefined when no home directory can be determined', () => {
     expect(compileCacheDirectory({}, () => '')).toBeUndefined();
