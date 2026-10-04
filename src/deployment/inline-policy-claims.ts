@@ -170,7 +170,8 @@ export class RollbackInlinePolicyWriters {
    * How a registered op ended: `completed` settles it, otherwise it failed.
    * A completed op settles every earlier entry of its logical id too: its
    * record is now the one the rollback restored, whatever a newer segment's
-   * op of that id (a skip, an unrecoverable delete) left unsettled.
+   * op of that id (a skip, an unrecoverable delete) left unsettled. This
+   * relies on a deploy journaling at most one op per logical id per segment.
    */
   noteOutcome(op: { logicalId: string }, completed: boolean): void {
     if (!completed) {
