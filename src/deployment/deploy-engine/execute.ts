@@ -690,6 +690,10 @@ export async function executeDeployment(
     // Set true when an automatic rollback replayed with zero per-op
     // failures and zero skips — gates the post-save journal deletion below.
     let autoRollbackClean = false;
+    // Whether this attempt's `auto-rollback-started` segment was written: the
+    // settle below pops the NEWEST segment, which without one is an OLDER
+    // attempt's revert record (go-to-k/cdkd#4356 review).
+    let autoRollbackJournaled = false;
     // Resources this deploy's rollback left in AWS under `DeletionPolicy: Retain`
     // (issue #2934). Stays empty when no rollback ran, so the saves below
     // spread nothing and a stack that never orphaned keeps a byte-identical
@@ -761,7 +765,7 @@ export async function executeDeployment(
       // rollback that dies partway (crash / network / per-op failure)
       // leaves the segment behind and becomes resumable via `cdkd
       // rollback`; the segment is deleted after a clean replay + save.
-      await this.writeRollbackJournalSegment(
+      autoRollbackJournaled = await this.writeRollbackJournalSegment(
         stackName,
         completedOperations,
         failedOperations,
@@ -779,7 +783,8 @@ export async function executeDeployment(
       // only record of a resource the rollback left as the failed deploy did.
       // A survivor warning (a retained new copy) is not a skip: its op WAS
       // reverted, and its event names the survivor.
-      autoRollbackClean = rollbackResult.failures === 0 && rollbackResult.skipped === 0;
+      autoRollbackClean =
+        autoRollbackJournaled && rollbackResult.failures === 0 && rollbackResult.skipped === 0;
       if (rollbackResult.failures === 0 && rollbackResult.skipped > 0) {
         // The kept segment also keeps the failed op's record, which the next
         // deploy's generic note (a plain `cdkd rollback`, which discards it)

@@ -539,6 +539,12 @@ export function producerRegionEvidence(
  * interrupted / about-to-auto-rollback deploy can be reverted later by
  * `cdkd rollback`. Best-effort like the partial-state save, but warns
  * LOUDLY on failure — the user just lost the ability to `cdkd rollback`.
+ *
+ * Returns whether THIS call appended a segment: `false` for the empty-segment
+ * skip and for a failed write. The clean auto-rollback's settle pops the
+ * NEWEST segment, so it may run only when this attempt wrote it; otherwise it
+ * pops an OLDER attempt's revert record (a refused-before-applying CREATE
+ * journals nothing since go-to-k/cdkd#4356, so its attempt can be empty).
  */
 export async function writeRollbackJournalSegment(
   this: DeployEngine,
@@ -554,13 +560,13 @@ export async function writeRollbackJournalSegment(
    * child's pre-deploy outputs.
    */
   nestedPending?: Pick<RollbackJournalSegment, 'previousOutputs' | 'previousCrossStackReads'>
-): Promise<void> {
+): Promise<boolean> {
   // A segment with no operations carries nothing to revert — skip it so a
   // failure before any resource completed does not create an empty journal.
   // A failed op alone (#1198) IS worth journaling: `cdkd rollback
   // --revert-failed` can act on it even with zero completed ops.
   if (!nestedPending && completedOperations.length === 0 && failedOperations.length === 0) {
-    return;
+    return false;
   }
   // Redact resolved secret plaintext out of the journal (GHSA fix): the ops
   // carry resolved / attempted properties and previous-state snapshots read
@@ -590,10 +596,12 @@ export async function writeRollbackJournalSegment(
     };
     await this.stateBackend.appendRollbackJournalSegment(stackName, this.stackRegion, segment);
     this.logger.debug(`Rollback journal segment written (${reason})`);
+    return true;
   } catch (journalError) {
     this.logger.warn(
       `Failed to write rollback journal: ${journalError instanceof Error ? journalError.message : String(journalError)}. ` +
         `'cdkd rollback' will NOT be able to revert this deploy — use 'cdkd deploy' to resume or 'cdkd destroy' to clean up.`
     );
+    return false;
   }
 }

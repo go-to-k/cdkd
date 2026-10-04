@@ -681,6 +681,37 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(journal.popRollbackJournalSegment).toHaveBeenCalledWith(stackName, 'us-east-1');
     });
 
+    // B1 of the #4522 review: an attempt whose only failure is a refused
+    // CREATE, with nothing completed, writes NO segment. Its clean
+    // auto-rollback must not then settle (pop) the newest segment, which is
+    // an OLDER attempt's revert record.
+    it('an attempt that wrote no segment leaves an older journal untouched', async () => {
+      const changes = new Map([['B', makeChange('B')]]);
+      const engine = buildEngine({ changes, deps: { B: [] }, noRollback: false, currentEtag: 'e0' });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockRejectedValue(markRefusedBeforeApplying(new Error('B is not ours')));
+
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      expect(journal.appendRollbackJournalSegment).not.toHaveBeenCalled();
+      expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+      expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
+    });
+
+    it('an attempt whose segment write FAILED does not pop an older segment either', async () => {
+      const engine = refusedCreateEngine(false, new Error('B failed mid-create'));
+      journal.appendRollbackJournalSegment.mockRejectedValueOnce(new Error('S3 down'));
+
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+      expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+      expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
+    });
+
     it('control: a refused UPDATE is still journaled, even over a record with no physical id', async () => {
       // Only a CREATE has nothing of this stack's behind it. An UPDATE's
       // previous record is this stack's, whatever its id says.
