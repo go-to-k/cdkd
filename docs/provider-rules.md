@@ -1208,14 +1208,21 @@ Where the API has no token and nothing can be deleted safely,
 `CreateUserPool`, `CreateGraphqlApi`, and API Gateway's `CreateAuthorizer`,
 `CreateDeployment`, `CreateApi` and `CreateIntegration`, EMR's
 `RunJobFlow`, `AddInstanceFleet` and `AddInstanceGroups`, Lambda's
-`PublishLayerVersion` and `CreateEventSourceMapping`, and AppSync's
-`CreateApiKey`, whose shared report is `orphan-report.ts`):
+`PublishLayerVersion` and `CreateEventSourceMapping`, AppSync's
+`CreateApiKey`, DLM's `CreateLifecyclePolicy` and ECS's
+`RegisterTaskDefinition`, whose shared report is `orphan-report.ts`):
 
 - **Keep the SDK from replaying a 5xx.** Send the create through a dedicated
   client wrapped by `withoutServerErrorRetries`: the SDK's own retry of a 5xx
   inside one `send` is a duplicate nothing can see. The engine's retry covers
   5xx and throttles; the SDK keeps its retry of throttles, connection
   failures, clock skew and socket resets, which the engine does not retry.
+  A create whose replay COLLIDES instead of duplicating (CodeCommit's
+  `CreateRepository`, by name, and its seed `CreateCommit`, refused once the
+  branch exists) needs this client and no lookup: the surfaced 5xx lets
+  `withRetry` mark the collision as possibly this create's own
+  ([#3978](https://github.com/go-to-k/cdkd/issues/3978)), so it is never
+  credited to another holder.
 - **Look only after an AMBIGUOUS failure.** `AmbiguousCreateLatch.noteFailure`
   arms on `isAmbiguousOutcomeError` thrown by the create call itself, and the
   next attempt `take`s it before creating again. A definite refusal (a 4xx, a
@@ -1227,7 +1234,11 @@ Where the API has no token and nothing can be deleted safely,
   `AMBIGUOUS_LATCH_TTL_MS`: where the resource carries a creation date, a
   same-named resource created later -- by another process, after this one
   gave up -- is never a candidate. A lookup over a type with no creation date
-  cannot apply the window, and its report says so.
+  cannot apply the window, and its report says so. Where only a
+  per-candidate read carries the date (`GetLifecyclePolicy`,
+  `DescribeTaskDefinition`), narrow by the list's own fields first, then read
+  each remaining candidate; a list ordered newest first stops at the first
+  candidate older than the window.
 - **Adopt only on EXACT attribution, which a lookup never has.** The one
   adoption in this family is a KMS key id that came back in this process's own
   response before a follow-up call failed, bound to a digest of its inputs.
