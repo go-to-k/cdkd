@@ -7611,6 +7611,7 @@
         "computed key in comparableIngressIdentity()",
         "computed key in ingressRuleIdentity()",
         "computed key in narrowRouteDestinations()",
+        "identity(...) in readSecurityGroupIngressCurrentState()",
         "object spread in canonicalizeSgInlineRuleProtocols()",
         "object spread in createSecurityGroupIngress()",
         "object spread in narrowIngressIpProtocol()",
