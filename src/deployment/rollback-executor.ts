@@ -204,6 +204,8 @@ async function replayRollbackUnbound(
 
   if (operations.length === 0) {
     ctx.logger.info('No completed operations to roll back.');
+    // go-to-k/cdkd#4408: a failed-only segment's removals (see below).
+    await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, ctx, result);
     return result;
   }
 
@@ -272,9 +274,10 @@ async function replayRollbackUnbound(
     }
   }
 
-  // go-to-k/cdkd#4408: an inline policy a removal above took off a principal
-  // while a record still holds it there goes back, with that record's
-  // document. Interrupted too: what ran is final for this replay.
+  // go-to-k/cdkd#4408: an inline policy a removal above (or the segment's
+  // failed-op replay before it, which shares `inlinePolicyWriters`) took off a
+  // principal while a record still holds it there goes back, with that
+  // record's document. Interrupted too: what ran is final for this replay.
   await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, ctx, result);
 
   ctx.logger.info('Rollback completed. Some resources may remain if deletion failed.');
@@ -1039,8 +1042,6 @@ async function replayFailedOperationsUnbound(
       });
     }
   }
-  // go-to-k/cdkd#4408: as at the end of `replayRollback`.
-  await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, ctx, result);
   if (emitEnvelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_FINISHED', stackName });
   result.remainingFailedOps = failedOps.filter((op) => pending.has(op));
   return result;

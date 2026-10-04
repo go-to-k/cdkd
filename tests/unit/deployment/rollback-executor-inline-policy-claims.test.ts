@@ -798,7 +798,7 @@ describe('a rollback puts back an inline policy its removal took from a record t
       { PolicyName: 'n', PolicyDocument: 'docOld', Roles: [ROLE_PHYS] },
     ]);
     expect((silentLogger.info as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toContain(
-      '  Rollback: put back the inline policy Old records on its role, which this rollback had removed'
+      '  Rollback: put back the inline policy Old records on its role'
     );
   });
 
@@ -860,9 +860,106 @@ describe('a rollback puts back an inline policy its removal took from a record t
       },
     ] as FailedOperation[];
 
-    const result = await replayFailedOperations(failed, state, 'S', ctx);
+    const writers = new RollbackInlinePolicyWriters();
+
+    const result = await replayFailedOperations(failed, state, 'S', ctx, { inlinePolicyWriters: writers });
 
     expect(result.failures).toBe(0);
+    // Nothing is put back before the segment's completed-op replay, whose
+    // records may still change; a failed-only segment's runs with no ops.
+    expect(holding()).toEqual({});
+    await replayRollback([], state, 'S', ctx, { inlinePolicyWriters: writers });
+    expect(holding()).toEqual({ n: 'docOld' });
+  });
+
+  it('a delete that fails part-way does not put back the grant it revoked from its own record', async () => {
+    // New (Roles r1, r2) is deleted: r1 is detached, r2 refuses, so New's
+    // record stays. New is the remover of `n` on r1; it must not count as
+    // the record holding it there (security review of the go-to-k/cdkd#4408 fix).
+    const state: Record<string, ResourceState> = { New: policyRecord('n', 'BROAD', ['r1', 'r2']) };
+    put('n', 'BROAD');
+    policyProvider.delete.mockImplementationOnce(async (_l, physicalId, _t, props: PolicyProps, c) => {
+      expect(asked(c)?.('role', props.Roles[0]!, physicalId)).toBe(false);
+      remove(physicalId);
+      throw new Error('AccessDenied on r2');
+    });
+
+    const result = await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(result.failures).toBe(1);
+    expect(state['New']).toBeDefined();
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(holding()).toEqual({});
+  });
+
+  it('CONTROL: a part-way failed delete still puts back ANOTHER record\'s document', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld', ['r1']),
+      New: policyRecord('n', 'docNew', ['r1', 'r2']),
+    };
+    put('n', 'docNew');
+    policyProvider.delete.mockImplementationOnce(async (_l, physicalId, _t, props: PolicyProps, c) => {
+      asked(c)?.('role', props.Roles[0]!, physicalId);
+      remove(physicalId);
+      throw new Error('AccessDenied on r2');
+    });
+
+    await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(policyProvider.create).toHaveBeenCalledTimes(1);
+    expect(policyProvider.create.mock.calls[0]![0]).toBe('Old');
+    expect(holding()).toEqual({ n: 'docOld' });
+  });
+
+  it('a holder whose own record changed since it removed the name holds it again', async () => {
+    // A remover is excluded only while its record is the one it had: a
+    // later replay that re-adopts it under the removed name makes it a holder.
+    const writers = new RollbackInlinePolicyWriters();
+    const before = policyRecord('m', 'docA');
+    writers.claimedFor(POLICY, 'A', { A: before })!('role', ROLE_PHYS, 'n');
+    expect(writers.takeHeldRemovals({ A: before })).toEqual([]);
+    const after = policyRecord('n', 'docA');
+    expect(writers.takeHeldRemovals({ A: after })).toHaveLength(1);
+  });
+
+  it('a holder another record may shadow under a redacted name is not put back, and it warns', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      R: roleRecord([{ PolicyName: '{{resolve:secretsmanager:s}}', PolicyDocument: 'docR' }]),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+
+    const result = await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(result.warnings).toBe(1);
+    expect(warned()).toContain('recorded by Old, and R may record it too under a redacted name');
+  });
+
+  it('a policy record listing the principal under a redacted entry shadows it too', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      Other: policyRecord('n', 'docOther', ['***']),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+
+    const result = await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(result.warnings).toBe(1);
+  });
+
+  it('a Cloud Control record holds the name too: the put-back writes what it records', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: { ...policyRecord('n', 'docOld'), provisionedBy: 'cc-api' },
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+
+    await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
     expect(holding()).toEqual({ n: 'docOld' });
   });
 
@@ -1060,6 +1157,7 @@ describe('RollbackInlinePolicyWriters.takeHeldRemovals (go-to-k/cdkd#4408)', () 
       {
         kind: 'role',
         holders: [{ logicalId: 'Old', principal: 'ROLE-PHYS', policyName: 'N', document: 'docOld' }],
+        unreadable: [],
       },
     ]);
     expect(writers.takeHeldRemovals(state)).toEqual([]);

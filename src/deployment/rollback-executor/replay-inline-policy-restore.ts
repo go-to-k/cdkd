@@ -16,7 +16,9 @@ const LIST_FIELD = { role: 'Roles', group: 'Groups', user: 'Users' } as const;
  * took off a principal while a record still holds it there
  * ({@link RollbackInlinePolicyWriters.takeHeldRemovals}), with that record's
  * RECORDED document — what cdkd state says the principal holds. Run at the end
- * of each replay over the bag, so every record is the one the rollback leaves.
+ * of each completed-op replay over the bag (`replayRollback`, never
+ * `replayFailedOperations`, which runs BEFORE its segment's completed ops), so
+ * every record of the segment is the one the rollback leaves.
  *
  * The put is `IAMPolicyProvider.create` with a one-principal bag naming the
  * holder's name explicitly: exactly one `Put{Role,Group,User}Policy`, the same
@@ -40,7 +42,7 @@ export async function restoreHeldInlinePolicies(
 }
 
 async function restoreOne(
-  { kind, holders }: HeldInlinePolicyRemoval,
+  { kind, holders, unreadable }: HeldInlinePolicyRemoval,
   stateResources: Record<string, ResourceState>,
   ctx: RollbackExecutorContext,
   result: Pick<RollbackReplayResult, 'warnings'>
@@ -51,6 +53,15 @@ async function restoreOne(
   const lost =
     safeMsg`the ${kind} it is on lacks that inline policy until the resource is next updated, or ` +
     `'cdkd drift <stack> --revert' restores it`;
+  if (unreadable.length > 0) {
+    logger.warn(
+      safeMsg`  Rollback: an inline policy this rollback removed is recorded by ${ids}, and ` +
+        safeMsg`${unreadable.map((id) => safe(id)).join(', ')} may record it too under a redacted ` +
+        safeMsg`name, so cdkd did not put it back; ${lost}.`
+    );
+    result.warnings++;
+    return;
+  }
   const documents = holders.map((h) => serializedDocument(h.document));
   if (documents.some((d) => d === undefined)) {
     logger.warn(
@@ -112,9 +123,7 @@ async function restoreOne(
     result.warnings++;
     return;
   }
-  logger.info(
-    safeMsg`  Rollback: put back the inline policy ${ids} records on its ${kind}, which this rollback had removed`
-  );
+  logger.info(safeMsg`  Rollback: put back the inline policy ${ids} records on its ${kind}`);
 }
 
 /**

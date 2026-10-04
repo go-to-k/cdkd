@@ -130,10 +130,18 @@ export class RollbackInlinePolicyWriters {
     string,
     { write: InlinePolicyWrite; record: ResourceState; policiesChanged: boolean }
   >();
-  /** The removals this rollback let proceed, keyed case-insensitively. */
+  /**
+   * The removals this rollback let proceed, keyed case-insensitively, each
+   * with the record every remover had in the bag when it asked.
+   */
   private readonly removals = new Map<
     string,
-    { kind: InlinePolicyPrincipalKind; principal: string; policyName: string }
+    {
+      kind: InlinePolicyPrincipalKind;
+      principal: string;
+      policyName: string;
+      removers: Map<string, ResourceState | undefined>;
+    }
   >();
 
   /**
@@ -204,7 +212,15 @@ export class RollbackInlinePolicyWriters {
       );
       // A value outside IAM's name charset is noted too; no record holds it.
       if (!claimed) {
-        this.removals.set(removalKey(kind, principal, policyName), { kind, principal, policyName });
+        const key = removalKey(kind, principal, policyName);
+        const noted = this.removals.get(key) ?? {
+          kind,
+          principal,
+          policyName,
+          removers: new Map(),
+        };
+        noted.removers.set(logicalId, stateResources[logicalId]);
+        this.removals.set(key, noted);
       }
       return claimed;
     };
@@ -213,18 +229,37 @@ export class RollbackInlinePolicyWriters {
   /**
    * go-to-k/cdkd#4408: the removals this rollback let proceed whose name a
    * record of `stateResources` holds on that principal NOW, each with every
-   * such record ({@link inlinePolicyHolders}). Read at the end of a replay,
-   * when each record is the one the rollback leaves. Each is handed out once;
-   * a removal no record holds yet stays for a later replay over the same bag
-   * (an older segment can re-adopt the record that holds it).
+   * such record ({@link inlinePolicyHolders}). Read at the end of each
+   * completed-op replay, when every record of the segment is the one the
+   * rollback leaves. Each is handed out once; a removal no record holds yet
+   * stays for a later replay over the same bag (an older segment can re-adopt
+   * the record that holds it).
+   *
+   * A REMOVER never holds its own removal while its record is still the one
+   * it had when it asked: the removal is noted BEFORE the call, so a delete or
+   * revert that failed or was skipped part-way (one principal detached, the
+   * next refused) keeps that record, and putting its document back would
+   * re-grant what this rollback had just revoked. A remover that completed
+   * replaced or dropped its record, which then no longer names the removal.
    */
   takeHeldRemovals(stateResources: Record<string, ResourceState>): HeldInlinePolicyRemoval[] {
     const held: HeldInlinePolicyRemoval[] = [];
-    for (const [key, { kind, principal, policyName }] of this.removals) {
-      const holders = inlinePolicyHolders(stateResources, kind, principal, policyName);
-      if (holders.length === 0) continue;
+    for (const [key, { kind, principal, policyName, removers }] of this.removals) {
+      const { holders, unreadable } = inlinePolicyHolders(
+        stateResources,
+        kind,
+        principal,
+        policyName
+      );
+      const others = holders.filter(
+        (h) =>
+          !removers.has(h.logicalId) ||
+          removers.get(h.logicalId) === undefined ||
+          stateResources[h.logicalId] !== removers.get(h.logicalId)
+      );
+      if (others.length === 0) continue;
       this.removals.delete(key);
-      held.push({ kind, holders });
+      held.push({ kind, holders: others, unreadable });
     }
     return held;
   }
@@ -235,6 +270,12 @@ export interface HeldInlinePolicyRemoval {
   kind: InlinePolicyPrincipalKind;
   /** Never empty. */
   holders: InlinePolicyHolder[];
+  /**
+   * Records that may hold the name on the principal too, but whose name for
+   * it is redacted (a secret reference or the mask), so their document cannot
+   * be compared.
+   */
+  unreadable: string[];
 }
 
 /** One record's claim to an inline policy name on a principal. */
@@ -255,15 +296,20 @@ export interface InlinePolicyHolder {
  * for `kind` names the principal, and a role / group / user of that kind whose
  * physical id is the principal, once per `Policies` entry of that name. What
  * a record holds is what cdkd state says the principal holds, whoever wrote
- * it last.
+ * it last. A Cloud Control record holds too: the put-back writes what it
+ * records, it does not trust a write it made. `unreadable` names the records
+ * of that shape whose principal entry or policy name is not an IAM name (a
+ * redacted value), which may hold it unseen.
  */
 export function inlinePolicyHolders(
   stateResources: Record<string, ResourceState>,
   kind: InlinePolicyPrincipalKind,
   principal: string,
   policyName: string
-): InlinePolicyHolder[] {
+): { holders: InlinePolicyHolder[]; unreadable: string[] } {
   const holders: InlinePolicyHolder[] = [];
+  const unreadable: string[] = [];
+  const unnamed = (v: unknown): boolean => typeof v !== 'string' || !IAM_NAME.test(v);
   for (const [logicalId, record] of Object.entries(stateResources)) {
     if (record === null || typeof record !== 'object') continue;
     const props = record.properties ?? {};
@@ -273,7 +319,11 @@ export function inlinePolicyHolders(
       const named = Array.isArray(listed)
         ? (listed as unknown[]).find((p) => sameIamName(p, principal))
         : undefined;
-      if (typeof named !== 'string') continue;
+      if (typeof named !== 'string') {
+        if (Array.isArray(listed) && (listed as unknown[]).some(unnamed))
+          unreadable.push(logicalId);
+        continue;
+      }
       holders.push({
         logicalId,
         principal: named,
@@ -290,6 +340,10 @@ export function inlinePolicyHolders(
     for (const entry of policies as unknown[]) {
       if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
       const name = (entry as Record<string, unknown>)['PolicyName'];
+      if (unnamed(name)) {
+        unreadable.push(logicalId);
+        continue;
+      }
       if (!sameIamName(name, policyName)) continue;
       holders.push({
         logicalId,
@@ -299,7 +353,7 @@ export function inlinePolicyHolders(
       });
     }
   }
-  return holders;
+  return { holders, unreadable: [...new Set(unreadable)] };
 }
 
 /**
