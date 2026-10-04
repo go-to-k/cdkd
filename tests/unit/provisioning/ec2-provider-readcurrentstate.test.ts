@@ -9,6 +9,7 @@ import {
   DescribeSecurityGroupsCommand,
   DescribeInstancesCommand,
   DescribeNetworkAclsCommand,
+  DescribeAddressesCommand,
 } from '@aws-sdk/client-ec2';
 
 const mockSend = vi.fn();
@@ -1613,8 +1614,196 @@ describe('EC2Provider.readCurrentState', () => {
     });
 
     it('keeps undefined for an unsupported type', async () => {
-      const result = bagOf(await provider.readCurrentState('x', 'Logical', 'AWS::EC2::EIP'));
+      const result = bagOf(
+        await provider.readCurrentState('x', 'Logical', 'AWS::EC2::LaunchTemplate')
+      );
       expect(result).toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('AWS::EC2::EIP (go-to-k/cdkd#4447)', () => {
+    const ALLOC = 'eipalloc-0a1b2c3d4e5f60718';
+    const IP = '203.0.113.25';
+    const PHYSICAL = `${IP}|${ALLOC}`;
+
+    it('reads the CFn-shaped properties by the allocation id the physicalId carries', async () => {
+      mockSend.mockResolvedValueOnce({
+        Addresses: [
+          {
+            AllocationId: ALLOC,
+            PublicIp: IP,
+            Domain: 'vpc',
+            InstanceId: 'i-0123456789abcdef0',
+            AssociationId: 'eipassoc-0123456789abcdef0',
+            NetworkInterfaceId: 'eni-0123456789abcdef0',
+            NetworkBorderGroup: 'us-east-1',
+            PublicIpv4Pool: 'amazon',
+            Tags: [
+              { Key: 'Name', Value: 'Stack/Vpc/PublicSubnet1' },
+              { Key: 'aws:cloudformation:stack-name', Value: 'Stack' },
+            ],
+          },
+        ],
+      });
+
+      const result = bagOf(await provider.readCurrentState(PHYSICAL, 'Eip', 'AWS::EC2::EIP'));
+
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(DescribeAddressesCommand);
+      expect((cmd as DescribeAddressesCommand).input).toEqual({ AllocationIds: [ALLOC] });
+      expect(result).toEqual({
+        Domain: 'vpc',
+        InstanceId: 'i-0123456789abcdef0',
+        NetworkBorderGroup: 'us-east-1',
+        PublicIpv4Pool: 'amazon',
+        Tags: [{ Key: 'Name', Value: 'Stack/Vpc/PublicSubnet1' }],
+      });
+    });
+
+    it('omits InstanceId and Tags when the address is unassociated and untagged', async () => {
+      mockSend.mockResolvedValueOnce({
+        Addresses: [
+          {
+            AllocationId: ALLOC,
+            PublicIp: IP,
+            Domain: 'vpc',
+            NetworkBorderGroup: 'us-east-1',
+            PublicIpv4Pool: 'amazon',
+            Tags: [],
+          },
+        ],
+      });
+
+      const result = bagOf(await provider.readCurrentState(PHYSICAL, 'Eip', 'AWS::EC2::EIP'));
+
+      expect(result).toEqual({
+        Domain: 'vpc',
+        NetworkBorderGroup: 'us-east-1',
+        PublicIpv4Pool: 'amazon',
+      });
+    });
+
+    it('reads by public IP when the physicalId carries no allocation id', async () => {
+      mockSend.mockResolvedValueOnce({
+        Addresses: [{ AllocationId: ALLOC, PublicIp: IP, Domain: 'vpc' }],
+      });
+
+      const result = bagOf(await provider.readCurrentState(IP, 'Eip', 'AWS::EC2::EIP'));
+
+      expect((mockSend.mock.calls[0]?.[0] as DescribeAddressesCommand).input).toEqual({
+        PublicIps: [IP],
+      });
+      expect(result).toEqual({ Domain: 'vpc' });
+    });
+
+    it.each([
+      ['InvalidAllocationID.NotFound', PHYSICAL, `The allocation IDs '${ALLOC}' do not exist`],
+      ['InvalidAddress.NotFound', IP, `Address ${IP} not found.`],
+    ])('returns RESOURCE_NOT_FOUND on EC2 %s', async (name, id, message) => {
+      const err = new Error(message);
+      err.name = name;
+      mockSend.mockRejectedValueOnce(err);
+
+      const result = await provider.readCurrentState(id, 'Eip', 'AWS::EC2::EIP');
+
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when the response does not list the address', async () => {
+      mockSend.mockResolvedValueOnce({
+        Addresses: [{ AllocationId: 'eipalloc-0ffffffffffffffff', PublicIp: '198.51.100.7' }],
+      });
+
+      const result = await provider.readCurrentState(PHYSICAL, 'Eip', 'AWS::EC2::EIP');
+
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('never reports a malformed address (InvalidParameterValue) as gone', async () => {
+      const err = new Error("Invalid value 'not-an-ip' for PublicIp");
+      err.name = 'InvalidParameterValue';
+      mockSend.mockRejectedValueOnce(err);
+
+      await expect(provider.readCurrentState('not-an-ip', 'Eip', 'AWS::EC2::EIP')).rejects.toBe(
+        err
+      );
+    });
+
+    it('rethrows an access-denied read instead of reporting the address gone', async () => {
+      const err = new Error('You are not authorized to perform this operation.');
+      err.name = 'UnauthorizedOperation';
+      mockSend.mockRejectedValueOnce(err);
+
+      await expect(provider.readCurrentState(PHYSICAL, 'Eip', 'AWS::EC2::EIP')).rejects.toThrow(
+        'not authorized'
+      );
+    });
+
+    it('keeps undefined, with no call, for an empty physicalId', async () => {
+      const result = bagOf(await provider.readCurrentState('', 'Eip', 'AWS::EC2::EIP'));
+
+      expect(result).toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    describe('Tags right after cdkd’s own write (afterOwnWrite, #4112)', () => {
+      const declaredTags = [{ Key: 'Name', Value: 'Stack/Vpc/PublicSubnet1' }];
+      const untagged = { Addresses: [{ AllocationId: ALLOC, PublicIp: IP, Domain: 'vpc' }] };
+
+      it('keeps the declared Tags when the capture read reports none', async () => {
+        mockSend.mockResolvedValueOnce(untagged);
+
+        const result = bagOf(
+          await provider.readCurrentState(
+            PHYSICAL,
+            'Eip',
+            'AWS::EC2::EIP',
+            { Domain: 'vpc', Tags: declaredTags },
+            { afterOwnWrite: true }
+          )
+        );
+
+        expect(result).toEqual({ Domain: 'vpc', Tags: declaredTags });
+      });
+
+      it('believes the live answer on every other read (drift, import)', async () => {
+        mockSend.mockResolvedValueOnce(untagged);
+
+        const result = bagOf(
+          await provider.readCurrentState(PHYSICAL, 'Eip', 'AWS::EC2::EIP', {
+            Domain: 'vpc',
+            Tags: declaredTags,
+          })
+        );
+
+        expect(result).toEqual({ Domain: 'vpc' });
+      });
+
+      it('prefers the live tags over the declared ones when the capture read has them', async () => {
+        mockSend.mockResolvedValueOnce({
+          Addresses: [
+            {
+              AllocationId: ALLOC,
+              PublicIp: IP,
+              Domain: 'vpc',
+              Tags: [{ Key: 'Name', Value: 'live' }],
+            },
+          ],
+        });
+
+        const result = bagOf(
+          await provider.readCurrentState(
+            PHYSICAL,
+            'Eip',
+            'AWS::EC2::EIP',
+            { Tags: declaredTags },
+            { afterOwnWrite: true }
+          )
+        );
+
+        expect(result).toEqual({ Domain: 'vpc', Tags: [{ Key: 'Name', Value: 'live' }] });
+      });
     });
   });
 

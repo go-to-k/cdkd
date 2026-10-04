@@ -140,6 +140,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import type { ResourceState } from '../../types/state.js';
@@ -6418,14 +6419,16 @@ export class EC2Provider implements ResourceProvider {
    *    or default scalar) so the v3 `observedProperties` baseline
    *    catches console-side ADDs.
    *  - **AWS::EC2::NetworkAcl**: `DescribeNetworkAcls` for `VpcId`.
+   *  - **AWS::EC2::EIP**: `DescribeAddresses` by allocation id (a bare
+   *    public IP when the physicalId carries no `eipalloc-` segment) for
+   *    `Domain`, `InstanceId`, `NetworkBorderGroup`, `PublicIpv4Pool`, `Tags`
+   *    (issue #4447).
    *
-   * Skipped (return `undefined`, falls through to the comparator's
-   * "unsupported" outcome):
+   * Read through the parent's `Describe*` response:
    *  - **AWS::EC2::VPCGatewayAttachment**: physical id is
-   *    `<internetGatewayId>|<vpcId>`. The two ids are immutable inputs to the SDK call;
-   *    drift detection on this resource has no useful signal beyond
-   *    existence verification (which the user can do via the parent IGW
-   *    / VPC drift report).
+   *    `<internetGatewayId>|<vpcId>`; `DescribeInternetGateways` proves the
+   *    attachment still exists, and the two ids it returns are the only
+   *    properties.
    *  - **AWS::EC2::Route**, **AWS::EC2::SubnetRouteTableAssociation**,
    *    **AWS::EC2::SecurityGroupIngress**, **AWS::EC2::NetworkAclEntry**,
    *    **AWS::EC2::SubnetNetworkAclAssociation**: rule / association
@@ -6447,7 +6450,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     logicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       switch (resourceType) {
@@ -6467,6 +6471,12 @@ export class EC2Provider implements ResourceProvider {
           return await this.readInstanceCurrentState(physicalId);
         case 'AWS::EC2::NetworkAcl':
           return await this.readNetworkAclCurrentState(physicalId);
+        case 'AWS::EC2::EIP':
+          return await this.readEipCurrentState(
+            physicalId,
+            properties,
+            context?.afterOwnWrite === true
+          );
         case 'AWS::EC2::VPCGatewayAttachment':
           return await this.readVpcGatewayAttachmentCurrentState(physicalId);
         case 'AWS::EC2::Route':
@@ -6711,6 +6721,56 @@ export class EC2Provider implements ResourceProvider {
     if (primary?.AllocationId !== undefined) result['AllocationId'] = primary.AllocationId;
     if (primary?.PrivateIp !== undefined) result['PrivateIpAddress'] = primary.PrivateIp;
 
+    return result;
+  }
+
+  /**
+   * `AWS::EC2::EIP` (issue #4447). Read by the allocation id the composite
+   * `PublicIp|AllocationId` physicalId carries, or by the public IP when the id
+   * holds no allocation segment (the forms `parseEipPhysicalId` tolerates).
+   *
+   * Gone is EC2's own answer: `InvalidAllocationID.NotFound` /
+   * `InvalidAddress.NotFound` (both reach `readCurrentState`'s `.NotFound`
+   * catch), or a response that does not list the address asked for.
+   *
+   * `Tags` follows the SecurityGroup reader: emitted only when AWS reports at
+   * least one non-`aws:` tag. Right after cdkd's own write (`afterOwnWrite`,
+   * issue #4112) a read reporting NO tags while the deployed template declares
+   * some keeps the declared list: `CreateTags` runs after `AllocateAddress`, and
+   * freezing a lagging "absent" into the baseline would report every later
+   * read's tags as drift.
+   */
+  private async readEipCurrentState(
+    physicalId: string,
+    properties: Record<string, unknown> | undefined,
+    afterOwnWrite: boolean
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const { allocationId, publicIp } = this.parseEipPhysicalId(physicalId);
+    if (!allocationId && !publicIp) return undefined;
+    const resp = await this.ec2Client.send(
+      new DescribeAddressesCommand(
+        allocationId ? { AllocationIds: [allocationId] } : { PublicIps: [publicIp!] }
+      )
+    );
+    const addr = resp.Addresses?.find((a) =>
+      allocationId ? a.AllocationId === allocationId : a.PublicIp === publicIp
+    );
+    if (!addr) return RESOURCE_NOT_FOUND;
+
+    const result: Record<string, unknown> = {};
+    if (addr.Domain !== undefined) result['Domain'] = addr.Domain;
+    if (addr.InstanceId !== undefined) result['InstanceId'] = addr.InstanceId;
+    if (addr.NetworkBorderGroup !== undefined) {
+      result['NetworkBorderGroup'] = addr.NetworkBorderGroup;
+    }
+    if (addr.PublicIpv4Pool !== undefined) result['PublicIpv4Pool'] = addr.PublicIpv4Pool;
+    const tags = normalizeAwsTagsToCfn(addr.Tags);
+    if (tags.length > 0) {
+      result['Tags'] = tags;
+    } else if (afterOwnWrite) {
+      const declared = properties?.['Tags'];
+      if (Array.isArray(declared) && declared.length > 0) result['Tags'] = declared;
+    }
     return result;
   }
 

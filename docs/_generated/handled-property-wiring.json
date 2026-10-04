@@ -7473,6 +7473,8 @@
             "createSecurityGroup",
             "createSubnet",
             "createVpc",
+            "readCurrentState",
+            "readEipCurrentState",
             "update",
             "updateEip",
             "updateInstance",

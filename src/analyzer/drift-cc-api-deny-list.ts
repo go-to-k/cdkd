@@ -40,13 +40,12 @@ export const CC_API_FALLBACK_DENY_LIST: Record<string, string> = {
   'AWS::ApiGateway::RestApi':
     'Body / BodyS3Location are write-only inputs not returned by CC API GetResource; cdkd state preserves them',
 
-  // AWS::CloudFormation::Stack: nested stacks aren't supported by cdkd's
-  // provider registry at all; the deploy / destroy paths reject them.
-  // Listing here is defense-in-depth — if a user manually crafts state
-  // with one, drift via CC API would compare CFn-template-input
-  // properties against CC API's stack-output shape (CC API's
-  // `AWS::CloudFormation::Stack` reports outputs / status, not the
-  // template parameters cdkd would have stored).
+  // AWS::CloudFormation::Stack: `NestedStackProvider` deploys the child's
+  // resources itself, so the row's physicalId is a `cdkd-local` placeholder
+  // ARN and no CloudFormation stack exists to read; the provider has no
+  // `readCurrentState`, so without this entry drift would ask Cloud Control
+  // about it. The child's resources are compared as their own
+  // `<parent>~<child>` stack (issue #4447).
   'AWS::CloudFormation::Stack':
     'CC API returns runtime stack state (outputs/status), not the template parameters cdkd state stores',
 

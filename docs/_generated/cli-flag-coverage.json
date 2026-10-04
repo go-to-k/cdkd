@@ -1779,6 +1779,7 @@
     "--alarm-names",
     "--alarm-types",
     "--all",
+    "--allocation-id",
     "--api-id",
     "--api-key",
     "--application-id",
