@@ -469,6 +469,72 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(infoLines().some((l) => l.includes('adopted the replacement'))).toBe(importedId === 'new-phys');
   });
 
+  // X1: a Type change that KEPT its name-based physical id — the OLD-type
+  // resource is still alive under that id. An import of the NEW type is
+  // displaced, naming the kept id, never adopted silently.
+  it('a Type-change replacement that kept its name: an import of the new type warns, naming the kept id', async () => {
+    const OLD = 'AWS::SQS::Queue';
+    install({ Topic: topicRecord('imported') }, [
+      {
+        operations: [
+          {
+            logicalId: 'Topic',
+            changeType: 'UPDATE',
+            resourceType: TOPIC,
+            physicalId: NAME,
+            properties: topicRecord('deployed').properties,
+            previousResourceType: OLD,
+            oldResourceRetained: true,
+            previousState: { ...topicRecord('pre-deploy'), physicalId: NAME, resourceType: OLD },
+            provisionedBy: 'sdk',
+          },
+        ],
+        importedResources: [MARK],
+      },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(provider.create).not.toHaveBeenCalled();
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(false);
+    expect(infoLines().some((l) => l.includes(`replaced ${NAME} but kept it`))).toBe(true);
+  });
+
+  // X2: a FAILED replacement UPDATE carries no `oldResourceRetained` verdict,
+  // and the recorded policy is a stale read, so the old resource counts as
+  // possibly kept: an import of the new resource warns, naming the old id —
+  // both in the plan and in the replay-time warn line (U-2).
+  it('a failed replacement UPDATE with no verdict: an import of the new resource warns, naming the old id', async () => {
+    install({ Topic: { ...topicRecord('imported'), physicalId: 'new-phys' } }, [
+      {
+        operations: [],
+        failedOperations: [
+          {
+            logicalId: 'Topic',
+            changeType: 'UPDATE',
+            resourceType: TOPIC,
+            physicalId: 'new-phys',
+            attemptedProperties: topicRecord('attempted').properties,
+            previousState: { ...topicRecord('pre-deploy'), physicalId: 'old-phys' },
+            provisionedBy: 'sdk',
+          },
+        ],
+        importedResources: [{ ...MARK, physicalId: 'new-phys' }],
+      },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(provider.update).not.toHaveBeenCalled();
+    const clause = 'replaced old-phys and may have kept it';
+    expect(infoLines().some((l) => l.includes(clause))).toBe(true);
+    const warns = (logger['warn'] as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(warns.some((l) => l.includes(clause))).toBe(true);
+  });
+
   it('a replacement UPDATE whose NEW resource the import took, old NOT retained, is adopted silently', async () => {
     install({ Topic: { ...topicRecord('imported'), physicalId: 'new-phys' } }, [
       { operations: [replacementOp(false)], importedResources: [{ ...MARK, physicalId: 'new-phys' }] },

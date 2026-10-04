@@ -159,7 +159,6 @@ export type DisplacedOp = JournalOpIdentitySource & {
         properties?: unknown;
         physicalId?: unknown;
         resourceType?: unknown;
-        updateReplacePolicy?: unknown;
       }
     | undefined;
 };
@@ -180,9 +179,15 @@ export function displacedOpClause(
   const retainedOld = retainedOldPhysicalId(op);
   if (retainedOld !== undefined && marks.some((m) => isMarkFor(m, op))) {
     const shownOld = displacedPhysicalIdShown(op, logger, retainedOld);
+    // Only a completed op of a current binary records whether it kept the old
+    // resource (`retainedOldPhysicalId`); otherwise say it MAY have.
+    const kept =
+      op.oldResourceRetained === true
+        ? 'but kept it (UpdateReplacePolicy: Retain)'
+        : 'and may have kept it (the journal records no verdict)';
     return (
-      `replaced ${shownOld} but kept it (UpdateReplacePolicy: Retain); cdkd import adopted the ` +
-      `replacement, so ${shownOld} is left untracked`
+      `replaced ${shownOld} ${kept}; cdkd import adopted the replacement, so ${shownOld} ` +
+      `is left untracked`
     );
   }
   const shownId = displacedPhysicalIdShown(op, logger);

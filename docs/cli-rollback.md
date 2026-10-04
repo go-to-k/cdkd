@@ -337,7 +337,7 @@ runs none of those segments' operations for that id:
 | --- | --- | --- |
 | The resource the import adopted (same physical id and type; for a DELETE, the record it removed) | Leaves it alone | `adopted by cdkd import after this deploy, left as it is` |
 | Another resource under the id (another physical id or type) | Leaves it alone, warns, exits 2 | `recorded <its physical id>, which cdkd import has since replaced under this id; not reverted, check that resource by hand` |
-| A replacement whose new resource the import adopted, while the old one was kept (`UpdateReplacePolicy: Retain`) | Leaves it alone, warns, exits 2 | `replaced <old physical id> but kept it ...; not reverted, check that resource by hand` |
+| A replacement (including a Type change that kept its name) whose new resource the import adopted, while the old one was kept or may have been (no verdict recorded, as on a failed operation) | Leaves it alone, warns, exits 2 | `replaced <old physical id> but kept it ...` or `... and may have kept it ...`; `not reverted, check that resource by hand` |
 
 For a replacement, only its new resource counts as what it recorded. If the
 import put the old resource back, the operation is reported as above, naming

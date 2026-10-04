@@ -334,7 +334,7 @@ later deploy adds are still reverted
 import cannot read or write the journal, it refuses and writes no state.
 An import done by a cdkd binary older than this change writes no mark, so a
 later rollback still acts on those operations; re-run the import with a
-current binary first.
+current binary first, with `--force` (the record is already in state).
 
 ### The drift baseline an import records
 

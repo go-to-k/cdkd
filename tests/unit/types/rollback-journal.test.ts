@@ -565,11 +565,25 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
     const replacement = { logicalId: 'B', resourceType: 'T', changeType: 'UPDATE', physicalId: 'new', previousState: { physicalId: 'old' } };
     expect(retainedOldPhysicalId({ ...replacement, oldResourceRetained: true })).toBe('old');
     expect(retainedOldPhysicalId({ ...replacement, oldResourceRetained: false })).toBeUndefined();
-    // A journal that predates the verdict falls back to the recorded policy.
-    expect(retainedOldPhysicalId({ ...replacement, previousState: { physicalId: 'old', updateReplacePolicy: 'Retain' } })).toBe('old');
+    // X3: an explicit verdict wins over any recorded policy (`??`, never `||`).
+    expect(
+      retainedOldPhysicalId({ ...replacement, oldResourceRetained: false, previousState: { physicalId: 'old', updateReplacePolicy: 'Retain' } } as never)
+    ).toBeUndefined();
+    // X2: NO verdict (a failed op, or a journal that predates it) counts as
+    // kept, whatever the stale policy read says — warn, never adopt silently.
+    expect(retainedOldPhysicalId(replacement)).toBe('old');
+    expect(retainedOldPhysicalId({ ...replacement, previousState: { physicalId: 'old', updateReplacePolicy: 'Delete' } } as never)).toBe('old');
     // In place (same id), or not an UPDATE: nothing kept.
     expect(retainedOldPhysicalId({ ...replacement, physicalId: 'old', oldResourceRetained: true })).toBeUndefined();
     expect(retainedOldPhysicalId({ ...replacement, changeType: 'CREATE', oldResourceRetained: true })).toBeUndefined();
+    // X1: a Type change that KEPT its name-based id is still a distinct old
+    // resource (the old type's), via the stamped type or the recorded one.
+    const typeChange = { ...replacement, physicalId: 'old', resourceType: 'New' };
+    expect(retainedOldPhysicalId({ ...typeChange, previousResourceType: 'Old', oldResourceRetained: true })).toBe('old');
+    expect(retainedOldPhysicalId({ ...typeChange, previousState: { physicalId: 'old', resourceType: 'Old' }, oldResourceRetained: true })).toBe('old');
+    expect(retainedOldPhysicalId({ ...typeChange, previousResourceType: 'Old', oldResourceRetained: false })).toBeUndefined();
+    // Same id AND same type: in place, nothing kept.
+    expect(retainedOldPhysicalId({ ...typeChange, resourceType: 'T', previousResourceType: 'T', oldResourceRetained: true })).toBeUndefined();
   });
 
   it('refuses a non-string runId, which a nested revert selects segments by', () => {

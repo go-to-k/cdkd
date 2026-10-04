@@ -244,6 +244,34 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     expect(h.scope.warnings).toBe(0);
   });
 
+  it.each([
+    ['the replacement (new) adopted: names the kept old id', 'q-new', 'replaced q-old but kept it'],
+    ['the kept old resource imported back: names the replacement', 'q-old', 'recorded q-new'],
+  ])('a displaced replacement in a child warns from the MARK: %s', async (_what, importedId, clause) => {
+    const h = harness({
+      segments: [
+        seg('run-1', [], {
+          operations: [
+            {
+              logicalId: 'Q',
+              resourceType: 'AWS::SQS::Queue',
+              changeType: 'UPDATE',
+              physicalId: 'q-new',
+              oldResourceRetained: true,
+              previousState: { physicalId: 'q-old', resourceType: 'AWS::SQS::Queue', properties: {} },
+            },
+          ] as unknown as RollbackJournalSegment['operations'],
+          importedResources: [{ logicalId: 'Q', physicalId: importedId, resourceType: 'AWS::SQS::Queue' }],
+        }),
+      ],
+    });
+
+    await h.run('run-1');
+
+    expect(replay.calls.map((c) => c.ops)).toEqual([[]]);
+    expect(h.logger.warn.mock.calls.some((c) => String(c[0]).includes(clause))).toBe(true);
+  });
+
   it('an op of a marked id that recorded ANOTHER resource is displaced: not replayed, counted as a warning', async () => {
     const events: Array<Record<string, unknown>> = [];
     const h = harness({

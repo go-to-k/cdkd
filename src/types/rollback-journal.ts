@@ -211,9 +211,7 @@ export interface JournalOpIdentitySource {
   physicalId?: string | undefined;
   previousResourceType?: string | undefined;
   oldResourceRetained?: boolean | undefined;
-  previousState?:
-    | { physicalId?: unknown; resourceType?: unknown; updateReplacePolicy?: unknown }
-    | undefined;
+  previousState?: { physicalId?: unknown; resourceType?: unknown } | undefined;
 }
 
 /**
@@ -228,18 +226,30 @@ export function journalOpPhysicalId(op: JournalOpIdentitySource): string | undef
 }
 
 /**
- * The OLD resource a completed replacement UPDATE KEPT alive
- * (`oldResourceRetained`, or `UpdateReplacePolicy: Retain` on a journal that
- * predates that verdict), when it names one other than the op's own. An import
- * of the op's NEW resource leaves this one running and untracked, so the op is
- * reported (displaced), naming it, rather than adopted silently.
+ * The OLD resource a replacement UPDATE may have KEPT alive, when it is a
+ * resource other than the op's own: another physical id, or the same
+ * name-based id under another TYPE (a Type change that kept its name). An
+ * import of the op's NEW resource leaves this one running and untracked, so
+ * the op is reported (displaced), naming it, rather than adopted silently.
+ *
+ * Only an explicit `oldResourceRetained: false` — the verdict a current binary
+ * stamps on every completed UPDATE — says the old resource is gone. A FAILED
+ * op never carries the verdict, and `previousState.updateReplacePolicy` is the
+ * stale pre-#2603 read (a deploy that ADDS Retain records it absent), so an
+ * absent verdict counts as kept: the op warns instead of adopting silently.
  */
 export function retainedOldPhysicalId(op: JournalOpIdentitySource): string | undefined {
   if (op.changeType !== 'UPDATE') return undefined;
   const prev = op.previousState?.physicalId;
-  if (typeof prev !== 'string' || prev === '' || prev === journalOpPhysicalId(op)) return undefined;
-  const retained = op.oldResourceRetained ?? op.previousState?.updateReplacePolicy === 'Retain';
-  return retained ? prev : undefined;
+  if (typeof prev !== 'string' || prev === '') return undefined;
+  const prevType = op.previousState?.resourceType;
+  const oldType =
+    op.previousResourceType ??
+    (typeof prevType === 'string' && prevType !== '' ? prevType : undefined);
+  const distinct =
+    prev !== journalOpPhysicalId(op) || (oldType !== undefined && oldType !== op.resourceType);
+  if (!distinct) return undefined;
+  return op.oldResourceRetained !== false ? prev : undefined;
 }
 
 /**
