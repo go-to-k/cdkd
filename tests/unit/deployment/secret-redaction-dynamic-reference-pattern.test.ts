@@ -251,9 +251,15 @@ describe('drift.ts reads the same predicate (issue #1936)', () => {
     expect(/^\{\{resolve:[^{}]*\}\}$/.test(token), 'braced: the old class does NOT').toBe(false);
     const live = 'the-live-value-at-that-position';
 
+    // EMPTY survivor set and map, deliberately: since issue #2102 a leaf the
+    // strict class calls "not whole" takes the EMBEDDED arm, which would match
+    // a survivor spanning the whole string and copy `live` anyway — voiding
+    // this fence. With no survivors that arm keeps the token.
     const send = preserveLiveValuesAtUnresolvedTokens(
       { MasterUserPassword: token },
-      { MasterUserPassword: live }
+      { MasterUserPassword: live },
+      new Set<string>(),
+      new Map()
     );
 
     expect(send['MasterUserPassword']).toBe(live);

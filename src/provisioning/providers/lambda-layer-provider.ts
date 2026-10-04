@@ -3,7 +3,9 @@ import {
   PublishLayerVersionCommand,
   DeleteLayerVersionCommand,
   GetLayerVersionByArnCommand,
+  ListLayerVersionsCommand,
   ResourceNotFoundException,
+  type PublishLayerVersionCommandOutput,
   type LayerVersionContentInput,
   type Runtime,
   type Architecture,
@@ -25,7 +27,56 @@ import type {
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import { createMaskedLogSinks, withDerivedNameMasks } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  withDerivedNameMasks,
+  type MaskedLogSinks,
+} from '../masked-retry-logger.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  isInsideWindow,
+  withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
+} from './ambiguous-create.js';
+import {
+  collectOrphanIds,
+  orphanCommandRegionArg,
+  reportPossibleOrphans,
+} from './orphan-report.js';
+
+/**
+ * Retry-safety state for `PublishLayerVersion`, which mints the next version
+ * number and carries no idempotency token (issue
+ * [#2080](https://github.com/go-to-k/cdkd/issues/2080)): a replay of a publish
+ * AWS completed adds a SECOND version under the same layer name, and the first
+ * is in no state record. See `orphan-report.ts`. Module-scoped: a provider
+ * instance is per registry, and one process can build several.
+ */
+const publishLayerVersionLatch = new AmbiguousCreateLatch('lambda:PublishLayerVersion');
+/** Layer version ARNs this process published and recorded, never reported as orphan candidates. */
+const versionsPublishedByThisProcess = new RecentIdSet();
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetLayerVersionCreateRetryStateForTests(): void {
+  publishLayerVersionLatch.resetForTests();
+  versionsPublishedByThisProcess.resetForTests();
+}
+
+/**
+ * `ListLayerVersions`' `CreatedDate` (ISO 8601, documented as
+ * `2018-11-27T15:10:45.123+0000`) as a `Date`, or `undefined` when it does not
+ * parse -- which leaves that version out of a window lookup (missed, never
+ * wrongly reported). The offset is given its colon first: `+0000` is not the
+ * ECMAScript date-time format.
+ */
+export function parseLayerCreatedDate(value: string | undefined): Date | undefined {
+  if (value === undefined) return undefined;
+  const date = new Date(value.replace(/([+-]\d{2})(\d{2})$/, '$1:$2'));
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
 
 /**
  * The short `ResourceDeleteResult.reason` the two malformed-`LayerVersionArn`
@@ -85,6 +136,7 @@ function layerNameSegment(value: string): string | undefined {
  */
 export class LambdaLayerVersionProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
+  private createClient: Promise<LambdaClient> | undefined;
   private logger = getLogger().child('LambdaLayerVersionProvider');
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -103,6 +155,79 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.lambdaClient = awsClients.lambda;
+  }
+
+  /**
+   * The client `PublishLayerVersion` goes through: SDK retries on, except a
+   * 5xx (`withoutServerErrorRetries`, issue #2080). Separate so every other
+   * call -- and every other provider sharing `getAwsClients().lambda` -- keeps
+   * the full SDK retry. Built in the shared client's REGION (read from it, as
+   * `config.region()` resolves it), so the create cannot land in another
+   * region than the calls around it. The PROMISE is cached, so two creates on
+   * a cold provider build one client; a rejected region read is not cached,
+   * so the next create retries it.
+   */
+  private getCreateClient(): Promise<LambdaClient> {
+    this.createClient ??= this.lambdaClient.config.region().then(
+      (region) =>
+        withoutServerErrorRetries(new LambdaClient({ ...ambientClientDefaults(), region })),
+      (error: unknown) => {
+        this.createClient = undefined;
+        throw error;
+      }
+    );
+    return this.createClient;
+  }
+
+  /**
+   * Issue #2080: list the versions of `layerName` an earlier ambiguous
+   * `PublishLayerVersion` attempt may have published -- created inside its
+   * window and not recorded by this process -- and warn, with a read command
+   * and then a delete command to run only after confirming. Detection only:
+   * a layer name is per account and region while cdkd's stack lock is per
+   * state location, so a version in the window can be another deploy's.
+   */
+  private async reportPossibleLayerOrphans(
+    logicalId: string,
+    window: AmbiguousCreateWindow,
+    log: MaskedLogSinks,
+    layerName: string
+  ): Promise<void> {
+    const aws = pasteableAwsCommand(log.mask);
+    const regionArg = await orphanCommandRegionArg(this.lambdaClient, aws);
+    // The version number is the ARN's last segment; the layer name argument
+    // stays the one this create publishes under (a name or a layer ARN).
+    const versionOf = (arn: string): string => /:(\d+)$/.exec(arn)?.[1] ?? '';
+    await reportPossibleOrphans(logicalId, window, log, {
+      action: 'PublishLayerVersion',
+      service: 'Lambda',
+      listAction: 'ListLayerVersions',
+      subject: `a version of layer ${log.value(layerName)}`,
+      noun: 'layer version(s)',
+      list: () =>
+        collectOrphanIds(
+          async (marker) => {
+            const page = await this.lambdaClient.send(
+              new ListLayerVersionsCommand({
+                LayerName: layerName,
+                ...(marker && { Marker: marker }),
+              })
+            );
+            return { items: page.LayerVersions ?? [], next: page.NextMarker };
+          },
+          (item) =>
+            item.LayerVersionArn &&
+            versionOf(item.LayerVersionArn) !== '' &&
+            isInsideWindow(parseLayerCreatedDate(item.CreatedDate), window) &&
+            !versionsPublishedByThisProcess.has(item.LayerVersionArn)
+              ? item.LayerVersionArn
+              : undefined
+        ),
+      inspect: (id) =>
+        aws`aws lambda get-layer-version --layer-name ${layerName} --version-number ${versionOf(id)}${regionArg}`.render(),
+      remove: (id) =>
+        aws`aws lambda delete-layer-version --layer-name ${layerName} --version-number ${versionOf(id)}${regionArg}`.render(),
+    });
   }
 
   /**
@@ -151,20 +276,36 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
       if (content['S3ObjectVersion'])
         contentInput.S3ObjectVersion = content['S3ObjectVersion'] as string;
 
-      const response = await this.lambdaClient.send(
-        new PublishLayerVersionCommand({
-          LayerName: layerName,
-          Content: contentInput,
-          CompatibleRuntimes: properties['CompatibleRuntimes'] as Runtime[] | undefined,
-          CompatibleArchitectures: properties['CompatibleArchitectures'] as
-            | Architecture[]
-            | undefined,
-          Description: properties['Description'] as string | undefined,
-          LicenseInfo: properties['LicenseInfo'] as string | undefined,
-        })
-      );
+      // Issue #2080: after an earlier ambiguous attempt, name the version it
+      // may have published before a second PublishLayerVersion is sent.
+      // Detection only -- see `orphan-report.ts`.
+      const orphanWindow = publishLayerVersionLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await this.reportPossibleLayerOrphans(logicalId, orphanWindow, log, layerName);
+      }
+      const createClient = await this.getCreateClient();
+      const attemptStartMs = Date.now();
+      let response: PublishLayerVersionCommandOutput;
+      try {
+        response = await createClient.send(
+          new PublishLayerVersionCommand({
+            LayerName: layerName,
+            Content: contentInput,
+            CompatibleRuntimes: properties['CompatibleRuntimes'] as Runtime[] | undefined,
+            CompatibleArchitectures: properties['CompatibleArchitectures'] as
+              | Architecture[]
+              | undefined,
+            Description: properties['Description'] as string | undefined,
+            LicenseInfo: properties['LicenseInfo'] as string | undefined,
+          })
+        );
+      } catch (error) {
+        publishLayerVersionLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
 
       const layerVersionArn = response.LayerVersionArn!;
+      if (layerVersionArn) versionsPublishedByThisProcess.add(layerVersionArn);
       log.debug(`Successfully created Lambda layer version ${logicalId}: ${layerVersionArn}`);
 
       return {

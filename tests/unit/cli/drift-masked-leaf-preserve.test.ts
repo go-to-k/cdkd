@@ -6,7 +6,7 @@ import {
   findRevertUnbaselinedAwsKeys,
   getAtPath,
   preserveLiveValuesAtMaskedLeaves,
-  preserveLiveValuesAtUnresolvedTokens,
+  preserveLiveValuesAtUnresolvedTokens as preserveLiveValuesAtUnresolvedTokensWith,
   setAtPath,
 } from '../../../src/cli/commands/drift.js';
 import {
@@ -15,6 +15,16 @@ import {
   maskSecretsInText,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+
+// Every case in this file predating issue #2102 exercises the WHOLE-token arm,
+// which reads neither the surviving-token set nor the map — so they run with
+// both empty, under which an EMBEDDED token never matches its frame and keeps
+// the send string, the pre-#2102 behaviour those cases pinned.
+const preserveLiveValuesAtUnresolvedTokens = (
+  send: Record<string, unknown>,
+  aws: Record<string, unknown>
+): Record<string, unknown> =>
+  preserveLiveValuesAtUnresolvedTokensWith(send, aws, new Set<string>(), new Map());
 
 // Issue #2274 review round 2, blocker 2 — plus the descent arms the first cut
 // shipped unfenced.
@@ -1765,5 +1775,168 @@ describe('own-key membership and reads across the revert helpers (PR 3124 review
 
     expect(unpreservablePaths).toEqual(['__proto__']);
     expect(properties['__proto__']).toBe(SECRET_MASK);
+  });
+});
+
+// Issue #2102: a token EMBEDDED in a longer string, or a MIXED leaf whose
+// other half cdkd resolved, is preserved by SPAN — AWS's value is kept only
+// when it equals the send string at every character outside the surviving
+// tokens' spans. Before the fix every such leaf shipped the literal token over
+// whatever AWS held.
+describe('preserveLiveValuesAtUnresolvedTokens preserves an EMBEDDED token by span (#2102)', () => {
+  const SURVIVORS = new Set([TOK_A, TOK_B]);
+  const RESOLVED = 'cdkd-2102-resolved-secret';
+  const ROTATED = 'cdkd-2102-rotated-secret';
+  const secretsWithResolved = (): RecordedSecretValues =>
+    new Map([[RESOLVED, '{{resolve:secretsmanager:db:SecretString:pw::}}']]);
+
+  it('keeps the live value of a single embedded token whose frame matches', () => {
+    const out = preserveLiveValuesAtUnresolvedTokensWith(
+      { Url: `jdbc:mysql://h/db?password=${TOK_A}`, Level: 'info' },
+      { Url: 'jdbc:mysql://h/db?password=live-pw', Level: 'debug' },
+      SURVIVORS,
+      new Map()
+    );
+
+    expect(out['Url']).toBe('jdbc:mysql://h/db?password=live-pw');
+    expect(out['Level']).toBe('info');
+  });
+
+  it('keeps the live value of a MIXED leaf whose resolved half equals AWS', () => {
+    const out = preserveLiveValuesAtUnresolvedTokensWith(
+      { Url: `${TOK_A}:${RESOLVED}` },
+      { Url: `live-host:${RESOLVED}` },
+      SURVIVORS,
+      secretsWithResolved()
+    );
+
+    expect(out['Url']).toBe(`live-host:${RESOLVED}`);
+  });
+
+  it('never moves a ROTATED secret in: a resolved half that differs keeps the send string', () => {
+    // AWS still holds the PREVIOUS secret beside the token. It has no map
+    // entry, so copying it in would put an unmaskable plaintext into the
+    // payload (retry log, AWS error text, narrowing delta).
+    const send = `${TOK_A}:${RESOLVED}`;
+    const out = preserveLiveValuesAtUnresolvedTokensWith(
+      { Url: send },
+      { Url: `live-host:${ROTATED}` },
+      SURVIVORS,
+      secretsWithResolved()
+    );
+
+    expect(out['Url']).toBe(send);
+    expect(JSON.stringify(out)).not.toContain(ROTATED);
+  });
+
+  it('keeps the send string when a literal outside the span differs', () => {
+    const send = `prefix-${TOK_A}-suffix`;
+    expect(
+      preserveLiveValuesAtUnresolvedTokensWith(
+        { V: send },
+        { V: 'prefix-x-other' },
+        SURVIVORS,
+        new Map()
+      )['V']
+    ).toBe(send);
+    expect(
+      preserveLiveValuesAtUnresolvedTokensWith(
+        { V: send },
+        { V: 'other-x-suffix' },
+        SURVIVORS,
+        new Map()
+      )['V']
+    ).toBe(send);
+  });
+
+  it('keeps the send string when AWS holds nothing, or a non-string, there', () => {
+    const send = `pre-${TOK_A}`;
+    expect(
+      preserveLiveValuesAtUnresolvedTokensWith({ V: send }, {}, SURVIVORS, new Map())['V']
+    ).toBe(send);
+    expect(
+      preserveLiveValuesAtUnresolvedTokensWith({ V: send }, { V: ['pre-x'] }, SURVIVORS, new Map())[
+        'V'
+      ]
+    ).toBe(send);
+  });
+
+  it('treats a token-shaped substring that is NOT a survivor as literal frame', () => {
+    // Only the reported survivors are wildcards: TOK_B is not in the set, so
+    // its span must match AWS byte for byte.
+    const send = `${TOK_A}/${TOK_B}`;
+    const out = preserveLiveValuesAtUnresolvedTokensWith(
+      { V: send },
+      { V: 'live/other' },
+      new Set([TOK_A]),
+      new Map()
+    );
+
+    expect(out['V']).toBe(send);
+  });
+
+  it('refuses a wildcard span overlapping a resolved plaintext that spells the same token', () => {
+    // A secret whose plaintext CONTAINS a survivor's spelling: which
+    // occurrence is the survivor cannot be told apart, so nothing is copied.
+    const plaintext = `x${TOK_A}y`;
+    const secrets: RecordedSecretValues = new Map([
+      [plaintext, '{{resolve:secretsmanager:odd:SecretString:pw::}}'],
+    ]);
+    const send = `${plaintext}`;
+    const out = preserveLiveValuesAtUnresolvedTokensWith(
+      { V: send },
+      { V: 'xLEAKEDy' },
+      SURVIVORS,
+      secrets
+    );
+
+    expect(out['V']).toBe(send);
+  });
+
+  it('a mixed leaf in an UNKEYED array still contradicts the pairing, even with survivors', () => {
+    // S17's shape with the survivor set supplied: the pairing is unchanged by
+    // #2102, so the refused pairing still keeps both tokens.
+    const out = preserveLiveValuesAtUnresolvedTokensWith(
+      {
+        I: [
+          { M: `jdbc:${TOK_A}`, U: TOK_B },
+          { M: 'plain', U: 'u2' },
+        ],
+      },
+      {
+        I: [
+          { M: 'jdbc:resolved-value', U: 'live-secret' },
+          { M: 'plain', U: 'u2' },
+        ],
+      },
+      SURVIVORS,
+      new Map()
+    );
+
+    const items = out['I'] as Array<Record<string, unknown>>;
+    expect(items[0]!['M']).toBe(`jdbc:${TOK_A}`);
+    expect(items[0]!['U']).toBe(TOK_B);
+  });
+
+  it('preserves an embedded token inside a KEYED array element', () => {
+    const out = preserveLiveValuesAtUnresolvedTokensWith(
+      {
+        Env: [
+          { Name: 'B', Value: 'b' },
+          { Name: 'URL', Value: `https://${TOK_A}/x` },
+        ],
+      },
+      {
+        Env: [
+          { Name: 'URL', Value: 'https://live.example/x' },
+          { Name: 'B', Value: 'b' },
+        ],
+      },
+      SURVIVORS,
+      new Map()
+    );
+
+    const env = out['Env'] as Array<Record<string, unknown>>;
+    expect(env[1]).toEqual({ Name: 'URL', Value: 'https://live.example/x' });
   });
 });
