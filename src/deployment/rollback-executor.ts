@@ -585,8 +585,6 @@ async function replayFailedOperationsUnbound(
   // has nothing left to act on and its warning was already shown once) is
   // considered handled and drops out of the journal.
   const pending = new Set<FailedOperation>();
-  // go-to-k/cdkd#4408: as in `replayRollback`.
-  inlinePolicyWriters.notePending(failedOps);
 
   for (let i = failedOps.length - 1; i >= 0; i--) {
     if (options.isInterrupted?.()) {

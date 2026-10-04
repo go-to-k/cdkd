@@ -1210,6 +1210,56 @@ describe('a rollback puts back an inline policy its removal took from a record t
     });
   });
 
+  it('S1: a holder whose op a re-run finds already reverted counts as settled', async () => {
+    // A's record already equals its pre-deploy record (a prior run reverted
+    // it), so its op is `skip-already-done`: its record is the pre-deploy one.
+    const { state, ops } = revertOps();
+    state['A'] = policyRecord('x', 'd0');
+
+    const result = await replayRollback(ops, state, 'S', ctx);
+
+    expect(policyProvider.update).not.toHaveBeenCalled();
+    expect(result.warnings).toBe(0);
+    expect(holding()).toEqual({ x: 'd0' });
+  });
+
+  it('S1: a --revert-failed op that finds nothing to revert settles; one that throws does not', async () => {
+    const run = async (failedChange: 'DELETE' | 'UPDATE'): Promise<number> => {
+      vi.clearAllMocks();
+      held = new Map();
+      const state: Record<string, ResourceState> = {
+        A: policyRecord('x', 'd0'),
+        B: policyRecord('x', 'dB'),
+      };
+      put('x', 'dB');
+      if (failedChange === 'UPDATE') policyProvider.update.mockRejectedValueOnce(new Error('throttled'));
+      const writers = new RollbackInlinePolicyWriters();
+      const failed = [
+        {
+          logicalId: 'A',
+          changeType: failedChange,
+          resourceType: POLICY,
+          physicalId: 'x',
+          ...(failedChange === 'UPDATE' && {
+            attemptedProperties: policyRecord('x', 'd1').properties,
+            previousState: policyRecord('x', 'd0'),
+          }),
+          provisionedBy: 'sdk',
+        },
+      ] as FailedOperation[];
+      await replayFailedOperations(failed, state, 'S', ctx, { inlinePolicyWriters: writers });
+      await replayRollback([createOp('B', state['B']!)], state, 'S', ctx, { inlinePolicyWriters: writers });
+      return policyProvider.create.mock.calls.length;
+    };
+
+    // A failed DELETE left A's record as it was: the pre-deploy one.
+    expect(await run('DELETE')).toBe(1);
+    expect(holding()).toEqual({ x: 'd0' });
+    // A force-revert that threw leaves A unsettled.
+    expect(await run('UPDATE')).toBe(0);
+    expect(warned()).toContain('the rollback of A has not completed');
+  });
+
   it('S8: a refused or failed put-back records no success event', async () => {
     const state: Record<string, ResourceState> = {
       Old: policyRecord('n', 'docOld'),
