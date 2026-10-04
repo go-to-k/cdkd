@@ -7436,7 +7436,17 @@ export class EC2Provider implements ResourceProvider {
     ) {
       return undefined;
     }
-    return match;
+    // The ports matched NUMERICALLY, so a template port AWS reports as a
+    // number but the record holds as a string (a token-resolved `"3306"`) is
+    // echoed in the TEMPLATE's spelling: the drift comparison is type-strict,
+    // and AWS's `3306` against the record's `"3306"` would read as port drift
+    // on every run, with `--revert` re-authorizing the same rule each time.
+    // (`IpProtocol` needs no echo: `canonicalizeIpProtocols` folds both sides.)
+    return {
+      ...match,
+      ...(properties['FromPort'] != null && { FromPort: properties['FromPort'] }),
+      ...(properties['ToPort'] != null && { ToPort: properties['ToPort'] }),
+    };
   }
 
   /**

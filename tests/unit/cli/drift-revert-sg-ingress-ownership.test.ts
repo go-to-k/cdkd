@@ -190,6 +190,41 @@ const writes = (): string[] =>
     .map((call) => (call[0] as { constructor: { name: string } }).constructor.name)
     .filter((name) => WRITES.test(name));
 
+/** `cdkd drift --json`: the per-resource verdict lists and the exit code. */
+async function detect(): Promise<{
+  clean: string[];
+  drifted: string[];
+  notSupported: string[];
+  thrown: unknown;
+}> {
+  const out: string[] = [];
+  const original = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string) => {
+    out.push(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+  // A non-clean verdict is THROWN (`DriftDetectedError` exits 1,
+  // `DriftComparisonIncompleteError` 2); a clean run throws nothing.
+  let thrown: unknown;
+  try {
+    const cmd = createDriftCommand();
+    cmd.exitOverride();
+    await cmd.parseAsync(['TestStack', '--state-bucket', 'b', '--region', 'us-east-1', '--json'], {
+      from: 'user',
+    });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    process.stdout.write = original;
+  }
+  const [report] = JSON.parse(out.join('')) as Array<
+    Record<'clean' | 'drifted' | 'notSupported', Array<{ logicalId: string }>>
+  >;
+  const ids = (key: 'clean' | 'drifted' | 'notSupported'): string[] =>
+    (report![key] ?? []).map((r) => r.logicalId);
+  return { clean: ids('clean'), drifted: ids('drifted'), notSupported: ids('notSupported'), thrown };
+}
+
 async function revert(): Promise<void> {
   const original = process.stdout.write.bind(process.stdout);
   process.stdout.write = (() => true) as typeof process.stdout.write;
@@ -242,6 +277,32 @@ describe('drift --revert on a standalone SG ingress rule matched by identity (go
 
     await revert();
 
+    expect(writes()).toEqual([]);
+  });
+
+  it('reads a token-resolved string-port rule CLEAN, and its revert writes nothing', async () => {
+    // `db.connections.allowDefaultPortFrom(sg)`: FromPort is a GetAtt the RDS
+    // provider resolves to the STRING "443", which is what the record holds;
+    // AWS reports the number. The exact key misses on the type, the identity
+    // fallback binds it, and the ports must come back in the record's spelling.
+    stubEc2(OUR_ID, 'ours');
+    mockGetState.mockResolvedValue(
+      stackState({
+        Rule: {
+          ...ingressRecord('ours', OUR_ID),
+          properties: { ...DECLARED, FromPort: '443', ToPort: '443' },
+        },
+      })
+    );
+
+    const verdict = await detect();
+
+    expect(verdict.clean).toEqual(['Rule']);
+    expect(verdict.drifted).toEqual([]);
+    expect(verdict.notSupported).toEqual([]);
+    expect(verdict.thrown).toBeUndefined();
+
+    await revert();
     expect(writes()).toEqual([]);
   });
 

@@ -1716,7 +1716,16 @@ describe('EC2Provider.readCurrentState', () => {
           )
         );
 
-        expect(result).toMatchObject({ CidrIp: '10.0.0.0/16', Description: 'edited in the console' });
+        // Ports come back in the TEMPLATE's spelling, so a type-strict compare
+        // against the record's "443" sees no port drift.
+        expect(result).toEqual({
+          GroupId: 'sg-1',
+          IpProtocol: 'tcp',
+          FromPort: '443',
+          ToPort: '443',
+          CidrIp: '10.0.0.0/16',
+          Description: 'edited in the console',
+        });
       });
 
       it('matches a same-account SG-to-SG rule whose template omits the peer owner', async () => {
