@@ -52,7 +52,11 @@ import {
   refuseMalformedOrphans,
   refuseMalformedState,
 } from '../state/malformed-resources-bag.js';
-import { replayRollback, type RollbackExecutorContext } from './rollback-executor.js';
+import {
+  replayRollback,
+  type CompletedOperation,
+  type RollbackExecutorContext,
+} from './rollback-executor.js';
 import { RollbackInlinePolicyWriters } from './inline-policy-claims.js';
 import { producerRegionsFromState } from './secret-region-classification.js';
 import { inheritProducerRegions, type ProducerRegionEvidence } from './producer-regions-scope.js';
@@ -106,6 +110,35 @@ export function nestedPendingSnapshot(
       ...(Array.isArray(state.outputReads) && { outputReads: [...state.outputReads] }),
     },
   };
+}
+
+/**
+ * go-to-k/cdkd#4523: record a `ROLLBACK_RESOURCE_SKIPPED` event for each op a
+ * `cdkd import` DISPLACED (`splitImportedOps`), the same durable event every
+ * other warned skip records (`recordRollbackSkip`): the replay never sees these
+ * ops, so it records nothing for them. Like that event, it carries no physical
+ * id — one here would point a cleanup pass at a resource no record names.
+ */
+export function recordDisplacedSkips(
+  recordEvent: RollbackExecutorContext['recordEvent'],
+  stackName: string,
+  ops: ReadonlyArray<
+    Pick<CompletedOperation, 'logicalId' | 'resourceType' | 'changeType' | 'provisionedBy'>
+  >
+): void {
+  for (const op of ops) {
+    recordEvent?.({
+      eventType: 'ROLLBACK_RESOURCE_SKIPPED',
+      stackName,
+      operation: op.changeType,
+      logicalId: op.logicalId,
+      resourceType: op.resourceType,
+      ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+      reason:
+        'cdkd import has since put another resource under this logical id, so the op was not ' +
+        'reverted; check the resource it recorded by hand',
+    });
+  }
 }
 
 /**
@@ -589,6 +622,13 @@ export async function revertNestedChildFromJournal(args: {
       );
       failures += result.failures;
       warnings += result.warnings + split.displaced.length;
+      recordDisplacedSkips(execCtx.recordEvent, childStackName, split.displaced);
+      for (const op of split.displaced) {
+        logger.warn(
+          safeMsg`Nested stack ${childStackName}: ${op.logicalId} recorded a resource cdkd import ` +
+            `has since replaced under this id; not reverted, check that resource by hand`
+        );
+      }
     }
     restoring = failures === 0;
     await save();

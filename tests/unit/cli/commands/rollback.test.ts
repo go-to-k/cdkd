@@ -2952,15 +2952,19 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
     info.mockClear();
     replayProvider.update.mockReset();
     replayProvider.update.mockResolvedValue({ physicalId: 'arn:child', wasReplaced: false });
-    const childSegment = (imported: boolean) => ({
+    // `markedAs`: the physical id the import recorded (`db-1` = adopted,
+    // anything else = the child op is displaced), or no mark at all.
+    const childSegment = (markedAs: string | undefined) => ({
       runId: 'r1',
       timestamp: 1,
       reason: 'nested-pending-parent',
       initialDeploy: false,
       operations: [{ logicalId: 'Db', changeType: 'CREATE', resourceType: 'AWS::SQS::Queue', physicalId: 'db-1' }],
-      ...(imported && { importedResources: [{ logicalId: 'Db', physicalId: 'db-1', resourceType: 'AWS::SQS::Queue' }] }),
+      ...(markedAs !== undefined && {
+        importedResources: [{ logicalId: 'Db', physicalId: markedAs, resourceType: 'AWS::SQS::Queue' }],
+      }),
     });
-    const planLines = async (imported: boolean): Promise<string[]> => {
+    const planLines = async (imported: string | undefined): Promise<string[]> => {
       info.mockClear();
       installSetup({
         listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
@@ -2997,13 +3001,18 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
       return info.mock.calls.map((c) => String(c[0]));
     };
 
-    const marked = await planLines(true);
+    const marked = await planLines('db-1');
     expect(marked.some((l) => l.includes('Db') && l.includes('adopted by cdkd import'))).toBe(true);
     expect(marked.some((l) => l.includes('delete') && l.includes('Db'))).toBe(false);
     // Control: unmarked, the same child op is planned as a delete.
-    const unmarked = await planLines(false);
+    const unmarked = await planLines(undefined);
     expect(unmarked.some((l) => l.includes('delete') && l.includes('Db'))).toBe(true);
     expect(unmarked.some((l) => l.includes('adopted by cdkd import'))).toBe(false);
+    // Displaced: the import put ANOTHER resource under the id. Listed, with
+    // the op's own physical id, and not planned as a delete.
+    const displaced = await planLines('other-db');
+    expect(displaced.some((l) => l.includes('Db') && l.includes('cdkd import has since replaced') && l.includes('db-1'))).toBe(true);
+    expect(displaced.some((l) => l.includes('delete') && l.includes('Db'))).toBe(false);
   });
 
   it('the nested-child plan line describes a padded stack name (go-to-k/cdkd#3760)', async () => {

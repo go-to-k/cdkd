@@ -326,10 +326,14 @@ runs none of those segments' operations for that id:
 | The operation recorded | The rollback | Plan line |
 | --- | --- | --- |
 | The resource the import adopted (same physical id and type) | Leaves it alone | `adopted by cdkd import after this deploy, left as it is` |
-| Another resource under the id (another physical id or type) | Leaves it alone, warns, exits 2 | `recorded a resource cdkd import has since replaced under this id; not reverted, check that resource by hand` |
+| Another resource under the id (another physical id or type) | Leaves it alone, warns, exits 2 | `recorded <its physical id>, which cdkd import has since replaced under this id; not reverted, check that resource by hand` |
 
 Failed operations follow the same table under `--revert-failed`, and stay in
-the journal. An id you pass to `--orphan` is not covered: the flag is honoured.
+the journal. A displaced operation also records a `ROLLBACK_RESOURCE_SKIPPED`
+event. Its segment is still removed after a run with no failures, so the plan
+line, which names the physical id, is the record to act on. Completed
+operations of an id you pass to `--orphan` are not covered: the flag is
+honoured.
 
 The mark matters for a resource with an explicit name, whose physical id is
 that name. A resource re-created by hand under the same name and imported

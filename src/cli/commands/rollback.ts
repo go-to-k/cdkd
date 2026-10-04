@@ -31,6 +31,7 @@ import {
   NESTED_PENDING_PARENT_REASON,
   dropSettledNestedJournals,
   nestedChildStackName,
+  recordDisplacedSkips,
   revertedNestedRowIds,
   withNestedRevertRun,
   type NestedRevertRun,
@@ -509,11 +510,20 @@ function importedOpLabel(op: { logicalId: string; resourceType: string }): strin
   );
 }
 
-function displacedOpLabel(op: { logicalId: string; resourceType: string }): string {
+function displacedOpLabel(op: {
+  logicalId: string;
+  resourceType: string;
+  physicalId?: string | undefined;
+}): string {
+  // The op's physical id is named: once the segment pops, this line is the
+  // only place the displaced resource is ever named (security review m4).
+  const recorded =
+    op.physicalId !== undefined
+      ? `recorded ${safe(op.physicalId)}, which cdkd import has since replaced under this id`
+      : `recorded no physical id, and cdkd import has since put another resource under this id`;
   return (
     `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
-    `— recorded a resource cdkd import has since replaced under this id; not reverted, ` +
-    `check that resource by hand`
+    `— ${recorded}; not reverted, check that resource by hand`
   );
 }
 
@@ -1159,6 +1169,7 @@ export async function rollbackCommand(
               : []),
           ];
           for (const op of displaced) logger.warn(displacedOpLabel(op).trim());
+          recordDisplacedSkips(ctx.recordEvent, stackName, displaced);
           // Issue #3754: what the nested-stack rows' child replays reported
           // (completed rows, skipped ops), read once the segment has replayed.
           let nestedRun: NestedRevertRun | undefined;

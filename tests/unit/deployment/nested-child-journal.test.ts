@@ -245,7 +245,9 @@ describe('revertNestedChildFromJournal (#3754)', () => {
   });
 
   it('an op of a marked id that recorded ANOTHER resource is displaced: not replayed, counted as a warning', async () => {
+    const events: Array<Record<string, unknown>> = [];
     const h = harness({
+      ctxExtra: { options: { eventRecorder: { record: (e: Record<string, unknown>) => events.push(e) } } },
       segments: [
         seg('run-1', [], {
           operations: [
@@ -261,6 +263,9 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     expect(replay.calls.map((c) => c.ops)).toEqual([[]]);
     expect(h.scope.warnings).toBe(1);
     expect(h.scope.settled.has('Child')).toBe(false);
+    expect(events.filter((e) => e['eventType'] === 'ROLLBACK_RESOURCE_SKIPPED')).toEqual([
+      expect.objectContaining({ stackName: CHILD, logicalId: 'Q', resourceType: 'AWS::SQS::Queue' }),
+    ]);
   });
 
   it('hands every segment replay ONE record of completed writes (go-to-k/cdkd#4225)', async () => {

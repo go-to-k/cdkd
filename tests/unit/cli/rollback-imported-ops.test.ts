@@ -40,8 +40,12 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
     setCustomResourceResponseBucket: vi.fn(),
   })),
 }));
+const recorded = vi.hoisted(() => ({ events: [] as Array<Record<string, unknown>> }));
 vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
-  startRunRecorder: () => ({ record: vi.fn(), finalize: vi.fn().mockResolvedValue(undefined) }),
+  startRunRecorder: () => ({
+    record: (e: Record<string, unknown>) => recorded.events.push(e),
+    finalize: vi.fn().mockResolvedValue(undefined),
+  }),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({ destroy: vi.fn() })),
@@ -160,6 +164,7 @@ const infoLines = (): string[] =>
 describe('cdkd rollback leaves a resource cdkd import adopted after the deploy alone (go-to-k/cdkd#4523)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    recorded.events.length = 0;
     provider.delete.mockResolvedValue(undefined);
     provider.update.mockResolvedValue({ physicalId: NAME, wasReplaced: false });
   });
@@ -321,9 +326,16 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(provider.update).not.toHaveBeenCalled();
     expect(backend['saveState']).not.toHaveBeenCalled();
     expect(infoLines().some((l) => l.includes(' Topic (') && l.includes(DISPLACED))).toBe(true);
+    // The op's own physical id is named: after the pop, nothing else does.
+    expect(infoLines().some((l) => l.includes(DISPLACED) && l.includes(op.physicalId))).toBe(true);
     expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(false);
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as Error).message).toContain('skipped');
+    // The durable event every warned skip records, without a physical id.
+    const skips = recorded.events.filter((e) => e['eventType'] === 'ROLLBACK_RESOURCE_SKIPPED');
+    expect(skips).toHaveLength(1);
+    expect(skips[0]).toMatchObject({ logicalId: 'Topic', resourceType: op.resourceType });
+    expect(skips[0]).not.toHaveProperty('physicalId');
   });
 
   it('--revert-failed: a displaced failed UPDATE is not force-reverted, warns, and stays in the journal', async () => {
