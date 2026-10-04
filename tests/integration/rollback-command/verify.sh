@@ -604,7 +604,7 @@ fi
 # Each capture is guarded: under `set -e` a failed substitution would end the
 # script with no FAIL line naming what broke.
 if ! SKIP_SEG_REASON="$(printf '%s' "${SKIP_JOURNAL}" | jq -r '.segments[-1].reason')" \
-  || ! SKIP_SEG_OPS="$(printf '%s' "${SKIP_JOURNAL}" | jq -c '[(.segments[-1].operations // [])[] | select(.logicalId == "SkipDoomed") | .changeType]')"; then
+  || ! SKIP_SEG_OPS="$(printf '%s' "${SKIP_JOURNAL}" | jq -c '[(.segments[-1].operations // [])[] | select((.logicalId | startswith("SkipDoomed"))) | .changeType]')"; then
   echo "[verify] FAIL: could not parse the rollback journal s3://${STATE_BUCKET}/${JOURNAL_KEY}"
   exit 1
 fi
@@ -639,7 +639,7 @@ if ! printf '%s' "${SKIP_EVENTS_JSON}" | jq -e '[.[] | select(.eventType == "ROL
   printf '%s\n' "${SKIP_EVENTS_JSON}" | sed 's/^/  /'
   exit 1
 fi
-if ! printf '%s' "${SKIP_EVENTS_JSON}" | jq -e '[.[] | select(.eventType == "ROLLBACK_RESOURCE_SKIPPED" and .logicalId == "SkipDoomed" and .operation == "DELETE" and ((.reason // "") | length) > 0 and (has("physicalId") | not))] | length == 1' >/dev/null; then
+if ! printf '%s' "${SKIP_EVENTS_JSON}" | jq -e '[.[] | select(.eventType == "ROLLBACK_RESOURCE_SKIPPED" and (.logicalId | startswith("SkipDoomed")) and .operation == "DELETE" and ((.reason // "") | length) > 0 and (has("physicalId") | not))] | length == 1' >/dev/null; then
   echo "[verify] FAIL: run ${SKIP_RUN_ID} has no ROLLBACK_RESOURCE_SKIPPED for SkipDoomed (DELETE, with a reason, no physicalId)"
   printf '%s\n' "${SKIP_EVENTS_JSON}" | jq '[.[] | select(.eventType | startswith("ROLLBACK_"))]' | sed 's/^/  /'
   exit 1
@@ -671,7 +671,7 @@ if [ "${S3_RUN_CMD}" != "rollback" ]; then
   exit 1
 fi
 if ! ${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --run "${S3_RUN_ID}" --format json \
-  | jq -e '[.[] | select(.eventType == "ROLLBACK_RESOURCE_SKIPPED" and .logicalId == "SkipDoomed")] | length == 1' >/dev/null; then
+  | jq -e '[.[] | select(.eventType == "ROLLBACK_RESOURCE_SKIPPED" and (.logicalId | startswith("SkipDoomed")))] | length == 1' >/dev/null; then
   echo "[verify] FAIL: the rollback run ${S3_RUN_ID} has no ROLLBACK_RESOURCE_SKIPPED for SkipDoomed"
   exit 1
 fi

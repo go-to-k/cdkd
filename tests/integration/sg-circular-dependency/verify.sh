@@ -1044,9 +1044,10 @@ echo "    OK: the destroy revoked the stack's own rule and only that"
 assert_gone "stranger-arm state file s3://${STATE_BUCKET}/${STRANGER_PREFIX}/state.json still exists after the update-arm destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STRANGER_PREFIX}/state.json"
 
 # The ADOPT half: with journal evidence that THIS stack attempted the rule, the
-# duplicate is adopted. A refused deploy leaves the failed op without its bag;
-# the bag is written back by hand — what a deploy whose Authorize landed but
-# whose response was lost journals — and the next deploy must adopt the rule,
+# duplicate is adopted. A refused deploy journals no failed op (#4356), so the
+# evidence is written by hand — the failed CREATE with its bag that a deploy
+# whose Authorize landed but whose response was lost journals — and the next
+# deploy must adopt the rule,
 # record its id, and (the rule now being the stack's) revoke it on destroy.
 echo "==> Phase 1e: ADOPT arm — refuse once, then give the journal the attempt"
 if ADOPT_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
@@ -1064,10 +1065,23 @@ if ! printf '%s\n' "${ADOPT_OUT}" | grep -qF "nothing in this stack's records sh
   printf '%s\n' "${ADOPT_OUT}" >&2
   exit 1
 fi
+# The refusal is raised before anything is applied, so (go-to-k/cdkd#4356) it
+# journals no failed op: the journal is absent, or holds no StrangerIngress
+# failed op. Any other read failure is a FAIL.
 if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
-  echo "FAIL: could not read the rollback journal after the ADOPT arm's refused deploy: ${ADOPT_JOURNAL}" >&2
+  if printf '%s' "${ADOPT_JOURNAL}" | grep -qE '\(404\)|NoSuchKey|Not Found'; then
+    ADOPT_JOURNAL=$(jq -n --arg s "${STRANGER_STACK}" --arg r "${REGION}" \
+      '{journalVersion: 1, stackName: $s, region: $r, segments: []}')
+  else
+    echo "FAIL: could not read the rollback journal after the ADOPT arm's refused deploy: ${ADOPT_JOURNAL}" >&2
+    exit 1
+  fi
+fi
+if [ "$(printf '%s' "${ADOPT_JOURNAL}" | jq '[.segments[].failedOperations[]? | select(.logicalId == "StrangerIngress")] | length')" -ne 0 ]; then
+  echo "FAIL: the refused-before-applying create was journaled as a failed op (go-to-k/cdkd#4356): ${ADOPT_JOURNAL}" >&2
   exit 1
 fi
+echo "    OK: the refused create left no failed-op record"
 # go-to-k/cdkd#4402: a COMPLETED op's bag is not evidence — its resource was
 # recorded in state, so a create of the id means it was reverted, destroyed or
 # replaced, and a matching rule now is someone else's. A segment holding the
@@ -1153,11 +1167,19 @@ if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback
   exit 1
 fi
 
+# The refused deploys journaled nothing (go-to-k/cdkd#4356), so append the
+# segment a deploy whose Authorize landed but whose response was lost leaves:
+# an unmarked failed CREATE carrying its attempted bag, with no superseded
+# marker.
 ADOPT_JOURNAL=$(printf '%s' "${ADOPT_JOURNAL}" | jq --arg g "${STRANGER_GROUP_ID}" '
-  .segments |= map(.failedOperations |= ((. // []) | map(
-    if .logicalId == "StrangerIngress" and .changeType == "CREATE"
-    then .attemptedProperties = {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
-    else . end)))')
+  .segments += [{
+    timestamp: 3, reason: "no-rollback-failure", initialDeploy: false, operations: [],
+    failedOperations: [{
+      logicalId: "StrangerIngress", changeType: "CREATE",
+      resourceType: "AWS::EC2::SecurityGroupIngress",
+      attemptedProperties: {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
+    }]
+  }]')
 # Only a bag in a segment that carries no superseded marker for it can be the
 # evidence the ADOPT arm relies on — the STALE-2 segment's bag cannot.
 if [ "$(printf '%s' "${ADOPT_JOURNAL}" | jq '[.segments[] | select(((.supersededLogicalIds // []) | index("StrangerIngress")) == null) | .failedOperations[]? | select(.logicalId == "StrangerIngress" and has("attemptedProperties"))] | length')" -lt 1 ]; then
