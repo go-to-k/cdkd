@@ -125,7 +125,7 @@ Every resource ends in exactly one of five states.
 | Outcome | Meaning | In the report |
 | --- | --- | --- |
 | **drifted** | At least one property differs between state and AWS. | `~ <logicalId> (<type>)`, with one `+/-` line per diverging property path. |
-| **deleted** | AWS reports the resource does not exist: it was deleted outside cdkd. | `- <logicalId> (<type>) — DELETED outside cdkd`, in the drift block, counted in `drift detected on N resources`. |
+| **deleted** | AWS reports the resource does not exist: it was deleted outside cdkd. For a [nested stack's row](#nested-stacks), its own state record is gone. | `- <logicalId> (<type>) — DELETED outside cdkd` (a nested row: `— RECORD MISSING`), in the drift block, counted in `drift detected on N resources`. |
 | **clean** | Every state-recorded property was compared against AWS and matched. | Counted in the per-stack summary, not listed individually. |
 | **not compared** | Nothing differed, but cdkd did not compare every property. | Listed in the partially-compared block, with its own reason. |
 | **drift unknown** | Nothing read back proves the resource's state: typically no provider reads its type back, or the read could not tell whether it still exists. | `? <logicalId> (<type>)`, in a separate block at the bottom of the stack's report. |
@@ -161,10 +161,15 @@ is selected — by `--all`, or by naming both a parent and its nested stack.
 | The parent's `AWS::CloudFormation::Stack` row | Reported as |
 | --- | --- |
 | Its nested stack's record exists | `skipped` — the nested stack's own block covers it. |
-| Its nested stack's record is gone | **deleted**, naming the missing record. |
+| Its nested stack's record is gone | **deleted**, printed as `— RECORD MISSING` naming the record. |
+
+A parent whose only resources are nested stacks prints
+`✓ <parent> (<region>): no drift detected here — N nested stacks, each checked in its own block`
+rather than claiming nothing was compared.
 
 cdkd writes a nested stack's record before the parent's row, so a missing
-record was removed outside cdkd. Its resources are then no longer tracked by
+record was removed afterwards: by hand, or by `cdkd state orphan` (which a
+failed nested destroy suggests). Its resources are then no longer tracked by
 cdkd and may still exist in AWS. `--accept` and `--revert` refuse that row by
 name, as they refuse any deleted resource, and act on every nested stack's
 drifted resources as on a stack named directly, each under that record's lock.
@@ -266,7 +271,8 @@ The glyph follows the question "was everything actually compared", so a stack
 in which nothing was compared does not get a reassuring `✓`. The **exit code
 is still `0`** — only the claim about coverage changes. The same applies to a
 stack whose resources are all Custom Resources, which are reported as
-`skipped`.
+`skipped`. A parent whose only rows are nested stacks is the exception: each is
+checked in its own block, so it gets a `✓` (see [Nested stacks](#nested-stacks)).
 
 Both the `N checked` and the `N of M fully checked` spellings count only
 resources a comparison was attempted for. In the `N of M` spelling the
@@ -829,7 +835,9 @@ the fallback:
    `AWS::ApiGateway::RestApi` (its `Body` / `BodyS3Location` are write-only
    inputs the response omits, while cdkd state preserves them),
    `AWS::CloudFormation::Stack` (cdkd deploys a nested stack itself, so no
-   CloudFormation stack exists and the row's id is a cdkd-local placeholder), and
+   CloudFormation stack exists and the row's id is a cdkd-local placeholder;
+   a nested row is decided before this point, as described under
+   [Nested stacks](#nested-stacks)), and
    `AWS::EC2::LaunchTemplate` (the response carries version-bumped
    `LaunchTemplateData` plus a synthetic `LatestVersionNumber`).
 2. **Strip pass.** Known AWS-managed timestamp, owner and generated-id fields
@@ -1134,6 +1142,12 @@ resolved.
 **`--json` shape change:** `deleted` is new. A resource AWS reports deleted
 outside cdkd used to be listed in `notSupported`; it is now listed in `deleted`
 only, and it makes the detection run exit `1`.
+
+A nested stack's `AWS::CloudFormation::Stack` row is listed in `skipped` when
+its own record is checked in the same run, or in `deleted` with
+`"nestedStackRecordMissing": true` when that record is gone. The key is omitted
+from every other `deleted` entry. That row used to be listed in
+`notSupported`.
 
 A report may also carry a `warnings` array of stack-level advisory strings. It
 is **omitted when there is nothing to say**, so an ordinary payload is unchanged.

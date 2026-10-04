@@ -439,7 +439,8 @@ export type DriftOutcome =
     }
   /**
    * `skipped` is reserved for resource types where drift detection is not
-   * conceptually applicable (currently: `Custom::*`). Unlike `unsupported`
+   * conceptually applicable (`Custom::*`), and for a nested stack's row whose
+   * own record this run compares in its own block (go-to-k/cdkd#4533). Unlike `unsupported`
    * (= "provider does not YET implement drift detection — user might want
    * to know"), `skipped` is silent in the human report so it doesn't
    * generate noise on every drift run for stacks that contain Custom
@@ -1503,8 +1504,9 @@ function compareNestedStackNames(a: string, b: string): number {
   const as = a.split('~');
   const bs = b.split('~');
   for (let i = 0; i < Math.min(as.length, bs.length); i++) {
-    const c = as[i]!.localeCompare(bs[i]!);
-    if (c !== 0) return c;
+    // Code-unit order, not `localeCompare`: the block order must not depend
+    // on the host's locale.
+    if (as[i]! !== bs[i]!) return as[i]! < bs[i]! ? -1 : 1;
   }
   return as.length - bs.length;
 }
@@ -3207,8 +3209,10 @@ async function runDriftForStack(
       // (cdkd deploys its resources itself), and its resources are compared as
       // their own `<parent>~<child>` stack in this same run. So the row is
       // `skipped` when that record is selected — its block covers it — and
-      // `deleted` when the record is gone, since `NestedStackProvider` writes
-      // it before the row exists. A record present but not selected cannot
+      // `deleted` when the record is gone: `NestedStackProvider` writes it
+      // before the row exists, so it was removed later (out of band, or by
+      // `cdkd state orphan`), and the report says so rather than "outside
+      // cdkd". A record present but not selected cannot
       // arise from this command's selection; it keeps the `unsupported` path.
       if (resource.resourceType === NESTED_STACK_RESOURCE_TYPE) {
         const child = nestedChildRecord(nestedChildStackName(stackName, logicalId), region);
@@ -7897,11 +7901,12 @@ interface StackDriftJson {
    */
   clean: Array<{ logicalId: string; type: string; referencesUnresolved: false }>;
   /**
-   * Resources AWS reports do NOT EXIST — deleted outside cdkd
+   * Resources AWS reports do NOT EXIST — deleted outside cdkd — and nested
+   * stack rows whose own record is gone (`nestedStackRecordMissing`, go-to-k/cdkd#4533)
    * (go-to-k/cdkd#4283). Drift: a non-empty array is what exits detection `1`
    * alongside `drifted`. Never in `notSupported`, where they used to land.
    */
-  deleted: Array<{ logicalId: string; type: string }>;
+  deleted: Array<{ logicalId: string; type: string; nestedStackRecordMissing?: true }>;
   notSupported: Array<{ logicalId: string; type: string }>;
   /**
    * Stack-level advisories, verbatim (issue
@@ -7917,7 +7922,7 @@ interface StackDriftJson {
    * a schema for them would invite exactly that.
    */
   warnings?: string[];
-  /** Issue #323: Custom Resources (drift not applicable). */
+  /** Issue #323: Custom Resources (drift not applicable); nested stack rows covered by their own block (#4533). */
   skipped: Array<{ logicalId: string; type: string }>;
   /**
    * Every resource cdkd did not fully compare: the `notCompared` outcomes, plus
@@ -7986,7 +7991,15 @@ function writeJsonReport(reports: StackDriftReport[]): void {
           skipped.push({ logicalId: sk.logicalId, type: sk.resourceType });
         },
         deleted: (del) => {
-          deleted.push({ logicalId: del.logicalId, type: del.resourceType });
+          // Present only on a nested row with no record, so an ordinary
+          // payload is byte-identical (go-to-k/cdkd#4533).
+          deleted.push({
+            logicalId: del.logicalId,
+            type: del.resourceType,
+            ...(del.nestedStackRecordMissing === true && {
+              nestedStackRecordMissing: true as const,
+            }),
+          });
         },
       });
     }
@@ -8231,7 +8244,7 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
     const drifted: DriftedOutcome[] = [];
     const deleted: Array<Extract<DriftOutcome, { kind: 'deleted' }>> = [];
     const unsupported: Array<Extract<DriftOutcome, { kind: 'unsupported' }>> = [];
-    // Issue #323: `skipped` (currently only `Custom::*`) is intentionally
+    // Issue #323: `skipped` (`Custom::*`, and a nested row its own block covers) is intentionally
     // NOT counted as "checked" — drift on Custom Resources is not
     // actionable from `cdkd drift` (no read happens). Excluded from the
     // human-report count so "N resources checked" matches the user's
@@ -8239,6 +8252,9 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
     // array and surface in `--json` output (as `skipped: [...]`).
     let inspectedCount = 0;
     let skippedCount = 0;
+    // go-to-k/cdkd#4533: the `skipped` nested rows, each compared in its own
+    // record's block below this one.
+    let nestedCoveredCount = 0;
     // Issue #2135: ONE exhaustive pass, and `inspected` is COUNTED UP inside
     // it rather than subtracted from `outcomes.length` afterwards. Subtracting
     // is what let the old shape absorb an unnamed variant into "checked"
@@ -8285,8 +8301,9 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
         // NOTHING-was-compared line states a PARTITION of the stack, and a
         // partition that omits a population accounts for none of an
         // all-`Custom::*` stack (it printed `0 of 3 ... (0 unsupported)`).
-        skipped: () => {
+        skipped: (sk) => {
           skippedCount += 1;
+          if (sk.resourceType === NESTED_STACK_RESOURCE_TYPE) nestedCoveredCount += 1;
         },
         // Both counted as inspected, and told apart by `notCompared` below:
         // a `clean` one was checked, a `notCompared` one was not.
@@ -8331,7 +8348,20 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
       // remove. The phrase `no drift detected` is kept in both spellings
       // because it stays true; what changes is the claim that everything was
       // looked at.
-      if (notCompared.length === 0 && checked === 0 && report.outcomes.length > 0) {
+      if (
+        notCompared.length === 0 &&
+        nestedCoveredCount > 0 &&
+        nestedCoveredCount === report.outcomes.length
+      ) {
+        // go-to-k/cdkd#4533: a parent holding only nested stacks. Its rows
+        // were not compared HERE, but each one's resources are, in that
+        // stack's own block in this run -- so `NOTHING was compared` would be false.
+        process.stdout.write(
+          `✓ ${reportHeading(report)}: no drift detected here — ` +
+            `${nestedCoveredCount} nested stack${nestedCoveredCount === 1 ? '' : 's'}, ` +
+            `each checked in its own block\n`
+        );
+      } else if (notCompared.length === 0 && checked === 0 && report.outcomes.length > 0) {
         // Issue [#2154](https://github.com/go-to-k/cdkd/issues/2154): a stack in
         // which NOTHING was compared must not get the reassuring glyph.
         //
@@ -8412,7 +8442,7 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
       for (const o of deleted) {
         process.stdout.write(
           o.nestedStackRecordMissing === true
-            ? `  - ${reportResource(o)} — DELETED outside cdkd: ${nestedRecordMissingClause(report, o)}\n\n`
+            ? `  - ${reportResource(o)} — RECORD MISSING: ${nestedRecordMissingClause(report, o)}\n\n`
             : `  - ${reportResource(o)} — DELETED outside cdkd: AWS reports it does not exist.\n\n`
         );
       }

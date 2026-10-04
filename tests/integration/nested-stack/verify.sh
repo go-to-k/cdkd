@@ -276,7 +276,7 @@ import json, sys
 s = json.load(sys.stdin)
 for k, v in s["resources"].items():
     if v["resourceType"] == "AWS::SSM::Parameter":
-        print(k + " " + v["physicalId"])
+        print(k + " " + v.get("physicalId", ""))
         break
 ')"
 CHILD_PARAM_ID="${CHILD_PARAM_ROW%% *}"

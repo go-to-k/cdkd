@@ -4257,6 +4257,11 @@ describe('cdkd drift', () => {
       const { output } = await runDrift(['Parent']);
 
       expect(reportedStacks(output)).toEqual(['Parent@us-east-1', 'Parent~Child@us-east-1']);
+      // A parent holding only nested rows: covered, not "NOTHING was compared".
+      expect(output).toContain(
+        '✓ Parent (us-east-1): no drift detected here — 1 nested stack, each checked in its own block'
+      );
+      expect(output).not.toContain('NOTHING was compared');
       expect(output).toContain('Parent~Child (us-east-1): drift detected on 1 resource');
       expect(output).toContain('  - Queue (AWS::SQS::Queue) — DELETED outside cdkd');
       // The nested row is covered by the child's own block: no `drift unknown`.
@@ -4307,9 +4312,11 @@ describe('cdkd drift', () => {
 
       expect(output).toContain('Parent (us-east-1): drift detected on 1 resource');
       expect(output).toContain(
-        `  - Child (${NESTED_ROW}) — DELETED outside cdkd: its nested stack's own state record ` +
+        `  - Child (${NESTED_ROW}) — RECORD MISSING: its nested stack's own state record ` +
           'Parent~Child no longer exists.'
       );
+      // `cdkd state orphan` is one way the record goes: cdkd, not "outside cdkd".
+      expect(output).not.toContain(`Child (${NESTED_ROW}) — DELETED outside cdkd`);
       // No AWS read stands behind it, so it must not say AWS answered.
       expect(output).not.toContain('AWS reports it does not exist');
       expect(exitSpy).toHaveBeenCalledWith(1);
@@ -4318,7 +4325,9 @@ describe('cdkd drift', () => {
       stageNested([{ stackName: 'Parent', region: 'us-east-1' }]);
       const json = await runDrift(['Parent', '--json']);
       const [report] = JSON.parse(json.output) as Array<Record<string, unknown>>;
-      expect(report!['deleted']).toEqual([{ logicalId: 'Child', type: NESTED_ROW }]);
+      expect(report!['deleted']).toEqual([
+        { logicalId: 'Child', type: NESTED_ROW, nestedStackRecordMissing: true },
+      ]);
       expect(report!['notSupported']).toEqual([]);
       expect(exitSpy).toHaveBeenCalledWith(1);
     });
@@ -4383,6 +4392,55 @@ describe('cdkd drift', () => {
       expect(mockGetState).not.toHaveBeenCalled();
     });
 
+    it('with no name, a nested record whose parent record is gone is a stack of its own', async () => {
+      stageNested([{ stackName: 'Parent~Child', region: 'us-east-1' }]);
+      readQueues();
+
+      const { output, error } = await runDrift([]);
+
+      expect(error).toBeUndefined();
+      expect(reportedStacks(output)).toEqual(['Parent~Child@us-east-1']);
+    });
+
+    it('with no name, such a record is listed beside another top-level stack', async () => {
+      stageNested([
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+        { stackName: 'Other', region: 'us-east-1' },
+      ]);
+      errorSpy.mockClear();
+
+      await runDrift([]);
+
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'Multiple stacks found in state: Parent~Child (us-east-1), Other (us-east-1).'
+      );
+    });
+
+    it('a parent with its own resource keeps the ordinary summary beside a covered nested row', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      const base = mockGetState.getMockImplementation()!;
+      mockGetState.mockImplementation(async (name: string, region: string) => {
+        const got = await base(name, region);
+        if (got && name === 'Parent') {
+          got.state.resources['Own'] = makeResource({
+            physicalId: 'https://sqs/Own',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'Own' },
+          });
+        }
+        return got;
+      });
+      readQueues();
+
+      const { output } = await runDrift(['Parent']);
+
+      expect(output).toContain('✓ Parent (us-east-1): no drift detected (1 resource checked, 0 unsupported)');
+      expect(output).not.toContain('no drift detected here');
+    });
+
     it('walks every depth parent-first, and keeps a sibling sharing a name prefix out', async () => {
       stageNested(
         [
@@ -4425,7 +4483,9 @@ describe('cdkd drift', () => {
       expect(jsonStacks(output)).toEqual(['Parent@us-east-1']);
       const [report] = JSON.parse(output) as Array<Record<string, unknown>>;
       // The us-east-1 parent's own child record is the one that is missing.
-      expect(report!['deleted']).toEqual([{ logicalId: 'Child', type: NESTED_ROW }]);
+      expect(report!['deleted']).toEqual([
+        { logicalId: 'Child', type: NESTED_ROW, nestedStackRecordMissing: true },
+      ]);
       expect(exitSpy).toHaveBeenCalledWith(1);
     });
 
@@ -4463,6 +4523,35 @@ describe('cdkd drift', () => {
       expect(warned()).toContain('may still exist in AWS');
       expect(warned()).not.toContain('AWS reports this resource no longer exists');
       expect(exitSpy).toHaveBeenCalledWith(2);
+    });
+
+    it('--accept refuses a nested row whose record is gone, writing nothing', async () => {
+      stageNested([{ stackName: 'Parent', region: 'us-east-1' }]);
+      readQueues();
+
+      await runDrift(['Parent', '--accept', '--yes']);
+
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(warned()).toContain(
+        `Child (${NESTED_ROW}): NOT accepted — its nested stack's own state record Parent~Child no longer exists.`
+      );
+      expect(exitSpy).toHaveBeenCalledWith(2);
+    });
+
+    it('--accept writes a drifted nested resource into the CHILD record, reached through its parent', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::SQS::Queue' ? { readCurrentState: async () => ({ QueueName: 'changed' }) } : {}
+      );
+
+      await runDrift(['Parent', '--accept', '--yes']);
+
+      expect(mockSaveState.mock.calls.map((c) => c.slice(0, 2))).toEqual([
+        ['Parent~Child', 'us-east-1'],
+      ]);
     });
   });
 
