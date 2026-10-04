@@ -206,9 +206,10 @@ orphaned segments, or a successful deploy whose journal delete failed) leaves th
 ids of its completed ops on the nearest older
 segment (`supersededLogicalIds`, additive, no `journalVersion` bump), so the
 attempt a reverted adoption consumed does not count again. `cdkd import` writes the
-journal too: before its state write, it records each logical id it adopts on every
-segment holding an op of that id (`importedLogicalIds`, additive, no `journalVersion` bump), and
-supersedes the id on the newest segment. `cdkd rollback` then leaves those ops
+journal too: before its state write, it records each resource it adopts, as its
+logical id and physical id, on every segment holding an op of that resource
+(`importedResources`, additive, no `journalVersion` bump), and supersedes the id on
+the newest segment. `cdkd rollback` then leaves those ops
 alone ([`cdkd rollback`](cli-rollback.md#interaction-with-cdkd-import)). A failed op refused because the
 resource it met belongs to someone else, or whose write AWS provably did not
 apply (one send answered with a 4xx or a throttle), is recorded WITHOUT its

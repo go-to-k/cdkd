@@ -761,7 +761,10 @@ export async function rollbackCommand(
       // Refused up front, before any replay, so the order cannot invert.
       if (!options.revertFailed) {
         for (const segment of journal.segments) {
-          for (const logicalId of revertedNestedRowIds(segment.failedOperations ?? [])) {
+          // go-to-k/cdkd#4523: an imported failed row is never replayed, so
+          // it is not one this refusal's `--revert-failed` advice reaches.
+          const failedRows = splitImportedOps(segment.failedOperations ?? [], segment).replay;
+          for (const logicalId of revertedNestedRowIds(failedRows)) {
             const child = nestedChildStackName(stackName, logicalId);
             const childJournal = await setup.stateBackend
               .loadRollbackJournal(child, region)
@@ -770,7 +773,7 @@ export async function rollbackCommand(
               (s) =>
                 s.runId === segment.runId &&
                 s.reason !== NESTED_PENDING_PARENT_REASON &&
-                s.operations.length > 0
+                splitImportedOps(s.operations, s).replay.length > 0
             );
             if (unreverted) {
               throw new Error(
@@ -917,7 +920,8 @@ export async function rollbackCommand(
         // go-to-k/cdkd#4523: ops of a logical id `cdkd import` adopted after
         // this segment was recorded are left alone, failed ones included.
         const failedOps = splitImportedOps(segment.failedOperations ?? [], segment);
-        const completedOps = splitImportedOps(segment.operations, segment);
+        // An id named by `--orphan` is never set aside: the flag is honoured.
+        const completedOps = splitImportedOps(segment.operations, segment, orphanLogicalIds);
         for (const op of [...failedOps.imported, ...completedOps.imported]) {
           logger.info(importedOpLabel(op));
         }
@@ -1131,7 +1135,11 @@ export async function rollbackCommand(
           const segment = journal.segments[journal.segments.length - 1]!;
           // go-to-k/cdkd#4523: the plan above listed these as left alone; the
           // replay below never sees them.
-          const completedOps = splitImportedOps(segment.operations, segment).replay;
+          const completedOps = splitImportedOps(
+            segment.operations,
+            segment,
+            orphanLogicalIds
+          ).replay;
           // Issue #3754: what the nested-stack rows' child replays reported
           // (completed rows, skipped ops), read once the segment has replayed.
           let nestedRun: NestedRevertRun | undefined;

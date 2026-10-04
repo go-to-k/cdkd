@@ -20,6 +20,7 @@ import type { StateBackendConfig } from '../types/config.js';
 import {
   ROLLBACK_JOURNAL_VERSION,
   parseRollbackJournal,
+  type ImportedResourceMark,
   type RollbackJournal,
   type RollbackJournalSegment,
 } from '../types/rollback-journal.js';
@@ -1336,31 +1337,40 @@ export class S3StateBackend {
   }
 
   /**
-   * go-to-k/cdkd#4523: record that `cdkd import` adopted `logicalIds`. Each
-   * segment whose completed or failed ops name one of them gets it in
-   * `importedLogicalIds`, which the replay leaves alone; the newest segment
-   * also supersedes them, since an import records the resource just as a
-   * completed op does. Returns the ids written; no journal, or no segment
-   * naming one, writes nothing. Throws on a read or write failure — the caller
-   * refuses the import rather than leave the journal free to delete it.
+   * go-to-k/cdkd#4523: record that `cdkd import` adopted `marks` (logical id +
+   * the physical id it wrote). Each segment holding a completed or failed op
+   * of the SAME logical id AND physical id gets that mark in
+   * `importedResources`, which the replay leaves alone; an op of the id that
+   * recorded another physical id stays unmarked. The newest segment also
+   * supersedes every imported id any segment names, since an import records
+   * the resource just as a completed op does. Returns the logical ids marked;
+   * no journal, or no segment naming one, writes nothing. Throws on a read or
+   * write failure — the caller refuses the import rather than leave the
+   * journal free to delete it.
    */
   async markRollbackJournalImported(
     stackName: string,
     region: string,
-    logicalIds: readonly string[]
+    marks: readonly ImportedResourceMark[]
   ): Promise<string[]> {
-    if (logicalIds.length === 0) return [];
+    if (marks.length === 0) return [];
     const journal = await this.loadRollbackJournal(stackName, region);
     if (!journal) return [];
-    const wanted = new Set(logicalIds);
+    const ids = new Set(marks.map((m) => m.logicalId));
     const named = new Set<string>();
+    const marked = new Set<string>();
     for (const segment of journal.segments) {
-      const ids = [...segment.operations, ...(segment.failedOperations ?? [])]
-        .map((op) => op.logicalId)
-        .filter((id) => wanted.has(id));
-      if (ids.length === 0) continue;
-      segment.importedLogicalIds = [...new Set([...(segment.importedLogicalIds ?? []), ...ids])];
-      for (const id of ids) named.add(id);
+      const ops = [...segment.operations, ...(segment.failedOperations ?? [])];
+      for (const op of ops) if (ids.has(op.logicalId)) named.add(op.logicalId);
+      const hits = marks.filter((m) =>
+        ops.some((op) => op.logicalId === m.logicalId && op.physicalId === m.physicalId)
+      );
+      if (hits.length === 0) continue;
+      const kept = (segment.importedResources ?? []).filter(
+        (k) => !hits.some((m) => m.logicalId === k.logicalId && m.physicalId === k.physicalId)
+      );
+      segment.importedResources = [...kept, ...hits.map((m) => ({ ...m }))];
+      for (const m of hits) marked.add(m.logicalId);
     }
     if (named.size === 0) return [];
     addSupersededIds(journal.segments[journal.segments.length - 1]!, [...named]);
@@ -1368,7 +1378,7 @@ export class S3StateBackend {
       this.getRollbackJournalKey(stackName, region),
       JSON.stringify(journal, null, 2)
     );
-    return [...named];
+    return [...marked];
   }
 
   /**

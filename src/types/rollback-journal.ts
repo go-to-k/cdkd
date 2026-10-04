@@ -129,16 +129,24 @@ export interface RollbackJournalSegment {
    */
   supersededLogicalIds?: string[];
   /**
-   * go-to-k/cdkd#4523: logical ids `cdkd import` adopted AFTER this segment
-   * was recorded. This segment's completed and failed ops of these ids
-   * describe a resource the import replaced in state, so the replay leaves
-   * them alone: a completed CREATE of an explicitly named resource would
-   * otherwise match the imported record's physical id and DELETE it. Written
-   * by the import onto every segment that names one of its ids; a segment a
-   * later deploy pushes does not carry it, and replays normally.
+   * go-to-k/cdkd#4523: the resources `cdkd import` adopted AFTER this segment
+   * was recorded, as the logical id AND the physical id the import wrote. An
+   * op of this segment naming both describes the resource the import put in
+   * state, so the replay leaves it alone: a completed CREATE of an explicitly
+   * named resource would otherwise match the imported record's physical id and
+   * DELETE it. An op of the same logical id that recorded ANOTHER physical id
+   * is not covered, and replays (or warns) as before. Written by the import
+   * onto every segment holding such an op; a segment a later deploy pushes
+   * does not carry it, and replays normally.
    * ADDITIVE, no `journalVersion` bump: an older binary ignores it.
    */
-  importedLogicalIds?: string[];
+  importedResources?: ImportedResourceMark[];
+}
+
+/** One `cdkd import` adoption recorded on a journal segment (go-to-k/cdkd#4523). */
+export interface ImportedResourceMark {
+  logicalId: string;
+  physicalId: string;
 }
 
 /** On-disk shape of `rollback-journal.json`. */
@@ -152,21 +160,29 @@ export interface RollbackJournal {
 /**
  * go-to-k/cdkd#4523: split a segment's completed or failed ops into the ones
  * the replay runs and the ones it leaves alone because `cdkd import` adopted
- * their logical id after the segment was recorded
- * ({@link RollbackJournalSegment.importedLogicalIds}). `classifyRollbackOp`
- * cannot tell such an op from a live one: an explicitly named resource keeps
- * its physical id, so a completed CREATE classifies `delete` against the
- * imported record. Every site that plans or replays a JOURNAL segment's ops
- * goes through this first.
+ * the very resource they recorded — same logical id, same physical id — after
+ * the segment was recorded ({@link RollbackJournalSegment.importedResources}).
+ * `classifyRollbackOp` cannot tell such an op from a live one: an explicitly
+ * named resource keeps its physical id, so a completed CREATE classifies
+ * `delete` against the imported record. Every site that plans or replays a
+ * JOURNAL segment's ops goes through this first.
+ *
+ * `except` holds logical ids the user named explicitly (`--orphan`): those are
+ * never set aside, so the flag is honoured on an imported id too.
  */
-export function splitImportedOps<T extends { logicalId: string }>(
+export function splitImportedOps<T extends { logicalId: string; physicalId?: string | undefined }>(
   ops: readonly T[],
-  segment: Pick<RollbackJournalSegment, 'importedLogicalIds'>
+  segment: Pick<RollbackJournalSegment, 'importedResources'>,
+  except: ReadonlySet<string> = new Set()
 ): { replay: T[]; imported: T[] } {
-  const ids = new Set(segment.importedLogicalIds ?? []);
+  const marks = segment.importedResources ?? [];
+  const isImported = (op: T): boolean =>
+    !except.has(op.logicalId) &&
+    op.physicalId !== undefined &&
+    marks.some((m) => m.logicalId === op.logicalId && m.physicalId === op.physicalId);
   const replay: T[] = [];
   const imported: T[] = [];
-  for (const op of ops) (ids.has(op.logicalId) ? imported : replay).push(op);
+  for (const op of ops) (isImported(op) ? imported : replay).push(op);
   return { replay, imported };
 }
 
@@ -453,16 +469,22 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
         `segments[${s}].supersededLogicalIds must be an array of strings when present.`
       );
     }
-    // go-to-k/cdkd#4523: same shape and the same reason — a malformed one
-    // would leave nothing alone, and the replay would delete what was imported.
+    // go-to-k/cdkd#4523: a malformed mark would leave nothing alone, and the
+    // replay would delete what was imported, so it is refused like the above.
     if (
-      seg['importedLogicalIds'] !== undefined &&
-      (!Array.isArray(seg['importedLogicalIds']) ||
-        !seg['importedLogicalIds'].every((id: unknown) => typeof id === 'string'))
+      seg['importedResources'] !== undefined &&
+      (!Array.isArray(seg['importedResources']) ||
+        !seg['importedResources'].every(
+          (m: unknown) =>
+            typeof m === 'object' &&
+            m !== null &&
+            typeof (m as Record<string, unknown>)['logicalId'] === 'string' &&
+            typeof (m as Record<string, unknown>)['physicalId'] === 'string'
+        ))
     ) {
       refuseMalformed(
         shownStack,
-        `segments[${s}].importedLogicalIds must be an array of strings when present.`
+        `segments[${s}].importedResources must be an array of { logicalId, physicalId } strings when present.`
       );
     }
     // Issue #3754: `runId` is what a nested revert SELECTS segments by, so a

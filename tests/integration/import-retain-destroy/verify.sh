@@ -164,6 +164,10 @@ if ! gone_probe aws ssm get-parameter --name "${R_NAME}" --region "${REGION}"; t
   echo "[verify] FAIL: parameter ${R_NAME} already exists — clean up first"
   exit 1
 fi
+if ! gone_probe aws sqs get-queue-url --queue-name "${R_QUEUE}" --region "${REGION}"; then
+  echo "[verify] FAIL: queue ${R_QUEUE} already exists — clean up first"
+  exit 1
+fi
 
 echo "[verify] step 3: cdk deploy (the CloudFormation stack to migrate)"
 (cd "${TEST_DIR}" && cdk deploy "${STACK}" \
@@ -255,8 +259,9 @@ aws ssm put-parameter --name "${R_NAME}" --type String --value hand-made --regio
 aws s3 cp "s3://${STATE_BUCKET}/${R_JOURNAL_KEY}" "${WORK}/r-journal.json" --region "${REGION}" >/dev/null
 R_MARKED="$(python3 -c '
 import json, sys
-print(any("Named" in seg.get("importedLogicalIds", []) for seg in json.load(open(sys.argv[1]))["segments"]))' \
-  "${WORK}/r-journal.json")"
+want = {"logicalId": "Named", "physicalId": sys.argv[2]}
+print(any(want in seg.get("importedResources", []) for seg in json.load(open(sys.argv[1]))["segments"]))' \
+  "${WORK}/r-journal.json" "${R_NAME}")"
 # Recorded, not exited on: step R3 then shows what the rollback does, which
 # is the user-visible consequence.
 R_MARK_FAILED=0

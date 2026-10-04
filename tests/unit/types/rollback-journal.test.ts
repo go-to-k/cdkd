@@ -503,27 +503,40 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
   });
 
   // go-to-k/cdkd#4523: the ids `cdkd import` adopted after the segment.
-  it('round-trips importedLogicalIds', () => {
+  it('round-trips importedResources', () => {
+    const marks = [{ logicalId: 'Bucket', physicalId: 'my-bucket' }];
     expect(
-      parseRollbackJournal(body({ importedLogicalIds: ['Bucket'] }), 'S').segments[0]
-    ).toMatchObject({ importedLogicalIds: ['Bucket'] });
+      parseRollbackJournal(body({ importedResources: marks }), 'S').segments[0]
+    ).toMatchObject({ importedResources: marks });
   });
 
   it.each([
     ['a string', 'Bucket'],
-    ['an array holding a non-string', ['Bucket', 7]],
-  ])('refuses importedLogicalIds as %s, which would leave nothing alone', (_what, value) => {
-    expect(() => parseRollbackJournal(body({ importedLogicalIds: value }), 'S')).toThrow(
-      /segments\[0\]\.importedLogicalIds must be an array of strings when present/
+    ['an array holding a bare id', ['Bucket']],
+    ['a mark without a physical id', [{ logicalId: 'Bucket' }]],
+    ['a mark with a non-string physical id', [{ logicalId: 'Bucket', physicalId: 7 }]],
+  ])('refuses importedResources as %s, which would leave nothing alone', (_what, value) => {
+    expect(() => parseRollbackJournal(body({ importedResources: value }), 'S')).toThrow(
+      /segments\[0\]\.importedResources must be an array of \{ logicalId, physicalId \} strings when present/
     );
   });
 
-  it('splitImportedOps keeps the replayed ops in order and sets the imported ones aside', () => {
-    const ops = [{ logicalId: 'A' }, { logicalId: 'B' }, { logicalId: 'C' }, { logicalId: 'B' }];
-    expect(splitImportedOps(ops, { importedLogicalIds: ['B'] })).toEqual({
-      replay: [{ logicalId: 'A' }, { logicalId: 'C' }],
-      imported: [{ logicalId: 'B' }, { logicalId: 'B' }],
+  it('splitImportedOps sets aside only ops of the SAME logical AND physical id', () => {
+    const ops = [
+      { logicalId: 'A', physicalId: 'a' },
+      { logicalId: 'B', physicalId: 'b' },
+      // Same logical id, another physical resource: NOT the imported one.
+      { logicalId: 'B', physicalId: 'b-old' },
+      // No physical id recorded (a failed create): never set aside.
+      { logicalId: 'B' },
+    ];
+    const segment = { importedResources: [{ logicalId: 'B', physicalId: 'b' }] };
+    expect(splitImportedOps(ops, segment)).toEqual({
+      replay: [{ logicalId: 'A', physicalId: 'a' }, { logicalId: 'B', physicalId: 'b-old' }, { logicalId: 'B' }],
+      imported: [{ logicalId: 'B', physicalId: 'b' }],
     });
+    // `--orphan B` keeps it in the replay.
+    expect(splitImportedOps(ops, segment, new Set(['B'])).imported).toEqual([]);
     expect(splitImportedOps(ops, {})).toEqual({ replay: ops, imported: [] });
   });
 

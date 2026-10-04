@@ -325,8 +325,9 @@ some resources (selective mode), the remaining template resources
 appear as `to create` in the diff.
 
 If the stack still has a rollback journal from a failed deploy, the import
-marks each logical id it adopts on that journal before it writes state. A
-later `cdkd rollback` then leaves those resources as they are
+marks each resource it adopts (its logical id and physical id) on that
+journal before it writes state. A later `cdkd rollback` then leaves those
+resources as they are
 ([`cdkd rollback`](cli-rollback.md#interaction-with-cdkd-import)). If the
 import cannot read or write the journal, it refuses and writes no state.
 

@@ -97,9 +97,9 @@ old one is re-adopted with its data instead and the new copy is again
 left running and untracked.
 
 A resource you `cdkd import` while the journal exists is left alone: the
-import marks its logical id on the journal, and the rollback skips the
-journal's operations for that id, listing each in its plan as `adopted by
-cdkd import after this deploy`. A deploy that runs after the import journals
+import marks it on the journal, and the rollback skips the journal's
+operations for that resource, listing each in its plan as `adopted by cdkd
+import after this deploy`. A deploy that runs after the import journals
 its own operations, and those are reverted as usual.
 
 Exit codes: `0` = fully clean

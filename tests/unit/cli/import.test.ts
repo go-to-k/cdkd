@@ -2625,7 +2625,10 @@ describe('cdkd import', () => {
       await runImport(['import', '--app', 'x', '--yes']);
 
       expect(mockMarkRollbackJournalImported).toHaveBeenCalledTimes(1);
-      expect(mockMarkRollbackJournalImported).toHaveBeenCalledWith('OnlyOne', 'us-east-1', ['MyBucket']);
+      // The mark carries the physical id this run records, not just the id.
+      expect(mockMarkRollbackJournalImported).toHaveBeenCalledWith('OnlyOne', 'us-east-1', [
+        { logicalId: 'MyBucket', physicalId: 'b' },
+      ]);
       expect(mockSaveState).toHaveBeenCalledTimes(1);
       expect(mockMarkRollbackJournalImported.mock.invocationCallOrder[0]).toBeLessThan(
         mockSaveState.mock.invocationCallOrder[0]!
@@ -5239,6 +5242,9 @@ describe('cdkd import', () => {
             JSON.stringify({
               Resources: {
                 ChildBucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+                // go-to-k/cdkd#4523: a row this walk does NOT import (no
+                // provider), which must not be marked on the child's journal.
+                ChildNoImpl: { Type: 'AWS::SQS::Queue', Properties: {} },
                 Grandchild: {
                   Type: 'AWS::CloudFormation::Stack',
                   Properties: { TemplateURL: 'x' },
@@ -5253,7 +5259,9 @@ describe('cdkd import', () => {
           mockSynthesize.mockResolvedValue({
             stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
           });
-          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          mockHasProvider.mockImplementation(
+            (t: string) => t !== 'AWS::CloudFormation::Stack' && t !== 'AWS::SQS::Queue'
+          );
           mockGetProvider.mockReturnValue({
             import: vi.fn(async () => ({ physicalId: 'phys', attributes: {} })),
           });
@@ -5301,8 +5309,24 @@ describe('cdkd import', () => {
           // that child imported, before its state write.
           const markFor = (stack: string) =>
             mockMarkRollbackJournalImported.mock.calls.find((c) => c[0] === stack);
-          expect(markFor('P~Child')?.[2]).toContain('ChildBucket');
-          expect(markFor('P~Child~Grandchild')?.[2]).toEqual(['GrandchildBucket']);
+          // Exactly the rows this walk imported, each with the physical id it
+          // records: `ChildNoImpl` is absent.
+          expect(markFor('P~Child')?.[2]).toEqual([
+            { logicalId: 'ChildBucket', physicalId: 'phys' },
+            {
+              logicalId: 'Grandchild',
+              physicalId: 'arn:cdkd-local:us-east-1:123456789012:nested-stack/P~Child/Grandchild',
+            },
+          ]);
+          expect(markFor('P~Child~Grandchild')?.[2]).toEqual([
+            { logicalId: 'GrandchildBucket', physicalId: 'phys' },
+          ]);
+          // Marked before the child's own state write.
+          const childMark = mockMarkRollbackJournalImported.mock.calls.findIndex((c) => c[0] === 'P~Child');
+          const childSave = mockSaveState.mock.calls.findIndex((c) => (c as unknown[])[0] === 'P~Child');
+          expect(mockMarkRollbackJournalImported.mock.invocationCallOrder[childMark]!).toBeLessThan(
+            mockSaveState.mock.invocationCallOrder[childSave]!
+          );
 
           // Region is propagated parent → child → grandchild.
           const grandSave = mockSaveState.mock.calls.find(

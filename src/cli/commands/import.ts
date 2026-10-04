@@ -1045,6 +1045,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         stackInfo.stackName,
         targetRegion,
         importedRows.map((r) => r.logicalId),
+        stackState.resources,
         logger
       );
       await stateBackend.saveState(stackInfo.stackName, targetRegion, stackState, saveOptions);
@@ -1184,9 +1185,10 @@ function stackShown(stackName: string): string {
 }
 
 /**
- * go-to-k/cdkd#4523: before the import's state write, mark the logical ids it
- * adopts on the stack's rollback journal, so a later `cdkd rollback` leaves
- * the journal's ops of those ids alone. Without it, a kept segment's completed
+ * go-to-k/cdkd#4523: before the import's state write, mark the resources it
+ * adopts (logical id + the physical id this run records) on the stack's
+ * rollback journal, so a later `cdkd rollback` leaves the journal's ops of
+ * exactly those resources alone. Without it, a kept segment's completed
  * CREATE of an explicitly named resource matches the imported record's
  * physical id and the replay DELETES the resource the user just adopted.
  *
@@ -1200,11 +1202,18 @@ async function recordImportOnRollbackJournal(
   stackName: string,
   region: string,
   logicalIds: readonly string[],
+  resources: StackState['resources'],
   logger: ReturnType<typeof getLogger>
 ): Promise<void> {
+  const marks = logicalIds.flatMap((logicalId) => {
+    const physicalId = hasOwnKey(resources, logicalId)
+      ? resources[logicalId]?.physicalId
+      : undefined;
+    return typeof physicalId === 'string' && physicalId !== '' ? [{ logicalId, physicalId }] : [];
+  });
   let marked: string[];
   try {
-    marked = await stateBackend.markRollbackJournalImported(stackName, region, logicalIds);
+    marked = await stateBackend.markRollbackJournalImported(stackName, region, marks);
   } catch (error) {
     throw new Error(
       `Could not record this import on the rollback journal of ${stackShown(stackName)}, so ` +
@@ -3967,6 +3976,7 @@ async function importNestedStackChildrenRecursive(args: {
         childStackName,
         childRegion,
         rows.filter((r) => r.outcome === 'imported').map((r) => r.logicalId),
+        childStackState.resources,
         logger
       );
       await stateBackend.saveState(childStackName, childRegion, childStackState);

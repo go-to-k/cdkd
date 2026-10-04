@@ -4,7 +4,7 @@
  * name by hand and `cdkd import`s it under the same logical id. The record's
  * physical id equals the op's, so the replay classified `delete` and removed
  * the resource the user had just adopted. The import now marks the id on the
- * segment (`importedLogicalIds`), and `cdkd rollback` leaves the segment's ops
+ * segment (`importedResources`: logical AND physical id), and `cdkd rollback` leaves the segment's ops
  * of that id alone. Driven through the real command and the real executor.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
@@ -92,6 +92,9 @@ const createOp = {
   provisionedBy: 'sdk',
 };
 
+/** The mark `cdkd import` writes for the topic it adopted. */
+const MARK = { logicalId: 'Topic', physicalId: NAME };
+
 let backend: Record<string, ReturnType<typeof vi.fn>>;
 
 function install(resources: StackState['resources'], segments: Record<string, unknown>[]): void {
@@ -154,7 +157,7 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
 
   it('a completed CREATE of an imported id is not replayed as a delete', async () => {
     install({ Topic: topicRecord('imported') }, [
-      { operations: [createOp], importedLogicalIds: ['Topic'] },
+      { operations: [createOp], importedResources: [MARK] },
     ]);
 
     const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
@@ -167,6 +170,8 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(infoLines().some((l) => l.includes('Topic') && l.includes('adopted by cdkd import'))).toBe(
       true
     );
+    // ...and the plan does not ALSO promise its delete.
+    expect(infoLines().some((l) => l.includes('Topic') && l.includes('delete'))).toBe(false);
     // The segment is still consumed: nothing in it is left to replay.
     expect(backend['popRollbackJournalSegment']).toHaveBeenCalledTimes(1);
   });
@@ -186,7 +191,7 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     // AFTER the import changed the topic in place, then failed. Its revert
     // must run; the older CREATE must not delete what is left.
     install({ Topic: topicRecord('changed-after-import') }, [
-      { operations: [createOp], importedLogicalIds: ['Topic'] },
+      { operations: [createOp], importedResources: [MARK] },
       {
         operations: [
           {
@@ -213,7 +218,7 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(backend['popRollbackJournalSegment']).toHaveBeenCalledTimes(2);
   });
 
-  it('--revert-failed: a failed CREATE of an imported id is not deleted, and stays in the journal', async () => {
+  it('--revert-failed: a failed CREATE of an imported id is neither planned nor replayed as a delete', async () => {
     const failedCreate = {
       logicalId: 'Topic',
       changeType: 'CREATE',
@@ -223,7 +228,7 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
       provisionedBy: 'sdk',
     };
     install({ Topic: topicRecord('imported') }, [
-      { operations: [], failedOperations: [failedCreate], importedLogicalIds: ['Topic'] },
+      { operations: [], failedOperations: [failedCreate], importedResources: [MARK] },
     ]);
 
     const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
@@ -232,6 +237,69 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(provider.delete).not.toHaveBeenCalled();
     expect(backend['setRollbackJournalFailedOperations']).not.toHaveBeenCalled();
     expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(true);
+    expect(infoLines().some((l) => l.includes('Topic') && l.includes('delete'))).toBe(false);
+  });
+
+  it('without --revert-failed, an imported failed op is not offered to --revert-failed', async () => {
+    install({ Topic: topicRecord('imported') }, [
+      {
+        operations: [],
+        failedOperations: [
+          {
+            logicalId: 'Topic',
+            changeType: 'CREATE',
+            resourceType: TOPIC,
+            physicalId: NAME,
+            attemptedProperties: topicRecord('deployed').properties,
+            provisionedBy: 'sdk',
+          },
+        ],
+        importedResources: [MARK],
+      },
+    ]);
+
+    await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    expect(infoLines().some((l) => l.includes('Topic') && l.includes('adopted by cdkd import'))).toBe(
+      true
+    );
+    expect(infoLines().some((l) => l.includes('pass --revert-failed'))).toBe(false);
+  });
+
+  it('an op of the same logical id that recorded ANOTHER physical id still warns (security review)', async () => {
+    // The deploy created an auto-named `old-auto-name`; the user then imported a
+    // DIFFERENT resource under the id. The mark names only the imported one, so
+    // the journal's CREATE keeps its "physical id changed" warning and the
+    // non-zero exit instead of reading as adopted.
+    install({ Topic: topicRecord('imported') }, [
+      {
+        operations: [{ ...createOp, physicalId: 'old-auto-name' }],
+        importedResources: [MARK],
+      },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(false);
+    expect(infoLines().some((l) => l.includes('physical id changed'))).toBe(true);
+    expect(thrown).toBeInstanceOf(Error);
+  });
+
+  it('--orphan on an imported id is honoured: the record is dropped from state, nothing is deleted', async () => {
+    install({ Topic: topicRecord('imported') }, [{ operations: [createOp], importedResources: [MARK] }]);
+
+    const thrown = await rollbackCommand(STACK, {
+      ...opts(),
+      orphan: ['Topic'],
+    } as Parameters<typeof rollbackCommand>[1]).catch((e: unknown) => e);
+
+    expect(thrown).toBeUndefined();
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(infoLines().some((l) => l.includes('[--orphan]'))).toBe(true);
+    const saves = backend['saveState']!.mock.calls;
+    expect(saves.length).toBeGreaterThan(0);
+    expect((saves[saves.length - 1]![2] as StackState).resources).not.toHaveProperty('Topic');
   });
 
   it('--revert-failed: stripping the handled failed ops keeps the imported one in the journal', async () => {
@@ -247,7 +315,7 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
       {
         operations: [],
         failedOperations: [failedCreate('Topic', NAME), failedCreate('Other', 'other')],
-        importedLogicalIds: ['Topic'],
+        importedResources: [MARK],
       },
     ]);
 

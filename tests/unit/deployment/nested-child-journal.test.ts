@@ -225,7 +225,13 @@ describe('revertNestedChildFromJournal (#3754)', () => {
   it('leaves the ops of an id cdkd import adopted out of THAT segment only (go-to-k/cdkd#4523)', async () => {
     const h = harness({
       segments: [
-        seg('run-1', ['Q', 'Keep'], { importedLogicalIds: ['Q'] }),
+        seg('run-1', [], {
+          operations: [
+            { logicalId: 'Q', resourceType: 'AWS::SQS::Queue', changeType: 'UPDATE', physicalId: 'q-url' },
+            { logicalId: 'Keep', resourceType: 'AWS::SQS::Queue', changeType: 'UPDATE', physicalId: 'k-url' },
+          ] as RollbackJournalSegment['operations'],
+          importedResources: [{ logicalId: 'Q', physicalId: 'q-url' }],
+        }),
         // A newer segment of the same run carries no mark: its Q op replays.
         seg('run-1', ['Q']),
       ],

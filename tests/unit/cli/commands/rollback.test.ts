@@ -2958,7 +2958,7 @@ describe('rollbackCommand — nested-stack rows (issue #3754)', () => {
       reason: 'nested-pending-parent',
       initialDeploy: false,
       operations: [{ logicalId: 'Db', changeType: 'CREATE', resourceType: 'AWS::SQS::Queue', physicalId: 'db-1' }],
-      ...(imported && { importedLogicalIds: ['Db'] }),
+      ...(imported && { importedResources: [{ logicalId: 'Db', physicalId: 'db-1' }] }),
     });
     const planLines = async (imported: boolean): Promise<string[]> => {
       info.mockClear();

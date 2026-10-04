@@ -2258,32 +2258,55 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
       expect(cmds.some((cmd: unknown) => cmd instanceof PutObjectCommand)).toBe(false);
     });
 
-    // go-to-k/cdkd#4523: `cdkd import` marks the ids it adopted.
-    it('markRollbackJournalImported marks every segment naming an id, and supersedes them on the newest', async () => {
+    // go-to-k/cdkd#4523: `cdkd import` marks the resources it adopted.
+    const opAt = (logicalId: string, physicalId: string) => ({ ...op(logicalId), physicalId });
+    const BUCKET = { logicalId: 'Bucket', physicalId: 'my-bucket' };
+
+    it('markRollbackJournalImported marks every segment holding an op of the SAME resource, and supersedes the id on the newest', async () => {
       s3Client.send.mockResolvedValueOnce({
         Body: rawBody({
           journalVersion: 1,
           stackName: 'S',
           region: 'us-east-1',
           segments: [
-            segment('interrupted', [op('Bucket'), op('Other')]),
-            { ...segment('no-rollback-failure', [op('Queue')]), failedOperations: [op('Bucket')] },
-            segment('auto-rollback-clean', [op('Other')]),
+            segment('interrupted', [opAt('Bucket', 'my-bucket'), opAt('Other', 'o')]),
+            { ...segment('no-rollback-failure', [opAt('Queue', 'q')]), failedOperations: [opAt('Bucket', 'my-bucket')] },
+            // Same logical id, ANOTHER physical resource: not the imported one.
+            segment('interrupted', [opAt('Bucket', 'old-auto-name')]),
+            segment('auto-rollback-clean', [opAt('Other', 'o')]),
           ],
         }),
       });
       s3Client.send.mockResolvedValueOnce({});
 
-      const marked = await backend.markRollbackJournalImported('S', 'us-east-1', ['Bucket', 'NotJournaled']);
+      const marked = await backend.markRollbackJournalImported('S', 'us-east-1', [
+        BUCKET,
+        { logicalId: 'NotJournaled', physicalId: 'x' },
+      ]);
 
       expect(marked).toEqual(['Bucket']);
-      const [oldest, middle, newest] = putBody().segments;
-      expect(oldest.importedLogicalIds).toEqual(['Bucket']);
-      // A FAILED op names the id too.
-      expect(middle.importedLogicalIds).toEqual(['Bucket']);
-      // Names no imported id: no mark, so its ops replay as before.
-      expect(newest).not.toHaveProperty('importedLogicalIds');
+      const [oldest, failedSeg, otherPhys, newest] = putBody().segments;
+      expect(oldest.importedResources).toEqual([BUCKET]);
+      // A FAILED op names the resource too.
+      expect(failedSeg.importedResources).toEqual([BUCKET]);
+      // The id with another physical id keeps replaying (or warning) as before.
+      expect(otherPhys).not.toHaveProperty('importedResources');
+      expect(newest).not.toHaveProperty('importedResources');
       expect(newest.supersededLogicalIds).toEqual(['Bucket']);
+    });
+
+    it('markRollbackJournalImported does not duplicate a mark on a re-import', async () => {
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [{ ...segment('interrupted', [opAt('Bucket', 'my-bucket')]), importedResources: [BUCKET] }],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+      await backend.markRollbackJournalImported('S', 'us-east-1', [BUCKET]);
+      expect(putBody().segments[0].importedResources).toEqual([BUCKET]);
     });
 
     it('markRollbackJournalImported writes nothing when no segment names an id, or without a journal', async () => {
@@ -2292,28 +2315,33 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
           journalVersion: 1,
           stackName: 'S',
           region: 'us-east-1',
-          segments: [segment('interrupted', [op('Other')])],
+          segments: [segment('interrupted', [opAt('Other', 'o')])],
         }),
       });
-      expect(await backend.markRollbackJournalImported('S', 'us-east-1', ['Bucket'])).toEqual([]);
+      expect(await backend.markRollbackJournalImported('S', 'us-east-1', [BUCKET])).toEqual([]);
       s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'nope', $metadata: {} }));
-      expect(await backend.markRollbackJournalImported('S', 'us-east-1', ['Bucket'])).toEqual([]);
+      expect(await backend.markRollbackJournalImported('S', 'us-east-1', [BUCKET])).toEqual([]);
       expect(await backend.markRollbackJournalImported('S', 'us-east-1', [])).toEqual([]);
       const cmds = s3Client.send.mock.calls.map((c: unknown[]) => c[0]);
       expect(cmds.some((cmd: unknown) => cmd instanceof PutObjectCommand)).toBe(false);
     });
 
-    it('markRollbackJournalImported throws when the journal cannot be written', async () => {
+    it('markRollbackJournalImported throws when the journal cannot be read or written', async () => {
       s3Client.send.mockResolvedValueOnce({
         Body: rawBody({
           journalVersion: 1,
           stackName: 'S',
           region: 'us-east-1',
-          segments: [segment('interrupted', [op('Bucket')])],
+          segments: [segment('interrupted', [opAt('Bucket', 'my-bucket')])],
         }),
       });
-      s3Client.send.mockRejectedValueOnce(new Error('AccessDenied'));
-      await expect(backend.markRollbackJournalImported('S', 'us-east-1', ['Bucket'])).rejects.toThrow();
+      s3Client.send.mockRejectedValueOnce(new Error('AccessDenied on put'));
+      await expect(backend.markRollbackJournalImported('S', 'us-east-1', [BUCKET])).rejects.toThrow(
+        'AccessDenied on put'
+      );
+      // An unparseable journal refuses too, rather than being treated as absent.
+      s3Client.send.mockResolvedValueOnce({ Body: { transformToString: () => Promise.resolve('{not json') } });
+      await expect(backend.markRollbackJournalImported('S', 'us-east-1', [BUCKET])).rejects.toThrow();
     });
 
     it('consecutive drops all land on the nearest kept segment before them', async () => {
