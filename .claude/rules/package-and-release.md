@@ -21,10 +21,10 @@ from the USER's project, and cdkd only reads the Cloud Assembly JSON. They stay
 dev deps because the unit suite reads `aws-cdk-lib/region-info` as the fact
 table cdkd's own S3-endpoint and region tables are compared against.
 
-Removing the peers changed nothing in a user's installed tree, because
-`cdk-local` (a runtime dependency) declares the SAME non-optional peers — the
-forced install goes away only when cdk-local's do. Per-file evidence:
-[#2861](https://github.com/go-to-k/cdkd/issues/2861).
+`cdk-local` (a runtime dependency) declares the same peers as OPTIONAL from
+0.149.8; do not lower its floor below that, or a user's install pulls
+`aws-cdk-lib` in again ([#2861](https://github.com/go-to-k/cdkd/issues/2861),
+[#4521](https://github.com/go-to-k/cdkd/issues/4521)).
 
 ## Other dependencies worth knowing
 

@@ -65,6 +65,8 @@ const FIXTURE_STACKS = [
   'tests/integration/local-invoke-java/lib/local-invoke-java-stack.ts',
   // Born with it (issue #3953).
   'tests/integration/local-invoke-stage/lib/local-invoke-stage-stack.ts',
+  // Joined after its RIE faulted under emulation during `$connect` (PR #4537).
+  'tests/integration/local-start-api-websocket/lib/stack.ts',
 ];
 
 /** The L2 spelling every listed fixture's handlers use; the first row of `ACCEPTED_CTORS`. */
@@ -229,7 +231,7 @@ describe('integ fixture Lambdas run at the host architecture (go-to-k/cdk-local#
   it('pins the fixture count, so a fixture silently leaving the list is loud', () => {
     // The list is literals precisely so it can shrink by accident; this is what
     // makes that accident fail. Raise it as fixtures from go-to-k/cdkd#2287 join.
-    expect(FIXTURE_STACKS.length).toBe(6);
+    expect(FIXTURE_STACKS.length).toBe(7);
     expect(new Set(FIXTURE_STACKS).size).toBe(FIXTURE_STACKS.length);
   });
 });

@@ -11,6 +11,14 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as path from 'node:path';
 
 /**
+ * The host architecture, not the CDK default (fenced by
+ * `tests/unit/scripts/integ-fixture-host-architecture.test.ts`): a function
+ * with no `architecture` is `X86_64`, which runs emulated on an arm64 host.
+ */
+const HOST_ARCHITECTURE =
+  process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;
+
+/**
  * WebSocket API fixture for the `cdkd local start-api` WebSocket integ
  * test (#462). The stack synthesizes 5 Lambdas + 1 WebSocket API + 5
  * routes — `$connect`, `$disconnect`, `$default`, `sendMessage` (echo),
@@ -30,26 +38,31 @@ export class LocalStartApiWebSocketStack extends cdk.Stack {
     // container).
     const connectFn = new lambda.Function(this, 'ConnectFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(import.meta.dirname, '..', 'lambda-connect')),
     });
     const disconnectFn = new lambda.Function(this, 'DisconnectFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(import.meta.dirname, '..', 'lambda-disconnect')),
     });
     const defaultFn = new lambda.Function(this, 'DefaultFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(import.meta.dirname, '..', 'lambda-default')),
     });
     const sendFn = new lambda.Function(this, 'SendFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(import.meta.dirname, '..', 'lambda-send')),
     });
     const broadcastFn = new lambda.Function(this, 'BroadcastFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(import.meta.dirname, '..', 'lambda-broadcast')),
     });
