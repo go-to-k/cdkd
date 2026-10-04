@@ -62,7 +62,7 @@ vi.mock('@aws-sdk/client-route-53', async () => {
 // in this file distinguishes the two polarities. Measured — the file is green with
 // this mock resolving and green with it rejecting. What it asserts is the
 // `Fn::Join` refusal over a non-list attribute, which never consults the account
-// id, so the `fabricated: true` degraded branch is simply not observed here. The
+// id, so the unknown-account refusal is simply not observed here. The
 // choice is about fidelity, not coverage.
 const stsMockSend = vi.fn(async () => ({
   Account: '123456789012',

@@ -46,7 +46,7 @@ declare module '../intrinsic-function-resolver.js' {
  * remedy.
  *
  * DELIBERATELY NOT `markNonRetryable`, unlike every other refusal in this
- * file but the fabricated-account guard: the verdict is TIME-DEPENDENT. A
+ * file but the unknown-account guard: the verdict is TIME-DEPENDENT. A
  * `pending` instance settles seconds later, and a failed describe can
  * succeed on the next attempt, so cdkd must not DECLARE it terminal — the
  * marker is that declaration, and `withRetry` honours it ahead of every
@@ -62,7 +62,7 @@ declare module '../intrinsic-function-resolver.js' {
  * the EC2 describes raises (the Cloud Map `GetNamespace` read, issue #4077,
  * can: its throttle `RequestLimitExceeded` is a retryable name, and a retry
  * is what a throttled read wants) — and then re-describes and can heal.
- * Measured, not designed: the fabricated-account guard sits in exactly the
+ * Measured, not designed: the unknown-account guard sits in exactly the
  * same place. Threading a sanitized SDK error as `cause` so a throttled
  * describe classifies as transient was considered and left out — a
  * `CdkdError`'s `cause` is rendered at default verbosity by `formatError`
