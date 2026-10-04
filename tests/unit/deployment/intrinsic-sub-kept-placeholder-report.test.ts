@@ -173,6 +173,22 @@ describe('resolveSub reports a placeholder it KEPT inside a reference (issue #21
     expect(abandoned.map((e) => [e.unit, e.subject])).toEqual([['placeholder', '${Typo}']]);
   });
 
+  it('records it ONCE when an enclosing Fn::Join passes over the same reference again', async () => {
+    // The inner `Fn::Sub` result already holds the whole reference, so its own
+    // pass reports it; the `Fn::Join` pass over the joined text meets it again.
+    await resolver.resolve(
+      {
+        'Fn::Join': [
+          '',
+          [{ 'Fn::Sub': '{{resolve:secretsmanager:${Typo}-db:SecretString:pw}}' }, '-suffix'],
+        ],
+      },
+      ctx(abandoned)
+    );
+
+    expect(abandoned.map((e) => [e.unit, e.subject])).toEqual([['placeholder', '${Typo}']]);
+  });
+
   it('places a kept placeholder correctly after a bound variable that changed the length', async () => {
     // An empty value before it: the kept span must not land past the `}}`.
     await resolver.resolve(
