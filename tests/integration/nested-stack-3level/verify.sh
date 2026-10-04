@@ -71,6 +71,10 @@
 #           exit 2 through three nested-stack hops (Step 4c).
 #   #4453 - an UNCHANGED redeploy re-attempts that kept DELETE and exits 2
 #           again; once it is gone the markers clear and a redeploy is quiet.
+#   #4543 - a new value the ROOT passes reaches the child's masked script
+#           (Step 4d).
+#   #4565 - a new value of a CLEAN child output reaches the ROOT's masked
+#           script, compared and skipped while it does not move (Step 4e).
 #
 # Run via: /run-integ nested-stack-3level
 #         or: bash tests/integration/nested-stack-3level/verify.sh
@@ -187,6 +191,25 @@ if [[ -z "${W1_ONE_B64}" || -z "${W1_TWO_B64}" || "${W1_ONE_B64}" == "${W1_TWO_B
 fi
 W1_PLAINTEXTS=("${W1_PW_VALUE}" "${W1_ONE_B64}" "${W1_TWO_B64}")
 
+# The #4565 arm. The ROOT's `Root4565Script` holds the base64 of a script
+# joining the child's `Target4565` name (a CLEAN child output the root reads
+# through `Fn::GetAtt [Child, Outputs.<Key>]`) and the `w1` key of the secret
+# above. `CDKD_TEST_4565_TARGET` renames (replaces) the child resource. Names
+# kept in sync with `lib/nested-stack-3level.ts`. Both encodings of the script
+# carry the w1 plaintext, so every scan covers them too.
+R4565_PARAM_NAME="cdkd-3level-r4565-${ACCOUNT_ID}"
+T4565_NAME_ONE="cdkd-3level-t4565-${ACCOUNT_ID}-one"
+T4565_NAME_TWO="cdkd-3level-t4565-${ACCOUNT_ID}-two"
+r4565_script() { printf '#!/bin/bash\nTARGET=%s\nPW=%s\n' "$1" "${W1_PW_VALUE}"; }
+R4565_ONE_B64=$(r4565_script "${T4565_NAME_ONE}" | base64 | tr -d '\n')
+R4565_TWO_B64=$(r4565_script "${T4565_NAME_TWO}" | base64 | tr -d '\n')
+if [[ -z "${R4565_ONE_B64}" || -z "${R4565_TWO_B64}" || "${R4565_ONE_B64}" == "${R4565_TWO_B64}" ]] \
+  || [[ "$(printf '%s' "${R4565_TWO_B64}" | base64 --decode)" != "$(r4565_script "${T4565_NAME_TWO}")" ]]; then
+  echo "FAIL: premise: could not derive two distinct, round-tripping encodings of the #4565 script -- the arm would be vacuous" >&2
+  exit 1
+fi
+W1_PLAINTEXTS+=("${R4565_ONE_B64}" "${R4565_TWO_B64}")
+
 # Collected physical ids (filled during the post-deploy state read) so the
 # post-destroy sweep can confirm each one is gone on AWS.
 SSM_PARAM_NAMES=()
@@ -204,6 +227,12 @@ cleanup() {
   # The #4543 arm's fixed-name parameter holds the base64 of a script carrying
   # the w1 plaintext: swept here in case a destroy left it standing.
   aws ssm delete-parameter --name "${W1_PARAM_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
+  # The #4565 arm's fixed names: the root's script (it carries the w1
+  # plaintext's encoding) and both names of the child's renamed target.
+  local p4565
+  for p4565 in "${R4565_PARAM_NAME}" "${T4565_NAME_ONE}" "${T4565_NAME_TWO}"; do
+    aws ssm delete-parameter --name "${p4565}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
+  done
   # NONCURRENT-only here: this runs from the failure / INT / TERM traps, where
   # a live state.json may be the only record of standing resources. The
   # success path below does the full sweep once the cascade is asserted.
@@ -378,6 +407,17 @@ case "${W1_VERSION_STEP1}" in
     exit 1
     ;;
 esac
+# #4565: Root4565Script's version as Step 1 left it, for the same reason: every
+# later deploy that re-runs the Child row re-evaluates the root's reader of
+# its output with the output unchanged.
+R4565_VERSION_STEP1=$(aws ssm get-parameter --name "${R4565_PARAM_NAME}" --region "${AWS_REGION}" \
+  --query 'Parameter.Version' --output text)
+case "${R4565_VERSION_STEP1}" in
+  '' | *[!0-9]*)
+    echo "FAIL: premise: ${R4565_PARAM_NAME}'s version after Step 1 did not read as a number (${R4565_VERSION_STEP1})" >&2
+    exit 1
+    ;;
+esac
 
 # #3156: the grandchild's lines per framed parameter, PRESENT and masked whole
 # -- the whole-value entry the root's carry records reaches the grandchild
@@ -447,19 +487,20 @@ assert_level "${GREATGRANDCHILD}" "${GRANDCHILD}"   "GreatGrandchild"
 assert_level "${FRAMED}"          "${STACK}"        "Framed"
 assert_level "${FRAMED_GC}"       "${FRAMED}"       "FramedGrandchild"
 
-# Sanity: we should have collected 14 SSM params (RootRef, Child.Param,
-# Child.W1Script, Grandchild.Param, Grandchild.SecretA, Grandchild.SecretB,
-# GreatGrandchild.Param, and the #3156 / #3306 grandchild's seven consumers)
-# and 2 SNS topics (RootTopic, Grandchild.Topic) across the tree.
-if [[ ${#SSM_PARAM_NAMES[@]} -ne 14 ]]; then
-  echo "FAIL: expected 14 SSM parameters across the tree, found ${#SSM_PARAM_NAMES[@]}: ${SSM_PARAM_NAMES[*]}"
+# Sanity: we should have collected 16 SSM params (RootRef, Root4565Script,
+# Child.Param, Child.W1Script, Child.Target4565, Grandchild.Param,
+# Grandchild.SecretA, Grandchild.SecretB, GreatGrandchild.Param, and the
+# #3156 / #3306 grandchild's seven consumers) and 2 SNS topics (RootTopic,
+# Grandchild.Topic) across the tree.
+if [[ ${#SSM_PARAM_NAMES[@]} -ne 16 ]]; then
+  echo "FAIL: expected 16 SSM parameters across the tree, found ${#SSM_PARAM_NAMES[@]}: ${SSM_PARAM_NAMES[*]}"
   exit 1
 fi
 if [[ ${#SNS_TOPIC_ARNS[@]} -ne 2 ]]; then
   echo "FAIL: expected 2 SNS topics across the tree, found ${#SNS_TOPIC_ARNS[@]}: ${SNS_TOPIC_ARNS[*]}"
   exit 1
 fi
-echo "  OK: 6 state files, 14 SSM params + 2 SNS topics collected across all levels"
+echo "  OK: 6 state files, 16 SSM params + 2 SNS topics collected across all levels"
 
 # --------------------------------------------------------------------
 # Step 3: every level's REAL AWS resource exists.
@@ -1026,6 +1067,159 @@ assert_eq "#4543: an unchanged root redeploy does not touch W1Script" "$(w1_live
 w1_scan_states "after the unchanged redeploy"
 
 # --------------------------------------------------------------------
+# Step 4e (#4565): a new value of a CLEAN nested-stack output reaches a masked
+# property in the ROOT. `Root4565Script` is `Fn::Base64` over a script joining
+# `Fn::GetAtt [Child, Outputs.<Key>]` (the `Ref` of the child's
+# `Target4565`) and a secretsmanager reference the root resolves itself, so
+# the root records the value as `***`. Before the fix a nested stack's output
+# was always kept as written in the input fingerprint, so a replaced
+# `Target4565` behind unchanged root text compared `***` with `***` and the
+# root kept the old script under a green deploy. `CDKD_TEST_4565_TARGET` moves
+# only the child resource's name. Every deploy here keeps Step 4d's
+# `CDKD_TEST_4543_INPUT=two`, so the #4543 arm stays as Step 4d left it.
+# The live value is compared, never printed (it decodes to the w1 plaintext).
+# --------------------------------------------------------------------
+echo ""
+echo "==> Step 4e: #4565 -- a new value of a clean child output reaches the root's masked script"
+r4565_live() { # r4565_live <Value|Version>
+  aws ssm get-parameter --name "${R4565_PARAM_NAME}" --region "${AWS_REGION}" \
+    --query "Parameter.$1" --output text
+}
+r4565_record() { # r4565_record <root state json> <jq path under .resources.Root4565Script>
+  jq -r ".resources.Root4565Script.$2 // \"<absent>\"" <<<"$1"
+}
+r4565_version_number() { # r4565_version_number <label> <version>
+  case "$2" in
+    '' | *[!0-9]*)
+      echo "FAIL: premise: ${R4565_PARAM_NAME}'s version $1 did not read as a number ($2)" >&2
+      exit 1
+      ;;
+  esac
+}
+# r4565_deploy <label> <target suffix> <ggc value>: a --verbose deploy with
+# Step 4d's root value, scanned before it is echoed; prints nothing on
+# success, leaves the output in R4565_OUT.
+r4565_deploy() {
+  local rc
+  set +e
+  R4565_OUT=$(CDKD_TEST_4543_INPUT=two CDKD_TEST_4565_TARGET="$2" CDKD_INTEG_GGC_VALUE="$3" \
+    ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes --verbose 2>&1)
+  rc=$?
+  set -e
+  scan_output "cdkd deploy --verbose (#4565 $1)" "${R4565_OUT}"
+  echo "${R4565_OUT}"
+  if [[ ${rc} -ne 0 ]]; then
+    echo "FAIL: #4565: the deploy ($1) exited ${rc}" >&2
+    exit 1
+  fi
+}
+R4565_SKIP_LINE="Skipping Root4565Script: no actual changes after intrinsic function resolution"
+# The output the root reads, and what is behind it in the child.
+R4565_GETATT=$(jq -c '.Resources.Root4565Script.Properties.Value["Fn::Base64"]["Fn::Join"][1][1]' "${ROOT_TEMPLATE}")
+R4565_OUTPUT=$(jq -r '.["Fn::GetAtt"][1] // ""' <<<"${R4565_GETATT}")
+if [[ "$(jq -r '.["Fn::GetAtt"][0] // ""' <<<"${R4565_GETATT}")" != "Child" || "${R4565_OUTPUT}" != Outputs.* ]]; then
+  echo "FAIL: premise: Root4565Script does not read Fn::GetAtt [Child, Outputs.<Key>] (read ${R4565_GETATT})" >&2
+  exit 1
+fi
+CHILD_TEMPLATE="cdk.out/$(jq -r '.Resources.Child.Metadata["aws:asset:path"]' "${ROOT_TEMPLATE}")"
+[[ -f "${CHILD_TEMPLATE}" ]] || { echo "FAIL: premise: the child template ${CHILD_TEMPLATE} is missing" >&2; exit 1; }
+assert_eq "premise: the output the root reads is the Ref of the child's Target4565" \
+  "$(jq -c ".Outputs[\"${R4565_OUTPUT#Outputs.}\"].Value" "${CHILD_TEMPLATE}")" '{"Ref":"Target4565"}'
+assert_eq "premise: Target4565's properties read no parameter, reference or attribute (a clean output)" \
+  "$(jq -c '.Resources.Target4565.Properties | [.. | objects | keys[] | select(startswith("Fn::") or . == "Ref")] | length' "${CHILD_TEMPLATE}")" '0'
+R4565_ROOT_TEXT=$(jq -c '.Resources.Root4565Script' "${ROOT_TEMPLATE}")
+R4565_JSON_ONE=$(fetch_state "${STACK}") || { echo "FAIL: could not fetch ${STACK} state for the #4565 premise" >&2; exit 1; }
+R4565_TEXT_ONE=$(r4565_record "${R4565_JSON_ONE}" 'maskedPropertyFingerprints.Value')
+R4565_INPUT_ONE=$(r4565_record "${R4565_JSON_ONE}" 'maskedPropertyInputFingerprints.Value')
+assert_eq "premise: the root records Root4565Script's Value as the mask" \
+  "$(r4565_record "${R4565_JSON_ONE}" 'properties.Value')" '***'
+if [[ "${R4565_TEXT_ONE}" != sha256:* || "${R4565_INPUT_ONE}" != inputs-sha256:* \
+  || "${R4565_INPUT_ONE#*+}" != "${R4565_TEXT_ONE}" ]]; then
+  echo "FAIL: premise: Root4565Script carries no text fingerprint with an input fingerprint bound to it (read '${R4565_TEXT_ONE}' / '${R4565_INPUT_ONE}')" >&2
+  exit 1
+fi
+if [[ "$(r4565_live Value)" != "${R4565_ONE_B64}" ]]; then
+  echo "FAIL: premise: ${R4565_PARAM_NAME} does not hold the script for TARGET=${T4565_NAME_ONE} (value withheld)" >&2
+  exit 1
+fi
+R4565_VERSION_ONE=$(r4565_live Version)
+r4565_version_number "before Step 4e" "${R4565_VERSION_ONE}"
+# Step 4c's and 4d's deploys each re-ran the Child row with the output
+# unchanged; none re-sent the script.
+assert_eq "#4565: Root4565Script was not re-sent by the deploys since Step 1 (version ${R4565_VERSION_STEP1})" \
+  "${R4565_VERSION_ONE}" "${R4565_VERSION_STEP1}"
+
+# 4e-1, NO CHURN, with the comparison proven to run: a great-grandchild value
+# no output depends on changes every level's row, so the Child row is an
+# UPDATE and the root's reader of its output is re-evaluated (the diff
+# promotes it). The engine compares the input fingerprint and skips: the
+# skip line names the script, and nothing is sent.
+r4565_deploy "child change behind no output" one "cdkd-3level-ggc-4565"
+grep -qF "Updating nested stack" <<<"${R4565_OUT}" \
+  || { echo "FAIL: premise: the #4565 no-churn deploy re-ran no nested stack, so it compared nothing" >&2; exit 1; }
+grep -qF "${R4565_SKIP_LINE}" <<<"${R4565_OUT}" \
+  || { echo "FAIL: #4565: the no-churn deploy did not re-evaluate Root4565Script and skip it (no '${R4565_SKIP_LINE}' line)" >&2; exit 1; }
+assert_eq "#4565: an unchanged output does not re-send Root4565Script" "$(r4565_live Version)" "${R4565_VERSION_ONE}"
+assert_eq "#4565: an unchanged output leaves Root4565Script's input fingerprint as it was" \
+  "$(r4565_record "$(fetch_state "${STACK}")" 'maskedPropertyInputFingerprints.Value')" "${R4565_INPUT_ONE}"
+
+# 4e-2, THE SEND: only the child's Target4565 is renamed (replaced).
+r4565_deploy "renamed child target" two "cdkd-3level-ggc-4565"
+assert_eq "premise: the #4565 deploy synthesized Target4565's new name" \
+  "$(jq -r '.Resources.Target4565.Properties.Name' "cdk.out/$(jq -r '.Resources.Child.Metadata["aws:asset:path"]' "${ROOT_TEMPLATE}")")" "${T4565_NAME_TWO}"
+assert_eq "premise: the root's Root4565Script template text did not change" \
+  "$(jq -c '.Resources.Root4565Script' "${ROOT_TEMPLATE}")" "${R4565_ROOT_TEXT}"
+assert_gone "#4565: the replaced Target4565 '${T4565_NAME_ONE}' still exists" \
+  aws ssm get-parameter --name "${T4565_NAME_ONE}" --region "${AWS_REGION}"
+if [[ "$(r4565_live Value)" != "${R4565_TWO_B64}" ]]; then
+  echo "FAIL: #4565: after a green deploy that replaced the child's Target4565, ${R4565_PARAM_NAME} does not hold the script for TARGET=${T4565_NAME_TWO} -- the root never sent its masked property (value withheld)" >&2
+  exit 1
+fi
+R4565_VERSION_TWO=$(r4565_live Version)
+r4565_version_number "after the send" "${R4565_VERSION_TWO}"
+if [[ ${R4565_VERSION_TWO} -le ${R4565_VERSION_ONE} ]]; then
+  echo "FAIL: #4565: ${R4565_PARAM_NAME}'s version did not advance with the new output value (${R4565_VERSION_ONE} -> ${R4565_VERSION_TWO})" >&2
+  exit 1
+fi
+R4565_JSON_TWO=$(fetch_state "${STACK}") || { echo "FAIL: could not fetch ${STACK} state after the #4565 deploy" >&2; exit 1; }
+R4565_TEXT_TWO=$(r4565_record "${R4565_JSON_TWO}" 'maskedPropertyFingerprints.Value')
+R4565_INPUT_TWO=$(r4565_record "${R4565_JSON_TWO}" 'maskedPropertyInputFingerprints.Value')
+assert_eq "#4565: the root still records Root4565Script's Value as the mask" \
+  "$(r4565_record "${R4565_JSON_TWO}" 'properties.Value')" '***'
+if [[ "${R4565_TEXT_TWO}" != "${R4565_TEXT_ONE}" || "${R4565_INPUT_TWO#*+}" != "${R4565_TEXT_TWO}" \
+  || "${R4565_INPUT_TWO}" == "${R4565_INPUT_ONE}" || "${R4565_INPUT_TWO}" != inputs-sha256:* ]]; then
+  echo "FAIL: #4565: Root4565Script's fingerprints after the new output value are not 'same text, new bound input' (text ${R4565_TEXT_ONE} -> ${R4565_TEXT_TWO}, input ${R4565_INPUT_ONE} -> ${R4565_INPUT_TWO})" >&2
+  exit 1
+fi
+w1_scan_states "after the #4565 send"
+echo "  OK: #4565: the new output value reached the root's masked script (version ${R4565_VERSION_ONE} -> ${R4565_VERSION_TWO}); the input half moved, the text half did not"
+
+# 4e-3, cdkd diff agrees with what the deploy stamped: no phantom change.
+set +e
+R4565_DIFF_OUT=$(CDKD_TEST_4543_INPUT=two CDKD_TEST_4565_TARGET=two CDKD_INTEG_GGC_VALUE="cdkd-3level-ggc-4565" \
+  ${CDKD} diff ${STACK} --recursive --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1)
+set -e
+scan_output "cdkd diff --recursive (#4565)" "${R4565_DIFF_OUT}"
+echo "${R4565_DIFF_OUT}"
+if ! grep -q "No changes detected" <<<"${R4565_DIFF_OUT}" || grep -qE "\[~\]|\[\+\]|\[-\]" <<<"${R4565_DIFF_OUT}"; then
+  echo "FAIL: #4565: cdkd diff after the send reports a change the deploy does not make" >&2
+  exit 1
+fi
+echo "  OK: #4565: cdkd diff after the send is clean"
+
+# 4e-4, NO CHURN after the send: the new fingerprint is compared and settles.
+r4565_deploy "child change behind no output, after the send" two "cdkd-3level-ggc-4565b"
+grep -qF "Updating nested stack" <<<"${R4565_OUT}" \
+  || { echo "FAIL: premise: the #4565 settle deploy re-ran no nested stack, so it compared nothing" >&2; exit 1; }
+grep -qF "${R4565_SKIP_LINE}" <<<"${R4565_OUT}" \
+  || { echo "FAIL: #4565: the settle deploy did not re-evaluate Root4565Script and skip it (no '${R4565_SKIP_LINE}' line)" >&2; exit 1; }
+assert_eq "#4565: the settle deploy does not re-send Root4565Script" "$(r4565_live Version)" "${R4565_VERSION_TWO}"
+assert_eq "#4565: the settle deploy leaves the new input fingerprint as it was" \
+  "$(r4565_record "$(fetch_state "${STACK}")" 'maskedPropertyInputFingerprints.Value')" "${R4565_INPUT_TWO}"
+w1_scan_states "after the #4565 settle deploy"
+echo "  OK: #4565: compared and skipped before and after the send; sent exactly once"
+
+# --------------------------------------------------------------------
 # Step 5: 'cdkd state list --tree' renders the 4-level hierarchy.
 # --------------------------------------------------------------------
 echo ""
@@ -1100,6 +1294,14 @@ echo "  OK: out-of-band secret and SecureString left intact by destroy, removed 
 # from state, which a lost record would hide).
 assert_gone "SSM parameter '${W1_PARAM_NAME}' (base64 of a script carrying the w1 plaintext) still exists after destroy" \
   aws ssm get-parameter --name "${W1_PARAM_NAME}" --region "${AWS_REGION}"
+# The #4565 arm's fixed names, by name (6b read Step 2's names: the renamed
+# target was created after it).
+assert_gone "SSM parameter '${R4565_PARAM_NAME}' (base64 of a script carrying the w1 plaintext) still exists after destroy" \
+  aws ssm get-parameter --name "${R4565_PARAM_NAME}" --region "${AWS_REGION}"
+for t4565 in "${T4565_NAME_ONE}" "${T4565_NAME_TWO}"; do
+  assert_gone "SSM parameter '${t4565}' (the #4565 child target) still exists after destroy" \
+    aws ssm get-parameter --name "${t4565}" --region "${AWS_REGION}"
+done
 
 # --- Teardown + VERSION sweep, ON THE SUCCESS PATH (issue #2096) -----------
 # 6a's head-object is on the CURRENT object; the bucket is VERSIONED, so every
@@ -1115,4 +1317,4 @@ for lvl in "${LEVELS[@]}"; do
 done
 
 echo ""
-echo "==> PASS: 4-level nested-stack deploy / parent-link / state-tree / destroy-cascade verified, the #3094 secret chain per leaf, the #3156 and #3306 framed carries, the #4543 root-passed input of a masked child property, zero surviving state versions"
+echo "==> PASS: 4-level nested-stack deploy / parent-link / state-tree / destroy-cascade verified, the #3094 secret chain per leaf, the #3156 and #3306 framed carries, the #4543 root-passed input of a masked child property, the #4565 clean child output of a masked root property, zero surviving state versions"

@@ -15,6 +15,7 @@ import {
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import {
+  type ChildTemplateLoader,
   type parameterInputsFor,
   withMaskedPropertyFingerprints,
 } from './masked-property-fingerprints.js';
@@ -532,6 +533,14 @@ export class DeployEngine {
    */
   /** @internal */
   fingerprintParameters: ReturnType<typeof parameterInputsFor> | undefined = undefined;
+  /**
+   * The nested-stack templates of the cloud assembly this deploy reads
+   * (go-to-k/cdkd#4565), so a masked property reading a clean nested-stack
+   * output is resolved alike in the diff pass and the provisioning arms. Set
+   * with {@link fingerprintParameters}, which gates every read of it.
+   */
+  /** @internal */
+  fingerprintChildTemplates: ChildTemplateLoader | undefined = undefined;
   /**
    * The input fingerprints (layout 2) each resource's masked properties
    * resolved to when this deploy provisioned it (go-to-k/cdkd#4543): what the

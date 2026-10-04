@@ -125,6 +125,8 @@ class GrandchildNestedStack extends cdk.NestedStack {
  */
 class ChildNestedStack extends cdk.NestedStack {
   public readonly param: ssm.StringParameter;
+  /** `{Ref: Target4565}`: read by the ROOT, so CDK emits a child Output for it. */
+  public readonly target4565Name: string;
 
   constructor(
     scope: Construct,
@@ -132,11 +134,27 @@ class ChildNestedStack extends cdk.NestedStack {
     downwardValue: string,
     stage: string,
     w1: { secretName: string; paramName: string },
+    target4565Name: string,
     props?: cdk.NestedStackProps
   ) {
     super(scope, id, props);
 
     (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('Child');
+
+    // THE #4565 ARM, depth 1: a resource whose NAME (create-only) verify.sh
+    // moves through `CDKD_TEST_4565_TARGET`, so a change replaces it. Its `Ref`
+    // is a CLEAN child output the root's masked script reads; nothing else in
+    // the root changes. An L1 `ref`, never `StringParameter.parameterName`:
+    // a literal physical name folds into the root's text across the nested
+    // boundary, and the root would read no output at all.
+    const target4565 = new ssm.CfnParameter(this, 'Target4565', {
+      name: target4565Name,
+      type: 'String',
+      value: 'cdkd-3level-4565-target',
+      description: 'cdkd nested-stack-3level integ - #4565 child resource behind a clean output',
+    });
+    target4565.overrideLogicalId('Target4565');
+    this.target4565Name = target4565.ref;
 
     // THE #4543 ARM: a masked property that reads a value the ROOT passes.
     // `Input4543` arrives as `{Ref: Input4543}` of a plain (non-`NoEcho`)
@@ -309,6 +327,8 @@ export class NestedStack3Level extends cdk.Stack {
       stage.valueAsString,
       // Kept in sync with verify.sh's W1_PARAM_NAME.
       { secretName, paramName: `cdkd-3level-w1-${account}` },
+      // Kept in sync with verify.sh's T4565_NAME_ONE / T4565_NAME_TWO.
+      `cdkd-3level-t4565-${account}-${process.env['CDKD_TEST_4565_TARGET'] ?? 'one'}`,
       {
         parameters: {
           HandoffSecretA: `{{resolve:secretsmanager:${secretName}:SecretString:handoff::}}`,
@@ -364,6 +384,24 @@ export class NestedStack3Level extends cdk.Stack {
         ]),
       },
     });
+
+    // THE #4565 ARM, depth 0: a masked property that reads a CLEAN child
+    // output. `Fn::Base64` over a script joining the child's `Target4565`
+    // name (`Fn::GetAtt [Child, Outputs.<Key>]`) and the `w1` key of the
+    // secret, which the root resolves itself, so the root records `***`.
+    // `CDKD_TEST_4565_TARGET` moves only the child's resource: this
+    // template's text stays as it was, and verify.sh asserts the new script
+    // reaches AWS. A FIXED name, swept by verify.sh's cleanup.
+    const root4565 = new ssm.CfnParameter(this, 'Root4565Script', {
+      name: `cdkd-3level-r4565-${account}`,
+      type: 'String',
+      description:
+        'cdkd nested-stack-3level integ - #4565 masked script reading a clean nested-stack output',
+      value: cdk.Fn.base64(
+        `#!/bin/bash\nTARGET=${child.target4565Name}\nPW={{resolve:secretsmanager:${secretName}:SecretString:w1::}}\n`
+      ),
+    });
+    root4565.overrideLogicalId('Root4565Script');
 
     // Root-side resource that pulls the child's exposed value UP via
     // Fn::GetAtt across the top nested-stack boundary.

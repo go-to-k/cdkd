@@ -189,7 +189,8 @@ function getAttTargetOf(node: unknown): string | undefined {
  * The sources a masked property's INPUT fingerprint is computed from
  * (go-to-k/cdkd#4543), for the deploy's diff pass and its provisioning arms
  * alike: the parameter classes {@link DeployEngine.fingerprintParameters}
- * recorded, the evaluated `conditions`, and a resolver over `resources`.
+ * recorded, the evaluated `conditions`, a resolver over `resources`, and the
+ * assembly's nested-stack templates (go-to-k/cdkd#4565).
  *
  * Each input node resolves through a FRESH context of its own, so nothing it
  * records (secrets, imports, output reads) reaches the resource's own
@@ -214,6 +215,7 @@ export function maskedInputSources(
     template,
     parameterInput: parameters.parameterInput,
     conditions,
+    childTemplate: this.fingerprintChildTemplates,
     resolve: async (node: unknown) => {
       // No healer, and the stale-attribute PROBE phase: an `Fn::GetAtt` the
       // resolver would answer with the physical-id FALLBACK (a guess, counted

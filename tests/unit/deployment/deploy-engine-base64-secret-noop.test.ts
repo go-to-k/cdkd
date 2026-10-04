@@ -1,7 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
+import { withNestedStackContext } from '../../../src/provisioning/nested-stack-context.js';
 import {
   passedParameterClassesOf,
   REFUSED_FINGERPRINT,
@@ -944,6 +948,174 @@ describe('DeployEngine - a resolved input behind unchanged template text is sent
     expect(h.provider.update).toHaveBeenCalledTimes(1);
     // ...and the write stamps the input form.
     expect(after.resources['R']!.maskedPropertyInputFingerprints!['Value']).toMatch(/^inputs-sha256:/);
+  });
+});
+
+describe('DeployEngine - a masked property reading a CLEAN nested-stack output is sent when it moves (go-to-k/cdkd#4565)', () => {
+  const SECRET = '{{resolve:ssm-secure:/app/pw}}';
+  const script = (input: unknown): unknown => ({
+    'Fn::Base64': { 'Fn::Join': ['', ['t=', input, ';pw=', SECRET]] },
+  });
+  const CHILD_TEMPLATE: CloudFormationTemplate = {
+    Parameters: { Hidden: { Type: 'String', NoEcho: true } },
+    Resources: { Target: { Type: 'AWS::SNS::Topic', Properties: { TopicName: 't' } } },
+    Outputs: {
+      Name: { Value: { Ref: 'Target' } },
+      FromHidden: { Value: { Ref: 'Hidden' } },
+    },
+  };
+  /** The parent: the Child row (its URL moves with any child edit) and two readers. */
+  const parent = (url: string): CloudFormationTemplate => ({
+    Resources: {
+      Child: {
+        Type: 'AWS::CloudFormation::Stack',
+        Properties: { TemplateURL: url, Parameters: { Hidden: 'hidden-value-4565' } },
+      },
+      R: {
+        Type: 'AWS::SSM::Parameter',
+        Properties: {
+          Name: '/app/ud',
+          Type: 'String',
+          Value: script({ 'Fn::GetAtt': ['Child', 'Outputs.Name'] }),
+        },
+      },
+      S: {
+        Type: 'AWS::SSM::Parameter',
+        Properties: {
+          Name: '/app/hidden',
+          Type: 'String',
+          Value: script({ 'Fn::Sub': '${Child.Outputs.FromHidden}' }),
+        },
+      },
+    },
+  });
+  let dir: string;
+  let childPath: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cdkd-4565-engine-'));
+    childPath = join(dir, 'child.json');
+    writeFileSync(childPath, JSON.stringify(CHILD_TEMPLATE));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  /** A harness whose Child row reports `outputs` as its `Outputs.<Key>` attributes. */
+  const nestedHarness = (outputs: { name: string; hidden: string }) => {
+    const h = harness({
+      levels: [['Child'], ['R', 'S']],
+      deps: { R: ['Child'], S: ['Child'] },
+    });
+    const attributes = () => ({
+      'Outputs.Name': outputs.name,
+      'Outputs.FromHidden': outputs.hidden,
+    });
+    h.provider.create.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === 'Child' ? { physicalId: 'child', attributes: attributes() } : { physicalId: id }
+      )
+    );
+    h.provider.update.mockImplementation((id: string, physicalId: string) =>
+      Promise.resolve({
+        physicalId,
+        wasReplaced: false,
+        ...(id === 'Child' && { attributes: attributes() }),
+      })
+    );
+    const deploy = (template: CloudFormationTemplate, nestedTemplates?: Record<string, string>) =>
+      withNestedStackContext(
+        { nestedTemplates: nestedTemplates ?? { Child: childPath } } as never,
+        () => h.deployTemplate(template)
+      );
+    const sentTo = (id: string) => h.provider.update.mock.calls.filter((c) => c[0] === id);
+    return { h, deploy, sentTo };
+  };
+
+  it('a replaced resource behind a clean output is sent once; a child change behind no output is compared and skipped', async () => {
+    const outputs = { name: 'target-one', hidden: 'h-one' };
+    const { h, deploy, sentTo } = nestedHarness(outputs);
+    const created = await deploy(parent('u1'));
+    expect(created.resources['R']!.properties['Value']).toBe('***');
+    const inputOne = created.resources['R']!.maskedPropertyInputFingerprints!['Value'];
+    expect(inputOne).toMatch(/^inputs-sha256:/);
+
+    // A child edit that moves no output: the Child row is an UPDATE, R is
+    // promoted (the diff cannot know the output did not move), and the
+    // engine compares R's fingerprint and sends nothing.
+    let promoted: string | undefined;
+    h.onDiff((changes) => {
+      promoted = changes.get('R')?.changeType;
+    });
+    const same = await deploy(parent('u2'));
+    expect(promoted).toBe('UPDATE');
+    expect(sentTo('Child')).toHaveLength(1);
+    expect(sentTo('R')).toHaveLength(0);
+    expect(same.resources['R']!.maskedPropertyInputFingerprints!['Value']).toBe(inputOne);
+
+    // The resource behind the output is replaced: only the output moves.
+    outputs.name = 'target-two';
+    const moved = await deploy(parent('u3'));
+    expect(sentTo('R')).toHaveLength(1);
+    expect((sentTo('R')[0]![3] as Record<string, unknown>)['Value']).toBe(
+      Buffer.from('t=target-two;pw=pw-secret-value').toString('base64')
+    );
+    const inputTwo = moved.resources['R']!.maskedPropertyInputFingerprints!['Value'];
+    expect(inputTwo).not.toBe(inputOne);
+    expect(moved.resources['R']!.maskedPropertyFingerprints!['Value']).toBe(
+      created.resources['R']!.maskedPropertyFingerprints!['Value']
+    );
+    expect(JSON.stringify(moved)).not.toContain('pw-secret-value');
+
+    // Flip once, never churn: unchanged, then another child edit behind no output.
+    await deploy(parent('u3'));
+    await deploy(parent('u4'));
+    expect(sentTo('R')).toHaveLength(1);
+    expect(h.saved().resources['R']!.maskedPropertyInputFingerprints!['Value']).toBe(inputTwo);
+  });
+
+  it("an output built from the child's NoEcho parameter stays out of the hash: its new value is not sent", async () => {
+    const outputs = { name: 'target-one', hidden: 'h-one' };
+    const { deploy, sentTo } = nestedHarness(outputs);
+    const created = await deploy(parent('u1'));
+    expect(created.resources['S']!.properties['Value']).toBe('***');
+    outputs.hidden = 'h-two';
+    const after = await deploy(parent('u2'));
+    expect(sentTo('S')).toHaveLength(0);
+    expect(after.resources['S']!.maskedPropertyInputFingerprints!['Value']).toBe(
+      created.resources['S']!.maskedPropertyInputFingerprints!['Value']
+    );
+    // The reader's record holds neither value (the Child row's own
+    // attributes are this double's, not the provider's).
+    expect(JSON.stringify(after.resources['S'])).not.toContain('h-two');
+    expect(JSON.stringify(after.resources['S'])).not.toContain('h-one');
+  });
+
+  it('with no assembly (no nested templates in the context) the output is kept as written, as before', async () => {
+    const outputs = { name: 'target-one', hidden: 'h-one' };
+    const { deploy, sentTo } = nestedHarness(outputs);
+    await deploy(parent('u1'), {});
+    outputs.name = 'target-two';
+    await deploy(parent('u2'), {});
+    expect(sentTo('R')).toHaveLength(0);
+  });
+
+  it('cdkd diff recomputes what the deploy stamped from the same assembly: no phantom change', async () => {
+    const outputs = { name: 'target-one', hidden: 'h-one' };
+    const { deploy } = nestedHarness(outputs);
+    await deploy(parent('u1'));
+    outputs.name = 'target-two';
+    const deployed = await deploy(parent('u2'));
+    const { computeStackDiff } = await import('../../../src/cli/commands/diff-recursive.js');
+    const backend = { getState: async () => null } as never;
+    const diffOf = async (nestedTemplates?: Record<string, string>) =>
+      (
+        await computeStackDiff(deployed, parent('u2'), 'us-east-1', 's', backend, new DiffCalculator(), {
+          previewMaskedInputs: true,
+          ...(nestedTemplates && { nestedTemplates }),
+        })
+      ).changes.get('R')!.changeType;
+    expect(await diffOf({ Child: childPath })).toBe('NO_CHANGE');
+    // Control: without the tree the diff keeps the output as written, which
+    // is not what the deploy stamped.
+    expect(await diffOf()).toBe('UPDATE');
   });
 });
 

@@ -97,6 +97,7 @@ import {
   readRecordedConditionVerdicts,
 } from '../../deployment/condition-verdicts.js';
 import { parameterInputsFor } from '../../deployment/masked-property-fingerprints.js';
+import { childTemplateLoader } from '../../deployment/nested-output-templates.js';
 import {
   findNestedStackTypeChanges,
   type NestedStackTypeChange,
@@ -1273,6 +1274,13 @@ export async function computeStackDiff(
      * fingerprint as unmoved rather than risk a change the deploy never makes.
      */
     previewMaskedInputs?: boolean;
+    /**
+     * This node's nested-stack templates (logical id -> template file), so a
+     * masked property reading a clean nested-stack output is compared as the
+     * deploy compares it (go-to-k/cdkd#4565). Read only with
+     * {@link previewMaskedInputs}.
+     */
+    nestedTemplates?: Readonly<Record<string, string>>;
   } = {}
 ): Promise<StackDiffResult> {
   const {
@@ -1922,6 +1930,8 @@ export async function computeStackDiff(
         template: effectiveTemplate,
         parameterInput: classified.parameterInput,
         conditions,
+        // The same reader of the same assembly the deploy's engine builds.
+        childTemplate: childTemplateLoader(options.nestedTemplates),
         resolve: async (node: unknown) => {
           const secrets: RecordedSecretValues = new Map();
           const value = await intrinsicResolver.resolve(structuredClone(node), {
@@ -2992,6 +3002,7 @@ export async function buildDiffTree(args: {
         // inherited flag only matters for the DELETED children below.
         inheritSecretBearingTemplate: false,
         previewMaskedInputs: !isNestedChild,
+        nestedTemplates,
       }
     );
   } finally {

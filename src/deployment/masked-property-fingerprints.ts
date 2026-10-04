@@ -172,7 +172,30 @@ export interface MaskedInputSources {
   resolve(
     node: unknown
   ): Promise<{ value: unknown; secrets?: RecordedSecretValues; keepAsWritten?: boolean }>;
+  /**
+   * The template of the nested stack a `AWS::CloudFormation::Stack` row of
+   * {@link template} names, read from the cloud assembly (go-to-k/cdkd#4565).
+   * An `Fn::GetAtt` on that row's `Outputs.<Key>` is resolved only when the
+   * output is classified clean from these templates (see
+   * {@link nestedStackOutputClass}). Absent: every such read is kept as written.
+   */
+  childTemplate?: ChildTemplateLoader | undefined;
 }
+
+/** A nested stack's template, and the loader for the nested stacks IT declares. */
+export interface NestedTemplate {
+  template: CloudFormationTemplate;
+  /** Identifies the template file, so a cyclic tree is refused rather than followed. */
+  identity: string;
+  childTemplate: ChildTemplateLoader;
+}
+
+/**
+ * The template of the nested stack a row (by logical id) of the template this
+ * loader belongs to names; `undefined` when there is none, or it cannot be
+ * read, parsed or contained in the assembly.
+ */
+export type ChildTemplateLoader = (logicalId: string) => NestedTemplate | undefined;
 
 /** Raised inside the walk when an input is unknown; caught by its entry points. */
 class UnknownInput extends Error {}
@@ -182,6 +205,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 const DYNAMIC_REFERENCE_OPEN = '{{resolve:';
+const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
+const NESTED_OUTPUT_PREFIX = 'Outputs.';
 
 /**
  * Whether a value carries a `{{resolve:...}}` reference (the diff side never
@@ -306,6 +331,10 @@ interface Walk {
   parameters: Record<string, unknown>;
   taint: Map<string, Taint>;
   inProgress: Set<string>;
+  /** Nested-stack rows whose passed values are being classified above this walk. */
+  stackChain: ReadonlySet<string>;
+  /** Shared by every nested-output classification one entry point starts. */
+  budget: { steps: number };
 }
 
 /** `${Name}` / `${Resource.Attr}` placeholders of an `Fn::Sub` string; `${!x}` is a literal. */
@@ -330,14 +359,15 @@ function intrinsicKey(value: Record<string, unknown>): string | undefined {
 /**
  * Types whose attributes are handler- or child-defined, and so may be a
  * `NoEcho` value (a custom resource's `Data`, a nested stack's output): an
- * `Fn::GetAtt` on one is kept as written whatever it resolves to. A parent
- * reading a nested stack's output is therefore not sent when only that output
- * moves (go-to-k/cdkd#4565).
+ * `Fn::GetAtt` on one is kept as written whatever it resolves to, and a
+ * resource whose definition reads one counts as reading a secret. The one
+ * exception is a masked property's DIRECT read of a nested stack's
+ * `Outputs.<Key>` (an `Fn::GetAtt`, or an `Fn::Sub` placeholder): it is
+ * resolved when the output is classified clean from the child's template
+ * ({@link nestedStackOutputClass}, go-to-k/cdkd#4565). A custom resource's
+ * attributes are fixed only when its handler runs, so they have no such path.
  */
-const OPAQUE_ATTRIBUTE_TYPES = new Set([
-  'AWS::CloudFormation::CustomResource',
-  'AWS::CloudFormation::Stack',
-]);
+const OPAQUE_ATTRIBUTE_TYPES = new Set(['AWS::CloudFormation::CustomResource', NESTED_STACK_TYPE]);
 
 function hasOpaqueAttributes(logicalId: string, walk: Walk): boolean {
   const definition = walk.resources[logicalId];
@@ -436,6 +466,22 @@ function taintOf(logicalId: string, walk: Walk): Taint {
  * it), `'unknown'` when a verdict or an input is not known here.
  */
 function conditionInput(name: string, walk: Walk): boolean | 'secret' | 'unknown' {
+  const closure = conditionClosure(name, walk);
+  if (closure !== 'clean') return closure;
+  const conditions = walk.sources.conditions;
+  if (conditions === undefined || !Object.hasOwn(conditions, name)) return 'unknown';
+  if (conditionsAssumedFalse(conditions as Record<string, boolean>).has(name)) return 'unknown';
+  const verdict = conditions[name];
+  return typeof verdict === 'boolean' ? verdict : 'unknown';
+}
+
+/**
+ * What a condition's closure reads, never its verdict: `'secret'` when it reads
+ * a secret parameter, a `{{resolve:...}}` reference, a cross-stack value or an
+ * attribute, `'unknown'` when a definition or a parameter input is not known
+ * here, else `'clean'`.
+ */
+function conditionClosure(name: string, walk: Walk): 'clean' | 'secret' | 'unknown' {
   const definitions = isPlainObject(walk.sources.template.Conditions)
     ? walk.sources.template.Conditions
     : {};
@@ -506,11 +552,7 @@ function conditionInput(name: string, walk: Walk): boolean | 'secret' | 'unknown
   }
   if (unknown) return 'unknown';
   if (secret) return 'secret';
-  const conditions = walk.sources.conditions;
-  if (conditions === undefined || !Object.hasOwn(conditions, name)) return 'unknown';
-  if (conditionsAssumedFalse(conditions as Record<string, boolean>).has(name)) return 'unknown';
-  const verdict = conditions[name];
-  return typeof verdict === 'boolean' ? verdict : 'unknown';
+  return 'clean';
 }
 
 /** Resolves an input node, keeping it as written when its value may be a secret. */
@@ -579,6 +621,9 @@ async function inputForm(value: unknown, walk: Walk): Promise<InputForm> {
         : { form: value, concrete: false };
     case 'Fn::GetAtt': {
       const target = getAttTarget(operand);
+      if (target !== undefined && isNestedStackRow(target, walk)) {
+        return nestedOutputInput(target, getAttAttribute(operand, target), value, walk);
+      }
       if (
         target === undefined ||
         !Object.hasOwn(walk.resources, target) ||
@@ -623,19 +668,26 @@ async function inputForm(value: unknown, walk: Walk): Promise<InputForm> {
         if (Object.hasOwn(explicit, name)) continue;
         const dot = name.indexOf('.');
         const part =
-          dot > 0 && !name.startsWith('AWS::')
-            ? Object.hasOwn(walk.resources, name.slice(0, dot)) &&
-              !hasOpaqueAttributes(name.slice(0, dot), walk)
-              ? await nameInput(
-                  name.slice(0, dot),
-                  { 'Fn::GetAtt': [name.slice(0, dot), name.slice(dot + 1)] },
-                  walk
-                )
-              : {
-                  form: { 'Fn::GetAtt': [name.slice(0, dot), name.slice(dot + 1)] },
-                  concrete: false,
-                }
-            : await nameInput(name, { Ref: name }, walk);
+          dot > 0 && !name.startsWith('AWS::') && isNestedStackRow(name.slice(0, dot), walk)
+            ? await nestedOutputInput(
+                name.slice(0, dot),
+                name.slice(dot + 1),
+                { 'Fn::GetAtt': [name.slice(0, dot), name.slice(dot + 1)] },
+                walk
+              )
+            : dot > 0 && !name.startsWith('AWS::')
+              ? Object.hasOwn(walk.resources, name.slice(0, dot)) &&
+                !hasOpaqueAttributes(name.slice(0, dot), walk)
+                ? await nameInput(
+                    name.slice(0, dot),
+                    { 'Fn::GetAtt': [name.slice(0, dot), name.slice(dot + 1)] },
+                    walk
+                  )
+                : {
+                    form: { 'Fn::GetAtt': [name.slice(0, dot), name.slice(dot + 1)] },
+                    concrete: false,
+                  }
+              : await nameInput(name, { Ref: name }, walk);
         placeholders.push([name, part.form]);
         concrete &&= part.concrete;
       }
@@ -662,14 +714,387 @@ async function inputForm(value: unknown, walk: Walk): Promise<InputForm> {
   }
 }
 
-function newWalk(sources: MaskedInputSources): Walk {
+function newWalk(
+  sources: MaskedInputSources,
+  nested: { stackChain: ReadonlySet<string>; budget: { steps: number } } = {
+    stackChain: new Set(),
+    budget: { steps: 0 },
+  }
+): Walk {
   return {
     sources,
     resources: isPlainObject(sources.template.Resources) ? sources.template.Resources : {},
     parameters: isPlainObject(sources.template.Parameters) ? sources.template.Parameters : {},
     taint: new Map(),
     inProgress: new Set(),
+    stackChain: nested.stackChain,
+    budget: nested.budget,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Nested-stack outputs (go-to-k/cdkd#4565)
+// ---------------------------------------------------------------------------
+
+/**
+ * How a nested stack's output may enter its parent's input fingerprint,
+ * decided from the TEMPLATES alone (the parent's row and the child's tree in
+ * the cloud assembly), so the deploy's diff pass, its provisioning arms and
+ * `cdkd diff` decide it alike whether or not the child has run:
+ * - `clean`: the output's `Value` is built only from non-secret inputs, so the
+ *   parent resolves it (through the value checks every input takes);
+ * - `secret`: it reads a `NoEcho` parameter, a `{{resolve:...}}` reference, a
+ *   cross-stack value, a name the child does not declare, a secret-reading
+ *   resource, a passed value the parent did not class clean, or a condition
+ *   over any of these: kept as written;
+ * - `unknown`: the template tree cannot say (no loader, a missing, unreadable
+ *   or cyclic template, an undeclared output, a custom resource's attribute):
+ *   kept as written;
+ * - `unread`: a passed value the parent could not read THIS time: neither
+ *   compared nor hashed, as for any unknown input, so a transient read never
+ *   flips the hash.
+ */
+export type NestedOutputClass = 'clean' | 'secret' | 'unknown' | 'unread';
+
+const NESTED_OUTPUT_ORDER: Readonly<Record<NestedOutputClass, number>> = {
+  clean: 0,
+  unread: 1,
+  unknown: 2,
+  secret: 3,
+};
+
+function worseOf(a: NestedOutputClass, b: NestedOutputClass): NestedOutputClass {
+  return NESTED_OUTPUT_ORDER[a] >= NESTED_OUTPUT_ORDER[b] ? a : b;
+}
+
+/** Templates deeper than this below the parent are not followed (`unknown`). */
+const MAX_NESTED_OUTPUT_DEPTH = 32;
+/** Classification steps one entry point may take before answering `unknown`. */
+const MAX_NESTED_OUTPUT_STEPS = 10_000;
+
+/** One child template being classified, with what its parameters carry. */
+interface OutputScope {
+  walk: Walk;
+  childTemplate: ChildTemplateLoader;
+  /** Template identities from the first child down to this one. */
+  chain: readonly string[];
+  /** Nested-stack rows of THIS template whose passed values are being classified. */
+  rows: ReadonlySet<string>;
+  budget: { steps: number };
+}
+
+function isNestedStackRow(logicalId: string, walk: Walk): boolean {
+  if (!Object.hasOwn(walk.resources, logicalId)) return false;
+  const definition = walk.resources[logicalId];
+  return isPlainObject(definition) && definition['Type'] === NESTED_STACK_TYPE;
+}
+
+/** The attribute an `Fn::GetAtt` operand names; `undefined` when not a literal. */
+function getAttAttribute(operand: unknown, target: string): string | undefined {
+  if (Array.isArray(operand)) {
+    return operand.length === 2 && typeof operand[1] === 'string' ? operand[1] : undefined;
+  }
+  return typeof operand === 'string' ? operand.slice(target.length + 1) : undefined;
+}
+
+/** The `Parameters` a nested-stack row passes, or `'unknown'` when not a plain map. */
+function rowParameters(definition: unknown): Record<string, unknown> | 'unknown' {
+  const properties = isPlainObject(definition) ? definition['Properties'] : undefined;
+  if (properties === undefined) return {};
+  if (!isPlainObject(properties)) return 'unknown';
+  const parameters = properties['Parameters'];
+  if (parameters === undefined) return {};
+  if (!isPlainObject(parameters) || intrinsicKey(parameters) !== undefined) return 'unknown';
+  return parameters;
+}
+
+/**
+ * How each of a child template's parameters enters the TAINT of its outputs:
+ * a `NoEcho` parameter is secret whatever was passed; a passed one takes the
+ * class its parent gave the value; one not passed binds its `Default`
+ * (template text, clean unless it carries a reference), or nothing at all,
+ * which reads as secret. Only the KIND is used: no value is bound.
+ */
+function childParameterInputs(
+  template: CloudFormationTemplate,
+  passed: ReadonlyMap<string, PassedParameterClass>
+): (name: string) => ParameterInput {
+  const declared = isPlainObject(template.Parameters) ? template.Parameters : {};
+  const inputs = new Map<string, ParameterInput>();
+  for (const name of Object.keys(declared)) {
+    const definition = declared[name] as unknown;
+    const noEcho =
+      isPlainObject(definition) &&
+      (definition['NoEcho'] === true || definition['NoEcho'] === 'true');
+    if (noEcho) {
+      inputs.set(name, { kind: 'secret' });
+    } else if (passed.has(name)) {
+      const passedClass = passed.get(name);
+      inputs.set(
+        name,
+        passedClass === 'clean'
+          ? { kind: 'value', value: undefined }
+          : passedClass === 'unknown'
+            ? { kind: 'unknown' }
+            : { kind: 'secret' }
+      );
+    } else if (
+      isPlainObject(definition) &&
+      Object.hasOwn(definition, 'Default') &&
+      !carriesSecretValue(definition['Default'], [])
+    ) {
+      inputs.set(name, { kind: 'value', value: definition['Default'] });
+    } else {
+      inputs.set(name, { kind: 'secret' });
+    }
+  }
+  return (name) => inputs.get(name) ?? { kind: 'secret' };
+}
+
+function taintClass(taint: Taint): NestedOutputClass {
+  return taint === 'clean' ? 'clean' : taint === 'tainted' ? 'secret' : 'unread';
+}
+
+function closureClass(closure: 'clean' | 'secret' | 'unknown'): NestedOutputClass {
+  return closure === 'clean' ? 'clean' : closure === 'secret' ? 'secret' : 'unread';
+}
+
+/**
+ * The class of output `outputName` of the child template `loaded`, whose
+ * parameters were passed with `passed`. Never resolves anything: the TAINT of
+ * the output's `Value` (and of its `Condition`'s closure) over the child's
+ * template, following `Outputs.<Key>` reads into grandchildren.
+ */
+async function childOutputClass(
+  loaded: NestedTemplate | undefined,
+  outputName: string,
+  passed: ReadonlyMap<string, PassedParameterClass>,
+  chain: readonly string[],
+  budget: { steps: number }
+): Promise<NestedOutputClass> {
+  if (++budget.steps > MAX_NESTED_OUTPUT_STEPS) return 'unknown';
+  if (loaded === undefined || !isPlainObject(loaded.template)) return 'unknown';
+  if (chain.includes(loaded.identity) || chain.length >= MAX_NESTED_OUTPUT_DEPTH) return 'unknown';
+  const template = loaded.template;
+  const outputs = isPlainObject(template.Outputs) ? template.Outputs : {};
+  // An undeclared name reads `undefined`, a prototype member a function or
+  // `Object.prototype` (which has no own `Value`): `unknown` either way.
+  const output = outputs[outputName] as unknown;
+  if (!isPlainObject(output) || !Object.hasOwn(output, 'Value')) return 'unknown';
+  const scope: OutputScope = {
+    walk: newWalk({
+      template,
+      parameterInput: childParameterInputs(template, passed),
+      // Nothing in the child is resolved here: the value comes from the
+      // parent's own record of the output.
+      resolve: () => Promise.reject(new Error('a nested output is classified, never resolved')),
+    }),
+    childTemplate: loaded.childTemplate,
+    chain: [...chain, loaded.identity],
+    rows: new Set(),
+    budget,
+  };
+  let outputClass: NestedOutputClass = 'clean';
+  if (Object.hasOwn(output, 'Condition')) {
+    const condition = output['Condition'];
+    // An output that exists or not by a condition over a secret is one bit
+    // of it; one over clean inputs that is absent fails the parent's read.
+    outputClass =
+      typeof condition === 'string'
+        ? closureClass(conditionClosure(condition, scope.walk))
+        : 'unknown';
+  }
+  return worseOf(outputClass, await expressionClass(output['Value'], scope));
+}
+
+/** The class of a name a child expression reads (`Ref`, an `Fn::Sub` placeholder). */
+function nameClass(name: string, scope: OutputScope): NestedOutputClass {
+  if (name.startsWith('AWS::')) return 'clean';
+  const walk = scope.walk;
+  if (Object.hasOwn(walk.resources, name)) return taintClass(taintOf(name, walk));
+  if (Object.hasOwn(walk.parameters, name)) {
+    const input = walk.sources.parameterInput(name);
+    return input.kind === 'value' ? 'clean' : input.kind === 'secret' ? 'secret' : 'unread';
+  }
+  return 'secret';
+}
+
+/** The class of an attribute a child expression reads off `target`. */
+async function attributeClass(
+  target: string,
+  attribute: string | undefined,
+  scope: OutputScope
+): Promise<NestedOutputClass> {
+  const walk = scope.walk;
+  if (!Object.hasOwn(walk.resources, target)) return 'secret';
+  if (isNestedStackRow(target, walk)) {
+    if (attribute === undefined || !attribute.startsWith(NESTED_OUTPUT_PREFIX)) return 'unknown';
+    if (scope.rows.has(target)) return 'unknown';
+    const parameters = rowParameters(walk.resources[target]);
+    if (parameters === 'unknown') return 'unknown';
+    // The grandchild's passed values, classified over THIS (the child's)
+    // template by the same taint rules.
+    const inner: OutputScope = { ...scope, rows: new Set([...scope.rows, target]) };
+    const passed = new Map<string, PassedParameterClass>();
+    for (const [name, expression] of Object.entries(parameters)) {
+      const passedClass = await expressionClass(expression, inner);
+      passed.set(
+        name,
+        passedClass === 'clean' ? 'clean' : passedClass === 'unread' ? 'unknown' : 'secret'
+      );
+    }
+    let loaded: NestedTemplate | undefined;
+    try {
+      loaded = scope.childTemplate(target);
+    } catch {
+      loaded = undefined;
+    }
+    return childOutputClass(
+      loaded,
+      attribute.slice(NESTED_OUTPUT_PREFIX.length),
+      passed,
+      scope.chain,
+      scope.budget
+    );
+  }
+  if (hasOpaqueAttributes(target, walk)) return 'unknown';
+  return taintClass(taintOf(target, walk));
+}
+
+/**
+ * The class of one expression inside a child template: the worst class of
+ * every input it reads. Evaluated in order, never concurrently, so the shared
+ * step budget answers the same way every time.
+ */
+async function expressionClass(value: unknown, scope: OutputScope): Promise<NestedOutputClass> {
+  if (typeof value === 'string') {
+    return value.includes(DYNAMIC_REFERENCE_OPEN) ? 'secret' : 'clean';
+  }
+  const all = async (values: readonly unknown[]): Promise<NestedOutputClass> => {
+    let result: NestedOutputClass = 'clean';
+    for (const element of values) result = worseOf(result, await expressionClass(element, scope));
+    return result;
+  };
+  if (Array.isArray(value)) return all(value);
+  if (!isPlainObject(value)) return 'clean';
+  const key = intrinsicKey(value);
+  if (key === undefined) return all(Object.values(value));
+  const operand = value[key];
+  switch (key) {
+    case 'Ref':
+      return typeof operand === 'string' ? nameClass(operand, scope) : 'unknown';
+    case 'Fn::GetAtt': {
+      const target = getAttTarget(operand);
+      if (target === undefined) return 'secret';
+      // An attribute NAME built from an intrinsic is an input too.
+      const attribute = getAttAttribute(operand, target);
+      const nameInput =
+        attribute === undefined && Array.isArray(operand) ? await all(operand.slice(1)) : 'clean';
+      return worseOf(nameInput, await attributeClass(target, attribute, scope));
+    }
+    case 'Fn::Sub': {
+      const text = Array.isArray(operand) ? operand[0] : operand;
+      if (typeof text !== 'string')
+        return worseOf('unknown', await expressionClass(operand, scope));
+      const vars = Array.isArray(operand) && isPlainObject(operand[1]) ? operand[1] : {};
+      let result: NestedOutputClass = text.includes(DYNAMIC_REFERENCE_OPEN) ? 'secret' : 'clean';
+      result = worseOf(result, await all(Object.values(vars)));
+      for (const name of subPlaceholders(text)) {
+        if (Object.hasOwn(vars, name)) continue;
+        const dot = name.indexOf('.');
+        result = worseOf(
+          result,
+          dot > 0 && !name.startsWith('AWS::')
+            ? await attributeClass(name.slice(0, dot), name.slice(dot + 1), scope)
+            : nameClass(name, scope)
+        );
+      }
+      return result;
+    }
+    case 'Fn::If': {
+      if (!Array.isArray(operand) || operand.length !== 3 || typeof operand[0] !== 'string') {
+        return worseOf('unknown', await expressionClass(operand, scope));
+      }
+      // No verdict of the child's is evaluated: both branches must be clean,
+      // and so must everything the condition reads.
+      return worseOf(
+        closureClass(conditionClosure(operand[0], scope.walk)),
+        await all(operand.slice(1))
+      );
+    }
+    case 'Fn::ImportValue':
+    case 'Fn::GetStackOutput':
+      return 'secret';
+    default:
+      return expressionClass(operand, scope);
+  }
+}
+
+/**
+ * The class of output `attribute` (`Outputs.<Key>`) of the nested stack
+ * `stackLogicalId` declares in `sources.template` (go-to-k/cdkd#4565). The
+ * values the row passes are classified as {@link classifyPassedParameters}
+ * classifies them, the same class the child engine is handed; the child's
+ * tree comes from {@link MaskedInputSources.childTemplate}. Never resolves
+ * anything in the child and reads no child state, so it is the same before
+ * and after the child runs.
+ */
+export async function nestedStackOutputClass(
+  stackLogicalId: string,
+  attribute: string | undefined,
+  sources: MaskedInputSources
+): Promise<NestedOutputClass> {
+  return stackOutputClass(stackLogicalId, attribute, newWalk(sources));
+}
+
+async function stackOutputClass(
+  stackLogicalId: string,
+  attribute: string | undefined,
+  walk: Walk
+): Promise<NestedOutputClass> {
+  const loader = walk.sources.childTemplate;
+  if (loader === undefined || !isNestedStackRow(stackLogicalId, walk)) return 'unknown';
+  if (attribute === undefined || !attribute.startsWith(NESTED_OUTPUT_PREFIX)) return 'unknown';
+  // A row whose passed values read this row's own outputs is a cycle
+  // CloudFormation refuses; it is not followed.
+  if (walk.stackChain.has(stackLogicalId)) return 'unknown';
+  if (++walk.budget.steps > MAX_NESTED_OUTPUT_STEPS) return 'unknown';
+  const parameters = rowParameters(walk.resources[stackLogicalId]);
+  if (parameters === 'unknown') return 'unknown';
+  const passed = await classifyPassed(parameters, walk.sources, {
+    stackChain: new Set([...walk.stackChain, stackLogicalId]),
+    budget: walk.budget,
+  });
+  let loaded: NestedTemplate | undefined;
+  try {
+    loaded = loader(stackLogicalId);
+  } catch {
+    loaded = undefined;
+  }
+  return childOutputClass(
+    loaded,
+    attribute.slice(NESTED_OUTPUT_PREFIX.length),
+    passed,
+    [],
+    walk.budget
+  );
+}
+
+/**
+ * A masked property's read of a nested stack's output: resolved, through the
+ * value checks every input takes (a `***`, a reference, a value whose read
+ * recorded a secret are still kept), only when the output is classified clean.
+ */
+async function nestedOutputInput(
+  stackLogicalId: string,
+  attribute: string | undefined,
+  node: unknown,
+  walk: Walk
+): Promise<InputForm> {
+  const outputClass = await stackOutputClass(stackLogicalId, attribute, walk);
+  if (outputClass === 'unread') throw new UnknownInput();
+  if (outputClass !== 'clean') return { form: node, concrete: false };
+  return resolvedInput(node, walk);
 }
 
 /**
@@ -720,12 +1145,22 @@ export async function classifyPassedParameters(
   parameters: unknown,
   sources: MaskedInputSources
 ): Promise<Map<string, PassedParameterClass>> {
+  return classifyPassed(parameters, sources, { stackChain: new Set(), budget: { steps: 0 } });
+}
+
+async function classifyPassed(
+  parameters: unknown,
+  sources: MaskedInputSources,
+  nested: { stackChain: ReadonlySet<string>; budget: { steps: number } }
+): Promise<Map<string, PassedParameterClass>> {
   const classes = new Map<string, PassedParameterClass>();
   if (!isPlainObject(parameters)) return classes;
   for (const [name, expression] of Object.entries(parameters)) {
     let passedClass: PassedParameterClass;
     try {
-      passedClass = (await inputForm(expression, newWalk(sources))).concrete ? 'clean' : 'secret';
+      passedClass = (await inputForm(expression, newWalk(sources, nested))).concrete
+        ? 'clean'
+        : 'secret';
     } catch {
       passedClass = 'unknown';
     }
