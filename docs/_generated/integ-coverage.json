@@ -1154,13 +1154,17 @@
       "resourceType": "AWS::EC2::EIP",
       "integs": [
         "ec2-vpc",
-        "export"
+        "export",
+        "vpc-nat-gateway"
       ],
       "signals": {
         "ec2-vpc": [
           "l1"
         ],
         "export": [
+          "l1"
+        ],
+        "vpc-nat-gateway": [
           "l1"
         ]
       }

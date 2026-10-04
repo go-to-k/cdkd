@@ -23,6 +23,10 @@
 #      carries the submitted `ConnectivityType` — i.e. the CC route really
 #      provisioned it rather than erroring past the un-wired property.
 #
+# PLUS issue #4447 (Phases 1b / 1c): `cdkd drift` reads every Elastic IP back
+# (both compare clean after the deploy), and a standalone EIP released out of
+# band reports `deleted` with exit 1 rather than "drift unknown".
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -77,6 +81,7 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${DRIFT_JSON_FILE:-}"
   destroy_rc=0
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
@@ -222,6 +227,60 @@ if [ "${DRAIN_CONNECTIVITY}" != "private" ]; then
   exit 1
 fi
 echo "    OK: drain NAT gateway is available with ConnectivityType=private (CC route forwarded the property map)"
+
+# --- Phase 1b: drift reads every Elastic IP back (issue #4447) --------------
+# Before #4447 `EC2Provider.readCurrentState` had no EIP arm, so both EIPs (the
+# NAT's and the standalone `DriftProbeEip`) landed in `notSupported` ("drift
+# unknown"), and one released out of band still read that way with exit 0.
+EIP_TYPE="AWS::EC2::EIP"
+EIP_IDS=$(echo "${STATE}" | jq -r "[.resources | to_entries[] | select(.value.resourceType == \"${EIP_TYPE}\") | .key] | sort | join(\" \")")
+EIP_COUNT=$(echo "${STATE}" | jq "[.resources[] | select(.resourceType == \"${EIP_TYPE}\")] | length")
+if [ "${EIP_COUNT}" -ne 2 ]; then
+  echo "FAIL: expected 2 ${EIP_TYPE} resources in state (the NAT's + DriftProbeEip), got ${EIP_COUNT}: '${EIP_IDS}'" >&2
+  exit 1
+fi
+PROBE_ID=$(echo "${STATE}" | jq -r "[.resources | to_entries[] | select(.value.resourceType == \"${EIP_TYPE}\") | select(.key | startswith(\"DriftProbeEip\")) | .key] | first // \"\"")
+PROBE_PHYSICAL=$(echo "${STATE}" | jq -r --arg id "${PROBE_ID}" '.resources[$id].physicalId // ""')
+PROBE_ALLOC="${PROBE_PHYSICAL#*|}"
+case "${PROBE_ALLOC}" in eipalloc-*) ;; *) echo "FAIL: DriftProbeEip physicalId '${PROBE_PHYSICAL}' carries no allocation id" >&2; exit 1;; esac
+
+drift_json() { # usage: drift_json <outfile>; echoes the exit code
+  local rc=0
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"$1" || rc=$?
+  echo "${rc}"
+}
+DRIFT_JSON_FILE=$(mktemp)
+echo "==> Phase 1b: cdkd drift --json on the freshly deployed stack"
+DRIFT_RC=$(drift_json "${DRIFT_JSON_FILE}")
+if ! jq -e 'type == "array" and length == 1' "${DRIFT_JSON_FILE}" >/dev/null; then
+  echo "FAIL: drift --json (rc=${DRIFT_RC}) did not print one stack report:" >&2
+  cat "${DRIFT_JSON_FILE}" >&2
+  exit 1
+fi
+for id in ${EIP_IDS}; do
+  if ! jq -e --arg id "${id}" '[.[0].clean[]?.logicalId] | index($id) != null' "${DRIFT_JSON_FILE}" >/dev/null; then
+    echo "FAIL: ${EIP_TYPE} ${id} is not reported clean after a fresh deploy (drift rc=${DRIFT_RC}); report:" >&2
+    jq '.[0] | {drifted, deleted, notSupported, notCompared}' "${DRIFT_JSON_FILE}" >&2
+    exit 1
+  fi
+done
+echo "    OK: both Elastic IPs were read back and compared clean"
+
+echo "==> Phase 1c: release ${PROBE_ID} (${PROBE_ALLOC}) out of band, then drift"
+aws ec2 release-address --allocation-id "${PROBE_ALLOC}" --region "${REGION}"
+DRIFT_RC=$(drift_json "${DRIFT_JSON_FILE}")
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  echo "FAIL: drift after releasing ${PROBE_ID} exited ${DRIFT_RC}, expected 1 (a deleted resource is drift)" >&2
+  cat "${DRIFT_JSON_FILE}" >&2
+  exit 1
+fi
+if ! jq -e --arg id "${PROBE_ID}" '[.[0].deleted[]?.logicalId] | index($id) != null' "${DRIFT_JSON_FILE}" >/dev/null; then
+  echo "FAIL: ${PROBE_ID} released out of band is not in the report's 'deleted' list:" >&2
+  jq '.[0] | {drifted, deleted, notSupported, notCompared}' "${DRIFT_JSON_FILE}" >&2
+  exit 1
+fi
+rm -f "${DRIFT_JSON_FILE}"
+echo "    OK: ${PROBE_ID} released out of band reports deleted, exit 1"
 
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy (SDK delete for one gateway, CC delete for the other)"
