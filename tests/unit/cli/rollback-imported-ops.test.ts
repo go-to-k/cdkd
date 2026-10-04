@@ -663,3 +663,105 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(provider.delete).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * go-to-k/cdkd#4552: a failed CREATE recorded `old-phys`, but state now names
+ * another resource under the id. With an import mark (#4523) it is displaced;
+ * without one (an import by an older binary) it used to plan "left nothing to
+ * revert" and exit 0, leaving `old-phys` unflagged. The three arms side by side.
+ */
+describe('--revert-failed: a failed CREATE whose recorded physical id state no longer names (go-to-k/cdkd#4552)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    recorded.events.length = 0;
+    provider.delete.mockResolvedValue(undefined);
+  });
+
+  const failedCreate = {
+    logicalId: 'Topic',
+    changeType: 'CREATE',
+    resourceType: TOPIC,
+    physicalId: 'old-phys',
+    attemptedProperties: topicRecord('deployed').properties,
+    provisionedBy: 'sdk',
+  };
+  const NOOP = 'left nothing to revert';
+  const MISMATCH = 'not the resource state tracks under this id';
+  const warnLines = (): string[] =>
+    (logger['warn'] as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+  const skipEvents = () =>
+    recorded.events.filter((e) => e['eventType'] === 'ROLLBACK_RESOURCE_SKIPPED');
+
+  it('no import mark: planned and warned as a mismatch, nothing deleted, exit 2', async () => {
+    install({ Topic: topicRecord('imported') }, [
+      { operations: [], failedOperations: [failedCreate] },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(backend['deleteState']).not.toHaveBeenCalled();
+    const plan = infoLines().find((l) => l.includes(' Topic ('));
+    expect(plan).toContain(MISMATCH);
+    expect(plan).toContain('old-phys');
+    expect(plan).not.toContain(NOOP);
+    expect(warnLines().some((l) => l.includes('Topic') && l.includes('it recorded old-phys'))).toBe(true);
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as { exitCode?: number }).exitCode).toBe(2);
+    expect((thrown as Error).message).toContain('1 skipped');
+    expect(skipEvents()).toHaveLength(1);
+    expect(skipEvents()[0]).not.toHaveProperty('physicalId');
+  });
+
+  it('no import mark: a secret-derived recorded id is masked in the plan and warn lines (go-to-k/cdkd#4037)', async () => {
+    install({ Topic: topicRecord('imported') }, [
+      {
+        operations: [],
+        failedOperations: [
+          {
+            ...failedCreate,
+            physicalId: 'name-from-a-secret',
+            attemptedProperties: { TopicName: '{{resolve:secretsmanager:app:SecretString:topic}}' },
+          },
+        ],
+      },
+    ]);
+
+    await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+
+    const lines = [...infoLines(), ...warnLines()];
+    // Both lines are reached (plan and replay), so the absence below is real.
+    expect(infoLines().some((l) => l.includes(' Topic (') && l.includes(MISMATCH))).toBe(true);
+    expect(warnLines().some((l) => l.includes('Topic') && l.includes(MISMATCH))).toBe(true);
+    expect(lines.some((l) => l.includes('name-from-a-secret'))).toBe(false);
+  });
+
+  it('import mark (#4523): still the displaced path, not the new mismatch arm, exit 2', async () => {
+    install({ Topic: topicRecord('imported') }, [
+      { operations: [], failedOperations: [failedCreate], importedResources: [MARK] },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+
+    expect(provider.delete).not.toHaveBeenCalled();
+    const plan = infoLines().find((l) => l.includes(' Topic ('));
+    expect(plan).toContain('cdkd import has since replaced');
+    expect(plan).not.toContain(MISMATCH);
+    expect((thrown as { exitCode?: number }).exitCode).toBe(2);
+    expect((thrown as Error).message).toContain('1 skipped');
+    expect(skipEvents()).toHaveLength(1);
+  });
+
+  it('control: the record already gone is still a silent no-op, exit 0', async () => {
+    install({}, [{ operations: [], failedOperations: [failedCreate] }]);
+
+    const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+
+    expect(thrown).toBeUndefined();
+    expect(provider.delete).not.toHaveBeenCalled();
+    const plan = infoLines().find((l) => l.includes(' Topic ('));
+    expect(plan).toContain(NOOP);
+    expect(warnLines().filter((l) => l.includes('Topic'))).toEqual([]);
+    expect(skipEvents()).toEqual([]);
+  });
+});

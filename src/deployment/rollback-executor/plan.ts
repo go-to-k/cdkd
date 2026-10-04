@@ -354,7 +354,11 @@ export function classifyFailedOp(
     // `prepareCreateRollbackFinalSnapshot`.
     if (!op.physicalId) return 'skip-failed-unknown';
     if (!current) return 'skip-failed-noop'; // already cleaned up (re-run)
-    if (current.physicalId !== op.physicalId) return 'skip-failed-noop';
+    // go-to-k/cdkd#4552: state names another resource under this id, so the
+    // one the failed CREATE recorded may still exist, untracked. Not deleted
+    // (state does not own it), but warned — `skip-mismatch`'s twin. An id a
+    // marked `cdkd import` adopted never reaches here (`splitImportedOps`).
+    if (current.physicalId !== op.physicalId) return 'skip-failed-mismatch';
     // The CURRENT record's DeletionPolicy governs this delete exactly as it
     // governs the COMPLETED-CREATE rollback above (issue #1362). Reaching
     // here means AWS did provision the resource (a physical id is recorded

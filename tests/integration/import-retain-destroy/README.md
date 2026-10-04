@@ -37,7 +37,14 @@ A second stack, `CdkdImportRollback`, is deployed by cdkd only. Its parameter
 3. `cdkd rollback --force` must exit 0 and leave the hand-made parameter in
    place, with its value and its state record. Before the fix, the replay
    deleted it.
-4. `cdkd destroy --force` deletes it, followed by gone-probes.
+4. Issue [#4552](https://github.com/go-to-k/cdkd/issues/4552): a stray
+   parameter is created by hand, and R2's journal is re-uploaded as one
+   segment holding a failed CREATE of `Named` that recorded the stray
+   parameter, with the import mark stripped (the shape a cdkd older than #4547
+   leaves). `cdkd rollback --revert-failed --force` must exit 2, name the stray
+   parameter as needing manual attention, and delete neither parameter. Before
+   the fix, it planned "left nothing to revert" and exited 0.
+5. `cdkd destroy --force` deletes it, followed by gone-probes.
 
 ## Run
 

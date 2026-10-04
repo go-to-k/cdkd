@@ -116,7 +116,9 @@ deploy attempted), and `--revert-failed` opts into acting on it:
 | --- | --- |
 | UPDATE | Force-reverted to its pre-deploy properties. The journal records the *attempted* properties, so patch-based providers generate a real undo diff. |
 | UPDATE that changed the resource's `Type` | Skipped with a warning; it was a replacement in flight, and there is no in-place revert of one. |
-| CREATE that recorded a physical id | Deleted, honouring its `DeletionPolicy` — see [DeletionPolicy on a rolled-back CREATE](#deletionpolicy-on-a-rolled-back-create). |
+| CREATE that recorded a physical id, which state still records | Deleted, honouring its `DeletionPolicy` — see [DeletionPolicy on a rolled-back CREATE](#deletionpolicy-on-a-rolled-back-create). |
+| CREATE that recorded a physical id, with no state record left | Nothing to do — already cleaned up (a re-run). |
+| CREATE that recorded a physical id other than the one state now records under its logical id | Skipped with a warning (exit `2`); nothing is deleted. The resource it recorded may still exist, untracked: the plan line names it (`recorded <its physical id>, which is not the resource state tracks under this id; not reverted, needs manual attention`). Reached when another resource took the id without an import mark, such as a `cdkd import` by an older cdkd, or when a newer segment's reverted replacement re-created the resource under a new physical id (the recorded one is then usually already gone); a marked import is reported as in [Interaction with `cdkd import`](#interaction-with-cdkd-import). |
 | CREATE that recorded no physical id | Skipped with a warning; there is nothing addressable to act on. A CREATE cdkd refused before anything was applied (another resource already holds its explicit name) is not journaled at all. |
 | DELETE | Nothing to do — the resource is still in place. |
 
@@ -360,6 +362,12 @@ would otherwise match the journal's CREATE, and the rollback would delete it.
 Segments that later deploys add carry no mark, and their operations replay as
 usual. If the import cannot read or write the journal, it refuses and writes
 no state.
+
+A cdkd older than the mark wrote none. Under `--revert-failed`, a failed
+CREATE whose physical id such an import replaced is still left alone with a
+warning, and the run exits 2 (see
+[`--revert-failed`](#revert-failed-revert-the-resource-whose-operation-failed-mid-deploy));
+the plan line then cannot say that an import caused it.
 
 ## Exit codes
 

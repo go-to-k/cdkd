@@ -412,7 +412,7 @@ describe('classifyFailedOp (#1198)', () => {
     expect(classifyFailedOp(op, {})).toBe('skip-failed-noop');
   });
 
-  it('failed CREATE whose state record has a DIFFERENT physical id → skip-failed-noop', () => {
+  it('failed CREATE whose state record has a DIFFERENT physical id → skip-failed-mismatch (go-to-k/cdkd#4552)', () => {
     const op: FailedOperation = {
       logicalId: 'B',
       changeType: 'CREATE',
@@ -420,7 +420,7 @@ describe('classifyFailedOp (#1198)', () => {
       physicalId: 'phys-B',
     };
     expect(classifyFailedOp(op, { B: res({ physicalId: 'phys-other' }) })).toBe(
-      'skip-failed-noop'
+      'skip-failed-mismatch'
     );
   });
 
@@ -2499,7 +2499,9 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
       // physical resource must not turn into an orphan of that resource.
       const state = stateWithPolicy('AWS::EC2::Volume', 'Retain');
       state['Res']!.physicalId = 'other-phys';
-      expect(classifyFailedOp(failedCreate('AWS::EC2::Volume'), state)).toBe('skip-failed-noop');
+      expect(classifyFailedOp(failedCreate('AWS::EC2::Volume'), state)).toBe(
+        'skip-failed-mismatch'
+      );
     });
   });
 
