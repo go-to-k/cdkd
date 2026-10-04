@@ -93,7 +93,7 @@ gh issue create -t 'fix(provider): ...' \
 ```
 
 **A `next` reason must still be true when someone reads it.** Write it as a
-condition a reader can CHECK (`PR #N holds this file`, `the fix belongs in
+condition a reader can CHECK (`PR #N holds the lines this fix needs`, `the fix belongs in
 <repo>`), never as a state of the lane ("the files are cold", "the session
 ended"). Check it before writing EITHER value, the held-file query above once
 per file the fix edits: one whose needed lines an open PR this session did not
