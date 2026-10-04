@@ -34,7 +34,7 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importO
   return {
     ...orig,
     getAccountInfo: () =>
-      Promise.resolve({ accountId: '111122223333', region: 'us-east-1', fabricated: false }),
+      Promise.resolve({ accountId: '111122223333', region: 'us-east-1' }),
   };
 });
 

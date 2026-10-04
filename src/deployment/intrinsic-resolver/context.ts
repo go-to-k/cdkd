@@ -802,19 +802,6 @@ export interface AwsAccountInfo {
   accountId: string;
   region: string;
   partition: string;
-  /**
-   * `true` when STS could not be reached and `accountId` is the hardcoded
-   * `123456789012` fallback rather than this caller's real account (issue
-   * #1728 review; the fallback itself is issue #1730).
-   *
-   * Purely ADDITIVE and absent on the success path, so every existing consumer
-   * is unaffected. It exists because the fabricated id is INDISTINGUISHABLE
-   * from a real one downstream: an ARN built from it carries no wildcard, so
-   * `isPlaceholderArn` cannot catch it, and a consumer receives a
-   * confidently-wrong value. A caller that PERSISTS an ARN into state must
-   * consult this and refuse — see `AppSyncProvider.childImportAttributes`.
-   */
-  fabricated?: boolean;
 }
 
 /**
@@ -833,11 +820,10 @@ export interface AwsAccountInfo {
  */
 export interface CachedAccountIdentity {
   accountId: string;
-  fabricated?: boolean;
 }
 
 /**
- * The real (non-fabricated) account identity, per CREDENTIAL IDENTITY: keyed by
+ * The real account identity, per CREDENTIAL IDENTITY: keyed by
  * {@link credentialFingerprint} of the active `AwsClients`' credential
  * configuration (issue [#3660](https://github.com/go-to-k/cdkd/issues/3660)).
  *
@@ -845,7 +831,7 @@ export interface CachedAccountIdentity {
  * entry. A LIBRARY caller can install `AwsClients` for account A, deploy, then
  * install account B's in the same process (or run both in per-stack scopes);
  * keyed by nothing, B's `AWS::AccountId` and every ARN built from it resolved
- * as A's. The fabricated window and the in-flight slot in `account-drain.ts` share the key.
+ * as A's. The in-flight slot in `account-drain.ts` shares the key.
  */
 export const cachedAccountIdentities = new Map<string, CachedAccountIdentity>();
 

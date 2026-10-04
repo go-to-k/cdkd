@@ -360,7 +360,11 @@ export function crossStackSourceKey(source: Record<string, unknown>): string | u
   // (`sub-${Child.Outputs.Foo}-end`) resolves to a value that merely EMBEDS the
   // producer's token rather than BEING it, and `recordCrossStackExpression` is
   // whole-token only -- so such a leaf has no single expression to persist and
-  // is refused here. `${!Literal}` is CloudFormation's ESCAPE and never resolves
+  // is refused here. Its placeholder is positioned instead by
+  // `positionByParameterPlaceholders` (`placeholder-positions.ts`, issue
+  // #2298), which keys the PLACEHOLDER rather than the leaf, through this same
+  // function, and checks that the template reassembles the resolved leaf.
+  // `${!Literal}` is CloudFormation's ESCAPE and never resolves
   // anything, so it refuses on the `!` group. A `${Child}` Ref form refuses
   // because `splitGetAttStringForm` requires a dotted attribute -- there is no
   // `Fn::GetAtt` writer behind it.

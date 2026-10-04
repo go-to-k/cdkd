@@ -690,10 +690,11 @@ Anything else in the intrinsic leaves it **unresolved**: a `Ref` to a
 resource or parameter, `Fn::GetAtt`, `Fn::Select`, `AWS::StackName`, or a
 `{{resolve:...}}` reference. The name route then declines that resource as
 before, and stage 2 or `--resource` adopts it. When `sts:GetCallerIdentity`
-fails and `AWS_ACCOUNT_ID` is not set, names that need the account are left
-unresolved rather than built from a placeholder account. This only changes
-what the lookup sees: the properties recorded in state are resolved from the
-template as before.
+fails and `AWS_ACCOUNT_ID` is unset or not a 12-digit account id, names that
+need the account are left unresolved. The properties recorded in state are
+resolved from the template separately, and if any of them needs the account
+that resolution fails too: cdkd warns and records that resource's properties
+as the template wrote them, intrinsics included.
 
 ### Override-only — no standalone identity / list API
 

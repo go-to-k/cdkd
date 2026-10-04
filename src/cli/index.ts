@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { enableUserCompileCache } from './compile-cache.js';
 import { installPipeCloseHandler } from './pipe-close-handler.js';
 import { runCli } from './run-cli.js';
 import { getCdkdVersion, isVersionOnlyInvocation } from '../version.js';
@@ -63,6 +64,13 @@ async function main(): Promise<void> {
     console.log(getCdkdVersion());
     return;
   }
+
+  // Every command evaluates the same large module graph (the command tree,
+  // the externalised @aws-sdk/* packages), so Node's on-disk compile cache
+  // pays for itself from the second run. Enabled BEFORE that graph is
+  // imported, since only modules loaded afterwards are cached; the directory
+  // choice is in compile-cache.ts.
+  enableUserCompileCache();
 
   const { buildProgram } = await import('./program.js');
   const program = buildProgram();

@@ -58,8 +58,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     ssm: { send: mockSsmSend, config: { region: () => Promise.resolve(ssmRegion.value) } },
     // `getAccountInfo` resolves the account through STS; the SSM provider's
-    // constructed ARN needs a NON-fabricated answer (a response carrying no
-    // `Account` is flagged `fabricated` and the provider then refuses).
+    // constructed ARN needs a real answer (a response carrying no `Account`
+    // makes `getAccountInfo` refuse, issue #1730, and the provider omits it).
     sts: { send: mockStsSend },
     ec2: { send: vi.fn() },
   }),
@@ -123,8 +123,8 @@ describe('issue #1824 — uncached ARN attributes resolve through Fn::GetAtt', (
     mockRdsSend.mockReset();
     mockSsmSend.mockReset();
     mockStsSend.mockReset();
-    // Re-seed the default (non-fabricated) STS answer after the reset; the
-    // fabricated-account test overrides it with a rejection of its own.
+    // Re-seed the default (real) STS answer after the reset; the
+    // unknown-account test overrides it with a rejection of its own.
     mockStsSend.mockResolvedValue({
       Account: '111122223333',
       Arn: 'arn:aws:iam::111122223333:user/test',
@@ -612,11 +612,10 @@ describe('issue #1824 — uncached ARN attributes resolve through Fn::GetAtt', (
   describe('the constructed ARN honors the guards the repo already has', () => {
     const TYPE = 'AWS::SSM::Parameter';
 
-    it('REFUSES to record an ARN built from a fabricated account (issues #1730 / #1746)', async () => {
-      // `getAccountInfo` catches its own STS failure and answers the hardcoded
-      // placeholder `123456789012`, flagged `fabricated`. That value carries no
-      // wildcard, so `isPlaceholderArn` cannot catch it downstream — the ARN
-      // must therefore NOT be recorded at all. Degrading to an absent attribute
+    it('records NO ARN when STS cannot name the account (issues #1730 / #1746)', async () => {
+      // `getAccountInfo` REJECTS when STS fails and `AWS_ACCOUNT_ID` is unset,
+      // and the parameter is already committed, so the ARN must be omitted
+      // rather than failing the create. Degrading to an absent attribute
       // restores the loud shape-guard failure, never a silently wrong value.
       mockStsSend.mockReset();
       mockStsSend.mockRejectedValue(new Error('STS unreachable'));
@@ -632,7 +631,7 @@ describe('issue #1824 — uncached ARN attributes resolve through Fn::GetAtt', (
       expect(Object.keys(result.attributes ?? {})).not.toContain('Arn');
 
       // ...and the resulting Fn::GetAtt fails LOUDLY rather than shipping a
-      // fabricated ARN to the consumer.
+      // wrong ARN to the consumer.
       const context = mkContext('MyParam', TYPE, result.physicalId, result.attributes ?? {});
       await expect(
         resolver.resolve({ 'Fn::GetAtt': ['MyParam', 'Arn'] }, context)
@@ -644,8 +643,8 @@ describe('issue #1824 — uncached ARN attributes resolve through Fn::GetAtt', (
       // inner cleanup block that would otherwise delete the parameter. A throw
       // here would therefore surface as a failed create over a missing ATTRIBUTE
       // and leave an orphan that makes the next deploy hit
-      // `ParameterAlreadyExists` (the issue #376 class). Simulate the one thing
-      // `getAccountInfo` does NOT catch: a rejecting region resolver.
+      // `ParameterAlreadyExists` (the issue #376 class). Simulate the other
+      // reachable rejection: the region resolver.
       const boom = vi.fn().mockRejectedValue(new Error('region resolver exploded'));
 
       mockSsmSend.mockResolvedValueOnce({}); // PutParameter

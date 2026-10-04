@@ -571,6 +571,24 @@ exist and still be billing. What causes a skip, what each command does with
 one, and how to clear it are on
 [Skipped resources on destroy](cli-destroy.md#skipped-resources-on-destroy).
 
+## Startup compile cache
+
+cdkd turns on Node.js's on-disk compile cache before it loads its command tree,
+so every run after the first starts faster: V8 reuses compiled code instead of
+compiling each module again. An upgraded cdkd never runs stale cached code.
+
+The cache lives in your own cache directory, `$XDG_CACHE_HOME/cdkd/compile-cache`
+or `~/.cache/cdkd/compile-cache`, never in the shared OS temp directory: Node
+checks cache entries with a checksum, not a signature, so a directory other
+users can write to is not a safe place for code cdkd loads. A relative
+`XDG_CACHE_HOME` is ignored, since it would point into the current project.
+With no home directory, the cache stays off.
+
+| To | Set |
+| --- | --- |
+| turn the cache off | `NODE_DISABLE_COMPILE_CACHE=1` |
+| keep it somewhere else | `NODE_COMPILE_CACHE=<directory>` (pick one only you can write to) |
+
 ## `local *` (run AWS workloads locally)
 
 The `cdkd local` command family runs AWS workloads on the developer's machine —

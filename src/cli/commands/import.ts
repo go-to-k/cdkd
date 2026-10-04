@@ -14,7 +14,7 @@ import { getLogger } from '../../utils/logger.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { AccountIdUnavailableError, withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
@@ -1456,11 +1456,11 @@ function isIntrinsicShape(value: Record<string, unknown>): boolean {
  *     runs after it, still replaces an overridden `{Ref: <X>}` inside an
  *     intrinsic, as it did before; the provider then sees an intrinsic either
  *     way.)
- *   - `AWS::AccountId` is resolved only when STS answered: `getAccountInfo`'s
- *     `fabricated` placeholder account would otherwise name a lookup after an
- *     account that is not the caller's, and a resource that happens to carry
- *     that name would be adopted. STS is asked only when an accepted
- *     intrinsic names the account.
+ *   - `AWS::AccountId` is resolved only when the account is known: when
+ *     `getAccountInfo` refuses (STS cannot name it and `AWS_ACCOUNT_ID` is
+ *     unset, issue #1730) the intrinsic is left as written, so the name route
+ *     declines it and stage 2 or `--resource` adopts the resource. STS is
+ *     asked only when an accepted intrinsic names the account.
  *
  * Plain objects and arrays are walked. Only what the PROVIDER sees changes:
  * state's `properties` are still resolved from the raw template by
@@ -1488,9 +1488,14 @@ export async function resolvePseudoParameterIntrinsics(
       if (!collectPseudoParameterClosure(obj, needs)) return node;
       if (needs.has('AWS::AccountId')) {
         // Memoized per credential identity by `getAccountInfo` itself.
-        const account = await getAccountInfo();
-        if (account.fabricated) return node;
-        values.set('AWS::AccountId', account.accountId);
+        let accountId: string;
+        try {
+          accountId = (await getAccountInfo()).accountId;
+        } catch (error) {
+          if (error instanceof AccountIdUnavailableError) return node;
+          throw error;
+        }
+        values.set('AWS::AccountId', accountId);
       }
       const resolved = evaluatePseudoParameterClosure(obj, values);
       return resolved.includes(DYNAMIC_REFERENCE_OPENER) ? node : resolved;
