@@ -51,6 +51,7 @@ import {
 import { withIndeterminateGuard } from '../../deployment/delete-outcome.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
+import { withoutServerErrorRetries } from './ambiguous-create.js';
 
 /**
  * CFn `Tags` entry shape (`[{Key, Value}]`). CodeCommit's SDK tag APIs use a
@@ -302,6 +303,7 @@ function readRepoList(kind: RepoListKind, value: unknown, side: RepoListSide): R
  */
 export class CodeCommitRepositoryProvider implements ResourceProvider {
   private client?: CodeCommitClient;
+  private createClient?: CodeCommitClient;
   private s3Client?: S3Client;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('CodeCommitRepositoryProvider');
@@ -340,6 +342,36 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       });
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateRepository` and the seed `CreateCommit` go through: SDK
+   * retries on, except a 5xx (`withoutServerErrorRetries`, issue #2080).
+   * Separate so every other call keeps the full SDK retry.
+   *
+   * Neither call carries an idempotency token, but neither can DUPLICATE: a
+   * repository name is unique per account and region, and a `CreateCommit`
+   * without a parent commit is refused once the branch exists. What the SDK's
+   * own replay of a 5xx whose request had succeeded does instead is FAIL the
+   * replay where cdkd cannot see why -- a `RepositoryNameExistsException`
+   * read as somebody else's repository, or a `ParentCommitIdRequiredException`
+   * that is not retried, after `create()`'s post-create catch has deleted
+   * the repository.
+   * Refused here, the 5xx reaches the deploy engine's retry, which marks the
+   * create as possibly replayed: a later name collision is then never
+   * credited to another holder (`withRetry`, #3978), and a failed seed
+   * commit, its repository deleted by that catch, is created again.
+   */
+  private getCreateClient(): CodeCommitClient {
+    if (!this.createClient) {
+      this.createClient = withoutServerErrorRetries(
+        new CodeCommitClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
+    }
+    return this.createClient;
   }
 
   private getS3Client(): S3Client {
@@ -399,7 +431,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       const description = properties['RepositoryDescription'] as string | undefined;
       const kmsKeyId = properties['KmsKeyId'] as string | undefined;
 
-      const response = await this.getClient().send(
+      const response = await this.getCreateClient().send(
         new CreateRepositoryCommand({
           repositoryName,
           ...(description !== undefined ? { repositoryDescription: description } : {}),
@@ -1437,7 +1469,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       return;
     }
 
-    await this.getClient().send(
+    await this.getCreateClient().send(
       new CreateCommitCommand({
         repositoryName,
         branchName,
