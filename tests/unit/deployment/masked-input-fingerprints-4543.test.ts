@@ -121,7 +121,7 @@ describe('parameterInputsFor', () => {
     ).toEqual({ kind: 'unknown' });
   });
 
-  it('in a nested child with no parent class: every supplied value is unknown, a Default-equal one included', () => {
+  it('in a nested child with no parent class: every supplied value is kept as written, a Default-equal one included', () => {
     const child: CloudFormationTemplate = {
       Parameters: {
         Embeds: { Type: 'String' },
@@ -137,13 +137,13 @@ describe('parameterInputsFor', () => {
       nestedChild: true,
       supplied: { Embeds: 'xaby', Supplied: 'other', AtDefault: 'default' },
     });
-    // Supplied but never classified (a rollback replay): neither hashed nor
-    // compared, whatever the value.
-    expect(parameterInput('Embeds')).toEqual({ kind: 'unknown' });
-    expect(parameterInput('Supplied')).toEqual({ kind: 'unknown' });
+    // Supplied but never classified (a rollback replay): kept as written,
+    // whatever the value.
+    expect(parameterInput('Embeds')).toEqual({ kind: 'secret' });
+    expect(parameterInput('Supplied')).toEqual({ kind: 'secret' });
     // Equal to the Default, but PASSED: comparing it with the Default would
     // let the hash confirm "the passed value equals the Default".
-    expect(parameterInput('AtDefault')).toEqual({ kind: 'unknown' });
+    expect(parameterInput('AtDefault')).toEqual({ kind: 'secret' });
     // Not supplied at all: the child's Default, template text, is a value.
     expect(parameterInput('Own')).toEqual({ kind: 'value', value: 'own' });
     // A supplied value with no Default to equal is supplied too.
@@ -154,7 +154,7 @@ describe('parameterInputsFor', () => {
         nestedChild: true,
         supplied: { NoDefault: 'plain' },
       }).parameterInput('NoDefault')
-    ).toEqual({ kind: 'unknown' });
+    ).toEqual({ kind: 'secret' });
     // A class map that lacks the name is no class either.
     expect(
       parameterInputsFor({
@@ -164,7 +164,7 @@ describe('parameterInputsFor', () => {
         supplied: { Supplied: 'other' },
         passedClasses: new Map([['Other', 'clean']]),
       }).parameterInput('Supplied')
-    ).toEqual({ kind: 'unknown' });
+    ).toEqual({ kind: 'secret' });
     // Outside a nested child (`cdkd deploy`'s own parameters) it is an input.
     expect(
       parameterInputsFor({
@@ -720,7 +720,7 @@ describe('review-round pins (go-to-k/cdkd#4543)', () => {
         nestedChild: true,
         supplied: { NoDefault: 'null' },
       }).parameterInput('NoDefault')
-    ).toEqual({ kind: 'unknown' });
+    ).toEqual({ kind: 'secret' });
   });
 });
 
@@ -801,11 +801,11 @@ describe('classifyPassedParameters (go-to-k/cdkd#4543)', () => {
     });
     expect(parameterInput('A')).toEqual({ kind: 'value', value: 'a' });
     expect(parameterInput('B')).toEqual({ kind: 'secret' });
-    // Passed but missing from the parent's classes: unknown, not compared.
-    expect(parameterInput('C')).toEqual({ kind: 'unknown' });
+    // Passed but missing from the parent's classes: kept as written.
+    expect(parameterInput('C')).toEqual({ kind: 'secret' });
     expect(parameterInput('Pw')).toEqual({ kind: 'secret' });
-    // Passed equal to the Default but not classified: unknown as well.
-    expect(parameterInput('AtDefault')).toEqual({ kind: 'unknown' });
+    // Passed equal to the Default but not classified: kept as written as well.
+    expect(parameterInput('AtDefault')).toEqual({ kind: 'secret' });
     // Classified unknown: not compared.
     expect(parameterInput('Unread')).toEqual({ kind: 'unknown' });
     // Not passed: the Default, template text, is a value.
@@ -925,27 +925,22 @@ describe('a nested child with no parent class (go-to-k/cdkd#4543 review n1/N4)',
     };
   };
 
-  it('a passed value it cannot vouch for is neither hashed nor compared, a Default-equal one included', async () => {
-    for (const passed of ['other-value', 'same-as-default']) {
-      for (const node of [{ Ref: 'Passed' }, { Ref: 'Reader' }]) {
-        const s = childSources(passed, undefined);
-        expect(await maskedInputFingerprint(script(node), s)).toBeUndefined();
-        // Nothing derived from the value was resolved.
-        expect(s.resolve).not.toHaveBeenCalled();
+  it('a passed value it cannot vouch for is hashed only as written, a Default-equal one included', async () => {
+    for (const node of [{ Ref: 'Passed' }, { Ref: 'Reader' }]) {
+      const forms = new Set<string | undefined>();
+      for (const passed of ['other-value', 'same-as-default']) {
+        for (const classes of [undefined, new Map([['Passed', 'secret' as const]])]) {
+          const s = childSources(passed, classes);
+          forms.add(await maskedInputFingerprint(script(node), s));
+          // Nothing derived from the value was resolved.
+          expect(s.resolve).not.toHaveBeenCalled();
+        }
       }
+      // One template-form hash whatever the value or the class: no oracle for
+      // "the passed value equals the Default".
+      expect(forms.size).toBe(1);
+      expect([...forms][0]).toMatch(/^inputs-sha256:/);
     }
-    // The same Default-equal value with the parent's `secret` class is hashed
-    // in template form, identically to any other secret value: no oracle.
-    const asSecret = await maskedInputFingerprint(
-      script({ Ref: 'Passed' }),
-      childSources('same-as-default', new Map([['Passed', 'secret']]))
-    );
-    expect(asSecret).toBe(
-      await maskedInputFingerprint(
-        script({ Ref: 'Passed' }),
-        childSources('other-value', new Map([['Passed', 'secret']]))
-      )
-    );
   });
 
   it('a parameter the parent did not pass binds the Default and is hashed', async () => {
@@ -967,60 +962,29 @@ describe('a nested child with no parent class (go-to-k/cdkd#4543 review n1/N4)',
     );
   });
 
-  it('a rollback replay with no class neither re-sends nor stamps, and the next classified deploy re-baselines once', async () => {
+  it('classified, then a no-class rollback replay, then classified: the replay and the next classified deploy each move once, then it settles', async () => {
     const value = script({ Ref: 'Passed' });
     const text = maskedPropertyFingerprint(value);
-    const classified = (passed: string): MaskedInputSources =>
-      childSources(passed, new Map([['Passed', 'clean']]));
-    // Deploy N: classified clean, stamped bound.
-    const stampedN = (await maskedInputFingerprint(value, classified('v1')))!;
-    const recordN = {
+    const fingerprintWith = (passed: string, classes: ReadonlyMap<string, 'clean'> | undefined) =>
+      inputFingerprinter({ Value: value }, childSources(passed, classes));
+    const CLEAN = new Map([['Passed', 'clean' as const]]);
+    const record = (input: string) => ({
       properties: { Value: '***' },
       maskedPropertyFingerprints: { Value: text },
-      maskedPropertyInputFingerprints: { Value: stampedN },
-    };
-    // The rollback replay of the child (no class): the property is not
-    // compared, so not sent on the input's account.
-    const unclassified = inputFingerprinter({ Value: value }, childSources('v0', undefined));
-    expect(await movedMaskedProperties(recordN, { Value: value }, unclassified)).toEqual([]);
-    // A replay that writes the record for another reason stamps no input
-    // fingerprint (nothing derived from the unclassified value is hashed).
-    const rewritten = withMaskedPropertyFingerprints(
-      { physicalId: 'p', resourceType: 'AWS::SSM::Parameter', properties: { Value: '***' } },
-      markWrittenFromDeployedTemplate({}),
-      { Value: value },
-      undefined,
-      undefined,
-      {}
-    );
-    expect(rewritten.maskedPropertyFingerprints).toEqual({ Value: text });
-    expect(rewritten.maskedPropertyInputFingerprints).toBeUndefined();
-    // The next classified deploy re-baselines it without sending, and the one
-    // after compares the stamped hash: no perpetual re-send.
-    const rebaselined: Array<[string, string]> = [];
-    expect(
-      await movedMaskedProperties(
-        rewritten,
-        { Value: value },
-        inputFingerprinter({ Value: value }, classified('v1')),
-        (key, fingerprint) => rebaselined.push([key, fingerprint])
-      )
-    ).toEqual([]);
-    expect(rebaselined).toEqual([['Value', stampedN]]);
-    const next = withRebaselinedFingerprints(rewritten, Object.fromEntries(rebaselined));
-    expect(
-      await movedMaskedProperties(
-        next,
-        { Value: value },
-        inputFingerprinter({ Value: value }, classified('v1'))
-      )
-    ).toEqual([]);
-    expect(
-      await movedMaskedProperties(
-        next,
-        { Value: value },
-        inputFingerprinter({ Value: value }, classified('v2'))
-      )
-    ).toEqual(['Value']);
+      maskedPropertyInputFingerprints: { Value: input },
+    });
+    // Deploy N: classified clean at v1, stamped.
+    const stampedN = (await fingerprintWith('v1', CLEAN)('Value'))!;
+    // The replay (no class, rolling back to v0): the template form differs
+    // from the stamped value, so the replay sends what it rolls back to.
+    const replayForm = (await fingerprintWith('v0', undefined)('Value'))!;
+    expect(replayForm).not.toBe(stampedN);
+    expect(await movedMaskedProperties(record(stampedN), { Value: value }, fingerprintWith('v0', undefined))).toEqual(['Value']);
+    // The next classified deploy (v1 again): moved once, so AWS gets v1 back.
+    expect(await movedMaskedProperties(record(replayForm), { Value: value }, fingerprintWith('v1', CLEAN))).toEqual(['Value']);
+    // Stamped v1 again: no further send.
+    expect(await movedMaskedProperties(record(stampedN), { Value: value }, fingerprintWith('v1', CLEAN))).toEqual([]);
+    // A second no-class replay over a no-class stamp does not loop either.
+    expect(await movedMaskedProperties(record(replayForm), { Value: value }, fingerprintWith('v9', undefined))).toEqual([]);
   });
 });

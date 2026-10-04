@@ -693,38 +693,49 @@ describe('DeployEngine - a resolved input behind unchanged template text is sent
       );
     });
 
-    it('a passed value the parent did not classify is neither hashed nor compared, a Default-equal one included', async () => {
+    it('a passed value the parent did not classify is kept as written, a Default-equal one included', async () => {
       // `withParameter('d')` declares `P` with Default `d`: the passed `d`
-      // equals it, and is still not hashed (that would confirm the equality).
+      // equals it, and is still held as `{Ref: P}` (hashing it would confirm
+      // the equality).
+      const forms = new Set<string>();
       for (const supplied of ['one', 'd']) {
         const first = await child(supplied, undefined).deployTemplate(withParameter('d'));
-        expect(first.resources['R']!.maskedPropertyInputFingerprints).toBeUndefined();
-        expect(first.resources['R']!.maskedPropertyFingerprints!['Value']).toMatch(/^sha256:/);
+        forms.add(first.resources['R']!.maskedPropertyInputFingerprints!['Value']!);
         const h2 = child('two', undefined);
         h2.setState(first);
         const second = await h2.deployTemplate(withParameter('d'));
         expect(h2.provider.update).not.toHaveBeenCalled();
         expect(fps(second.resources['R']!)).toEqual(fps(first.resources['R']!));
       }
+      expect(forms.size).toBe(1);
+      expect([...forms][0]).toMatch(/^inputs-sha256:/);
+      // The SECRET class stamps that same form.
+      const secret = await child('one', SECRET).deployTemplate(withParameter('d'));
+      expect(secret.resources['R']!.maskedPropertyInputFingerprints!['Value']).toBe([...forms][0]);
     });
 
-    it('a rollback replay with no class sends nothing on the input, and the next classified deploy does not resend', async () => {
+    it('classified, a no-class rollback replay, classified: the final deploy sends once and then settles', async () => {
       // Deploy N: classified clean at `one`, stamped.
       const stamped = await child('one', CLEAN).deployTemplate(withParameter('d'));
-      const bound = stamped.resources['R']!.maskedPropertyInputFingerprints!['Value'];
-      expect(bound).toMatch(/^inputs-sha256:/);
-      // The rollback replay of the child: no class, so the input is unknown.
+      // The rollback replay of the child back to `zero`, with no class: the
+      // template form differs from the stamped value, so the replay sends.
       const replay = child('zero', undefined);
       replay.setState(stamped);
       const replayed = await replay.deployTemplate(withParameter('d'));
-      expect(replay.provider.update).not.toHaveBeenCalled();
-      // Nothing derived from the unclassified value was stamped.
-      expect(replayed.resources['R']!.maskedPropertyInputFingerprints?.['Value']).toBe(bound);
-      // The next classified deploy at the stamped value: no extra send.
+      expect(replay.provider.update).toHaveBeenCalledTimes(1);
+      expect(sentValue(replay, 0)).toBe(Buffer.from('b=zero;pw=pw-secret-value').toString('base64'));
+      // The next classified deploy at `one`: exactly one send, of `one`.
       const next = child('one', CLEAN);
       next.setState(replayed);
-      await next.deployTemplate(withParameter('d'));
-      expect(next.provider.update).not.toHaveBeenCalled();
+      const settled = await next.deployTemplate(withParameter('d'));
+      expect(next.provider.update).toHaveBeenCalledTimes(1);
+      expect(sentValue(next, 0)).toBe(Buffer.from('b=one;pw=pw-secret-value').toString('base64'));
+      expect(fps(settled.resources['R']!)).toEqual(fps(stamped.resources['R']!));
+      // And the one after sends nothing: no loop.
+      const after = child('one', CLEAN);
+      after.setState(settled);
+      await after.deployTemplate(withParameter('d'));
+      expect(after.provider.update).not.toHaveBeenCalled();
     });
 
     it('a parameter the parent does not pass binds the Default and is hashed', async () => {

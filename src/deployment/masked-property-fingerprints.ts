@@ -224,15 +224,16 @@ function carriesSecretValue(
  * `secret`: a `NoEcho` parameter; a value carrying a `{{resolve:...}}`
  * reference or the mask; and, in a nested child (`nestedChild`), a value the
  * parent SUPPLIED that the parent classified `secret` (`passedClasses`, from
- * {@link classifyPassedParameters} over the parent's own template). A parent can pass a
+ * {@link classifyPassedParameters} over the parent's own template) or did not
+ * classify at all, even one equal to the `Default`. A parent can pass a
  * resolved secret, or a value embedding one, as a plain parameter, and the
  * child cannot tell that from the value (the inherited corpus can miss a short
  * ancestor secret), so only the parent's class vouches for it; the rule
  * `parentSuppliedValues` in `condition-verdicts.ts` applies for the same
  * reason. `unknown`: a parameter with no bound value, one named in `unbound`,
  * and, in a nested child, a value the parent supplied and classified
- * `unknown` or did not classify at all. A parameter the parent did not supply
- * binds the child's `Default` (template text) and is a plain value.
+ * `unknown`. A parameter the parent did not supply binds the child's `Default`
+ * (template text) and is a plain value.
  */
 export function parameterInputsFor(args: {
   template: CloudFormationTemplate;
@@ -266,15 +267,16 @@ export function parameterInputsFor(args: {
         // the `Default` included (comparing with it would let the hash confirm
         // "the passed secret equals the Default"). With no class (a rollback
         // replay binds a bag the parent never classified, or the parent had no
-        // fingerprint sources), the value is unknown: neither compared nor
-        // stamped, so nothing derived from it is hashed and a later classified
-        // deploy re-baselines rather than reading a stale form as moved.
+        // fingerprint sources), the value is kept as written like a secret:
+        // nothing derived from it is hashed, and the next classified deploy
+        // sees its fingerprint move and sends once, which is what puts back
+        // a value a rollback replayed.
         const passed = args.passedClasses?.get(name);
-        if (passed === undefined || passed === 'unknown') {
+        if (passed === 'unknown') {
           inputs.set(name, { kind: 'unknown' });
           continue;
         }
-        if (passed === 'secret') secret = true;
+        if (passed !== 'clean') secret = true;
       }
     }
     if (secret) {
@@ -710,8 +712,9 @@ export type PassedParameterClass = 'clean' | 'secret' | 'unknown';
 /**
  * Each parameter an `AWS::CloudFormation::Stack` row passes (its template
  * `Parameters` object), classified over the PARENT's template with the
- * parent's sources. A passed parameter missing here reads as `unknown` in the
- * child (see {@link parameterInputsFor}).
+ * parent's sources. A passed parameter missing here reads as `secret` in the
+ * child, even when it equals the child's `Default` (see
+ * {@link parameterInputsFor}).
  */
 export async function classifyPassedParameters(
   parameters: unknown,

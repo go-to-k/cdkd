@@ -1039,11 +1039,13 @@ parameter as its `Ref`, and these are kept as written:
   by these same rules and hands the result to the child; a value built only
   from non-secret inputs (a `Ref` to a parent resource, say) enters the
   child's hash like any input. A passed value the parent did not classify (a
-  rollback, which replays the child without the parent's template) or could
-  not read this time is neither compared nor hashed, nor is a property that
-  reads it directly or through a resource or condition, even when the value
-  equals the `Default`. A parameter the parent does not pass binds the
-  child's `Default`, which is template text, and is hashed.
+  rollback, which replays the child without the parent's template) is kept as
+  written too, even when it equals the `Default`; the next deploy that
+  classifies it sees the property's hash move and sends it once. One the
+  parent could not read this time is neither compared nor hashed, nor is a
+  property that reads it directly or through a resource or condition. A
+  parameter the parent does not pass binds the child's `Default`, which is
+  template text, and is hashed.
 
 So these are NOT sent through the mask: a new value of a `NoEcho` parameter,
 a flip of a condition over one, and a new value of anything above. A hash
