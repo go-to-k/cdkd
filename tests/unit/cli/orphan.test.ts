@@ -85,6 +85,7 @@ vi.mock('../../../src/synthesis/synthesizer.js', () => ({
 
 const mockRegisterAllProviders = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
+  loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: mockRegisterAllProviders,
 }));
 

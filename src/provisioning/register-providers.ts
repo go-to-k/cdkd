@@ -1,98 +1,120 @@
-import { ProviderRegistry } from './provider-registry.js';
-import { IAMRoleProvider } from './providers/iam-role-provider.js';
-import { IAMPolicyProvider } from './providers/iam-policy-provider.js';
-import { IAMManagedPolicyProvider } from './providers/iam-managed-policy-provider.js';
-import { IAMInstanceProfileProvider } from './providers/iam-instance-profile-provider.js';
-import { IAMAccessKeyProvider } from './providers/iam-access-key-provider.js';
-import { IAMUserGroupProvider } from './providers/iam-user-group-provider.js';
-import { S3BucketProvider } from './providers/s3-bucket-provider.js';
-import { S3BucketPolicyProvider } from './providers/s3-bucket-policy-provider.js';
-import { SQSQueueProvider } from './providers/sqs-queue-provider.js';
-import { SQSQueuePolicyProvider } from './providers/sqs-queue-policy-provider.js';
-import { SNSTopicProvider } from './providers/sns-topic-provider.js';
-import { SNSSubscriptionProvider } from './providers/sns-subscription-provider.js';
-import { SNSTopicPolicyProvider } from './providers/sns-topic-policy-provider.js';
-import { LambdaFunctionProvider } from './providers/lambda-function-provider.js';
-import { LambdaPermissionProvider } from './providers/lambda-permission-provider.js';
-import { LambdaUrlProvider } from './providers/lambda-url-provider.js';
-import { LambdaEventSourceMappingProvider } from './providers/lambda-eventsource-provider.js';
-import { LambdaLayerVersionProvider } from './providers/lambda-layer-provider.js';
-import { LambdaEventInvokeConfigProvider } from './providers/lambda-event-invoke-config-provider.js';
-import { LambdaMicrovmImageProvider } from './providers/lambda-microvm-image-provider.js';
-import { DynamoDBTableProvider } from './providers/dynamodb-table-provider.js';
-import { DynamoDBGlobalTableProvider } from './providers/dynamodb-globaltable-provider.js';
-import { LogsLogGroupProvider } from './providers/logs-loggroup-provider.js';
-import { CloudWatchAlarmProvider } from './providers/cloudwatch-alarm-provider.js';
-import { CloudWatchAnomalyDetectorProvider } from './providers/cloudwatch-anomaly-detector-provider.js';
-import { SecretsManagerSecretProvider } from './providers/secretsmanager-secret-provider.js';
-import { SSMParameterProvider } from './providers/ssm-parameter-provider.js';
-import { EventBridgeRuleProvider } from './providers/eventbridge-rule-provider.js';
-import { EventBridgeBusProvider } from './providers/eventbridge-bus-provider.js';
-import { EC2Provider } from './providers/ec2-provider.js';
-import { ApiGatewayProvider } from './providers/apigateway-provider.js';
-import { ApiGatewayV2Provider } from './providers/apigatewayv2-provider.js';
-import { CloudFrontOAIProvider } from './providers/cloudfront-oai-provider.js';
-import { CloudFrontOACProvider } from './providers/cloudfront-oac-provider.js';
-import { CloudFrontDistributionProvider } from './providers/cloudfront-distribution-provider.js';
-import { AgentCoreRuntimeProvider } from './providers/agentcore-runtime-provider.js';
-import { AgentCoreBrowserProvider } from './providers/agentcore-browser-provider.js';
-import { AgentCoreCodeInterpreterProvider } from './providers/agentcore-code-interpreter-provider.js';
-import { AgentCoreEvaluatorProvider } from './providers/agentcore-evaluator-provider.js';
-import { StepFunctionsProvider } from './providers/stepfunctions-provider.js';
-import { ECSProvider } from './providers/ecs-provider.js';
-import { ELBv2Provider } from './providers/elbv2-provider.js';
-import { RDSProvider } from './providers/rds-provider.js';
-import { RDSDBProxyProvider } from './providers/rds-dbproxy-provider.js';
-import { RDSDBProxyEndpointProvider } from './providers/rds-dbproxy-endpoint-provider.js';
-import { RDSDBProxyTargetGroupProvider } from './providers/rds-dbproxy-targetgroup-provider.js';
-import { DocDBProvider } from './providers/docdb-provider.js';
-import { DocDBSubnetGroupProvider } from './providers/docdb-subnet-group-provider.js';
-import { NeptuneProvider } from './providers/neptune-provider.js';
-import { Route53Provider } from './providers/route53-provider.js';
-import { WAFv2WebACLProvider } from './providers/wafv2-provider.js';
-import { CognitoUserPoolProvider } from './providers/cognito-provider.js';
-import { ElastiCacheProvider } from './providers/elasticache-provider.js';
-import { ServiceDiscoveryProvider } from './providers/servicediscovery-provider.js';
-import { AppSyncProvider } from './providers/appsync-provider.js';
-import {
-  GlueProvider,
-  GlueWorkflowProvider,
-  GlueSecurityConfigurationProvider,
-  GlueJobProvider,
-  GlueCrawlerProvider,
-  GlueConnectionProvider,
-  GlueTriggerProvider,
-} from './providers/glue-provider.js';
-import { KMSProvider } from './providers/kms-provider.js';
-import { BudgetsBudgetProvider } from './providers/budgets-budget-provider.js';
-import { KinesisStreamProvider } from './providers/kinesis-provider.js';
-import { KinesisStreamConsumerProvider } from './providers/kinesis-streamconsumer-provider.js';
-import { SchedulerScheduleProvider } from './providers/scheduler-schedule-provider.js';
-import { PipesPipeProvider } from './providers/pipes-provider.js';
-import { EFSProvider } from './providers/efs-provider.js';
-import { FSxFileSystemProvider } from './providers/fsx-filesystem-provider.js';
-import { EMRClusterProvider } from './providers/emr-cluster-provider.js';
-import { EMRInstanceGroupConfigProvider } from './providers/emr-instance-group-config-provider.js';
-import { EMRInstanceFleetConfigProvider } from './providers/emr-instance-fleet-config-provider.js';
-import { FirehoseProvider } from './providers/firehose-provider.js';
-import { CloudTrailProvider } from './providers/cloudtrail-provider.js';
-import { CodeBuildProvider } from './providers/codebuild-provider.js';
-import { CodeCommitRepositoryProvider } from './providers/codecommit-repository-provider.js';
-import { DLMLifecyclePolicyProvider } from './providers/dlm-lifecycle-policy-provider.js';
-import { S3VectorsProvider } from './providers/s3-vectors-provider.js';
-import { S3DirectoryBucketProvider } from './providers/s3-directory-bucket-provider.js';
-import { S3TablesProvider } from './providers/s3-tables-provider.js';
-import { ECRProvider } from './providers/ecr-provider.js';
-import { ASGProvider } from './providers/asg-provider.js';
-import { NestedStackProvider } from './providers/nested-stack-provider.js';
-import { WaitConditionHandleProvider } from './providers/wait-condition-handle-provider.js';
-import { ACMCertificateProvider } from './providers/acm-certificate-provider.js';
+import type { ProviderRegistry } from './provider-registry.js';
+
+export type ProviderClasses = typeof import('./provider-classes.js');
+
+let providerClasses: Promise<ProviderClasses> | undefined;
 
 /**
- * Register all SDK providers with the given registry.
- * Called from both deploy and destroy commands.
+ * Load every SDK provider class, once per process.
+ *
+ * The classes are NOT imported at module scope: each provider module evaluates
+ * its `@aws-sdk/client-*` package, and every command module that registers
+ * providers is reached statically from the command tree, so a static import
+ * made every `cdkd` invocation (`--help`, `synth`, `list`) pay for all of them
+ * (issue #4521). Await this first, before the synchronous section that sets a
+ * stack's AWS client scope / globals and calls `registerAllProviders`, so no
+ * await separates the two.
  */
-export function registerAllProviders(registry: ProviderRegistry): void {
+export function loadProviderClasses(): Promise<ProviderClasses> {
+  providerClasses ??= import('./provider-classes.js');
+  return providerClasses;
+}
+
+/**
+ * Register all SDK providers with the given registry. Called by every command
+ * that provisions, reads or deletes resources, with the classes from
+ * {@link loadProviderClasses}. Every type is registered.
+ */
+export function registerAllProviders(registry: ProviderRegistry, classes: ProviderClasses): void {
+  const {
+    IAMRoleProvider,
+    IAMPolicyProvider,
+    IAMManagedPolicyProvider,
+    IAMInstanceProfileProvider,
+    IAMAccessKeyProvider,
+    IAMUserGroupProvider,
+    S3BucketProvider,
+    S3BucketPolicyProvider,
+    SQSQueueProvider,
+    SQSQueuePolicyProvider,
+    SNSTopicProvider,
+    SNSSubscriptionProvider,
+    SNSTopicPolicyProvider,
+    LambdaFunctionProvider,
+    LambdaPermissionProvider,
+    LambdaUrlProvider,
+    LambdaEventSourceMappingProvider,
+    LambdaLayerVersionProvider,
+    LambdaEventInvokeConfigProvider,
+    LambdaMicrovmImageProvider,
+    DynamoDBTableProvider,
+    DynamoDBGlobalTableProvider,
+    LogsLogGroupProvider,
+    CloudWatchAlarmProvider,
+    CloudWatchAnomalyDetectorProvider,
+    SecretsManagerSecretProvider,
+    SSMParameterProvider,
+    EventBridgeRuleProvider,
+    EventBridgeBusProvider,
+    EC2Provider,
+    ApiGatewayProvider,
+    ApiGatewayV2Provider,
+    CloudFrontOAIProvider,
+    CloudFrontOACProvider,
+    CloudFrontDistributionProvider,
+    AgentCoreRuntimeProvider,
+    AgentCoreBrowserProvider,
+    AgentCoreCodeInterpreterProvider,
+    AgentCoreEvaluatorProvider,
+    StepFunctionsProvider,
+    ECSProvider,
+    ELBv2Provider,
+    RDSProvider,
+    RDSDBProxyProvider,
+    RDSDBProxyEndpointProvider,
+    RDSDBProxyTargetGroupProvider,
+    DocDBProvider,
+    DocDBSubnetGroupProvider,
+    NeptuneProvider,
+    Route53Provider,
+    WAFv2WebACLProvider,
+    CognitoUserPoolProvider,
+    ElastiCacheProvider,
+    ServiceDiscoveryProvider,
+    AppSyncProvider,
+    GlueProvider,
+    GlueWorkflowProvider,
+    GlueSecurityConfigurationProvider,
+    GlueJobProvider,
+    GlueCrawlerProvider,
+    GlueConnectionProvider,
+    GlueTriggerProvider,
+    KMSProvider,
+    BudgetsBudgetProvider,
+    KinesisStreamProvider,
+    KinesisStreamConsumerProvider,
+    SchedulerScheduleProvider,
+    PipesPipeProvider,
+    EFSProvider,
+    FSxFileSystemProvider,
+    EMRClusterProvider,
+    EMRInstanceGroupConfigProvider,
+    EMRInstanceFleetConfigProvider,
+    FirehoseProvider,
+    CloudTrailProvider,
+    CodeBuildProvider,
+    CodeCommitRepositoryProvider,
+    DLMLifecyclePolicyProvider,
+    S3VectorsProvider,
+    S3DirectoryBucketProvider,
+    S3TablesProvider,
+    ECRProvider,
+    ASGProvider,
+    NestedStackProvider,
+    WaitConditionHandleProvider,
+    ACMCertificateProvider,
+  } = classes;
+
   // IAM
   registry.register('AWS::IAM::Role', new IAMRoleProvider());
   registry.register('AWS::IAM::Policy', new IAMPolicyProvider());

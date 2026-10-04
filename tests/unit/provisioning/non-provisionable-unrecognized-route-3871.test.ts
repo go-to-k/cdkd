@@ -10,16 +10,18 @@
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';
 import { SDK_PROVIDER_NON_PROVISIONABLE_TYPES } from '../../../src/provisioning/unsupported-types.js';
+
+const providerClasses = await loadProviderClasses();
 
 /** A key no CFn schema carries. */
 const UNKNOWN = 'CdkdKeyNotInTheSchemaSnapshot';
 
 function realRegistry(): { registry: ProviderRegistry; warn: ReturnType<typeof vi.fn> } {
   const registry = new ProviderRegistry();
-  registerAllProviders(registry);
+  registerAllProviders(registry, providerClasses);
   const warn = vi.fn();
   (registry as unknown as { logger: Record<string, unknown> }).logger = {
     info: vi.fn(),

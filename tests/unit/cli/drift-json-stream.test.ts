@@ -118,6 +118,7 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
+  loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
 }));
 

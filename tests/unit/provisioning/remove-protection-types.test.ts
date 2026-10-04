@@ -21,7 +21,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import {
   SDK_REMOVE_PROTECTION_TYPES,
   removeProtectionTypes,
@@ -32,6 +32,8 @@ import {
   destroyRemoveProtectionHelp,
   stateDestroyRemoveProtectionHelp,
 } from './remove-protection-help.js';
+
+const providerClasses = await loadProviderClasses();
 
 const PROVIDERS_DIR = join(import.meta.dirname, '../../../src/provisioning/providers');
 
@@ -46,7 +48,7 @@ function fileOfClass(className: string): string | undefined {
 /** Every registered type -> the file of the provider instance it is registered to. */
 function registeredTypeFiles(): Map<string, string> {
   const registry = new ProviderRegistry();
-  registerAllProviders(registry);
+  registerAllProviders(registry, providerClasses);
   const out = new Map<string, string>();
   for (const type of registry.getRegisteredTypes()) {
     const file = fileOfClass(registry.getProvider(type).constructor.name);
