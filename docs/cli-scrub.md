@@ -501,8 +501,7 @@ cannot rewrite. Five shapes qualify, and all five are also reported in words:
   `--parameters`, so it cannot bind one), or a declared resource, is different:
   it gets only the `keeping placeholder` warning. No `ABANDONED` line is
   printed, `--fail` does not count it, and the stack can still print
-  `No plaintext secrets found`
-  ([#4559](https://github.com/go-to-k/cdkd/issues/4559)). A parameter that
+  `No plaintext secrets found`. A parameter that
   has a `Default` is bound even when another parameter of the stack has none.
 
 - a **cross-stack read name holding a secret's value from before a
@@ -686,7 +685,7 @@ every other secret in the stack.
 summarised CLEAN.** When the `Fn::Sub` placeholder inside such a reference
 names a declared parameter with no `Default`, or a declared resource, the
 reference is never looked up and the only sign is the `keeping placeholder`
-warning ([#4559](https://github.com/go-to-k/cdkd/issues/4559)). Run
+warning. Run
 `cdkd scrub --verbose` when a stack you expect findings from reports clean.
 
 ### A read cdkd declines by design is a finding, not a refusal

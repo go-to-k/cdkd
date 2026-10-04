@@ -6006,8 +6006,7 @@ async function bindDefaultedParametersOneByOne(
       // No context and no bag here, so nothing to mask beyond the stack name
       // the caller already rendered; the parameter stays unbound.
       logger.debug(
-        `Parameter ${displayIdent(name)} of ${shownStack} left unbound: ` +
-          `${err instanceof Error ? err.message : String(err)}`
+        safeMsg`Parameter ${name} of ${shownStack} left unbound: ${err instanceof Error ? err.message : String(err)}`
       );
     }
   }
