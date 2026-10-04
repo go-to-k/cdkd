@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   statSync,
   mkdtempSync,
@@ -11,7 +12,7 @@ import {
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..', '..', '..');
@@ -332,6 +333,11 @@ describe('cdkd --version', () => {
         writeFileSync(join(sandbox, 'package.json'), '{"type":"module"}\n');
 
         const cacheHome = join(sandbox, 'xdg-cache');
+        // A previous version's cache must be gone by the time the process
+        // exits, even on a command that exits at once like this stub: a
+        // background delete would be cut off by the exit.
+        const staleVersion = join(cacheHome, 'cdkd', 'compile-cache', '0.0.1', 'v');
+        mkdirSync(staleVersion, { recursive: true });
         const env: NodeJS.ProcessEnv = { ...process.env, XDG_CACHE_HOME: cacheHome };
         delete env['NODE_COMPILE_CACHE'];
         delete env['NODE_DISABLE_COMPILE_CACHE'];
@@ -340,8 +346,15 @@ describe('cdkd --version', () => {
           env,
         });
         const dir = /^CACHE_DIR=(.*)$/m.exec(out)?.[1];
-        // Node appends a version/arch/uid subdirectory to the one it was given.
-        expect(dir?.startsWith(join(cacheHome, 'cdkd', 'compile-cache'))).toBe(true);
+        const builtVersion = (
+          JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8')) as { version: string }
+        ).version;
+        // cdkd nests the cache under its own version (so an upgrade can drop
+        // the previous one), and Node appends a version/arch/uid subdirectory.
+        expect(dir?.startsWith(join(cacheHome, 'cdkd', 'compile-cache', builtVersion) + sep)).toBe(
+          true
+        );
+        expect(existsSync(join(cacheHome, 'cdkd', 'compile-cache', '0.0.1'))).toBe(false);
       } finally {
         rmSync(sandbox, { recursive: true, force: true });
       }

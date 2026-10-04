@@ -584,6 +584,10 @@ users can write to is not a safe place for code cdkd loads. A relative
 `XDG_CACHE_HOME` is ignored, since it would point into the current project.
 With no home directory, the cache stays off.
 
+Each cdkd version caches into its own subdirectory, and the first run of a new
+version deletes the others', so the cache holds one version at a time instead
+of growing with every upgrade.
+
 | To | Set |
 | --- | --- |
 | turn the cache off | `NODE_DISABLE_COMPILE_CACHE=1` |
