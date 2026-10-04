@@ -1640,7 +1640,7 @@ describe('EC2Provider.readCurrentState', () => {
       it('keeps undefined when a sibling declares the same rule under ANOTHER recorded id (#4492)', async () => {
         // Isolates the identity-holder arm: the twin's id differs, so the
         // same-id arm cannot be what refuses it.
-        mockSend.mockResolvedValueOnce(edited);
+        mockSend.mockResolvedValueOnce(edited).mockResolvedValueOnce(byId());
 
         const result = bagOf(
           await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, {
@@ -1683,7 +1683,8 @@ describe('EC2Provider.readCurrentState', () => {
       });
 
       it('keeps undefined when the group’s own SecurityGroup record declares the rule inline (#4492)', async () => {
-        mockSend.mockResolvedValueOnce(edited);
+        // The by-id answer would PROVE ownership: only the holder check refuses.
+        mockSend.mockResolvedValueOnce(edited).mockResolvedValueOnce(byId());
 
         const result = bagOf(
           await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, {
@@ -1704,6 +1705,7 @@ describe('EC2Provider.readCurrentState', () => {
         );
 
         expect(result).toBeUndefined();
+        expect(mockSend).toHaveBeenCalledTimes(1);
       });
 
       it('still answers when an unrelated sibling rule is declared', async () => {
