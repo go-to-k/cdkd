@@ -20,7 +20,7 @@ Issue [#1740](https://github.com/go-to-k/cdkd/issues/1740). Per-site reasons:
 - Refusals throw `IntrinsicResolutionRefusalError` and the `Fn::Sub` catch
   RE-RAISES it. Refusing arms: `guardedPhysicalIdFallback`'s `*Arn` / `*Url`
   shape hard-fail, `--strict-getatt`, `rejectPlaceholderArnAttribute`, the
-  fabricated-account guard, a declared resource, an unbound declared
+  unknown-account guard, a declared resource, an unbound declared
   parameter with no `Default`, and an `Fn::GetAtt` cdkd cannot build or
   CloudFormation does not define (`refuseUnconstructibleAttribute` /
   `refuseUndefinedAttribute`, [#4077](https://github.com/go-to-k/cdkd/issues/4077) —
@@ -49,7 +49,7 @@ Issue [#1740](https://github.com/go-to-k/cdkd/issues/1740). Per-site reasons:
 - **All but the time-dependent sites `markNonRetryable` at the `throw`** — they
   decide from inputs a retry cannot change, yet interpolate template text a
   substring-matching classifier reads as transient. The CLASS stays UNMARKED:
-  the fabricated-account arm and `refuseUnservedAttribute` ARE time-dependent.
+  the unknown-account arm and `refuseUnservedAttribute` ARE time-dependent.
 - **Where the intrinsic SITS decides what the user sees.** In a resource
   property it fails the resource; in a stack Output `deploy` catches it
   per-output and exits 0 (`--strict-getatt` fails the deploy); in

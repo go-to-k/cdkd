@@ -55,7 +55,6 @@ export {
   dynamicReferenceRetryDelays,
   concurrentDrainCap,
   isClientSafeRegion,
-  accountInfoClock,
   getAccountInfo,
   isImpossibleEmptyStoredAttribute,
   resetAccountInfoCache,

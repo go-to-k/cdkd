@@ -64,7 +64,7 @@ export async function constructAttributeForComputeTypes(
         // `<acct>.dkr.ecr.<region>.amazonaws.com.cn` in `aws-cn`, so a
         // hardcoded `amazonaws.com` is the identical defect one field over —
         // and this is the very attribute whose account embedding the
-        // fabricated-account guard had to be widened for.
+        // unknown-account guard matches by bare substring for.
         return `${accountId}.dkr.ecr.${region}.${derivePartitionAndUrlSuffix(region).urlSuffix}/${physicalId}`;
       default:
         return this.guardedPhysicalIdFallback(

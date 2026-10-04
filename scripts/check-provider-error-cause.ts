@@ -307,6 +307,16 @@ export const EXEMPTIONS: readonly CauseExemption[] = [
       "re-brands cdk-local's own build error into cdkd's class with the SAME message; it is " +
       'not an AWS error, and a cause would print that message twice',
   },
+  {
+    file: 'deployment/intrinsic-resolver/getatt-heal.ts',
+    errorClass: 'IntrinsicResolutionRefusalError',
+    within: 'constructGuardedAttribute',
+    count: 1,
+    reason:
+      "wraps cdkd's own AccountIdUnavailableError, whose whole message it embeds; that error " +
+      'carries no AWS error or classifier field, and a cause would print the message twice ' +
+      '(go-to-k/cdkd#1730)',
+  },
 ];
 
 // ---------------------------------------------------------------------------

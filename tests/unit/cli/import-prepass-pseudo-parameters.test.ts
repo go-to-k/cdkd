@@ -172,7 +172,7 @@ describe('resolvePseudoParameterIntrinsics (issue #1897)', () => {
     expect(smSend).not.toHaveBeenCalled();
   });
 
-  it('leaves an AWS::AccountId intrinsic untouched when STS could not answer (fabricated account)', async () => {
+  it('leaves an AWS::AccountId intrinsic untouched when STS could not answer (issue #1730)', async () => {
     stsSend.mockImplementation(async () => {
       throw new Error('ExpiredToken');
     });
@@ -183,11 +183,27 @@ describe('resolvePseudoParameterIntrinsics (issue #1897)', () => {
         { Name: ACCOUNT_JOIN, Region: { Ref: 'AWS::Region' } },
         'us-east-1'
       );
-      // The account-free sibling still resolves: only the lookup named after
-      // a placeholder account is withheld.
+      // The account-free sibling still resolves: only the account-bearing
+      // name is withheld, since `getAccountInfo` refuses rather than inventing
+      // an account.
       expect(out).toEqual({ Name: ACCOUNT_JOIN, Region: 'us-east-1' });
     } finally {
       if (saved !== undefined) process.env['AWS_ACCOUNT_ID'] = saved;
+    }
+  });
+
+  it('propagates a NON-account failure instead of leaving the intrinsic unresolved', async () => {
+    // Only `AccountIdUnavailableError` means "no account"; anything else is a
+    // bug or an outage the importer must surface (as a `failed` row).
+    const resolverModule = await import('../../../src/deployment/intrinsic-function-resolver.js');
+    const boom = new Error('unexpected failure');
+    const spy = vi.spyOn(resolverModule, 'getAccountInfo').mockRejectedValue(boom);
+    try {
+      await expect(
+        resolvePseudoParameterIntrinsics({ Name: ACCOUNT_JOIN }, 'us-east-1')
+      ).rejects.toBe(boom);
+    } finally {
+      spy.mockRestore();
     }
   });
 
