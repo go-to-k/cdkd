@@ -6410,6 +6410,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
@@ -6435,6 +6436,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
@@ -6717,6 +6719,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "survivingIngressHolder",
             "update",
@@ -6924,6 +6927,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "survivingIngressHolder",
             "update",
@@ -7371,6 +7375,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
@@ -7396,6 +7401,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "update",
             "updateSecurityGroupIngress"
@@ -7420,6 +7426,7 @@
             "deleteSecurityGroupIngress",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "update",
             "updateSecurityGroupIngress"
           ]
@@ -7505,6 +7512,7 @@
             "lookupIngressRuleId",
             "readCurrentState",
             "readSecurityGroupIngressCurrentState",
+            "readSgIngressByIdentity",
             "revokeMatchingLiveRule",
             "survivingIngressHolder",
             "update",
@@ -7611,7 +7619,7 @@
         "computed key in comparableIngressIdentity()",
         "computed key in ingressRuleIdentity()",
         "computed key in narrowRouteDestinations()",
-        "identity(...) in readSecurityGroupIngressCurrentState()",
+        "identity(...) in readSgIngressByIdentity()",
         "object spread in canonicalizeSgInlineRuleProtocols()",
         "object spread in createSecurityGroupIngress()",
         "object spread in narrowIngressIpProtocol()",

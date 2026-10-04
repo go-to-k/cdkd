@@ -7414,7 +7414,7 @@ export class EC2Provider implements ResourceProvider {
       owned = resp.SecurityGroupRules?.find((r) => r.SecurityGroupRuleId === recordedId);
     } catch (err) {
       this.logger.debug(
-        `readCurrentState: recorded rule ${recordedId} could not be read (${err instanceof Error ? err.name : String(err)}); the ingress rule stays unknown`
+        safeMsg`readCurrentState: recorded rule ${recordedId} could not be read (${describeAwsFailure(err).summary}); the ingress rule stays unknown`
       );
       return undefined;
     }
@@ -8137,14 +8137,15 @@ function stackIngressRuleHolder(
  * malformed entry on either side makes them differ.
  */
 function tagListsMatch(live: ReadonlyArray<unknown>, declared: ReadonlyArray<unknown>): boolean {
-  const pairs = (list: ReadonlyArray<unknown>): string[] | undefined => {
-    const out: string[] = [];
-    for (const entry of list) {
-      if (!isPlainRecord(entry) || typeof entry['Key'] !== 'string') return undefined;
-      out.push(JSON.stringify([entry['Key'], entry['Value'] ?? '']));
-    }
-    return out.sort();
-  };
+  const pairs = (list: ReadonlyArray<unknown>): string[] | undefined =>
+    list.every((entry) => isPlainRecord(entry) && typeof entry['Key'] === 'string')
+      ? list
+          .map((entry) => {
+            const tag = entry as Record<string, unknown>;
+            return JSON.stringify([tag['Key'], tag['Value'] ?? '']);
+          })
+          .sort()
+      : undefined;
   const a = pairs(live);
   const b = pairs(declared);
   return a !== undefined && b !== undefined && JSON.stringify(a) === JSON.stringify(b);
