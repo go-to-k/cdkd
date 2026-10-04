@@ -792,10 +792,13 @@ export interface ResourceState {
    * `***` and was never sent. The diff and the deploy's no-change skip treat a
    * property whose template hash moved as changed; a rotated secret behind an
    * unchanged template leaves it equal. Only template text is hashed, never a
-   * resolved value, so it is no oracle for the secret.
+   * resolved value; a property whose template text holds, as a literal, a
+   * value the same resource resolved as a secret gets `REFUSED_FINGERPRINT`
+   * instead of a hash, so the field is no oracle for the secret.
    *
-   * ABSENT (or malformed, read through `maskedPropertyFingerprintsOf`) keeps
-   * the pre-#4451 comparison, and a deploy backfills it from the template it
+   * ABSENT (or malformed, or refused, read through
+   * `maskedPropertyFingerprintsOf`) keeps the pre-#4451 comparison, and a
+   * deploy backfills each masked property with no entry from the template it
    * deploys. Writers: the save rebuilds it for a record this deploy wrote
    * through `propertiesToRecord`; every writer that spreads a record carries
    * it. Helpers: `src/deployment/masked-property-fingerprints.ts`.

@@ -1001,7 +1001,9 @@ reference, or a retarget of the reference, is shown and sent. A secret rotated
 behind an unchanged template leaves it equal and sends nothing, as
 CloudFormation does. Only template text is hashed: a secret appears there as
 its reference and a `NoEcho` parameter as its `Ref`, so the hash says nothing
-about a value. For the same reason a change that leaves the property's
+about a value. A property whose template text holds a resolved secret's value
+as a literal is the exception: it gets no hash and is compared as before the
+field existed. For the same reason a change that leaves the property's
 template text as it was (a new parameter value, a `Ref` to a resource that
 was replaced, a condition that flipped) is not seen through the mask yet,
 although CloudFormation would update the resource.
@@ -1011,11 +1013,17 @@ although CloudFormation would update the resource.
   record and its previous fingerprints, so the retry still sends the edit.
 - **No version bump.** A record without the field (an older cdkd's) is
   compared exactly as before. The first deploy under a cdkd that knows the
-  field fills it in from the template it deploys, and saves even when nothing
-  else changed; that deploy cannot tell an edit made since the last deploy, so
-  such an edit is not sent until the property changes again. To push one
-  anyway, change the property once more, or replace the resource with
-  `--recreate-via-cc-api` / `--recreate-via-sdk-provider`.
+  field fills it in, per masked property, from the template it deploys, and
+  saves even when nothing else changed; that deploy cannot tell an edit made
+  since the last deploy, so such an edit is not sent until the property
+  changes again. To push one anyway, change the property once more, or replace
+  the resource with `--recreate-via-cc-api` / `--recreate-via-sdk-provider`.
+- **Nested stacks.** A nested child is deployed only when its parent row
+  changed, which is usually because the child's own template changed. So the
+  first deploy that reaches a child last deployed by an older cdkd is, most
+  likely, one that carries an edit, and an edit to a masked property in that
+  deploy is not sent. Check such a child after that deploy, and change the
+  property once more if it did not take.
 - A malformed field reads as absent. A record a rollback orphans gets it from
   the same save, and a writer that spreads an existing record (rollback,
   drift, scrub, orphan adoption) carries it.

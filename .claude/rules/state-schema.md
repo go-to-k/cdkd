@@ -61,7 +61,7 @@ interface ResourceState {
 
 `acceptedCreateOnlyDrops` is EVIDENCE, read only through `acceptedCreateOnlyDropsOf` (malformed = absent = none): the #2790 refusal fires only for a key it names, since an imported or pre-v7 record holds create-only keys AWS does hold. An SDK-route create or replacement rebuilds it, an in-place update only carries entries still in `properties` (`acceptedCreateOnlyDropsField`), Cloud Control clears it, a spreading writer keeps it.
 
-`maskedPropertyFingerprints` hashes TEMPLATE text only, never a resolved value (a hash of one is a confirm oracle for the secret). Helpers and the write rule live in `src/deployment/masked-property-fingerprints.ts`: the save rebuilds it only for a bag `propertiesToRecord` wrote this deploy, since a failed update's record is the previous generation; absent keeps the pre-#4451 comparison and is backfilled at deploy start.
+`maskedPropertyFingerprints` hashes TEMPLATE text only, never a resolved value (a hash of one is a confirm oracle for the secret); a template value holding one of the resource's needles as a literal gets `REFUSED_FINGERPRINT`, which reads as no hash. Helpers and the write rule live in `src/deployment/masked-property-fingerprints.ts`: the save rebuilds it only for a bag `propertiesToRecord` wrote this deploy, since a failed update's record is the previous generation; absent keeps the pre-#4451 comparison and is backfilled per property at deploy start.
 
 ## `exportNames` (v9+)
 

@@ -1177,25 +1177,40 @@ fi
 echo "    OK: premise: the record fingerprints the masked Value, and AWS holds the original script (version ${UD_VERSION_BEFORE})"
 # The DIFF half: the edit is reported, and the unedited template is not (the
 # control, so a row the diff prints for some other reason cannot pass this).
-# The two probe outputs were dropped from state above, so both diffs also
-# report them as additions; only the RESOURCE row is asserted.
+# The two probe outputs were dropped from state above, so BOTH diffs report
+# them as additions: `--fail` must exit 1 on both, and `Base64Secret` must be
+# named on both. That is the sentinel that the diff ran to completion and
+# compared, so a crashed diff cannot pass the control, and only the RESOURCE
+# row, labelled, tells the two apart.
+set +e
 B64_EDIT_DIFF_OUT=$(CDKD_TEST_BASE64_LEAK=true CDKD_TEST_BASE64_EDIT=true node "${LOCAL_DIST}" diff "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1) || true
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+B64_EDIT_DIFF_RC=$?
+B64_SAME_DIFF_OUT=$(CDKD_TEST_BASE64_LEAK=true node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+B64_SAME_DIFF_RC=$?
+set -e
 no_b64_leak "the edited-script diff" "${B64_EDIT_DIFF_OUT}"
-if [[ "${B64_EDIT_DIFF_OUT}" != *"Base64UserDataParam"* ]]; then
-  echo "FAIL: 'cdkd diff' of the edited script does not report Base64UserDataParam -- an edit around the reference reads as unchanged (issue #4451)" >&2
+no_b64_leak "the unedited-script diff" "${B64_SAME_DIFF_OUT}"
+if [ "${B64_EDIT_DIFF_RC}" -ne 1 ] || [ "${B64_SAME_DIFF_RC}" -ne 1 ] \
+  || [[ "${B64_EDIT_DIFF_OUT}" != *"Base64Secret"* ]] || [[ "${B64_SAME_DIFF_OUT}" != *"Base64Secret"* ]]; then
+  echo "FAIL: premise: both 'cdkd diff --fail' runs must exit 1 and name the re-declared Base64Secret output (edited rc=${B64_EDIT_DIFF_RC}, unedited rc=${B64_SAME_DIFF_RC}) -- a diff that did not run to completion proves nothing (issue #4451)" >&2
+  diag_output "${B64_EDIT_DIFF_OUT}"
+  diag_output "${B64_SAME_DIFF_OUT}"
+  exit 1
+fi
+if [[ "${B64_EDIT_DIFF_OUT}" != *"Base64UserDataParam"* ]] \
+  || [[ "${B64_EDIT_DIFF_OUT}" != *"[template expression changed]"* ]]; then
+  echo "FAIL: 'cdkd diff' of the edited script does not report Base64UserDataParam with '[template expression changed]' -- an edit around the reference reads as unchanged (issue #4451)" >&2
   diag_output "${B64_EDIT_DIFF_OUT}"
   exit 1
 fi
-B64_SAME_DIFF_OUT=$(CDKD_TEST_BASE64_LEAK=true node "${LOCAL_DIST}" diff "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1) || true
-no_b64_leak "the unedited-script diff" "${B64_SAME_DIFF_OUT}"
 if [[ "${B64_SAME_DIFF_OUT}" == *"Base64UserDataParam"* ]]; then
   echo "FAIL: 'cdkd diff' of the UNEDITED script reports Base64UserDataParam -- the edited-script row above is not evidence of the fingerprint (issue #4451)" >&2
   diag_output "${B64_SAME_DIFF_OUT}"
   exit 1
 fi
-echo "    OK: the diff reports the edited script, and not the unedited one"
+echo "    OK: the diff reports the edited script, labelled, and not the unedited one"
 # The DEPLOY half.
 if ! DEPLOY_OUT_B64_EDIT=$(CDKD_TEST_BASE64_LEAK=true CDKD_TEST_BASE64_EDIT=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes 2>&1); then
@@ -1224,10 +1239,15 @@ fi
 B64_EDIT_STATE=$(mktemp)
 SCRATCH_FILES+=("${B64_EDIT_STATE}")
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${B64_EDIT_STATE}" --quiet
-if grep -qF "${EXPECTED_UD_EDIT_B64}" "${B64_EDIT_STATE}" || grep -qF "${EXPECTED_PASSWORD_B64}" "${B64_EDIT_STATE}"; then
-  echo "FAIL: state.json carries the base64 of the edited script or of the password (issue #4451)" >&2
-  exit 1
-fi
+# no_b64_in_state <what> <file>: neither script's encoding nor the password's.
+no_b64_in_state() {
+  if grep -qF "${EXPECTED_UD_EDIT_B64}" "$2" || grep -qF "${EXPECTED_UD_B64}" "$2" \
+    || grep -qF "${EXPECTED_PASSWORD_B64}" "$2"; then
+    echo "FAIL: $1 carries the base64 of a script holding the password, or of the password (issue #4451)" >&2
+    exit 1
+  fi
+}
+no_b64_in_state "state.json after the edit" "${B64_EDIT_STATE}"
 UD_EDIT_PERSISTED=$(jq -r '.resources.Base64UserDataParam.properties.Value // "<absent>"' "${B64_EDIT_STATE}")
 UD_FP_EDITED=$(jq -r '.resources.Base64UserDataParam.maskedPropertyFingerprints.Value // "<absent>"' "${B64_EDIT_STATE}")
 if [ "${UD_EDIT_PERSISTED}" != "***" ] || [[ "${UD_FP_EDITED}" != sha256:* ]] \
@@ -1252,9 +1272,70 @@ if [ "${UD_VERSION_SAME}" != "${UD_VERSION_EDITED}" ]; then
   exit 1
 fi
 echo "    OK: the unchanged redeploy sent nothing (version stays ${UD_VERSION_SAME})"
-# Both deploys declared the two probe outputs again; drop them as above, for
-# the same later `diff --fail` guard.
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${B64_EDIT_STATE}" --quiet
+no_b64_in_state "state.json after the unchanged redeploy" "${B64_EDIT_STATE}"
+
+# The LEGACY-UPGRADE half: a record an older cdkd wrote has no fingerprint.
+# Stripped here, the same direct-S3 write idiom as the output drops; nothing
+# holds the lock between phases. Also drops the two probe outputs both deploys
+# declared again, for the later `diff --fail` guard.
+jq 'del(.outputs.Base64Secret, .outputs.Base64Pin)
+  | del(.resources.Base64UserDataParam.maskedPropertyFingerprints)' "${B64_EDIT_STATE}" > "${B64_TRIMMED}"
+if jq -e '(.resources.Base64UserDataParam | has("maskedPropertyFingerprints"))
+  or (.resources.Base64UserDataParam.properties.Value != "***")' "${B64_TRIMMED}" >/dev/null; then
+  echo "FAIL: premise: could not strip the fingerprint from a masked Base64UserDataParam record -- the legacy-upgrade arm would test nothing (issue #4451)" >&2
+  exit 1
+fi
+aws s3 cp "${B64_TRIMMED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+# An unchanged deploy over the legacy record: nothing sent, field restored.
+if ! DEPLOY_OUT_B64_LEGACY=$(CDKD_TEST_BASE64_LEAK=true CDKD_TEST_BASE64_EDIT=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes 2>&1); then
+  no_b64_leak "the failed legacy-upgrade deploy's log" "${DEPLOY_OUT_B64_LEGACY}"
+  echo "FAIL: the unchanged deploy over a fingerprint-less record exited non-zero (issue #4451)" >&2
+  diag_output "${DEPLOY_OUT_B64_LEGACY}"
+  exit 1
+fi
+no_b64_leak "the legacy-upgrade deploy's --verbose log" "${DEPLOY_OUT_B64_LEGACY}"
+if [ "$(ud_live_version)" != "${UD_VERSION_EDITED}" ]; then
+  echo "FAIL: the first deploy over a fingerprint-less record re-sent Base64UserDataParam -- an upgrade must send what it sent before (issue #4451)" >&2
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${B64_EDIT_STATE}" --quiet
+no_b64_in_state "state.json after the legacy-upgrade deploy" "${B64_EDIT_STATE}"
+UD_FP_RESTORED=$(jq -r '.resources.Base64UserDataParam.maskedPropertyFingerprints.Value // "<absent>"' "${B64_EDIT_STATE}")
+if [ "${UD_FP_RESTORED}" != "${UD_FP_EDITED}" ]; then
+  echo "FAIL: the legacy-upgrade deploy did not backfill the fingerprint of the deployed template (${UD_FP_EDITED} expected, read ${UD_FP_RESTORED}) (issue #4451)" >&2
+  exit 1
+fi
+echo "    OK: a fingerprint-less record: the unchanged deploy sent nothing and backfilled the field"
+# ...and the NEXT edit (back to the original script) is sent.
+if ! DEPLOY_OUT_B64_BACK=$(CDKD_TEST_BASE64_LEAK=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes 2>&1); then
+  no_b64_leak "the failed post-upgrade edit deploy's log" "${DEPLOY_OUT_B64_BACK}"
+  echo "FAIL: the edit deploy after the backfill exited non-zero (issue #4451)" >&2
+  diag_output "${DEPLOY_OUT_B64_BACK}"
+  exit 1
+fi
+no_b64_leak "the post-upgrade edit deploy's --verbose log" "${DEPLOY_OUT_B64_BACK}"
+if [ "$(ud_live_value)" != "${EXPECTED_UD_B64}" ]; then
+  echo "FAIL: the edit after the backfill was not sent -- Base64UserDataParam does not hold the original script again (issue #4451)" >&2
+  exit 1
+fi
+UD_VERSION_BACK=$(ud_live_version)
+case "${UD_VERSION_BACK}" in
+  '' | *[!0-9]*)
+    echo "FAIL: premise: Base64UserDataParam's version did not read as a number (${UD_VERSION_BACK}) (issue #4451)" >&2
+    exit 1
+    ;;
+esac
+if [ "${UD_VERSION_BACK}" -le "${UD_VERSION_EDITED}" ]; then
+  echo "FAIL: Base64UserDataParam's version did not advance with the post-upgrade edit (${UD_VERSION_EDITED} -> ${UD_VERSION_BACK}) (issue #4451)" >&2
+  exit 1
+fi
+echo "    OK: the edit after the backfill reached AWS (version ${UD_VERSION_EDITED} -> ${UD_VERSION_BACK})"
+# Drop the two probe outputs this last deploy declared again.
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${B64_EDIT_STATE}" --quiet
+no_b64_in_state "state.json after the post-upgrade edit" "${B64_EDIT_STATE}"
 jq 'del(.outputs.Base64Secret, .outputs.Base64Pin)' "${B64_EDIT_STATE}" > "${B64_TRIMMED}"
 if jq -e 'has("outputs") and ((.outputs | has("Base64Secret")) or (.outputs | has("Base64Pin")))' "${B64_TRIMMED}" >/dev/null; then
   echo "FAIL: could not drop Base64Secret / Base64Pin from the persisted outputs after Phase 1b2c -- the diff --fail guard later would red on them" >&2
