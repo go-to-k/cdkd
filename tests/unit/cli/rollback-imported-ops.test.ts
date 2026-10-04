@@ -329,6 +329,8 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
       await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
 
       expect(provider.update).toHaveBeenCalledTimes(updates);
+      // The plan says why the mismatched op is skipped.
+      expect(infoLines().some((l) => l.includes('no longer names'))).toBe(updates === 0);
     }
   );
 

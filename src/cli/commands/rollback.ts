@@ -530,6 +530,15 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
     case 'skip-failed-unknown':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed CREATE recorded no physical id`;
     case 'skip-failed-noop':
+      // go-to-k/cdkd#4523: a failed UPDATE reaches this kind only when the
+      // state record names ANOTHER physical resource (e.g. one `cdkd import`
+      // adopted), so say that rather than "nothing to revert".
+      if (op.changeType === 'UPDATE') {
+        return (
+          `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) — failed ` +
+          `UPDATE was on a resource the state record no longer names; check that resource by hand`
+        );
+      }
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed ${safe(op.changeType)} left nothing to revert`;
     case 'skip-failed-absent':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — no previous state available`;
