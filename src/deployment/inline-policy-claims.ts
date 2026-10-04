@@ -202,8 +202,8 @@ export class RollbackInlinePolicyWriters {
         principal,
         policyName
       );
-      // A value outside IAM's name charset names nothing to put back.
-      if (!claimed && IAM_NAME.test(principal) && IAM_NAME.test(policyName)) {
+      // A value outside IAM's name charset is noted too; no record holds it.
+      if (!claimed) {
         this.removals.set(removalKey(kind, principal, policyName), { kind, principal, policyName });
       }
       return claimed;
