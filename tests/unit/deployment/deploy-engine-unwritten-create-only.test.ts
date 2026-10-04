@@ -373,6 +373,54 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
     });
   });
 
+  describe('the evidence field across an in-place update (update-in-place.ts)', () => {
+    const TAGGED = { ...DECLARED, MapPublicIpOnLaunch: true };
+    const IN_PLACE: PropertyChange[] = [
+      { path: 'MapPublicIpOnLaunch', oldValue: undefined, newValue: true, requiresReplacement: false },
+    ];
+
+    function sdkEngine() {
+      allowed = new Set([`${TYPE}:${CREATE_ONLY}`]);
+      const engine = makeEngine();
+      (
+        engine as unknown as { providerRegistry: { getProviderFor: ReturnType<typeof vi.fn> } }
+      ).providerRegistry.getProviderFor.mockReturnValue({ provider, provisionedBy: 'sdk' });
+      return engine;
+    }
+
+    it('CARRIES the evidence for a key still recorded', async () => {
+      const records = await provision(sdkEngine(), { desired: TAGGED, changes: IN_PLACE });
+      expect(callOrder).toEqual(['update']);
+      expect(records['MySubnet']!['acceptedCreateOnlyDrops']).toEqual([CREATE_ONLY]);
+    });
+
+    it('never ASSERTS evidence for an imported record the update did not create', async () => {
+      const records = await provision(sdkEngine(), {
+        desired: TAGGED,
+        changes: IN_PLACE,
+        evidence: null,
+      });
+      expect(callOrder).toEqual(['update']);
+      expect(JSON.parse(JSON.stringify(records['MySubnet']))).not.toHaveProperty(
+        'acceptedCreateOnlyDrops'
+      );
+    });
+
+    it('REBUILDS it when update() itself replaced the resource under a new id', async () => {
+      vi.mocked(provider.update).mockImplementationOnce(async () => {
+        callOrder.push('update');
+        return { physicalId: 'subnet-new', wasReplaced: true, attributes: {} };
+      });
+      const records = await provision(sdkEngine(), {
+        desired: TAGGED,
+        changes: IN_PLACE,
+        evidence: null,
+      });
+      expect(records['MySubnet']!['physicalId']).toBe('subnet-new');
+      expect(records['MySubnet']!['acceptedCreateOnlyDrops']).toEqual([CREATE_ONLY]);
+    });
+  });
+
   describe('the evidence field across a replacement (update-replace.ts)', () => {
     it('is cleared when the replacement lands on Cloud Control', async () => {
       const records = await provision(makeEngine({ replace: true }));

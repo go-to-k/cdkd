@@ -26,6 +26,7 @@ import type {
   ResourceUpdateResult,
 } from '../../types/resource.js';
 import { type ResourceState, hasUnverifiableParameterRefusal } from '../../types/state.js';
+import { acceptedCreateOnlyDropsField } from './record-shape.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { CdkdError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
@@ -1141,10 +1142,26 @@ export async function updateInPlace(
     resolvedProps
   );
 
+  const recordedProperties = this.propertiesToRecord(
+    resolvedProps,
+    result,
+    resourceType,
+    resultProvisionedBy
+  );
   stateResources[logicalId] = {
     physicalId: result.physicalId,
     resourceType,
-    properties: this.propertiesToRecord(resolvedProps, result, resourceType, resultProvisionedBy),
+    properties: recordedProperties,
+    // #2790: an update of the same resource cannot set a create-only key, so
+    // it only CARRIES the previous evidence; an evidenced replacement inside
+    // `update()` built a new resource, whose evidence is rebuilt.
+    ...acceptedCreateOnlyDropsField(
+      recordedProperties,
+      resourceType,
+      resultProvisionedBy,
+      dischargedByReplacement ? 'new-resource' : 'in-place',
+      currentResource
+    ),
     ...(carriedAttributes && { attributes: carriedAttributes }),
     ...(dependencies && dependencies.length > 0 && { dependencies }),
     ...this.extractTemplateAttributes(template, logicalId),
