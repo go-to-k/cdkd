@@ -22,7 +22,11 @@ import {
 } from '../retryable-errors.js';
 import { redactRollbackRecord } from './replay-secrets.js';
 import { resolveReplacementOldType, unroutableReplacementError } from './plan.js';
-import { requireRestorableBaseline, replayPrefixScope } from './names.js';
+import {
+  requireRestorableBaseline,
+  replayPrefixScope,
+  ABSENT_BASELINE_SKIP_CAUSE,
+} from './names.js';
 import {
   safe,
   throwIfDeleteSkipped,
@@ -39,6 +43,7 @@ import {
   describedPhysicalIdPointer,
   collisionLine,
   shownLogicalId,
+  recordRollbackSkip,
 } from './messages.js';
 import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.js';
 import { createWithRollbackRetry, recordedPropertiesAfterReplayCreate } from './replay-retry.js';
@@ -90,7 +95,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       retry: `re-running ${rerunRollbackPhrase(ctx, '`cdkd rollback`')} retries this op`,
     })
   ) {
-    result.warnings++;
+    recordRollbackSkip(s, op, ABSENT_BASELINE_SKIP_CAUSE);
     return;
   }
   // Re-resolve the redacted secret expressions for the re-CREATE (GHSA
@@ -974,6 +979,17 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       physicalId: current.physicalId,
       reason: mask(survivorReason),
       ...(survivorProvisionedBy && { provisionedBy: survivorProvisionedBy }),
+    }),
+    // go-to-k/cdkd#3338: the replacement was NOT fully reversed, which the
+    // warn above is otherwise the only trace of. No `physicalId`: the live
+    // resource is the one state now records, so nothing is untracked.
+    ...(adoptedLiveNewResource && {
+      reason: mask(
+        `The re-create returned the live new resource instead of re-creating the old one ` +
+          `(its Create API is name-idempotent), so the replacement was NOT fully reversed: ` +
+          `the old resource's original properties may not have been re-applied. Inspect it ` +
+          `with \`cdkd drift\` and run \`cdkd deploy\` to reconcile.`
+      ),
     }),
   });
   return;

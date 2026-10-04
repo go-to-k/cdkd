@@ -68,8 +68,8 @@
 #          name them.
 #   5. OWNERSHIP (issue #4355), phase 1e: a rule added by hand to the
 #      ambiguity-arm SG, then `CdkdSgIngressStrangerExample` declaring the
-#      identical rule. Both deploys must refuse naming it (the first journaled
-#      without its attempted bag), an UPDATE onto it from another range must
+#      identical rule. Both deploys must refuse naming it (a refusal journals
+#      no failed op, #4356), an UPDATE onto it from another range must
 #      refuse too, and it must survive each such destroy. A journal holding
 #      the rule only as a COMPLETED CREATE, or as a failed attempt a removed
 #      newer segment superseded, must still refuse (#4402). A POP arm adopts in
@@ -921,22 +921,27 @@ for ATTEMPT in first second; do
   done
   echo "    OK: the ${ATTEMPT} deploy refused, naming ${STRANGER_RULE_ID}"
   if [ "${ATTEMPT}" = first ]; then
-    # The refusal is journaled as a failed CREATE WITHOUT its attempted bag —
-    # the bag is what the next deploy would read as "this stack attempted it".
-    if ! STRANGER_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
-      echo "FAIL: could not read the rollback journal at s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json after the refused deploy: ${STRANGER_JOURNAL}" >&2
+    # The refused CREATE is NOT journaled as a failed op (go-to-k/cdkd#4356):
+    # nothing was applied and it recorded no physical id, so the record could
+    # only be the next deploy's adoption evidence (its attempted bag,
+    # go-to-k/cdkd#4355) or a `--revert-failed` line advising to delete the
+    # rule by hand — the stranger's rule. Absent journal is fine; a present one
+    # must not name StrangerIngress. Tri-state: an unreadable journal fails.
+    STRANGER_JOURNAL_ERR="$(mktemp)"
+    if STRANGER_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>"${STRANGER_JOURNAL_ERR}"); then
+      REFUSED_OPS=$(printf '%s' "${STRANGER_JOURNAL}" | jq '[.segments[].failedOperations[]? | select(.logicalId == "StrangerIngress")]')
+      if [ "$(printf '%s' "${REFUSED_OPS}" | jq 'length')" -ne 0 ]; then
+        echo "FAIL: the journal records the refused StrangerIngress CREATE as a failed op: ${REFUSED_OPS}" >&2
+        rm -f "${STRANGER_JOURNAL_ERR}"
+        exit 1
+      fi
+    elif ! grep -qF '(404)' "${STRANGER_JOURNAL_ERR}" && ! grep -qF 'NoSuchKey' "${STRANGER_JOURNAL_ERR}"; then
+      echo "FAIL: could not read the rollback journal at s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json after the refused deploy: $(cat "${STRANGER_JOURNAL_ERR}")" >&2
+      rm -f "${STRANGER_JOURNAL_ERR}"
       exit 1
     fi
-    REFUSED_OPS=$(printf '%s' "${STRANGER_JOURNAL}" | jq '[.segments[].failedOperations[]? | select(.logicalId == "StrangerIngress" and .changeType == "CREATE")]')
-    if [ "$(printf '%s' "${REFUSED_OPS}" | jq 'length')" -lt 1 ]; then
-      echo "FAIL: the journal holds no failed CREATE for StrangerIngress: ${STRANGER_JOURNAL}" >&2
-      exit 1
-    fi
-    if [ "$(printf '%s' "${REFUSED_OPS}" | jq '[.[] | select(has("attemptedProperties"))] | length')" -ne 0 ]; then
-      echo "FAIL: the refused CREATE was journaled WITH attemptedProperties — the next deploy would adopt ${STRANGER_RULE_ID}: ${REFUSED_OPS}" >&2
-      exit 1
-    fi
-    echo "    OK: the refusal is journaled without its attempted bag"
+    rm -f "${STRANGER_JOURNAL_ERR}"
+    echo "    OK: the refusal left no failed-op record in the journal"
   fi
 done
 
@@ -1039,9 +1044,10 @@ echo "    OK: the destroy revoked the stack's own rule and only that"
 assert_gone "stranger-arm state file s3://${STATE_BUCKET}/${STRANGER_PREFIX}/state.json still exists after the update-arm destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STRANGER_PREFIX}/state.json"
 
 # The ADOPT half: with journal evidence that THIS stack attempted the rule, the
-# duplicate is adopted. A refused deploy leaves the failed op without its bag;
-# the bag is written back by hand — what a deploy whose Authorize landed but
-# whose response was lost journals — and the next deploy must adopt the rule,
+# duplicate is adopted. A refused deploy journals no failed op (#4356), so the
+# evidence is written by hand — the failed CREATE with its bag that a deploy
+# whose Authorize landed but whose response was lost journals — and the next
+# deploy must adopt the rule,
 # record its id, and (the rule now being the stack's) revoke it on destroy.
 echo "==> Phase 1e: ADOPT arm — refuse once, then give the journal the attempt"
 if ADOPT_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
@@ -1059,10 +1065,23 @@ if ! printf '%s\n' "${ADOPT_OUT}" | grep -qF "nothing in this stack's records sh
   printf '%s\n' "${ADOPT_OUT}" >&2
   exit 1
 fi
+# The refusal is raised before anything is applied, so (go-to-k/cdkd#4356) it
+# journals no failed op: the journal is absent, or holds no StrangerIngress
+# failed op. Any other read failure is a FAIL.
 if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
-  echo "FAIL: could not read the rollback journal after the ADOPT arm's refused deploy: ${ADOPT_JOURNAL}" >&2
+  if printf '%s' "${ADOPT_JOURNAL}" | grep -qE '\(404\)|NoSuchKey|Not Found'; then
+    ADOPT_JOURNAL=$(jq -n --arg s "${STRANGER_STACK}" --arg r "${REGION}" \
+      '{journalVersion: 1, stackName: $s, region: $r, segments: []}')
+  else
+    echo "FAIL: could not read the rollback journal after the ADOPT arm's refused deploy: ${ADOPT_JOURNAL}" >&2
+    exit 1
+  fi
+fi
+if [ "$(printf '%s' "${ADOPT_JOURNAL}" | jq '[.segments[].failedOperations[]? | select(.logicalId == "StrangerIngress")] | length')" -ne 0 ]; then
+  echo "FAIL: the refused-before-applying create was journaled as a failed op (go-to-k/cdkd#4356): ${ADOPT_JOURNAL}" >&2
   exit 1
 fi
+echo "    OK: the refused create left no failed-op record"
 # go-to-k/cdkd#4402: a COMPLETED op's bag is not evidence — its resource was
 # recorded in state, so a create of the id means it was reverted, destroyed or
 # replaced, and a matching rule now is someone else's. A segment holding the
@@ -1104,10 +1123,21 @@ if printf '%s\n' "${STALE_OUT}" | grep -qF "could not be read"; then
   exit 1
 fi
 echo "    OK: a completed op's bag did not count as evidence"
+# The journal must SURVIVE the refused deploy: that attempt journaled nothing,
+# so its clean auto-rollback may not settle (pop) the seeded segment, which is
+# an older attempt's record (the #4522 review's B1). A 404, or a segment count
+# or newest segment that differs from what was seeded, is that bug.
 if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
   echo "FAIL: could not read the rollback journal after the STALE arm's refused deploy: ${ADOPT_JOURNAL}" >&2
   exit 1
 fi
+STALE_SEEDED_COUNT=$(printf '%s' "${STALE_JOURNAL}" | jq '.segments | length')
+if [ "$(printf '%s' "${ADOPT_JOURNAL}" | jq --argjson n "${STALE_SEEDED_COUNT}" \
+  '(.segments | length) == $n and .segments[-1].timestamp == 1 and .segments[-1].reason == "no-rollback-failure"')" != true ]; then
+  echo "FAIL: the STALE arm's refused deploy changed the seeded journal (expected ${STALE_SEEDED_COUNT} segment(s), newest timestamp 1): ${ADOPT_JOURNAL}" >&2
+  exit 1
+fi
+echo "    OK: the refused deploy left the seeded journal as it was"
 
 # The same, for the shape a removed newer segment leaves (#4402): a FAILED
 # attempt of the identical rule whose segment carries `supersededLogicalIds`
@@ -1147,12 +1177,27 @@ if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback
   echo "FAIL: could not read the rollback journal after the STALE-2 arm's refused deploy: ${ADOPT_JOURNAL}" >&2
   exit 1
 fi
+STALE2_SEEDED_COUNT=$(printf '%s' "${SUPERSEDED_JOURNAL}" | jq '.segments | length')
+if [ "$(printf '%s' "${ADOPT_JOURNAL}" | jq --argjson n "${STALE2_SEEDED_COUNT}" \
+  '(.segments | length) == $n and .segments[-1].timestamp == 2 and ((.segments[-1].supersededLogicalIds // []) | index("StrangerIngress")) != null')" != true ]; then
+  echo "FAIL: the STALE-2 arm's refused deploy changed the seeded journal (expected ${STALE2_SEEDED_COUNT} segment(s), newest timestamp 2 superseding StrangerIngress): ${ADOPT_JOURNAL}" >&2
+  exit 1
+fi
+echo "    OK: the refused deploy left the seeded journal as it was"
 
+# The refused deploys journaled nothing (go-to-k/cdkd#4356), so append the
+# segment a deploy whose Authorize landed but whose response was lost leaves:
+# an unmarked failed CREATE carrying its attempted bag, with no superseded
+# marker.
 ADOPT_JOURNAL=$(printf '%s' "${ADOPT_JOURNAL}" | jq --arg g "${STRANGER_GROUP_ID}" '
-  .segments |= map(.failedOperations |= ((. // []) | map(
-    if .logicalId == "StrangerIngress" and .changeType == "CREATE"
-    then .attemptedProperties = {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
-    else . end)))')
+  .segments += [{
+    timestamp: 3, reason: "no-rollback-failure", initialDeploy: false, operations: [],
+    failedOperations: [{
+      logicalId: "StrangerIngress", changeType: "CREATE",
+      resourceType: "AWS::EC2::SecurityGroupIngress",
+      attemptedProperties: {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
+    }]
+  }]')
 # Only a bag in a segment that carries no superseded marker for it can be the
 # evidence the ADOPT arm relies on — the STALE-2 segment's bag cannot.
 if [ "$(printf '%s' "${ADOPT_JOURNAL}" | jq '[.segments[] | select(((.supersededLogicalIds // []) | index("StrangerIngress")) == null) | .failedOperations[]? | select(.logicalId == "StrangerIngress" and has("attemptedProperties"))] | length')" -lt 1 ]; then
@@ -1227,15 +1272,30 @@ if node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
   echo "FAIL: the POP arm's first deploy SUCCEEDED over ${STRANGER_RULE_ID} with no journal evidence" >&2
   exit 1
 fi
+# The refusal journals no failed op (go-to-k/cdkd#4356): the journal is absent
+# or holds no StrangerIngress failed op, so the attempt is appended by hand.
 if ! POP_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
-  echo "FAIL: could not read the rollback journal for the POP arm: ${POP_JOURNAL}" >&2
+  if printf '%s' "${POP_JOURNAL}" | grep -qE '\(404\)|NoSuchKey|Not Found'; then
+    POP_JOURNAL=$(jq -n --arg s "${STRANGER_STACK}" --arg r "${REGION}" \
+      '{journalVersion: 1, stackName: $s, region: $r, segments: []}')
+  else
+    echo "FAIL: could not read the rollback journal for the POP arm: ${POP_JOURNAL}" >&2
+    exit 1
+  fi
+fi
+if [ "$(printf '%s' "${POP_JOURNAL}" | jq '[.segments[].failedOperations[]? | select(.logicalId == "StrangerIngress")] | length')" != 0 ]; then
+  echo "FAIL: the POP arm's refused create was journaled as a failed op (go-to-k/cdkd#4356): ${POP_JOURNAL}" >&2
   exit 1
 fi
 POP_JOURNAL=$(printf '%s' "${POP_JOURNAL}" | jq --arg g "${STRANGER_GROUP_ID}" '
-  .segments |= map(.failedOperations |= ((. // []) | map(
-    if .logicalId == "StrangerIngress" and .changeType == "CREATE"
-    then .attemptedProperties = {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
-    else . end)))')
+  .segments += [{
+    timestamp: 4, reason: "no-rollback-failure", initialDeploy: false, operations: [],
+    failedOperations: [{
+      logicalId: "StrangerIngress", changeType: "CREATE",
+      resourceType: "AWS::EC2::SecurityGroupIngress",
+      attemptedProperties: {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
+    }]
+  }]')
 printf '%s' "${POP_JOURNAL}" | aws s3 cp - "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" \
   --content-type application/json >/dev/null
 

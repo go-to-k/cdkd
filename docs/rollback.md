@@ -73,7 +73,8 @@ purpose: a broken app is a common reason you want to roll back. The
 journal is deleted automatically on the next successful deploy and by
 `cdkd destroy`; after a clean automatic rollback it keeps only the
 failed resource's record so `cdkd rollback --revert-failed` still works
-in the default deploy flow. A nested stack's journal is the exception:
+in the default deploy flow. An automatic rollback that skipped an operation
+it could not revert keeps the whole journal. A nested stack's journal is the exception:
 its successful deploy keeps a record until the top-level stack's deploy
 succeeds, which deletes the journals of every nested stack under it.
 
@@ -96,8 +97,10 @@ old one is re-adopted with its data instead and the new copy is again
 left running and untracked.
 
 Exit codes: `0` = fully clean
-(journal deleted), `2` = partial (some ops failed / were skipped — the
-journal is kept so you can re-run), `1` = hard error. See
+(journal deleted), `2` = partial (some ops failed — the journal is kept so
+you can re-run — or were skipped, each recorded as a
+`ROLLBACK_RESOURCE_SKIPPED` event, or left an untracked new copy behind or
+were not fully reversed, recorded on its `ROLLBACK_RESOURCE_SUCCEEDED` event's `reason`), `1` = hard error. See
 [`cdkd rollback`](cli-rollback.md) for the
 full reference and known limitations (a DELETE that already happened
 cannot be restored).

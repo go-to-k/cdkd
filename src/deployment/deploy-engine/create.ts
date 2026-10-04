@@ -18,6 +18,7 @@ import {
 } from '../replacement-name-holder.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { markNonRetryable } from '../retryable-errors.js';
+import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import {
   type RecordedSecretValues,
   createSecretMasker,
@@ -295,12 +296,17 @@ async function refuseTakenCreateName(
   const adoptsText =
     `its create API hands back or overwrites an existing resource of that name instead of ` +
     `refusing it`;
+  // Marked refused-before-applying (go-to-k/cdkd#4356): every arm refuses
+  // BEFORE the create call, so nothing was created, and the deploy then
+  // journals no failed op the rollback could misdescribe.
   const refuse = (message: string, cause?: unknown): never => {
     throw markNonRetryable(
-      new CdkdError(
-        maskName(message),
-        'NAMED_CREATE_COLLISION',
-        cause instanceof Error ? cause : undefined
+      markRefusedBeforeApplying(
+        new CdkdError(
+          maskName(message),
+          'NAMED_CREATE_COLLISION',
+          cause instanceof Error ? cause : undefined
+        )
       )
     );
   };

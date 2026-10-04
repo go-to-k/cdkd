@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 
@@ -32,6 +33,13 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *     target (issue #1198): the journal records the failed op with its
  *     pre-op state + attempted properties, and
  *     `cdkd rollback --revert-failed` force-reverts it.
+ *   - `SkipBucket` + `SkipDoomed` — added ONLY when `WITH_SKIP_PAIR=true`
+ *     (go-to-k/cdkd#3338). Removing the pair from the template makes the
+ *     deploy DELETE both: `SkipDoomed` (an SSM parameter) first, since it
+ *     depends on the bucket, then `SkipBucket`, which verify.sh has put an
+ *     object into and which has no `autoDeleteObjects`, so its delete FAILS.
+ *     The automatic rollback then meets a COMPLETED DELETE it cannot undo — a
+ *     skipped op — which must be recorded as an event and keep the journal.
  *   - `FailingQueue` — an SQS queue with an out-of-range
  *     `messageRetentionPeriod` (valid range [60, 1209600]) added ONLY when
  *     `INJECT_FAIL=true`. AWS rejects `CreateQueue`, so the deploy fails. It
@@ -89,6 +97,23 @@ export class RollbackCommandStack extends cdk.Stack {
         messageRetentionPeriod: 9999999,
       });
       for (const d of deps) failing.node.addDependency(d);
+    }
+
+    if (process.env.WITH_SKIP_PAIR === 'true') {
+      // DESTROY so the template's removal is a real DELETE (s3.Bucket defaults
+      // to RETAIN), and no autoDeleteObjects so a non-empty bucket refuses it.
+      const skipBucket = new s3.Bucket(this, 'SkipBucket', {
+        bucketName: `${this.stackName.toLowerCase()}-skip-${this.account}-${this.region}`,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+      const doomed = new ssm.StringParameter(this, 'SkipDoomed', {
+        parameterName: `${this.stackName}-skip-doomed`,
+        stringValue: 'deleted-then-unrecoverable',
+        description: 'completed-DELETE (unrecoverable) target for the cdkd rollback integ',
+      });
+      // A dependent is deleted BEFORE its dependency: SkipDoomed's delete
+      // completes, then SkipBucket's fails.
+      doomed.node.addDependency(skipBucket);
     }
 
     new cdk.CfnOutput(this, 'MarkerName', { value: marker.parameterName });
