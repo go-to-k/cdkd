@@ -466,6 +466,33 @@ export class IntrinsicFunctionResolver {
     );
   }
 
+  /**
+   * Record where a cross-stack read's value lies on the string it resolved to
+   * -- the whole of it -- as the parameter `Ref` arm below does (issue
+   * #4527). An `Fn::Join` / `Fn::Sub` holding `source` reads that span to
+   * position the read on its own output, and an `Fn::If` selecting it lends
+   * it, so an EMBEDDED read is answered from its own association however many
+   * parts beside it have no fixed text. Any STRING value is recorded, spans or
+   * not (an empty one, a source with no key), in the same shape the `Ref` arm
+   * records a parameter's; a record with no span reads exactly as no record.
+   */
+  private recordCrossStackReadSpan(
+    context: ResolverContext,
+    source: Record<string, unknown>,
+    value: unknown
+  ): unknown {
+    if (typeof value === 'string') {
+      this.recordLeafResolution(context, source, {
+        input: value,
+        output: value,
+        substitutions: [],
+        complete: true,
+        parameterSpans: stringFnMixin.wholeReferenceSpans(source, value),
+      });
+    }
+    return value;
+  }
+
   /** Recursively resolve a value. */
   /** @internal */
   async resolveValue(value: unknown, context: ResolverContext): Promise<unknown> {
@@ -517,15 +544,18 @@ export class IntrinsicFunctionResolver {
           output: value,
           substitutions: [],
           complete: true,
-          parameterSpans:
-            value === '' ? [] : [{ start: 0, length: value.length, parameter: logicalId }],
+          parameterSpans: stringFnMixin.wholeReferenceSpans({ Ref: logicalId }, value),
         });
       }
       return value;
     }
 
     if ('Fn::GetAtt' in obj) {
-      return await this.resolveGetAtt(obj['Fn::GetAtt'] as [string, unknown] | string, context);
+      return this.recordCrossStackReadSpan(
+        context,
+        obj,
+        await this.resolveGetAtt(obj['Fn::GetAtt'] as [string, unknown] | string, context)
+      );
     }
 
     // Both pass the intrinsic OBJECT itself, the key its resolution record is
@@ -595,11 +625,19 @@ export class IntrinsicFunctionResolver {
     }
 
     if ('Fn::ImportValue' in obj) {
-      return await this.resolveImportValue(obj['Fn::ImportValue'], context);
+      return this.recordCrossStackReadSpan(
+        context,
+        obj,
+        await this.resolveImportValue(obj['Fn::ImportValue'], context)
+      );
     }
 
     if ('Fn::GetStackOutput' in obj) {
-      return await this.resolveGetStackOutput(obj['Fn::GetStackOutput'], context);
+      return this.recordCrossStackReadSpan(
+        context,
+        obj,
+        await this.resolveGetStackOutput(obj['Fn::GetStackOutput'], context)
+      );
     }
 
     if ('Fn::FindInMap' in obj) {
