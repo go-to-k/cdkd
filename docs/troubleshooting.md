@@ -2304,7 +2304,8 @@ MyAlarm (AWS::CloudWatch::Alarm): routing via Cloud Control API (cdkd's SDK Prov
 So if the field is genuinely missing from AWS, the auto-route did not fire.
 Three reasons:
 
-1. **You passed `--prefer-sdk-route <Type>:<Prop>`.** That flag
+1. **You passed
+   [`--prefer-sdk-route <Type>:<Prop>`](cli-deploy-safety.md#the-override).** That flag
    means "keep this resource on the SDK provider and accept the drop" — it is
    the opt-in to exactly this outcome.
 2. **The property is not in cdkd's committed CloudFormation schema snapshot,
@@ -2337,10 +2338,15 @@ deliberately.
 The case 1 exception is a create-only property. cdkd keeps it in the record,
 because applying one to a live resource needs a replacement, so the deploy
 without the flag refuses with `CREATE_ONLY_DROP_NEEDS_REPLACEMENT` rather than
-replacing the resource on its own. The refusal names the remedies: opt in with
-`--recreate-via-cc-api <LogicalId>` or `--replace` (only `--replace` inside a
-nested stack, and a stateful type also needs `--force-stateful-recreation`), or
-keep passing `--prefer-sdk-route`. See
+replacing the resource on its own. The refusal names the remedies:
+
+- `--recreate-via-cc-api <LogicalId>` or `--replace` replaces the resource with
+  the property applied; inside a nested stack only `--replace` reaches it.
+- `--force-stateful-recreation` is also required for a stateful type.
+- `--prefer-sdk-route` with the `<Type>:<Prop>,...` list the refusal prints keeps
+  dropping the property; that list can name more than your original flag did.
+
+See
 [`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](cli-deploy-safety.md#create-only-drop-needs-replacement)
 for what each remedy does and costs.
 
