@@ -20,6 +20,7 @@ import type { StateBackendConfig } from '../types/config.js';
 import {
   ROLLBACK_JOURNAL_VERSION,
   parseRollbackJournal,
+  type ImportedResourceMark,
   type RollbackJournal,
   type RollbackJournalSegment,
 } from '../types/rollback-journal.js';
@@ -1333,6 +1334,50 @@ export class S3StateBackend {
       this.getRollbackJournalKey(stackName, region),
       JSON.stringify(journal, null, 2)
     );
+  }
+
+  /**
+   * go-to-k/cdkd#4523: record that `cdkd import` adopted `marks` (logical id,
+   * the physical id it wrote, and the type). Every segment holding a completed
+   * or failed op of a marked logical id gets that mark in `importedResources`
+   * (the replay then runs none of the segment's ops of the id: the matching
+   * ones are adopted, the rest displaced — see `splitImportedOps`). The newest
+   * segment also supersedes every marked id, since an import records the
+   * resource just as a completed op does. Returns the logical ids marked; no
+   * journal, or no segment naming one, writes nothing. Throws on a read or
+   * write failure — the caller refuses the import rather than leave the
+   * journal free to delete it.
+   */
+  async markRollbackJournalImported(
+    stackName: string,
+    region: string,
+    marks: readonly ImportedResourceMark[]
+  ): Promise<string[]> {
+    if (marks.length === 0) return [];
+    const journal = await this.loadRollbackJournal(stackName, region);
+    if (!journal) return [];
+    const marked = new Set<string>();
+    for (const segment of journal.segments) {
+      const named = new Set(
+        [...segment.operations, ...(segment.failedOperations ?? [])].map((op) => op.logicalId)
+      );
+      const hits = marks.filter((m) => named.has(m.logicalId));
+      if (hits.length === 0) continue;
+      // A re-import replaces the id's earlier mark: the record names the
+      // NEW resource now.
+      const kept = (segment.importedResources ?? []).filter(
+        (k) => !hits.some((m) => m.logicalId === k.logicalId)
+      );
+      segment.importedResources = [...kept, ...hits.map((m) => ({ ...m }))];
+      for (const m of hits) marked.add(m.logicalId);
+    }
+    if (marked.size === 0) return [];
+    addSupersededIds(journal.segments[journal.segments.length - 1]!, [...marked]);
+    await this.putRawObject(
+      this.getRollbackJournalKey(stackName, region),
+      JSON.stringify(journal, null, 2)
+    );
+    return [...marked];
   }
 
   /**

@@ -126,8 +126,8 @@ eventbridge-pipes	2026-10-03T09:34:47Z	PASS	175	verify.sh	rc ok, orph clean (#44
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-03T19:15:22Z	PASS	100	verify.sh	rc ok, orph clean (#2080 PR #4515)
-export	2026-10-04T17:04:46Z	PASS	231	verify.sh	rc ok, orph clean (#4408)
-export-nested-stack	2026-10-04T05:31:47Z	PASS	195	verify.sh	rc ok, orph clean (#4002)
+export	2026-10-04T19:49:12Z	PASS	236	verify.sh	rc ok, orph clean (#4547)
+export-nested-stack	2026-10-04T19:49:12Z	PASS	181	verify.sh	rc ok, orph clean (#4547)
 fallback-recreate-children	2026-10-03T13:19:14Z	PASS	105	verify.sh	rc ok, orph clean; #4461 regression
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
 fsx-lustre	2026-10-03T13:51:11Z	PASS	842	verify.sh	rc ok, orph clean, no final backup left; #4438 regression
@@ -159,11 +159,11 @@ import-deployed-parameter-secret	2026-10-01T06:24:56Z	PASS	440	verify.sh	rc ok, 
 import-heal-prefix-record	2026-09-25T10:36:04Z	PASS	165	verify.sh	rc ok, orph clean; resolver at origin/main leaves all 4 rows wrong
 import-lambda-url-attributes	2026-10-01T10:13:53Z	PASS	105	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
 import-migrate-vpc	2026-09-28T17:48:20Z	PASS	350	verify.sh	rc ok, orph clean (#3950 lane B)
-import-nested-stack	2026-10-04T05:31:47Z	PASS	140	verify.sh	rc ok, orph clean (#4002)
+import-nested-stack	2026-10-04T19:49:12Z	PASS	141	verify.sh	rc ok, orph clean (#4547)
 import-reimport-masked-attrs	2026-09-28T18:03:10Z	PASS	186	verify.sh	PR #4007 merge-gate run; new fixture; pre-fix binary red at phase 2; rc ok, orph clean
-import-retain-destroy	2026-09-24T12:30:44Z	PASS	65	verify.sh	rc ok, orph clean; import.ts at origin/main deletes the Retain param
+import-retain-destroy	2026-10-04T19:49:12Z	PASS	115	verify.sh	rc ok, orph clean (#4547); arm R red at origin/main (R2 no imported mark, R3 imported param deleted)
 import-secret-observed	2026-10-03T10:38:15Z	PASS	135	verify.sh	rc ok, orph clean (#4508)
-import-value-strong-ref	2026-10-04T05:31:47Z	PASS	150	verify.sh	rc ok, orph clean (#4002); first attempt blocked pre-deploy by migrate-from-cfn's concurrent build
+import-value-strong-ref	2026-10-04T19:49:12Z	PASS	155	verify.sh	rc ok, orph clean (#4547)
 importvalue-chain	2026-10-02T23:53:44Z	PASS	145	verify.sh	rc ok, orph clean (#4475)
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 inplace-attr-propagation	2026-10-03T05:58:37Z	PASS	60	verify.sh	rc ok, orph clean (#4497)
@@ -243,7 +243,7 @@ nested-stack	2026-10-04T17:56:15Z	PASS	75	verify.sh	rc ok, orph clean (#4533)
 nested-stack-3level	2026-10-04T01:59:33Z	PASS	320	verify.sh	rc ok, orph clean (#1989 PR #4524)
 nested-stack-deep	2026-10-04T03:21:48Z	PASS	105	verify.sh	rc ok, orph clean (#4521; first run failed on the pre-#4252 arrow grep, fixed here)
 nested-stack-replace-guard	2026-10-04T09:21:25Z	PASS	65	verify.sh	rc ok, orph clean (#3932)
-nested-stack-rollback	2026-10-02T13:42:45Z	PASS	110	verify.sh	rc ok, orph clean (#4436)
+nested-stack-rollback	2026-10-04T19:49:12Z	PASS	100	verify.sh	rc ok, orph clean (#4547)
 nested-stack-secret	2026-10-04T15:13:49Z	PASS	231	verify.sh	rc ok, orph clean (#4451)
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
@@ -277,7 +277,7 @@ replacement-immutable-name	2026-10-02T19:47:13Z	PASS	216	verify.sh	rc ok, orph c
 replacement-rename-onto-holder	2026-10-04T09:21:25Z	PASS	641	verify.sh	rc ok, orph clean (#3932)
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
-rollback-command	2026-10-04T17:04:46Z	PASS	201	verify.sh	rc ok, orph clean (#4408)
+rollback-command	2026-10-04T19:49:12Z	PASS	195	verify.sh	rc ok, orph clean (#4547)
 rollback-cross-region-secret	2026-10-02T23:58:52Z	PASS	295	verify.sh	rc ok, orph clean (#4475)
 rollback-deletion-policy-snapshot	2026-10-02T13:55:47Z	PASS	141	verify.sh	rc ok, orph clean (#4436)
 rollback-explicit-name-rewrite	2026-10-04T17:04:46Z	PASS	201	verify.sh	rc ok, orph clean (#4408)
@@ -305,7 +305,7 @@ schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
 schema-v8-to-v9-migration	2026-09-24T15:24:57Z	FAIL	138	verify.sh	stale fixture: v9 phase expects state.version 9, binary writes 10; AWS clean (#3658, tooling-backlog row)
-schema-v9-to-v10-migration	2026-09-29T06:42:58Z	PASS	215	verify.sh	rc ok, orph clean, rebased head (#4059)
+schema-v9-to-v10-migration	2026-10-04T19:49:12Z	PASS	155	verify.sh	rc ok, orph clean (#4547)
 scrub-nested-child	2026-10-04T17:26:35Z	PASS	145	verify.sh	rc ok, orph clean (#2166 PR #4556)
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-10-04T06:31:24Z	PASS	225	verify.sh	rc ok, orph clean (#2790 PR #4516 phases 7-10)

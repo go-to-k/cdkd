@@ -326,6 +326,41 @@ in-flight, so `Retain` does not delete what the policy says to keep and
 CloudFormation while a rollback journal exists. The half-deployed state is
 almost certainly not what you want exported; roll back or re-deploy first.
 
+## Interaction with `cdkd import`
+
+Before it writes state, `cdkd import` marks each resource it adopts (its
+logical id, the physical id it records, and its resource type) on every
+journal segment that holds an operation for that logical id. The rollback then
+runs none of those segments' operations for that id:
+
+| The operation recorded | The rollback | Plan line |
+| --- | --- | --- |
+| The resource the import adopted (same physical id and type; for a DELETE, the record it removed) | Leaves it alone | `adopted by cdkd import after this deploy, left as it is` |
+| Another resource under the id (another physical id or type) | Leaves it alone, warns, exits 2 | `recorded <its physical id>, which cdkd import has since replaced under this id; not reverted, check that resource by hand` |
+| A replacement (including a Type change that kept its name) whose new resource the import adopted, while the old one was kept or may have been (no verdict recorded, as on a failed operation) | Leaves it alone, warns, exits 2 | `replaced <old physical id> but kept it ...` or `... and may have kept it ...`; `not reverted, check that resource by hand` |
+
+For a replacement, only its new resource counts as what it recorded. If the
+import put the old resource back, the operation is reported as above, naming
+the replacement, which is left running.
+
+Failed operations follow the same table, with or without `--revert-failed`.
+They are left unreverted. If the segment is kept for a re-run, the re-run
+lists them again; a run with no failures removes the segment as usual. A
+displaced operation also records a `ROLLBACK_RESOURCE_SKIPPED` event. Once
+its segment is removed, the plan line, which names the physical id, is the
+record to act on. A physical id
+derived from a secret is masked there, as in every other rollback line. Completed
+operations of an id you pass to `--orphan` are not covered: the flag is
+honoured.
+
+The mark matters for a resource with an explicit name, whose physical id is
+that name. A resource re-created by hand under the same name and imported
+would otherwise match the journal's CREATE, and the rollback would delete it.
+
+Segments that later deploys add carry no mark, and their operations replay as
+usual. If the import cannot read or write the journal, it refuses and writes
+no state.
+
 ## Exit codes
 
 | Code | Meaning |

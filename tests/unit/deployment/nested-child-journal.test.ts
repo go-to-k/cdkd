@@ -222,6 +222,82 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     expect(replay.calls.map((c) => c.ops)).toEqual([['New1'], ['Old1']]);
   });
 
+  it('leaves the ops of an id cdkd import adopted out of THAT segment only (go-to-k/cdkd#4523)', async () => {
+    const h = harness({
+      segments: [
+        seg('run-1', [], {
+          operations: [
+            { logicalId: 'Q', resourceType: 'AWS::SQS::Queue', changeType: 'UPDATE', physicalId: 'q-url' },
+            { logicalId: 'Keep', resourceType: 'AWS::SQS::Queue', changeType: 'UPDATE', physicalId: 'k-url' },
+          ] as RollbackJournalSegment['operations'],
+          importedResources: [{ logicalId: 'Q', physicalId: 'q-url', resourceType: 'AWS::SQS::Queue' }],
+        }),
+        // A newer segment of the same run carries no mark: its Q op replays.
+        seg('run-1', ['Q']),
+      ],
+    });
+
+    await h.run('run-1');
+
+    expect(replay.calls.map((c) => c.ops)).toEqual([['Q'], ['Keep']]);
+    // Adopted, not displaced: no warning, and the row settles.
+    expect(h.scope.warnings).toBe(0);
+  });
+
+  it.each([
+    ['the replacement (new) adopted: names the kept old id', 'q-new', 'replaced q-old but kept it'],
+    ['the kept old resource imported back: names the replacement', 'q-old', 'recorded q-new'],
+  ])('a displaced replacement in a child warns from the MARK: %s', async (_what, importedId, clause) => {
+    const h = harness({
+      segments: [
+        seg('run-1', [], {
+          operations: [
+            {
+              logicalId: 'Q',
+              resourceType: 'AWS::SQS::Queue',
+              changeType: 'UPDATE',
+              physicalId: 'q-new',
+              oldResourceRetained: true,
+              previousState: { physicalId: 'q-old', resourceType: 'AWS::SQS::Queue', properties: {} },
+            },
+          ] as unknown as RollbackJournalSegment['operations'],
+          importedResources: [{ logicalId: 'Q', physicalId: importedId, resourceType: 'AWS::SQS::Queue' }],
+        }),
+      ],
+    });
+
+    await h.run('run-1');
+
+    expect(replay.calls.map((c) => c.ops)).toEqual([[]]);
+    expect(h.logger.warn.mock.calls.some((c) => String(c[0]).includes(clause))).toBe(true);
+  });
+
+  it('an op of a marked id that recorded ANOTHER resource is displaced: not replayed, counted as a warning', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const h = harness({
+      ctxExtra: { options: { eventRecorder: { record: (e: Record<string, unknown>) => events.push(e) } } },
+      segments: [
+        seg('run-1', [], {
+          operations: [
+            { logicalId: 'Q', resourceType: 'AWS::SQS::Queue', changeType: 'UPDATE', physicalId: 'old-url' },
+          ] as RollbackJournalSegment['operations'],
+          importedResources: [{ logicalId: 'Q', physicalId: 'q-url', resourceType: 'AWS::SQS::Queue' }],
+        }),
+      ],
+    });
+
+    await h.run('run-1');
+
+    expect(replay.calls.map((c) => c.ops)).toEqual([[]]);
+    expect(h.scope.warnings).toBe(1);
+    expect(h.scope.settled.has('Child')).toBe(false);
+    expect(events.filter((e) => e['eventType'] === 'ROLLBACK_RESOURCE_SKIPPED')).toEqual([
+      expect.objectContaining({ stackName: CHILD, logicalId: 'Q', resourceType: 'AWS::SQS::Queue' }),
+    ]);
+    // The warn line names the displaced op's own physical id.
+    expect(h.logger.warn.mock.calls.some((c) => String(c[0]).includes('old-url'))).toBe(true);
+  });
+
   it('hands every segment replay ONE record of completed writes (go-to-k/cdkd#4225)', async () => {
     // An older segment's revert must see the inline policy names a newer
     // segment's reverts put back, over the one state bag they share.

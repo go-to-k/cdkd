@@ -41,7 +41,15 @@ import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
 import type { Logger } from '../types/config.js';
 import type { ResourceState, StackOrphanRecord, StackState } from '../types/state.js';
-import type { RollbackJournalSegment } from '../types/rollback-journal.js';
+import {
+  isMarkFor,
+  journalOpPhysicalId,
+  retainedOldPhysicalId,
+  type ImportedResourceMark,
+  splitImportedOps,
+  type JournalOpIdentitySource,
+  type RollbackJournalSegment,
+} from '../types/rollback-journal.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   importableOutputs,
@@ -52,7 +60,12 @@ import {
   refuseMalformedOrphans,
   refuseMalformedState,
 } from '../state/malformed-resources-bag.js';
-import { replayRollback, type RollbackExecutorContext } from './rollback-executor.js';
+import {
+  replayRollback,
+  type CompletedOperation,
+  type RollbackExecutorContext,
+} from './rollback-executor.js';
+import { createOpMasker } from './rollback-executor/names.js';
 import { RollbackInlinePolicyWriters } from './inline-policy-claims.js';
 import { producerRegionsFromState } from './secret-region-classification.js';
 import { inheritProducerRegions, type ProducerRegionEvidence } from './producer-regions-scope.js';
@@ -106,6 +119,110 @@ export function nestedPendingSnapshot(
       ...(Array.isArray(state.outputReads) && { outputReads: [...state.outputReads] }),
     },
   };
+}
+
+/**
+ * go-to-k/cdkd#4523: a DISPLACED op's physical id as a plan or warn line may
+ * print it — through the same per-op masker every replay line goes through
+ * (`createOpMasker`, go-to-k/cdkd#4037), since a physical id can be derived
+ * from a secret (a name built from a `{{resolve:...}}` value). The journal's
+ * bags hold the reference, not the plaintext, so `addNamed` masks the id
+ * whenever a recorded name is secret-derived. `undefined` when none recorded.
+ */
+export function displacedPhysicalIdShown(
+  op: DisplacedOp,
+  logger: Logger,
+  physicalId: string | undefined = journalOpPhysicalId(op)
+): string | undefined {
+  if (physicalId === undefined) return undefined;
+  const masker = createOpMasker(logger, new Map());
+  for (const properties of [op.properties, op.attemptedProperties, op.previousState?.properties]) {
+    if (properties === undefined) continue;
+    masker.addNamed({
+      resourceType: op.resourceType,
+      properties,
+      logicalId: op.logicalId,
+      physicalIds: [physicalId],
+    });
+  }
+  // `displaySafe` strips control characters and never truncates, so a long
+  // ARN is named whole.
+  return displaySafe(String(masker.mask(physicalId)));
+}
+
+/** A journal op as the displaced-op lines read it. */
+export type DisplacedOp = JournalOpIdentitySource & {
+  properties?: Record<string, unknown> | undefined;
+  attemptedProperties?: Record<string, unknown> | undefined;
+  previousState?:
+    | {
+        properties?: unknown;
+        physicalId?: unknown;
+        resourceType?: unknown;
+      }
+    | undefined;
+};
+
+/**
+ * go-to-k/cdkd#4523: what a DISPLACED op left behind, as one clause naming the
+ * resource to check (masked, {@link displacedPhysicalIdShown}). Decided from
+ * the segment's `marks`, not the op alone: only when the import adopted the
+ * op's OWN (new) resource while its OLD one was kept alive is the old one
+ * named. Every other displaced op — an import of the old resource back
+ * included — names its own resource, the one left running.
+ */
+export function displacedOpClause(
+  op: DisplacedOp,
+  marks: readonly ImportedResourceMark[],
+  logger: Logger
+): string {
+  const retainedOld = retainedOldPhysicalId(op);
+  if (retainedOld !== undefined && marks.some((m) => isMarkFor(m, op))) {
+    const shownOld = displacedPhysicalIdShown(op, logger, retainedOld);
+    // Only a completed op of a current binary records whether it kept the old
+    // resource (`retainedOldPhysicalId`); otherwise say it MAY have.
+    const kept =
+      op.oldResourceRetained === true
+        ? 'but kept it (UpdateReplacePolicy: Retain)'
+        : 'and may have kept it (the journal records no verdict)';
+    return (
+      `replaced ${shownOld} ${kept}; cdkd import adopted the replacement, so ${shownOld} ` +
+      `is left untracked`
+    );
+  }
+  const shownId = displacedPhysicalIdShown(op, logger);
+  return shownId !== undefined
+    ? `recorded ${shownId}, which cdkd import has since replaced under this id`
+    : 'recorded no physical id, and cdkd import has since put another resource under this id';
+}
+
+/**
+ * go-to-k/cdkd#4523: record a `ROLLBACK_RESOURCE_SKIPPED` event for each op a
+ * `cdkd import` DISPLACED (`splitImportedOps`), the same durable event every
+ * other warned skip records (`recordRollbackSkip`): the replay never sees these
+ * ops, so it records nothing for them. Like that event, it carries no physical
+ * id — one here would point a cleanup pass at a resource no record names.
+ */
+export function recordDisplacedSkips(
+  recordEvent: RollbackExecutorContext['recordEvent'],
+  stackName: string,
+  ops: ReadonlyArray<
+    Pick<CompletedOperation, 'logicalId' | 'resourceType' | 'changeType' | 'provisionedBy'>
+  >
+): void {
+  for (const op of ops) {
+    recordEvent?.({
+      eventType: 'ROLLBACK_RESOURCE_SKIPPED',
+      stackName,
+      operation: op.changeType,
+      logicalId: op.logicalId,
+      resourceType: op.resourceType,
+      ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+      reason:
+        'cdkd import has since put another resource under this logical id, so the op was not ' +
+        'reverted; check the resource it recorded by hand',
+    });
+  }
 }
 
 /**
@@ -558,6 +675,10 @@ export async function revertNestedChildFromJournal(args: {
       // the parent's, under the prefix flag it records; a segment an older cdkd
       // wrote keeps the enclosing scope (the parent replay's).
       const skipPrefix = segment.skipPrefix ?? getCurrentSkipPrefix();
+      // go-to-k/cdkd#4523: an id `cdkd import` adopted after the segment was
+      // recorded is left alone; an op of it that recorded ANOTHER resource
+      // (displaced by the import) is a warning, since nothing reverts it.
+      const split = splitImportedOps(segment.operations, segment);
       const result = await withNestedStackContext(childCtx, () =>
         withSkipPrefix(skipPrefix, () =>
           withStackName(childStackName, () =>
@@ -566,7 +687,7 @@ export async function revertNestedChildFromJournal(args: {
             withCreateTokenLedger(ledgerForStack(ctx.stateBackend, childStackName, region), () =>
               withNestedRevertRun(runId, async (inner) => {
                 const replayed = await replayRollback(
-                  segment.operations,
+                  split.replay,
                   stateResources,
                   childStackName,
                   execCtx,
@@ -584,7 +705,15 @@ export async function revertNestedChildFromJournal(args: {
         )
       );
       failures += result.failures;
-      warnings += result.warnings;
+      warnings += result.warnings + split.displaced.length;
+      recordDisplacedSkips(execCtx.recordEvent, childStackName, split.displaced);
+      for (const op of split.displaced) {
+        logger.warn(
+          safeMsg`Nested stack ${childStackName}: ${op.logicalId} ` +
+            safeMsg`${displacedOpClause(op, segment.importedResources ?? [], logger)}; ` +
+            'not reverted, check that resource by hand'
+        );
+      }
     }
     restoring = failures === 0;
     await save();

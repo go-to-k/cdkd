@@ -6303,6 +6303,7 @@
         "full-stack-demo",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
+        "import-retain-destroy",
         "intrinsics-torture",
         "lambda-destinations",
         "lambda-event-invoke-config-update",
@@ -6411,6 +6412,9 @@
         "iam-role-policies-drift-clean": [
           "l1",
           "l2"
+        ],
+        "import-retain-destroy": [
+          "l1"
         ],
         "intrinsics-torture": [
           "l2"
@@ -6752,6 +6756,7 @@
           "literal"
         ],
         "import-retain-destroy": [
+          "l1",
           "l2"
         ],
         "import-secret-observed": [

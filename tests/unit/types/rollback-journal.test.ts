@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   ROLLBACK_JOURNAL_VERSION,
   parseRollbackJournal,
+  isMarkFor,
+  retainedOldPhysicalId,
+  splitImportedOps,
   UnknownRollbackJournalVersionError,
   type RollbackJournal,
 } from '../../../src/types/rollback-journal.js';
@@ -499,6 +502,88 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
     expect(() => parseRollbackJournal(body({ supersededLogicalIds: value }), 'S')).toThrow(
       /segments\[0\]\.supersededLogicalIds must be an array of strings when present/
     );
+  });
+
+  // go-to-k/cdkd#4523: the resources `cdkd import` adopted after the segment.
+  it('round-trips importedResources', () => {
+    const marks = [{ logicalId: 'Bucket', physicalId: 'my-bucket', resourceType: 'AWS::S3::Bucket' }];
+    expect(
+      parseRollbackJournal(body({ importedResources: marks }), 'S').segments[0]
+    ).toMatchObject({ importedResources: marks });
+  });
+
+  it.each([
+    ['a string', 'Bucket'],
+    ['an array holding a bare id', ['Bucket']],
+    ['a mark without a physical id', [{ logicalId: 'Bucket', resourceType: 'T' }]],
+    ['a mark with a non-string physical id', [{ logicalId: 'Bucket', physicalId: 7, resourceType: 'T' }]],
+    ['a mark without a resource type', [{ logicalId: 'Bucket', physicalId: 'b' }]],
+  ])('refuses importedResources as %s, which would leave nothing alone', (_what, value) => {
+    expect(() => parseRollbackJournal(body({ importedResources: value }), 'S')).toThrow(
+      /segments\[0\]\.importedResources must be an array of \{ logicalId, physicalId, resourceType \} strings when present/
+    );
+  });
+
+  it('splitImportedOps: adopted = same logical id, physical id AND type; any other op of a marked id is displaced', () => {
+    const T1 = 'AWS::Old::Type';
+    const T2 = 'AWS::New::Type';
+    const ops = [
+      { logicalId: 'A', physicalId: 'a', resourceType: T2 },
+      { logicalId: 'B', physicalId: 'b', resourceType: T2 },
+      // Same logical id, another physical resource: displaced.
+      { logicalId: 'B', physicalId: 'b-old', resourceType: T2 },
+      // Same logical AND physical id, the OLD type of a Type change: displaced.
+      { logicalId: 'B', physicalId: 'b', resourceType: T1 },
+      // No physical id recorded (a failed create): displaced too.
+      { logicalId: 'B', resourceType: T2 },
+    ];
+    const segment = { importedResources: [{ logicalId: 'B', physicalId: 'b', resourceType: T2 }] };
+    expect(splitImportedOps(ops, segment)).toEqual({
+      replay: [ops[0]],
+      imported: [ops[1]],
+      displaced: [ops[2], ops[3], ops[4]],
+    });
+    // `--orphan B` keeps every op of B in the replay.
+    expect(splitImportedOps(ops, segment, new Set(['B'])).replay).toEqual(ops);
+    expect(splitImportedOps(ops, {})).toEqual({ replay: ops, imported: [], displaced: [] });
+  });
+
+  it('isMarkFor reads a DELETE by its previous record, and a replacement only by its OWN resource', () => {
+    const mark = { logicalId: 'B', physicalId: 'b', resourceType: 'T' };
+    // A DELETE carries no physicalId: its identity is the record it removed.
+    expect(isMarkFor(mark, { logicalId: 'B', resourceType: 'T', changeType: 'DELETE', previousState: { physicalId: 'b' } })).toBe(true);
+    expect(isMarkFor(mark, { logicalId: 'B', resourceType: 'T', changeType: 'DELETE', previousState: { physicalId: 'x' } })).toBe(false);
+    // Only a DELETE falls back to the previous record for its OWN id.
+    expect(isMarkFor(mark, { logicalId: 'B', resourceType: 'T', changeType: 'CREATE', previousState: { physicalId: 'b' } })).toBe(false);
+    // A replacement UPDATE is its NEW resource only: the old one is not adopted.
+    const replacement = { logicalId: 'B', resourceType: 'T', changeType: 'UPDATE', physicalId: 'new', previousState: { physicalId: 'b' } };
+    expect(isMarkFor(mark, replacement)).toBe(false);
+    expect(isMarkFor({ ...mark, physicalId: 'new' }, replacement)).toBe(true);
+  });
+
+  it('retainedOldPhysicalId names a replacement\'s kept OLD resource only', () => {
+    const replacement = { logicalId: 'B', resourceType: 'T', changeType: 'UPDATE', physicalId: 'new', previousState: { physicalId: 'old' } };
+    expect(retainedOldPhysicalId({ ...replacement, oldResourceRetained: true })).toBe('old');
+    expect(retainedOldPhysicalId({ ...replacement, oldResourceRetained: false })).toBeUndefined();
+    // X3: an explicit verdict wins over any recorded policy (`??`, never `||`).
+    expect(
+      retainedOldPhysicalId({ ...replacement, oldResourceRetained: false, previousState: { physicalId: 'old', updateReplacePolicy: 'Retain' } } as never)
+    ).toBeUndefined();
+    // X2: NO verdict (a failed op, or a journal that predates it) counts as
+    // kept, whatever the stale policy read says — warn, never adopt silently.
+    expect(retainedOldPhysicalId(replacement)).toBe('old');
+    expect(retainedOldPhysicalId({ ...replacement, previousState: { physicalId: 'old', updateReplacePolicy: 'Delete' } } as never)).toBe('old');
+    // In place (same id), or not an UPDATE: nothing kept.
+    expect(retainedOldPhysicalId({ ...replacement, physicalId: 'old', oldResourceRetained: true })).toBeUndefined();
+    expect(retainedOldPhysicalId({ ...replacement, changeType: 'CREATE', oldResourceRetained: true })).toBeUndefined();
+    // X1: a Type change that KEPT its name-based id is still a distinct old
+    // resource (the old type's), via the stamped type or the recorded one.
+    const typeChange = { ...replacement, physicalId: 'old', resourceType: 'New' };
+    expect(retainedOldPhysicalId({ ...typeChange, previousResourceType: 'Old', oldResourceRetained: true })).toBe('old');
+    expect(retainedOldPhysicalId({ ...typeChange, previousState: { physicalId: 'old', resourceType: 'Old' }, oldResourceRetained: true })).toBe('old');
+    expect(retainedOldPhysicalId({ ...typeChange, previousResourceType: 'Old', oldResourceRetained: false })).toBeUndefined();
+    // Same id AND same type: in place, nothing kept.
+    expect(retainedOldPhysicalId({ ...typeChange, resourceType: 'T', previousResourceType: 'T', oldResourceRetained: true })).toBeUndefined();
   });
 
   it('refuses a non-string runId, which a nested revert selects segments by', () => {
