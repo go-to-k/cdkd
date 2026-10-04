@@ -93,6 +93,7 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
  */
 const registeredRegions = vi.hoisted(() => [] as (string | undefined)[]);
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
+  loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(() => {
     // A mock factory cannot `await import(...)` synchronously, so the real
     // module is handed in through `scopeModule`, primed in `beforeEach`.

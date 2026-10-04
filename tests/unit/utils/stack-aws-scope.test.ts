@@ -15,11 +15,13 @@ import {
 } from '../../../src/utils/stack-aws-scope.js';
 import { ECRProvider } from '../../../src/provisioning/providers/ecr-provider.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import {
   acquireIdempotencyToken,
   resetIdempotencyTokensForTests,
 } from '../../../src/provisioning/providers/idempotency-token.js';
+
+const providerClasses = await loadProviderClasses();
 
 /**
  * Issue go-to-k/cdkd#1981: the per-stack AWS scope that replaced `deploy.ts`'s
@@ -167,7 +169,7 @@ describe('every registered provider takes its region from the scope', () => {
     process.env['AWS_REGION'] = 'sa-east-1';
     const registry = runWithStackAwsClients(new AwsClients({ region: 'eu-west-1' }), () => {
       const r = new ProviderRegistry();
-      registerAllProviders(r);
+      registerAllProviders(r, providerClasses);
       return r;
     });
     const seen = new Set<object>();

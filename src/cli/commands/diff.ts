@@ -42,7 +42,10 @@ import {
   renderAllNoTopLevelStacks,
   renderNoStackMatch,
 } from '../stack-matcher.js';
-import { registerAllProviders } from '../../provisioning/register-providers.js';
+import {
+  loadProviderClasses,
+  registerAllProviders,
+} from '../../provisioning/register-providers.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
 import { planOrphanAdoption, makeSiblingClaimReader } from '../../deployment/orphan-adoption.js';
@@ -144,6 +147,9 @@ async function diffCommand(
     cfnFallback?: boolean;
   }
 ): Promise<void> {
+  // Awaited first, so provider construction below stays synchronous once the
+  // stack client scope / globals are set (see `loadProviderClasses`).
+  const providerClasses = await loadProviderClasses();
   const logger = getLogger();
 
   if (options.json) {
@@ -281,7 +287,7 @@ async function diffCommand(
     // only when needed: the pre-pass for a stack whose state holds orphan
     // records, the heal for a reference that reaches a missing attribute.
     const diffProviderRegistry = new ProviderRegistry();
-    registerAllProviders(diffProviderRegistry);
+    registerAllProviders(diffProviderRegistry, providerClasses);
     const canonicalizeProperties = makeCanonicalizePropertiesFn(diffProviderRegistry);
 
     // Per-STACK-region clients and providers, for every provider read this
@@ -309,7 +315,7 @@ async function diffCommand(
         });
         const registry = runWithStackAwsClients(clients, () => {
           const scoped = new ProviderRegistry();
-          registerAllProviders(scoped);
+          registerAllProviders(scoped, providerClasses);
           return scoped;
         });
         scope = { clients, registry };

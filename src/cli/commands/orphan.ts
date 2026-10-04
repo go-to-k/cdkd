@@ -23,7 +23,10 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion, regionShown } from '../region-options.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
-import { registerAllProviders } from '../../provisioning/register-providers.js';
+import {
+  loadProviderClasses,
+  registerAllProviders,
+} from '../../provisioning/register-providers.js';
 import {
   buildCdkPathIndex,
   resolveCdkPathToLogicalIds,
@@ -219,6 +222,9 @@ interface OrphanOptions {
  *     untouched.
  */
 async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promise<void> {
+  // Awaited first, so provider construction below stays synchronous once the
+  // stack client scope / globals are set (see `loadProviderClasses`).
+  const providerClasses = await loadProviderClasses();
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
@@ -467,7 +473,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       }
 
       const providerRegistry = new ProviderRegistry();
-      registerAllProviders(providerRegistry);
+      registerAllProviders(providerRegistry, providerClasses);
 
       const rewriteResult = await rewriteResourceReferences(
         state,

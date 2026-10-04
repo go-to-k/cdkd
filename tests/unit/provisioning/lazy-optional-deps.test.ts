@@ -22,8 +22,11 @@ vi.mock('adm-zip', async (importOriginal) => {
 describe('provider modules keep rarely-used dependencies off the startup path', () => {
   it('registering every provider evaluates neither graphql nor adm-zip', async () => {
     const { ProviderRegistry } = await import('../../../src/provisioning/provider-registry.js');
-    const { registerAllProviders } = await import('../../../src/provisioning/register-providers.js');
-    registerAllProviders(new ProviderRegistry());
+    const { loadProviderClasses, registerAllProviders } = await import(
+      '../../../src/provisioning/register-providers.js'
+    );
+    const providerClasses = await loadProviderClasses();
+    registerAllProviders(new ProviderRegistry(), providerClasses);
     expect(loaded).toEqual({ graphql: false, admZip: false });
     // Transforming every provider module takes several seconds.
   }, 120_000);

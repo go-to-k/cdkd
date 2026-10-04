@@ -12,8 +12,10 @@ import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js
 //
 // Nothing here required the laziness: this file has no `vi.mock`, so there was
 // no mock-ordering reason to defer the import.
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { WaitConditionHandleProvider } from '../../../src/provisioning/providers/wait-condition-handle-provider.js';
+
+const providerClasses = await loadProviderClasses();
 
 describe('ProviderRegistry pre-flight (validateResourceTypes)', () => {
   it('passes for SDK + Cloud-Control-supported types', () => {
@@ -25,7 +27,7 @@ describe('ProviderRegistry pre-flight (validateResourceTypes)', () => {
 
   it('passes for AWS::CloudFormation::WaitConditionHandle via its no-op SDK provider (issue #1020)', () => {
     const registry = new ProviderRegistry();
-    registerAllProviders(registry);
+    registerAllProviders(registry, providerClasses);
     expect(() =>
       registry.validateResourceTypes(new Set(['AWS::CloudFormation::WaitConditionHandle']))
     ).not.toThrow();

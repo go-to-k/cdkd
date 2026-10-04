@@ -37,6 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 // Keep the import graph light: the runner only touches these on the
 // cross-region path, which these tests never exercise.
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
+  loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
 }));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({

@@ -14,7 +14,7 @@ Loaded under `src/provisioning/providers/**`: [replay + refusals](provider-repla
 
 ## Adding a New SDK Provider
 
-1. New file in `src/provisioning/providers/`; register it in `registerAllProviders()` (`src/provisioning/register-providers.ts`).
+1. New file in `src/provisioning/providers/`; re-export its class from `src/provisioning/provider-classes.ts`, then add it to the destructure and register it in `registerAllProviders()` (`src/provisioning/register-providers.ts`). Never import a provider module statically elsewhere: it puts its SDK client on every command's startup path (#4521).
 2. Refresh the CFn schema fixture (`node scripts/refresh-cfn-schemas.mjs --only-missing`) and classify each unaccounted property into `handledProperties` or `unhandledByDesign` so `property-coverage` stays green ([docs/provider-rules.md](../../docs/provider-rules.md#handledproperties-against-the-cfn-schema)).
 3. A provider that FORWARDS a nested config blob belongs in `NESTED_KEY_TARGETS` (`scripts/gen-nested-key-coverage.ts`); one building FRESH SDK objects sets `freshObjectMapper: true` too. Adding an EXISTING type there needs an explicit `node scripts/refresh-cfn-schemas.mjs '<AWS::Service::Type>'`: `--only-missing` skips types that already have a fixture, and an older capture lacks the `definitionShapes` / `nestedPropertyPaths` sections the generator reads. Then re-run `vp run gen:all-matrices`.
 4. Add the type to [docs/supported-resources.md](../../docs/supported-resources.md) and [docs/import.md](../../docs/import.md) — `provider-docs-coverage.test.ts` matches the exact type string and fails CI on a missing one.
