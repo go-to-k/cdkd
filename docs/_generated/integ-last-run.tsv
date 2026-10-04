@@ -85,8 +85,6 @@ dlm-lifecycle-policy	2026-10-03T04:25:59Z	PASS	112	verify.sh	rc ok, orph clean (
 docdb-neptune	2026-10-03T05:35:39Z	PASS	5713	verify.sh	rc ok, orph clean (#4283 PR #4449)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-10-04T03:52:12Z	PASS	306	verify.sh	rc ok, orph clean (#2298)
-drift-revert	2026-10-04T02:52:14Z	PASS	316	verify.sh	rc ok, orph clean (#1730)
-drift-revert	2026-10-04T03:21:48Z	PASS	321	verify.sh	rc ok, orph clean (#4521 lazy provider classes)
 drift-revert-arrays	2026-10-03T18:30:14Z	PASS	190	verify.sh	rc ok, orph clean
 drift-revert-vpc	2026-10-04T02:52:14Z	PASS	390	verify.sh	rc ok, orph clean (#1730)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
