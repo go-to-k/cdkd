@@ -249,10 +249,11 @@ export function safeRegion(value: string): string {
  * a kept part holding a character outside the plain-identifier set (`'`, a
  * space) is wrapped in double quotes with an embedded `"` escaped, so text an
  * id plants on a line that ends in a pasteable command stays visibly inside one
- * quoted token. A cut id is followed by `[cut: N more characters withheld]`,
- * which cannot be read as part of it — so a plain 255-character prefix renders
- * bare with that marker even when the withheld tail held a `'`, and nothing of
- * the tail is shown. An id with nothing renderable left is the bare
+ * quoted token. A cut id is followed by `cutMarker`'s
+ * `[cut: N more characters withheld, tail sha256:<hex>]`, which cannot be read
+ * as part of it — so a plain 255-character prefix renders bare with that
+ * marker even when the withheld tail held a `'`, and nothing of the tail is
+ * shown, only its digest. An id with nothing renderable left is the bare
  * `<unrenderable>` stand-in. A
  * bare `,` inside a plain id still reads as two entries in a `', '`-joined list
  * — the residual go-to-k/cdkd#3179 records for every caller of the helper. That
