@@ -3,6 +3,7 @@ import {
   DeploymentEventsStore,
   DeploymentEventsReader,
   DEPLOYMENT_EVENTS_MAX_INDEX_RUNS,
+  DEPLOYMENT_EVENTS_OBJECT_DESCRIPTION,
   deploymentEventsKey,
   deploymentEventsIndexKey,
   newDeploymentRunId,
@@ -10,6 +11,7 @@ import {
 } from '../../../src/state/deployment-events-store.js';
 import { DEPLOYMENT_EVENTS_INDEX_VERSION } from '../../../src/types/deployment-events.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { purgeNoncurrentKeyVersions } from '../../../src/state/s3-noncurrent-version-purge.js';
 
 /**
  * In-memory fake of the raw-object surface the store + reader use on the
@@ -38,6 +40,7 @@ function makeFakeBackend(opts?: { failPut?: boolean }): {
     deleteRawObjects: vi.fn(async (keys: string[]) => {
       for (const k of keys) objects.delete(k);
     }),
+    purgeNoncurrentVersions: vi.fn(async () => {}),
   } as unknown as S3StateBackend;
   return {
     backend,
@@ -779,7 +782,7 @@ describe('DeploymentEventsReader.pruneRuns', () => {
     seedRuns(objects, 'us-east-1', [id(0), id(1), id(2)]);
     const reader = new DeploymentEventsReader(backend);
     // keep 0 protects nothing — distinct from --all but reaches the same
-    // empty-remainder index-delete branch in rewriteIndexAfterPrune.
+    // empty-remainder index-delete branch in pruneRuns.
     const r = await reader.pruneRuns('S', 'us-east-1', { keep: 0 });
     expect([...r.deletedRunIds].sort()).toEqual([id(0), id(1), id(2)]);
     expect(r.remainingRunIds).toEqual([]);
@@ -798,5 +801,308 @@ describe('DeploymentEventsReader.pruneRuns', () => {
     );
     const reader = new DeploymentEventsReader(backend);
     await expect(reader.pruneRuns('S', 'us-east-1', { keep: 1 })).rejects.toThrow(/delete failed/);
+  });
+});
+
+/**
+ * Issue #2624: every delete under `deployments/` also purges the deleted keys'
+ * NONCURRENT versions. Exercised against an in-memory S3 that models
+ * versioning, with the backend's `purgeNoncurrentVersions` wired to the REAL
+ * shared purge helper, so the assertions read what an S3 version listing
+ * would show afterwards rather than which mock was called.
+ */
+describe('deployments/ deletes purge noncurrent versions (issue #2624)', () => {
+  type Version = { versionId: string; body: string | null }; // null = delete marker
+
+  function makeVersionedBackend(
+    versioned: boolean,
+    bucket: string,
+    opts: { failDelete?: boolean; failList?: boolean } = {}
+  ) {
+    const store = new Map<string, Version[]>(); // oldest first
+    let seq = 0;
+    const versionDeletes: { Key: string; VersionId: string }[] = [];
+    const latest = (k: string): Version | undefined => store.get(k)?.at(-1);
+    const client = {
+      send: vi.fn(async (cmd: { constructor: { name: string }; input: any }) => {
+        const name = cmd.constructor.name;
+        if (name === 'ListObjectVersionsCommand') {
+          if (opts.failList) {
+            throw Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+          }
+          const Versions: unknown[] = [];
+          const DeleteMarkers: unknown[] = [];
+          for (const [Key, versions] of store) {
+            if (!Key.startsWith(cmd.input.Prefix)) continue;
+            versions.forEach((v, i) => {
+              const entry = {
+                Key: encodeURIComponent(Key),
+                VersionId: v.versionId,
+                IsLatest: i === versions.length - 1,
+              };
+              (v.body === null ? DeleteMarkers : Versions).push(entry);
+            });
+          }
+          return { Versions, DeleteMarkers, IsTruncated: false };
+        }
+        if (name === 'DeleteObjectsCommand') {
+          for (const o of cmd.input.Delete.Objects as { Key: string; VersionId: string }[]) {
+            versionDeletes.push(o);
+            const versions = store.get(o.Key) ?? [];
+            store.set(
+              o.Key,
+              versions.filter((v) => v.versionId !== o.VersionId)
+            );
+          }
+          return {};
+        }
+        if (name === 'GetBucketReplicationCommand') {
+          throw Object.assign(new Error('none'), { name: 'ReplicationConfigurationNotFoundError' });
+        }
+        throw new Error(`unexpected command ${name}`);
+      }),
+    };
+    const warn = vi.fn();
+    const backend = {
+      prefix: 'cdkd',
+      putRawObject: vi.fn(async (key: string, body: string) => {
+        if (versioned) {
+          store.set(key, [...(store.get(key) ?? []), { versionId: `v${seq++}`, body }]);
+        } else {
+          store.set(key, [{ versionId: 'null', body }]);
+        }
+      }),
+      getRawObject: vi.fn(async (key: string) => latest(key)?.body ?? null),
+      listRawKeys: vi.fn(async (keyPrefix: string) =>
+        [...store.keys()].filter((k) => k.startsWith(keyPrefix) && (latest(k)?.body ?? null) !== null)
+      ),
+      deleteRawObjects: vi.fn(async (keys: string[]) => {
+        // A failed DeleteObjects writes nothing: every key keeps its CURRENT body.
+        if (opts.failDelete) throw new Error('AccessDenied: delete');
+        for (const k of keys) {
+          if (versioned) {
+            store.set(k, [...(store.get(k) ?? []), { versionId: `v${seq++}`, body: null }]);
+          } else {
+            store.delete(k);
+          }
+        }
+      }),
+      purgeNoncurrentVersions: vi.fn(
+        async (keys: string[], opts: { listPrefix?: string; objectDescription?: string } = {}) =>
+          purgeNoncurrentKeyVersions(client as never, bucket, keys, {
+            ...opts,
+            logger: { warn, debug: () => {} },
+          })
+      ),
+    } as unknown as S3StateBackend;
+    /** Every readable BODY version still stored for `key`. */
+    const bodies = (key: string): string[] =>
+      (store.get(key) ?? []).filter((v) => v.body !== null).map((v) => v.body!);
+    return { backend, store, bodies, versionDeletes, warn };
+  }
+
+  const dir = 'cdkd/S/us-east-1/deployments/';
+  const stream = (runId: string) => `${dir}${runId}.jsonl`;
+  const indexKey = `${dir}index.json`;
+
+  /** Seed runs the way the writer does: one full re-PUT per flush. */
+  async function seed(backend: S3StateBackend, ids: string[], flushes: number): Promise<void> {
+    for (const runId of ids) {
+      for (let f = 1; f <= flushes; f++) {
+        await backend.putRawObject(stream(runId), `{"flush":${f}}\n`);
+      }
+    }
+    const runs = [...ids].sort().reverse().map((runId) => ({ runId, result: 'SUCCEEDED' }));
+    await backend.putRawObject(indexKey, JSON.stringify({ runs }));
+    await backend.putRawObject(indexKey, JSON.stringify({ runs }));
+  }
+
+  it('versioned: --all leaves no readable body of any stream or the index', async () => {
+    const m = makeVersionedBackend(true, 'bucket-all');
+    // A sibling stack whose name extends this one's (`S` / `S2`). The trailing
+    // `/` of the listing prefix keeps it out of the walk entirely; the
+    // `wanted` filter within one prefix is exercised by the --keep case.
+    await m.backend.putRawObject('cdkd/S2/us-east-1/deployments/x.jsonl', 'other\n');
+    await m.backend.putRawObject('cdkd/S2/us-east-1/deployments/x.jsonl', 'other2\n');
+    await seed(m.backend, [id(0), id(1)], 3);
+    expect(m.bodies(stream(id(0)))).toHaveLength(3); // precondition: history exists
+
+    const r = await new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { all: true });
+
+    expect(r.indexDeleted).toBe(true);
+    for (const k of [stream(id(0)), stream(id(1)), indexKey]) expect(m.bodies(k)).toEqual([]);
+    expect(m.bodies('cdkd/S2/us-east-1/deployments/x.jsonl')).toHaveLength(2);
+    expect(m.warn).not.toHaveBeenCalled();
+    expect(m.backend.purgeNoncurrentVersions).toHaveBeenCalledWith(
+      expect.arrayContaining([stream(id(0)), stream(id(1)), indexKey]),
+      expect.objectContaining({ listPrefix: dir })
+    );
+  });
+
+  it('versioned: --keep purges only the pruned streams, never a retained run', async () => {
+    const m = makeVersionedBackend(true, 'bucket-keep');
+    await seed(m.backend, [id(0), id(1), id(2)], 2);
+
+    await new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { keep: 1 });
+
+    expect(m.bodies(stream(id(0)))).toEqual([]);
+    expect(m.bodies(stream(id(1)))).toEqual([]);
+    // The retained run keeps its CURRENT body and its own history.
+    expect(m.bodies(stream(id(2)))).toHaveLength(2);
+    // The REWRITTEN index is not a deleted key: its history (two seeded PUTs
+    // plus the rewrite) is untouched.
+    expect(m.versionDeletes.some((d) => d.Key === indexKey)).toBe(false);
+    expect(m.bodies(indexKey)).toHaveLength(3);
+    expect(m.versionDeletes.some((d) => d.Key === stream(id(2)))).toBe(false);
+    // Boundary of `keys.length > 1`: two keys already take the one-walk mode.
+    expect(m.backend.purgeNoncurrentVersions).toHaveBeenCalledWith(
+      [stream(id(1)), stream(id(0))],
+      expect.objectContaining({ listPrefix: dir })
+    );
+  });
+
+  it('versioned: --keep 0 also purges the deleted index', async () => {
+    const m = makeVersionedBackend(true, 'bucket-keep0');
+    await seed(m.backend, [id(0)], 2);
+    const r = await new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { keep: 0 });
+    expect(r.indexDeleted).toBe(true);
+    expect(m.bodies(indexKey)).toEqual([]);
+    expect(m.bodies(stream(id(0)))).toEqual([]);
+    // One delete-and-purge covers streams and index together, as on `--all`:
+    // one version walk, so at most one warning.
+    expect(m.backend.purgeNoncurrentVersions).toHaveBeenCalledOnce();
+    expect(m.backend.purgeNoncurrentVersions).toHaveBeenCalledWith(
+      [stream(id(0)), indexKey],
+      expect.objectContaining({ listPrefix: dir })
+    );
+  });
+
+  it('versioned: a failed delete still purges the history, and every CURRENT body survives', async () => {
+    const m = makeVersionedBackend(true, 'bucket-fail', { failDelete: true });
+    await seed(m.backend, [id(0), id(1)], 3);
+
+    await expect(
+      new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { all: true })
+    ).rejects.toThrow(/AccessDenied: delete/);
+
+    // The `finally` purge ran (history gone) but the IsLatest filter kept the
+    // current version of each key whose delete failed.
+    expect(m.bodies(stream(id(0)))).toEqual(['{"flush":3}\n']);
+    expect(m.bodies(stream(id(1)))).toEqual(['{"flush":3}\n']);
+    expect(m.bodies(indexKey)).toHaveLength(1);
+    expect(m.versionDeletes.length).toBeGreaterThan(0);
+  });
+
+  it('a purge that cannot list warns ONCE, naming the event store, and the prune still succeeds', async () => {
+    const m = makeVersionedBackend(true, 'bucket-failList', { failList: true });
+    await seed(m.backend, [id(0), id(1)], 2);
+
+    const r = await new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { all: true });
+
+    expect([...r.deletedRunIds].sort()).toEqual([id(0), id(1)]);
+    expect(r.indexDeleted).toBe(true);
+    expect(m.warn).toHaveBeenCalledTimes(1);
+    // Pins the `objectDescription` wiring: without it the warning would name
+    // the helper's generic default, not the object the user has to inspect.
+    expect(String(m.warn.mock.calls[0]![0])).toContain(DEPLOYMENT_EVENTS_OBJECT_DESCRIPTION);
+    // Nothing was purged: the history is still there behind the markers.
+    expect(m.bodies(stream(id(0)))).toHaveLength(2);
+  });
+
+  it('a purge that cannot list does not mask the DELETE error', async () => {
+    const m = makeVersionedBackend(true, 'bucket-failList-failDelete', {
+      failList: true,
+      failDelete: true,
+    });
+    await seed(m.backend, [id(0)], 2);
+
+    await expect(
+      new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { all: true })
+    ).rejects.toThrow(/AccessDenied: delete/);
+    expect(m.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('unversioned: a failed delete leaves every current null version in place', async () => {
+    // The purge's listing DOES return entries here (each key's current
+    // `VersionId: 'null'`, `IsLatest: true`), so this is the case that proves
+    // the unversioned polarity removes nothing rather than finding nothing.
+    const m = makeVersionedBackend(false, 'bucket-unversioned-fail', { failDelete: true });
+    await seed(m.backend, [id(0), id(1)], 2);
+
+    await expect(
+      new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { all: true })
+    ).rejects.toThrow(/AccessDenied: delete/);
+
+    expect(m.versionDeletes).toEqual([]);
+    for (const k of [stream(id(0)), stream(id(1)), indexKey]) expect(m.bodies(k)).toHaveLength(1);
+    expect(m.warn).not.toHaveBeenCalled();
+  });
+
+  it('unversioned: --keep leaves the retained run and removes no version', async () => {
+    const m = makeVersionedBackend(false, 'bucket-unversioned-keep');
+    await seed(m.backend, [id(0), id(1), id(2)], 2);
+
+    await new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { keep: 1 });
+
+    // Guards the `wanted` filter (id(2) is not a deleted key); the IsLatest
+    // polarity is pinned by the failed-delete case above.
+    expect(m.versionDeletes).toEqual([]);
+    expect(m.bodies(stream(id(2)))).toEqual(['{"flush":2}\n']);
+    expect(m.store.has(stream(id(0)))).toBe(false);
+  });
+
+  it('unversioned: --all deletes as before and removes no version (nothing noncurrent exists)', async () => {
+    const m = makeVersionedBackend(false, 'bucket-unversioned');
+    await seed(m.backend, [id(0), id(1)], 3);
+
+    const r = await new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { all: true });
+
+    expect([...r.deletedRunIds].sort()).toEqual([id(0), id(1)]);
+    expect(r.indexDeleted).toBe(true);
+    expect([...m.store.keys()].filter((k) => k.startsWith(dir))).toEqual([]);
+    expect(m.versionDeletes).toEqual([]);
+    expect(m.warn).not.toHaveBeenCalled();
+  });
+
+  it("versioned: the writer's self-bounding prune purges the streams it drops", async () => {
+    const m = makeVersionedBackend(true, 'bucket-writer');
+    const N = DEPLOYMENT_EVENTS_MAX_INDEX_RUNS;
+    await seed(
+      m.backend,
+      Array.from({ length: N }, (_, i) => id(i)),
+      2
+    );
+    const store = new DeploymentEventsStore(m.backend, {
+      stackName: 'S',
+      region: 'us-east-1',
+      command: 'deploy',
+      runId: id(N),
+    });
+    store.record({ eventType: 'RESOURCE_STARTED', stackName: 'S', logicalId: 'A' });
+    await store.finalize('SUCCEEDED');
+
+    // id(0) fell out of the window: deleted AND its bodies purged, so no later
+    // `--all` (which only sees CURRENT keys) is needed to reach them.
+    expect(m.bodies(stream(id(0)))).toEqual([]);
+    expect(m.bodies(stream(id(1)))).toHaveLength(2);
+    expect(m.bodies(stream(id(N)))).not.toEqual([]);
+    // One stale key walks only its own versions, not the whole prefix.
+    expect(m.backend.purgeNoncurrentVersions).toHaveBeenCalledWith(
+      [stream(id(0))],
+      expect.not.objectContaining({ listPrefix: expect.anything() })
+    );
+  });
+
+  it('still purges when the delete fails, and the delete error reaches the caller', async () => {
+    const { backend, objects } = makeFakeBackend();
+    seedRuns(objects, 'us-east-1', [id(0), id(1)]);
+    vi.mocked(backend.deleteRawObjects).mockRejectedValueOnce(new Error('AccessDenied: delete'));
+    await expect(
+      new DeploymentEventsReader(backend).pruneRuns('S', 'us-east-1', { all: true })
+    ).rejects.toThrow(/AccessDenied: delete/);
+    expect(backend.purgeNoncurrentVersions).toHaveBeenCalledWith(
+      [stream(id(1)), stream(id(0)), indexKey],
+      expect.objectContaining({ listPrefix: dir })
+    );
   });
 });

@@ -99,37 +99,25 @@ const safeText = (value: unknown): string => displaySafe(value);
 const safeCount = (value: unknown): string => (typeof value === 'number' ? String(value) : '?');
 
 /**
- * Appended to every `cdkd events prune` line that reports a DELETE, because
- * "pruned" and "removed" would otherwise read as removal and are not (issue
+ * Appended to every `cdkd events prune` line that reports a DELETE (issue
  * [#2624](https://github.com/go-to-k/cdkd/issues/2624)).
  *
- * The pruner reaches S3 through `S3StateBackend.deleteRawObjects`, which sends
- * `DeleteObjects` with no `VersionId`. On the versioned state bucket
- * `cdkd bootstrap` creates, that writes a DELETE MARKER and leaves every
- * earlier version of the key readable through `GetObject` with a `VersionId`.
- * And the versions exist in QUANTITY here rather than as a theoretical
- * remainder: the store re-PUTs a run's whole JSONL body on every flush, so a
- * single run accumulates one noncurrent version per flush before it is ever
- * pruned. `docs/deployment-events.md` classes `deployments/*.jsonl` as
- * sensitive, which is what makes the distinction worth a line of output.
+ * The state bucket `cdkd bootstrap` creates is versioned, so a delete by key
+ * alone only writes a DELETE MARKER, and the store re-PUTs a run's whole JSONL
+ * body on every flush, so one run accumulates a noncurrent version per flush.
+ * `pruneRuns` therefore purges the noncurrent versions of every key it
+ * deletes. That purge is fail-soft: when it cannot finish (missing
+ * `s3:ListBucketVersions` / `s3:DeleteObjectVersion`) or the bucket is
+ * replicated, it prints its own warning BEFORE this line, which is why the
+ * note defers to "a warning above" rather than claiming success outright.
  *
- * Deliberately NOT appended to the "no runs matched" arm: that arm deleted no
- * object the prune's listing held, so there is no delete to qualify. The count
- * path reaches it before any `deleteRawObjects` call; `--all` on an empty
- * prefix reaches it after sending only the absent index key.
- *
- * The converse holds too: `pruneRuns` reports `indexDeleted` only for an index
- * that EXISTED in its listing (issue #2624), not because the idempotent
- * `DeleteObjects` succeeded, so the arms this note IS appended to never fire
- * for a stack that had no history at all.
+ * Deliberately NOT appended to the "no runs matched" arm, which deleted no
+ * object the prune's listing held. And `pruneRuns` reports `indexDeleted`
+ * only for an index that EXISTED in its listing, so the arms this note IS
+ * appended to never fire for a stack that had no history at all.
  */
-const NONCURRENT_VERSIONS_SURVIVE_NOTE =
-  // "bootstrapping with cdkd", never `cdkd bootstrap`: both prune lines this
-  // note follows display the stack name, and a block that displays an
-  // untrusted value carries no pasteable command (go-to-k/cdkd#3950's S1 rule).
-  ' Where the state bucket is versioned — which bootstrapping with cdkd enables — earlier versions of ' +
-  'the deleted keys survive and stay readable with GetObject and a VersionId; prune does not ' +
-  'purge them.';
+const EARLIER_VERSIONS_PURGED_NOTE =
+  ' Earlier versions of the deleted keys were purged as well, unless a warning above says otherwise.';
 
 /**
  * Options accepted by `cdkd events`. `stateBucket` / `statePrefix` /
@@ -353,17 +341,15 @@ interface EventsPruneCommandOptions {
 }
 
 /**
- * `cdkd events prune <stack>` — clear old per-run `{runId}.jsonl` event
- * streams out of the bucket's object LISTING (issue #885). `cdkd destroy`
- * deliberately keeps event history as post-mortem context, so this is the
- * explicit way to purge it; the deploy/destroy writer also self-bounds to the
+ * `cdkd events prune <stack>` — delete old per-run `{runId}.jsonl` event
+ * streams (issue #885). `cdkd destroy` deliberately keeps event history as
+ * post-mortem context, so this is the explicit way to purge it; the
+ * deploy/destroy writer also self-bounds to the
  * last {@link DEPLOYMENT_EVENTS_MAX_INDEX_RUNS} runs automatically.
  *
- * It does NOT reclaim the storage, and the wording above said it did until
- * issue [#2624](https://github.com/go-to-k/cdkd/issues/2624): the delete
- * carries no `VersionId`, so on a versioned state bucket every earlier
- * version of a pruned key is still billed and still readable. See
- * {@link NONCURRENT_VERSIONS_SURVIVE_NOTE}.
+ * On a versioned state bucket the earlier versions of every deleted key are
+ * purged too (issue [#2624](https://github.com/go-to-k/cdkd/issues/2624)).
+ * See {@link EARLIER_VERSIONS_PURGED_NOTE}.
  *
  * Retention selection:
  *   - `--all`              purge every run + the index.
@@ -477,7 +463,7 @@ export async function eventsPruneCommand(
         gray(
           result.indexDeleted
             ? `Removed the empty deployment-event index for ${safeStack} (${safeRegion}); no run streams to delete.` +
-                NONCURRENT_VERSIONS_SURVIVE_NOTE
+                EARLIER_VERSIONS_PURGED_NOTE
             : `No runs matched the prune criteria for ${safeStack} (${safeRegion}).`
         )
       );
@@ -489,7 +475,7 @@ export async function eventsPruneCommand(
         `${result.remainingRunIds.length} retained` +
         (result.indexDeleted ? gray(' (index removed)') : '') +
         '.' +
-        gray(NONCURRENT_VERSIONS_SURVIVE_NOTE)
+        gray(EARLIER_VERSIONS_PURGED_NOTE)
     );
   } finally {
     awsClients.destroy();
@@ -826,8 +812,8 @@ export function createEventsCommand(): Command {
 export function createEventsPruneCommand(): Command {
   const cmd = new Command('prune')
     .description(
-      'Delete old per-run deployment-event streams. On a versioned state bucket this clears ' +
-        'the object listing; earlier versions of the deleted keys survive and are not purged.'
+      'Delete old per-run deployment-event streams. On a versioned state bucket the earlier ' +
+        'versions of the deleted keys are purged too, unless a warning says otherwise.'
     )
     .argument('<stack>', 'Stack name (physical CloudFormation name)')
     .addOption(
