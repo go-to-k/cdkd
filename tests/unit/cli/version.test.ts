@@ -332,7 +332,7 @@ describe('cdkd --version', () => {
         writeFileSync(join(sandbox, 'package.json'), '{"type":"module"}\n');
 
         const cacheHome = join(sandbox, 'xdg-cache');
-        const env = { ...process.env, XDG_CACHE_HOME: cacheHome };
+        const env: NodeJS.ProcessEnv = { ...process.env, XDG_CACHE_HOME: cacheHome };
         delete env['NODE_COMPILE_CACHE'];
         delete env['NODE_DISABLE_COMPILE_CACHE'];
         const out = execFileSync('node', [join(sandbox, 'cli.js'), '--help'], {
