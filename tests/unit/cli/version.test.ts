@@ -300,12 +300,14 @@ describe('cdkd --version', () => {
 
   // Node caches only modules compiled AFTER `enableCompileCache()`, so the
   // claim is about ORDER: the cache is on by the time the command tree is
-  // evaluated. Same sandbox shape as the fence above, with a stub tree that
-  // reports `getCompileCacheDir()` — `undefined` unless the entry enabled the
-  // cache before importing it. The two env vars are stripped because either
-  // would decide the answer on its own.
+  // evaluated, in the USER-OWNED directory (never the shared OS temp default).
+  // Same sandbox shape as the fence above, with a stub tree that reports
+  // `getCompileCacheDir()` — `undefined` unless the entry enabled the cache
+  // before importing it. `XDG_CACHE_HOME` points into the sandbox, so the
+  // cache lands there and is removed with it; the two Node env vars are
+  // stripped because either would decide the answer on its own.
   it.skipIf(skipUnbuilt)(
-    'enables the compile cache before the command tree is imported',
+    'enables the compile cache in the user cache dir before the command tree is imported',
     () => {
       requireBuiltCli();
       const distDir = join(repoRoot, 'dist');
@@ -315,29 +317,34 @@ describe('cdkd --version', () => {
       )[1] as string;
 
       const sandbox = mkdtempSync(join(tmpdir(), 'cdkd-compile-cache-fence-'));
-      for (const m of entry.matchAll(/^import\s[^\n]*from\s*["'](\.\/[^"']+)["']/gm)) {
-        const spec = m[1] as string;
-        copyFileSync(join(distDir, spec), join(sandbox, spec.replace('./', '')));
+      try {
+        for (const m of entry.matchAll(/^import\s[^\n]*from\s*["'](\.\/[^"']+)["']/gm)) {
+          const spec = m[1] as string;
+          copyFileSync(join(distDir, spec), join(sandbox, spec.replace('./', '')));
+        }
+        copyFileSync(cliPath, join(sandbox, 'cli.js'));
+        writeFileSync(
+          join(sandbox, programChunk.replace('./', '')),
+          "import { getCompileCacheDir } from 'node:module';\n" +
+            "console.log('CACHE_DIR=' + String(getCompileCacheDir()));\n" +
+            'process.exit(0);\n'
+        );
+        writeFileSync(join(sandbox, 'package.json'), '{"type":"module"}\n');
+
+        const cacheHome = join(sandbox, 'xdg-cache');
+        const env = { ...process.env, XDG_CACHE_HOME: cacheHome };
+        delete env['NODE_COMPILE_CACHE'];
+        delete env['NODE_DISABLE_COMPILE_CACHE'];
+        const out = execFileSync('node', [join(sandbox, 'cli.js'), '--help'], {
+          encoding: 'utf-8',
+          env,
+        });
+        const dir = /^CACHE_DIR=(.*)$/m.exec(out)?.[1];
+        // Node appends a version/arch/uid subdirectory to the one it was given.
+        expect(dir?.startsWith(join(cacheHome, 'cdkd', 'compile-cache'))).toBe(true);
+      } finally {
+        rmSync(sandbox, { recursive: true, force: true });
       }
-      copyFileSync(cliPath, join(sandbox, 'cli.js'));
-      writeFileSync(
-        join(sandbox, programChunk.replace('./', '')),
-        "import { getCompileCacheDir } from 'node:module';\n" +
-          "console.log('CACHE_DIR=' + String(getCompileCacheDir()));\n" +
-          'process.exit(0);\n'
-      );
-      writeFileSync(join(sandbox, 'package.json'), '{"type":"module"}\n');
-
-      const env = { ...process.env };
-      delete env['NODE_COMPILE_CACHE'];
-      delete env['NODE_DISABLE_COMPILE_CACHE'];
-      const out = execFileSync('node', [join(sandbox, 'cli.js'), '--help'], {
-        encoding: 'utf-8',
-        env,
-      });
-      expect(out).toMatch(/^CACHE_DIR=(?!undefined$).+$/m);
-
-      rmSync(sandbox, { recursive: true, force: true });
     },
     CLI_SPAWN_TIMEOUT_MS,
   );
