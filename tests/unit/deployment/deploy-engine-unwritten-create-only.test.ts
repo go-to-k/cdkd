@@ -373,6 +373,45 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
     });
   });
 
+  describe('the evidence field on a CREATE (create.ts)', () => {
+    async function create(provisionedBy: 'sdk' | 'cc-api') {
+      allowed = new Set([`${TYPE}:${CREATE_ONLY}`]);
+      const engine = makeEngine();
+      (
+        engine as unknown as { providerRegistry: { getProviderFor: ReturnType<typeof vi.fn> } }
+      ).providerRegistry.getProviderFor.mockReturnValue({ provider, provisionedBy });
+      const stateResources: Record<string, Record<string, unknown>> = {};
+      await (
+        engine as unknown as { provisionResource: (...args: unknown[]) => Promise<void> }
+      ).provisionResource(
+        'MySubnet',
+        {
+          logicalId: 'MySubnet',
+          changeType: 'CREATE',
+          resourceType: TYPE,
+          desiredProperties: DECLARED,
+        } as ResourceChange,
+        stateResources,
+        'MyStack',
+        { Resources: { MySubnet: { Type: TYPE, Properties: DECLARED } } }
+      );
+      return stateResources['MySubnet']!;
+    }
+
+    it('an SDK-route create names the create-only drop it kept', async () => {
+      const record = await create('sdk');
+      expect(callOrder).toEqual(['create']);
+      expect(record['properties']).toHaveProperty(CREATE_ONLY);
+      expect(record['acceptedCreateOnlyDrops']).toEqual([CREATE_ONLY]);
+    });
+
+    it('a Cloud Control create writes none: Cloud Control sent the property', async () => {
+      const record = await create('cc-api');
+      expect(callOrder).toEqual(['create']);
+      expect(JSON.parse(JSON.stringify(record))).not.toHaveProperty('acceptedCreateOnlyDrops');
+    });
+  });
+
   describe('the evidence field across an in-place update (update-in-place.ts)', () => {
     const TAGGED = { ...DECLARED, MapPublicIpOnLaunch: true };
     const IN_PLACE: PropertyChange[] = [
