@@ -46,7 +46,7 @@ For EACH issue you start — PROMOTING a QUEUED one included — first re-check
 `gh issue view <n> --json state`, §2's open-PR `files` query, and §3's premise
 check on CURRENT `origin/main` — in a call BEFORE the claim, never chained with
 it: after TRIAGE a peer can close a queued issue, or open a PR holding its
-files, before its turn (#3979). Then:
+lines, before its turn (#3979). Then:
 
 ```bash
 gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <files>. \
