@@ -182,9 +182,7 @@ export interface RollbackJournal {
  * `except` holds logical ids the user named explicitly (`--orphan`): those are
  * never set aside, so the flag is honoured on an imported id too.
  */
-export function splitImportedOps<
-  T extends { logicalId: string; physicalId?: string | undefined; resourceType: string },
->(
+export function splitImportedOps<T extends JournalOpIdentitySource>(
   ops: readonly T[],
   segment: Pick<RollbackJournalSegment, 'importedResources'>,
   except: ReadonlySet<string> = new Set()
@@ -202,16 +200,63 @@ export function splitImportedOps<
   return { replay, imported, displaced };
 }
 
-/** Does `mark` name the very resource `op` recorded: logical id, physical id and type? */
-export function isMarkFor(
-  mark: ImportedResourceMark,
-  op: { logicalId: string; physicalId?: string | undefined; resourceType: string }
-): boolean {
+/** What a journal op carries that names a resource — completed and failed ops alike. */
+export interface JournalOpIdentitySource {
+  logicalId: string;
+  resourceType: string;
+  changeType?: string | undefined;
+  physicalId?: string | undefined;
+  previousResourceType?: string | undefined;
+  previousState?: { physicalId?: unknown; resourceType?: unknown } | undefined;
+}
+
+/**
+ * The physical id the op's OWN record names: `physicalId`, or — for a DELETE,
+ * which carries none — the id of the record it deleted (or kept, under
+ * `DeletionPolicy: Retain`). `undefined` when the op names no resource.
+ */
+export function journalOpPhysicalId(op: JournalOpIdentitySource): string | undefined {
+  if (op.physicalId !== undefined) return op.physicalId;
+  const prev = op.previousState?.physicalId;
+  return op.changeType === 'DELETE' && typeof prev === 'string' && prev !== '' ? prev : undefined;
+}
+
+/**
+ * Every (physical id, type) the op can be said to have recorded: its own
+ * resource ({@link journalOpPhysicalId}), and for an UPDATE whose previous
+ * record names ANOTHER physical id (a replacement) the OLD resource too — an
+ * import that put the old resource back is adopting what the op replaced.
+ */
+function journalOpIdentities(
+  op: JournalOpIdentitySource
+): Array<{ physicalId: string; resourceType: string }> {
+  const out: Array<{ physicalId: string; resourceType: string }> = [];
+  const own = journalOpPhysicalId(op);
+  if (own !== undefined) out.push({ physicalId: own, resourceType: op.resourceType });
+  const prev = op.previousState?.physicalId;
+  if (op.changeType === 'UPDATE' && typeof prev === 'string' && prev !== '' && prev !== own) {
+    const prevType = op.previousState?.resourceType;
+    out.push({
+      physicalId: prev,
+      resourceType:
+        typeof prevType === 'string' && prevType !== ''
+          ? prevType
+          : (op.previousResourceType ?? op.resourceType),
+    });
+  }
+  return out;
+}
+
+/**
+ * Does `mark` name a resource `op` recorded (see {@link journalOpIdentities}):
+ * logical id, physical id and type?
+ */
+export function isMarkFor(mark: ImportedResourceMark, op: JournalOpIdentitySource): boolean {
   return (
-    op.physicalId !== undefined &&
     mark.logicalId === op.logicalId &&
-    mark.physicalId === op.physicalId &&
-    mark.resourceType === op.resourceType
+    journalOpIdentities(op).some(
+      (id) => id.physicalId === mark.physicalId && id.resourceType === mark.resourceType
+    )
   );
 }
 

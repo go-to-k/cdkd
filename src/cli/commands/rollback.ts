@@ -1161,11 +1161,12 @@ export async function rollbackCommand(
           // import replaced under the id) is a warning: nothing reverts it.
           const completedSplit = splitImportedOps(segment.operations, segment, orphanLogicalIds);
           const completedOps = completedSplit.replay;
+          // A displaced FAILED op counts whether or not `--revert-failed` is
+          // passed: the plan lists it either way, and nothing ever reverts it,
+          // so a run that then pops the segment must still say so (exit 2).
           const displaced = [
             ...completedSplit.displaced,
-            ...(options.revertFailed
-              ? splitImportedOps(segment.failedOperations ?? [], segment).displaced
-              : []),
+            ...splitImportedOps(segment.failedOperations ?? [], segment).displaced,
           ];
           for (const op of displaced) logger.warn(displacedOpLabel(op).trim());
           recordDisplacedSkips(ctx.recordEvent, stackName, displaced);

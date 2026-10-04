@@ -325,13 +325,15 @@ runs none of those segments' operations for that id:
 
 | The operation recorded | The rollback | Plan line |
 | --- | --- | --- |
-| The resource the import adopted (same physical id and type) | Leaves it alone | `adopted by cdkd import after this deploy, left as it is` |
+| The resource the import adopted (same physical id and type; for a DELETE, the record it removed; for a replacement, the new or the old resource) | Leaves it alone | `adopted by cdkd import after this deploy, left as it is` |
 | Another resource under the id (another physical id or type) | Leaves it alone, warns, exits 2 | `recorded <its physical id>, which cdkd import has since replaced under this id; not reverted, check that resource by hand` |
 
-Failed operations follow the same table under `--revert-failed`, and stay in
-the journal. A displaced operation also records a `ROLLBACK_RESOURCE_SKIPPED`
-event. Its segment is still removed after a run with no failures, so the plan
-line, which names the physical id, is the record to act on. A physical id
+Failed operations follow the same table, with or without `--revert-failed`.
+They are left unreverted. If the segment is kept for a re-run, the re-run
+lists them again; a run with no failures removes the segment as usual. A
+displaced operation also records a `ROLLBACK_RESOURCE_SKIPPED` event. Once
+its segment is removed, the plan line, which names the physical id, is the
+record to act on. A physical id
 derived from a secret is masked there, as in every other rollback line. Completed
 operations of an id you pass to `--orphan` are not covered: the flag is
 honoured.

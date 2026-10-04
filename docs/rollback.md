@@ -99,8 +99,11 @@ left running and untracked.
 A resource you `cdkd import` while the journal exists is left alone: the
 import marks it on the journal, and the rollback skips the journal's
 operations for that resource, listing each in its plan as `adopted by cdkd
-import after this deploy`. A deploy that runs after the import journals
-its own operations, and those are reverted as usual.
+import after this deploy`. An operation that recorded a different resource
+under the same logical id is also left alone, with a warning. See
+[`cdkd rollback`](cli-rollback.md#interaction-with-cdkd-import) for both
+cases. A deploy that runs after the import journals its own operations, and
+those are reverted as usual.
 
 Exit codes: `0` = fully clean
 (journal deleted), `2` = partial (some ops failed — the journal is kept so

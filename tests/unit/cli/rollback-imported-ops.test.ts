@@ -257,7 +257,7 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(infoLines().some((l) => l.includes(' Topic (') && l.includes('delete'))).toBe(false);
   });
 
-  it('without --revert-failed, an imported failed op is not offered to --revert-failed', async () => {
+  it('without --revert-failed, an adopted failed op is not offered to --revert-failed', async () => {
     install({ Topic: topicRecord('imported') }, [
       {
         operations: [],
@@ -375,6 +375,93 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(infoLines().some((l) => l.includes(' Topic (') && l.includes('recorded no physical id'))).toBe(
       true
     );
+  });
+
+  // V3/V4: ONLY displaced failed ops in the segment, so nothing else warns.
+  // Counted with or without `--revert-failed`: the plan lists them either
+  // way and nothing ever reverts them.
+  it.each([
+    ['with --revert-failed', true],
+    ['without --revert-failed', false],
+  ])('a segment holding only a displaced failed op warns and exits non-zero %s', async (_what, revertFailed) => {
+    install({ Topic: topicRecord('imported') }, [
+      { operations: [], failedOperations: [failedUpdate('old-phys')], importedResources: [MARK] },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts(revertFailed)).catch((e: unknown) => e);
+
+    expect(provider.update).not.toHaveBeenCalled();
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain('skipped');
+    const skips = recorded.events.filter((e) => e['eventType'] === 'ROLLBACK_RESOURCE_SKIPPED');
+    expect(skips).toHaveLength(1);
+    expect(skips[0]).toMatchObject({ logicalId: 'Topic', operation: 'UPDATE' });
+    expect(skips[0]).not.toHaveProperty('physicalId');
+    // The replay-time warn line, not only the plan line.
+    const warns = (logger['warn'] as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(warns.some((l) => l.includes('Topic (') && l.includes(DISPLACED) && l.includes('old-phys'))).toBe(true);
+  });
+
+  // V1: a completed DELETE carries no `physicalId`; its identity is the
+  // record it deleted (or kept under Retain).
+  it.each([
+    ['the SAME resource (adopted, silent, exit 0)', NAME, false],
+    ['ANOTHER resource (displaced, exit 2)', 'old-phys', true],
+  ])('a DELETE whose previous record names %s', async (_what, prevId, displacedExpected) => {
+    install({ Topic: topicRecord('imported') }, [
+      {
+        operations: [
+          {
+            logicalId: 'Topic',
+            changeType: 'DELETE',
+            resourceType: TOPIC,
+            previousState: { ...topicRecord('pre-deploy'), physicalId: prevId },
+            provisionedBy: 'sdk',
+          },
+        ],
+        importedResources: [MARK],
+      },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    expect(thrown instanceof Error).toBe(displacedExpected);
+    expect(infoLines().some((l) => l.includes(' Topic (') && l.includes('adopted by cdkd import'))).toBe(
+      !displacedExpected
+    );
+    expect(infoLines().some((l) => l.includes(DISPLACED) && l.includes(prevId))).toBe(displacedExpected);
+  });
+
+  // V2: a replacement UPDATE (old -> new) where the import put the OLD
+  // resource back: adopting what the op replaced, silent like main's
+  // skip-already-done, not a displaced warning.
+  it('a replacement UPDATE whose OLD resource the import adopted is left alone silently', async () => {
+    install({ Topic: { ...topicRecord('imported'), physicalId: 'old-phys' } }, [
+      {
+        operations: [
+          {
+            logicalId: 'Topic',
+            changeType: 'UPDATE',
+            resourceType: TOPIC,
+            physicalId: 'new-phys',
+            properties: topicRecord('deployed').properties,
+            previousResourceType: TOPIC,
+            oldResourceRetained: false,
+            previousState: { ...topicRecord('pre-deploy'), physicalId: 'old-phys' },
+            provisionedBy: 'sdk',
+          },
+        ],
+        importedResources: [{ ...MARK, physicalId: 'old-phys' }],
+      },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    expect(thrown).toBeUndefined();
+    expect(provider.create).not.toHaveBeenCalled();
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(infoLines().some((l) => l.includes(DISPLACED))).toBe(false);
+    expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(true);
   });
 
   it('--revert-failed: a displaced failed UPDATE is not force-reverted, warns, and stays in the journal', async () => {

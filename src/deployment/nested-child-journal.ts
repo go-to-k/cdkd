@@ -41,7 +41,12 @@ import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
 import type { Logger } from '../types/config.js';
 import type { ResourceState, StackOrphanRecord, StackState } from '../types/state.js';
-import { splitImportedOps, type RollbackJournalSegment } from '../types/rollback-journal.js';
+import {
+  journalOpPhysicalId,
+  splitImportedOps,
+  type JournalOpIdentitySource,
+  type RollbackJournalSegment,
+} from '../types/rollback-journal.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   importableOutputs,
@@ -122,17 +127,17 @@ export function nestedPendingSnapshot(
  * whenever a recorded name is secret-derived. `undefined` when none recorded.
  */
 export function displacedPhysicalIdShown(
-  op: {
-    logicalId: string;
-    resourceType: string;
-    physicalId?: string | undefined;
+  op: JournalOpIdentitySource & {
     properties?: Record<string, unknown> | undefined;
     attemptedProperties?: Record<string, unknown> | undefined;
-    previousState?: { properties?: unknown } | undefined;
+    previousState?:
+      | { properties?: unknown; physicalId?: unknown; resourceType?: unknown }
+      | undefined;
   },
   logger: Logger
 ): string | undefined {
-  if (op.physicalId === undefined) return undefined;
+  const physicalId = journalOpPhysicalId(op);
+  if (physicalId === undefined) return undefined;
   const masker = createOpMasker(logger, new Map());
   for (const properties of [op.properties, op.attemptedProperties, op.previousState?.properties]) {
     if (properties === undefined) continue;
@@ -140,12 +145,12 @@ export function displacedPhysicalIdShown(
       resourceType: op.resourceType,
       properties,
       logicalId: op.logicalId,
-      physicalIds: [op.physicalId],
+      physicalIds: [physicalId],
     });
   }
   // `displaySafe` strips control characters and never truncates, so a long
   // ARN is named whole.
-  return displaySafe(String(masker.mask(op.physicalId)));
+  return displaySafe(String(masker.mask(physicalId)));
 }
 
 /**

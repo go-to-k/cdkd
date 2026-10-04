@@ -332,6 +332,9 @@ operation that recorded a different resource under the id. Operations that a
 later deploy adds are still reverted
 ([`cdkd rollback`](cli-rollback.md#interaction-with-cdkd-import)). If the
 import cannot read or write the journal, it refuses and writes no state.
+An import done by a cdkd binary older than this change writes no mark, so a
+later rollback still acts on those operations; re-run the import with a
+current binary first.
 
 ### The drift baseline an import records
 

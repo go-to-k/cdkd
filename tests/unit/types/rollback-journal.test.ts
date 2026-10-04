@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   ROLLBACK_JOURNAL_VERSION,
   parseRollbackJournal,
+  isMarkFor,
   splitImportedOps,
   UnknownRollbackJournalVersionError,
   type RollbackJournal,
@@ -544,6 +545,21 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
     // `--orphan B` keeps every op of B in the replay.
     expect(splitImportedOps(ops, segment, new Set(['B'])).replay).toEqual(ops);
     expect(splitImportedOps(ops, {})).toEqual({ replay: ops, imported: [], displaced: [] });
+  });
+
+  it('isMarkFor reads a DELETE by its previous record, and a replacement UPDATE by its OLD resource too', () => {
+    const mark = { logicalId: 'B', physicalId: 'b', resourceType: 'T' };
+    // A DELETE carries no physicalId: its identity is the record it removed.
+    expect(isMarkFor(mark, { logicalId: 'B', resourceType: 'T', changeType: 'DELETE', previousState: { physicalId: 'b' } })).toBe(true);
+    expect(isMarkFor(mark, { logicalId: 'B', resourceType: 'T', changeType: 'DELETE', previousState: { physicalId: 'x' } })).toBe(false);
+    // Only a DELETE falls back to the previous record for its OWN id.
+    expect(isMarkFor(mark, { logicalId: 'B', resourceType: 'T', changeType: 'CREATE', previousState: { physicalId: 'b' } })).toBe(false);
+    // A replacement UPDATE names both the new and the OLD resource.
+    const replacement = { logicalId: 'B', resourceType: 'T', changeType: 'UPDATE', physicalId: 'new', previousState: { physicalId: 'b', resourceType: 'T' } };
+    expect(isMarkFor(mark, replacement)).toBe(true);
+    expect(isMarkFor({ ...mark, physicalId: 'new' }, replacement)).toBe(true);
+    // ...each under ITS type: the old resource of a Type change is the old type.
+    expect(isMarkFor(mark, { ...replacement, previousState: { physicalId: 'b', resourceType: 'Old' } })).toBe(false);
   });
 
   it('refuses a non-string runId, which a nested revert selects segments by', () => {

@@ -1187,8 +1187,9 @@ function stackShown(stackName: string): string {
 /**
  * go-to-k/cdkd#4523: before the import's state write, mark the resources it
  * adopts (logical id, the physical id this run records, and the type) on the stack's
- * rollback journal, so a later `cdkd rollback` leaves the journal's ops of
- * exactly those resources alone. Without it, a kept segment's completed
+ * rollback journal, so a later `cdkd rollback` replays none of the journal's
+ * ops of those logical ids (the matching ones are adopted, the rest displaced
+ * with a warning — `splitImportedOps`). Without it, a kept segment's completed
  * CREATE of an explicitly named resource matches the imported record's
  * physical id and the replay DELETES the resource the user just adopted.
  *
