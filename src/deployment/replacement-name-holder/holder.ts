@@ -397,32 +397,35 @@ function holderVerdict(
       ? (value: string): string => value.replace(/[A-Z]/g, (c) => c.toLowerCase())
       : (value: string): string => value;
   const same = (a: string, b: string): boolean => inCase(a) === inCase(b);
-  // A record and a read-back that name the holder DIFFERENTLY (renamed out
-  // of band, or a drifted record) cannot say which name it holds now: the
-  // physical id would still name the recorded one. Undecided, in both
-  // directions.
-  const drifted = newKey.name.find((path) => {
-    const recordedName = valueAt(recorded, path);
-    const observedName = valueAt(observed, path);
-    return (
-      recordedName !== undefined && observedName !== undefined && !same(recordedName, observedName)
-    );
-  });
-  if (drifted !== undefined) {
-    return unproven(
-      `${wanted}, and the records of ${newResource} disagree on its ` +
-        `${r.shown(drifted.join('.'))} (recorded ${r.quoted(valueAt(recorded, drifted) ?? '')}, ` +
-        `read back ${r.quoted(valueAt(observed, drifted) ?? '')}), so cdkd cannot show which name ` +
-        `it holds`
-    );
-  }
   // The FIRST path the holder answers on is its name, as a provider's `??`
   // reads it: one it holds unreadably (a redacted name) leaves the name
   // unknown — only the physical id can still prove it — and a later path must
-  // not stand in for it.
-  const haveName = newKey.name
-    .map((path) => heldAt(recorded, observed, path))
-    .find((h) => h.value !== undefined || h.unreadable)?.value;
+  // not stand in for it, nor be read for drift (Glue's read-back fills the
+  // top-level `Name` a create with `TableInput.Name` never sends).
+  const namePathHeld = newKey.name.find((path) => {
+    const h = heldAt(recorded, observed, path);
+    return h.value !== undefined || h.unreadable;
+  });
+  // A record and a read-back that name the holder DIFFERENTLY on that path
+  // (renamed out of band, or a drifted record) cannot say which name it holds
+  // now: the physical id would still name the recorded one. Undecided, in both
+  // directions.
+  const recordedName = namePathHeld && valueAt(recorded, namePathHeld);
+  const observedName = namePathHeld && valueAt(observed, namePathHeld);
+  if (
+    namePathHeld !== undefined &&
+    recordedName !== undefined &&
+    observedName !== undefined &&
+    !same(recordedName, observedName)
+  ) {
+    return unproven(
+      `${wanted}, and the records of ${newResource} disagree on its ` +
+        `${r.shown(namePathHeld.join('.'))} (recorded ${r.quoted(recordedName)}, ` +
+        `read back ${r.quoted(observedName)}), so cdkd cannot show which name it holds`
+    );
+  }
+  const haveName =
+    namePathHeld === undefined ? undefined : heldAt(recorded, observed, namePathHeld).value;
   const nameHeld =
     (haveName !== undefined && same(haveName, wantName)) ||
     (physicalId !== '' &&

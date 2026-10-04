@@ -423,6 +423,33 @@ describe('replacementOldHoldsSentName', () => {
       expect(table({ ...OLD, TableInput: { Name: 'T' } })).toEqual({ holds: true });
     });
 
+    // Parent review m1: the read-back fills the top-level `Name` with the real
+    // table name, while the create sent `TableInput.Name` and ignored `Name`.
+    // Only the path the name came from is read for drift.
+    it('ignores a later name path the read-back fills differently', () => {
+      const verdict = holds({
+        createType: TABLE,
+        holderType: TABLE,
+        requested: { ...OLD, Name: 't' },
+        recorded: { ...OLD, Name: 'X' },
+        observed: { ...OLD, Name: 't' },
+        physicalId: 'db|t',
+      });
+      expect(verdict).toEqual({ holds: true });
+    });
+
+    it('still reads drift on the path the name came from', () => {
+      const verdict = holds({
+        createType: TABLE,
+        holderType: TABLE,
+        requested: OLD,
+        recorded: OLD,
+        observed: { ...OLD, TableInput: { Name: 'renamed' } },
+        physicalId: 'db|t',
+      });
+      expect(verdict.holds === false && verdict.diagnosis).toContain('disagree on its TableInput.Name');
+    });
+
     it('does not fold non-ASCII case, which Glue may keep apart', () => {
       const old = { ...OLD, TableInput: { Name: 'ä' } };
       expect(table({ ...OLD, TableInput: { Name: 'Ä' } }, old, 'db|ä').holds).toBe(false);
