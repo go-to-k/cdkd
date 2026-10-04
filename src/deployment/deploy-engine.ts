@@ -938,13 +938,24 @@ export class DeployEngine {
       // survived. Measured by `tests/integration/retain-orphan-secret`.
       const sameResource =
         this.perResourceResolvedType.get(entry.logicalId) === entry.state.resourceType;
+      const orphanTemplateProps = sameResource
+        ? this.perResourceTemplateProps.get(entry.logicalId)
+        : undefined;
       return {
         ...entry,
-        state: scrubResourceRecord(
-          entry.state,
-          (sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined) ??
-            new Map<string, string>(),
-          sameResource ? this.perResourceTemplateProps.get(entry.logicalId) : undefined
+        // go-to-k/cdkd#4451: a record THIS deploy created and its rollback
+        // orphaned carries a bag this deploy wrote, so it gets its masked
+        // properties' fingerprints here too, or a later adoption backfills
+        // them from whatever template that deploy carries.
+        state: withMaskedPropertyFingerprints(
+          scrubResourceRecord(
+            entry.state,
+            (sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined) ??
+              new Map<string, string>(),
+            orphanTemplateProps
+          ),
+          entry.state.properties,
+          orphanTemplateProps
         ),
       };
     });

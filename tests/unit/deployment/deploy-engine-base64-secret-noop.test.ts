@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
-import { maskedPropertyFingerprint } from '../../../src/deployment/masked-property-fingerprints.js';
+import {
+  markWrittenFromDeployedTemplate,
+  maskedPropertyFingerprint,
+} from '../../../src/deployment/masked-property-fingerprints.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 
@@ -227,6 +230,66 @@ describe('DeployEngine - an edit around a secret reference inside Fn::Base64 is 
 
     await h.deploy(edited);
     expect(h.provider.update).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('DeployEngine - a rollback-orphaned record this deploy created keeps its fingerprints (go-to-k/cdkd#4451)', () => {
+  // The rollback moves the in-memory CREATE record into `orphans`, so the
+  // save meets the bag this deploy wrote there rather than in `resources`.
+  function persistOrphan(bag: Record<string, unknown>, resolvedType: string): StackState {
+    const engine = new DeployEngine(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { dryRun: false },
+      'us-east-1'
+    );
+    engine.perResourceTemplateProps.set('R', PROPS);
+    engine.perResourceResolvedType.set('R', resolvedType);
+    engine.perResourceSecrets.set('R', new Map());
+    const state: StackState = {
+      version: 10,
+      stackName: 's',
+      region: 'us-east-1',
+      resources: {},
+      outputs: {},
+      orphans: [
+        {
+          logicalId: 'R',
+          orphanedAt: 0,
+          state: { physicalId: 'p', resourceType: 'AWS::SSM::Parameter', properties: bag },
+        },
+      ],
+      lastModified: 0,
+    };
+    return (
+      engine as unknown as { redactStateForPersist(s: StackState): StackState }
+    ).redactStateForPersist(state);
+  }
+
+  it('stamps an orphan whose bag this deploy wrote', () => {
+    const saved = persistOrphan(
+      markWrittenFromDeployedTemplate({ Name: '/app/ud', Type: 'String', Value: '***' }),
+      'AWS::SSM::Parameter'
+    );
+    expect(saved.orphans![0]!.state.maskedPropertyFingerprints).toEqual({
+      Value: maskedPropertyFingerprint(PROPS.Value),
+    });
+  });
+
+  it('leaves an orphan an earlier deploy wrote, or one of another type, alone', () => {
+    expect(
+      persistOrphan({ Name: '/app/ud', Type: 'String', Value: '***' }, 'AWS::SSM::Parameter')
+        .orphans![0]!.state.maskedPropertyFingerprints
+    ).toBeUndefined();
+    expect(
+      persistOrphan(
+        markWrittenFromDeployedTemplate({ Name: '/app/ud', Type: 'String', Value: '***' }),
+        'AWS::SNS::Topic'
+      ).orphans![0]!.state.maskedPropertyFingerprints
+    ).toBeUndefined();
   });
 });
 

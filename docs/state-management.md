@@ -1001,7 +1001,11 @@ reference, or a retarget of the reference, is shown and sent. A secret rotated
 behind an unchanged template leaves it equal and sends nothing, as
 CloudFormation does. Only template text is hashed: a secret appears there as
 its reference and a `NoEcho` parameter as its `Ref`, so the hash says nothing
-about a value.
+about a value. For the same reason a change that leaves the property's
+template text as it was (a new parameter value, a `Ref` to a resource that
+was replaced, a condition that flipped) is not seen through the mask yet
+([#4543](https://github.com/go-to-k/cdkd/issues/4543)), although
+CloudFormation would update the resource.
 
 - **Written** by the save of a deploy that created, updated or replaced the
   resource, from the template it deployed. A failed update keeps the previous
@@ -1013,8 +1017,9 @@ about a value.
   such an edit is not sent until the property changes again. To push one
   anyway, change the property once more, or replace the resource with
   `--recreate-via-cc-api` / `--recreate-via-sdk-provider`.
-- A malformed field reads as absent. A writer that spreads an existing record
-  (rollback, drift, scrub, orphan adoption) carries it.
+- A malformed field reads as absent. A record a rollback orphans gets it from
+  the same save, and a writer that spreads an existing record (rollback,
+  drift, scrub, orphan adoption) carries it.
 
 ## State Schema
 

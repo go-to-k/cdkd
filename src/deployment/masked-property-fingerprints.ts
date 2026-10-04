@@ -7,10 +7,13 @@
  * reference, go-to-k/cdkd#2759) is persisted as `***`. The mask identifies
  * nothing, so the deploy's no-change skip and the diff compared `***` with
  * `***`, and an edit around the reference, or a retarget of it, was never
- * sent. CloudFormation decides by comparing the unresolved template, so the
- * record keeps, per such property, a hash of the TEMPLATE value it was written
- * from: an edit around the reference moves the hash and the property is
- * updated, while a rotated secret behind an unchanged template does not.
+ * sent. The record keeps, per such property, a hash of the TEMPLATE value it
+ * was written from: an edit around the reference (or a retarget of it) moves
+ * the hash and the property is updated, while a rotated secret behind an
+ * unchanged template does not, as in CloudFormation. An input that changes
+ * WITHOUT the template text changing (a parameter value, a replaced
+ * resource's `Ref`, a flipped condition) moves no hash and is still compared
+ * as `***` (go-to-k/cdkd#4543).
  *
  * WHAT IS HASHED is the template value only, never a resolved one. The
  * template holds a secret as its `{{resolve:...}}` token and a `NoEcho`
