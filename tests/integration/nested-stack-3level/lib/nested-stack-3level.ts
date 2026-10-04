@@ -131,11 +131,33 @@ class ChildNestedStack extends cdk.NestedStack {
     id: string,
     downwardValue: string,
     stage: string,
+    w1: { secretName: string; paramName: string },
     props?: cdk.NestedStackProps
   ) {
     super(scope, id, props);
 
     (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('Child');
+
+    // THE #4543 ARM: a masked property that reads a value the ROOT passes.
+    // `Input4543` arrives as `{Ref: Input4543}` of a plain (non-`NoEcho`)
+    // root parameter, so the root classifies it clean; the script also holds
+    // a secretsmanager reference this child resolves itself, so the value is
+    // recorded as `***` (an `Fn::Base64` the redaction cannot map back).
+    // Changing `CDKD_TEST_4543_INPUT` moves only the root parameter's
+    // `Default`: this template's text stays as it was, and verify.sh asserts
+    // the new script reaches AWS. A FIXED name, swept by verify.sh's cleanup.
+    const input4543 = new cdk.CfnParameter(this, 'Input4543', { type: 'String' });
+    input4543.overrideLogicalId('Input4543');
+    const w1Param = new ssm.CfnParameter(this, 'W1Script', {
+      name: w1.paramName,
+      type: 'String',
+      description:
+        'cdkd nested-stack-3level integ - #4543 masked script reading a root-passed parameter',
+      value: cdk.Fn.base64(
+        `#!/bin/bash\nINPUT=${input4543.valueAsString}\nPW={{resolve:secretsmanager:${w1.secretName}:SecretString:w1::}}\n`
+      ),
+    });
+    w1Param.overrideLogicalId('W1Script');
 
     // THE #3094 ARM, depth 1: the two secret spellings arrive from the ROOT
     // as literal `{{resolve:...}}` strings (the parent resolves them) and are
@@ -273,12 +295,28 @@ export class NestedStack3Level extends cdk.Stack {
       default: 'stage-4094',
     });
     stage.overrideLogicalId('Stage4094');
-    const child = new ChildNestedStack(this, 'Child', rootTopic.topicName, stage.valueAsString, {
-      parameters: {
-        HandoffSecretA: `{{resolve:secretsmanager:${secretName}:SecretString:handoff::}}`,
-        HandoffSecretB: `{{resolve:secretsmanager:${secretName}:SecretString:handoff:AWSCURRENT:}}`,
-      },
+    // THE #4543 ARM, depth 0: a plain root parameter handed to the child,
+    // whose `Default` verify.sh moves through `CDKD_TEST_4543_INPUT`.
+    const input4543 = new cdk.CfnParameter(this, 'Input4543', {
+      type: 'String',
+      default: process.env['CDKD_TEST_4543_INPUT'] ?? 'one',
     });
+    input4543.overrideLogicalId('Input4543');
+    const child = new ChildNestedStack(
+      this,
+      'Child',
+      rootTopic.topicName,
+      stage.valueAsString,
+      // Kept in sync with verify.sh's W1_PARAM_NAME.
+      { secretName, paramName: `cdkd-3level-w1-${account}` },
+      {
+        parameters: {
+          HandoffSecretA: `{{resolve:secretsmanager:${secretName}:SecretString:handoff::}}`,
+          HandoffSecretB: `{{resolve:secretsmanager:${secretName}:SecretString:handoff:AWSCURRENT:}}`,
+          Input4543: input4543.valueAsString,
+        },
+      }
+    );
 
     // THE #3156 ARM, depth 0: two 2-character secrets in the two intrinsic
     // frames the sub-floor carry refused before the issue -- an `ssm` token

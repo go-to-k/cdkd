@@ -171,6 +171,22 @@ if [[ "${PIN_SSM_VALUE}" == "${PIN_OUT_VALUE}" ]]; then
   exit 1
 fi
 
+# The #4543 arm. The child's `W1Script` holds the base64 of a script joining
+# the root-passed `Input4543` and the `w1` key of the secret above; both names
+# are kept in sync with `lib/nested-stack-3level.ts`. Every scan covers the
+# plaintext AND both encodings of the script, which decode to it.
+W1_PARAM_NAME="cdkd-3level-w1-${ACCOUNT_ID}"
+W1_PW_VALUE="w1nput-3level-pl4intext-4543"
+w1_script() { printf '#!/bin/bash\nINPUT=%s\nPW=%s\n' "$1" "${W1_PW_VALUE}"; }
+W1_ONE_B64=$(w1_script one | base64 | tr -d '\n')
+W1_TWO_B64=$(w1_script two | base64 | tr -d '\n')
+if [[ -z "${W1_ONE_B64}" || -z "${W1_TWO_B64}" || "${W1_ONE_B64}" == "${W1_TWO_B64}" ]] \
+  || [[ "$(printf '%s' "${W1_TWO_B64}" | base64 --decode)" != "$(w1_script two)" ]]; then
+  echo "FAIL: premise: could not derive two distinct, round-tripping encodings of the #4543 script -- the arm would be vacuous" >&2
+  exit 1
+fi
+W1_PLAINTEXTS=("${W1_PW_VALUE}" "${W1_ONE_B64}" "${W1_TWO_B64}")
+
 # Collected physical ids (filled during the post-deploy state read) so the
 # post-destroy sweep can confirm each one is gone on AWS.
 SSM_PARAM_NAMES=()
@@ -185,6 +201,9 @@ cleanup() {
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
     --force-delete-without-recovery --region "${AWS_REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${PIN_SSM_PARAM_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
+  # The #4543 arm's fixed-name parameter holds the base64 of a script carrying
+  # the w1 plaintext: swept here in case a destroy left it standing.
+  aws ssm delete-parameter --name "${W1_PARAM_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
   # NONCURRENT-only here: this runs from the failure / INT / TERM traps, where
   # a live state.json may be the only record of standing resources. The
   # success path below does the full sweep once the cascade is asserted.
@@ -264,7 +283,7 @@ created=0
 create_err=""
 for attempt in 1 2 3 4 5 6; do
   if create_err=$(aws secretsmanager create-secret --name "${SECRET_NAME}" \
-       --secret-string "{\"handoff\":\"${HANDOFF_PW_VALUE}\",\"pin\":\"${PIN_OUT_VALUE}\"}" \
+       --secret-string "{\"handoff\":\"${HANDOFF_PW_VALUE}\",\"pin\":\"${PIN_OUT_VALUE}\",\"w1\":\"${W1_PW_VALUE}\"}" \
        --region "${AWS_REGION}" 2>&1 >/dev/null); then
     created=1
     break
@@ -301,7 +320,7 @@ echo "==> Step 1: deploy ${STACK} (root -> Child -> Grandchild -> GreatGrandchil
 # aborting with nothing to read.
 scan_output() { # scan_output <label> <text> -- FAIL (without echoing) on the plaintext
   local plaintext
-  for plaintext in "${HANDOFF_PW_VALUE}" "${FRAMED_PLAINTEXTS[@]}"; do
+  for plaintext in "${HANDOFF_PW_VALUE}" "${FRAMED_PLAINTEXTS[@]}" "${W1_PLAINTEXTS[@]}"; do
     if grep -qF "${plaintext}" <<<"$2"; then
       echo "FAIL: $1 printed a secret plaintext" >&2
       exit 1
@@ -347,6 +366,18 @@ if ! grep -qF "${STACK}" <<<"${DEPLOY_OUT}"; then
   exit 1
 fi
 echo "  OK: the deploy's --verbose output carries no plaintext"
+# #4543: W1Script's version as Step 1 left it. Step 4d compares it with the
+# version just before its own deploy: Step 4c's deploys re-run the child
+# engine with Input4543 unchanged, so an equal version there is the arm's
+# no-churn evidence.
+W1_VERSION_STEP1=$(aws ssm get-parameter --name "${W1_PARAM_NAME}" --region "${AWS_REGION}" \
+  --query 'Parameter.Version' --output text)
+case "${W1_VERSION_STEP1}" in
+  '' | *[!0-9]*)
+    echo "FAIL: premise: ${W1_PARAM_NAME}'s version after Step 1 did not read as a number (${W1_VERSION_STEP1})" >&2
+    exit 1
+    ;;
+esac
 
 # #3156: the grandchild's lines per framed parameter, PRESENT and masked whole
 # -- the whole-value entry the root's carry records reaches the grandchild
@@ -416,19 +447,19 @@ assert_level "${GREATGRANDCHILD}" "${GRANDCHILD}"   "GreatGrandchild"
 assert_level "${FRAMED}"          "${STACK}"        "Framed"
 assert_level "${FRAMED_GC}"       "${FRAMED}"       "FramedGrandchild"
 
-# Sanity: we should have collected 13 SSM params (RootRef, Child.Param,
-# Grandchild.Param, Grandchild.SecretA, Grandchild.SecretB,
+# Sanity: we should have collected 14 SSM params (RootRef, Child.Param,
+# Child.W1Script, Grandchild.Param, Grandchild.SecretA, Grandchild.SecretB,
 # GreatGrandchild.Param, and the #3156 / #3306 grandchild's seven consumers)
 # and 2 SNS topics (RootTopic, Grandchild.Topic) across the tree.
-if [[ ${#SSM_PARAM_NAMES[@]} -ne 13 ]]; then
-  echo "FAIL: expected 13 SSM parameters across the tree, found ${#SSM_PARAM_NAMES[@]}: ${SSM_PARAM_NAMES[*]}"
+if [[ ${#SSM_PARAM_NAMES[@]} -ne 14 ]]; then
+  echo "FAIL: expected 14 SSM parameters across the tree, found ${#SSM_PARAM_NAMES[@]}: ${SSM_PARAM_NAMES[*]}"
   exit 1
 fi
 if [[ ${#SNS_TOPIC_ARNS[@]} -ne 2 ]]; then
   echo "FAIL: expected 2 SNS topics across the tree, found ${#SNS_TOPIC_ARNS[@]}: ${SNS_TOPIC_ARNS[*]}"
   exit 1
 fi
-echo "  OK: 6 state files, 13 SSM params + 2 SNS topics collected across all levels"
+echo "  OK: 6 state files, 14 SSM params + 2 SNS topics collected across all levels"
 
 # --------------------------------------------------------------------
 # Step 3: every level's REAL AWS resource exists.
@@ -531,7 +562,7 @@ assert_eq "live SecretB holds the resolved plaintext" \
 # (#3102 review, the gone-probe shape one layer over).
 for lvl in "${LEVELS[@]}"; do
   lvl_json=$(fetch_state "${lvl}") || { echo "FAIL: could not fetch the state file of '${lvl}' for the plaintext scan" >&2; exit 1; }
-  for plaintext in "${HANDOFF_PW_VALUE}" "${FRAMED_PLAINTEXTS[@]}"; do
+  for plaintext in "${HANDOFF_PW_VALUE}" "${FRAMED_PLAINTEXTS[@]}" "${W1_PLAINTEXTS[@]}"; do
     if grep -qF "${plaintext}" <<<"${lvl_json}"; then
       echo "FAIL: state.json of '${lvl}' carries a secret plaintext" >&2
       exit 1
@@ -787,7 +818,7 @@ assert_eq "#4453: the marked child row keeps HandoffSecretB as its expression" \
   "$(jq_of "${MARKED_CHILD_JSON}" '.resources.Grandchild.properties.Parameters.HandoffSecretB')" "${HANDOFF_EXPR_B}"
 for lvl in "${LEVELS[@]}"; do
   lvl_json=$(fetch_state "${lvl}") || { echo "FAIL: could not fetch the state file of '${lvl}' for the #4453 plaintext scan" >&2; exit 1; }
-  for plaintext in "${HANDOFF_PW_VALUE}" "${FRAMED_PLAINTEXTS[@]}"; do
+  for plaintext in "${HANDOFF_PW_VALUE}" "${FRAMED_PLAINTEXTS[@]}" "${W1_PLAINTEXTS[@]}"; do
     if grep -qF "${plaintext}" <<<"${lvl_json}"; then
       echo "FAIL: #4453: state.json of '${lvl}' carries a secret plaintext while a pending marker is recorded" >&2
       exit 1
@@ -873,6 +904,128 @@ fi
 echo "  OK: #4453 control: the markers cleared and an unchanged redeploy re-runs nothing"
 
 # --------------------------------------------------------------------
+# Step 4d (#4543): a new value the ROOT passes reaches a masked property in
+# the child. `W1Script` is `Fn::Base64` over a script joining `{Ref:
+# Input4543}` (a plain root parameter the root hands down, so the root
+# classifies it clean) and a secretsmanager reference the child resolves
+# itself, so the child records the value as `***`. Before the fix only the
+# template TEXT was fingerprinted, so a new `Input4543` behind unchanged text
+# compared `***` with `***` and the child kept the old script under a green
+# deploy. `CDKD_TEST_4543_INPUT` moves only the root parameter's `Default`.
+# The send is proven on the parameter AWS holds (value and version); the live
+# value is compared, never printed (it decodes to the w1 plaintext).
+# --------------------------------------------------------------------
+echo ""
+echo "==> Step 4d: #4543 -- a new root-passed value reaches the child's masked script"
+w1_live() { # w1_live <Value|Version>
+  aws ssm get-parameter --name "${W1_PARAM_NAME}" --region "${AWS_REGION}" \
+    --query "Parameter.$1" --output text
+}
+w1_record() { # w1_record <child state json> <jq path under .resources.W1Script>
+  jq -r ".resources.W1Script.$2 // \"<absent>\"" <<<"$1"
+}
+w1_scan_states() { # w1_scan_states <label>: no level's state.json holds the w1 plaintext or an encoding
+  local lvl lvl_json plaintext
+  for lvl in "${LEVELS[@]}"; do
+    lvl_json=$(fetch_state "${lvl}") || { echo "FAIL: could not fetch the state file of '${lvl}' for the #4543 scan ($1)" >&2; exit 1; }
+    for plaintext in "${W1_PLAINTEXTS[@]}"; do
+      if grep -qF "${plaintext}" <<<"${lvl_json}"; then
+        echo "FAIL: #4543: state.json of '${lvl}' carries the w1 plaintext or an encoding of its script ($1)" >&2
+        exit 1
+      fi
+    done
+  done
+}
+assert_eq "premise: Input4543 is a plain root parameter whose Default is \"one\"" \
+  "$(jq -c '.Parameters.Input4543' "${ROOT_TEMPLATE}")" '{"Type":"String","Default":"one"}'
+assert_eq "premise: the root's Child row hands Input4543 down as its Ref" \
+  "$(jq -c '.Resources.Child.Properties.Parameters.Input4543' "${ROOT_TEMPLATE}")" '{"Ref":"Input4543"}'
+W1_JSON_ONE=$(fetch_state "${CHILD}") || { echo "FAIL: could not fetch ${CHILD} state for the #4543 premise" >&2; exit 1; }
+W1_TEXT_ONE=$(w1_record "${W1_JSON_ONE}" 'maskedPropertyFingerprints.Value')
+W1_INPUT_ONE=$(w1_record "${W1_JSON_ONE}" 'maskedPropertyInputFingerprints.Value')
+assert_eq "premise: the child records W1Script's Value as the mask" \
+  "$(w1_record "${W1_JSON_ONE}" 'properties.Value')" '***'
+if [[ "${W1_TEXT_ONE}" != sha256:* || "${W1_INPUT_ONE}" != inputs-sha256:* \
+  || "${W1_INPUT_ONE#*+}" != "${W1_TEXT_ONE}" ]]; then
+  echo "FAIL: premise: W1Script carries no text fingerprint with an input fingerprint bound to it (read '${W1_TEXT_ONE}' / '${W1_INPUT_ONE}') -- the child stamped no input fingerprint for a value its parent classified clean (issue #4543)" >&2
+  exit 1
+fi
+if [[ "$(w1_live Value)" != "${W1_ONE_B64}" ]]; then
+  echo "FAIL: premise: ${W1_PARAM_NAME} does not hold the script for INPUT=one before the change (value withheld)" >&2
+  exit 1
+fi
+W1_VERSION_ONE=$(w1_live Version)
+echo "  OK: premise: W1Script is recorded '***' with a bound input fingerprint, and AWS holds INPUT=one (version ${W1_VERSION_ONE})"
+# The no-churn half. Step 4c's three deploys (the changed great-grandchild
+# value, its re-attempt and the control) each made the root's Child row an
+# UPDATE, so the child engine ran with Input4543 unchanged and compared
+# W1Script's input fingerprint each time. Its version is still Step 1's: none
+# of them re-sent it.
+assert_eq "#4543: W1Script was not re-sent by Step 4c's child deploys (version ${W1_VERSION_STEP1})" \
+  "${W1_VERSION_ONE}" "${W1_VERSION_STEP1}"
+
+set +e
+W1_DEPLOY_OUT=$(CDKD_TEST_4543_INPUT=two ${CDKD} deploy ${STACK} \
+  --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes --verbose 2>&1)
+W1_DEPLOY_RC=$?
+set -e
+scan_output "cdkd deploy --verbose (#4543 new root value)" "${W1_DEPLOY_OUT}"
+echo "${W1_DEPLOY_OUT}"
+if [[ ${W1_DEPLOY_RC} -ne 0 ]]; then
+  echo "FAIL: #4543: the deploy with the new root value exited ${W1_DEPLOY_RC}" >&2
+  exit 1
+fi
+# Premise: that deploy moved only the root parameter's Default.
+assert_eq "premise: the #4543 deploy synthesized Input4543's Default as \"two\"" \
+  "$(jq -c '.Parameters.Input4543.Default' "${ROOT_TEMPLATE}")" '"two"'
+if [[ "$(w1_live Value)" != "${W1_TWO_B64}" ]]; then
+  echo "FAIL: #4543: after a green deploy with the new root value, ${W1_PARAM_NAME} does not hold the script for INPUT=two -- the child never sent its masked property (value withheld)" >&2
+  exit 1
+fi
+W1_VERSION_TWO=$(w1_live Version)
+case "${W1_VERSION_ONE}${W1_VERSION_TWO}" in
+  '' | *[!0-9]*)
+    echo "FAIL: premise: ${W1_PARAM_NAME}'s version did not read as a number (${W1_VERSION_ONE} / ${W1_VERSION_TWO})" >&2
+    exit 1
+    ;;
+esac
+if [[ ${W1_VERSION_TWO} -le ${W1_VERSION_ONE} ]]; then
+  echo "FAIL: #4543: ${W1_PARAM_NAME}'s version did not advance with the new root value (${W1_VERSION_ONE} -> ${W1_VERSION_TWO})" >&2
+  exit 1
+fi
+W1_JSON_TWO=$(fetch_state "${CHILD}") || { echo "FAIL: could not fetch ${CHILD} state after the #4543 deploy" >&2; exit 1; }
+W1_TEXT_TWO=$(w1_record "${W1_JSON_TWO}" 'maskedPropertyFingerprints.Value')
+W1_INPUT_TWO=$(w1_record "${W1_JSON_TWO}" 'maskedPropertyInputFingerprints.Value')
+assert_eq "#4543: the child still records W1Script's Value as the mask" \
+  "$(w1_record "${W1_JSON_TWO}" 'properties.Value')" '***'
+# The text half stays (the child's template text did not change); the input
+# half moves with the passed value.
+if [[ "${W1_TEXT_TWO}" != "${W1_TEXT_ONE}" || "${W1_INPUT_TWO#*+}" != "${W1_TEXT_TWO}" \
+  || "${W1_INPUT_TWO}" == "${W1_INPUT_ONE}" || "${W1_INPUT_TWO}" != inputs-sha256:* ]]; then
+  echo "FAIL: #4543: W1Script's fingerprints after the new root value are not 'same text, new bound input' (text ${W1_TEXT_ONE} -> ${W1_TEXT_TWO}, input ${W1_INPUT_ONE} -> ${W1_INPUT_TWO})" >&2
+  exit 1
+fi
+w1_scan_states "after the new root value"
+echo "  OK: #4543: the new root value reached the child's masked script (version ${W1_VERSION_ONE} -> ${W1_VERSION_TWO}); the input half moved, the text half did not"
+
+# A guard only, NOT churn coverage: with the same new value the root's Child
+# row diffs NO_CHANGE, so the child engine does not run here (the no-churn
+# check is the Step 4c comparison above).
+set +e
+W1_SAME_OUT=$(CDKD_TEST_4543_INPUT=two ${CDKD} deploy ${STACK} \
+  --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --yes 2>&1)
+W1_SAME_RC=$?
+set -e
+scan_output "cdkd deploy (#4543 unchanged redeploy)" "${W1_SAME_OUT}"
+echo "${W1_SAME_OUT}"
+if [[ ${W1_SAME_RC} -ne 0 ]]; then
+  echo "FAIL: #4543: the unchanged redeploy with the new root value exited ${W1_SAME_RC}" >&2
+  exit 1
+fi
+assert_eq "#4543: an unchanged root redeploy does not touch W1Script" "$(w1_live Version)" "${W1_VERSION_TWO}"
+w1_scan_states "after the unchanged redeploy"
+
+# --------------------------------------------------------------------
 # Step 5: 'cdkd state list --tree' renders the 4-level hierarchy.
 # --------------------------------------------------------------------
 echo ""
@@ -943,6 +1096,10 @@ if ! aws ssm get-parameter --name "${PIN_SSM_PARAM_NAME}" --region "${AWS_REGION
 fi
 aws ssm delete-parameter --name "${PIN_SSM_PARAM_NAME}" --region "${AWS_REGION}" >/dev/null
 echo "  OK: out-of-band secret and SecureString left intact by destroy, removed by the fixture"
+# The #4543 arm's fixed-name parameter, by its name too (6b reads the names
+# from state, which a lost record would hide).
+assert_gone "SSM parameter '${W1_PARAM_NAME}' (base64 of a script carrying the w1 plaintext) still exists after destroy" \
+  aws ssm get-parameter --name "${W1_PARAM_NAME}" --region "${AWS_REGION}"
 
 # --- Teardown + VERSION sweep, ON THE SUCCESS PATH (issue #2096) -----------
 # 6a's head-object is on the CURRENT object; the bucket is VERSIONED, so every
@@ -958,4 +1115,4 @@ for lvl in "${LEVELS[@]}"; do
 done
 
 echo ""
-echo "==> PASS: 4-level nested-stack deploy / parent-link / state-tree / destroy-cascade verified, the #3094 secret chain per leaf, the #3156 and #3306 framed carries, zero surviving state versions"
+echo "==> PASS: 4-level nested-stack deploy / parent-link / state-tree / destroy-cascade verified, the #3094 secret chain per leaf, the #3156 and #3306 framed carries, the #4543 root-passed input of a masked child property, zero surviving state versions"

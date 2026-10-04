@@ -43,7 +43,11 @@ import {
   parentSuppliedValues,
   readRecordedConditionVerdicts,
 } from '../condition-verdicts.js';
-import { backfillMaskedPropertyFingerprints } from '../masked-property-fingerprints.js';
+import {
+  backfillMaskedPropertyFingerprints,
+  parameterInputsFor,
+  withRebaselinedFingerprints,
+} from '../masked-property-fingerprints.js';
 import { noEchoParameterValueSeed } from '../outputs-export-alias.js';
 import { withProducerRegions } from '../producer-regions-scope.js';
 import { promoteRecreateTargets, recreateTargetIdsFor } from '../recreate-target-promotion.js';
@@ -344,6 +348,16 @@ export async function doDeployWithPrefetch(
     );
     // The save reads the same corpus for a record it stamps or carries.
     this.fingerprintNoEchoValues = backfillNoEchoValues;
+    // go-to-k/cdkd#4543: how each parameter enters a masked property's INPUT
+    // fingerprint, decided once from the REAL values so the diff pass (which
+    // binds a nested child's redacted bag) and the provisioning arms agree.
+    this.fingerprintParameters = parameterInputsFor({
+      template,
+      values: parameterValues,
+      nestedChild: this.options.parentStackInfo !== undefined,
+      supplied: this.options.parameters,
+      passedClasses: this.options.passedParameterClasses,
+    });
     let maskedFingerprintsBackfilled =
       backfillMaskedPropertyFingerprints(currentState.resources, template, backfillNoEchoValues) >
       0;
@@ -552,6 +566,16 @@ export async function doDeployWithPrefetch(
     // config state stores resolved.
     diffResolverContext.skipDynamicReferences = true;
     const diffResolveFn = (value: unknown) => this.resolver.resolve(value, diffResolverContext);
+    const maskedInputSourcesForDiff = this.maskedInputSources(
+      effectiveTemplate,
+      currentState.resources,
+      conditions,
+      stackName
+    );
+    const maskedInputs = maskedInputSourcesForDiff && {
+      sources: maskedInputSourcesForDiff,
+      rebaselined: new Map<string, Record<string, string>>(),
+    };
     const changes = await this.diffCalculator.calculateDiff(
       currentState,
       effectiveTemplate,
@@ -600,12 +624,26 @@ export async function doDeployWithPrefetch(
       // its same-stack readers are promoted as for a property-driven
       // replacement, before anything below counts the changes. This stack's
       // targets only, never a nested child's or another stack's.
-      recreateTargetIdsFor(this.options.recreateTargets, stackName)
+      recreateTargetIdsFor(this.options.recreateTargets, stackName),
+      // go-to-k/cdkd#4543: a masked property's resolved inputs, so a changed
+      // parameter or flipped condition behind unchanged template text diffs.
+      // A layout-1 fingerprint whose text still matches is re-baselined to
+      // layout 2 from these same inputs, stamped below without sending.
+      maskedInputs
     );
     // The diff was the prefetch's only consumer: withdraw what it did not
     // need, so it stops spending the account's DescribeType quota that the
     // deploy's own (write-only) lookups draw on.
     createOnlyPrefetch.cancel();
+    // The re-baselined records, before anything provisions: an UPDATE row then
+    // compares its provisioning-time inputs with today's, and the no-change
+    // save below persists the rest.
+    for (const [logicalId, fingerprints] of maskedInputs?.rebaselined ?? []) {
+      const record = currentState.resources[logicalId];
+      if (record === undefined) continue;
+      currentState.resources[logicalId] = withRebaselinedFingerprints(record, fingerprints);
+      maskedFingerprintsBackfilled = true;
+    }
 
     // Issue #2668: refuse a Type change into or out of
     // `AWS::CloudFormation::Stack` before anything is provisioned. Every

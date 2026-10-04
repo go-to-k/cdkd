@@ -92,22 +92,22 @@ describe('maskedPropertyFingerprintsOf', () => {
 describe('movedMaskedProperties', () => {
   const stamped = record({ maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(SCRIPT) } });
 
-  it('names a masked property whose template expression moved', () => {
-    expect(movedMaskedProperties(stamped, { Name: '/app/ud', Value: EDITED })).toEqual(['Value']);
+  it('names a masked property whose template expression moved', async () => {
+    expect(await movedMaskedProperties(stamped, { Name: '/app/ud', Value: EDITED })).toEqual(['Value']);
   });
 
-  it('is empty for the unchanged expression (a rotated secret moves nothing)', () => {
-    expect(movedMaskedProperties(stamped, { Name: '/app/ud', Value: SCRIPT })).toEqual([]);
+  it('is empty for the unchanged expression (a rotated secret moves nothing)', async () => {
+    expect(await movedMaskedProperties(stamped, { Name: '/app/ud', Value: SCRIPT })).toEqual([]);
   });
 
-  it('is empty for a record without the field: the pre-#4451 comparison', () => {
-    expect(movedMaskedProperties(record(), { Name: '/app/ud', Value: EDITED })).toEqual([]);
+  it('is empty for a record without the field: the pre-#4451 comparison', async () => {
+    expect(await movedMaskedProperties(record(), { Name: '/app/ud', Value: EDITED })).toEqual([]);
   });
 
-  it('leaves a removed property, or one no longer masked, to the ordinary comparison', () => {
-    expect(movedMaskedProperties(stamped, { Name: '/app/ud' })).toEqual([]);
+  it('leaves a removed property, or one no longer masked, to the ordinary comparison', async () => {
+    expect(await movedMaskedProperties(stamped, { Name: '/app/ud' })).toEqual([]);
     expect(
-      movedMaskedProperties(
+      await movedMaskedProperties(
         { ...stamped, properties: { Name: '/app/ud', Value: 'plain' } },
         { Name: '/app/ud', Value: EDITED }
       )
@@ -257,9 +257,9 @@ describe('withMaskedPropertyFingerprints - a template literal equal to a resolve
     );
   });
 
-  it('a refused entry is never compared and never replaced by the backfill', () => {
+  it('a refused entry is never compared and never replaced by the backfill', async () => {
     const refused = record({ maskedPropertyFingerprints: { Value: REFUSED_FINGERPRINT } });
-    expect(movedMaskedProperties(refused, { Name: '/app/ud', Value: EDITED })).toEqual([]);
+    expect(await movedMaskedProperties(refused, { Name: '/app/ud', Value: EDITED })).toEqual([]);
     const resources: Record<string, ResourceState> = { R: refused };
     expect(
       backfillMaskedPropertyFingerprints(resources, {

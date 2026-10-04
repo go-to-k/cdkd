@@ -25,6 +25,14 @@ import {
   maskSecretsInText,
   recordNestedStackParameterExpressions,
 } from '../secret-redaction.js';
+import {
+  classifyPassedParameters,
+  inputFingerprinter,
+  maskedInputFingerprintsFor,
+  possiblyMaskedKeys,
+  recordPassedParameterClasses,
+} from '../masked-property-fingerprints.js';
+
 declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
@@ -96,6 +104,23 @@ export async function provisionCreate(
   this.refuseRedactedAttributeReads(logicalId, resourceType, context);
   // Capture the UNRESOLVED bag as the redaction position source (#1904).
   this.perResourceTemplateProps.set(logicalId, desiredProps);
+  // go-to-k/cdkd#4543: the input fingerprint of each property the save may
+  // record as the mask, resolved against this deploy's state.
+  const fingerprintSources =
+    template && this.maskedInputSources(template, stateResources, conditions, stackName);
+  if (fingerprintSources !== undefined) {
+    this.perResourceInputFingerprints.set(
+      logicalId,
+      await maskedInputFingerprintsFor(
+        possiblyMaskedKeys(resolvedProps, [
+          context.recordedSecretValues,
+          this.fingerprintNoEchoValues,
+          this.options.inheritedSecrets,
+        ]),
+        inputFingerprinter(desiredProps, fingerprintSources)
+      )
+    );
+  }
   this.perResourceResolvedType.set(logicalId, resourceType);
   // Named so the provider call below can bind the SAME bag into its
   // masker (issue #1932 item 3), mirroring `updateSecrets` on the UPDATE
@@ -104,6 +129,16 @@ export async function provisionCreate(
   // but a masker bound to a real map is what keeps the provider call
   // shape identical on both paths.
   const createSecrets = context.recordedSecretValues ?? new Map<string, string>();
+  // go-to-k/cdkd#4543: for a nested-stack row, how each value it passes may
+  // enter the child's input fingerprints, read off THIS (the parent's)
+  // template, recorded on the bag the provider call is bound to, where the
+  // child engine reads it.
+  if (fingerprintSources !== undefined && resourceType === 'AWS::CloudFormation::Stack') {
+    recordPassedParameterClasses(
+      createSecrets,
+      await classifyPassedParameters(desiredProps['Parameters'], fingerprintSources)
+    );
+  }
   // Issue #2291: for an `AWS::CloudFormation::Stack` row, remember which
   // `{{resolve:...}}` expression each `Parameters` entry was resolved
   // FROM, keyed by the child's parameter NAME. The bag above is keyed by

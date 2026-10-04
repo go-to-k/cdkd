@@ -1,12 +1,20 @@
 import type { DeployEngine } from '../deploy-engine.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceState } from '../../types/state.js';
-import { hasMaskableValues, inheritNestedStackParameterAssociations } from '../secret-redaction.js';
+import {
+  hasMaskableValues,
+  inheritNestedStackParameterAssociations,
+  redactSecretsForState,
+  type RecordedSecretValues,
+} from '../secret-redaction.js';
+import type { MaskedInputSources } from '../masked-property-fingerprints.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     buildResolverContext: OmitThisParameter<typeof buildResolverContext>;
+    /** @internal */
+    maskedInputSources: OmitThisParameter<typeof maskedInputSources>;
   }
 }
 
@@ -164,5 +172,93 @@ export function buildResolverContext(
     ...(base.redactedAttributeReads && {
       redactedAttributeReads: base.redactedAttributeReads,
     }),
+  };
+}
+
+/** The logical id an `Fn::GetAtt` input node reads. */
+function getAttTargetOf(node: unknown): string | undefined {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined;
+  const record = node as Record<string, unknown>;
+  const getAtt = record['Fn::GetAtt'];
+  if (Array.isArray(getAtt) && typeof getAtt[0] === 'string') return getAtt[0];
+  if (typeof getAtt === 'string') return getAtt.split('.')[0];
+  return undefined;
+}
+
+/**
+ * The sources a masked property's INPUT fingerprint is computed from
+ * (go-to-k/cdkd#4543), for the deploy's diff pass and its provisioning arms
+ * alike: the parameter classes {@link DeployEngine.fingerprintParameters}
+ * recorded, the evaluated `conditions`, and a resolver over `resources`.
+ *
+ * Each input node resolves through a FRESH context of its own, so nothing it
+ * records (secrets, imports, output reads) reaches the resource's own
+ * resolution, and its bag holds only what THAT node read: a value it records a
+ * secret for is kept as written. It never resolves a `{{resolve:...}}`
+ * reference (`skipDynamicReferences`), as the diff pass never does, so both
+ * sides resolve an input the same way; the one difference is `resources`,
+ * which on the provisioning side holds what this deploy already replaced.
+ * `undefined` before the parameters resolve.
+ */
+/** @internal */
+export function maskedInputSources(
+  this: DeployEngine,
+  template: CloudFormationTemplate,
+  resources: Record<string, ResourceState>,
+  conditions: Record<string, boolean> | undefined,
+  stackName: string
+): MaskedInputSources | undefined {
+  const parameters = this.fingerprintParameters;
+  if (parameters === undefined) return undefined;
+  return {
+    template,
+    parameterInput: parameters.parameterInput,
+    conditions,
+    resolve: async (node: unknown) => {
+      // No healer, and the stale-attribute PROBE phase: an `Fn::GetAtt` the
+      // resolver would answer with the physical-id FALLBACK (a guess, counted
+      // in the deploy summary and warned) throws instead, which reads as an
+      // unknown input. The fingerprint pass must neither bump that counter nor
+      // repeat the warning, and a guessed value is no input to hash.
+      // `cdkd diff` builds its context the same way.
+      const { attributeHealer: _healer, ...base } = this.buildResolverContext(
+        {
+          template,
+          resources,
+          parameters: parameters.bound,
+          ...(conditions && { conditions }),
+        },
+        stackName
+      );
+      const context = {
+        ...base,
+        recordedImports: [],
+        recordedOutputReads: [],
+        bestEffort: true,
+        skipDynamicReferences: true,
+        staleAttributeHeal: { phase: 'probe' as const },
+      };
+      const value = await this.resolver.resolve(structuredClone(node), context);
+      const secrets: RecordedSecretValues | undefined = context.recordedSecretValues;
+      // An attribute of a resource whose resolution THIS deploy recorded a
+      // secret for is still raw in memory (the save redacts it), so one
+      // echoing that secret would be hashed in plaintext. Kept as written
+      // exactly when the save's OWN redaction (`redactSecretsForState`, called
+      // as the attribute scrub calls it) would change the value: the saved
+      // record then holds `***` or a reference, which the next deploy's diff
+      // reads and keeps too, so both sides agree. The decision mirrors what
+      // state shows anyway, so it is no oracle (security review of
+      // go-to-k/cdkd#4543).
+      const target = getAttTargetOf(node);
+      const targetSecrets = target === undefined ? undefined : this.perResourceSecrets.get(target);
+      if (targetSecrets !== undefined && hasMaskableValues(targetSecrets)) {
+        const probe = { value };
+        const redacted = redactSecretsForState(probe, targetSecrets);
+        if (JSON.stringify(redacted) !== JSON.stringify(probe)) {
+          return { value, keepAsWritten: true };
+        }
+      }
+      return { value, ...(secrets && { secrets }) };
+    },
   };
 }

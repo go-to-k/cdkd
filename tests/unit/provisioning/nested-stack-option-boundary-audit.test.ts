@@ -63,6 +63,7 @@ const AUDITED_MEMBERS = [
   'captureObservedState',
   'assetRedirect',
   'inheritedSecrets',
+  'passedParameterClasses', // overwritten from THIS row's bag: absent unless the parent recorded it (#4543)
   'inheritedProducerRegions', // overwritten by the spread site with THIS parent's evidence (#4174)
   'replace',
   'forceStatefulRecreation',

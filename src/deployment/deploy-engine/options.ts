@@ -189,6 +189,16 @@ export interface DeployEngineOptions {
   inheritedSecrets?: RecordedSecretValues;
 
   /**
+   * How the parent classified each value it passes this child, for the
+   * child's masked-property input fingerprints (go-to-k/cdkd#4543): `clean`
+   * when the parent's expression for it reads only known non-secret inputs,
+   * `unknown` when it could not be read (nothing reading it is compared).
+   * A parameter missing here, or an absent map, is treated as possibly
+   * secret-derived. Set by `NestedStackProvider` from the parent's bag.
+   */
+  passedParameterClasses?: ReadonlyMap<string, 'clean' | 'secret' | 'unknown'>;
+
+  /**
    * The PARENT engine's producer-region evidence, set by `NestedStackProvider`
    * on the child engine it builds (go-to-k/cdkd#4174). A child receives a
    * parent's cross-region value only as a Parameter and records the parent's

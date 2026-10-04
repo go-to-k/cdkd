@@ -642,7 +642,11 @@ describe('DeployEngine — two child Parameters resolving to ONE plaintext (#229
 
     // AWS got the real value on both leaves — a fix that redacted the
     // PROVISIONING side would ship a literal token into the resource.
-    const createdProps = mockProvider.create!.mock.calls[0]![2] as Record<string, unknown>;
+    // Found by logical id: the two creates run concurrently.
+    const createdProps = mockProvider.create!.mock.calls.find((c) => c[0] === 'ChildRes')![2] as Record<
+      string,
+      unknown
+    >;
     expect(createdProps['Value']).toBe(SHARED);
     expect(createdProps['Description']).toBe(SHARED);
 

@@ -14,7 +14,10 @@ import {
   hasMaskableValues,
   type RecordedSecretValues,
 } from './secret-redaction.js';
-import { withMaskedPropertyFingerprints } from './masked-property-fingerprints.js';
+import {
+  type parameterInputsFor,
+  withMaskedPropertyFingerprints,
+} from './masked-property-fingerprints.js';
 import {
   isInlinePolicyClaimedByCompletedWriter,
   type InlinePolicyWrite,
@@ -523,6 +526,20 @@ export class DeployEngine {
   /** @internal */
   fingerprintNoEchoValues: RecordedSecretValues | undefined = undefined;
   /**
+   * How each template parameter enters a masked property's INPUT fingerprint
+   * (go-to-k/cdkd#4543), set once parameters resolve, so the diff pass and the
+   * provisioning arms classify every parameter alike. Reset per `deploy()`.
+   */
+  /** @internal */
+  fingerprintParameters: ReturnType<typeof parameterInputsFor> | undefined = undefined;
+  /**
+   * The input fingerprints (layout 2) each resource's masked properties
+   * resolved to when this deploy provisioned it (go-to-k/cdkd#4543): what the
+   * save stamps on a record this deploy wrote. Reset per `deploy()`.
+   */
+  /** @internal */
+  perResourceInputFingerprints = new Map<string, Record<string, string>>();
+  /**
    * Resolved secrets recorded while resolving the stack OUTPUTS (a `CfnOutput`
    * whose Value resolves a `{{resolve:...}}` reference). Separate from the
    * per-resource maps for the same anti-cross-contamination reason. Reset per
@@ -808,6 +825,8 @@ export class DeployEngine {
     // and a reused engine carrying last deploy's answer is the #2516 class.
     this.perResourceResolvedType = new Map();
     this.fingerprintNoEchoValues = undefined;
+    this.fingerprintParameters = undefined;
+    this.perResourceInputFingerprints = new Map();
     // Issue #2516: reset with the other per-deploy maps. A reused engine
     // whose next deploy fails before its own attempted bag is recorded would
     // otherwise journal the PREVIOUS run's bag against today's template and
@@ -904,7 +923,8 @@ export class DeployEngine {
         record.properties,
         templateProps,
         secrets,
-        this.fingerprintNoEchoValues
+        this.fingerprintNoEchoValues,
+        this.perResourceInputFingerprints.get(logicalId)
       );
     }
     // `outputs` is also secret-bearing: a `CfnOutput` whose Value resolves a
@@ -968,7 +988,8 @@ export class DeployEngine {
           entry.state.properties,
           orphanTemplateProps,
           sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined,
-          sameResource ? this.fingerprintNoEchoValues : undefined
+          sameResource ? this.fingerprintNoEchoValues : undefined,
+          sameResource ? this.perResourceInputFingerprints.get(entry.logicalId) : undefined
         ),
       };
     });
@@ -1367,6 +1388,7 @@ DeployEngine.prototype.peekRoutingForLabel = routingMixin.peekRoutingForLabel;
 DeployEngine.prototype.preparePropertiesForCcApi = routingMixin.preparePropertiesForCcApi;
 
 DeployEngine.prototype.buildResolverContext = resolverContextMixin.buildResolverContext;
+DeployEngine.prototype.maskedInputSources = resolverContextMixin.maskedInputSources;
 
 DeployEngine.prototype.doDeployWithPrefetch = deployFlowMixin.doDeployWithPrefetch;
 

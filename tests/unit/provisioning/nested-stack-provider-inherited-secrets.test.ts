@@ -61,6 +61,7 @@ import {
 } from '../../../src/provisioning/nested-stack-context.js';
 import { withCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
+import { recordPassedParameterClasses } from '../../../src/deployment/masked-property-fingerprints.js';
 import type { DeployEngineOptions } from '../../../src/deployment/deploy-engine.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -190,6 +191,41 @@ describe('NestedStackProvider — inherited secrets + child-region provenance', 
       withNestedStackContext(makeContext(), () => provider.create('Child', NESTED, {}))
     );
     expect(childOptions()).not.toHaveProperty('inheritedSecrets');
+  });
+
+  it('forwards the classes the parent recorded on the same bag, on both paths, and nothing else (go-to-k/cdkd#4543)', async () => {
+    const provider = new NestedStackProvider();
+    const parentSecrets = new Map<string, string>();
+    const classes = new Map<string, 'clean' | 'secret'>([
+      ['BucketName', 'clean'],
+      ['Pw', 'secret'],
+    ]);
+    recordPassedParameterClasses(parentSecrets, classes);
+    await withCurrentResourceSecrets(parentSecrets, () =>
+      withNestedStackContext(makeContext(), () =>
+        provider.create('Child', NESTED, { Parameters: { BucketName: 'b', Pw: 'p' } })
+      )
+    );
+    expect(childOptions().passedParameterClasses).toBe(classes);
+    ctorCalls.length = 0;
+    await withCurrentResourceSecrets(parentSecrets, () =>
+      withNestedStackContext(makeContext(), () =>
+        provider.update(
+          'Child',
+          'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child',
+          NESTED,
+          { Parameters: { BucketName: 'b', Pw: 'p' } },
+          {}
+        )
+      )
+    );
+    expect(childOptions().passedParameterClasses).toBe(classes);
+    // A bag the parent recorded nothing on: no option, every value secret.
+    ctorCalls.length = 0;
+    await withCurrentResourceSecrets(new Map(), () =>
+      withNestedStackContext(makeContext(), () => provider.create('Child', NESTED, {}))
+    );
+    expect(childOptions()).not.toHaveProperty('passedParameterClasses');
   });
 
   it('builds the physicalId region segment from the CONTEXT, never from the ambient environment (#2055)', async () => {

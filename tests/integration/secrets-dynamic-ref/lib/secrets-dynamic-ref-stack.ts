@@ -491,6 +491,23 @@ export class SecretsDynamicRefStack extends cdk.Stack {
           `${scriptHead}PW={{resolve:secretsmanager:${literalSecretName}:SecretString:password}}\n`
         ),
       });
+      // Issue #4543: the same shape reading a template PARAMETER. Changing
+      // `CDKD_TEST_UD_INPUT` changes only the parameter's `Default`, so the
+      // property's template text stays as it was while its resolved value
+      // moves. The record's fingerprint covers the parameter's resolved value
+      // (a non-secret input), so verify.sh asserts the new value reaches AWS.
+      // A FIXED name, swept by verify.sh's cleanup like the one above.
+      const udInput = new cdk.CfnParameter(this, 'UdInput', {
+        type: 'String',
+        default: process.env.CDKD_TEST_UD_INPUT ?? 'one',
+      });
+      new ssm.CfnParameter(this, 'B64InputUdParam', {
+        name: `cdkd-test-dynref-b64-in-${account}`,
+        type: 'String',
+        value: cdk.Fn.base64(
+          `#!/bin/bash\nINPUT=${udInput.valueAsString}\nPW={{resolve:secretsmanager:${literalSecretName}:SecretString:password}}\n`
+        ),
+      });
     }
     // Issue #2889: an `Export.Name` holding the password split by
     // `U+09BC` (BENGALI SIGN NUKTA), a zero-width nonspacing mark, so the name

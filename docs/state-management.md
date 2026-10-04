@@ -997,55 +997,119 @@ the condition's FALSE branch, as before
   scrub, orphan rewrite, `state refresh-observed`) may carry it, since none of
   them changes a definition or an input the fingerprint covers.
 
-### `maskedPropertyFingerprints` (no version bump)
+### `maskedPropertyFingerprints` / `maskedPropertyInputFingerprints` (no version bump)
 
 A property whose resolved value carries a secret in a form state cannot
 record as a reference is persisted as `***`. The common case is the EC2
 `UserData` shape: `Fn::Base64` over a script that embeds a
 `{{resolve:...}}` reference, whose encoding decodes straight back to the
 secret. `***` identifies nothing, so for each such top-level property the
-record also keeps `sha256:` over the property's UNRESOLVED template value.
+record also keeps two fingerprints of what the property was built from.
 `cdkd diff` and `cdkd deploy` treat a property whose recorded fingerprint no
-longer matches the template as changed, so an edit to the script around the
-reference, or a retarget of the reference, is shown and sent. A secret rotated
-behind an unchanged template leaves it equal and sends nothing, as
-CloudFormation does. Only template text is hashed: a secret appears there as
-its reference and a `NoEcho` parameter as its `Ref`, so the hash says nothing
-about a value. A property whose template text holds, as a literal, the value
+longer matches as changed, so the change is shown and sent. A secret rotated
+behind an unchanged template leaves both equal and sends nothing, as
+CloudFormation does.
+
+- `maskedPropertyFingerprints` (`sha256:`) hashes the property's template
+  TEXT, so an edit to the script around the reference, or a retarget of the
+  reference, is sent.
+- `maskedPropertyInputFingerprints` (`inputs-sha256:`, then the text hash it
+  belongs to after a `+`) hashes the template value with each NON-SECRET input
+  replaced by what it resolved to: a parameter's value, a `Ref` /
+  `Fn::GetAtt` result (so a `Ref` to a resource the deploy replaced), a
+  cross-stack read, and the branch an evaluated condition selects. So a new
+  parameter value, a replaced resource's new name and a flipped condition
+  are sent too.
+
+Secrets stay in their template form and never reach the hash, decided by
+where an input comes from, never by comparing its value with a secret it did
+not read. A `{{resolve:...}}` reference is hashed as the reference, a `NoEcho`
+parameter as its `Ref`, and these are kept as written:
+- a condition that reads a `NoEcho` parameter, a reference, a cross-stack
+  value or an attribute (as its whole `Fn::If`);
+- a `Ref` / `Fn::GetAtt` to a resource whose own definition reads a secret, a
+  `NoEcho` parameter, a cross-stack value or a name the template does not
+  declare, directly or through another resource;
+- an `Fn::GetAtt` on a custom resource or a nested stack, whose attributes
+  may be `NoEcho` (its physical id is hashed), and one whose attribute NAME is
+  built from any of these. So a new value of a nested-stack output a parent
+  reads (`Outputs.X`) behind an unchanged template is not sent through the
+  mask yet;
+- an input whose resolution read a secret (a `NoEcho` custom resource's
+  `Data`, a redacted `***` read), and an attribute that the save redacts
+  because the resource it belongs to read that secret in the same deploy;
+- in a nested stack, a parameter value its parent passed that the PARENT
+  built from any of the above, and every resource and condition that reads
+  one. The parent classifies each expression in its stack row's `Parameters`
+  by these same rules and hands the result to the child; a value built only
+  from non-secret inputs (a `Ref` to a parent resource, say) enters the
+  child's hash like any input. A passed value the parent did not classify (a
+  rollback, which replays the child without the parent's template) is kept as
+  written too, even when it equals the `Default`; the next deploy that
+  classifies it sees the property's hash move and sends it once. One the
+  parent could not read this time is neither compared nor hashed, nor is a
+  property that reads it directly or through a resource or condition. A
+  parameter the parent does not pass binds the child's `Default`, which is
+  template text, and is hashed.
+
+So these are NOT sent through the mask: a new value of a `NoEcho` parameter,
+a flip of a condition over one, and a new value of anything above. A hash
+that moved with such a value would let anyone holding the state file test
+guesses of it. CloudFormation would update the resource; change the
+property's template text, or replace the resource, to push one.
+
+A non-`NoEcho` parameter value and a cross-stack output value are treated as
+public: they enter the hash, so a low-entropy one may be recoverable from the
+state file by guessing. Declare a sensitive parameter `NoEcho`. A secret the
+redaction itself does not mask (one shorter than 4 characters, embedded in a
+longer value) is persisted in the clear already, and is not kept out of the
+hash either.
+
+A property whose template text holds, as a literal, the value
 of one of the stack's `NoEcho` parameters, or a value the same resource
-resolved as a secret, is the exception: it gets no hash and is compared as
-before the field existed. A `NoEcho` parameter value is known when the deploy
-starts, so this holds from the first deploy. A resolved secret is known only
-to a deploy that resolves the resource, so a hash the first deploy under this
-version filled in for a resource it did not change is checked by the next
-deploy that resolves it.
+resolved as a secret, is the exception: it gets no hash in either field and
+is compared as before the fields existed. A `NoEcho` parameter value is known
+when the deploy starts, so this holds from the first deploy. A resolved secret
+is known only to a deploy that resolves the resource, so a hash the first
+deploy under this version filled in for a resource it did not change is
+checked by the next deploy that resolves it.
 The check is a plain text match, so a short secret that also occurs as
 ordinary text in the property (a word in a script) costs that property its
-hash too, and edits to it are not seen through the mask. Because only
-template text is hashed, a change that leaves the property's template text as
-it was (a new parameter value, a `Ref` to a resource that was replaced, a
-condition that flipped) is not seen through the mask yet, although
-CloudFormation would update the resource.
+hash too, and edits to it are not seen through the mask.
 
 - **Written** by the save of a deploy that created, updated or replaced the
   resource, from the template it deployed. A failed update keeps the previous
   record and its previous fingerprints, so the retry still sends the edit.
-- **No version bump.** A record without the field (an older cdkd's) is
+- **No version bump.** A record without the fields (an older cdkd's) is
   compared exactly as before. The first deploy under a cdkd that knows the
-  field fills it in, per masked property, from the template it deploys, and
-  saves even when nothing else changed; that deploy cannot tell an edit made
-  since the last deploy, so such an edit is not sent until the property
+  text field fills it in, per masked property, from the template it deploys,
+  and saves even when nothing else changed; that deploy cannot tell an edit
+  made since the last deploy, so such an edit is not sent until the property
   changes again. To push one anyway, change the property once more, or replace
   the resource with `--recreate-via-cc-api` / `--recreate-via-sdk-provider`.
+- **An input fingerprint is bound to the text fingerprint** it was computed
+  with. A property with a text fingerprint but no bound input fingerprint (a
+  record written before the input fingerprint existed, or one an older cdkd
+  rewrote since: it updates the text field and carries the other one as it
+  was) is compared as text, so an edit is sent as before. While the text is
+  unchanged, the deploy fills in the input fingerprint from today's inputs
+  and sends nothing: it cannot tell whether an input moved since (a parameter
+  changed under the older cdkd), so such a change is sent only once the input
+  moves again. An older cdkd reads the text field only, exactly as it always
+  did, so after a downgrade it still sends a template edit.
+- **`cdkd diff`** compares the input fingerprint for the stack it was given.
+  For a nested child, and wherever it cannot bind an input (a parameter it
+  cannot resolve), it compares the text field only: a template edit shows,
+  an input change shows only when the deploy sends it.
 - **Nested stacks.** A nested child is deployed only when its parent row
   changed, which is usually because the child's own template changed. So the
   first deploy that reaches a child last deployed by an older cdkd is, most
   likely, one that carries an edit, and an edit to a masked property in that
   deploy is not sent. Check such a child after that deploy, and change the
   property once more if it did not take.
-- A malformed field reads as absent. A record a rollback orphans gets it from
-  the same save, and a writer that spreads an existing record (rollback,
-  drift, scrub, orphan adoption) carries it.
+- A malformed field reads as absent. A record a rollback orphans gets them
+  from the same save, and a writer that spreads an existing record (rollback,
+  drift, scrub, orphan adoption) carries them.
 
 ## State Schema
 
@@ -1482,7 +1546,8 @@ interface ResourceState {
   observedBaselineRefused?: true               // v10+: `cdkd import` declined to capture a baseline
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution' // optional, no bump: only the first survives an in-place UPDATE
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
-  maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its unresolved template value (issue #4451)
+  maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)
+  maskedPropertyInputFingerprints?: Record<string, string> // optional, no bump: per such property, a hash of its template value with its non-secret inputs resolved, bound to the text hash (issue #4543)
 }
 ```
 
