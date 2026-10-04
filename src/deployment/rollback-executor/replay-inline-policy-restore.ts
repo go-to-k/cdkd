@@ -1,5 +1,6 @@
 import { isRedactedRecordedValue } from '../../provisioning/redacted-delete-address.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { carryLogOnlyValues, type RecordedSecretValues } from '../secret-redaction.js';
 import type { ResourceState } from '../../types/state.js';
 import type {
   HeldInlinePolicyRemoval,
@@ -80,7 +81,14 @@ async function restoreOne(
     return;
   }
   const holder = holders[0]!;
-  const masker = createOpMasker(logger, new Map());
+  // The deploy's log-only needles for each holder, as `replaySingle` carries
+  // an op's (go-to-k/cdkd#1998): a NoEcho value an AWS error may quote.
+  const secrets: RecordedSecretValues = new Map();
+  for (const h of holders) {
+    const bag = ctx.logOnlyNeedlesFor?.(h.logicalId);
+    if (bag) carryLogOnlyValues(bag, secrets);
+  }
+  const masker = createOpMasker(logger, secrets);
   for (const h of holders) {
     const record = stateResources[h.logicalId];
     addRecordNames(

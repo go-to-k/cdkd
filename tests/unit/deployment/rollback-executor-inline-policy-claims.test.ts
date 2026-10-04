@@ -52,7 +52,9 @@ type RoleProps = { Policies: Array<{ PolicyName: string; PolicyDocument: string 
 
 const policyProvider = {
   create: vi.fn(async (_l: string, _t: string, props: PolicyProps) => {
-    for (const _r of props.Roles) put(props.PolicyName, props.PolicyDocument);
+    // A put-back of a group / user policy lists its principal there instead.
+    const p = props as PolicyProps & { Groups?: string[]; Users?: string[] };
+    for (const _r of p.Roles ?? p.Groups ?? p.Users ?? []) put(props.PolicyName, props.PolicyDocument);
     return { physicalId: props.PolicyName, attributes: {} };
   }),
   update: vi.fn(
@@ -949,6 +951,73 @@ describe('a rollback puts back an inline policy its removal took from a record t
 
     expect(policyProvider.create).not.toHaveBeenCalled();
     expect(result.warnings).toBe(1);
+  });
+
+  it.each([
+    ['AWS::IAM::Group', 'group', 'Groups'],
+    ['AWS::IAM::User', 'user', 'Users'],
+  ] as const)('a %s holder is put back under its own list key', async (type, kind, field) => {
+    // The remover is a principal revert of that kind dropping `n`; the
+    // holder is a policy listing the same principal under `field`.
+    const principalBefore: ResourceState = {
+      physicalId: 'p-phys',
+      resourceType: type,
+      properties: { Policies: [{ PolicyName: 'n', PolicyDocument: 'docMine' }] },
+      provisionedBy: 'sdk',
+    };
+    const principalAfter: ResourceState = { ...principalBefore, properties: { Policies: [] } };
+    const holder: ResourceState = {
+      physicalId: 'n',
+      resourceType: POLICY,
+      properties: { PolicyName: 'n', PolicyDocument: 'docHolder', [field]: ['p-phys'] },
+      provisionedBy: 'sdk',
+    };
+    const writers = new RollbackInlinePolicyWriters();
+    // The principal's revert (back to `principalAfter`) asked about `n`.
+    writers.claimedFor(type, 'P', { P: principalBefore, H: holder })!(kind, 'p-phys', 'n');
+
+    const result = await replayRollback([], { P: principalAfter, H: holder }, 'S', ctx, {
+      inlinePolicyWriters: writers,
+    });
+
+    expect(result.warnings).toBe(0);
+    expect(policyProvider.create).toHaveBeenCalledTimes(1);
+    expect(policyProvider.create.mock.calls[0]![2]).toEqual({
+      PolicyName: 'n',
+      PolicyDocument: 'docHolder',
+      [field]: ['p-phys'],
+    });
+    expect((silentLogger.info as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toContain(
+      `  Rollback: put back the inline policy H records on its ${kind}`
+    );
+  });
+
+  it('an interrupted replay still puts back what its completed ops removed', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      New: policyRecord('n', 'docNew'),
+      Later: policyRecord('q', 'docLater'),
+    };
+    put('n', 'docNew');
+    put('q', 'docLater');
+    let ops = 0;
+    policyProvider.delete.mockImplementationOnce(async (_l, physicalId, _t, props: PolicyProps, c) => {
+      ops++;
+      asked(c)?.('role', props.Roles[0]!, physicalId);
+      remove(physicalId);
+    });
+
+    const result = await replayRollback(
+      [createOp('New', state['New']!), createOp('Later', state['Later']!)],
+      state,
+      'S',
+      ctx,
+      { isInterrupted: () => ops > 0 }
+    );
+
+    expect(result.interrupted).toBe(true);
+    expect(state['Later']).toBeDefined();
+    expect(holding()).toEqual({ n: 'docOld', q: 'docLater' });
   });
 
   it('a Cloud Control record holds the name too: the put-back writes what it records', async () => {
