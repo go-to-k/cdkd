@@ -39,10 +39,12 @@ import {
   redactSecretsForState,
 } from '../secret-redaction.js';
 import {
+  classifyPassedParameters,
   inputFingerprinter,
   maskedInputFingerprintsFor,
   movedMaskedProperties,
   possiblyMaskedKeys,
+  recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
 
 declare module '../deploy-engine.js' {
@@ -282,7 +284,7 @@ export async function provisionUpdate(
   // inside one `Fn::Base64`, or the reference's target), so neither skip
   // below may fire for it. A record with no fingerprint (an older cdkd's)
   // reads as unmoved, the comparison it always had.
-  // go-to-k/cdkd#4543: a layout-2 fingerprint also covers the property's
+  // go-to-k/cdkd#4543: a bound input fingerprint also covers the property's
   // resolved non-secret inputs, read here against THIS deploy's state, so a
   // `Ref` to a resource the deploy just replaced (the diff saw the old one)
   // moves it too.
@@ -305,6 +307,16 @@ export async function provisionUpdate(
         ]),
         fingerprints
       )
+    );
+  }
+  // go-to-k/cdkd#4543: for a nested-stack row, how each value it passes may
+  // enter the child's input fingerprints, read off THIS (the parent's)
+  // template, recorded on the bag the provider call is bound to, where the
+  // child engine reads it.
+  if (fingerprintSources !== undefined && resourceType === 'AWS::CloudFormation::Stack') {
+    recordPassedParameterClasses(
+      updateSecrets,
+      await classifyPassedParameters(desiredProps['Parameters'], fingerprintSources)
     );
   }
   const desiredForSkipCheck = redactSecretsForState(

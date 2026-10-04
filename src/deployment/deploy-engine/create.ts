@@ -26,9 +26,11 @@ import {
   recordNestedStackParameterExpressions,
 } from '../secret-redaction.js';
 import {
+  classifyPassedParameters,
   inputFingerprinter,
   maskedInputFingerprintsFor,
   possiblyMaskedKeys,
+  recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
 
 declare module '../deploy-engine.js' {
@@ -127,6 +129,16 @@ export async function provisionCreate(
   // but a masker bound to a real map is what keeps the provider call
   // shape identical on both paths.
   const createSecrets = context.recordedSecretValues ?? new Map<string, string>();
+  // go-to-k/cdkd#4543: for a nested-stack row, how each value it passes may
+  // enter the child's input fingerprints, read off THIS (the parent's)
+  // template, recorded on the bag the provider call is bound to, where the
+  // child engine reads it.
+  if (fingerprintSources !== undefined && resourceType === 'AWS::CloudFormation::Stack') {
+    recordPassedParameterClasses(
+      createSecrets,
+      await classifyPassedParameters(desiredProps['Parameters'], fingerprintSources)
+    );
+  }
   // Issue #2291: for an `AWS::CloudFormation::Stack` row, remember which
   // `{{resolve:...}}` expression each `Parameters` entry was resolved
   // FROM, keyed by the child's parameter NAME. The bag above is keyed by

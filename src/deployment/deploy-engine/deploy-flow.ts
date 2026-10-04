@@ -356,6 +356,7 @@ export async function doDeployWithPrefetch(
       values: parameterValues,
       nestedChild: this.options.parentStackInfo !== undefined,
       supplied: this.options.parameters,
+      passedClasses: this.options.passedParameterClasses,
     });
     let maskedFingerprintsBackfilled =
       backfillMaskedPropertyFingerprints(currentState.resources, template, backfillNoEchoValues) >

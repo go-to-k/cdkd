@@ -215,20 +215,28 @@ export function maskedInputSources(
     parameterInput: parameters.parameterInput,
     conditions,
     resolve: async (node: unknown) => {
+      // No healer, and the stale-attribute PROBE phase: an `Fn::GetAtt` the
+      // resolver would answer with the physical-id FALLBACK (a guess, counted
+      // in the deploy summary and warned) throws instead, which reads as an
+      // unknown input. The fingerprint pass must neither bump that counter nor
+      // repeat the warning, and a guessed value is no input to hash.
+      // `cdkd diff` builds its context the same way.
+      const { attributeHealer: _healer, ...base } = this.buildResolverContext(
+        {
+          template,
+          resources,
+          parameters: parameters.bound,
+          ...(conditions && { conditions }),
+        },
+        stackName
+      );
       const context = {
-        ...this.buildResolverContext(
-          {
-            template,
-            resources,
-            parameters: parameters.bound,
-            ...(conditions && { conditions }),
-          },
-          stackName
-        ),
+        ...base,
         recordedImports: [],
         recordedOutputReads: [],
         bestEffort: true,
         skipDynamicReferences: true,
+        staleAttributeHeal: { phase: 'probe' as const },
       };
       const value = await this.resolver.resolve(structuredClone(node), context);
       const secrets: RecordedSecretValues | undefined = context.recordedSecretValues;

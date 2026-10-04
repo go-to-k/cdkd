@@ -1169,8 +1169,12 @@ ud_live_version() {
     --query 'Parameter.Version' --output text
 }
 UD_FP_BEFORE=$(jq -r '.resources.Base64UserDataParam.maskedPropertyFingerprints.Value // "<absent>"' "${B64_STATE}")
-if [[ "${UD_FP_BEFORE}" != inputs-sha256:* ]]; then
-  echo "FAIL: the record of Base64UserDataParam carries no fingerprint for its masked Value (read '${UD_FP_BEFORE}') -- the deploy did not record one (issue #4451)" >&2
+UD_IN_BEFORE=$(jq -r '.resources.Base64UserDataParam.maskedPropertyInputFingerprints.Value // "<absent>"' "${B64_STATE}")
+# The text fingerprint keeps #4451's spelling (an older cdkd reads it), and the
+# input fingerprint (issue #4543) is bound to it after its `+`.
+if [[ "${UD_FP_BEFORE}" != sha256:* ]] || [[ "${UD_IN_BEFORE}" != inputs-sha256:* ]] \
+  || [ "${UD_IN_BEFORE#*+}" != "${UD_FP_BEFORE}" ]; then
+  echo "FAIL: the record of Base64UserDataParam does not carry a text fingerprint and an input fingerprint bound to it for its masked Value (read '${UD_FP_BEFORE}' / '${UD_IN_BEFORE}') -- the deploy did not record them (issues #4451, #4543)" >&2
   exit 1
 fi
 UD_VERSION_BEFORE=$(ud_live_version)
@@ -1204,8 +1208,8 @@ if [ "${B64_EDIT_DIFF_RC}" -ne 1 ] || [ "${B64_SAME_DIFF_RC}" -ne 1 ] \
   exit 1
 fi
 if [[ "${B64_EDIT_DIFF_OUT}" != *"Base64UserDataParam"* ]] \
-  || [[ "${B64_EDIT_DIFF_OUT}" != *"[template expression changed]"* ]]; then
-  echo "FAIL: 'cdkd diff' of the edited script does not report Base64UserDataParam with '[template expression changed]' -- an edit around the reference reads as unchanged (issue #4451)" >&2
+  || [[ "${B64_EDIT_DIFF_OUT}" != *"[masked input or expression changed]"* ]]; then
+  echo "FAIL: 'cdkd diff' of the edited script does not report Base64UserDataParam with '[masked input or expression changed]' -- an edit around the reference reads as unchanged (issue #4451)" >&2
   diag_output "${B64_EDIT_DIFF_OUT}"
   exit 1
 fi
@@ -1254,8 +1258,9 @@ no_b64_in_state() {
 no_b64_in_state "state.json after the edit" "${B64_EDIT_STATE}"
 UD_EDIT_PERSISTED=$(jq -r '.resources.Base64UserDataParam.properties.Value // "<absent>"' "${B64_EDIT_STATE}")
 UD_FP_EDITED=$(jq -r '.resources.Base64UserDataParam.maskedPropertyFingerprints.Value // "<absent>"' "${B64_EDIT_STATE}")
-if [ "${UD_EDIT_PERSISTED}" != "***" ] || [[ "${UD_FP_EDITED}" != inputs-sha256:* ]] \
-  || [ "${UD_FP_EDITED}" = "${UD_FP_BEFORE}" ]; then
+UD_IN_EDITED=$(jq -r '.resources.Base64UserDataParam.maskedPropertyInputFingerprints.Value // "<absent>"' "${B64_EDIT_STATE}")
+if [ "${UD_EDIT_PERSISTED}" != "***" ] || [[ "${UD_FP_EDITED}" != sha256:* ]] \
+  || [ "${UD_FP_EDITED}" = "${UD_FP_BEFORE}" ] || [ "${UD_IN_EDITED#*+}" != "${UD_FP_EDITED}" ]; then
   echo "FAIL: after the edit the record should hold '***' with a NEW fingerprint (fingerprint ${UD_FP_BEFORE} -> ${UD_FP_EDITED}) (issue #4451)" >&2
   exit 1
 fi
@@ -1284,12 +1289,14 @@ no_b64_in_state "state.json after the unchanged redeploy" "${B64_EDIT_STATE}"
 # holds the lock between phases. Also drops the two probe outputs both deploys
 # declared again, for the later `diff --fail` guard.
 jq 'del(.outputs.Base64Secret, .outputs.Base64Pin)
-  | del(.resources.Base64UserDataParam.maskedPropertyFingerprints)' "${B64_EDIT_STATE}" > "${B64_TRIMMED}"
+  | del(.resources.Base64UserDataParam.maskedPropertyFingerprints)
+  | del(.resources.Base64UserDataParam.maskedPropertyInputFingerprints)' "${B64_EDIT_STATE}" > "${B64_TRIMMED}"
 # `jq -e` exits 5 on an error (a missing record would make `has` fail), and
 # an `if` reads that as false: so the record's ABSENCE is a premise failure
 # stated in the filter, and the premise is asserted as a positive `true`.
 if [ "$(jq -r '(.resources.Base64UserDataParam // null) as $r
   | ($r != null and ($r | has("maskedPropertyFingerprints") | not)
+     and ($r | has("maskedPropertyInputFingerprints") | not)
      and $r.properties.Value == "***")' "${B64_TRIMMED}")" != "true" ]; then
   echo "FAIL: premise: could not strip the fingerprint from a masked Base64UserDataParam record -- the legacy-upgrade arm would test nothing (issue #4451)" >&2
   exit 1
@@ -1316,11 +1323,12 @@ fi
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${B64_EDIT_STATE}" --quiet
 no_b64_in_state "state.json after the legacy-upgrade deploy" "${B64_EDIT_STATE}"
 UD_FP_RESTORED=$(jq -r '.resources.Base64UserDataParam.maskedPropertyFingerprints.Value // "<absent>"' "${B64_EDIT_STATE}")
+UD_IN_RESTORED=$(jq -r '.resources.Base64UserDataParam.maskedPropertyInputFingerprints.Value // "<absent>"' "${B64_EDIT_STATE}")
 # The backfill writes the text fingerprint and the same deploy's diff
 # re-baselines it to the input fingerprint (issue #4543), which equals the one
 # the edit deploy stamped.
-if [ "${UD_FP_RESTORED}" != "${UD_FP_EDITED}" ]; then
-  echo "FAIL: the legacy-upgrade deploy did not backfill and re-baseline the fingerprint of the deployed template (${UD_FP_EDITED} expected, read ${UD_FP_RESTORED}) (issues #4451, #4543)" >&2
+if [ "${UD_FP_RESTORED}" != "${UD_FP_EDITED}" ] || [ "${UD_IN_RESTORED}" != "${UD_IN_EDITED}" ]; then
+  echo "FAIL: the legacy-upgrade deploy did not backfill the text fingerprint and re-baseline the input fingerprint of the deployed template (${UD_FP_EDITED} / ${UD_IN_EDITED} expected, read ${UD_FP_RESTORED} / ${UD_IN_RESTORED}) (issues #4451, #4543)" >&2
   exit 1
 fi
 echo "    OK: a fingerprint-less record: the unchanged deploy sent nothing and backfilled the field"
@@ -1418,9 +1426,11 @@ if [ -z "${IN_SYNTH_ONE}" ] || [ "${IN_SYNTH_ONE}" = "null" ] \
   echo "FAIL: premise: the last synth's B64InputUdParam.Value does not read {Ref: UdInput}, or UdInput's Default is not \"one\" (${IN_DEFAULT_ONE}) (issue #4543)" >&2
   exit 1
 fi
-IN_FP_BEFORE=$(jq -r '.resources.B64InputUdParam.maskedPropertyFingerprints.Value // "<absent>"' "${IN_STATE}")
+IN_FP_BEFORE=$(jq -r '.resources.B64InputUdParam.maskedPropertyInputFingerprints.Value // "<absent>"' "${IN_STATE}")
+IN_TEXT_BEFORE=$(jq -r '.resources.B64InputUdParam.maskedPropertyFingerprints.Value // "<absent>"' "${IN_STATE}")
 IN_PERSISTED=$(jq -r '.resources.B64InputUdParam.properties.Value // "<absent>"' "${IN_STATE}")
-if [ "${IN_PERSISTED}" != "***" ] || [[ "${IN_FP_BEFORE}" != inputs-sha256:* ]]; then
+if [ "${IN_PERSISTED}" != "***" ] || [[ "${IN_FP_BEFORE}" != inputs-sha256:* ]] \
+  || [ "${IN_FP_BEFORE#*+}" != "${IN_TEXT_BEFORE}" ]; then
   echo "FAIL: premise: B64InputUdParam should be recorded as '***' with an input fingerprint (value '${IN_PERSISTED}', fingerprint '${IN_FP_BEFORE}') (issue #4543)" >&2
   exit 1
 fi
@@ -1451,7 +1461,7 @@ if [ "${IN_DIFF_RC}" -ne 1 ] || [ "${IN_SAME_DIFF_RC}" -ne 1 ] \
   exit 1
 fi
 if [[ "${IN_DIFF_OUT}" != *"B64InputUdParam"* ]] \
-  || [[ "${IN_DIFF_OUT}" != *"[template expression changed]"* ]]; then
+  || [[ "${IN_DIFF_OUT}" != *"[masked input or expression changed]"* ]]; then
   echo "FAIL: 'cdkd diff' with the new parameter value does not report B64InputUdParam, labelled -- the masked property reads as unchanged (issue #4543)" >&2
   diag_output "${IN_DIFF_OUT}"
   exit 1
@@ -1495,15 +1505,17 @@ if [ "${IN_VERSION_AFTER}" -le "${IN_VERSION_BEFORE}" ]; then
 fi
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${IN_STATE}" --quiet
 no_in_in_state "state.json after the parameter change" "${IN_STATE}"
-IN_FP_AFTER=$(jq -r '.resources.B64InputUdParam.maskedPropertyFingerprints.Value // "<absent>"' "${IN_STATE}")
+IN_FP_AFTER=$(jq -r '.resources.B64InputUdParam.maskedPropertyInputFingerprints.Value // "<absent>"' "${IN_STATE}")
+IN_TEXT_AFTER=$(jq -r '.resources.B64InputUdParam.maskedPropertyFingerprints.Value // "<absent>"' "${IN_STATE}")
 if [ "$(jq -r '.resources.B64InputUdParam.properties.Value // "<absent>"' "${IN_STATE}")" != "***" ] \
   || [[ "${IN_FP_AFTER}" != inputs-sha256:* ]] || [ "${IN_FP_AFTER}" = "${IN_FP_BEFORE}" ]; then
   echo "FAIL: after the parameter change the record should hold '***' with a NEW input fingerprint (${IN_FP_BEFORE} -> ${IN_FP_AFTER}) (issue #4543)" >&2
   exit 1
 fi
 # The text half of the entry did not move: the template text is the same.
-if [ "${IN_FP_AFTER#*+}" != "${IN_FP_BEFORE#*+}" ]; then
-  echo "FAIL: the text half of the fingerprint moved although the property's template text did not (issue #4543)" >&2
+if [ "${IN_FP_AFTER#*+}" != "${IN_FP_BEFORE#*+}" ] || [ "${IN_TEXT_AFTER}" != "${IN_TEXT_BEFORE}" ] \
+  || [ "${IN_FP_AFTER#*+}" != "${IN_TEXT_AFTER}" ]; then
+  echo "FAIL: the text fingerprint moved although the property's template text did not, or the input fingerprint is not bound to it (issue #4543)" >&2
   exit 1
 fi
 echo "    OK: the new parameter value reached AWS (version ${IN_VERSION_BEFORE} -> ${IN_VERSION_AFTER}); the input half moved, the text half did not"

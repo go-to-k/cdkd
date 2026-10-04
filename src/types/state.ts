@@ -783,36 +783,53 @@ export interface ResourceState {
   acceptedCreateOnlyDrops?: string[] | undefined;
 
   /**
-   * Per top-level property `properties` holds as the secret mask `***`, a
-   * fingerprint of what it was written from. Optional, no schema bump.
-   * `sha256:<hex>` hashes the template value's TEXT (go-to-k/cdkd#4451);
-   * `inputs-sha256:<hex>+sha256:<hex>` hashes the template value with its
-   * NON-SECRET inputs resolved (a parameter value, a `Ref` / `Fn::GetAtt`
-   * result, an evaluated condition's branch, go-to-k/cdkd#4543), then the
-   * text hash.
+   * Per top-level property `properties` holds as the secret mask `***`,
+   * `sha256:<hex>` over the template value's TEXT it was written from
+   * (go-to-k/cdkd#4451). Optional, no schema bump. Its sibling
+   * {@link maskedPropertyInputFingerprints} covers the resolved inputs.
    *
    * The mask identifies nothing, so without it an edit around a secret
-   * reference inside one `Fn::Base64` (EC2 `UserData`), or a changed input
-   * the script reads, compared `***` with `***` and was never sent. The diff
-   * and the deploy's no-change skip treat a property whose fingerprint moved
-   * as changed; a rotated secret behind an unchanged template leaves it
-   * equal. No secret-derived value is hashed: a `NoEcho` parameter, a
-   * `{{resolve:...}}` reference and an input whose value carries a secret
-   * stay in template form, and a property whose template text holds, as a
-   * literal, a `NoEcho` parameter value or a value the same resource resolved
-   * as a secret gets `REFUSED_FINGERPRINT` instead of a hash, so the field is
-   * no oracle for the secret.
+   * reference inside one `Fn::Base64` (EC2 `UserData`) compared `***` with
+   * `***` and was never sent. The diff and the deploy's no-change skip treat
+   * a property whose fingerprint moved as changed; a rotated secret behind an
+   * unchanged template leaves it equal. Only template text is hashed, and a
+   * property whose template text holds, as a literal, a `NoEcho` parameter
+   * value or a value the same resource resolved as a secret gets
+   * `REFUSED_FINGERPRINT` instead of a hash, so the field is no oracle for
+   * the secret.
    *
    * ABSENT (or malformed, or refused, read through
    * `maskedPropertyFingerprintsOf`) keeps the pre-#4451 comparison, and a
    * deploy backfills each masked property with no entry from the template it
-   * deploys. A `sha256:` entry whose text still matches is re-baselined to
-   * the input form by the deploy's diff, without sending. Writers: the save
-   * rebuilds it for a record this deploy wrote through `propertiesToRecord`;
-   * every writer that spreads a record carries it. Helpers:
-   * `src/deployment/masked-property-fingerprints.ts`.
+   * deploys. Writers: the save rebuilds it for a record this deploy wrote
+   * through `propertiesToRecord`; every writer that spreads a record carries
+   * it. Helpers: `src/deployment/masked-property-fingerprints.ts`.
    */
   maskedPropertyFingerprints?: Record<string, string> | undefined;
+
+  /**
+   * Per masked property, `inputs-sha256:<hex>+sha256:<hex>`: a hash of the
+   * template value with its NON-SECRET inputs resolved (a parameter value, a
+   * `Ref` / `Fn::GetAtt` result, an evaluated condition's branch,
+   * go-to-k/cdkd#4543), then the text fingerprint it is BOUND to. Optional, no
+   * schema bump. A separate field so an older cdkd, which reads only
+   * {@link maskedPropertyFingerprints}, still compares the text and still
+   * sends a template edit.
+   *
+   * Moved means changed, so a new parameter value, a replaced resource's
+   * `Ref` or a flipped condition behind unchanged text is sent. A `NoEcho`
+   * parameter, a `{{resolve:...}}` reference and anything derived from one
+   * stay in template form, so no secret-derived value is hashed. A
+   * non-`NoEcho` parameter value and a cross-stack output value are treated
+   * as public and may be recoverable from the hash when low in entropy:
+   * declare a sensitive one `NoEcho`.
+   *
+   * An entry whose text half differs from the text fingerprint (absent, or an
+   * older cdkd rewrote the text field and carried this one) reads as absent,
+   * and the deploy's diff re-baselines it from today's inputs without sending.
+   * Read through `maskedPropertyInputFingerprintsOf`.
+   */
+  maskedPropertyInputFingerprints?: Record<string, string> | undefined;
 }
 
 /**

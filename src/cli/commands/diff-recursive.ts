@@ -1934,7 +1934,9 @@ export async function computeStackDiff(
             ...(Object.keys(classified.bound).length > 0 && { parameters: classified.bound }),
             ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
             skipDynamicReferences: true,
-            ...(attributeHealer && { attributeHealer }),
+            // As the deploy's fingerprint pass (`maskedInputSources`): no
+            // healer, and a physical-id fallback reads as an unknown input.
+            staleAttributeHeal: { phase: 'probe' },
           });
           return { value, secrets };
         },
@@ -3903,7 +3905,7 @@ export function renderChangeLines(
               : propChange.inPlacePropagated
                 ? ' [attribute propagated]'
                 : propChange.maskedExpressionChanged === true
-                  ? ' [template expression changed]'
+                  ? ' [masked input or expression changed]'
                   : '';
             const indent = '              ';
             const [oldFiltered, newFiltered] = stripUnchangedValuePair(

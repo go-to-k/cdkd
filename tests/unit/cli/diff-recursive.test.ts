@@ -5176,7 +5176,7 @@ describe('renderDiffTree - a masked property whose template expression changed (
     };
     const lines: string[] = [];
     renderDiffTree(root, true, (m) => lines.push(m));
-    expect(lines).toContain('      - Value: [template expression changed]');
+    expect(lines).toContain('      - Value: [masked input or expression changed]');
     // Only the flagged row carries it.
     expect(lines).toContain('      - Name:');
   });

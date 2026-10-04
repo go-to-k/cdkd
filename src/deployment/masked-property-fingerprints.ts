@@ -15,20 +15,22 @@
  * resource's `Ref`, a flipped condition) moves the INPUT fingerprint
  * (go-to-k/cdkd#4543, below).
  *
- * TWO LAYOUTS, told apart by the entry's prefix.
- * - Layout 1 (`sha256:`, {@link maskedPropertyFingerprint}): the template
- *   value's TEXT. What #4451 wrote and what the deploy-start backfill still
- *   writes; an older cdkd reads only this one.
- * - Layout 2 (`inputs-sha256:`, {@link maskedInputFingerprint}): the template
- *   value with each NON-SECRET input replaced by what it resolved to: a
- *   parameter's bound value, a `Ref` / `Fn::GetAtt` result, the branch an
- *   evaluated condition selects. A `NoEcho` parameter, a `{{resolve:...}}`
- *   reference, and any input derived from one stay in their UNRESOLVED
- *   (template) form: the hash is computed from no secret value, so it is no confirm
- *   oracle (`.claude/rules/layout-deployment-secrets.md`). The classes are in
- *   {@link parameterInputsFor} and `inputForm` below. The entry also carries
- *   the layout-1 text hash after a `+`, which a side that cannot resolve the
- *   inputs (a nested child's `cdkd diff`, an unbound parameter) compares.
+ * TWO FIELDS.
+ * - `maskedPropertyFingerprints` (`sha256:`, {@link maskedPropertyFingerprint}):
+ *   the template value's TEXT, exactly as #4451 wrote it, so an older cdkd
+ *   still reads it and still sends a template edit.
+ * - `maskedPropertyInputFingerprints` (`inputs-sha256:<hex>+sha256:<hex>`,
+ *   {@link maskedInputFingerprint}): the template value with each NON-SECRET
+ *   input replaced by what it resolved to (a parameter's bound value, a
+ *   `Ref` / `Fn::GetAtt` result, the branch an evaluated condition selects),
+ *   then the text hash it is BOUND to. A `NoEcho` parameter, a
+ *   `{{resolve:...}}` reference, and any input derived from one stay in their
+ *   UNRESOLVED (template) form: the hash is computed from no secret value, so
+ *   it is no confirm oracle (`.claude/rules/layout-deployment-secrets.md`).
+ *   The classes are in {@link parameterInputsFor} and `inputForm` below.
+ *   Non-`NoEcho` parameter values and cross-stack outputs are treated as
+ *   public, so a low-entropy one may be recoverable from the hash: declare a
+ *   sensitive one `NoEcho`.
  *
  * The one way a secret can still reach either hash is a template LITERAL
  * equal to a `NoEcho` parameter's value or to a value the same resource
@@ -37,23 +39,22 @@
  * parameter values are known from deploy start (backfill and every save); a
  * resolved value only to a save that resolved the resource.
  *
- * COMPATIBILITY. A record with no fingerprint for a masked property (every
- * record a pre-#4451 cdkd wrote) is compared exactly as before. The deploy
- * backfills the field from the template it deploys, the same template the
+ * COMPATIBILITY. A record with no text fingerprint for a masked property
+ * (every record a pre-#4451 cdkd wrote) is compared exactly as before. The
+ * deploy backfills it from the template it deploys, the same template the
  * unchanged comparison has just accepted, so the FIRST deploy under this
- * version sends what it sent before, and a later edit is detected. A layout-1
- * entry is compared as text, as #4451 compared it; when the text is unchanged
- * the deploy's diff RE-BASELINES it to layout 2 from today's inputs without
- * sending anything, and a record this deploy writes is stamped with layout 2.
- * An older cdkd ignores a layout-2 entry (an unknown prefix reads as no
- * fingerprint), so a downgrade sends nothing either.
+ * version sends what it sent before, and a later edit is detected. A property
+ * with a text fingerprint but no bound input fingerprint (a #4451 record, or
+ * one an older cdkd rewrote: it carries the input field untouched, so the
+ * binding breaks) is compared as text; while the text matches, the deploy's
+ * diff RE-BASELINES its input fingerprint from today's inputs without
+ * sending anything.
  */
 import { createHash } from 'node:crypto';
 import {
   carriesSecretMask,
   MIN_NEEDLE_LENGTH,
   printingCorpusOf,
-  SECRET_MASK,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import { conditionsAssumedFalse } from './assumed-conditions.js';
@@ -92,15 +93,12 @@ function canonicalJson(value: unknown): string {
 export const REFUSED_FINGERPRINT = 'refused:secret-in-template';
 
 const FINGERPRINT_PREFIX = 'sha256:';
-/**
- * A prefix an older cdkd's reader does not accept (it reads `sha256:` only),
- * so it reads a layout-2 entry as no fingerprint rather than as a moved one.
- */
+/** An input fingerprint's prefix (its own field, go-to-k/cdkd#4543). */
 const INPUT_FINGERPRINT_PREFIX = 'inputs-sha256:';
-/** Joins a layout-2 entry's input half to its text half. */
+/** Joins an input fingerprint's input half to the text half it is bound to. */
 const TEXT_HALF_SEPARATOR = '+';
 
-/** A layout-2 entry's two halves; the text half is `undefined` when malformed. */
+/** An input fingerprint's two halves; the text half is `undefined` when malformed. */
 function splitInputFingerprint(entry: string): { input: string; text: string | undefined } {
   const at = entry.indexOf(TEXT_HALF_SEPARATOR);
   if (at < 0) return { input: entry, text: undefined };
@@ -202,8 +200,11 @@ function carriesSecretValue(
   value: unknown,
   corpora: ReadonlyArray<RecordedSecretValues | undefined>
 ): boolean {
+  // The mask is a WHOLE leaf wherever cdkd writes it, so only a whole leaf
+  // counts: a cron or glob value containing `***` is ordinary text.
+  if (carriesSecretMask(value)) return true;
   const text = canonicalJson(value);
-  if (text.includes(DYNAMIC_REFERENCE_OPEN) || text.includes(SECRET_MASK)) return true;
+  if (text.includes(DYNAMIC_REFERENCE_OPEN)) return true;
   for (const corpus of corpora) {
     if (corpus === undefined) continue;
     for (const needle of printingCorpusOf(corpus).keys()) {
@@ -228,12 +229,16 @@ function scalarText(value: unknown): string {
  * `carriesSecretValue`).
  *
  * `secret`: a `NoEcho` parameter; a value carrying a `{{resolve:...}}`
- * reference or the mask; and, in a nested child (`nestedChild`), every value
- * the parent SUPPLIED other than the `Default`. A parent can pass a resolved
- * secret, or a value embedding one, as a plain parameter, and the inherited
- * corpus can miss a short ancestor secret: the rule `parentSuppliedValues` in
- * `condition-verdicts.ts` applies for the same reason. `unknown`: a
- * parameter with no bound value, or one named in `unbound`.
+ * reference or the mask; and, in a nested child (`nestedChild`), a value the
+ * parent SUPPLIED other than the `Default` unless the parent classified the
+ * expression it passed as CLEAN (`passedClasses`, from
+ * {@link classifyPassedParameters} over the parent's own template). A parent
+ * can pass a resolved secret, or a value embedding one, as a plain parameter,
+ * and the child cannot tell that from the value (the inherited corpus can miss
+ * a short ancestor secret), so a value the parent did not vouch for stays
+ * `secret`: the rule `parentSuppliedValues` in `condition-verdicts.ts` applies
+ * for the same reason. `unknown`: a parameter with no bound value, or one
+ * named in `unbound`.
  */
 export function parameterInputsFor(args: {
   template: CloudFormationTemplate;
@@ -241,6 +246,7 @@ export function parameterInputsFor(args: {
   unbound?: ReadonlySet<string>;
   nestedChild?: boolean;
   supplied?: Readonly<Record<string, unknown>> | undefined;
+  passedClasses?: ReadonlyMap<string, PassedParameterClass> | undefined;
 }): { parameterInput: (name: string) => ParameterInput; bound: Record<string, unknown> } {
   const declared = isPlainObject(args.template.Parameters) ? args.template.Parameters : {};
   const values = args.values ?? {};
@@ -260,9 +266,9 @@ export function parameterInputsFor(args: {
     if (!secret && args.nestedChild === true && args.supplied !== undefined) {
       if (Object.hasOwn(args.supplied, name)) {
         const fallback = isPlainObject(definition) ? definition['Default'] : undefined;
-        if (fallback === undefined || scalarText(fallback) !== scalarText(args.supplied[name])) {
-          secret = true;
-        }
+        const atDefault =
+          fallback !== undefined && scalarText(fallback) === scalarText(args.supplied[name]);
+        if (!atDefault && args.passedClasses?.get(name) !== 'clean') secret = true;
       }
     }
     if (secret) {
@@ -313,6 +319,24 @@ function intrinsicKey(value: Record<string, unknown>): string | undefined {
   return key === 'Ref' || key.startsWith('Fn::') ? key : undefined;
 }
 
+/**
+ * Types whose attributes are handler- or child-defined, and so may be a
+ * `NoEcho` value (a custom resource's `Data`, a nested stack's output): an
+ * `Fn::GetAtt` on one is kept as written whatever it resolves to.
+ */
+const OPAQUE_ATTRIBUTE_TYPES = new Set([
+  'AWS::CloudFormation::CustomResource',
+  'AWS::CloudFormation::Stack',
+]);
+
+function hasOpaqueAttributes(logicalId: string, walk: Walk): boolean {
+  const definition = walk.resources[logicalId];
+  const type = isPlainObject(definition) ? definition['Type'] : undefined;
+  return (
+    typeof type === 'string' && (type.startsWith('Custom::') || OPAQUE_ATTRIBUTE_TYPES.has(type))
+  );
+}
+
 /** The logical id an `Fn::GetAtt` operand names, either spelling. */
 function getAttTarget(operand: unknown): string | undefined {
   if (Array.isArray(operand) && typeof operand[0] === 'string') return operand[0];
@@ -358,7 +382,11 @@ function taintOf(logicalId: string, walk: Walk): Taint {
     if (key === 'Ref' && typeof operand === 'string') verdict = nameTaint(operand);
     else if (key === 'Fn::GetAtt') {
       const target = getAttTarget(operand);
-      verdict = target === undefined ? 'tainted' : nameTaint(target);
+      verdict =
+        target === undefined ||
+        (Object.hasOwn(walk.resources, target) && hasOpaqueAttributes(target, walk))
+          ? 'tainted'
+          : nameTaint(target);
     } else if (key === 'Fn::ImportValue' || key === 'Fn::GetStackOutput') verdict = 'tainted';
     else if (key === 'Fn::Sub') {
       const text = Array.isArray(operand) ? operand[0] : operand;
@@ -366,7 +394,13 @@ function taintOf(logicalId: string, walk: Walk): Taint {
       if (typeof text === 'string') {
         for (const name of subPlaceholders(text)) {
           if (Object.hasOwn(vars, name)) continue;
-          const t = nameTaint(name.includes('.') ? name.split('.')[0]! : name);
+          const owner = name.includes('.') ? name.split('.')[0]! : name;
+          const t =
+            name.includes('.') &&
+            Object.hasOwn(walk.resources, owner) &&
+            hasOpaqueAttributes(owner, walk)
+              ? 'tainted'
+              : nameTaint(owner);
           if (t === 'tainted') return true;
           if (t === 'unknown') unknown = true;
         }
@@ -535,8 +569,20 @@ async function inputForm(value: unknown, walk: Walk): Promise<InputForm> {
         : { form: value, concrete: false };
     case 'Fn::GetAtt': {
       const target = getAttTarget(operand);
-      if (target === undefined || !Object.hasOwn(walk.resources, target)) {
+      if (
+        target === undefined ||
+        !Object.hasOwn(walk.resources, target) ||
+        hasOpaqueAttributes(target, walk)
+      ) {
         return { form: value, concrete: false };
+      }
+      // An attribute NAME built from an intrinsic is itself an input: unless it
+      // resolves to a known non-secret value, the node stays as written.
+      if (Array.isArray(operand) && operand.length > 1 && typeof operand[1] !== 'string') {
+        const attribute = await inputForm(operand[1], walk);
+        if (!attribute.concrete) {
+          return { form: { [key]: [operand[0], attribute.form] }, concrete: false };
+        }
       }
       return nameInput(target, value, walk);
     }
@@ -568,7 +614,8 @@ async function inputForm(value: unknown, walk: Walk): Promise<InputForm> {
         const dot = name.indexOf('.');
         const part =
           dot > 0 && !name.startsWith('AWS::')
-            ? Object.hasOwn(walk.resources, name.slice(0, dot))
+            ? Object.hasOwn(walk.resources, name.slice(0, dot)) &&
+              !hasOpaqueAttributes(name.slice(0, dot), walk)
               ? await nameInput(
                   name.slice(0, dot),
                   { 'Fn::GetAtt': [name.slice(0, dot), name.slice(dot + 1)] },
@@ -605,27 +652,30 @@ async function inputForm(value: unknown, walk: Walk): Promise<InputForm> {
   }
 }
 
-/**
- * `inputs-sha256:<hex>+sha256:<hex>`: the hash of one property's template
- * value with its non-secret inputs resolved (go-to-k/cdkd#4543), then the
- * layout-1 text hash of the same value, so a side that cannot resolve the
- * inputs still sees a template edit. `undefined` when an input is unknown on
- * this side (the caller then neither compares nor stamps the input half).
- */
-export async function maskedInputFingerprint(
-  templateValue: unknown,
-  sources: MaskedInputSources
-): Promise<string | undefined> {
-  const walk: Walk = {
+function newWalk(sources: MaskedInputSources): Walk {
+  return {
     sources,
     resources: isPlainObject(sources.template.Resources) ? sources.template.Resources : {},
     parameters: isPlainObject(sources.template.Parameters) ? sources.template.Parameters : {},
     taint: new Map(),
     inProgress: new Set(),
   };
+}
+
+/**
+ * `inputs-sha256:<hex>+sha256:<hex>`: the hash of one property's template
+ * value with its non-secret inputs resolved (go-to-k/cdkd#4543), then the
+ * text fingerprint of the same value, which binds it to the text entry the
+ * record holds. `undefined` when an input is unknown on this side (the caller
+ * then neither compares nor stamps one).
+ */
+export async function maskedInputFingerprint(
+  templateValue: unknown,
+  sources: MaskedInputSources
+): Promise<string | undefined> {
   let form: unknown;
   try {
-    form = (await inputForm(templateValue, walk)).form;
+    form = (await inputForm(templateValue, newWalk(sources))).form;
   } catch (error) {
     if (error instanceof UnknownInput) return undefined;
     throw error;
@@ -634,6 +684,61 @@ export async function maskedInputFingerprint(
     .update(canonicalJson({ layout: INPUT_FINGERPRINT_LAYOUT, value: form }))
     .digest('hex');
   return `${INPUT_FINGERPRINT_PREFIX}${digest}${TEXT_HALF_SEPARATOR}${maskedPropertyFingerprint(templateValue)}`;
+}
+
+/**
+ * How a nested child may use a value its parent passes (go-to-k/cdkd#4543):
+ * `clean` when the PARENT'S expression for it is built only from known
+ * non-secret inputs (the same rules as {@link maskedInputFingerprint}: no
+ * `NoEcho` parameter, `{{resolve:...}}` reference, secret-reading resource,
+ * cross-stack read or opaque attribute anywhere in it), `secret` otherwise.
+ */
+export type PassedParameterClass = 'clean' | 'secret';
+
+/**
+ * Each parameter an `AWS::CloudFormation::Stack` row passes (its template
+ * `Parameters` object), classified over the PARENT's template with the
+ * parent's sources. A value whose expression keeps any input as written, or
+ * reads an unknown one, is `secret`. A parameter missing here reads as
+ * `secret` in the child.
+ */
+export async function classifyPassedParameters(
+  parameters: unknown,
+  sources: MaskedInputSources
+): Promise<Map<string, PassedParameterClass>> {
+  const classes = new Map<string, PassedParameterClass>();
+  if (!isPlainObject(parameters)) return classes;
+  for (const [name, expression] of Object.entries(parameters)) {
+    let clean = false;
+    try {
+      clean = (await inputForm(expression, newWalk(sources))).concrete;
+    } catch {
+      clean = false;
+    }
+    classes.set(name, clean ? 'clean' : 'secret');
+  }
+  return classes;
+}
+
+/**
+ * The classification a parent recorded for the child it is about to deploy,
+ * keyed by the per-resource secrets bag `withCurrentResourceSecrets` binds
+ * around that provider call: the one object both sides already share
+ * (`NestedStackProvider` reads it through `getCurrentResourceSecrets`).
+ */
+const passedParameterClasses = new WeakMap<object, ReadonlyMap<string, PassedParameterClass>>();
+
+export function recordPassedParameterClasses(
+  bag: object,
+  classes: ReadonlyMap<string, PassedParameterClass>
+): void {
+  passedParameterClasses.set(bag, classes);
+}
+
+export function passedParameterClassesOf(
+  bag: object | undefined
+): ReadonlyMap<string, PassedParameterClass> | undefined {
+  return bag === undefined ? undefined : passedParameterClasses.get(bag);
 }
 
 /**
@@ -662,23 +767,44 @@ export function inputFingerprinter(
 
 /**
  * The top-level keys of a RESOLVED bag that the save may record as the mask:
- * each whose value holds the mask or any needle of `corpora`, at any length
- * (a superset; a key the save does not mask is never stamped).
+ * each whose value holds the mask, a needle of `corpora` at or above the
+ * needle floor, or a shorter needle as a WHOLE leaf (a superset of what the
+ * save masks, which takes a sub-floor needle only whole; a key the save does
+ * not mask is never stamped). A nested child with a short parent secret would
+ * otherwise fingerprint nearly every key.
  */
 export function possiblyMaskedKeys(
   resolvedProps: Record<string, unknown>,
   corpora: ReadonlyArray<RecordedSecretValues | undefined>
 ): string[] {
+  const needles = new Set<string>();
+  for (const corpus of corpora) {
+    if (corpus === undefined) continue;
+    for (const needle of printingCorpusOf(corpus).keys())
+      if (needle.length > 0) needles.add(needle);
+  }
+  const short = [...needles].filter((needle) => needle.length < MIN_NEEDLE_LENGTH);
+  const long = [...needles].filter((needle) => needle.length >= MIN_NEEDLE_LENGTH);
+  const wholeShortLeaf = (value: unknown): boolean => {
+    if (typeof value === 'string') return short.includes(value);
+    if (Array.isArray(value)) return value.some(wholeShortLeaf);
+    if (isPlainObject(value)) return Object.values(value).some(wholeShortLeaf);
+    return false;
+  };
   return Object.keys(resolvedProps).filter((key) => {
     const value = resolvedProps[key];
-    return carriesSecretMask(value) || carriesSecretValue(value, corpora);
+    if (carriesSecretMask(value) || wholeShortLeaf(value)) return true;
+    const text = canonicalJson(value);
+    return long.some(
+      (needle) => text.includes(needle) || text.includes(JSON.stringify(needle).slice(1, -1))
+    );
   });
 }
 
 /**
  * The input fingerprints of `keys` (what the save stamps on a record this
  * deploy writes); a key whose fingerprint is unknown is left out, and the
- * save writes layout 1 for it.
+ * save stamps its text fingerprint alone.
  */
 export async function maskedInputFingerprintsFor(
   keys: readonly string[],
@@ -693,52 +819,83 @@ export async function maskedInputFingerprintsFor(
 }
 
 /**
- * The fingerprint of every top-level property whose RECORDED (redacted) value
- * carries the mask: its input fingerprint from `inputFingerprints` where the
- * deploy computed one (layout 2), otherwise the text hash of the template
- * value `templateProps` gives it (layout 1). `undefined` when there is none,
- * so a record with no masked property carries no field. Built through
- * `Object.fromEntries`, since the keys are template-controlled and a
- * `__proto__` property must stay an own key.
+ * The text fingerprint (`sha256:`, go-to-k/cdkd#4451) of every top-level
+ * property whose RECORDED (redacted) value carries the mask, over the template
+ * value `templateProps` gives it. `undefined` when there is none, so a record
+ * with no masked property carries no field. Built through `Object.fromEntries`,
+ * since the keys are template-controlled and a `__proto__` property must stay
+ * an own key.
  */
 export function maskedPropertyFingerprintsFor(
   recordedProperties: Record<string, unknown>,
-  templateProps: Record<string, unknown>,
-  inputFingerprints?: Readonly<Record<string, string>>
+  templateProps: Record<string, unknown>
 ): Record<string, string> | undefined {
   const entries: Array<[string, string]> = [];
   for (const key of Object.keys(recordedProperties)) {
     if (!Object.hasOwn(templateProps, key)) continue;
     if (!carriesSecretMask(recordedProperties[key])) continue;
-    entries.push([
-      key,
-      inputFingerprints !== undefined && Object.hasOwn(inputFingerprints, key)
-        ? inputFingerprints[key]!
-        : maskedPropertyFingerprint(templateProps[key]),
-    ]);
+    entries.push([key, maskedPropertyFingerprint(templateProps[key])]);
   }
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 /**
- * The record's fingerprints, either layout. A missing field, a non-object, a
- * non-string entry, an unknown prefix or a {@link REFUSED_FINGERPRINT} is no
- * fingerprint, which keeps the pre-#4451 comparison for it.
+ * The record's text fingerprints (`maskedPropertyFingerprints`). A missing
+ * field, a non-object, a non-string entry, an unknown prefix or a
+ * {@link REFUSED_FINGERPRINT} is no fingerprint, which keeps the pre-#4451
+ * comparison for it. Exactly what #4451's reader accepts.
  */
 export function maskedPropertyFingerprintsOf(record: unknown): ReadonlyMap<string, string> {
   const read = new Map<string, string>();
   if (record === null || typeof record !== 'object') return read;
   const field = (record as { maskedPropertyFingerprints?: unknown }).maskedPropertyFingerprints;
-  if (field === null || typeof field !== 'object' || Array.isArray(field)) return read;
-  for (const [key, value] of Object.entries(field as Record<string, unknown>)) {
-    if (
-      typeof value === 'string' &&
-      (value.startsWith(FINGERPRINT_PREFIX) || value.startsWith(INPUT_FINGERPRINT_PREFIX))
-    ) {
-      read.set(key, value);
-    }
+  if (!isPlainObject(field)) return read;
+  for (const [key, value] of Object.entries(field)) {
+    if (typeof value === 'string' && value.startsWith(FINGERPRINT_PREFIX)) read.set(key, value);
   }
   return read;
+}
+
+/**
+ * The record's input fingerprints (`maskedPropertyInputFingerprints`,
+ * go-to-k/cdkd#4543), each kept only while it is BOUND to the text fingerprint
+ * the record holds for the same property: its text half must equal that
+ * entry. An older cdkd rewrites the text field and carries this one untouched,
+ * so an entry whose text half no longer matches describes a previous
+ * generation and reads as absent (re-baselined, never compared).
+ */
+export function maskedPropertyInputFingerprintsOf(record: unknown): ReadonlyMap<string, string> {
+  const read = new Map<string, string>();
+  if (record === null || typeof record !== 'object') return read;
+  const field = (record as { maskedPropertyInputFingerprints?: unknown })
+    .maskedPropertyInputFingerprints;
+  if (!isPlainObject(field)) return read;
+  const text = maskedPropertyFingerprintsOf(record);
+  for (const [key, value] of Object.entries(field)) {
+    if (typeof value !== 'string' || !value.startsWith(INPUT_FINGERPRINT_PREFIX)) continue;
+    const half = splitInputFingerprint(value).text;
+    if (half !== undefined && text.get(key) === half) read.set(key, value);
+  }
+  return read;
+}
+
+/**
+ * The input fingerprints a save stamps: one per property the text field holds
+ * (an unrefused `sha256:` entry) for which the deploy computed one bound to
+ * that same text. `undefined` when there is none.
+ */
+function boundInputFingerprints(
+  textFingerprints: Readonly<Record<string, string>> | undefined,
+  inputFingerprints: Readonly<Record<string, string>> | undefined
+): Record<string, string> | undefined {
+  if (textFingerprints === undefined || inputFingerprints === undefined) return undefined;
+  const entries: Array<[string, string]> = [];
+  for (const [key, text] of Object.entries(textFingerprints)) {
+    if (!text.startsWith(FINGERPRINT_PREFIX) || !Object.hasOwn(inputFingerprints, key)) continue;
+    const input = inputFingerprints[key]!;
+    if (splitInputFingerprint(input).text === text) entries.push([key, input]);
+  }
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 /**
@@ -749,14 +906,19 @@ export function maskedPropertyFingerprintsOf(record: unknown): ReadonlyMap<strin
  * ordinary comparison already decides (an added, removed or unmasked value
  * differs from `***`).
  *
- * A layout-1 entry compares the template text. A layout-2 entry compares the
- * input half against what `fingerprinter` computes; with no fingerprinter, or
- * an input unknown on this side, it compares its text half, as layout 1.
- * A layout-1 entry whose text is unchanged is reported to `onRebaseline`
- * with today's input fingerprint, which the deploy stamps without sending.
+ * The text fingerprint is compared first, as #4451 compared it. When the text
+ * is unchanged, a bound input fingerprint is compared with what `fingerprinter`
+ * computes; with no fingerprinter, or an input unknown on this side, the
+ * property reads as unmoved. A property with NO bound input fingerprint (a
+ * record #4451 wrote, or one an older cdkd rewrote since) is reported to
+ * `onRebaseline` with today's input fingerprint, which the deploy stamps
+ * without sending.
  */
 export async function movedMaskedProperties(
-  record: Pick<ResourceState, 'properties'> & { maskedPropertyFingerprints?: unknown },
+  record: Pick<ResourceState, 'properties'> & {
+    maskedPropertyFingerprints?: unknown;
+    maskedPropertyInputFingerprints?: unknown;
+  },
   templateProps: Record<string, unknown>,
   fingerprinter?: InputFingerprinter,
   onRebaseline?: (key: string, fingerprint: string) => void
@@ -765,56 +927,53 @@ export async function movedMaskedProperties(
   if (recorded.size === 0) return [];
   const properties = record.properties as unknown;
   if (properties === null || typeof properties !== 'object') return [];
+  const inputs = maskedPropertyInputFingerprintsOf(record);
   const moved: string[] = [];
   for (const [key, fingerprint] of recorded) {
     if (!Object.hasOwn(templateProps, key) || !Object.hasOwn(properties, key)) continue;
     if (!carriesSecretMask((properties as Record<string, unknown>)[key])) continue;
-    if (fingerprint.startsWith(INPUT_FINGERPRINT_PREFIX)) {
-      const recordedHalves = splitInputFingerprint(fingerprint);
-      const now = fingerprinter === undefined ? undefined : await fingerprinter(key);
-      if (now !== undefined) {
-        if (splitInputFingerprint(now).input !== recordedHalves.input) moved.push(key);
-      } else if (
-        recordedHalves.text !== undefined &&
-        maskedPropertyFingerprint(templateProps[key]) !== recordedHalves.text
-      ) {
-        // The inputs are unknown here, but the template text moved.
-        moved.push(key);
-      }
-      continue;
-    }
     if (maskedPropertyFingerprint(templateProps[key]) !== fingerprint) {
       moved.push(key);
       continue;
     }
-    if (fingerprinter !== undefined && onRebaseline !== undefined) {
-      const now = await fingerprinter(key);
-      if (now !== undefined) onRebaseline(key, now);
+    if (fingerprinter === undefined) continue;
+    const bound = inputs.get(key);
+    if (bound === undefined && onRebaseline === undefined) continue;
+    const now = await fingerprinter(key);
+    if (now === undefined) continue;
+    if (bound !== undefined) {
+      if (splitInputFingerprint(now).input !== splitInputFingerprint(bound).input) moved.push(key);
+    } else {
+      onRebaseline!(key, now);
     }
   }
   return moved;
 }
 
 /**
- * `record` with the re-baselined entries of `fingerprints` written over its
- * own (a new record object; the bag it came from is not touched). Only an
- * entry the record still holds as a layout-1 fingerprint is replaced.
+ * `record` with `fingerprints` written into its input field (a new record
+ * object; the bag it came from is not touched), each only while it is bound to
+ * the text fingerprint the record holds for that property.
  */
 export function withRebaselinedFingerprints<T extends object>(
   record: T,
   fingerprints: Readonly<Record<string, string>>
 ): T {
-  const field = (record as { maskedPropertyFingerprints?: unknown }).maskedPropertyFingerprints;
-  if (!isPlainObject(field)) return record;
-  const next: Array<[string, unknown]> = Object.entries(field).map(([key, value]) => [
-    key,
-    Object.hasOwn(fingerprints, key) &&
-    typeof value === 'string' &&
-    value.startsWith(FINGERPRINT_PREFIX)
-      ? fingerprints[key]
-      : value,
-  ]);
-  return { ...record, maskedPropertyFingerprints: Object.fromEntries(next) };
+  const text = maskedPropertyFingerprintsOf(record);
+  const field = (record as { maskedPropertyInputFingerprints?: unknown })
+    .maskedPropertyInputFingerprints;
+  const next: Array<[string, unknown]> = isPlainObject(field) ? Object.entries(field) : [];
+  let changed = false;
+  for (const [key, value] of Object.entries(fingerprints)) {
+    if (text.get(key) !== splitInputFingerprint(value).text) continue;
+    const at = next.findIndex(([k]) => k === key);
+    if (at >= 0) next[at] = [key, value];
+    else next.push([key, value]);
+    changed = true;
+  }
+  return changed
+    ? { ...record, maskedPropertyInputFingerprints: Object.fromEntries(next) }
+    : record;
 }
 
 /**
@@ -836,13 +995,13 @@ export function markWrittenFromDeployedTemplate<T extends object>(bag: T): T {
  * The save-time stamp: `scrubbed` (the persisted, redacted record) with its
  * fingerprints rebuilt from `templateProps` when `writtenBag` (the in-memory
  * record's `properties`, before the scrub) was written by this deploy.
- * Otherwise `scrubbed` unchanged, carrying whatever field it had, except
+ * Otherwise `scrubbed` unchanged, carrying whatever fields it had, except
  * that an entry whose template text holds a needle of `secrets` (the
  * resource's own resolution) or of `noEchoParameterValues` (the stack's
- * `NoEcho` parameters) becomes {@link REFUSED_FINGERPRINT}.
- * `inputFingerprints` are the layout-2 fingerprints the deploy computed when
- * it resolved the resource (go-to-k/cdkd#4543); a masked key without one is
- * stamped with layout 1.
+ * `NoEcho` parameters) becomes {@link REFUSED_FINGERPRINT} and loses its input
+ * fingerprint. `inputFingerprints` are the input fingerprints the deploy
+ * computed when it resolved the resource (go-to-k/cdkd#4543); each is stamped
+ * only while bound to the text fingerprint stamped beside it.
  */
 export function withMaskedPropertyFingerprints(
   scrubbed: ResourceState,
@@ -860,22 +1019,25 @@ export function withMaskedPropertyFingerprints(
     writtenBag !== null &&
     typeof writtenBag === 'object' &&
     writtenFromDeployedTemplate.has(writtenBag);
-  const { maskedPropertyFingerprints: previous, ...rest } = scrubbed;
+  const {
+    maskedPropertyFingerprints: previous,
+    maskedPropertyInputFingerprints: previousInputs,
+    ...rest
+  } = scrubbed;
   let fingerprints: Record<string, string> | undefined;
+  let inputs: Record<string, string> | undefined;
   if (written) {
-    fingerprints = maskedPropertyFingerprintsFor(
-      scrubbed.properties,
-      templateProps,
-      inputFingerprints
-    );
+    fingerprints = maskedPropertyFingerprintsFor(scrubbed.properties, templateProps);
+    inputs = boundInputFingerprints(fingerprints, inputFingerprints);
   } else {
     // Carried as it was, except that this save may hold the needles a
     // backfill or an earlier save could not see.
-    if (previous === undefined || previous === null || typeof previous !== 'object') {
-      return scrubbed;
-    }
+    if (!isPlainObject(previous)) return scrubbed;
     if (corpora.length === 0) return scrubbed;
     fingerprints = { ...(previous as Record<string, string>) };
+    inputs = isPlainObject(previousInputs)
+      ? { ...(previousInputs as Record<string, string>) }
+      : undefined;
   }
   if (fingerprints !== undefined && corpora.length > 0) {
     const refused = Object.keys(fingerprints).filter(
@@ -890,10 +1052,25 @@ export function withMaskedPropertyFingerprints(
           refused.includes(key) ? REFUSED_FINGERPRINT : value,
         ])
       );
+      // A refused property's input fingerprint hashes the same template text.
+      if (inputs !== undefined) {
+        const kept = Object.entries(inputs).filter(([key]) => !refused.includes(key));
+        inputs = kept.length > 0 ? Object.fromEntries(kept) : undefined;
+      }
     }
   }
-  if (!written && JSON.stringify(fingerprints) === JSON.stringify(previous)) return scrubbed;
-  return fingerprints === undefined ? rest : { ...rest, maskedPropertyFingerprints: fingerprints };
+  if (
+    !written &&
+    JSON.stringify(fingerprints) === JSON.stringify(previous) &&
+    JSON.stringify(inputs) === JSON.stringify(previousInputs)
+  ) {
+    return scrubbed;
+  }
+  return {
+    ...rest,
+    ...(fingerprints !== undefined && { maskedPropertyFingerprints: fingerprints }),
+    ...(inputs !== undefined && { maskedPropertyInputFingerprints: inputs }),
+  };
 }
 
 /**

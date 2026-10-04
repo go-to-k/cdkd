@@ -1,15 +1,19 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import {
+  classifyPassedParameters,
   REFUSED_FINGERPRINT,
   inputFingerprinter,
   maskedInputFingerprint,
   maskedPropertyFingerprint,
   maskedPropertyFingerprintsFor,
   maskedPropertyFingerprintsOf,
+  maskedPropertyInputFingerprintsOf,
+  markWrittenFromDeployedTemplate,
   movedMaskedProperties,
   parameterInputsFor,
   possiblyMaskedKeys,
+  withMaskedPropertyFingerprints,
   withRebaselinedFingerprints,
   type MaskedInputSources,
 } from '../../../src/deployment/masked-property-fingerprints.js';
@@ -85,6 +89,7 @@ describe('parameterInputsFor', () => {
       HiddenString: { Type: 'String', NoEcho: 'true' as unknown as boolean },
       Token: { Type: 'String' },
       Masked: { Type: 'String' },
+      Starry: { Type: 'String' },
       Unbound: { Type: 'String' },
     },
     Resources: {},
@@ -94,7 +99,8 @@ describe('parameterInputsFor', () => {
     Hidden: 'h',
     HiddenString: 'h2',
     Token: 'x-{{resolve:secretsmanager:s}}',
-    Masked: 'a***b',
+    Masked: '***',
+    Starry: '0 * * * ***',
   };
 
   it('classifies NoEcho, a reference, the mask and an unbound parameter', () => {
@@ -104,10 +110,12 @@ describe('parameterInputsFor', () => {
     expect(parameterInput('HiddenString')).toEqual({ kind: 'secret' });
     expect(parameterInput('Token')).toEqual({ kind: 'secret' });
     expect(parameterInput('Masked')).toEqual({ kind: 'secret' });
+    // Only a WHOLE leaf is the mask: a cron or glob holding `***` is a value.
+    expect(parameterInput('Starry')).toEqual({ kind: 'value', value: '0 * * * ***' });
     expect(parameterInput('Unbound')).toEqual({ kind: 'unknown' });
     expect(parameterInput('Undeclared')).toEqual({ kind: 'unknown' });
     // Only the non-secret values are bound for the resolver.
-    expect(bound).toEqual({ Plain: 'd' });
+    expect(bound).toEqual({ Plain: 'd', Starry: '0 * * * ***' });
     expect(
       parameterInputsFor({ template, values, unbound: new Set(['Plain']) }).parameterInput('Plain')
     ).toEqual({ kind: 'unknown' });
@@ -415,40 +423,41 @@ describe('maskedInputFingerprint', () => {
   });
 });
 
-describe('movedMaskedProperties - layouts', () => {
-  const record = (fingerprint: string) => ({
-    properties: { Value: '***' },
-    maskedPropertyFingerprints: { Value: fingerprint },
-  });
+describe('movedMaskedProperties - the two fields', () => {
   const props = { Value: script({ Ref: 'P' }) };
+  const TEXT = maskedPropertyFingerprint(props.Value);
+  const record = (input?: string, text: string = TEXT) => ({
+    properties: { Value: '***' },
+    maskedPropertyFingerprints: { Value: text },
+    ...(input !== undefined && { maskedPropertyInputFingerprints: { Value: input } }),
+  });
 
-  it('compares a layout-2 entry against today\'s inputs', async () => {
+  it("compares a bound input fingerprint against today's inputs", async () => {
     const stamped = (await maskedInputFingerprint(props.Value, sources()))!;
     const same = inputFingerprinter(props, sources());
     expect(await movedMaskedProperties(record(stamped), props, same)).toEqual([]);
-    const changed = inputFingerprinter(props, sources({ values: { P: 'two', Hidden: 'h', Env: 'dev' } }));
+    const changed = inputFingerprinter(
+      props,
+      sources({ values: { P: 'two', Hidden: 'h', Env: 'dev' } })
+    );
     expect(await movedMaskedProperties(record(stamped), props, changed)).toEqual(['Value']);
-    // No sources, or an unknown input: the pre-#4543 comparison (unmoved).
+    // No sources, or an unknown input: unmoved.
     expect(await movedMaskedProperties(record(stamped), props)).toEqual([]);
     const unknown = inputFingerprinter(props, sources({ values: {} }));
     expect(await movedMaskedProperties(record(stamped), props, unknown)).toEqual([]);
-    // ...but the text half still sees a template edit there.
+    // ...but the text field still sees a template edit there.
     const edited = { Value: script({ 'Fn::Join': ['-', [{ Ref: 'P' }]] }) };
     expect(await movedMaskedProperties(record(stamped), edited)).toEqual(['Value']);
-    expect(
-      await movedMaskedProperties(
-        record(stamped),
-        edited,
-        inputFingerprinter(edited, sources({ values: {} }))
-      )
-    ).toEqual(['Value']);
   });
 
-  it('compares a layout-1 entry as text, and re-baselines an unchanged one', async () => {
-    const legacy = record(maskedPropertyFingerprint(props.Value));
+  it('compares a record with no input field as text, and re-baselines an unchanged one', async () => {
+    const legacy = record();
     const rebaselined: Array<[string, string]> = [];
-    const moved = await movedMaskedProperties(legacy, props, inputFingerprinter(props, sources()), (k, f) =>
-      rebaselined.push([k, f])
+    const moved = await movedMaskedProperties(
+      legacy,
+      props,
+      inputFingerprinter(props, sources()),
+      (k, f) => rebaselined.push([k, f])
     );
     expect(moved).toEqual([]);
     expect(rebaselined).toEqual([['Value', await maskedInputFingerprint(props.Value, sources())]]);
@@ -463,42 +472,122 @@ describe('movedMaskedProperties - layouts', () => {
     expect(rebaselined).toEqual([]);
   });
 
-  it('reads both prefixes, and neither a refused nor an unknown one', () => {
-    const read = maskedPropertyFingerprintsOf({
+  it('treats an input fingerprint bound to another text as absent (an older cdkd rewrote the text)', async () => {
+    const stale = (await maskedInputFingerprint(props.Value, sources()))!;
+    // The text field an older binary rewrote for an edited template; the input
+    // field it carried untouched still names the previous text.
+    const edited = { Value: script({ 'Fn::Join': ['-', [{ Ref: 'P' }]] }) };
+    const rewritten = record(stale, maskedPropertyFingerprint(edited.Value));
+    expect([...maskedPropertyInputFingerprintsOf(rewritten).keys()]).toEqual([]);
+    const rebaselined: Array<[string, string]> = [];
+    // Inputs changed since, but nothing compares the stale entry: re-baselined.
+    const moved = await movedMaskedProperties(
+      rewritten,
+      edited,
+      inputFingerprinter(edited, sources({ values: { P: 'two', Hidden: 'h', Env: 'dev' } })),
+      (k, f) => rebaselined.push([k, f])
+    );
+    expect(moved).toEqual([]);
+    expect(rebaselined.map(([k]) => k)).toEqual(['Value']);
+  });
+
+  it('reads only sha256: in the text field, and only bound inputs-sha256: in the input field', () => {
+    const rec = {
       maskedPropertyFingerprints: {
         A: 'sha256:aa',
         B: 'inputs-sha256:bb',
         C: REFUSED_FINGERPRINT,
         D: 'md5:dd',
       },
-    });
-    expect([...read.keys()]).toEqual(['A', 'B']);
+      maskedPropertyInputFingerprints: {
+        A: 'inputs-sha256:x+sha256:aa',
+        C: 'inputs-sha256:y+refused:secret-in-template',
+        E: 'inputs-sha256:z+sha256:ee',
+      },
+    };
+    expect([...maskedPropertyFingerprintsOf(rec).keys()]).toEqual(['A']);
+    expect([...maskedPropertyInputFingerprintsOf(rec).entries()]).toEqual([
+      ['A', 'inputs-sha256:x+sha256:aa'],
+    ]);
   });
 
-  it('re-baselines only a layout-1 entry', () => {
-    const rec = { maskedPropertyFingerprints: { A: 'sha256:aa', B: 'inputs-sha256:bb', C: REFUSED_FINGERPRINT } };
-    expect(
-      withRebaselinedFingerprints(rec, { A: 'inputs-sha256:new', B: 'inputs-sha256:x', C: 'inputs-sha256:y' })
-        .maskedPropertyFingerprints
-    ).toEqual({ A: 'inputs-sha256:new', B: 'inputs-sha256:bb', C: REFUSED_FINGERPRINT });
+  it('re-baselines into the input field, only an entry bound to the text the record holds', () => {
+    const rec = { maskedPropertyFingerprints: { A: 'sha256:aa', C: REFUSED_FINGERPRINT } };
+    const next = withRebaselinedFingerprints(rec, {
+      A: 'inputs-sha256:new+sha256:aa',
+      C: 'inputs-sha256:y+sha256:cc',
+    }) as typeof rec & { maskedPropertyInputFingerprints?: Record<string, string> };
+    expect(next.maskedPropertyFingerprints).toEqual(rec.maskedPropertyFingerprints);
+    expect(next.maskedPropertyInputFingerprints).toEqual({ A: 'inputs-sha256:new+sha256:aa' });
+  });
+
+  it('an older cdkd reading a new record still compares the text exactly as #4451 did', async () => {
+    const stamped = withMaskedPropertyFingerprints(
+      { physicalId: 'p', resourceType: 'AWS::SSM::Parameter', properties: { Value: '***' } },
+      markWrittenFromDeployedTemplate({ Value: '***' }),
+      props,
+      undefined,
+      undefined,
+      { Value: (await maskedInputFingerprint(props.Value, sources()))! }
+    );
+    // #4451's reader: `sha256:` entries of `maskedPropertyFingerprints`,
+    // compared with the template text's hash. It still finds exactly that.
+    expect(stamped.maskedPropertyFingerprints).toEqual({ Value: TEXT });
+    expect(stamped.maskedPropertyInputFingerprints!['Value']).toMatch(
+      /^inputs-sha256:[0-9a-f]{64}\+sha256:/
+    );
   });
 });
 
 describe('the save-time stamp', () => {
-  it('stamps layout 2 where an input fingerprint was computed, layout 1 otherwise', () => {
-    const template = { Value: script({ Ref: 'P' }), Other: script('x') };
-    expect(
-      maskedPropertyFingerprintsFor({ Value: '***', Other: '***' }, template, {
-        Value: 'inputs-sha256:v',
-      })
-    ).toEqual({ Value: 'inputs-sha256:v', Other: maskedPropertyFingerprint(template.Other) });
+  it('stamps the text fingerprint always, and an input fingerprint only bound to it', () => {
+    const template = { Value: script({ Ref: 'P' }), Other: script('x'), Stale: script('y') };
+    const stamped = withMaskedPropertyFingerprints(
+      {
+        physicalId: 'p',
+        resourceType: 'T',
+        properties: { Value: '***', Other: '***', Stale: '***' },
+      },
+      markWrittenFromDeployedTemplate({}),
+      template,
+      undefined,
+      undefined,
+      {
+        Value: `inputs-sha256:v+${maskedPropertyFingerprint(template.Value)}`,
+        Stale: 'inputs-sha256:s+sha256:not-this-text',
+      }
+    );
+    expect(stamped.maskedPropertyFingerprints).toEqual({
+      Value: maskedPropertyFingerprint(template.Value),
+      Other: maskedPropertyFingerprint(template.Other),
+      Stale: maskedPropertyFingerprint(template.Stale),
+    });
+    expect(stamped.maskedPropertyInputFingerprints).toEqual({
+      Value: `inputs-sha256:v+${maskedPropertyFingerprint(template.Value)}`,
+    });
+    expect(maskedPropertyFingerprintsFor({ Value: '***' }, template)).toEqual({
+      Value: maskedPropertyFingerprint(template.Value),
+    });
   });
 
-  it('names as possibly masked each key holding the mask or a needle at any length', () => {
-    const bag = new Map([['pw', SECRET]]);
+  it('names as possibly masked each key holding the mask, a long needle, or a short one as a WHOLE leaf', () => {
+    const bag = new Map([
+      ['pw', SECRET],
+      ['long-secret-value', SECRET],
+    ]);
     expect(
-      possiblyMaskedKeys({ A: 'x-pw', B: '***', C: 'clean', D: ['a', 'pw'] }, [bag, undefined])
-    ).toEqual(['A', 'B', 'D']);
+      possiblyMaskedKeys(
+        {
+          A: 'x-pw',
+          B: '***',
+          C: 'clean',
+          D: ['a', 'pw'],
+          E: 'pre-long-secret-value-post',
+          F: { n: 'pw' },
+        },
+        [bag, undefined]
+      )
+    ).toEqual(['B', 'D', 'E', 'F']);
   });
 });
 
@@ -510,7 +599,7 @@ describe('DiffCalculator - a masked property whose resolved input moved (go-to-k
     },
   };
   const diffWith = async (
-    fingerprint: string,
+    input: string | undefined,
     maskedInputs?: Parameters<DiffCalculator['calculateDiff']>[8]
   ) => {
     const state = {
@@ -522,7 +611,8 @@ describe('DiffCalculator - a masked property whose resolved input moved (go-to-k
           physicalId: 'p',
           resourceType: 'AWS::SSM::Parameter',
           properties: { Name: 'n', Value: '***' },
-          maskedPropertyFingerprints: { Value: fingerprint },
+          maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(script({ Ref: 'P' })) },
+          ...(input !== undefined && { maskedPropertyInputFingerprints: { Value: input } }),
         },
       },
       outputs: {},
@@ -562,7 +652,7 @@ describe('DiffCalculator - a masked property whose resolved input moved (go-to-k
 
   it('re-baselines an unchanged layout-1 entry into the caller\'s map', async () => {
     const rebaselined = new Map<string, Record<string, string>>();
-    const change = await diffWith(maskedPropertyFingerprint(script({ Ref: 'P' })), {
+    const change = await diffWith(undefined, {
       sources: at('one'),
       rebaselined,
     });
@@ -618,3 +708,138 @@ describe('review-round pins (go-to-k/cdkd#4543)', () => {
     ).toEqual({ kind: 'secret' });
   });
 });
+
+describe('classifyPassedParameters (go-to-k/cdkd#4543)', () => {
+  it('classifies each passed expression by the parent-side rules', async () => {
+    const node = ref('Bucket');
+    const classes = await classifyPassedParameters(
+      {
+        Clean: { Ref: 'Bucket' },
+        Literal: 'v',
+        Plain: { Ref: 'P' },
+        Joined: { 'Fn::Join': ['-', [{ Ref: 'P' }, { Ref: 'AWS::Region' }]] },
+        NoEcho: { Ref: 'Hidden' },
+        Reference: '{{resolve:secretsmanager:s}}',
+        Tainted: { Ref: 'Named' },
+        Imported: { 'Fn::ImportValue': { Ref: 'Hidden' } },
+        Unknown: { Ref: 'Unresolvable' },
+        Opaque: { 'Fn::GetAtt': ['Cr', 'Out'] },
+      },
+      sources({
+        template: {
+          ...BASE,
+          Resources: {
+            ...BASE.Resources,
+            Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: 'arn' } },
+            Unresolvable: { Type: 'AWS::SNS::Topic', Properties: {} },
+          },
+        },
+        resolved: { [node]: 'bucket-1', [ref('AWS::Region')]: 'us-east-1' },
+      })
+    );
+    expect(Object.fromEntries(classes)).toEqual({
+      Clean: 'clean',
+      Literal: 'clean',
+      Plain: 'clean',
+      Joined: 'clean',
+      NoEcho: 'secret',
+      Reference: 'secret',
+      Tainted: 'secret',
+      Imported: 'secret',
+      Unknown: 'secret',
+      Opaque: 'secret',
+    });
+    expect(Object.fromEntries(await classifyPassedParameters(undefined, sources()))).toEqual({});
+  });
+
+  it('a child honours only the parent CLEAN class for a supplied non-Default value', () => {
+    const template: CloudFormationTemplate = {
+      Parameters: { A: { Type: 'String' }, B: { Type: 'String' }, C: { Type: 'String' } },
+      Resources: {},
+    };
+    const { parameterInput } = parameterInputsFor({
+      template,
+      values: { A: 'a', B: 'b', C: 'c' },
+      nestedChild: true,
+      supplied: { A: 'a', B: 'b', C: 'c' },
+      passedClasses: new Map([
+        ['A', 'clean'],
+        ['B', 'secret'],
+      ]),
+    });
+    expect(parameterInput('A')).toEqual({ kind: 'value', value: 'a' });
+    expect(parameterInput('B')).toEqual({ kind: 'secret' });
+    expect(parameterInput('C')).toEqual({ kind: 'secret' });
+  });
+});
+
+describe('pins on the concrete check (go-to-k/cdkd#4543 review)', () => {
+  it('never resolves a cross-stack read whose operand text holds a reference, in either spelling', async () => {
+    for (const operand of [
+      'shared-{{resolve:secretsmanager:s}}',
+      { 'Fn::Sub': 'shared-{{resolve:secretsmanager:s}}' },
+    ]) {
+      const s = sources({ resolved: {} });
+      const fingerprint = await maskedInputFingerprint(script({ 'Fn::ImportValue': operand }), s);
+      expect(fingerprint).toBeDefined();
+      expect(s.resolve).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a resource whose GetAtt operand is malformed counts as reading a secret', async () => {
+    const template: CloudFormationTemplate = {
+      ...BASE,
+      Resources: {
+        ...BASE.Resources,
+        Odd: { Type: 'AWS::SNS::Topic', Properties: { TopicName: { 'Fn::GetAtt': 5 } } },
+      },
+    };
+    const s = sources({ template, resolved: { [ref('Odd')]: 'odd' } });
+    expect(await maskedInputFingerprint(script({ Ref: 'Odd' }), s)).toBeDefined();
+    expect(s.resolve).not.toHaveBeenCalled();
+  });
+
+  it('an attribute name built from an intrinsic is an input: resolved only when known non-secret', async () => {
+    const node = (attr: unknown) => ({ 'Fn::GetAtt': ['Bucket', attr] });
+    // A NoEcho parameter as the attribute name: kept as written, never resolved.
+    const s = sources({ resolved: {} });
+    expect(await maskedInputFingerprint(script(node({ Ref: 'Hidden' })), s)).toBeDefined();
+    expect(s.resolve).not.toHaveBeenCalled();
+    // A plain one: resolved.
+    const plain = sources({ resolved: { [JSON.stringify(node({ Ref: 'P' }))]: 'arn:x' } });
+    expect(await maskedInputFingerprint(script(node({ Ref: 'P' })), plain)).toBeDefined();
+    expect(plain.resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('an attribute of a custom resource or a nested stack is kept as written (it may be NoEcho)', async () => {
+    const template: CloudFormationTemplate = {
+      ...BASE,
+      Resources: {
+        ...BASE.Resources,
+        Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: 'arn' } },
+        Cr2: { Type: 'AWS::CloudFormation::CustomResource', Properties: { ServiceToken: 'arn' } },
+        Nested: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } },
+        ReadsCr: {
+          Type: 'AWS::SNS::Topic',
+          Properties: { TopicName: { 'Fn::GetAtt': ['Cr', 'Out'] } },
+        },
+      },
+    };
+    for (const value of [
+      { 'Fn::GetAtt': ['Cr', 'Out'] },
+      { 'Fn::GetAtt': ['Cr2', 'Out'] },
+      { 'Fn::GetAtt': ['Nested', 'Outputs.X'] },
+      { 'Fn::Sub': '${Cr.Out}' },
+      { Ref: 'ReadsCr' },
+    ]) {
+      const s = sources({ template, resolved: {} });
+      expect(await maskedInputFingerprint(script(value), s), JSON.stringify(value)).toBeDefined();
+      expect(s.resolve, JSON.stringify(value)).not.toHaveBeenCalled();
+    }
+    // Its physical id is no attribute: resolved.
+    const s = sources({ template, resolved: { [ref('Cr')]: 'cr-id' } });
+    await maskedInputFingerprint(script({ Ref: 'Cr' }), s);
+    expect(s.resolve).toHaveBeenCalledTimes(1);
+  });
+});
+

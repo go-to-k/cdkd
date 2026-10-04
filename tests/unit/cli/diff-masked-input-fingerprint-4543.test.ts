@@ -38,6 +38,7 @@ import { buildDiffTree, computeStackDiff } from '../../../src/cli/commands/diff-
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import {
   maskedInputFingerprint,
+  maskedPropertyFingerprint,
   parameterInputsFor,
 } from '../../../src/deployment/masked-property-fingerprints.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -71,7 +72,8 @@ async function stateStampedAt(value: string): Promise<StackState> {
         physicalId: 'n',
         resourceType: 'AWS::SSM::Parameter',
         properties: { Name: 'n', Type: 'String', Value: '***' },
-        maskedPropertyFingerprints: { Value: fingerprint! },
+        maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(VALUE) },
+        maskedPropertyInputFingerprints: { Value: fingerprint! },
       },
     },
     outputs: {},
@@ -156,6 +158,67 @@ describe('buildDiffTree compares the inputs for the root only (go-to-k/cdkd#4543
       expect(root.children[0]!.changes.get('R')!.changeType).toBe('NO_CHANGE');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('cdkd diff keeps an input its resolution recorded a secret for as written (go-to-k/cdkd#4543 G2)', () => {
+  it('a recovered secret cross-stack value neither moves the preview nor reaches the hash', async () => {
+    const { IntrinsicFunctionResolver } = await import(
+      '../../../src/deployment/intrinsic-function-resolver.js'
+    );
+    const { recordMaskOnlyValue } = await import('../../../src/deployment/secret-redaction.js');
+    const IMPORT = { 'Fn::ImportValue': 'shared' };
+    let plaintext = 'recovered-output-one';
+    // A cross-stack read recovered in-process re-registers the plaintext into
+    // the bag of the context resolving it (`recoverMaskedOutput`).
+    const spy = vi
+      .spyOn(IntrinsicFunctionResolver.prototype, 'resolveImportValue')
+      .mockImplementation((_arg: unknown, context: unknown) => {
+        const bag = (context as { recordedSecretValues?: Map<string, string> })
+          .recordedSecretValues;
+        if (bag) recordMaskOnlyValue(bag, plaintext);
+        return Promise.resolve(plaintext);
+      });
+    try {
+      const value = {
+        'Fn::Base64': {
+          'Fn::Join': ['', [IMPORT, ';pw=', '{{resolve:secretsmanager:app-pw}}']],
+        },
+      };
+      const template: CloudFormationTemplate = {
+        Resources: {
+          R: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'n', Type: 'String', Value: value } },
+        },
+      };
+      // Stamped with the input kept as written, as the deploy keeps it.
+      const stamped = await maskedInputFingerprint(value, {
+        template,
+        parameterInput: () => ({ kind: 'unknown' }),
+        resolve: () =>
+          Promise.resolve({ value: 'x', secrets: new Map([['x', '***']]) }),
+      });
+      const state: StackState = {
+        stackName: 'S',
+        region: 'us-east-1',
+        resources: {
+          R: {
+            physicalId: 'n',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Name: 'n', Type: 'String', Value: '***' },
+            maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(value) },
+            maskedPropertyInputFingerprints: { Value: stamped! },
+          },
+        },
+        outputs: {},
+        version: 10,
+        lastModified: 0,
+      };
+      expect((await changeOf(state, template, true)).changeType).toBe('NO_CHANGE');
+      plaintext = 'recovered-output-two';
+      expect((await changeOf(state, template, true)).changeType).toBe('NO_CHANGE');
+    } finally {
+      spy.mockRestore();
     }
   });
 });

@@ -17,6 +17,7 @@ import type {
 } from '../../types/resource.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
+import { passedParameterClassesOf } from '../../deployment/masked-property-fingerprints.js';
 import { getCurrentProducerRegions } from '../../deployment/producer-regions-scope.js';
 import {
   getNestedRevertRun,
@@ -789,6 +790,7 @@ export class NestedStackProvider implements ResourceProvider {
     // Never enumerate or log this map's KEYS: they are secret plaintext. It is
     // passed on and nothing else.
     const inheritedSecrets = getCurrentResourceSecrets();
+    const passedClasses = passedParameterClassesOf(inheritedSecrets);
     const childEngine = new DeployEngine(
       parentCtx.stateBackend,
       parentCtx.lockManager,
@@ -858,6 +860,10 @@ export class NestedStackProvider implements ResourceProvider {
         // only LOG-ONLY needles (a `NoEcho` parameter's value) still masks the
         // child's lines and is carried into its consuming resources' bags.
         ...(inheritedSecrets && hasMaskableValues(inheritedSecrets) && { inheritedSecrets }),
+        // go-to-k/cdkd#4543: how the parent classified each value it passes
+        // (recorded on the same bag), so the child hashes a clean one into a
+        // masked property's input fingerprint and keeps the rest as written.
+        ...(passedClasses && { passedParameterClasses: passedClasses }),
         // go-to-k/cdkd#4174: the parent engine's producer regions, for the
         // child's own in-process rollback. Always overwritten: none bound
         // (no parent engine on the stack) reads as incomplete in the child.
