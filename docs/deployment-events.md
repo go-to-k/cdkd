@@ -162,8 +162,9 @@ gets through:
 
 Treat `deployments/*.jsonl` as sensitive on that basis, and rotate any secret
 whose plaintext a run is known to have quoted — masking a later write does not
-un-persist an earlier one, and neither does deleting the stream
-([earlier versions of it survive](#deleting-a-run-stream-does-not-remove-its-earlier-versions)).
+un-persist an earlier one, and deleting the stream afterwards does not make
+the secret safe again
+([what the purge does not reach](#deleting-a-run-stream-also-purges-its-earlier-versions)).
 
 ### Rendering: the human path sanitises, JSON output escapes
 
@@ -252,7 +253,7 @@ s3://{bucket}/{prefix}/{stackName}/{region}/deployments/index.json      # last N
 
 ### Bounded growth
 
-Two mechanisms keep the `deployments/` prefix from growing without bound:
+Three mechanisms keep the `deployments/` prefix from growing without bound:
 
 - **Self-bounding at write time.** When a run finalizes, the writer prunes
   `{runId}.jsonl` streams that have fallen out of the 20-run index window —
@@ -274,9 +275,9 @@ Two mechanisms keep the `deployments/` prefix from growing without bound:
   already-destroyed stack, and for `cdkd state destroy`, which has no such
   flag, is `cdkd events prune '<stack>' --all`.
 
-Neither one reclaims the storage or removes the content, because the state
-bucket is versioned — see
-[Deleting a run stream does not remove its earlier versions](#deleting-a-run-stream-does-not-remove-its-earlier-versions).
+All three also purge the earlier versions of the keys they delete, because
+the state bucket is versioned — see
+[Deleting a run stream also purges its earlier versions](#deleting-a-run-stream-also-purges-its-earlier-versions).
 
 ### Best-effort, never blocking
 
@@ -376,29 +377,53 @@ unlike the writer's best-effort auto-prune, errors surface to the caller.
 After deleting the matching `{runId}.jsonl` streams it rewrites `index.json`
 to drop the pruned runs, or removes the index entirely when no runs remain —
 so a full `--all` purge (or a destroy followed by `prune --all`) leaves the
-stack's `deployments/` prefix listing nothing, satisfying the "state bucket
-empty after teardown" convention.
+stack's `deployments/` prefix listing nothing and, on a versioned bucket, no
+readable earlier version of the keys it deleted either.
 
-### Deleting a run stream does not remove its earlier versions
+### Deleting a run stream also purges its earlier versions
 
-`cdkd bootstrap` turns **versioning** on for the state bucket, and every
-delete on this path — the writer's self-bounding prune, `cdkd events prune`,
-and `cdkd destroy --purge-events` alike — deletes by key with no version id.
-On a versioned bucket that writes a DELETE MARKER: the key disappears from an
-ordinary listing while every earlier version of it stays readable through
-`GetObject` with a `VersionId`.
+`cdkd bootstrap` turns **versioning** on for the state bucket, so a delete by
+key alone only writes a DELETE MARKER: the key disappears from an ordinary
+listing while every earlier version stays readable through `GetObject` with a
+`VersionId`. Those versions are not a rounding error here — a run's
+`{runId}.jsonl` body is re-written **in full on every flush**, so one run
+leaves one noncurrent version per flush.
 
-Those versions are not a rounding error here. A run's `{runId}.jsonl` body is
-re-written **in full on every flush**, so one run leaves one noncurrent
-version per flush behind the current object, and pruning the run removes none
-of them. Combined with the guidance above to
-[treat `deployments/*.jsonl` as sensitive](#what-the-masking-does-not-cover),
-that means a prune is not a remediation for a run that quoted a secret —
-**rotate the secret**. Every line cdkd prints that reports such a delete —
-`cdkd events prune`'s two, and `cdkd destroy --purge-events`' one — says so
-rather than reporting a removal it did not perform. The writer's self-bounding
-prune reports only at `--verbose`, and its line is not qualified — it is an
-internal housekeeping note, not a removal cdkd is asking you to rely on.
+So every delete on this path — the writer's self-bounding prune,
+`cdkd events prune`, and `cdkd destroy --purge-events` alike — also deletes the
+**noncurrent versions** of the keys it removes. The writer's prune is included
+because a stream it drops is no longer listed, so no later
+`cdkd events prune --all` could find it again. On an unversioned bucket there
+are no noncurrent versions and nothing extra is deleted.
+
+The purge is fail-soft and needs `s3:ListBucketVersions` and
+`s3:DeleteObjectVersion` on the state bucket (see the
+[recommended bucket policy](state-management.md#recommended-bucket-policy-with-least-privilege)).
+Without them the prune or destroy still succeeds, and a warning naming the two
+grants prints before the `Pruned` / `Purged` line, which is why that line says
+"unless a warning above says otherwise". Because the writer's self-bounding
+prune purges too, a `cdkd deploy` or `cdkd destroy` of a stack past 20 runs can
+print the same warnings — including the replication one when the state bucket
+is replicated — and does so again on every such deploy or destroy, since each
+one prunes a stream.
+
+What it does not reach:
+
+- **Streams deleted before a purge could run on them** — by a cdkd release
+  without this purge, or by a delete whose purge warned (for example, the
+  writer's prune under a role that lacked the two grants). The purge acts on
+  the keys a run deletes, found by an ordinary listing, so a stream already
+  behind a delete marker is not revisited, and a later purge that prints no
+  warning says nothing about it — including `cdkd events prune --all` and
+  `cdkd destroy --purge-events`, whose output is scoped to "the deleted
+  keys" for this reason. Use the recipe below.
+- **Earlier versions of a REWRITTEN `index.json`.** A partial prune
+  (`--keep` / `--older-than`) rewrites the index rather than deleting it, so
+  its earlier versions survive; they hold run summaries (run id, command,
+  version, timestamps, result, event count), never event bodies. An `--all`
+  prune deletes the index and purges them.
+- **A replicated bucket's destination**, which keeps its own copies — see
+  [S3 replication defeats the purge](state-management.md#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you).
 
 To see what survives for a stack, and to remove it yourself:
 
@@ -414,9 +439,9 @@ aws s3api delete-object --bucket <state-bucket> \
   --version-id <VersionId>
 ```
 
-If the bucket is replicated, the destination keeps its own copies and no
-delete here reaches them — see
-[S3 replication defeats the purge](state-management.md#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you).
+A purge is still not a remediation for a run that quoted a secret on its own —
+**rotate the secret**: the run's events were readable until the purge, and a
+replica or a pre-purge copy may hold them.
 
 ## Out of scope (follow-ups)
 

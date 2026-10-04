@@ -49,14 +49,18 @@ describe('purgeEventsAfterDestroy', () => {
     expect(pruneRuns).toHaveBeenCalledWith('MyStack', 'us-east-1', { all: true });
     expect(res).toBe(PRUNED);
     expect(info).toHaveBeenCalledTimes(1);
-    // Issue #2624: `--purge-events` routes through `deleteRawObjects`, which
-    // sends `DeleteObjects` with no `VersionId`, so on the versioned state
-    // bucket the earlier versions of those keys stay readable. "Purged" alone
-    // reads as removal and is not one — the line has to carry the bound.
+    // Issue #2624: `pruneRuns` purges the earlier versions of every key it
+    // deletes, so "Purged" now covers them -- bounded by the purge's own
+    // warning, which prints first when it could not finish.
     const line = String(info.mock.calls[0]![0]);
-    expect(line).toContain('Purged deployment-event history for MyStack (us-east-1).');
-    expect(line).toContain('earlier versions of those keys survive');
-    expect(line).toContain('VersionId');
+    expect(line).toContain('Purged deployment-event history for MyStack (us-east-1)');
+    // Scoped to the keys THIS purge deleted: a stream already behind a delete
+    // marker is not reached, so the line must not claim the whole history.
+    expect(line).toContain('and the earlier versions of the deleted keys');
+    expect(line).not.toContain('keys it deleted');
+    expect(line).not.toContain('earlier object versions included');
+    expect(line).toContain('unless a warning above says otherwise');
+    expect(line).not.toContain('survive');
   });
 
   it('names no cdkd invocation on the purge line that displays the stack name (go-to-k/cdkd#3950)', async () => {
@@ -73,7 +77,7 @@ describe('purgeEventsAfterDestroy', () => {
       logger
     );
     const line = String(info.mock.calls[0]![0]);
-    expect(line).toContain('which bootstrapping with cdkd enables');
+    expect(line).toContain('Purged deployment-event history');
     expectNoCommandBesideDisplay(line, stack);
   });
 
@@ -154,6 +158,7 @@ describe('purgeEventsAfterDestroy', () => {
       getRawObject: vi.fn(async () => null),
       putRawObject: vi.fn(async () => {}),
       deleteRawObjects,
+      purgeNoncurrentVersions: vi.fn(async () => {}),
     } as unknown as S3StateBackend;
     const { logger, info } = fakeLogger();
     const res = await purgeEventsAfterDestroy(
@@ -236,16 +241,14 @@ describe('cdkd destroy --purge-events help text', () => {
   const description = (): string =>
     createDestroyCommand().options.find((o) => o.long === '--purge-events')?.description ?? '';
 
-  it('promises an empty LISTING and names the surviving versions, not an empty bucket', () => {
+  it('says the earlier versions of those keys are purged too (issue #2624)', () => {
     // Bound the arm first: a missing option yields '' above, which would
     // satisfy every `not.toContain` below for free.
     expect(description()).not.toBe('');
-    expect(description()).toContain('an object listing of the state bucket comes back empty');
-    expect(description()).toContain('earlier versions of those keys survive');
-    expect(description()).toContain('VersionId');
-    // The hedge: cdkd bootstrap skips PutBucketVersioning for a pre-existing
-    // bucket, so the claim is conditional and must read as conditional.
-    expect(description()).toContain('Where the state bucket is versioned');
+    expect(description()).toContain(
+      'purging the earlier versions of those keys on a versioned state bucket too unless a warning says otherwise'
+    );
+    expect(description()).not.toContain('survive and stay readable');
   });
 
   it('THE OTHER POLARITY: it no longer claims the bucket itself ends empty', () => {
