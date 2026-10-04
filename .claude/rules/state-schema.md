@@ -55,10 +55,13 @@ interface ResourceState {
   observedBaselineRefused?: true;           // v10+: import refused a baseline; no writer may synthesize one from `properties`
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution'; // no bump: only the first survives an in-place UPDATE
   acceptedCreateOnlyDrops?: string[];       // no bump: create-only keys in `properties` the SDK route was told to drop (#2790)
+  maskedPropertyFingerprints?: Record<string, string>; // no bump: per property held as `***`, sha256 of its UNRESOLVED template value (#4451)
 }
 ```
 
 `acceptedCreateOnlyDrops` is EVIDENCE, read only through `acceptedCreateOnlyDropsOf` (malformed = absent = none): the #2790 refusal fires only for a key it names, since an imported or pre-v7 record holds create-only keys AWS does hold. An SDK-route create or replacement rebuilds it, an in-place update only carries entries still in `properties` (`acceptedCreateOnlyDropsField`), Cloud Control clears it, a spreading writer keeps it.
+
+`maskedPropertyFingerprints` hashes TEMPLATE text only, never a resolved value (a hash of one is a confirm oracle for the secret); a template value holding as a literal a `NoEcho` parameter value (checked at the backfill and every save) or one of the resource's resolved needles (checked at the first save holding them, a deploy that resolved it) gets `REFUSED_FINGERPRINT`, which reads as no hash. Helpers and the write rule live in `src/deployment/masked-property-fingerprints.ts`: the save rebuilds it only for a bag `propertiesToRecord` wrote this deploy, since a failed update's record is the previous generation; absent keeps the pre-#4451 comparison and is backfilled per property at deploy start.
 
 ## `exportNames` (v9+)
 
