@@ -19,6 +19,7 @@ import {
 } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { producerRecordKey } from '../../state/record-keys.js';
+import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 import { LockManager } from '../../state/lock-manager.js';
 import {
   isReadableResourceEntry,
@@ -1286,6 +1287,7 @@ async function driftCommand(
     // neither flag can act on it. Refused by name FIRST, and the rest of the
     // run proceeds on the resources it can act on.
     const refusedDeleted = refuseDeletedForRemediation(reports, mode, logger);
+    const anyRefusedDeleted = refusedDeleted.deleted + refusedDeleted.recordMissing > 0;
     const actionable = reports.some((r) =>
       r.outcomes.some((o) =>
         matchOutcome<boolean>(o, {
@@ -1299,7 +1301,7 @@ async function driftCommand(
       )
     );
     if (!actionable) {
-      if (refusedDeleted > 0) {
+      if (anyRefusedDeleted) {
         if (anyIncomplete) {
           // Its last line says a detection-only run exits 2; with a deleted
           // resource in the stack it exits 1, so that line is replaced.
@@ -1311,7 +1313,7 @@ async function driftCommand(
               `with a deleted resource in the stack, that run exits 1.`
           );
         }
-        if (!options.dryRun) throw deletedRefusalError(reports, mode);
+        if (!options.dryRun) throw deletedRefusalError(refusedDeleted, mode);
         return;
       }
       // Issue #2208: `No drift detected` is FALSE for a run that did not manage
@@ -1351,17 +1353,17 @@ async function driftCommand(
       } catch (err) {
         // `--revert`'s own partial failure ends the run before the deleted
         // refusal below can; carry the deleted count into its message.
-        if (refusedDeleted > 0 && err instanceof PartialFailureError) {
+        if (anyRefusedDeleted && err instanceof PartialFailureError) {
           throw new PartialFailureError(
-            `${err.message} ${deletedRefusalError(reports, mode).message}`,
+            `${err.message} ${deletedRefusalError(refusedDeleted, mode).message}`,
             err
           );
         }
         throw err;
       }
     }
-    if (refusedDeleted > 0 && !options.dryRun && outcome !== false) {
-      throw deletedRefusalError(reports, mode);
+    if (anyRefusedDeleted && !options.dryRun && outcome !== false) {
+      throw deletedRefusalError(refusedDeleted, mode);
     }
   } finally {
     for (const { clients } of stackRegionScopes.values()) clients.destroy();
@@ -1385,13 +1387,13 @@ function refuseDeletedForRemediation(
   reports: StackDriftReport[],
   mode: 'accept' | 'revert',
   logger: Logger
-): number {
-  let refused = 0;
+): RefusedDeletedCounts {
+  const refused = { deleted: 0, recordMissing: 0 };
   for (const report of reports) {
     for (const outcome of report.outcomes) {
       if (outcome.kind !== 'deleted') continue;
-      refused += 1;
       if (outcome.nestedStackRecordMissing === true) {
+        refused.recordMissing += 1;
         // go-to-k/cdkd#4533: no AWS read stands behind this one, so it does
         // not say AWS answered, and the remedy is the nested stack's own.
         logger.warn(
@@ -1410,9 +1412,20 @@ function refuseDeletedForRemediation(
               `so there is no AWS-current value to write to state.`) +
           safeMsg` ${DELETED_RESOURCE_REMEDY}`
       );
+      refused.deleted += 1;
     }
   }
   return refused;
+}
+
+/**
+ * What {@link refuseDeletedForRemediation} refused, by kind: a nested row
+ * whose record is gone is counted apart (go-to-k/cdkd#4533), since
+ * `cdkd state orphan` is one way it goes and it is not "outside cdkd".
+ */
+interface RefusedDeletedCounts {
+  deleted: number;
+  recordMissing: number;
 }
 
 /**
@@ -1422,20 +1435,9 @@ function refuseDeletedForRemediation(
  * `--revert`'s per-resource failures already carry.
  */
 function deletedRefusalError(
-  reports: StackDriftReport[],
+  { deleted, recordMissing }: RefusedDeletedCounts,
   mode: 'accept' | 'revert'
 ): PartialFailureError {
-  // go-to-k/cdkd#4533: a nested row whose record is gone is counted apart --
-  // `cdkd state orphan` is one way it goes, so it is not "outside cdkd".
-  let deleted = 0;
-  let recordMissing = 0;
-  for (const report of reports) {
-    for (const o of report.outcomes) {
-      if (o.kind !== 'deleted') continue;
-      if (o.nestedStackRecordMissing === true) recordMissing += 1;
-      else deleted += 1;
-    }
-  }
   const verb = mode === 'accept' ? 'accepted' : 'reverted';
   const parts = [
     ...(deleted > 0 ? [`${deleted} resource(s) deleted outside cdkd`] : []),
@@ -1456,19 +1458,23 @@ const DELETED_RESOURCE_REMEDY =
   `deploys is enough. Anything in the app that references it has to come out with it, and ` +
   `that deploy DELETES those resources too.`;
 
-/** The row type `NestedStackProvider` records a nested stack under. */
-const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
-
 /**
  * What to do about a nested stack whose own `<parent>~<child>` record is gone
- * (go-to-k/cdkd#4533). cdkd no longer tracks its resources, which may still
- * exist, so recreating it can collide with them.
+ * (go-to-k/cdkd#4533). Two ways it happens, and their remedies are opposite:
+ * `cdkd import --migrate-from-cloudformation` saves the PARENT record first and
+ * the children after it, keeping the parent when that walk stops part-way --
+ * there the resources are live in the source CloudFormation stack and the fix
+ * is re-running the import, so the text must NOT lead with deleting them.
+ * Otherwise (a hand edit, `cdkd state orphan`) cdkd no longer tracks them.
  */
 const NESTED_RECORD_MISSING_REMEDY =
-  `The resources it held are no longer tracked by cdkd and may still exist in AWS: find ` +
-  `and delete them first. A deploy that does not change the nested stack will not recreate ` +
-  `it: to recreate it, remove it from the CDK app and deploy, then restore it and deploy ` +
-  `again; if it is meant to be gone, the first of those deploys is enough.`;
+  `If the parent was imported with 'cdkd import --migrate-from-cloudformation' and that ` +
+  `import stopped part-way, its nested stacks were not recorded yet: re-run the import. ` +
+  `Otherwise the resources the nested stack held are no longer tracked by cdkd and may ` +
+  `still exist in AWS, and recreating it can collide with them. A deploy that does not ` +
+  `change the nested stack will not recreate it: to recreate it, remove it from the CDK ` +
+  `app and deploy, then restore it and deploy again; if it is meant to be gone, the ` +
+  `first of those deploys is enough.`;
 
 /** The sentence a nested row with no record of its own reports (go-to-k/cdkd#4533). */
 function nestedRecordMissingClause(
@@ -3225,10 +3231,11 @@ async function runDriftForStack(
       // (cdkd deploys its resources itself), and its resources are compared as
       // their own `<parent>~<child>` stack in this same run. So the row is
       // `skipped` when that record is selected — its block covers it — and
-      // `deleted` when the record is gone: `NestedStackProvider` writes it
-      // before the row exists, so it was removed later (out of band, or by
-      // `cdkd state orphan`), and the report says so rather than "outside
-      // cdkd". A record present but not selected cannot
+      // `deleted` when the record is gone: a deploy writes it before the row
+      // exists, so it was removed later (out of band, or by `cdkd state
+      // orphan`) or never written by an interrupted `cdkd import
+      // --migrate-from-cloudformation`, which records the parent first. The
+      // report says neither "outside cdkd" nor which. A record present but not selected cannot
       // arise from this command's selection; it keeps the `unsupported` path.
       if (resource.resourceType === NESTED_STACK_RESOURCE_TYPE) {
         const child = nestedChildRecord(nestedChildStackName(stackName, logicalId), region);

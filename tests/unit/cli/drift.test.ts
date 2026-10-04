@@ -4441,6 +4441,34 @@ describe('cdkd drift', () => {
       expect(output).not.toContain('no drift detected here');
     });
 
+    it('a parent with a nested row and a Custom Resource keeps the NOTHING-compared warning', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      const base = mockGetState.getMockImplementation()!;
+      mockGetState.mockImplementation(async (name: string, region: string) => {
+        const got = await base(name, region);
+        if (got && name === 'Parent') {
+          got.state.resources['Deploy'] = makeResource({
+            physicalId: 'cr-1',
+            resourceType: 'Custom::CDKBucketDeployment',
+            properties: {},
+          });
+        }
+        return got;
+      });
+      readQueues();
+
+      const { output } = await runDrift(['Parent']);
+
+      // The Custom Resource is never compared, so this block's own claim stays the warning.
+      expect(output).toContain(
+        '⚠ Parent (us-east-1): no drift detected, but NOTHING was compared — 0 of 2 resources checked (0 unsupported, 2 skipped)'
+      );
+      expect(output).not.toContain('no drift detected here');
+    });
+
     it('names how many nested stacks a nested-only parent covers', async () => {
       stageNested(
         [
@@ -4538,7 +4566,15 @@ describe('cdkd drift', () => {
       expect(warned()).toContain(
         `Child (${NESTED_ROW}): NOT reverted — its nested stack's own state record Parent~Child no longer exists.`
       );
+      // An interrupted `--migrate-from-cloudformation` import leaves this shape
+      // with the resources live: the remedy names that route BEFORE any
+      // untracked-resource advice, and never tells the user to delete them.
+      expect(warned()).toContain(
+        "If the parent was imported with 'cdkd import --migrate-from-cloudformation' and that " +
+          'import stopped part-way, its nested stacks were not recorded yet: re-run the import.'
+      );
       expect(warned()).toContain('may still exist in AWS');
+      expect(warned()).not.toMatch(/delete them/);
       expect(warned()).not.toContain('AWS reports this resource no longer exists');
       // The run's closing line counts it apart from AWS-confirmed deletions.
       const closing = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');

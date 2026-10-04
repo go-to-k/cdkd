@@ -167,12 +167,16 @@ A parent whose only resources are nested stacks prints
 `✓ <parent> (<region>): no drift detected here — N nested stacks, each checked in its own block`
 rather than claiming nothing was compared.
 
-cdkd writes a nested stack's record before the parent's row, so a missing
-record was removed afterwards: by hand, or by `cdkd state orphan` (which a
-failed nested destroy suggests). Its resources are then no longer tracked by
-cdkd and may still exist in AWS. `--accept` and `--revert` refuse that row by
-name, as they refuse any deleted resource, and act on every nested stack's
-drifted resources as on a stack named directly, each under that record's lock.
+A missing record comes about in one of two ways, and the remedy differs:
+
+| How the record went missing | What to do |
+| --- | --- |
+| A `cdkd import --migrate-from-cloudformation` stopped part-way: it records the parent before its nested stacks | Re-run the import; the resources are still live in the source CloudFormation stack. |
+| The record was removed after a deploy: by hand, or by `cdkd state orphan` (which a failed nested destroy suggests) | Its resources are no longer tracked by cdkd and may still exist in AWS; check before recreating the nested stack. |
+
+`--accept` and `--revert` refuse that row by name, as they refuse any deleted
+resource, and act on every nested stack's drifted resources as on a stack named
+directly, each under that record's lock.
 
 ### Why a resource was not compared
 
