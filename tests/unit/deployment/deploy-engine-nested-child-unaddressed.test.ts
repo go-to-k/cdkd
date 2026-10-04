@@ -81,10 +81,19 @@ type Counts = {
   skipped: number;
   deleteSkipped: number;
   updatePartial: number;
+  nestedUpdatePartial: number;
 };
 
 function freshCounts(): Counts {
-  return { created: 0, updated: 0, deleted: 0, skipped: 0, deleteSkipped: 0, updatePartial: 0 };
+  return {
+    created: 0,
+    updated: 0,
+    deleted: 0,
+    skipped: 0,
+    deleteSkipped: 0,
+    updatePartial: 0,
+    nestedUpdatePartial: 0,
+  };
 }
 
 /** Write the current row's slot the way `NestedStackProvider.runChildDeploy` does. */
@@ -200,7 +209,15 @@ describe('DeployEngine — a nested child left resources unaddressed (#1989)', (
       provision(makeEngine(), 'Child', createChange(), {}, counts)
     );
 
-    expect(counts).toEqual({ ...freshCounts(), created: 1, deleteSkipped: 2, updatePartial: 1 });
+    expect(counts).toEqual({
+      ...freshCounts(),
+      created: 1,
+      deleteSkipped: 2,
+      updatePartial: 1,
+      // The child's partial is also marked as a descendant's, so the summary
+      // can keep it out of this stack's own `Updated:` total.
+      nestedUpdatePartial: 1,
+    });
   });
 
   it('UPDATE: the child counters are added to the parent counts beside the row itself', async () => {
@@ -289,7 +306,12 @@ describe('DeployEngine — a nested child left resources unaddressed (#1989)', (
     );
 
     expect(countsA).toEqual({ ...freshCounts(), created: 1, deleteSkipped: 3 });
-    expect(countsB).toEqual({ ...freshCounts(), created: 1, updatePartial: 5 });
+    expect(countsB).toEqual({
+      ...freshCounts(),
+      created: 1,
+      updatePartial: 5,
+      nestedUpdatePartial: 5,
+    });
   });
 
   it('recursion: a grandchild reaches the top through the child, counted exactly once', async () => {
@@ -325,8 +347,50 @@ describe('DeployEngine — a nested child left resources unaddressed (#1989)', (
       provision(makeEngine(), 'Child', createChange(), {}, counts)
     );
 
-    expect(childCounts).toEqual({ ...freshCounts(), created: 1, deleteSkipped: 1, updatePartial: 1 });
-    expect(counts).toEqual({ ...freshCounts(), created: 1, deleteSkipped: 1, updatePartial: 1 });
+    const once = { created: 1, deleteSkipped: 1, updatePartial: 1, nestedUpdatePartial: 1 };
+    expect(childCounts).toEqual({ ...freshCounts(), ...once });
+    expect(counts).toEqual({ ...freshCounts(), ...once });
+  });
+
+  it("a row's OWN partial stays out of nestedUpdatePartial; its child's goes in", async () => {
+    vi.mocked(provider.update).mockImplementation(async () => {
+      reportChild({ deleteSkipped: 0, updatePartial: 1 });
+      return {
+        physicalId: 'arn:child',
+        wasReplaced: false,
+        outcome: 'partial',
+        reason: 'the old child stack survived',
+      } as never;
+    });
+    const counts = freshCounts();
+    const change: ResourceChange = {
+      logicalId: 'Child',
+      changeType: 'UPDATE',
+      resourceType: STACK_TYPE,
+      currentProperties: { Parameters: { A: '1' } },
+      desiredProperties: { Parameters: { A: '2' } },
+      propertyChanges: [
+        { path: 'Parameters', oldValue: { A: '1' }, newValue: { A: '2' }, requiresReplacement: false },
+      ],
+    };
+    const state = {
+      Child: {
+        physicalId: 'arn:child',
+        resourceType: STACK_TYPE,
+        properties: { Parameters: { A: '1' } },
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'sdk',
+      },
+    };
+
+    await withNestedStackContext(makeContext(), () =>
+      provision(makeEngine(), 'Child', change, state, counts)
+    );
+
+    // One own partial (the row) + one descendant partial.
+    expect(counts.updatePartial).toBe(2);
+    expect(counts.nestedUpdatePartial).toBe(1);
   });
 
   it('outside any nested-stack context the row provisions and counts as before', async () => {

@@ -86,6 +86,7 @@ export async function executeDeployment(
     skipped: 0,
     deleteSkipped: 0,
     updatePartial: 0,
+    nestedUpdatePartial: 0,
   };
   const completedOperations: CompletedOperation[] = [];
   // #1198: the op(s) that FAILED mid-deploy (usually one; concurrent

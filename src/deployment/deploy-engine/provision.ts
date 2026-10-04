@@ -245,6 +245,7 @@ export async function provisionResource(
     if (counts && nestedChildUnaddressed) {
       counts.deleteSkipped += nestedChildUnaddressed.deleteSkipped;
       counts.updatePartial += nestedChildUnaddressed.updatePartial;
+      counts.nestedUpdatePartial += nestedChildUnaddressed.updatePartial;
     }
     // Issue #1762: a DELETE the provider refused to issue is NOT a
     // success — the events store is the durable post-mortem, and

@@ -457,7 +457,7 @@ export async function resolveGetAtt(
         // method's type refusal masks a few lines up — the sweep that built
         // this fix stopped at `throw new Error(` and missed both this
         // `markNonRetryable(new IntrinsicResolutionRefusalError(...))` and
-        // the fabricated-account refusal below.
+        // the unknown-account refusal in `constructGuardedAttribute`.
         `Cannot resolve Fn::GetAtt [${loggedLogicalId}, ${this.displayMasked(attributeName, context)}]: the nested stack ` +
           `${quotedRender(loggedLogicalId, "'")} declares no output named ` +
           `${quotedRender(this.displayMasked(this.outputNameLogText(attributeName, context), context), "'")}. ` +

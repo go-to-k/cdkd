@@ -13,6 +13,7 @@ import {
   createNameQuestion,
 } from '../../../src/deployment/replacement-name-holder.js';
 import { getAccountInfo } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { AccountIdUnavailableError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
@@ -350,13 +351,19 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     );
   });
 
-  it('refuses an SNS topic when STS could not report the account', async () => {
-    accountInfo.mockResolvedValue({
-      accountId: '123456789012',
-      region: 'us-east-1',
-      partition: 'aws',
-      fabricated: true,
-    });
+  it('refuses an SNS topic when STS could not report the account (issue #1730)', async () => {
+    accountInfo.mockRejectedValue(
+      new AccountIdUnavailableError('Cannot determine the AWS account id: STS unreachable.')
+    );
+
+    const err = await create(makeEngine(h), 'AWS::SNS::Topic', { TopicName: 'my-topic' });
+
+    expect(err).toBeInstanceOf(AccountIdUnavailableError);
+    expect(h.callOrder).toEqual([]);
+  });
+
+  it('refuses an SNS topic when the account id is malformed', async () => {
+    accountInfo.mockResolvedValue({ accountId: 'unknown', region: 'us-east-1', partition: 'aws' });
 
     const err = await create(makeEngine(h), 'AWS::SNS::Topic', { TopicName: 'my-topic' });
 
@@ -415,13 +422,8 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(err!.message).not.toContain('cdkd import');
   });
 
-  it('refuses a state machine when STS could not report the account', async () => {
-    accountInfo.mockResolvedValue({
-      accountId: '123456789012',
-      region: 'us-east-1',
-      partition: 'aws',
-      fabricated: true,
-    });
+  it('refuses a state machine when the account id is malformed', async () => {
+    accountInfo.mockResolvedValue({ accountId: 'unknown', region: 'us-east-1', partition: 'aws' });
 
     const err = await create(makeEngine(h), 'AWS::StepFunctions::StateMachine', {
       StateMachineName: 'my-sm',
@@ -647,9 +649,9 @@ describe('createLookupArn (#4180)', () => {
     expect(createLookupArn(QUEUE, 'q', account)).toBeUndefined();
   });
 
-  it('names why it cannot build one: a fabricated or malformed account, or a ":" in the name', () => {
+  it('names why it cannot build one: a malformed account, an empty region, or a ":" in the name', () => {
     const sm = 'AWS::StepFunctions::StateMachine';
-    expect(createLookupArn(sm, 'sm', { ...account, fabricated: true })).toEqual({
+    expect(createLookupArn(sm, 'sm', { ...account, region: '' })).toEqual({
       unbuildable: 'account',
     });
     expect(createLookupArn(sm, 'sm', { ...account, accountId: 'unknown' })).toEqual({

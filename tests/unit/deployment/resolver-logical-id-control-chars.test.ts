@@ -478,11 +478,11 @@ describe('every remaining sanitized logicalId render, by its emitted bytes (#343
     });
   }
 
-  it('sanitizes the FABRICATED-ACCOUNT refusal, which STS reachability hid', async () => {
+  it('sanitizes the UNKNOWN-ACCOUNT refusal, which STS reachability hid', async () => {
     // FOUND BY REVIEW, not by the table above (go-to-k/cdkd#3435 round 2). This
     // site was wrapped by the same sweep and then listed as unreachable offline
-    // — wrongly: `accountInfo.fabricated` is set from an STS response that
-    // simply carries no `Account`, which the suite's own mock can produce. The
+    // — wrongly: `getAccountInfo` refuses on an STS response that simply
+    // carries no `Account` (issue #1730), which the suite's own mock can produce. The
     // row needs its own case rather than a table entry because it is the only
     // one that has to change the STS answer.
     vi.resetModules();
@@ -512,9 +512,9 @@ describe('every remaining sanitized logicalId render, by its emitted bytes (#343
       );
 
       expect(got.error, `did not reach the arm: ${JSON.stringify(got)}`).toContain(
-        'STS did not report'
+        "embeds this deploy's account id"
       );
-      expectSanitized(got.error ?? '', 'the fabricated-account refusal');
+      expectSanitized(got.error ?? '', 'the unknown-account refusal');
     } finally {
       vi.doUnmock('../../../src/utils/aws-clients.js');
       vi.resetModules();

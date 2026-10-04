@@ -55,7 +55,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     s3: { send: mockSend, config: { region: () => Promise.resolve(clientRegion.value) } },
     // The SSM provider builds its `Arn` attribute through `getAccountInfo`,
     // which reads `getAwsClients().sts`; omitting it routes every create in
-    // this file through the fabricated-account arm and adds an unrelated warn
+    // this file through the unknown-account arm and adds an unrelated warn
     // that the assertions below would then have to skip past.
     sts: { send: () => Promise.resolve({ Account: '111122223333' }) },
   }),

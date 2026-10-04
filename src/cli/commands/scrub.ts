@@ -5384,7 +5384,7 @@ function makeCrossStackPrePass(deps: {
    * The predicate is the SUBCLASS, not `IntrinsicResolutionRefusalError`. That
    * class has six throw sites and only ONE — `resolveGetStackOutput`'s
    * cross-account arm — is permanent; the other five (a stale placeholder ARN,
-   * a fabricated account id, an unenriched `Fn::GetAtt`, `--strict-getatt`, a
+   * an unknown account id, an unenriched `Fn::GetAtt`, `--strict-getatt`, a
    * malformed `Fn::Split`) are all fixed by editing the template or deploying
    * the producer. They are REACHABLE here, because `resolveSub` re-raises the
    * class, so any cross-stack node whose ARGUMENT is an `Fn::Sub` /

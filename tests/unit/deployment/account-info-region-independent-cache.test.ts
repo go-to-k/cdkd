@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import {
   getAccountInfo,
   resetAccountInfoCache,
-  accountInfoClock,
   embedsAccountId,
   IntrinsicFunctionResolver,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
@@ -46,21 +45,16 @@ vi.mock('@aws-sdk/client-ec2', async () => {
 describe('getAccountInfo caches the ACCOUNT only (issue #1746)', () => {
   const originalRegion = process.env['AWS_REGION'];
   const originalAccountId = process.env['AWS_ACCOUNT_ID'];
-  const realNow = accountInfoClock.now;
-  let now = 1_000_000;
 
   beforeEach(() => {
     resetAccountInfoCache();
     stsSend.mockReset();
     delete process.env['AWS_ACCOUNT_ID'];
     process.env['AWS_REGION'] = 'us-east-1';
-    now = 1_000_000;
-    accountInfoClock.now = () => now;
   });
 
   afterEach(() => {
     resetAccountInfoCache();
-    accountInfoClock.now = realNow;
     if (originalRegion === undefined) delete process.env['AWS_REGION'];
     else process.env['AWS_REGION'] = originalRegion;
     if (originalAccountId === undefined) delete process.env['AWS_ACCOUNT_ID'];
@@ -122,22 +116,6 @@ describe('getAccountInfo caches the ACCOUNT only (issue #1746)', () => {
     expect(new Set(seen.map((i) => i.accountId))).toEqual(new Set(['999988887777']));
   });
 
-  it('the FABRICATED TTL window derives its region per call too', async () => {
-    stsSend.mockRejectedValue(new Error('STS unreachable'));
-
-    const first = await getAccountInfo('cn-north-1');
-    expect(first.fabricated).toBe(true);
-    expect(first.partition).toBe('aws-cn');
-
-    // Inside the TTL, so the same fabricated identity is reused — but the
-    // region must still come from THIS caller.
-    const second = await getAccountInfo();
-    expect(second.fabricated).toBe(true);
-    expect(second.region).toBe('us-east-1');
-    expect(second.partition).toBe('aws');
-    expect(stsSend).toHaveBeenCalledTimes(1);
-  });
-
   it('concurrent callers sharing ONE in-flight lookup each get their own region', async () => {
     let release: (value: { Account: string }) => void = () => {};
     stsSend.mockReturnValue(
@@ -193,12 +171,12 @@ describe('getAccountInfo caches the ACCOUNT only (issue #1746)', () => {
     const second = await getAccountInfo();
     expect(second.region).toBe('us-east-1');
     expect(second.partition).toBe('aws');
-    expect(second.fabricated).toBeUndefined();
+    expect(stsSend).toHaveBeenCalledTimes(1);
   });
 });
 
 /**
- * Issue #1746 item 2 — the fabricated-account guard inspected STRING values
+ * Issue #1746 item 2 — the unknown-account guard inspected STRING values
  * only. Every account-bearing `constructAttribute` branch returns a string
  * today, so no live defect; the array arm exists so a future list-valued
  * attribute cannot bypass the guard silently.
@@ -218,11 +196,11 @@ describe('embedsAccountId (issue #1746)', () => {
     expect(embedsAccountId(['2001:db8::/64', '2001:db8:1::/64'], '123456789012')).toBe(false);
   });
 
-  it('does NOT refuse a real array attribute under a fabricated account (the false-positive direction)', async () => {
+  it('does NOT refuse a real array attribute under an unknown account (the false-positive direction)', async () => {
     // PR review: the array TYPE arm IS reachable end to end — `AWS::EC2::VPC`
     // `Ipv6CidrBlocks` returns `string[]` through the same guard. What must
-    // never happen is the guard REFUSING it: those CIDRs carry no account, so a
-    // fabricated account must still let them through.
+    // never happen is the guard REFUSING it: those CIDRs carry no account, so an
+    // unknown account must still let them through.
     stsSend.mockRejectedValue(new Error('STS unreachable'));
     ec2Send.mockResolvedValue({
       Vpcs: [
@@ -263,5 +241,49 @@ describe('embedsAccountId (issue #1746)', () => {
     expect(embedsAccountId({ Arn: 'arn:aws:iam::123456789012:role/x' }, '123456789012')).toBe(
       false
     );
+  });
+});
+
+/**
+ * Issue #1730: `getAccountInfo` now REFUSES when STS cannot name the account.
+ * `Fn::GetAZs ''` (what an environment-agnostic CDK VPC emits) needs only the
+ * region, so it must take no STS hop and keep resolving through an outage.
+ */
+describe('Fn::GetAZs with no region takes no STS hop (issue #1730)', () => {
+  const originalRegion = process.env['AWS_REGION'];
+  const originalAccountId = process.env['AWS_ACCOUNT_ID'];
+
+  beforeEach(() => {
+    resetAccountInfoCache();
+    stsSend.mockReset();
+    ec2Send.mockReset();
+    delete process.env['AWS_ACCOUNT_ID'];
+    process.env['AWS_REGION'] = 'eu-central-1';
+  });
+
+  afterEach(() => {
+    resetAccountInfoCache();
+    if (originalRegion === undefined) delete process.env['AWS_REGION'];
+    else process.env['AWS_REGION'] = originalRegion;
+    if (originalAccountId === undefined) delete process.env['AWS_ACCOUNT_ID'];
+    else process.env['AWS_ACCOUNT_ID'] = originalAccountId;
+  });
+
+  it('resolves the current region AZs while STS is failing', async () => {
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    ec2Send.mockResolvedValue({
+      AvailabilityZones: [{ ZoneName: 'ap-south-1a' }, { ZoneName: 'ap-south-1b' }],
+    });
+    const resolver = new IntrinsicFunctionResolver('ap-south-1');
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAZs': '' },
+      { template: { Resources: {} }, resources: {} }
+    );
+
+    expect(result).toEqual(['ap-south-1a', 'ap-south-1b']);
+    expect(stsSend).not.toHaveBeenCalled();
+    // The region filter is the resolver's own region, not a default.
+    expect(JSON.stringify(ec2Send.mock.calls[0]?.[0]?.input)).toContain('ap-south-1');
   });
 });

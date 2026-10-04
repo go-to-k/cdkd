@@ -28,7 +28,7 @@ const { sends, answers, makeFakeClientClass } = vi.hoisted(() => {
   const sends: Array<{ service: string; command: string; keyId: string | undefined }> = [];
   /**
    * Per (service, access key id) answer. A function so a test can hold a
-   * response open (in-flight cases) or throw (fabricated-account cases).
+   * response open (in-flight cases) or throw (unknown-account cases).
    */
   const answers = new Map<string, (input: unknown) => Promise<unknown>>();
   const makeFakeClientClass = (service: string): unknown =>
@@ -87,7 +87,6 @@ import {
   IntrinsicFunctionResolver,
   getAccountInfo,
   resetAccountInfoCache,
-  accountInfoClock,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 
@@ -115,8 +114,6 @@ const stsCalls = (): Array<string | undefined> =>
 describe('resolver value caches are keyed by credential identity (#3660)', () => {
   const originalRegion = process.env['AWS_REGION'];
   const originalAccountId = process.env['AWS_ACCOUNT_ID'];
-  const realNow = accountInfoClock.now;
-  let now = 1_000_000;
 
   beforeEach(() => {
     sends.length = 0;
@@ -124,14 +121,11 @@ describe('resolver value caches are keyed by credential identity (#3660)', () =>
     resetAccountInfoCache();
     process.env['AWS_REGION'] = REGION;
     delete process.env['AWS_ACCOUNT_ID'];
-    now = 1_000_000;
-    accountInfoClock.now = () => now;
   });
 
   afterEach(() => {
     resetAwsClients();
     resetAccountInfoCache();
-    accountInfoClock.now = realNow;
     if (originalRegion === undefined) delete process.env['AWS_REGION'];
     else process.env['AWS_REGION'] = originalRegion;
     if (originalAccountId === undefined) delete process.env['AWS_ACCOUNT_ID'];
@@ -186,45 +180,37 @@ describe('resolver value caches are keyed by credential identity (#3660)', () =>
       expect([underA, underB]).toEqual([ACCOUNT[A.accessKeyId], ACCOUNT[B.accessKeyId]]);
     });
 
-    it('keeps the fabricated-answer window per identity, and still expires it (#1730)', async () => {
+    it("refuses for A without touching B's cache, and A re-asks STS every time (#1730)", async () => {
       answer('sts', A, () => {
         throw new Error('sts down for A');
       });
       primeSts(B);
 
-      setAwsClients(clientsFor(A));
-      const fabricatedA = await getAccountInfo();
-      expect(fabricatedA.fabricated).toBe(true);
-
-      // B is not answered from A's fabricated window: it asks STS and caches a real answer.
-      setAwsClients(clientsFor(B));
-      const realB = await getAccountInfo();
-      expect(realB).toMatchObject({ accountId: ACCOUNT[B.accessKeyId] });
-      expect(realB.fabricated).toBeUndefined();
-
-      // A inside its window: still fabricated, no new STS call.
-      setAwsClients(clientsFor(A));
-      expect((await getAccountInfo()).fabricated).toBe(true);
-      expect(stsCalls()).toEqual([A.accessKeyId, B.accessKeyId]);
-
-      // B's real answer did not end A's window, and A's window did not
-      // shadow B's cache: B is still served without a call.
       setAwsClients(clientsFor(B));
       expect((await getAccountInfo()).accountId).toBe(ACCOUNT[B.accessKeyId]);
-      expect(stsCalls()).toEqual([A.accessKeyId, B.accessKeyId]);
 
-      // Past the TTL A re-asks, heals, and caches its real answer.
-      now += 10_001;
+      // A refuses, and B's cached answer is not served to A.
+      setAwsClients(clientsFor(A));
+      await expect(getAccountInfo()).rejects.toThrow(/Cannot determine the AWS account id/);
+      // A failure is never cached: the next A caller asks again.
+      await expect(getAccountInfo()).rejects.toThrow(/Cannot determine the AWS account id/);
+      expect(stsCalls()).toEqual([B.accessKeyId, A.accessKeyId, A.accessKeyId]);
+
+      // A's refusals did not evict B's cache.
+      setAwsClients(clientsFor(B));
+      expect((await getAccountInfo()).accountId).toBe(ACCOUNT[B.accessKeyId]);
+      expect(stsCalls()).toEqual([B.accessKeyId, A.accessKeyId, A.accessKeyId]);
+
+      // Once STS answers A, A heals and caches its real answer.
       primeSts(A);
       setAwsClients(clientsFor(A));
-      const healedA = await getAccountInfo();
-      expect(healedA).toMatchObject({ accountId: ACCOUNT[A.accessKeyId] });
-      expect(healedA.fabricated).toBeUndefined();
-      expect(stsCalls()).toEqual([A.accessKeyId, B.accessKeyId, A.accessKeyId]);
+      expect((await getAccountInfo()).accountId).toBe(ACCOUNT[A.accessKeyId]);
+      expect((await getAccountInfo()).accountId).toBe(ACCOUNT[A.accessKeyId]);
+      expect(stsCalls()).toEqual([B.accessKeyId, A.accessKeyId, A.accessKeyId, A.accessKeyId]);
     });
 
     it('files an operator AWS_ACCOUNT_ID fallback under the identity whose STS call failed', async () => {
-      // The catch arm's non-fabricated branch: STS failed for A, and the
+      // The catch arm's AWS_ACCOUNT_ID branch: STS failed for A, and the
       // operator-supplied id is cached as A's REAL answer. It must be A's
       // alone, or B would never ask STS for its own account.
       process.env['AWS_ACCOUNT_ID'] = '333333333333';
@@ -236,7 +222,6 @@ describe('resolver value caches are keyed by credential identity (#3660)', () =>
       setAwsClients(clientsFor(A));
       const fallbackA = await getAccountInfo();
       expect(fallbackA.accountId).toBe('333333333333');
-      expect(fallbackA.fabricated).toBeUndefined();
 
       setAwsClients(clientsFor(B));
       expect((await getAccountInfo()).accountId).toBe(ACCOUNT[B.accessKeyId]);
@@ -245,24 +230,6 @@ describe('resolver value caches are keyed by credential identity (#3660)', () =>
       setAwsClients(clientsFor(A));
       expect((await getAccountInfo()).accountId).toBe('333333333333');
       expect(stsCalls()).toEqual([A.accessKeyId, B.accessKeyId]);
-    });
-
-    it("opens A's fabricated window even while B holds a real cached answer", async () => {
-      // The catch arm refuses to open a window over a real answer, and that
-      // check is per identity: B's cached account must not stop A's window,
-      // or every A caller re-issues GetCallerIdentity for the whole outage.
-      primeSts(B);
-      answer('sts', A, () => {
-        throw new Error('sts down for A');
-      });
-
-      setAwsClients(clientsFor(B));
-      await getAccountInfo();
-      setAwsClients(clientsFor(A));
-      expect((await getAccountInfo()).fabricated).toBe(true);
-      expect((await getAccountInfo()).fabricated).toBe(true);
-
-      expect(stsCalls()).toEqual([B.accessKeyId, A.accessKeyId]);
     });
 
     it('shares one in-flight lookup within an identity, never across identities', async () => {

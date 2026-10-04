@@ -5,6 +5,10 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { drainDeadlines } from '../drain-budget.js';
 import { markNonRetryable } from '../retryable-errors.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { AccountIdUnavailableError } from '../../utils/error-handler.js';
 import { clearRecoverableMaskedOutputs } from '../secret-redaction.js';
 import {
   ambientCredentialConfig,
@@ -109,22 +113,8 @@ export function accountInfoFor(
     accountId: identity.accountId,
     region,
     partition: derivePartitionAndUrlSuffix(region).partition,
-    ...(identity.fabricated ? { fabricated: true } : {}),
   };
 }
-
-/**
- * How long a FABRICATED answer is reused before STS is retried (issue #1730,
- * PR review). Deliberately not the success path's forever-cache — the whole
- * point is that a transient blip must not poison the run — but not zero either:
- * `getAccountInfo` is on the path of EVERY `Fn::GetAtt` and every
- * `AWS::AccountId` / `AWS::Partition` / `AWS::StackId` pseudo-parameter, so an
- * uncached failure re-issues `GetCallerIdentity` (with the SDK's own 3-attempt
- * retry + backoff) dozens of times per stack and prints one warning each. This
- * window collapses a burst into one call while still letting a later phase of
- * the same deploy heal.
- */
-export const FABRICATED_ACCOUNT_INFO_TTL_MS = 10_000;
 
 /**
  * Retries after the first attempt for a dynamic-reference lookup, THROTTLE-shaped
@@ -565,25 +555,16 @@ export function isClientSafeRegion(region: string): boolean {
   return /^[a-z0-9][a-z0-9-]{0,30}$/.test(region);
 }
 
-/** Test seam for {@link FABRICATED_ACCOUNT_INFO_TTL_MS} expiry. */
-export const accountInfoClock = { now: (): number => Date.now() };
-
-/** The bounded fabricated-answer window, per credential identity (see {@link cachedAccountIdentities}). */
-export const fabricatedAccountIdentities = new Map<
-  string,
-  { identity: CachedAccountIdentity; expiresAt: number }
->();
-
 /**
  * The single in-flight lookup PER CREDENTIAL IDENTITY, so N concurrent callers
  * of one identity share ONE round trip, and a second identity never joins the
  * first's (issue #3660).
  *
- * The TTL above collapses SEQUENTIAL callers; this collapses PARALLEL ones
- * (PR review). `cdkd deploy --concurrency 10` resolves ten resources' intrinsics
- * at once, so without it an STS outage costs ten `GetCallerIdentity` calls —
- * each with the SDK's own 3-attempt retry — and ten identical warnings per
- * window. Cleared in a `finally` so a failure cannot wedge it.
+ * `cdkd deploy --concurrency 10` resolves ten resources' intrinsics at once, so
+ * without it an STS outage costs ten `GetCallerIdentity` calls — each with the
+ * SDK's own 3-attempt retry. A REJECTED lookup rejects every caller sharing it,
+ * and is cleared in a `finally` so the next caller asks STS again: a failure is
+ * never cached (issue #1730).
  */
 export const accountInfoInFlight = new Map<string, Promise<CachedAccountIdentity>>();
 
@@ -602,6 +583,11 @@ export let accountInfoGeneration = 0;
 /**
  * Get AWS account information from STS, for the ACTIVE credential identity.
  *
+ * REJECTS when STS cannot name the account and `AWS_ACCOUNT_ID` is unset (issue
+ * [#1730](https://github.com/go-to-k/cdkd/issues/1730)) — see
+ * {@link resolveAccountIdentity}. There is no placeholder account: every
+ * caller either gets the real id or an error.
+ *
  * `identityKey` is read FIRST and synchronously, and `resolveAccountIdentity`
  * reads `getAwsClients().sts` before its first `await`, so the key and the
  * client that answers come from ONE reading of the active clients (issue
@@ -612,15 +598,8 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
   const cached = cachedAccountIdentities.get(identityKey);
   if (cached) return accountInfoFor(cached, overrideRegion);
 
-  // A fabricated answer inside its TTL is reused (see the constant above) —
-  // WITHOUT promoting it to `cachedAccountIdentities`, so it still expires.
-  const fabricated = fabricatedAccountIdentities.get(identityKey);
-  if (fabricated && accountInfoClock.now() < fabricated.expiresAt) {
-    return accountInfoFor(fabricated.identity, overrideRegion);
-  }
-
   const pending = accountInfoInFlight.get(identityKey);
-  if (pending) return accountInfoFor(await pending, overrideRegion);
+  if (pending) return accountInfoFor(await ownRefusal(pending), overrideRegion);
 
   // NOTE the lookup is region-AGNOSTIC — it resolves the ACCOUNT, and every
   // caller's region is applied by `accountInfoFor` afterwards — so sharing one
@@ -630,7 +609,7 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
   const inFlight = resolveAccountIdentity(identityKey);
   accountInfoInFlight.set(identityKey, inFlight);
   try {
-    return accountInfoFor(await inFlight, overrideRegion);
+    return accountInfoFor(await ownRefusal(inFlight), overrideRegion);
   } finally {
     // Only clear the slot we still OWN. `resetAccountInfoCache` clears it too, so
     // a reset mid-flight lets a later caller install its own promise — an
@@ -640,6 +619,59 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
   }
 }
 
+/**
+ * Await a lookup that other callers may share, giving THIS caller its own
+ * refusal instance. Concurrent callers share one rejected promise, and a
+ * caller's catch may decorate what it caught (`markAuxiliaryFailure` stamps a
+ * `logicalId`), which would then leak onto every other caller's error.
+ */
+async function ownRefusal(lookup: Promise<CachedAccountIdentity>): Promise<CachedAccountIdentity> {
+  try {
+    return await lookup;
+  } catch (error) {
+    if (error instanceof AccountIdUnavailableError) {
+      throw new AccountIdUnavailableError(error.message);
+    }
+    throw error;
+  }
+}
+
+/**
+ * The refusal {@link resolveAccountIdentity} throws when STS cannot name the
+ * account and `AWS_ACCOUNT_ID` is unset or malformed (issue #1730).
+ *
+ * `reason` is the STS failure's `describeAwsFailure(...).summary`, never its
+ * `detail`: this message is THROWN, so it is persisted to the deployment event
+ * log, and an AWS-authored message can spell out the caller's role ARN. The
+ * summary withholds AWS-authored text (a non-AWS one such as `ECONNREFUSED`
+ * passes through whole); the full text goes to `logger.debug` at the throw site.
+ */
+function accountIdUnavailableMessage(reason: string): string {
+  return (
+    // cdkd-profile-display: `withPasteableAwsProfile` prints the profile only
+    // when it holds no shell-active character, else a quoted hole.
+    `Cannot determine the AWS account id: ${reason}. cdkd does not substitute a ` +
+    `placeholder account, because AWS::AccountId, AWS::StackId and every ARN built from ` +
+    `it would look valid while naming a different account. Fix the AWS credentials ` +
+    `(\`${withPasteableAwsProfile('aws sts get-caller-identity')}\` must succeed), or set ` +
+    `AWS_ACCOUNT_ID to this deploy's 12-digit account id, and re-run.`
+  );
+}
+
+/**
+ * Resolve the account id for `identityKey` from STS, caching ONLY a real answer.
+ *
+ * When STS fails (or answers with no `Account`), an operator-supplied
+ * 12-digit `AWS_ACCOUNT_ID` is used and cached as a real answer; without one
+ * (or with a malformed one) this THROWS {@link AccountIdUnavailableError}
+ * (issue [#1730](https://github.com/go-to-k/cdkd/issues/1730)). It used to
+ * answer the hardcoded `123456789012`, which is structurally valid with no
+ * wildcard, so nothing downstream could tell it from a real account, and
+ * `AWS::AccountId` served it silently.
+ *
+ * A failure is never cached, so one transient STS blip cannot poison the rest of
+ * the process: the next caller (or a retry of the same operation) asks again.
+ */
 export async function resolveAccountIdentity(identityKey: string): Promise<CachedAccountIdentity> {
   const generation = accountInfoGeneration;
   const stillCurrent = (): boolean => generation === accountInfoGeneration;
@@ -648,79 +680,48 @@ export async function resolveAccountIdentity(identityKey: string): Promise<Cache
   const awsClients = getAwsClients();
   const stsClient = awsClients.sts;
 
+  let reason: string;
   try {
     const response = await stsClient.send(new GetCallerIdentityCommand({}));
-    const accountId = response.Account || '123456789012';
-
-    // A SUCCESSFUL call that carries no `Account` lands on the same hardcoded
-    // id as the failure arm below, so it has to be flagged the same way (review
-    // finding) — reachable against an emulated / non-AWS STS endpoint. Flagging
-    // only the catch arm would leave the identical fabricated value unmarked on
-    // the path that looks like it worked.
-    const resolved: CachedAccountIdentity = {
-      accountId,
-      ...(response.Account ? {} : { fabricated: true }),
-    };
-    // Only a NON-fabricated answer is cached for the process (issue #1730,
-    // mirroring `write-only-properties.ts`'s "only SUCCESSFUL lookups are
-    // cached"): a fabricated id poisons every later caller in the run, and the
-    // ARN-building consumers refuse on `fabricated`, so caching one turns a
-    // single bad STS answer into a whole deploy that records no ARNs. A
-    // fabricated one gets the short TTL above instead of nothing, so the retry
-    // is bounded rather than per-call.
-    if (!stillCurrent()) {
+    if (response.Account) {
+      const resolved: CachedAccountIdentity = { accountId: response.Account };
       // A reset landed while this lookup was in flight — return the answer to
       // our own caller but do NOT re-populate the cache it cleared.
-    } else if (resolved.fabricated) {
-      fabricatedAccountIdentities.set(identityKey, {
-        identity: resolved,
-        expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
-      });
-    } else {
-      cachedAccountIdentities.set(identityKey, resolved);
-      fabricatedAccountIdentities.delete(identityKey);
+      if (stillCurrent()) cachedAccountIdentities.set(identityKey, resolved);
+      // not-in-class(response.Account): an AWS ACCOUNT ID from STS, never a resolved template value.
+      logger.debug(`Retrieved AWS account info: ${response.Account}`);
+      return resolved;
     }
-    // not-in-class(accountId): an AWS ACCOUNT ID from STS, never a resolved template value.
-    logger.debug(`Retrieved AWS account info: ${accountId}`);
-    return resolved;
+    // A SUCCESSFUL call with no `Account` is reachable against an emulated /
+    // non-AWS STS endpoint, and is the same "no account" answer as a failure.
+    reason = 'STS GetCallerIdentity returned no Account';
   } catch (error) {
-    // not-in-class(error instanceof Error ? error.message : String(error)): an STS GetCallerIdentity rejection -- `new GetCallerIdentityCommand({})` carries no parameters at all, so its message cannot echo a template value, and this helper is module scope with no ResolverContext to mask against.
-    logger.warn(
-      `Failed to get AWS account info from STS: ${error instanceof Error ? error.message : String(error)}, using defaults`
-    );
-    // Fallback to environment variables or defaults
-    const fallback: CachedAccountIdentity = {
-      accountId: process.env['AWS_ACCOUNT_ID'] || '123456789012',
-      // Only when the id is the HARDCODED fallback. An `AWS_ACCOUNT_ID` the
-      // operator supplied is a real answer to "which account", so flagging it
-      // would make callers refuse a value that is fine.
-      ...(process.env['AWS_ACCOUNT_ID'] ? {} : { fabricated: true }),
-    };
-    // A transient STS blip must not poison the rest of the run — see the
-    // caching note on the success path. An operator-supplied `AWS_ACCOUNT_ID`
-    // IS a real answer and is cached as one; a fabricated id gets the bounded
-    // TTL so the retry does not fire on every single caller.
-    if (!stillCurrent()) {
-      // See the success arm: a reset invalidated this lookup's right to cache.
-      return fallback;
+    const described = describeAwsFailure(error);
+    reason = `STS GetCallerIdentity failed (${described.summary})`;
+    // not-in-class(described.detail): an STS GetCallerIdentity rejection -- `new GetCallerIdentityCommand({})` carries no parameters at all, so its message cannot echo a template value, and this helper is module scope with no ResolverContext to mask against.
+    logger.debug(`STS GetCallerIdentity failure detail: ${described.detail}`);
+  }
+
+  const operatorAccountId = process.env['AWS_ACCOUNT_ID'];
+  if (operatorAccountId !== undefined && operatorAccountId !== '') {
+    // A MALFORMED one is refused rather than used: it is interpolated into
+    // `AWS::AccountId` and every ARN cdkd builds, so `my-account` would ship
+    // exactly the "looks plausible, names nothing" value this refusal exists
+    // to prevent. Not echoed: an env var's value is the operator's, and the
+    // shape is all the remedy needs.
+    if (!/^\d{12}$/.test(operatorAccountId)) {
+      throw new AccountIdUnavailableError(
+        accountIdUnavailableMessage(`${reason}, and AWS_ACCOUNT_ID is not a 12-digit account id`)
+      );
     }
-    if (fallback.fabricated) {
-      // Guarded on the SAME identity's real answer so a late failure arm cannot
-      // install a fabricated window over a real answer a concurrent call already
-      // cached (PR review). Benign either way — the cached branch is read first —
-      // but the invariant should be enforced rather than accidental.
-      if (!cachedAccountIdentities.has(identityKey)) {
-        fabricatedAccountIdentities.set(identityKey, {
-          identity: fallback,
-          expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
-        });
-      }
-    } else {
-      cachedAccountIdentities.set(identityKey, fallback);
-      fabricatedAccountIdentities.delete(identityKey);
-    }
+    // An operator-supplied id IS a real answer to "which account", so it is
+    // cached like one.
+    logger.warn(safeMsg`${reason}; using AWS_ACCOUNT_ID for the account id`);
+    const fallback: CachedAccountIdentity = { accountId: operatorAccountId };
+    if (stillCurrent()) cachedAccountIdentities.set(identityKey, fallback);
     return fallback;
   }
+  throw new AccountIdUnavailableError(accountIdUnavailableMessage(reason));
 }
 
 /**
@@ -758,10 +759,6 @@ export function isImpossibleEmptyStoredAttribute(
  */
 export function resetAccountInfoCache(): void {
   cachedAccountIdentities.clear();
-  // The bounded fabricated-answer window is part of the same cache and must
-  // clear with it, or a test (or a later phase) would keep reading a fabricated
-  // answer it just asked to forget.
-  fabricatedAccountIdentities.clear();
   // Invalidate any lookup already in flight so its resolve cannot write the
   // caches this call just cleared.
   accountInfoGeneration += 1;

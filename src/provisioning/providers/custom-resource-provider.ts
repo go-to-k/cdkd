@@ -25,7 +25,7 @@ import {
   type AwsAccountInfo,
 } from '../../deployment/intrinsic-function-resolver.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { AccountIdUnavailableError, ProvisioningError } from '../../utils/error-handler.js';
 import {
   withRetry,
   IAM_PROPAGATION_INITIAL_DELAY_MS,
@@ -914,6 +914,20 @@ export const customResourceRetryDelays = {
 };
 
 /**
+ * Backoff between account lookups on the DELETE path only, when
+ * `getAccountInfo` refuses (issue [#1730](https://github.com/go-to-k/cdkd/issues/1730)).
+ *
+ * A refused Delete is never sent, so the resource is reported `skipped` — and
+ * the same destroy run deletes the backing Lambda, after which the next destroy
+ * drops the record (see {@link CR_SKIP_NOT_A_RETRY_CAVEAT}). A transient STS
+ * blip would therefore become an untracked orphan of whatever the handler
+ * manages. `getAccountInfo` never caches a failure, so asking again can
+ * recover; create / update need no such loop, because their refusal fails
+ * before anything exists and the next deploy simply retries.
+ */
+const DELETE_ACCOUNT_LOOKUP_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 10_000];
+
+/**
  * Lines Lambda emits for EVERY invocation regardless of what the handler logged.
  * A tail consisting only of these carries no diagnostic value, and it is the
  * COMMON case — `LogResult` is never absent on a `LogType: 'Tail'` invoke, so a
@@ -954,21 +968,6 @@ const CR_LOG_TAIL_BOILERPLATE =
 const SNS_SERVICE_TOKEN_ARN_RE = /^arn:aws[a-z0-9-]*:sns:/;
 
 /**
- * Account segment {@link syntheticStackId} falls back to when STS could not
- * answer (`AwsAccountInfo.fabricated`, issue
- * [#1730](https://github.com/go-to-k/cdkd/issues/1730)).
- *
- * The Cloud Control enrichment sites answer a fabricated account by OMITTING
- * the value they would have built. That is not available here — `StackId` is a
- * REQUIRED member of the custom-resource request payload — so the choice is
- * between two wrong strings, and the honest one is the one a handler cannot
- * mistake for real. `getAccountInfo`'s own fallback id (`123456789012`) is
- * shaped exactly like a live account; the all-zero id is not a valid AWS
- * account and reads as the placeholder it is.
- */
-const SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT = '000000000000';
-
-/**
  * The synthetic `StackId` handed to a custom-resource handler in place of the
  * CloudFormation stack ARN cdkd does not have.
  *
@@ -997,10 +996,7 @@ const SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT = '000000000000';
  * {@link CustomResourceProvider.resolveSyntheticStackId}.
  */
 function syntheticStackId(logicalId: string, accountInfo: AwsAccountInfo): string {
-  const account = accountInfo.fabricated
-    ? SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT
-    : accountInfo.accountId;
-  return `arn:${accountInfo.partition}:cloudformation:${accountInfo.region}:${account}:stack/cdkd-${logicalId}/cdkd`;
+  return `arn:${accountInfo.partition}:cloudformation:${accountInfo.region}:${accountInfo.accountId}:stack/cdkd-${logicalId}/cdkd`;
 }
 
 /**
@@ -1548,25 +1544,37 @@ export class CustomResourceProvider implements ResourceProvider {
    * Resolve {@link syntheticStackId} against this deploy's REAL account /
    * region / partition (issue #1866).
    *
-   * `getAccountInfo` never throws — it answers a `fabricated` account when STS
-   * cannot, which {@link SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT} handles — so
-   * this cannot turn a working deploy into a failing one on the credential
-   * path. It is resolved ONCE per `create` / `update` / `delete` rather than
-   * per invocation attempt: the value does not vary between attempts, and the
-   * request builder the retry loop re-runs is synchronous.
+   * REJECTS when STS cannot name the account and `AWS_ACCOUNT_ID` is unset
+   * (issue [#1730](https://github.com/go-to-k/cdkd/issues/1730)): `StackId` is
+   * a REQUIRED member of the request payload and has no honest stand-in, so the
+   * create / update / delete fails BEFORE the handler is invoked rather than
+   * handing it a `StackId` naming no account. A DELETE first asks again on
+   * {@link DELETE_ACCOUNT_LOOKUP_RETRY_DELAYS_MS}, since a Delete that is never
+   * sent can orphan what the handler manages. It is resolved ONCE per `create`
+   * / `update` / `delete` rather than per invocation attempt: the value does not
+   * vary between attempts, and the request builder the retry loop re-runs is
+   * synchronous.
    */
-  private async resolveSyntheticStackId(logicalId: string): Promise<string> {
-    const accountInfo = await getAccountInfo(this.configuredRegion);
-    if (accountInfo.fabricated) {
-      this.logger.warn(
-        `Custom resource ${logicalId}: STS did not report this deploy's account id, so the ` +
-          `synthetic StackId handed to the handler carries the placeholder account ` +
-          `${SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT}. A handler that parses StackId to re-derive ` +
-          `the account it is running in will not get a usable one — fix the credentials (or set ` +
-          `AWS_ACCOUNT_ID) and re-run.`
-      );
+  private async resolveSyntheticStackId(
+    logicalId: string,
+    operation: string,
+    watch: InterruptWatch
+  ): Promise<string> {
+    const retryDelays = operation === 'Delete' ? DELETE_ACCOUNT_LOOKUP_RETRY_DELAYS_MS : [];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return syntheticStackId(logicalId, await getAccountInfo(this.configuredRegion));
+      } catch (error) {
+        const delayMs = retryDelays[attempt];
+        if (!(error instanceof AccountIdUnavailableError) || delayMs === undefined) throw error;
+        this.logger.warn(
+          `Custom resource ${logicalId}: the Delete request cannot be sent until the account is ` +
+            `known: ${error.message} Asking again in ${delayMs / 1000}s ` +
+            `(attempt ${attempt + 1}/${retryDelays.length + 1}).`
+        );
+        await this.sleepInterruptibly(delayMs, watch);
+      }
     }
-    return syntheticStackId(logicalId, accountInfo);
   }
 
   /**
@@ -2140,9 +2148,11 @@ export class CustomResourceProvider implements ResourceProvider {
     const watch = startInterruptWatch(`Custom resource ${logicalId}`);
     try {
       // Resolved ONCE per call, and deliberately AFTER the watch above: the
-      // value does not vary between attempts, and `getAccountInfo` never
-      // throws, so there is nothing to gain from re-resolving it per attempt.
-      const stackId = await this.resolveSyntheticStackId(logicalId);
+      // value does not vary between attempts. It REJECTS when STS cannot name
+      // the account (issue #1730), before any invocation: create / update
+      // fail, and delete — after a bounded re-ask — reports the resource
+      // `skipped` and keeps it.
+      const stackId = await this.resolveSyntheticStackId(logicalId, operation, watch);
       // Two budgets, counted SEPARATELY (issue #2033). Sharing the loop counter
       // would let a pre-delivery throw consume the FAILED-response arm's budget
       // — with the arms on 26 and 2, three thrown retries would silently leave
