@@ -4,7 +4,7 @@ import type { ResourceState } from '../../types/state.js';
 import {
   hasMaskableValues,
   inheritNestedStackParameterAssociations,
-  MIN_NEEDLE_LENGTH,
+  redactSecretsForState,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import type { MaskedInputSources } from '../masked-property-fingerprints.js';
@@ -175,6 +175,16 @@ export function buildResolverContext(
   };
 }
 
+/** The logical id an `Fn::GetAtt` input node reads. */
+function getAttTargetOf(node: unknown): string | undefined {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined;
+  const record = node as Record<string, unknown>;
+  const getAtt = record['Fn::GetAtt'];
+  if (Array.isArray(getAtt) && typeof getAtt[0] === 'string') return getAtt[0];
+  if (typeof getAtt === 'string') return getAtt.split('.')[0];
+  return undefined;
+}
+
 /**
  * The sources a masked property's INPUT fingerprint is computed from
  * (go-to-k/cdkd#4543), for the deploy's diff pass and its provisioning arms
@@ -190,16 +200,6 @@ export function buildResolverContext(
  * which on the provisioning side holds what this deploy already replaced.
  * `undefined` before the parameters resolve.
  */
-/** The logical id an `Fn::GetAtt` input node reads. */
-function getAttTargetOf(node: unknown): string | undefined {
-  if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined;
-  const record = node as Record<string, unknown>;
-  const getAtt = record['Fn::GetAtt'];
-  if (Array.isArray(getAtt) && typeof getAtt[0] === 'string') return getAtt[0];
-  if (typeof getAtt === 'string') return getAtt.split('.')[0];
-  return undefined;
-}
-
 /** @internal */
 export function maskedInputSources(
   this: DeployEngine,
@@ -234,22 +234,20 @@ export function maskedInputSources(
       const secrets: RecordedSecretValues | undefined = context.recordedSecretValues;
       // An attribute of a resource whose resolution THIS deploy recorded a
       // secret for is still raw in memory (the save redacts it), so one
-      // echoing that secret would be hashed in plaintext. Kept as written when
-      // it contains one of that resource's persisted needles (at the
-      // redaction floor): exactly when the saved record holds it as `***` or
-      // a reference, which is what the next deploy's diff reads and keeps,
-      // so both sides agree (security review of go-to-k/cdkd#4543).
+      // echoing that secret would be hashed in plaintext. Kept as written
+      // exactly when the save's OWN redaction (`redactSecretsForState`, called
+      // as the attribute scrub calls it) would change the value: the saved
+      // record then holds `***` or a reference, which the next deploy's diff
+      // reads and keeps too, so both sides agree. The decision mirrors what
+      // state shows anyway, so it is no oracle (security review of
+      // go-to-k/cdkd#4543).
       const target = getAttTargetOf(node);
       const targetSecrets = target === undefined ? undefined : this.perResourceSecrets.get(target);
-      if (targetSecrets !== undefined && targetSecrets.size > 0) {
-        const text = JSON.stringify(value) ?? '';
-        for (const needle of targetSecrets.keys()) {
-          if (
-            needle.length >= MIN_NEEDLE_LENGTH &&
-            (text.includes(needle) || text.includes(JSON.stringify(needle).slice(1, -1)))
-          ) {
-            return { value, keepAsWritten: true };
-          }
+      if (targetSecrets !== undefined && hasMaskableValues(targetSecrets)) {
+        const probe = { value };
+        const redacted = redactSecretsForState(probe, targetSecrets);
+        if (JSON.stringify(redacted) !== JSON.stringify(probe)) {
+          return { value, keepAsWritten: true };
         }
       }
       return { value, ...(secrets && { secrets }) };

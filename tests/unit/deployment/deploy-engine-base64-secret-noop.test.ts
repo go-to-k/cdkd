@@ -680,6 +680,57 @@ describe('DeployEngine - a resolved input behind unchanged template text is sent
     ).toBe('UPDATE');
   });
 
+  it('an attribute echoing a NoEcho value a dependency read this deploy stays out of the hash, and settles', async () => {
+    const TOKEN = 'noecho-handler-token-4543';
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: 'arn:aws:lambda:us-east-1:1:function:h' } },
+        // Y reads the custom resource's NoEcho value; nothing in the template
+        // says so, so only this deploy's resolution knows.
+        Y: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: '/app/y', Type: 'String', Value: { 'Fn::GetAtt': ['Cr', 'Secret'] } },
+        },
+        R: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: '/app/ud',
+            Type: 'String',
+            Value: script({ 'Fn::GetAtt': ['Y', 'Echo'] }),
+          },
+        },
+      },
+    };
+    const h = harness({
+      levels: [['Cr'], ['Y'], ['R']],
+      deps: { Y: ['Cr'], R: ['Y'] },
+      physicalIdFromName: true,
+    });
+    h.provider.import.mockResolvedValue(null);
+    h.provider.create.mockImplementation((id: string, _type: string, props: Record<string, unknown>) =>
+      Promise.resolve(
+        id === 'Cr'
+          ? { physicalId: 'cr', attributes: { Secret: TOKEN }, noEchoAttributeNames: ['Secret'] }
+          : id === 'Y'
+            ? { physicalId: '/app/y', attributes: { Echo: TOKEN } }
+            : { physicalId: String(props['Name']) }
+      )
+    );
+    const created = await h.deployTemplate(template);
+    // R's script reached AWS with the value, and no state version holds it.
+    const sentToR = h.provider.create.mock.calls.find((c) => c[0] === 'R')![2] as Record<
+      string,
+      unknown
+    >;
+    expect(Buffer.from(String(sentToR['Value']), 'base64').toString()).toContain(TOKEN);
+    expect(JSON.stringify(created)).not.toContain(TOKEN);
+    expect(created.resources['R']!.maskedPropertyFingerprints!['Value']).toMatch(/^inputs-sha256:/);
+    // The next deploy reads Y.Echo as the saved `***`, keeps it as written as
+    // the create did, and sends nothing.
+    await h.deployTemplate(template);
+    expect(h.provider.update.mock.calls.filter((c) => c[0] === 'R')).toHaveLength(0);
+  });
+
   it('a layout-1 fingerprint whose TEXT moved is still sent, as #4451 sent it', async () => {
     const h = harness();
     const created = await h.deployTemplate(withParameter('one'));

@@ -1012,7 +1012,8 @@ cross-stack read, and the branch an evaluated condition selects. So an edit to
 the script around the reference, a retarget of the reference, a new parameter
 value, a replaced resource's new name and a flipped condition are all sent.
 Secrets stay in their template form and never reach the hash, decided by
-where an input comes from, never by comparing its value with a secret: a
+where an input comes from, never by comparing its value with a secret it did
+not read: a
 `{{resolve:...}}` reference is hashed as the reference, a `NoEcho` parameter as
 its `Ref`, and these are kept as written:
 - a condition that reads a `NoEcho` parameter, a reference, a cross-stack
@@ -1021,8 +1022,8 @@ its `Ref`, and these are kept as written:
   `NoEcho` parameter, a cross-stack value or a name the template does not
   declare, directly or through another resource;
 - an input whose resolution read a secret (a `NoEcho` custom resource's
-  `Data`, a redacted `***` read), and an attribute holding a secret that the
-  resource it belongs to read in the same deploy;
+  `Data`, a redacted `***` read), and an attribute that the save redacts
+  because the resource it belongs to read that secret in the same deploy;
 - in a nested stack, every parameter value its parent passed other than the
   parameter's `Default`.
 
