@@ -2971,8 +2971,9 @@ const UNSAFE_ID_DESCRIPTION = '(not shown: it is not a plain identifier)';
  *    forged remedy ahead of the real one, on a line that ends in a pasteable
  *    command. It also supplies the quotes the old `shellQuote` wrapper added —
  *    which is why the wrapper GOES rather than composing, per the same note.
- * 3. **TRUNCATION.** `cutMarker`'s `[cut: N more characters withheld, ...]` cannot be mistaken for
- *    content, where the old `...` tail was indistinguishable from a legitimate
+ * 3. **TRUNCATION.** `cutMarker`'s `[cut: N more characters withheld, ...]`
+ *    cannot be mistaken for content, where the old `...` tail was
+ *    indistinguishable from a legitimate
  *    id ending `Prod...`.
  *
  * The cap is passed EXPLICITLY although it equals the default: a logical id is

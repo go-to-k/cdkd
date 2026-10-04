@@ -504,8 +504,9 @@ const CUT_DIGEST_HEX_CHARS = 32;
  * — the concern go-to-k/cdkd#3729 records for a salted hash beside a mask.
  * That is accepted only because every digesting site renders an identifier,
  * or masks before the cut (or replaces the whole rendered token, as
- * `stack-output.ts` does), and no legitimate value reaches an identifier cap. Free-form text — AWS's error messages, which can
- * echo a submitted payload a BOUNDED masker missed — takes the bare marker:
+ * `stack-output.ts` does), and no legitimate value reaches an identifier cap.
+ * Free-form text — AWS's error messages, which can echo a submitted payload a
+ * BOUNDED masker missed — takes the bare marker:
  * two messages rendering alike spoof no identity, so the digest would buy
  * nothing there.
  *
