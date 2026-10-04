@@ -102,13 +102,13 @@ unreached ones stood down with a four-field comment.
 record included (its comments; a body's "conditional on #N": read N's `state`,
 #2179's #2012 had closed) — already-done, not-yet-true and WRONG look identical
 from the title. Grep the asserted SYMBOL, not the body's paths or line numbers;
-a body PROPOSING a mechanism has no symbol, so resolve its EFFECT — what on `origin/main` already produces it
-(#2286). On an empty grep, `gh pr list --state all --search <symbol>` separates
-"premise wrong" from "premise on an unmerged branch". A fix choosing accept /
-refuse / replace / update has a CFn premise: `aws cloudformation describe-type
---type RESOURCE --type-name <T> --query Schema` (`required`,
-`createOnlyProperties`), else a throwaway change set (delete its stack after),
-BEFORE design (#3769).
+a body PROPOSING a mechanism has no symbol, so resolve its EFFECT — what on
+`origin/main` already produces it (#2286). On an empty grep,
+`gh pr list --state all --search <symbol>` separates "premise wrong" from
+"premise on an unmerged branch". A fix choosing accept / refuse / replace /
+update has a CFn premise: `aws cloudformation describe-type --type RESOURCE
+--type-name <T> --query Schema` (`required`, `createOnlyProperties`), else a
+throwaway change set (delete its stack after), BEFORE design (#3769).
 
 ### 3-0. A FRESH issue belongs to the lane that FILED it
 
