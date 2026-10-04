@@ -1040,6 +1040,13 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       if (migrationPending) {
         saveOptions.migrateLegacy = true;
       }
+      await recordImportOnRollbackJournal(
+        stateBackend,
+        stackInfo.stackName,
+        targetRegion,
+        importedRows.map((r) => r.logicalId),
+        logger
+      );
       await stateBackend.saveState(stackInfo.stackName, targetRegion, stackState, saveOptions);
       logger.info(`✓ State written: ${stackInfo.stackName} (${targetRegion})`);
       logger.info(
@@ -1174,6 +1181,44 @@ function stackShown(stackName: string): string {
   return isPasteableIdent(stackName)
     ? `stack '${stackName}'`
     : 'a stack whose name is not a plain identifier';
+}
+
+/**
+ * go-to-k/cdkd#4523: before the import's state write, mark the logical ids it
+ * adopts on the stack's rollback journal, so a later `cdkd rollback` leaves
+ * the journal's ops of those ids alone. Without it, a kept segment's completed
+ * CREATE of an explicitly named resource matches the imported record's
+ * physical id and the replay DELETES the resource the user just adopted.
+ *
+ * Runs BEFORE `saveState`: a failure here refuses the import with nothing
+ * written, rather than write a record the journal is still free to delete. A
+ * mark that lands followed by a failed save leaves those ops unreverted, which
+ * the rollback's plan lists — it never deletes.
+ */
+async function recordImportOnRollbackJournal(
+  stateBackend: S3StateBackend,
+  stackName: string,
+  region: string,
+  logicalIds: readonly string[],
+  logger: ReturnType<typeof getLogger>
+): Promise<void> {
+  let marked: string[];
+  try {
+    marked = await stateBackend.markRollbackJournalImported(stackName, region, logicalIds);
+  } catch (error) {
+    throw new Error(
+      `Could not record this import on the rollback journal of ${stackShown(stackName)}, so ` +
+        `state was NOT written: a later cdkd rollback could otherwise delete what was imported. ` +
+        `Cause: ${displaySafe(error instanceof Error ? error.message : String(error))}`
+    );
+  }
+  if (marked.length > 0) {
+    logger.info(
+      safeMsg`  The rollback journal of ${stackShown(stackName)} records ` +
+        safeMsg`${marked.map((id) => logicalIdShown(id)).join(', ')} as imported: ` +
+        'cdkd rollback leaves those resources as they are.'
+    );
+  }
 }
 
 /**
@@ -3917,6 +3962,13 @@ async function importNestedStackChildrenRecursive(args: {
         rebuiltLogicalIdsFrom(rows, childTemplate)
       );
 
+      await recordImportOnRollbackJournal(
+        stateBackend,
+        childStackName,
+        childRegion,
+        rows.filter((r) => r.outcome === 'imported').map((r) => r.logicalId),
+        logger
+      );
       await stateBackend.saveState(childStackName, childRegion, childStackState);
       logger.info(
         `✓ Nested stack state written: ${childStackName} (${childRegion}) — ` +

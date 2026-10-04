@@ -24,6 +24,21 @@ resources by default.
 4. The run asserts `Kept` is still in AWS, `Gone` and the state file are gone.
 5. The retained parameter is deleted, followed by a gone-probe.
 
+## Arm R: rollback after import (issue [#4523](https://github.com/go-to-k/cdkd/issues/4523))
+
+A second stack, `CdkdImportRollback`, is deployed by cdkd only. Its parameter
+`Named` has an explicit name, which is its physical id.
+
+1. The first deploy, with `INJECT_FAIL=true` and `--no-rollback`, fails on
+   `FailingQueue`. It keeps a rollback journal whose completed CREATE is `Named`.
+2. `cdkd orphan` drops `Named` from state. The parameter is deleted and
+   re-created by hand, and `cdkd import --resource Named=<name>` adopts it. The
+   run asserts that the journal marks `Named` as imported.
+3. `cdkd rollback --force` must exit 0 and leave the hand-made parameter in
+   place, with its value and its state record. Before the fix, the replay
+   deleted it.
+4. `cdkd destroy --force` deletes it, followed by gone-probes.
+
 ## Run
 
 ```bash

@@ -128,6 +128,17 @@ export interface RollbackJournalSegment {
    * ADDITIVE, no `journalVersion` bump: an older binary ignores it.
    */
   supersededLogicalIds?: string[];
+  /**
+   * go-to-k/cdkd#4523: logical ids `cdkd import` adopted AFTER this segment
+   * was recorded. This segment's completed and failed ops of these ids
+   * describe a resource the import replaced in state, so the replay leaves
+   * them alone: a completed CREATE of an explicitly named resource would
+   * otherwise match the imported record's physical id and DELETE it. Written
+   * by the import onto every segment that names one of its ids; a segment a
+   * later deploy pushes does not carry it, and replays normally.
+   * ADDITIVE, no `journalVersion` bump: an older binary ignores it.
+   */
+  importedLogicalIds?: string[];
 }
 
 /** On-disk shape of `rollback-journal.json`. */
@@ -136,6 +147,27 @@ export interface RollbackJournal {
   stackName: string;
   region: string;
   segments: RollbackJournalSegment[];
+}
+
+/**
+ * go-to-k/cdkd#4523: split a segment's completed or failed ops into the ones
+ * the replay runs and the ones it leaves alone because `cdkd import` adopted
+ * their logical id after the segment was recorded
+ * ({@link RollbackJournalSegment.importedLogicalIds}). `classifyRollbackOp`
+ * cannot tell such an op from a live one: an explicitly named resource keeps
+ * its physical id, so a completed CREATE classifies `delete` against the
+ * imported record. Every site that plans or replays a JOURNAL segment's ops
+ * goes through this first.
+ */
+export function splitImportedOps<T extends { logicalId: string }>(
+  ops: readonly T[],
+  segment: Pick<RollbackJournalSegment, 'importedLogicalIds'>
+): { replay: T[]; imported: T[] } {
+  const ids = new Set(segment.importedLogicalIds ?? []);
+  const replay: T[] = [];
+  const imported: T[] = [];
+  for (const op of ops) (ids.has(op.logicalId) ? imported : replay).push(op);
+  return { replay, imported };
 }
 
 /** Thrown when a journal's `journalVersion` is newer than this binary knows. */
@@ -419,6 +451,18 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
       refuseMalformed(
         shownStack,
         `segments[${s}].supersededLogicalIds must be an array of strings when present.`
+      );
+    }
+    // go-to-k/cdkd#4523: same shape and the same reason — a malformed one
+    // would leave nothing alone, and the replay would delete what was imported.
+    if (
+      seg['importedLogicalIds'] !== undefined &&
+      (!Array.isArray(seg['importedLogicalIds']) ||
+        !seg['importedLogicalIds'].every((id: unknown) => typeof id === 'string'))
+    ) {
+      refuseMalformed(
+        shownStack,
+        `segments[${s}].importedLogicalIds must be an array of strings when present.`
       );
     }
     // Issue #3754: `runId` is what a nested revert SELECTS segments by, so a

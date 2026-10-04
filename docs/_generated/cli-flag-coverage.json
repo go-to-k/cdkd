@@ -419,6 +419,7 @@
       "integs": [
         "appsync",
         "dynamodb-globaltable",
+        "import-retain-destroy",
         "lambda-url-authtype-replay",
         "nested-stack-rollback",
         "rollback-command",

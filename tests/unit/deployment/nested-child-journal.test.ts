@@ -222,6 +222,20 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     expect(replay.calls.map((c) => c.ops)).toEqual([['New1'], ['Old1']]);
   });
 
+  it('leaves the ops of an id cdkd import adopted out of THAT segment only (go-to-k/cdkd#4523)', async () => {
+    const h = harness({
+      segments: [
+        seg('run-1', ['Q', 'Keep'], { importedLogicalIds: ['Q'] }),
+        // A newer segment of the same run carries no mark: its Q op replays.
+        seg('run-1', ['Q']),
+      ],
+    });
+
+    await h.run('run-1');
+
+    expect(replay.calls.map((c) => c.ops)).toEqual([['Q'], ['Keep']]);
+  });
+
   it('hands every segment replay ONE record of completed writes (go-to-k/cdkd#4225)', async () => {
     // An older segment's revert must see the inline policy names a newer
     // segment's reverts put back, over the one state bag they share.

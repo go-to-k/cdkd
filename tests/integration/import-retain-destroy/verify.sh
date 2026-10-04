@@ -12,6 +12,17 @@
 #   4. `cdkd destroy --force` with NO deploy in between.
 #   5. Assert: `Kept` (Retain) is still in AWS, `Gone` is deleted, state gone.
 #   6. Delete the retained parameter and assert it is gone.
+#
+# Arm R (go-to-k/cdkd#4523), a second stack deployed by cdkd only:
+#   R1. First deploy of `CdkdImportRollback` with INJECT_FAIL under
+#       --no-rollback: fails, keeps a journal whose completed CREATE is the
+#       explicitly named parameter `Named`.
+#   R2. `cdkd orphan` drops `Named` from state; the parameter is deleted and
+#       re-created BY HAND (the issue's flow), then `cdkd import --resource
+#       Named=<name>` adopts it. The journal must mark `Named` as imported.
+#   R3. `cdkd rollback --force`: exit 0, and the hand-made parameter is still
+#       there with its hand-made value, still recorded in state; journal gone.
+#   R4. `cdkd destroy --force` deletes it; gone-probes.
 set -euo pipefail
 
 # --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
@@ -58,6 +69,13 @@ ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
+# Arm R (go-to-k/cdkd#4523).
+R_STACK="CdkdImportRollback"
+R_NAME="${R_STACK}-named"
+R_QUEUE="${R_STACK}-failing-queue"
+R_STATE_KEY="cdkd/${R_STACK}/${REGION}/state.json"
+R_JOURNAL_KEY="cdkd/${R_STACK}/${REGION}/rollback-journal.json"
+
 # Captured after `cdk deploy`; empty until then so cleanup can read them under
 # `set -u` when it fires earlier.
 KEPT_NAME=""
@@ -93,6 +111,17 @@ cleanup() {
     aws cloudformation delete-stack --stack-name "${STACK}" --region "${REGION}" || true
     aws cloudformation wait stack-delete-complete --stack-name "${STACK}" --region "${REGION}" || true
   fi
+  # Arm R: cdkd's destroy first, then whatever it could not name.
+  if [ -f "${REPO_ROOT}/dist/cli.js" ] && aws s3api head-object \
+      --bucket "${STATE_BUCKET}" --key "${R_STATE_KEY}" --region "${REGION}" >/dev/null 2>&1; then
+    echo "[verify] cleanup: cdkd destroy ${R_STACK}"
+    (cd "${TEST_DIR}" && ${CLI} destroy "${R_STACK}" --state-bucket "${STATE_BUCKET}" --force 2>&1) || true
+  fi
+  aws ssm delete-parameter --name "${R_NAME}" --region "${REGION}" 2>/dev/null || true
+  R_QUEUE_URL="$(aws sqs get-queue-url --queue-name "${R_QUEUE}" --region "${REGION}" \
+    --query QueueUrl --output text 2>/dev/null)"
+  [ -z "${R_QUEUE_URL}" ] || aws sqs delete-queue --queue-url "${R_QUEUE_URL}" --region "${REGION}" 2>/dev/null || true
+  aws s3 rm "s3://${STATE_BUCKET}/cdkd/${R_STACK}/" --recursive --region "${REGION}" >/dev/null 2>&1 || true
   # Both parameters outlive a Retain-injected CFn delete, and `Kept` outlives
   # a correct cdkd destroy by design, so reap them by name.
   for n in "${KEPT_NAME}" "${GONE_NAME}"; do
@@ -123,6 +152,16 @@ if aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION
 fi
 if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${REGION}" >/dev/null 2>&1; then
   echo "[verify] FAIL: cdkd state ${STATE_KEY} already exists — clean up first"
+  exit 1
+fi
+for key in "${R_STATE_KEY}" "${R_JOURNAL_KEY}"; do
+  if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}" --region "${REGION}"; then
+    echo "[verify] FAIL: s3://${STATE_BUCKET}/${key} already exists — clean up first"
+    exit 1
+  fi
+done
+if ! gone_probe aws ssm get-parameter --name "${R_NAME}" --region "${REGION}"; then
+  echo "[verify] FAIL: parameter ${R_NAME} already exists — clean up first"
   exit 1
 fi
 
@@ -169,6 +208,103 @@ echo "[verify] step 6: delete the retained parameter"
 aws ssm delete-parameter --name "${KEPT_NAME}" --region "${REGION}"
 assert_gone "retained parameter ${KEPT_NAME} still exists after its delete" aws ssm get-parameter --name "${KEPT_NAME}" --region "${REGION}"
 echo "[verify] step 6 ok"
+
+# ---------------------------------------------------------------------------
+# Arm R (go-to-k/cdkd#4523): a rollback after an import must not delete the
+# imported resource.
+# ---------------------------------------------------------------------------
+r_param_value() {
+  aws ssm get-parameter --name "${R_NAME}" --region "${REGION}" --query Parameter.Value --output text
+}
+
+echo "[verify] step R1: first deploy of ${R_STACK} with INJECT_FAIL --no-rollback (expect FAILURE)"
+R1_RC=0
+(cd "${TEST_DIR}" && INJECT_FAIL=true ${CLI} deploy "${R_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --no-rollback) > "${WORK}/r1-deploy.log" 2>&1 || R1_RC=$?
+if [ "${R1_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: the INJECT_FAIL deploy of ${R_STACK} unexpectedly succeeded"
+  exit 1
+fi
+if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${R_JOURNAL_KEY}" --region "${REGION}"; then
+  echo "[verify] FAIL: the failed deploy kept no rollback journal for ${R_STACK}"
+  tail -n 40 "${WORK}/r1-deploy.log"
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${R_JOURNAL_KEY}" "${WORK}/r-journal.json" --region "${REGION}" >/dev/null
+R_CREATE_PHYS="$(python3 -c '
+import json, sys
+ops = [op for seg in json.load(open(sys.argv[1]))["segments"] for op in seg["operations"]
+       if op["logicalId"] == "Named" and op["changeType"] == "CREATE"]
+print(ops[0].get("physicalId", "") if ops else "")' "${WORK}/r-journal.json")"
+# The premise: the journal holds a completed CREATE whose physical id IS the
+# name the import will adopt. Without it the rollback below decides nothing.
+if [ "${R_CREATE_PHYS}" != "${R_NAME}" ]; then
+  echo "[verify] FAIL: journal's completed CREATE of Named has physicalId '${R_CREATE_PHYS}', want '${R_NAME}'"
+  exit 1
+fi
+echo "[verify] step R1 ok: deploy failed (rc=${R1_RC}), journal holds CREATE Named=${R_NAME}"
+
+echo "[verify] step R2: orphan Named, re-create it by hand, cdkd import it"
+(cd "${TEST_DIR}" && ${CLI} orphan "${R_STACK}/Named" --state-bucket "${STATE_BUCKET}" --force)
+aws ssm delete-parameter --name "${R_NAME}" --region "${REGION}"
+aws ssm put-parameter --name "${R_NAME}" --type String --value hand-made --region "${REGION}" >/dev/null
+(cd "${TEST_DIR}" && ${CLI} import "${R_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --resource "Named=${R_NAME}" \
+  --yes)
+aws s3 cp "s3://${STATE_BUCKET}/${R_JOURNAL_KEY}" "${WORK}/r-journal.json" --region "${REGION}" >/dev/null
+R_MARKED="$(python3 -c '
+import json, sys
+print(any("Named" in seg.get("importedLogicalIds", []) for seg in json.load(open(sys.argv[1]))["segments"]))' \
+  "${WORK}/r-journal.json")"
+# Recorded, not exited on: step R3 then shows what the rollback does, which
+# is the user-visible consequence.
+R_MARK_FAILED=0
+if [ "${R_MARKED}" != "True" ]; then
+  echo "[verify] FAIL: the import did not mark Named as imported on the rollback journal (go-to-k/cdkd#4523)"
+  R_MARK_FAILED=1
+else
+  echo "[verify] step R2 ok: journal marks Named as imported"
+fi
+
+echo "[verify] step R3: cdkd rollback ${R_STACK} --force (expect exit 0)"
+(cd "${TEST_DIR}" && ${CLI} rollback "${R_STACK}" --state-bucket "${STATE_BUCKET}" --force) \
+  > "${WORK}/r3-rollback.log" 2>&1 || { cat "${WORK}/r3-rollback.log"; echo "[verify] FAIL: rollback exited non-zero"; exit 1; }
+cat "${WORK}/r3-rollback.log"
+if gone_probe aws ssm get-parameter --name "${R_NAME}" --region "${REGION}"; then
+  echo "[verify] FAIL: cdkd rollback DELETED the imported parameter ${R_NAME} (go-to-k/cdkd#4523)"
+  exit 1
+fi
+R_VALUE="$(r_param_value)"
+if [ "${R_VALUE}" != "hand-made" ]; then
+  echo "[verify] FAIL: imported parameter value is '${R_VALUE}', want 'hand-made' (the rollback replaced it)"
+  exit 1
+fi
+if ! grep -q "adopted by cdkd import" "${WORK}/r3-rollback.log"; then
+  echo "[verify] FAIL: the rollback plan does not list Named as adopted by cdkd import"
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${R_STATE_KEY}" "${WORK}/r-state.json" --region "${REGION}" >/dev/null
+R_STATE_PHYS="$(python3 -c '
+import json, sys
+print(json.load(open(sys.argv[1]))["resources"].get("Named", {}).get("physicalId", ""))' "${WORK}/r-state.json")"
+if [ "${R_STATE_PHYS}" != "${R_NAME}" ]; then
+  echo "[verify] FAIL: after the rollback state records Named as '${R_STATE_PHYS}', want '${R_NAME}'"
+  exit 1
+fi
+assert_gone "rollback journal still present after a clean rollback" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${R_JOURNAL_KEY}" --region "${REGION}"
+[ "${R_MARK_FAILED}" = 0 ] || exit 1
+echo "[verify] step R3 ok: the imported parameter survived the rollback, still in state"
+
+echo "[verify] step R4: cdkd destroy ${R_STACK}"
+(cd "${TEST_DIR}" && ${CLI} destroy "${R_STACK}" --state-bucket "${STATE_BUCKET}" --force)
+assert_gone "parameter ${R_NAME} still exists after destroy" aws ssm get-parameter --name "${R_NAME}" --region "${REGION}"
+assert_gone "cdkd state still present at s3://${STATE_BUCKET}/${R_STATE_KEY}" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${R_STATE_KEY}" --region "${REGION}"
+assert_gone "failing queue ${R_QUEUE} exists (CreateQueue should have rejected it)" \
+  aws sqs get-queue-url --queue-name "${R_QUEUE}" --region "${REGION}"
+echo "[verify] step R4 ok"
 
 trap - EXIT INT TERM
 rm -rf "${WORK}"

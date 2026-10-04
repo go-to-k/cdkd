@@ -324,6 +324,12 @@ the next `cdkd deploy` will UPDATE them to match. If you imported only
 some resources (selective mode), the remaining template resources
 appear as `to create` in the diff.
 
+If the stack still has a rollback journal from a failed deploy, the import
+marks each logical id it adopts on that journal before it writes state. A
+later `cdkd rollback` then leaves those resources as they are
+([`cdkd rollback`](cli-rollback.md#interaction-with-cdkd-import)). If the
+import cannot read or write the journal, it refuses and writes no state.
+
 ### The drift baseline an import records
 
 For each adopted resource cdkd also reads its current AWS state and records it

@@ -41,7 +41,7 @@ import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
 import type { Logger } from '../types/config.js';
 import type { ResourceState, StackOrphanRecord, StackState } from '../types/state.js';
-import type { RollbackJournalSegment } from '../types/rollback-journal.js';
+import { splitImportedOps, type RollbackJournalSegment } from '../types/rollback-journal.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   importableOutputs,
@@ -566,7 +566,9 @@ export async function revertNestedChildFromJournal(args: {
             withCreateTokenLedger(ledgerForStack(ctx.stateBackend, childStackName, region), () =>
               withNestedRevertRun(runId, async (inner) => {
                 const replayed = await replayRollback(
-                  segment.operations,
+                  // go-to-k/cdkd#4523: an id `cdkd import` adopted after the
+                  // segment was recorded is left alone.
+                  splitImportedOps(segment.operations, segment).replay,
                   stateResources,
                   childStackName,
                   execCtx,

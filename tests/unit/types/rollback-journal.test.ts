@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   ROLLBACK_JOURNAL_VERSION,
   parseRollbackJournal,
+  splitImportedOps,
   UnknownRollbackJournalVersionError,
   type RollbackJournal,
 } from '../../../src/types/rollback-journal.js';
@@ -499,6 +500,31 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
     expect(() => parseRollbackJournal(body({ supersededLogicalIds: value }), 'S')).toThrow(
       /segments\[0\]\.supersededLogicalIds must be an array of strings when present/
     );
+  });
+
+  // go-to-k/cdkd#4523: the ids `cdkd import` adopted after the segment.
+  it('round-trips importedLogicalIds', () => {
+    expect(
+      parseRollbackJournal(body({ importedLogicalIds: ['Bucket'] }), 'S').segments[0]
+    ).toMatchObject({ importedLogicalIds: ['Bucket'] });
+  });
+
+  it.each([
+    ['a string', 'Bucket'],
+    ['an array holding a non-string', ['Bucket', 7]],
+  ])('refuses importedLogicalIds as %s, which would leave nothing alone', (_what, value) => {
+    expect(() => parseRollbackJournal(body({ importedLogicalIds: value }), 'S')).toThrow(
+      /segments\[0\]\.importedLogicalIds must be an array of strings when present/
+    );
+  });
+
+  it('splitImportedOps keeps the replayed ops in order and sets the imported ones aside', () => {
+    const ops = [{ logicalId: 'A' }, { logicalId: 'B' }, { logicalId: 'C' }, { logicalId: 'B' }];
+    expect(splitImportedOps(ops, { importedLogicalIds: ['B'] })).toEqual({
+      replay: [{ logicalId: 'A' }, { logicalId: 'C' }],
+      imported: [{ logicalId: 'B' }, { logicalId: 'B' }],
+    });
+    expect(splitImportedOps(ops, {})).toEqual({ replay: ops, imported: [] });
   });
 
   it('refuses a non-string runId, which a nested revert selects segments by', () => {

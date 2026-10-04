@@ -155,11 +155,14 @@ const mockGetState = vi.fn<
   ) => Promise<{ state: unknown; etag: string; migrationPending?: boolean } | null>
 >();
 const mockSaveState = vi.fn<(...args: unknown[]) => Promise<string>>();
+// go-to-k/cdkd#4523: the import marks its ids on the rollback journal first.
+const mockMarkRollbackJournalImported = vi.fn<(...args: unknown[]) => Promise<string[]>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     verifyBucketExists: mockVerifyBucketExists,
     getState: mockGetState,
     saveState: mockSaveState,
+    markRollbackJournalImported: mockMarkRollbackJournalImported,
   })),
 }));
 
@@ -313,6 +316,8 @@ describe('cdkd import', () => {
     mockGetState.mockResolvedValue(null);
     mockSaveState.mockReset();
     mockSaveState.mockResolvedValue('"new-etag"');
+    mockMarkRollbackJournalImported.mockReset();
+    mockMarkRollbackJournalImported.mockResolvedValue([]);
     mockAcquireLock.mockReset();
     mockAcquireLock.mockResolvedValue(true);
     mockReleaseLock.mockReset();
@@ -2595,6 +2600,63 @@ describe('cdkd import', () => {
       // existing state was found (no etag to forward, no migration pending).
       {}
     );
+  });
+
+  describe('the rollback journal records the import (go-to-k/cdkd#4523)', () => {
+    const twoBuckets = () =>
+      template({
+        MyBucket: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/MyBucket' } },
+        Missing: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/Missing' } },
+      });
+    const provide = () => {
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async (input: { logicalId: string }) =>
+          input.logicalId === 'MyBucket' ? { physicalId: 'b', attributes: {} } : null
+        ),
+      });
+    };
+
+    it('marks only the IMPORTED ids, before the state write', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('OnlyOne', twoBuckets())] });
+      provide();
+      mockMarkRollbackJournalImported.mockResolvedValue(['MyBucket']);
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      expect(mockMarkRollbackJournalImported).toHaveBeenCalledTimes(1);
+      expect(mockMarkRollbackJournalImported).toHaveBeenCalledWith('OnlyOne', 'us-east-1', ['MyBucket']);
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      expect(mockMarkRollbackJournalImported.mock.invocationCallOrder[0]).toBeLessThan(
+        mockSaveState.mock.invocationCallOrder[0]!
+      );
+    });
+
+    it('refuses, writing no state, when the journal cannot be marked', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('OnlyOne', twoBuckets())] });
+      provide();
+      mockMarkRollbackJournalImported.mockRejectedValue(new Error('AccessDenied on the journal'));
+
+      await expect(runImport(['import', '--app', 'x', '--yes'])).rejects.toThrow('process.exit-mock');
+
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      const errors = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+      expect(errors).toContain('state was NOT written');
+      expect(errors).toContain('AccessDenied on the journal');
+      // The lock is still released.
+      expect(mockReleaseLock).toHaveBeenCalled();
+    });
+
+    it('a dry run marks nothing', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('OnlyOne', twoBuckets())] });
+      provide();
+
+      await runImport(['import', '--app', 'x', '--yes', '--dry-run']);
+
+      expect(mockMarkRollbackJournalImported).not.toHaveBeenCalled();
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
   });
 
   describe('--record-resource-mapping', () => {
@@ -5235,6 +5297,12 @@ describe('cdkd import', () => {
           expect(saveCalls).toContain('P');
           expect(saveCalls).toContain('P~Child');
           expect(saveCalls).toContain('P~Child~Grandchild');
+          // go-to-k/cdkd#4523: each child's own journal is marked with what
+          // that child imported, before its state write.
+          const markFor = (stack: string) =>
+            mockMarkRollbackJournalImported.mock.calls.find((c) => c[0] === stack);
+          expect(markFor('P~Child')?.[2]).toContain('ChildBucket');
+          expect(markFor('P~Child~Grandchild')?.[2]).toEqual(['GrandchildBucket']);
 
           // Region is propagated parent → child → grandchild.
           const grandSave = mockSaveState.mock.calls.find(

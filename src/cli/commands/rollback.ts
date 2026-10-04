@@ -62,6 +62,7 @@ import {
   type StackOrphanRecord,
   type LockInfo,
 } from '../../types/state.js';
+import { splitImportedOps } from '../../types/rollback-journal.js';
 import type { S3StateBackend, StackStateRef } from '../../state/s3-state-backend.js';
 import { isLockInfoExpired } from '../../state/lock-manager.js';
 import {
@@ -494,6 +495,18 @@ function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string
 }
 
 /**
+ * go-to-k/cdkd#4523: the plan line for a journal op the replay leaves alone
+ * because `cdkd import` adopted its logical id after the segment was recorded
+ * (`splitImportedOps`). Completed and failed ops share it.
+ */
+function importedOpLabel(op: { logicalId: string; resourceType: string }): string {
+  return (
+    `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
+    `— adopted by cdkd import after this deploy, left as it is`
+  );
+}
+
+/**
  * Human label for a planned FAILED-op revert (issue #1198, --revert-failed).
  * Takes `skipFinalSnapshot` for the same reason {@link actionLabel} does: the
  * classifier is pure, so without the flag the Snapshot label would promise a
@@ -901,11 +914,18 @@ export async function rollbackCommand(
         logger.info(
           `\n  Segment ${s + 1}/${journal.segments.length} (${safe(segment.reason)}${segment.runId ? `, run ${safe(segment.runId)}` : ''}):`
         );
+        // go-to-k/cdkd#4523: ops of a logical id `cdkd import` adopted after
+        // this segment was recorded are left alone, failed ones included.
+        const failedOps = splitImportedOps(segment.failedOperations ?? [], segment);
+        const completedOps = splitImportedOps(segment.operations, segment);
+        for (const op of [...failedOps.imported, ...completedOps.imported]) {
+          logger.info(importedOpLabel(op));
+        }
         // #1198: the segment's FAILED in-flight op(s) come first (they are
         // the newest work of the failed deploy).
-        if (segment.failedOperations && segment.failedOperations.length > 0) {
+        if (failedOps.replay.length > 0) {
           if (options.revertFailed) {
-            const failedPlan = planFailedOps(segment.failedOperations, planStateView);
+            const failedPlan = planFailedOps(failedOps.replay, planStateView);
             for (const item of failedPlan) {
               logger.info(failedActionLabel(item, options.skipFinalSnapshot === true));
               // A failed nested row's revert replays its child's journal too.
@@ -923,7 +943,7 @@ export async function rollbackCommand(
             }
             applyFailedPlanToPreview(failedPlan, planStateView, options.skipFinalSnapshot === true);
           } else {
-            for (const fop of segment.failedOperations) {
+            for (const fop of failedOps.replay) {
               // Each journal value is named only when plain, described
               // otherwise: the line names `--revert-failed` (go-to-k/cdkd#4214).
               logger.info(
@@ -934,7 +954,7 @@ export async function rollbackCommand(
             }
           }
         }
-        const plan = planRollback(segment.operations, planStateView, orphanLogicalIds);
+        const plan = planRollback(completedOps.replay, planStateView, orphanLogicalIds);
         for (const item of plan) {
           logger.info(actionLabel(item, options.skipFinalSnapshot === true));
           // Issue #3754: a nested row's revert replays its CHILD's journal, so
@@ -1109,6 +1129,9 @@ export async function rollbackCommand(
         while (journal.segments.length > 0) {
           if (interrupted) break;
           const segment = journal.segments[journal.segments.length - 1]!;
+          // go-to-k/cdkd#4523: the plan above listed these as left alone; the
+          // replay below never sees them.
+          const completedOps = splitImportedOps(segment.operations, segment).replay;
           // Issue #3754: what the nested-stack rows' child replays reported
           // (completed rows, skipped ops), read once the segment has replayed.
           let nestedRun: NestedRevertRun | undefined;
@@ -1144,13 +1167,12 @@ export async function rollbackCommand(
                   // summed failure count keeps the segment from popping.
                   let failedOpFailures = 0;
                   let failedOpWarnings = 0;
-                  if (
-                    options.revertFailed &&
-                    segment.failedOperations &&
-                    segment.failedOperations.length > 0
-                  ) {
+                  // go-to-k/cdkd#4523: an imported id's failed op is left alone
+                  // too, and stays in the journal (below).
+                  const failedOps = splitImportedOps(segment.failedOperations ?? [], segment);
+                  if (options.revertFailed && failedOps.replay.length > 0) {
                     const failedResult = await replayFailedOperations(
-                      segment.failedOperations,
+                      failedOps.replay,
                       stateResources,
                       stackName,
                       ctx,
@@ -1165,7 +1187,7 @@ export async function rollbackCommand(
                         // ROLLBACK_STARTED — accepted cosmetic ordering (the
                         // events stream is informational; the reader derives
                         // nothing from envelope position).
-                        emitEnvelope: segment.operations.length === 0,
+                        emitEnvelope: completedOps.length === 0,
                         // Same reason as the sibling replay below: `afterOp`
                         // saves per op, so a record appended only after this
                         // returns is absent from every intermediate save
@@ -1186,7 +1208,7 @@ export async function rollbackCommand(
                     // failure paths too so partial progress is never lost.
                     // Best-effort: on a strip failure the re-run merely
                     // re-attempts the revert.
-                    const remaining = failedResult.remainingFailedOps;
+                    const remaining = [...failedOps.imported, ...failedResult.remainingFailedOps];
                     // NOT after a declined divergent rewrite (go-to-k/cdkd#3370):
                     // the handled ops' state rows were never saved, so stripping
                     // them would leave the record describing work the journal no
@@ -1195,7 +1217,7 @@ export async function rollbackCommand(
                     // failed-CREATE delete reads not-found as done).
                     if (
                       !declinedDivergentRewrite &&
-                      remaining.length !== segment.failedOperations.length
+                      remaining.length !== (segment.failedOperations ?? []).length
                     ) {
                       try {
                         await setup.stateBackend.setRollbackJournalFailedOperations(
@@ -1220,7 +1242,7 @@ export async function rollbackCommand(
                     }
                   }
                   const replayResult = await replayRollback(
-                    segment.operations,
+                    completedOps,
                     stateResources,
                     stackName,
                     ctx,
@@ -1506,7 +1528,10 @@ async function previewNestedChildRevert(
     const view: Record<string, ResourceState> = { ...childState.state.resources };
     const lines = [`      ${shown} replays its own journal:`];
     for (let s = segments.length - 1; s >= 0; s--) {
-      const childPlan = planRollback(segments[s]!.operations, view, new Set<string>());
+      // go-to-k/cdkd#4523: the child replay leaves an imported id's ops alone.
+      const childOps = splitImportedOps(segments[s]!.operations, segments[s]!);
+      for (const op of childOps.imported) lines.push(`    ${importedOpLabel(op)}`);
+      const childPlan = planRollback(childOps.replay, view, new Set<string>());
       for (const item of childPlan) lines.push(`    ${actionLabel(item, skipFinalSnapshot)}`);
       applyPlanToPreview(childPlan, view, skipFinalSnapshot);
     }

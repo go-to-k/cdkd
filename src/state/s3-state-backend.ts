@@ -1336,6 +1336,42 @@ export class S3StateBackend {
   }
 
   /**
+   * go-to-k/cdkd#4523: record that `cdkd import` adopted `logicalIds`. Each
+   * segment whose completed or failed ops name one of them gets it in
+   * `importedLogicalIds`, which the replay leaves alone; the newest segment
+   * also supersedes them, since an import records the resource just as a
+   * completed op does. Returns the ids written; no journal, or no segment
+   * naming one, writes nothing. Throws on a read or write failure — the caller
+   * refuses the import rather than leave the journal free to delete it.
+   */
+  async markRollbackJournalImported(
+    stackName: string,
+    region: string,
+    logicalIds: readonly string[]
+  ): Promise<string[]> {
+    if (logicalIds.length === 0) return [];
+    const journal = await this.loadRollbackJournal(stackName, region);
+    if (!journal) return [];
+    const wanted = new Set(logicalIds);
+    const named = new Set<string>();
+    for (const segment of journal.segments) {
+      const ids = [...segment.operations, ...(segment.failedOperations ?? [])]
+        .map((op) => op.logicalId)
+        .filter((id) => wanted.has(id));
+      if (ids.length === 0) continue;
+      segment.importedLogicalIds = [...new Set([...(segment.importedLogicalIds ?? []), ...ids])];
+      for (const id of ids) named.add(id);
+    }
+    if (named.size === 0) return [];
+    addSupersededIds(journal.segments[journal.segments.length - 1]!, [...named]);
+    await this.putRawObject(
+      this.getRollbackJournalKey(stackName, region),
+      JSON.stringify(journal, null, 2)
+    );
+    return [...named];
+  }
+
+  /**
    * Remove every segment for which `drop` answers `true` (issue #3754: a
    * nested child's segments for one parent run, once that run's rollback no
    * longer needs them). Deletes the journal — with its noncurrent-version

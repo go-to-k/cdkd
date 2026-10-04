@@ -316,6 +316,19 @@ in-flight, so `Retain` does not delete what the policy says to keep and
 CloudFormation while a rollback journal exists. The half-deployed state is
 almost certainly not what you want exported; roll back or re-deploy first.
 
+## Interaction with `cdkd import`
+
+`cdkd import` marks each logical id it adopts on every journal segment that
+holds an operation for that id, before it writes state. The rollback leaves
+those operations alone, failed ones included under `--revert-failed`, and the
+plan lists each one as `adopted by cdkd import after this deploy, left as it
+is`. A deploy that creates or changes a resource with an explicit name records
+a physical id equal to that name. Without the mark, a resource re-created by
+hand under the same name and imported would match the journal's CREATE, and
+the rollback would delete it. Segments that later deploys add carry no mark,
+and their operations replay as usual. If the import cannot read or write the
+journal, it refuses and writes no state.
+
 ## Exit codes
 
 | Code | Meaning |
