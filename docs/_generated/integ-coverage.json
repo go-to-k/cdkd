@@ -6811,6 +6811,7 @@
           "l2"
         ],
         "nested-stack-3level": [
+          "l1",
           "l2"
         ],
         "nested-stack-deep": [
