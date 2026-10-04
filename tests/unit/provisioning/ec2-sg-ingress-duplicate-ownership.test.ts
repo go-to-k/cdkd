@@ -387,16 +387,20 @@ describe('EC2Provider SecurityGroupIngress duplicate ownership (#4355)', () => {
         properties: { ...PROPS },
         attributes: { Id: REVOKED_ID },
       };
-      const replayOnly = () =>
+      const replayOnly = (props: Record<string, unknown> = PROPS) =>
         provider.update(
           'Rule',
           `${GROUP_ID}|tcp|5432|5432`,
           TYPE,
-          PROPS,
-          { ...PROPS },
+          props,
+          { ...props },
           { replayingState: true }
         );
-      const replayWith = (authorized: unknown[], described: () => Promise<unknown>) => {
+      const replayWith = (
+        authorized: unknown[],
+        described: () => Promise<unknown>,
+        props: Record<string, unknown> = PROPS
+      ) => {
         mockSend.mockImplementation((command: unknown) => {
           if (command instanceof AuthorizeSecurityGroupIngressCommand) {
             return Promise.resolve({ SecurityGroupRules: authorized });
@@ -404,7 +408,7 @@ describe('EC2Provider SecurityGroupIngress duplicate ownership (#4355)', () => {
           if (command instanceof DescribeSecurityGroupRulesCommand) return described();
           return Promise.reject(new Error('unexpected call'));
         });
-        return replayOnly();
+        return replayOnly(props);
       };
       const liveRule = (id: string) => ({
         SecurityGroupRuleId: id,
@@ -415,14 +419,10 @@ describe('EC2Provider SecurityGroupIngress duplicate ownership (#4355)', () => {
         CidrIpv4: '10.0.0.0/16',
       });
 
-      it.each([
-        ['zero', []],
-        [
-          'two',
-          [{ SecurityGroupRuleId: 'sgr-0000000000000000a' }, { SecurityGroupRuleId: 'sgr-0000000000000000b' }],
-        ],
-      ])('%s rules in the response: the new id is looked up by identity', async (_n, authorized) => {
-        const result = await replayWith(authorized, () =>
+      it('zero rules in the response: the new id is looked up by identity', async () => {
+        // A mock-only shape: a single-source Authorize on real AWS names its
+        // one rule. It drives the lookup this arm falls back to.
+        const result = await replayWith([], () =>
           Promise.resolve({ SecurityGroupRules: [liveRule(RULE_ID)] })
         );
 
@@ -432,6 +432,36 @@ describe('EC2Provider SecurityGroupIngress duplicate ownership (#4355)', () => {
         ]);
         expect(result.wasReplaced).toBe(true);
         expect(recordAfterRollbackUpdate(RESTORED, result).attributes).toEqual({ Id: RULE_ID });
+      });
+
+      it('two rules in the response (a CidrIp + CidrIpv6 bag): no single rule matches, the revoked id is dropped', async () => {
+        // The real two-id shape: one bag declaring both sources authorizes two
+        // rules, and neither single-source rule matches the bag's identity.
+        const dualStack = { ...PROPS, CidrIpv6: '2001:db8::/32' };
+        const result = await replayWith(
+          [{ SecurityGroupRuleId: 'sgr-0000000000000000a' }, { SecurityGroupRuleId: 'sgr-0000000000000000b' }],
+          () =>
+            Promise.resolve({
+              SecurityGroupRules: [
+                liveRule('sgr-0000000000000000a'),
+                {
+                  ...liveRule('sgr-0000000000000000b'),
+                  CidrIpv4: undefined,
+                  CidrIpv6: '2001:db8::/32',
+                },
+              ],
+            }),
+          dualStack
+        );
+
+        expect(sent()).toEqual([
+          'AuthorizeSecurityGroupIngressCommand',
+          'DescribeSecurityGroupRulesCommand',
+        ]);
+        expect(result.wasReplaced).toBe(true);
+        expect(
+          recordAfterRollbackUpdate({ ...RESTORED, properties: dualStack }, result).attributes
+        ).toEqual({});
       });
 
       it.each([

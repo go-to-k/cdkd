@@ -4169,7 +4169,12 @@ export class EC2Provider implements ResourceProvider {
             : await this.lookupIngressRuleId(
                 logicalId,
                 properties['GroupId'] as string,
-                restored.effectiveProperties ?? properties
+                // The Duplicate arm's identity bag. The create already warned
+                // about a malformed protocol, so it is not warned twice.
+                {
+                  ...properties,
+                  IpProtocol: narrowIngressIpProtocol(properties, () => undefined).ipProtocol,
+                }
               );
       return {
         physicalId: restored.physicalId,
