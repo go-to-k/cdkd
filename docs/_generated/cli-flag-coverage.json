@@ -78,6 +78,7 @@
       "integs": [
         "appsync",
         "cross-stack-secret-import",
+        "dynamic-ref-cross-region",
         "export",
         "gc-custom-asset-names",
         "lambda",

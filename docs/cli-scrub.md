@@ -489,6 +489,21 @@ cannot rewrite. Five shapes qualify, and all five are also reported in words:
   rewrite it (there is no needle to match) and does not refuse the stack, so it
   is reported and counted instead. Restore the parameter or secret and re-run.
 
+  The same finding covers a reference an `Fn::Sub` placeholder left
+  unresolvable: `{{resolve:secretsmanager:${Typo}-db:...}}`, where `Typo` names
+  nothing the template declares (no resource, no parameter), keeps its
+  `${Typo}` (the `keeping placeholder` warning), so the reference is never
+  looked up — also when the `{{resolve:` around it comes from an enclosing
+  `Fn::Join` or `Fn::Sub`. Declare the variable, fix its name, or escape it as
+  `${!Typo}`, and re-run.
+
+  A placeholder naming a DECLARED parameter with no `Default` (scrub takes no
+  `--parameters`, so it cannot bind one), or a declared resource, is different:
+  it gets only the `keeping placeholder` warning. No `ABANDONED` line is
+  printed, `--fail` does not count it, and the stack can still print
+  `No plaintext secrets found`. A parameter that
+  has a non-empty `Default` is bound even when another parameter of the stack has none.
+
 - a **cross-stack read name holding a secret's value from before a
   rotation**: `N cross-stack read name(s) in <stack> hold a plaintext scrub
   could NOT repair`. See [What this does not repair](#what-this-does-not-repair).
@@ -506,7 +521,8 @@ properties bag, and some of those have nothing to do with fetching a reference:
 | --- | --- | --- |
 | The reference itself — deleted parameter, denied secret, missing `JSON_KEY` | exits `1` | Restoring the reference clears it. |
 | An unresolvable `Ref` / `Fn::GetAtt`, or a parameter with no `Default` | warns only | `scrub` resolves with template defaults and takes no `--parameters`, so it cannot bind these. A gate failure could not be cleared. |
-| A reference whose own argument still holds an unsubstituted `${...}` | warns only | The token was never fetchable — same reason. |
+| An `Fn::Sub` placeholder naming no resource or parameter of the template, kept inside the reference | exits `1` | Fixing the template clears it; no `--parameters` is involved. |
+| A reference whose own argument still holds a `${...}` no `Fn::Sub` substitutes | warns only | The token was never fetchable — same reason. |
 
 A failure is scoped to the PROPERTY that caused it — an unresolvable `Ref` in
 one property no longer stops the scan of a `{{resolve:...}}` in another
@@ -562,6 +578,18 @@ pre-pass walks `Fn::If` the way the resolver does, selected branch only.
 Neither does an `Fn::ImportValue` inside an output that this run's conditions
 SUPPRESS — such an output wrote no state key, so there is nothing behind it to
 protect.
+
+### A reference built from a parameter
+
+A parameter is resolved from today's template: its `Default`, or for an
+SSM-typed parameter the value Parameter Store holds now. If the deploy used a
+different value (`--parameters`, an older `Default`, or an SSM value that has
+since changed), scrub looks up a DIFFERENT reference than the deploy resolved
+and cannot tell: the plaintext the deploy wrote can stay in state while the
+stack prints clean. This holds for any reference built from a parameter, in the
+stack's own region too. There is no flag for it: for a stack deployed with
+non-default parameters, inspect the record with `cdkd state show` rather than
+trusting a clean result.
 
 ### Which `Fn::If` branch scrub selects
 
@@ -657,18 +685,23 @@ and hands it to the resolver instead of refusing. The resolver decides the
 region AFTER assembly and either routes the read to the region the ARN names
 or refuses it as ambiguous.
 
-**Known residual: if the downstream lookup then FAILS, the stack can still be
-summarised as CLEAN.** Two shapes reach it, and they are not equally loud:
+If such a reference then goes UNRESOLVED — the region refuses the read, the
+secret was deleted, or an `Fn::Sub` placeholder it needs names nothing the
+template declares — the record is reported as an
+abandoned scan (see Exit codes above): the stack is not summarised clean and `--fail` exits `1`. It is a finding rather than the
+`SCRUB_CROSS_REGION_SECRET_UNRESOLVED` refusal a complete reference gets,
+because the failure belongs to one assembled value, and refusing would strand
+every other secret in the stack.
 
-- a region that refuses the read — a denied `GetSecretValue`, a deleted secret
-  — is reported only at `--verbose`;
-- an `Fn::Sub` placeholder `scrub` cannot evaluate does print a
-  `keeping placeholder` warning at default verbosity.
+**Known residual: a placeholder scrub cannot bind still leaves the stack
+summarised CLEAN.** When the `Fn::Sub` placeholder inside such a reference
+names a declared parameter with no `Default`, or a declared resource, the
+reference is never looked up and the only sign is the `keeping placeholder`
+warning. Run
+`cdkd scrub --verbose` when a stack you expect findings from reports clean.
 
-Neither stops the summary line. The complete-token spelling of the first is
-loud (`SCRUB_CROSS_REGION_SECRET_UNRESOLVED`, exit `2`), so the two disagree.
-Run `cdkd scrub --verbose` when a stack you expect findings from reports
-clean.
+A reference built from a parameter has the limit described in
+[A reference built from a parameter](#a-reference-built-from-a-parameter).
 
 ### A read cdkd declines by design is a finding, not a refusal
 

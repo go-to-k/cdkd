@@ -62,5 +62,7 @@ if (foreignSecureParameterArn) {
       'Scrubs an Fn::Sub-ASSEMBLED foreign-ARN SecureString reference (cdkd issue #2157)',
     env: { region: regionA },
     foreignSecureParameterArn,
+    // Issue #2166's scrub phase only (verify.sh phase 3g).
+    keptPlaceholder: process.env['CDKD_IT_DYNREF_KEPT_PLACEHOLDER'] === '1',
   });
 }

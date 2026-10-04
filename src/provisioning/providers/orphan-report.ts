@@ -5,8 +5,10 @@
  * `CreateAuthorizer` / `CreateDeployment`, v2 `CreateApi` /
  * `CreateIntegration` / `CreateAuthorizer`), and the EMR providers reuse for
  * `RunJobFlow` / `AddInstanceFleet` / `AddInstanceGroups`, the Lambda
- * providers for `PublishLayerVersion` / `CreateEventSourceMapping` and the
- * AppSync provider for `CreateApiKey` (naming their service through
+ * providers for `PublishLayerVersion` / `CreateEventSourceMapping`, the
+ * AppSync provider for `CreateApiKey`, the DLM provider for
+ * `CreateLifecyclePolicy` and the ECS provider for `RegisterTaskDefinition`
+ * (naming their service through
  * {@link OrphanLookup.service}). The latch, the 5xx-refusing
  * client and the window come from `ambiguous-create.ts`; this module is only
  * the lookup-and-report step a provider runs at the top of the next attempt.

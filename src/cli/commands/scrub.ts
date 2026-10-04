@@ -2971,45 +2971,25 @@ async function resolveForeignRegionTokens(
   // the region its ARN names, or refused per reference by the resolver's own
   // `DYNAMIC_REFERENCE_REGION_AMBIGUOUS`.
   //
-  // WHAT IS PRESERVED, AND WHAT IS NOT -- stated because the first three cuts of
-  // this change each asserted the wrong half of it.
+  // WHAT IS PRESERVED -- stated because the first three cuts of this change
+  // each asserted the wrong half of it.
   //
-  // PRESERVED, and over strictly MORE information: a reference whose region
+  // The region safety, over strictly MORE information: a reference whose region
   // cannot be established is never resolved in the stack's own region. The
   // resolver classifies the ASSEMBLED expression rather than the raw leaf, and
   // `classifyReplaySecretRegion` verdicts an ARN-form token `named-region`
   // whatever evidence it holds, so a deferred reference cannot be answered by
   // the wrong region.
   //
-  // NOT PRESERVED: LOUDNESS when the downstream lookup FAILS. The refusal fired
-  // BEFORE any attempt; deferring moves the attempt inside `scrubStack`'s
-  // best-effort `catch { logger.debug }`, so a producer region answering
-  // AccessDenied becomes a VERBOSE-ONLY line under a `No plaintext secrets
-  // found` summary. The neighbouring shape -- an `Fn::Sub` placeholder scrub
-  // cannot evaluate, which `resolveSub` warn-and-KEEPS without throwing at all
-  // -- is less bad than that, and worth stating separately rather than lumping
-  // in: `resolveSub` warns at DEFAULT verbosity (`subPlaceholderWarning`), so
-  // the user does see a line, just not one that stops the summary from claiming
-  // the stack is clean.
-  //
-  // That residual is TRACKED, not fixed here, and the reason is worth recording
-  // because three rounds of review were spent on it: every attempt to detect
-  // "this reference went unresolved" from OUTSIDE the resolver was a proxy, and
-  // each proxy was wrong in BOTH directions. Keying on "the resolution threw"
-  // missed the warn-and-keep shape and over-reported an unrelated `Ref` failure
-  // sharing the bag; keying on "the raw leaf text survived" missed a leaf a
-  // downstream intrinsic rewrote without resolving, broke on JSON escaping, and
-  // -- worst -- fired permanently on PROSE that merely mentions
-  // `{{resolve:secretsmanager:`, which is the unactionable-refusal class
-  // {@link SECRET_REFERENCE_OPENINGS} already records as unacceptable. Only the
-  // resolver knows which references it declined, so the fix belongs there:
-  // issue [#2166](https://github.com/go-to-k/cdkd/issues/2166).
-  //
-  // Shipping without it is not a new silent class. `classifyReplaySecretRegion`
-  // verdicts an ARN-form token `named-region` regardless of evidence, so a stack
-  // with no cross-stack read on record ALREADY reached the same silent outcome
-  // for the same leaf; this widens that existing population rather than creating
-  // one, which is the same inconsistency the paragraph below removes.
+  // LOUDNESS when the deferred reference then goes UNRESOLVED is kept by the
+  // RESOLVER, which reports what it declined into the abandoned-unit bag
+  // `scrubStack` opts into, never by a proxy here (issue
+  // [#2166](https://github.com/go-to-k/cdkd/issues/2166): keying on "it threw"
+  // or "the raw text survived" was wrong both ways, and fired permanently on
+  // prose). A lookup that FAILS is a `token` unit; a placeholder `resolveSub`
+  // KEPT inside the reference, where nothing throws, is a `placeholder` unit.
+  // Both are counted findings: the stack is not printed clean and `--fail`
+  // exits non-zero.
   //
   // Deferring is unconditional on evidence, unlike the refusal it replaces.
   // The refusal was gated on `foreignProducerRegions.length > 0` to keep it
@@ -4692,7 +4672,9 @@ function isRegionAmbiguousRefusal(err: unknown): boolean {
  * refusal, never a silent clean run) and the shape is a rare one, so it is
  * accepted rather than worked around; go-to-k/cdkd#3160 carries it alongside
  * the sibling class, which needs a countable unverifiable-leaf finding rather
- * than a refusal.
+ * than a refusal. `bindDefaultedParametersOneByOne` does NOT widen it: beside a
+ * `Default`-less sibling it leaves a `Default: ''` parameter unbound, as the
+ * failed whole-bag call always did (issue #2166).
  *
  * It is a loudness REGRESSION rather than a new gap: before go-to-k/cdkd#2689
  * fixed `ssmParameterName`, this input produced a bogus `secretName` and
@@ -4739,12 +4721,11 @@ function isNamelessDynamicReferenceFailure(err: unknown): boolean {
 // exists for the ORDINARY failure the comment beside it names — a `Ref` to
 // something not in state — and that throw is not a dynamic-reference failure
 // however many `{{resolve:...}}` leaves the same bag happens to carry. The
-// population is not exotic: `scrubStack` catches `resolveParameters` wholesale
-// and carries on with an EMPTY parameter bag, so ONE parameter with no
-// `Default` makes every `{Ref: <param>}` in the stack throw — including refs
-// to parameters that do have one. Counting those would red `--dry-run --fail`,
-// the documented STANDING CI gate, on stacks that are entirely healthy and
-// with no way for the operator to clear it. That is the same outcome
+// population is not exotic: `scrubStack` takes no `--parameters`, so every
+// `{Ref: <param>}` to a parameter with no `Default` throws (since issue
+// #2166 the defaulted ones are still bound, one by one). Counting those
+// would red `--dry-run --fail`, the documented STANDING CI gate, on stacks
+// that are entirely healthy and with no way for the operator to clear it. That is the same outcome
 // go-to-k/cdkd#3160 gives as the reason NOT to widen into a refusal.
 //
 // Hence the conjunction, and note WHO OWNS each half. The excluded set is
@@ -4904,9 +4885,9 @@ function abandonedScanStackNote(verdict: 'count' | 'warn', scans: number): strin
  * B: '{{resolve:secretsmanager:prod/db:...}}'}` has `B` abandoned by a failure
  * that is nothing to do with `B`. Excluding it means `B` records no needle, its
  * legacy plaintext is never rewritten, and the stack can still print
- * `No plaintext secrets found` at exit 0. Reachable accidentally (one
- * `Default`-less parameter empties the bag, so every `{Ref: <param>}` throws)
- * and, on a repo whose CI runs `--dry-run --fail`, defeatable on purpose by
+ * `No plaintext secrets found` at exit 0. Reachable accidentally (scrub
+ * takes no `--parameters`, so every `{Ref: <param>}` to a `Default`-less
+ * parameter throws) and, on a repo whose CI runs `--dry-run --fail`, defeatable on purpose by
  * adding one dangling `Ref` ahead of the secret. That loss is REAL and is not
  * repaired by making it visible — go-to-k/cdkd#3196 tracks scoping the resolve
  * per property so the sibling reference is still scanned.
@@ -4971,6 +4952,14 @@ function abandonedScanVerdict(source: unknown, err: unknown): 'count' | 'warn' |
  */
 function abandonedUnitVerdict(entry: AbandonedResolution): 'count' | 'warn' | 'silent' {
   if (!entry.carriedDynamicReference) return 'silent';
+  // Issue #2166: an `Fn::Sub` placeholder KEPT inside a reference. Asked
+  // FIRST because the tests below would not reliably say `count` for it -- its
+  // token is unfetchable, and its error may read as template-shaped -- while
+  // the resolver reports only a placeholder naming NOTHING the
+  // template declares (no resource, no parameter), which fixing the template
+  // clears without any `--parameters`. Counted, so the stack is not printed
+  // clean over a reference nothing resolved.
+  if (entry.unit === 'placeholder') return 'count';
   if (isTemplateShapeResolutionFailure(entry.error) || !entry.carriedFetchableReference) {
     return 'warn';
   }
@@ -4984,7 +4973,7 @@ function abandonedUnitVerdict(entry: AbandonedResolution): 'count' | 'warn' | 's
  * folding to the most severe is what stops a gateable finding hiding behind an
  * ungateable one recorded before it. That is not a hypothetical ordering
  * concern: `isTemplateShapeResolutionFailure` fires EN MASSE on healthy stacks
- * (one `Default`-less parameter makes every `{Ref: <param>}` throw), so a
+ * (every `{Ref: <param>}` to a `Default`-less parameter throws), so a
  * `warn` at index 0 is the common case, and the per-unit recovery exists
  * precisely to keep walking past it to the reference that matters.
  */
@@ -5085,10 +5074,9 @@ function isTemplateShapeResolutionFailure(err: unknown): boolean {
  *
  * Deliberately just these THREE, not every shape failure the resolver can
  * raise. They are the ones that fire EN MASSE on a healthy stack:
- * `resolveParameters` is caught wholesale by `scrubStack`, so one
- * `Default`-less parameter empties the whole bag and every `{Ref: <param>}`
- * throws; and `resolveGetAtt` refuses on the same condition as `resolveRef`,
- * which a branch adding a not-yet-deployed resource hits for every
+ * scrub takes no `--parameters`, so every `{Ref: <param>}` to a
+ * `Default`-less parameter throws; and `resolveGetAtt` refuses on the same
+ * condition as `resolveRef`, which a branch adding a not-yet-deployed resource hits for every
  * `Fn::GetAtt` to it. A rarer shape failure (an `Fn::Select` over a
  * non-array, say) is a genuine template defect, and counting a leaf whose
  * scan it abandoned is not wrong — the scan really did stop. Over-counting
@@ -5985,6 +5973,53 @@ function makeCrossStackPrePass(deps: {
   };
 }
 
+/**
+ * Bind every template parameter that carries a `Default`, each resolved ALONE
+ * (issue [#2166](https://github.com/go-to-k/cdkd/issues/2166)).
+ *
+ * The fallback for a TOP-LEVEL stack whose whole-bag `resolveParameters`
+ * failed: scrub takes no `--parameters`, so a `Default`-less parameter fails
+ * that call, and before this every defaulted sibling was left unbound with it.
+ * One call per parameter, through the same `resolveParameters`, so a binding
+ * here is exactly what the whole-bag call would have produced for it; a
+ * parameter whose own resolution fails stays unbound. A nested child never
+ * reaches this: it refuses on the whole-bag failure instead.
+ */
+async function bindDefaultedParametersOneByOne(
+  resolver: IntrinsicFunctionResolver,
+  template: CloudFormationTemplate,
+  shownStack: string,
+  logger: { debug: (message: string) => void }
+): Promise<Record<string, unknown>> {
+  const bound = nullPrototypeRecord<unknown>();
+  const declared = template.Parameters;
+  if (declared === undefined || declared === null || typeof declared !== 'object') return bound;
+  for (const [name, definition] of Object.entries(declared)) {
+    if (definition === null || typeof definition !== 'object' || !('Default' in definition)) {
+      continue;
+    }
+    // An EMPTY `Default` stays unbound, as it did when the whole-bag call
+    // failed: bound, `{{resolve:ssm-secure:${P}}}` assembles a NAMELESS
+    // reference, which refuses the whole stack -- a refusal scrub's missing
+    // `--parameters` would make unclearable.
+    if ((definition as { Default?: unknown }).Default === '') continue;
+    try {
+      const one = await resolver.resolveParameters({
+        ...template,
+        Parameters: { [name]: definition },
+      });
+      if (Object.hasOwn(one, name)) bound[name] = one[name];
+    } catch (err) {
+      // No context and no bag here, so nothing to mask beyond the stack name
+      // the caller already rendered; the parameter stays unbound.
+      logger.debug(
+        safeMsg`Parameter ${name} of ${shownStack} left unbound: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  return bound;
+}
+
 /** What one stack's scrub found. */
 export interface ScrubStackResult {
   /**
@@ -6083,7 +6118,8 @@ export interface ScrubStackResult {
    * stack is scrubbed, but a real secret sitting after the failing token in
    * the same leaf recorded no needle, so the record must not be reported
    * clean. Refusing instead would refuse healthy stacks — see
-   * `abandonedScanVerdict`.
+   * `abandonedScanVerdict`. Also counts a reference an `Fn::Sub` placeholder
+   * left unresolvable, which throws nothing (issue #2166).
    */
   unverifiableLeaves: number;
   /**
@@ -6629,6 +6665,17 @@ export async function scrubStack(
       logger.debug(
         `Parameter resolution skipped for ${shownStack}: ${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
       );
+      // Issue #2166: the whole-bag call fails on the FIRST `Default`-less
+      // parameter, which left every DEFAULTED sibling unbound too, so a
+      // `{{resolve:...}}` assembled from one was kept unresolved and recorded
+      // no needle. Bind each parameter that CAN be bound on its own; a
+      // `Default`-less one stays unbound and is judged per leaf, as before.
+      parameters = await bindDefaultedParametersOneByOne(
+        resolver,
+        stack.template,
+        shownStack,
+        logger
+      );
     }
     // Issue #2133: the ONE resolve context every resolution in this function
     // uses, spelled once. The three inline copies it replaces were identical but
@@ -6899,9 +6946,9 @@ export async function scrubStack(
         // unresolvable `Ref` in property A abandoned the `{{resolve:...}}` in
         // property B — B recorded no needle, its legacy plaintext was never
         // rewritten, and the stack could still print `No plaintext secrets
-        // found` at exit 0. Reachable by accident (one `Default`-less parameter
-        // empties the parameter bag, so every `{Ref: <param>}` throws) and, on a
-        // repo whose CI runs `--dry-run --fail`, defeatable on purpose by
+        // found` at exit 0. Reachable by accident (every `{Ref: <param>}` to a
+        // `Default`-less parameter throws, since scrub takes no `--parameters`)
+        // and, on a repo whose CI runs `--dry-run --fail`, defeatable on purpose by
         // putting one dangling `Ref` ahead of the secret.
         //
         // BOUNDED TO THE TOP LEVEL, and the residual is real: `resolveValue`'s
@@ -7038,8 +7085,8 @@ export async function scrubStack(
             // An earlier cut judged `abandoned[0]` against the whole property
             // and called that "the count is unchanged". It was the defect. The
             // verdict turns on `isTemplateShapeResolutionFailure`, and that
-            // class fires EN MASSE on healthy stacks — one `Default`-less
-            // parameter makes every `{Ref: <param>}` throw — so entry 0 is
+            // class fires EN MASSE on healthy stacks — every `{Ref: <param>}`
+            // to a `Default`-less parameter throws — so entry 0 is
             // routinely a `warn`, which gates nothing. Recovery then reaches a
             // genuinely unfetched reference later in the same property, and
             // judging only entry 0 discarded exactly the finding this PR

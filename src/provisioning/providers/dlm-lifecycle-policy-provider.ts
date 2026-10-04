@@ -4,10 +4,12 @@ import {
   UpdateLifecyclePolicyCommand,
   DeleteLifecyclePolicyCommand,
   GetLifecyclePolicyCommand,
+  GetLifecyclePoliciesCommand,
   TagResourceCommand,
   UntagResourceCommand,
   ResourceNotFoundException,
   type CreateLifecyclePolicyCommandInput,
+  type CreateLifecyclePolicyCommandOutput,
   type UpdateLifecyclePolicyCommandInput,
   type PolicyDetails,
   type CrossRegionCopyTarget,
@@ -27,10 +29,38 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  CreateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  isInsideWindow,
+  withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
+} from './ambiguous-create.js';
+import { orphanCommandRegionArg, reportPossibleOrphans } from './orphan-report.js';
+
+/**
+ * Issue #2080: `CreateLifecyclePolicy` carries no idempotency token and the
+ * policy id is minted by DLM, so a 5xx whose request had succeeded leaves a
+ * second, unrecorded policy -- which keeps snapshotting (and deleting
+ * snapshots) on its schedule. Armed by an ambiguous create failure; the next
+ * attempt reports candidates before creating again.
+ */
+const createLifecyclePolicyLatch = new AmbiguousCreateLatch('dlm:CreateLifecyclePolicy');
+/** Policy ids this process created, never reported as orphan candidates. */
+const policiesCreatedByThisProcess = new RecentIdSet();
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetLifecyclePolicyCreateRetryStateForTests(): void {
+  createLifecyclePolicyLatch.resetForTests();
+  policiesCreatedByThisProcess.resetForTests();
+}
 
 /**
  * SDK Provider for AWS::DLM::LifecyclePolicy (Data Lifecycle Manager).
@@ -64,6 +94,7 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
  */
 export class DLMLifecyclePolicyProvider implements ResourceProvider {
   private client: DLMClient | undefined;
+  private createClient: DLMClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('DLMLifecyclePolicyProvider');
 
@@ -95,6 +126,97 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       });
     }
     return this.client;
+  }
+
+  /**
+   * The client `CreateLifecyclePolicy` goes through: SDK retries on, except a
+   * 5xx (`withoutServerErrorRetries`, issue #2080). Separate so every other
+   * call keeps the full SDK retry.
+   */
+  private getCreateClient(): DLMClient {
+    if (!this.createClient) {
+      this.createClient = withoutServerErrorRetries(
+        new DLMClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
+    }
+    return this.createClient;
+  }
+
+  /**
+   * Issue #2080: after an attempt at `CreateLifecyclePolicy` ended AMBIGUOUS
+   * (a 5xx: DLM may have made the policy and lost the answer), name the
+   * policies that could be its orphan -- the same description and the same
+   * default-or-custom kind, created inside the failed attempts' window
+   * (`GetLifecyclePolicy`'s `DateCreated`; the list summary carries no date),
+   * and not recorded by this process. Detection only: a description is not
+   * attribution, and another deploy can create a policy with the same one in
+   * the window, so the report leads with a read command and offers the delete
+   * command only after confirming (`orphan-report.ts`).
+   *
+   * `GetLifecyclePolicies` takes no page token: one call returns every policy
+   * in the region (a per-region quota bounds the count).
+   */
+  private async reportPossibleOrphanPolicies(
+    logicalId: string,
+    input: CreateLifecyclePolicyCommandInput,
+    window: AmbiguousCreateWindow,
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const description = input.Description ?? '';
+    const isDefault = input.DefaultPolicy != null;
+    const kind = isDefault ? 'a default lifecycle policy' : 'a lifecycle policy';
+    const aws = pasteableAwsCommand(log.mask);
+    const regionArg = await orphanCommandRegionArg(this.getClient(), aws);
+    await reportPossibleOrphans(logicalId, window, log, {
+      action: 'CreateLifecyclePolicy',
+      service: 'DLM',
+      listAction: 'GetLifecyclePolicies',
+      subject:
+        description === ''
+          ? `${kind} with no description`
+          : `${kind} described ${log.value(description)}`,
+      noun: 'lifecycle policy(ies)',
+      list: async () => {
+        const page = await this.getClient().send(new GetLifecyclePoliciesCommand({}));
+        const ids: string[] = [];
+        for (const summary of page.Policies ?? []) {
+          const id = summary.PolicyId;
+          if (
+            !id ||
+            (summary.Description ?? '') !== description ||
+            (summary.DefaultPolicy === true) !== isDefault ||
+            policiesCreatedByThisProcess.has(id)
+          ) {
+            continue;
+          }
+          let created: Date | undefined;
+          let defaultType: string | undefined;
+          try {
+            const detail = await this.getClient().send(
+              new GetLifecyclePolicyCommand({ PolicyId: id })
+            );
+            created = detail.Policy?.DateCreated;
+            defaultType = detail.Policy?.PolicyDetails?.ResourceType;
+          } catch (error) {
+            // Deleted since the listing: not an orphan any more.
+            if (error instanceof ResourceNotFoundException) continue;
+            throw error;
+          }
+          // A default policy exists once per resource type (VOLUME /
+          // INSTANCE): one of the other type is not this create's.
+          if (isDefault && defaultType !== undefined && defaultType !== input.DefaultPolicy) {
+            continue;
+          }
+          if (isInsideWindow(created, window)) ids.push(id);
+        }
+        return { ids, truncated: false };
+      },
+      inspect: (id) => aws`aws dlm get-lifecycle-policy --policy-id ${id}${regionArg}`.render(),
+      remove: (id) => aws`aws dlm delete-lifecycle-policy --policy-id ${id}${regionArg}`.render(),
+    });
   }
 
   /**
@@ -265,11 +387,15 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DLM Lifecycle Policy ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    // One sink set for this create (issue #2177): a template value (the
+    // description) can be secret-derived, and AWS may quote it back.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
 
     try {
       // CFn `[{ Key, Value }]` -> DLM tag map; omitted when empty.
@@ -279,7 +405,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
           : undefined;
       const input: CreateLifecyclePolicyCommandInput = {
         ...this.toSdkFields(properties),
-        ...(properties['DefaultPolicy'] !== undefined && {
+        ...(properties['DefaultPolicy'] != null && {
           DefaultPolicy: properties[
             'DefaultPolicy'
           ] as CreateLifecyclePolicyCommandInput['DefaultPolicy'],
@@ -287,10 +413,25 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         ...(tags && { Tags: tags }),
       } as CreateLifecyclePolicyCommandInput;
 
-      const response = await this.getClient().send(new CreateLifecyclePolicyCommand(input));
+      // Issue #2080: after an earlier ambiguous attempt, name the policy it
+      // may have made before a second CreateLifecyclePolicy is sent.
+      // Detection only -- see `orphan-report.ts`.
+      const orphanWindow = createLifecyclePolicyLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await this.reportPossibleOrphanPolicies(logicalId, input, orphanWindow, log);
+      }
+      const attemptStartMs = Date.now();
+      let response: CreateLifecyclePolicyCommandOutput;
+      try {
+        response = await this.getCreateClient().send(new CreateLifecyclePolicyCommand(input));
+      } catch (error) {
+        createLifecyclePolicyLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
       if (!response.PolicyId) {
         throw new Error('CreateLifecyclePolicy did not return a PolicyId');
       }
+      policiesCreatedByThisProcess.add(response.PolicyId);
 
       // The create response only carries PolicyId; fetch the ARN for the
       // `Fn::GetAtt Arn` attribute cache. Best-effort: a failure here MUST
@@ -302,8 +443,8 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       try {
         arn = await this.fetchPolicyArn(response.PolicyId);
       } catch (err) {
-        this.logger.warn(
-          `Created DLM Lifecycle Policy ${response.PolicyId} but could not fetch its ARN: ${describeAwsFailure(err).detail}`
+        log.warn(
+          `Created DLM Lifecycle Policy ${response.PolicyId} but could not fetch its ARN: ${log.value(describeAwsFailure(err).detail)}`
         );
       }
 

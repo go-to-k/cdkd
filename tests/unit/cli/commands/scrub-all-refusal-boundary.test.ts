@@ -134,6 +134,14 @@ const abandonScan = vi.hoisted(() => ({ on: false, spareMarker: undefined as str
  * was unreachable from the only scrubCommand harness in the repo.
  */
 const recordProducerRead = vi.hoisted(() => ({ on: false }));
+/**
+ * Issue #2166: report a unit the way `resolveSub` reports a placeholder it
+ * KEPT inside a `{{resolve:...}}` reference -- pushed into the bag, with the
+ * resolve itself SUCCEEDING, because warn-and-keep throws nothing. `unit`
+ * selects the spelling, so the negative control can push the same entry as a
+ * `key` unit and show the verdict turns on the unit alone.
+ */
+const keptPlaceholder = vi.hoisted(() => ({ unit: undefined as 'placeholder' | 'key' | undefined }));
 
 vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => {
   // The module's non-class exports must survive the double: `scrub.ts` imports
@@ -158,6 +166,7 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (impo
       .mockImplementation((
         value: unknown,
         ctx: {
+          abandonedResolutions?: unknown[];
           recordedSecretValues?: Map<string, string>;
           recordedOutputReads?: Array<{
             sourceStack: string;
@@ -214,6 +223,18 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (impo
             outputName: "Db",
           });
           return Promise.resolve("resolved-cross-stack-value");
+        }
+        if (keptPlaceholder.unit !== undefined && JSON.stringify(value ?? null).includes('{{resolve:')) {
+          // Template-shaped error and an unfetchable token: everything about
+          // the entry but its UNIT says `warn`.
+          ctx.abandonedResolutions?.push({
+            unit: keptPlaceholder.unit,
+            subject: '${Typo}',
+            message: 'Fn::Sub kept the placeholder ${Typo} (Ref Typo not found) inside a reference',
+            error: new Error('Ref Typo not found'),
+            carriedDynamicReference: true,
+            carriedFetchableReference: false,
+          });
         }
         const walk = (v: unknown): unknown => {
           if (v === CLEAN_EXPR) {
@@ -1162,5 +1183,66 @@ describe('cdkd scrub: an unreadable resources ROW reaches the VERDICT (go-to-k/c
     expect(errored).toContain('cannot be read as resources');
     expect(errored).toContain("'cdkd scrub' REBUILDS and SAVES");
     expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The COMMAND-level half of issue
+ * [#2166](https://github.com/go-to-k/cdkd/issues/2166), fenced here for the
+ * reason the #3160 block above is: both clean lines and the `--fail` gate live
+ * in `scrubCommand`, so an assertion against `scrubStack`'s count alone is
+ * vacuous. The entry the double pushes is what `resolveSub` pushes for a
+ * placeholder it KEPT inside a reference: a template-shaped error and an
+ * unfetchable token, which the `key` spelling of the same entry shows would
+ * otherwise only WARN.
+ */
+describe('cdkd scrub: a reference a KEPT placeholder left unresolved reaches the verdict (issue #2166)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    synthStacks.length = 0;
+    synthStacks.push(makeStackInfo('Kept'));
+    // Already scrubbed, so the kept placeholder is the ONLY finding this run
+    // can report.
+    commandStateBackend.getState.mockImplementation((stackName: string) => {
+      const state = makeState(stackName, false);
+      state.resources['Db']!.properties['MasterUserPassword'] = NAME_EXPR;
+      return Promise.resolve({ state, etag: 'etag-1' });
+    });
+    commandStateBackend.saveState.mockResolvedValue('etag-2');
+  });
+
+  afterEach(() => {
+    keptPlaceholder.unit = undefined;
+  });
+
+  it.each([
+    ['a real run', { fail: true }],
+    ['--dry-run, the CI gate', { dryRun: true, fail: true }],
+  ])('%s: neither clean line prints, and --fail exits 1', async (_label, flags) => {
+    keptPlaceholder.unit = 'placeholder';
+
+    const err = await scrubCommand([], commandOptions(flags)).catch((e: unknown) => e);
+
+    const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(summary).not.toContain('No plaintext secrets found in any target stack state');
+    expect(summary).not.toContain('No plaintext secrets found in Kept');
+    expect(summary, 'the summary note is missing').toContain('ABANDONED');
+    // A FINDING, not a refusal: nothing was refused, exit 1.
+    expect(commandLogger.error.mock.calls.map((c) => String(c[0])).join('\n')).toBe('');
+    expect((err as { code?: string }).code).toBe('SCRUB_NEEDED');
+  });
+
+  it('NEGATIVE CONTROL: the same entry as a KEY unit only warns, and the run exits clean', async () => {
+    keptPlaceholder.unit = 'key';
+
+    const err = await scrubCommand([], commandOptions({ fail: true })).catch((e: unknown) => e);
+
+    expect(err).toBeUndefined();
+    expect(commandLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'cut short by a TEMPLATE problem'
+    );
+    expect(commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'No plaintext secrets found in any target stack state'
+    );
   });
 });

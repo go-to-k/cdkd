@@ -209,6 +209,13 @@ export interface AssembledForeignSecretStackProps extends cdk.StackProps {
    * source parameter.
    */
   readonly foreignSecureParameterArn: string;
+  /**
+   * Issue [#2166](https://github.com/go-to-k/cdkd/issues/2166): spell the
+   * reference with an `Fn::Sub` placeholder NO variable binds, MID-string, so
+   * the resolver keeps it and no whole token forms. Set only for the scrub
+   * phase that asserts it is a finding; the deploy never sees it.
+   */
+  readonly keptPlaceholder?: boolean;
 }
 
 /**
@@ -258,9 +265,12 @@ export class AssembledForeignSecretStack extends cdk.Stack {
     new ssm.CfnParameter(this, 'AssembledForeignSecretEcho', {
       type: 'String',
       name: `${this.stackName}-assembled-foreign-secret-echo`,
-      value: cdk.Fn.sub('{{resolve:ssm:${TargetArn}}}', {
-        TargetArn: props.foreignSecureParameterArn,
-      }),
+      value: cdk.Fn.sub(
+        props.keptPlaceholder
+          ? '{{resolve:ssm:${UndeclaredPrefix}${TargetArn}}}'
+          : '{{resolve:ssm:${TargetArn}}}',
+        { TargetArn: props.foreignSecureParameterArn }
+      ),
       description:
         "Echoes the OTHER region's SecureString through an Fn::Sub-ASSEMBLED reference " +
         '(cdkd issues 2134 and 2157)',

@@ -140,6 +140,86 @@ const DEPLOY_RESOLVED_REFERENCE_SERVICES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Does the span `[start, end)` of `text` sit INSIDE a `{{resolve:...}}`
+ * reference the deploy could resolve (issue
+ * [#2166](https://github.com/go-to-k/cdkd/issues/2166))?
+ *
+ * Inside means: the nearest `{{resolve:` opening before the span is not closed
+ * before it, a `}}` closes it after the span before any later opening, nothing
+ * between the opening and that `}}` is a quote or a line break, and the
+ * opening names a resolvable service — or the span IS the service, which no
+ * one can classify. The closing and quote / line-break tests keep prose that
+ * merely mentions the opening (`Use the {{resolve:secretsmanager: prefix`, or
+ * the same followed by a JSON body that has a `}}` of its own) out.
+ */
+export function sitsInsideResolvableReference(text: string, start: number, end: number): boolean {
+  const OPENING = '{{resolve:';
+  const opening = text.lastIndexOf(OPENING, start);
+  if (opening < 0) return false;
+  const head = text.slice(opening + OPENING.length, start);
+  if (head.includes('}}')) return false;
+  // No `:` yet: the span is (part of) the SERVICE, so it is unknown, not public.
+  const colon = head.indexOf(':');
+  if (colon >= 0 && !DEPLOY_RESOLVED_REFERENCE_SERVICES.has(head.slice(0, colon))) return false;
+  const close = text.indexOf('}}', end);
+  if (close < 0) return false;
+  const nextOpening = text.indexOf(OPENING, end);
+  if (nextOpening >= 0 && nextOpening < close) return false;
+  return !/["\r\n]/.test(text.slice(opening, close));
+}
+
+/**
+ * Placeholders `resolveSub` KEPT, per abandoned-unit bag, with why each was
+ * kept and whether it has been reported (issue
+ * [#2166](https://github.com/go-to-k/cdkd/issues/2166)). Keyed by the bag
+ * INSTANCE, which a caller opens per unit it resolves, so one unit's kept
+ * placeholder is never reported against another's reference.
+ */
+const KEPT_PLACEHOLDERS = new WeakMap<
+  AbandonedResolution[],
+  Map<string, { because: unknown; reported: boolean }>
+>();
+
+/** Remember a kept placeholder against `bag`; the first reason wins. */
+export function recordKeptPlaceholder(
+  bag: AbandonedResolution[],
+  placeholder: string,
+  because: unknown
+): void {
+  let kept = KEPT_PLACEHOLDERS.get(bag);
+  if (kept === undefined) {
+    kept = new Map();
+    KEPT_PLACEHOLDERS.set(bag, kept);
+  }
+  if (!kept.has(placeholder)) kept.set(placeholder, { because, reported: false });
+}
+
+/**
+ * The kept placeholders of `bag` that sit inside a resolvable reference in
+ * `text` and were not reported yet, each marked reported as it is returned —
+ * so the nested passes over one assembled string report it once.
+ */
+export function takeKeptPlaceholdersInsideReferences(
+  bag: AbandonedResolution[],
+  text: string
+): Array<{ placeholder: string; because: unknown }> {
+  const kept = KEPT_PLACEHOLDERS.get(bag);
+  if (kept === undefined) return [];
+  const found: Array<{ placeholder: string; because: unknown }> = [];
+  for (const [placeholder, entry] of kept) {
+    if (entry.reported) continue;
+    for (let at = text.indexOf(placeholder); at >= 0; at = text.indexOf(placeholder, at + 1)) {
+      if (sitsInsideResolvableReference(text, at, at + placeholder.length)) {
+        entry.reported = true;
+        found.push({ placeholder, because: entry.because });
+        break;
+      }
+    }
+  }
+  return found;
+}
+
+/**
  * True when text RESOLVED by a `skipDynamicReferences` pass
  * still carries a token of a service the deploy resolves (issue
  * [#4056](https://github.com/go-to-k/cdkd/issues/4056)).
@@ -230,15 +310,22 @@ export function selectIndexPosition(value: unknown): number | undefined {
  * (#3181); a `key` is one entry of an object property bag or of an `Fn::Sub`
  * variable map (#3218), whose failure needs no dynamic reference at all — the
  * issue's own repro fails on a `Ref` — and therefore never reaches the token
- * loop.
+ * loop. A third, `placeholder` (#2166), records a reference nothing threw for:
+ * see {@link AbandonedResolution.unit}.
  *
  * STRUCTURED, for the reason its sibling below records at length: a consumer
  * forced to recover structure out of a human string couples to a spelling, and
  * both prior attempts at that coupling shipped a defect.
  */
 export interface AbandonedResolution {
-  /** Which walk abandoned this unit. */
-  readonly unit: 'token' | 'key';
+  /**
+   * Which walk abandoned this unit. A `placeholder` is the one unit nothing
+   * THREW for (issue [#2166](https://github.com/go-to-k/cdkd/issues/2166)):
+   * `resolveSub` KEPT an undeclared `${...}` inside a `{{resolve:...}}`
+   * reference, so that reference cannot be evaluated and was never looked up.
+   * Its `subject` is the placeholder as the template spells it.
+   */
+  readonly unit: 'token' | 'key' | 'placeholder';
   /**
    * For `'token'`, the reference as the log twin would PRINT it — never the raw
    * one: `resolveSub` / `resolveJoin` re-enter with an ASSEMBLED string, so
