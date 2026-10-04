@@ -4559,6 +4559,29 @@ describe('cdkd drift', () => {
       expect(warned()).toContain(
         `Child (${NESTED_ROW}): NOT accepted — its nested stack's own state record Parent~Child no longer exists.`
       );
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        '1 nested stack(s) whose state record is gone were not accepted; each is named above.'
+      );
+      expect(exitSpy).toHaveBeenCalledWith(2);
+    });
+
+    it('the closing line names both kinds when a run refuses both', async () => {
+      // `Parent~A` is checked and its queue is gone in AWS; `Parent~B`'s record is gone.
+      stageNested(
+        [
+          { stackName: 'Parent', region: 'us-east-1' },
+          { stackName: 'Parent~A', region: 'us-east-1' },
+        ],
+        { Parent: ['A', 'B'] }
+      );
+      readQueues('Parent~A');
+
+      await runDrift(['Parent', '--revert', '--yes']);
+
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        '1 resource(s) deleted outside cdkd and 1 nested stack(s) whose state record is gone ' +
+          'were not reverted; each is named above.'
+      );
       expect(exitSpy).toHaveBeenCalledWith(2);
     });
 
