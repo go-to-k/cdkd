@@ -6484,7 +6484,11 @@ export class EC2Provider implements ResourceProvider {
         case 'AWS::EC2::SubnetRouteTableAssociation':
           return await this.readSubnetRouteTableAssociationCurrentState(physicalId);
         case 'AWS::EC2::SecurityGroupIngress':
-          return await this.readSecurityGroupIngressCurrentState(physicalId, properties);
+          return await this.readSecurityGroupIngressCurrentState(
+            physicalId,
+            properties,
+            context?.afterOwnWrite === true
+          );
         case 'AWS::EC2::NetworkAclEntry':
           return await this.readNetworkAclEntryCurrentState(physicalId);
         case 'AWS::EC2::SubnetNetworkAclAssociation':
@@ -7281,7 +7285,8 @@ export class EC2Provider implements ResourceProvider {
    */
   private async readSecurityGroupIngressCurrentState(
     physicalId: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    afterOwnWrite = false
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const parts = physicalId.split('|');
     if (parts.length < 4) return undefined;
@@ -7344,9 +7349,13 @@ export class EC2Provider implements ResourceProvider {
       // not declare it: the ordinary same-account SG-to-SG rule omits it (see
       // `securityGroupRuleMatchesCfnIngress`). Only `sgRuleKey`'s READER use
       // changes; its ownership / reorder callers still key on the whole rule.
+      // Right after cdkd's own write (`afterOwnWrite`, #4112) `Description`
+      // stays in the key: a Description-only update revokes and re-authorizes,
+      // and a lagging read still showing the OLD text must not be frozen into
+      // the baseline, where `drift --revert` would write it back.
       const identity = (rule: CfnSgRule): string => {
         const key = JSON.parse(sgRuleKey(rule, 'ingress')) as Record<string, unknown>;
-        delete key['d'];
+        if (!afterOwnWrite) delete key['d'];
         if (properties['SourceSecurityGroupOwnerId'] == null) delete key['peerOwner'];
         return JSON.stringify(key);
       };

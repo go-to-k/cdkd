@@ -1484,6 +1484,91 @@ describe('EC2Provider.readCurrentState', () => {
         });
       });
 
+      it('keeps undefined for a Description mismatch right after cdkd’s own write (#4112)', async () => {
+        // A Description-only update revokes and re-authorizes; a lagging read
+        // still carrying the OLD text must not become the baseline.
+        const lagging = {
+          SecurityGroups: [
+            {
+              GroupId: 'sg-1',
+              IpPermissions: [
+                {
+                  IpProtocol: 'tcp',
+                  FromPort: 443,
+                  ToPort: 443,
+                  IpRanges: [{ CidrIp: '10.0.0.0/16', Description: 'the old text' }],
+                },
+              ],
+            },
+          ],
+        };
+        mockSend.mockResolvedValueOnce(lagging);
+
+        const captured = bagOf(
+          await provider.readCurrentState(
+            'sg-1|tcp|443|443',
+            'Logical',
+            'AWS::EC2::SecurityGroupIngress',
+            declared,
+            { afterOwnWrite: true }
+          )
+        );
+        expect(captured).toBeUndefined();
+
+        mockSend.mockResolvedValueOnce(lagging);
+        const drifted = bagOf(
+          await provider.readCurrentState(
+            'sg-1|tcp|443|443',
+            'Logical',
+            'AWS::EC2::SecurityGroupIngress',
+            declared
+          )
+        );
+        expect(drifted).toMatchObject({ CidrIp: '10.0.0.0/16', Description: 'the old text' });
+      });
+
+      it('still matches an undeclared peer owner right after cdkd’s own write', async () => {
+        mockSend.mockResolvedValueOnce({
+          SecurityGroups: [
+            {
+              GroupId: 'sg-1',
+              IpPermissions: [
+                {
+                  IpProtocol: 'tcp',
+                  FromPort: 443,
+                  ToPort: 443,
+                  UserIdGroupPairs: [
+                    { GroupId: 'sg-peer', UserId: '111122223333', Description: 'from peer' },
+                  ],
+                },
+              ],
+            },
+          ],
+        });
+
+        const result = bagOf(
+          await provider.readCurrentState(
+            'sg-1|tcp|443|443',
+            'Logical',
+            'AWS::EC2::SecurityGroupIngress',
+            {
+              GroupId: 'sg-1',
+              IpProtocol: 'tcp',
+              FromPort: 443,
+              ToPort: 443,
+              SourceSecurityGroupId: 'sg-peer',
+              Description: 'from peer',
+            },
+            { afterOwnWrite: true }
+          )
+        );
+
+        expect(result).toMatchObject({
+          SourceSecurityGroupId: 'sg-peer',
+          SourceSecurityGroupOwnerId: '111122223333',
+        });
+      });
+
       it('returns the live rule without a Description when it was removed', async () => {
         mockSend.mockResolvedValueOnce({
           SecurityGroups: [
