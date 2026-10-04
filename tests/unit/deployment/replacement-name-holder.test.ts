@@ -28,7 +28,9 @@ import { join } from 'node:path';
 import { withSkipPrefix, withStackName } from '../../../src/provisioning/resource-name.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
+
+const providerClasses = await loadProviderClasses();
 
 const FN = 'AWS::Lambda::Function';
 
@@ -804,7 +806,7 @@ describe('replacementNameProbe (go-to-k/cdkd#3937)', () => {
 
   it("each one's SDK provider has the import() the probe asks", () => {
     const registry = new ProviderRegistry();
-    registerAllProviders(registry);
+    registerAllProviders(registry, providerClasses);
     for (const type of nameAdoptingSdkCreateTypes()) {
       const decision = registry.getProviderFor({ resourceType: type, provisionedBy: 'sdk' });
       expect(decision.provisionedBy, type).toBe('sdk');

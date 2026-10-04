@@ -198,8 +198,9 @@ export function redactByPath(
     const certified = positionByCrossStackSource(bag, source, secrets);
     if (certified !== undefined) return certified;
     // The EMBEDDING twin of the `{Ref: <Param>}` arm above (issue #2320): an
-    // `Fn::Sub` / `Fn::Join` over the child's own parameters, each placeholder
-    // answered from its OWN association. Before the skeleton arm, because an
+    // `Fn::Sub` / `Fn::Join` over the child's own parameters, or embedding a
+    // cross-stack read (issue #2298), each placeholder answered from its OWN
+    // association. Before the skeleton arm, because an
     // association is exact evidence where a pattern is a search.
     const placeheld = positionByParameterPlaceholders(bag, source, secrets);
     if (placeheld !== undefined) return placeheld;

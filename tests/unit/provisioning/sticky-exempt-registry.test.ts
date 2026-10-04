@@ -7,8 +7,10 @@ import {
   STICKY_CC_MIGRATION_EXEMPT,
   type StickyExemptEntry,
 } from '../../../src/provisioning/provider-registry.js';
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.generated.js';
+
+const providerClasses = await loadProviderClasses();
 
 /**
  * Hygiene fence over the sticky-CC exemption table (issue #2719).
@@ -143,7 +145,7 @@ describe('sticky-CC exemption table', () => {
     // does nothing, silently, while reading as a shipped capability -- and
     // `physicalIdForm` would be describing a provider that does not exist.
     const registry = new ProviderRegistry();
-    registerAllProviders(registry);
+    registerAllProviders(registry, providerClasses);
     for (const [type] of entries()) {
       expect(
         registry.getProviderType(type),

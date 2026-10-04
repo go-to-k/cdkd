@@ -23,7 +23,10 @@ import {
   type LockRecoveryContext,
 } from '../../state/lock-contention-message.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
-import { registerAllProviders } from '../../provisioning/register-providers.js';
+import {
+  loadProviderClasses,
+  registerAllProviders,
+} from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import {
@@ -231,6 +234,9 @@ export class ObservedBaselineRefusals extends Set<string> {
 }
 
 async function importCommand(stackArg: string | undefined, options: ImportOptions): Promise<void> {
+  // Awaited first, so provider construction below stays synchronous once the
+  // stack client scope / globals are set (see `loadProviderClasses`).
+  const providerClasses = await loadProviderClasses();
   const logger = getLogger();
   if (options.verbose) {
     logger.setLevel('debug');
@@ -275,7 +281,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     await stateBackend.verifyBucketExists();
     const lockManager = new LockManager(awsClients.s3, stateConfig);
     const providerRegistry = new ProviderRegistry();
-    registerAllProviders(providerRegistry);
+    registerAllProviders(providerRegistry, providerClasses);
 
     // Synth — required for import: we need logicalId/resourceType/dependencies
     // from the template. Without it, the user would have to specify everything

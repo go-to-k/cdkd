@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 // The runner only builds its own registry on the cross-region path, which
 // this case never takes.
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
+  loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
 }));
 vi.mock('../../../src/utils/live-renderer.js', () => ({

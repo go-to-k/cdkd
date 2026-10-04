@@ -3702,7 +3702,7 @@ export class AppSyncProvider implements ResourceProvider {
    * to diff against.
    *
    * `graphql` is imported here, not at module scope: every provider module
-   * is evaluated at startup by `registerAllProviders()`, and graphql-js is
+   * is evaluated whenever a command registers providers, and graphql-js is
    * ~70 ms of CPU that only an AppSync schema drift read needs. The import
    * sits OUTSIDE the `try` so a failure to load it is not mistaken for an
    * unparseable SDL.
