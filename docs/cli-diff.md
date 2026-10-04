@@ -88,6 +88,7 @@ instead of a block.
 | `[requires replacement]` | Changing that property replaces the resource rather than updating it in place. |
 | `[may require replacement]` | On a `[replacement propagated]` or `[attribute propagated]` row: the property cannot change in place, and the deploy replaces the resource only if the value it reads actually moves. |
 | `[replacement propagated]` | The property's template value did not change — only the physical ID or ARN it references will, because an upstream resource is being replaced. The apparent `"value"` → `{Ref: ...}` delta is not a literal edit. |
+| `[template expression changed]` | The property is stored as `***` because its value carries a secret in a form state cannot record as a reference (an `Fn::Base64` over a script that embeds a `{{resolve:...}}` reference, such as EC2 `UserData`), so both sides print `***`. Its template expression changed (the text around the reference, or the reference itself), and the deploy sends the property again. |
 | `[attribute propagated]` | The property's template value did not change — it reads a value a resource being updated may move: an attribute (a nested stack's output, a custom resource's response `Data`) or a custom resource's physical id through `Ref`. The deploy sends the update only if the value did, and replaces the resource only if a value that cannot change in place did. A `NoEcho` value returned again cannot be compared with the stored mask, so it is always sent. A reader holding it in such a property is replaced unless the deploy reads that reader back from AWS and finds the same value already there. |
 | `[metadata only, no AWS API call]` | A `DeletionPolicy` / `UpdateReplacePolicy` change. cdkd records it in state; AWS is not called. |
 | `(known after deploy)` | The new side is an unresolved intrinsic — a `Ref` or `Fn::GetAtt` to a resource this same deploy will create. |
@@ -720,7 +721,9 @@ The payload is a flat array of one record per target stack:
   `inPlacePropagated: true` for the `[replacement propagated]` /
   `[attribute propagated]` rows above; the field is absent otherwise. On such
   an entry `requiresReplacement: true` is the `[may require replacement]`
-  ceiling, not a verdict.
+  ceiling, not a verdict. An entry for a `[template expression changed]` row
+  carries `maskedExpressionChanged: true`, and its `oldValue` / `newValue` are
+  both `***`.
 - Three fields report what the diff could not read, and all three are
   **always present**. Any of them non-empty means `changes` is not the whole
   picture: a row the template still declares appears there as a `CREATE`, but

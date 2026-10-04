@@ -14,6 +14,7 @@ import {
   hasMaskableValues,
   type RecordedSecretValues,
 } from './secret-redaction.js';
+import { withMaskedPropertyFingerprints } from './masked-property-fingerprints.js';
 import {
   isInlinePolicyClaimedByCompletedWriter,
   type InlinePolicyWrite,
@@ -515,6 +516,13 @@ export class DeployEngine {
   /** @internal */
   perResourceResolvedType = new Map<string, string>();
   /**
+   * The stack's `NoEcho` parameter values, set once parameters resolve
+   * (go-to-k/cdkd#4451): a masked property whose template text holds one is
+   * refused a fingerprint at the save. Reset per `deploy()`.
+   */
+  /** @internal */
+  fingerprintNoEchoValues: RecordedSecretValues | undefined = undefined;
+  /**
    * Resolved secrets recorded while resolving the stack OUTPUTS (a `CfnOutput`
    * whose Value resolves a `{{resolve:...}}` reference). Separate from the
    * per-resource maps for the same anti-cross-contamination reason. Reset per
@@ -799,6 +807,7 @@ export class DeployEngine {
     // map's whole job is to answer "do those needles describe THIS record",
     // and a reused engine carrying last deploy's answer is the #2516 class.
     this.perResourceResolvedType = new Map();
+    this.fingerprintNoEchoValues = undefined;
     // Issue #2516: reset with the other per-deploy maps. A reused engine
     // whose next deploy fails before its own attempted bag is recorded would
     // otherwise journal the PREVIOUS run's bag against today's template and
@@ -870,7 +879,7 @@ export class DeployEngine {
       // not resolved this deploy there is none, and `scrubResourceRecord` falls
       // back to the record's own `properties` for the observed bag (#1900).
       const templateProps = this.perResourceTemplateProps.get(logicalId);
-      resources[logicalId] = scrubResourceRecord(
+      const scrubbed = scrubResourceRecord(
         // Issue #1852: merged BEFORE the scrub, so a healed value enters the
         // same pass a provider-recorded attribute does. That pass has no needles
         // for an UNCHANGED record (nothing resolved for it this deploy), so what
@@ -884,6 +893,18 @@ export class DeployEngine {
         // own already-redacted properties as the observed bag's source, which is
         // the #1900 path — so do NOT "simplify" this to `templateProps!`.
         templateProps
+      );
+      // go-to-k/cdkd#4451: the masked properties' template fingerprints, read
+      // off the SCRUBBED bag (only it holds `***`), and rebuilt only for a
+      // record this deploy wrote; a failed update keeps the previous bag and
+      // its previous fingerprints. This resource's needles refuse a hash to a
+      // template value that holds one as a literal.
+      resources[logicalId] = withMaskedPropertyFingerprints(
+        scrubbed,
+        record.properties,
+        templateProps,
+        secrets,
+        this.fingerprintNoEchoValues
       );
     }
     // `outputs` is also secret-bearing: a `CfnOutput` whose Value resolves a
@@ -928,13 +949,26 @@ export class DeployEngine {
       // survived. Measured by `tests/integration/retain-orphan-secret`.
       const sameResource =
         this.perResourceResolvedType.get(entry.logicalId) === entry.state.resourceType;
+      const orphanTemplateProps = sameResource
+        ? this.perResourceTemplateProps.get(entry.logicalId)
+        : undefined;
       return {
         ...entry,
-        state: scrubResourceRecord(
-          entry.state,
-          (sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined) ??
-            new Map<string, string>(),
-          sameResource ? this.perResourceTemplateProps.get(entry.logicalId) : undefined
+        // go-to-k/cdkd#4451: a record THIS deploy created and its rollback
+        // orphaned carries a bag this deploy wrote, so it gets its masked
+        // properties' fingerprints here too, or a later adoption backfills
+        // them from whatever template that deploy carries.
+        state: withMaskedPropertyFingerprints(
+          scrubResourceRecord(
+            entry.state,
+            (sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined) ??
+              new Map<string, string>(),
+            orphanTemplateProps
+          ),
+          entry.state.properties,
+          orphanTemplateProps,
+          sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined,
+          sameResource ? this.fingerprintNoEchoValues : undefined
         ),
       };
     });
