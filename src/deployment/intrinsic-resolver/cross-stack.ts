@@ -9,9 +9,9 @@ import {
   type ResolverContext,
   carriesDynamicReference,
   quotedRender,
-  recordedSecretExpressions,
   withoutProducerRegions,
 } from './support.js';
+import { pinScopedSecretVerdict } from '../secret-redaction/mask-only.js';
 import {
   carriesSecretMask,
   crossStackSourceKey,
@@ -340,7 +340,9 @@ export async function reresolveCrossStackValue(
   // same spelling — and this then answers `true` for a producer-region
   // parameter that is really public. The cost is bounded to a spurious UPDATE
   // (#1901's class) and can never be a plaintext, since what gets persisted is
-  // still an EXPRESSION. Closing it means keying the verdict store by region.
+  // still an EXPRESSION. Closing it means a scope-aware read of the bare
+  // set the redaction path shares; only the resolver's own skip-arm read is
+  // scoped (issue #4105).
   //
   // Both, not either: presence proves the pass actually resolved this token to
   // a usable needle, the verdict proves the token is a secret at all.
@@ -376,40 +378,30 @@ export async function reresolveCrossStackValue(
  * follows for its template-named region.
  */
 /**
- * Pin (or retract) a `{{resolve:...}}` secret verdict in the PROCESS-GLOBAL
- * store — unless this resolver is a producer-region GUEST, which writes
- * nothing there.
+ * Pin (or retract) a `{{resolve:...}}` secret verdict in the process-wide
+ * store, filed under `scope` ({@link secretVerdictScope}) — unless this
+ * resolver is a producer-region GUEST, which writes nothing there.
  *
- * The guest suppression is the correction the review of issue #1934 forced,
- * and the isolation note on {@link producerRegionResolvers} used to overstate
- * what a per-region resolver bought. The value cache is per-instance, but the
- * VERDICT store is not this class's — it lives in `secret-redaction.ts` and is
- * keyed by the expression STRING alone, so a producer-region resolution would
- * pin a FOREIGN region's answer for the whole process. The consequence is
- * concrete, and it lands on the consumer's very next pass: `isKnownSecret`
- * consults that store, and on the `skipDynamicReferences` (diff / no-op) path
- * a `true` verdict SKIPS the lookup and leaves the expression unresolved — so
- * a consumer-region parameter that is a plain `String`, and which state
- * therefore holds RESOLVED, would be compared as an expression and report a
- * spurious change on every run. That is issue #1901's perpetual-UPDATE class,
- * arriving through a region boundary the store cannot see.
+ * SCOPED SINCE ISSUE #4105. The store was keyed by the expression STRING
+ * alone, so one region's `SecureString` verdict made another region's resolver
+ * SKIP its lookup on the `skipDynamicReferences` (diff / no-op) path and
+ * compare a plain `String` parameter as an expression — a phantom change on
+ * every run, and since issue #4056 a refused `Export.Name` alias and withheld
+ * previous values too. The verdict is now also filed under `scope`, and the
+ * resolver's `isKnownSecret` reads only its OWN scope's entry. The bare set
+ * the redaction path reads is written exactly as before.
  *
- * KEYING THE STORE BY REGION IS THE BETTER FIX AND IS NOT AVAILABLE FROM
- * HERE. `secret-redaction.ts` reads its own store internally with the BARE
- * expression (`isKnownSecretExpression`, and the mixed-leaf public-reference
- * test), so a region-qualified key would silently stop matching for the
- * redaction path — losing the #1910 losing-member arm and changing the #1926
- * empty-map verdict — and that file is owned by another lane in this run.
- * Suppressing the WRITE is the half that is correct on its own: it removes
- * the new cross-region reachability without changing the key, and the
- * consumer's own resolver keeps pinning its own region's verdicts exactly as
- * before.
+ * The guest suppression predates the scope and is kept. The review of issue
+ * #1934 added it because a producer-region resolution pinned a FOREIGN region's
+ * answer under a key the consumer reads. The scoped read keeps that answer away
+ * from the consumer's skip arm, but the bare set still reaches the redaction
+ * path with no region attached, so suppressing the WRITE stays the
+ * conservative half.
  *
- * READS are deliberately NOT suppressed. A guest reading the consumer's
- * verdict can only seed `isKnownSecret`, which for `ssm` is OVERWRITTEN by
- * the fresh `GetParameter` response, and on the skip path it produces the
- * unresolved expression the diff wants anyway. Only the write direction
- * carried the defect.
+ * READS are deliberately NOT suppressed. A guest reading its own scope can
+ * only seed `isKnownSecret`, which for `ssm` is OVERWRITTEN by the fresh
+ * `GetParameter` response, and on the skip path it produces the unresolved
+ * expression the diff wants anyway.
  *
  * The cost of suppressing is one `GetParameter` per foreign expression per
  * later pass, since the guest's OWN instance cache still carries the verdict
@@ -419,11 +411,11 @@ export async function reresolveCrossStackValue(
 export function pinSecretVerdict(
   this: IntrinsicFunctionResolver,
   expression: string,
-  secret: boolean
+  secret: boolean,
+  scope: string
 ): void {
   if (this.producerRegionGuest) return;
-  if (secret) recordedSecretExpressions.add(expression);
-  else recordedSecretExpressions.delete(expression);
+  pinScopedSecretVerdict(scope, expression, secret);
 }
 
 /**

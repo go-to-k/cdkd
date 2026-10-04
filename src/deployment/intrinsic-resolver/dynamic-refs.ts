@@ -13,9 +13,10 @@ import {
   type ResolverContext,
   isDeliberateResolutionRefusal,
   quotedRender,
-  recordedSecretExpressions,
   withoutProducerRegions,
 } from './support.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { isScopedSecretVerdict } from '../secret-redaction/mask-only.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import {
   type DynamicReferenceSubstitution,
@@ -35,6 +36,30 @@ declare module '../intrinsic-function-resolver.js' {
       typeof resolveDynamicReferencesWithLogTwin
     >;
   }
+}
+
+/**
+ * The SCOPE a secret verdict read by this resolver is filed under (issue
+ * [#4105](https://github.com/go-to-k/cdkd/issues/4105)): the credential
+ * identity and the region whose SSM endpoint answered. The same parameter NAME
+ * is a different parameter in another region or account, so a verdict read in
+ * one says nothing about the other.
+ *
+ * The region is {@link explicitRegion}, the one {@link clientsForRegion} binds
+ * the lookup to, and `''` when none was named — the AMBIENT clients answer
+ * then, in whatever region they point at, which a per-stack region switch can
+ * change. Such resolvers share the one `''` scope, exactly as every resolver
+ * shared the bare store before #4105; every multi-region command builds its
+ * resolvers with the stack's region. The credential half is the same
+ * reading the instance value cache keys on (issue #3660). Call it ONCE per
+ * token, before the lookup, and pass the result to both the read and
+ * `pinSecretVerdict`, so the verdict is filed under the scope that asked.
+ */
+function secretVerdictScope(resolver: IntrinsicFunctionResolver): string {
+  return injectiveKey(
+    credentialFingerprint(ambientCredentialConfig()),
+    canonicalizeRegion(resolver.explicitRegion) ?? ''
+  );
 }
 
 /**
@@ -184,10 +209,18 @@ export async function resolveDynamicReferencesWithLogTwin(
       // needed to know the value must not be persisted — and on the comparison
       // path below it is left unresolved WITHOUT a `GetParameter`, exactly like
       // `secretsmanager`.
+      //
+      // The memo is read for THIS resolver's SCOPE only (issue #4105): the
+      // same parameter NAME in another region or account is a different
+      // parameter, and a foreign `SecureString` verdict made the skip arm
+      // below leave a public `String` token unresolved on every diff. The
+      // scope is read ONCE here and handed to every `pinSecretVerdict` for
+      // this token, so the verdict is filed under the scope that asked.
+      const verdictScope = secretVerdictScope(this);
       const isKnownSecret =
         service === 'secretsmanager' ||
         service === 'ssm-secure' ||
-        recordedSecretExpressions.has(fullMatch);
+        isScopedSecretVerdict(verdictScope, fullMatch);
 
       // Diff / no-op comparison path: leave SECRET references UNRESOLVED (the
       // expression is what state stores, so comparing keeps like-for-like and
@@ -359,10 +392,12 @@ export async function resolveDynamicReferencesWithLogTwin(
         //
         // The verdict is read off the ENTRY **and only off the entry** —
         // deliberately NOT `isKnownSecret`, and that exclusion is the point.
-        // `isKnownSecret` consults the process-global `recordedSecretExpressions`,
-        // which a FOREIGN resolver writes to, so ORing it in here would re-open
-        // the cross-resolver channel this cache's instance scope exists to close
-        // — in the opposite direction from the leak (issue #1933 review):
+        // `isKnownSecret` consulted the process-global `recordedSecretExpressions`,
+        // which a FOREIGN resolver wrote to, so ORing it in here would have
+        // re-opened the cross-resolver channel this cache's instance scope
+        // exists to close — in the opposite direction from the leak (issue
+        // #1933 review). It reads only this resolver's own scope since issue
+        // #4105, but the entry stays the only authority here:
         //
         //   virginia resolves `/env` -> `String` -> retracts the memo, caches
         //   {value:'prod', secret:false}; tokyo resolves the SAME expression ->
@@ -466,10 +501,10 @@ export async function resolveDynamicReferencesWithLogTwin(
             persistedText ||
             !this.tokenAssembledForRecording(fullMatch, tokenLogText, context)
           ) {
-            this.pinSecretVerdict(fullMatch, true);
+            this.pinSecretVerdict(fullMatch, true, verdictScope);
           }
         } else if (!param.secure) {
-          this.pinSecretVerdict(fullMatch, false);
+          this.pinSecretVerdict(fullMatch, false, verdictScope);
         } else {
           // Secret, but from a `Type` too anomalous to memoize — so the VALUE is
           // not memoized either. See `cacheable`'s doc above.
@@ -601,7 +636,7 @@ export async function resolveDynamicReferencesWithLogTwin(
       if (isSecret && resolved && !persistedText) {
         this.refuseSecretAssembledReference(fullMatch, tokenLogText, context);
       }
-      if (pinSecureVerdict) this.pinSecretVerdict(fullMatch, true);
+      if (pinSecureVerdict) this.pinSecretVerdict(fullMatch, true, verdictScope);
 
       // The verdict is stored ALONGSIDE the value so the cache-hit arm above can
       // re-record it into a later pass's bag on its own, without depending on a
@@ -648,7 +683,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         // two intrinsic-shaped `ssm-secure` references sharing a value would
         // persist the winner's expression at the loser's position.
         if (service === 'secretsmanager' || service === 'ssm-secure') {
-          this.pinSecretVerdict(fullMatch, true);
+          this.pinSecretVerdict(fullMatch, true, verdictScope);
         }
       }
       // Replacer FUNCTION — see the cache-hit arm above for why a replacement

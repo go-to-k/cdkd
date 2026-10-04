@@ -20,6 +20,9 @@ const secureSourceParameterName =
 // region B (issue #1957 acceptance criterion 3). Seeded by `verify.sh`.
 const mixedTypeSourceParameterName =
   process.env['CDKD_IT_DYNREF_MIXED_PARAM'] ?? '/cdkd-test/dynref-cross-region-mixed';
+// The same with the types swapped: SecureString in A, String in B (issue #4105).
+const mixedTypeReversedSourceParameterName =
+  process.env['CDKD_IT_DYNREF_MIXED_REV_PARAM'] ?? '/cdkd-test/dynref-cross-region-mixed-rev';
 
 // The region-B ARN of the shared String parameter, for the #2134
 // assembled-foreign arm. Region A's stack ONLY: the arm exists to prove a
@@ -33,6 +36,7 @@ new DynamicRefCrossRegionStack(app, 'CdkdDynamicRefCrossRegionAStack', {
   sourceParameterName,
   secureSourceParameterName,
   mixedTypeSourceParameterName,
+  mixedTypeReversedSourceParameterName,
   ...(foreignParameterArn ? { foreignParameterArn } : {}),
 });
 
@@ -42,6 +46,7 @@ new DynamicRefCrossRegionStack(app, 'CdkdDynamicRefCrossRegionBStack', {
   sourceParameterName,
   secureSourceParameterName,
   mixedTypeSourceParameterName,
+  mixedTypeReversedSourceParameterName,
 });
 
 // The `cdkd scrub` arm for issue
