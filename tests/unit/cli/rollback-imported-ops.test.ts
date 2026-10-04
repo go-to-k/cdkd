@@ -301,6 +301,37 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(thrown).toBeInstanceOf(Error);
   });
 
+  it.each([
+    ['ANOTHER resource the import adopted', 'old-phys', 0],
+    ['the same resource (control)', NAME, 1],
+  ])(
+    '--revert-failed: a failed UPDATE recorded against %s',
+    async (_what, opPhysicalId, updates) => {
+      // A deploy's UPDATE of Topic failed on `opPhysicalId`; the record now
+      // names NAME. Only when they agree may the force-revert write to it.
+      install({ Topic: topicRecord('imported') }, [
+        {
+          operations: [],
+          failedOperations: [
+            {
+              logicalId: 'Topic',
+              changeType: 'UPDATE',
+              resourceType: TOPIC,
+              physicalId: opPhysicalId,
+              attemptedProperties: topicRecord('attempted').properties,
+              previousState: { ...topicRecord('pre-deploy'), physicalId: opPhysicalId },
+              provisionedBy: 'sdk',
+            },
+          ],
+        },
+      ]);
+
+      await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+
+      expect(provider.update).toHaveBeenCalledTimes(updates);
+    }
+  );
+
   it('--orphan on an imported id is honoured: the record is dropped from state, nothing is deleted', async () => {
     install({ Topic: topicRecord('imported') }, [{ operations: [createOp], importedResources: [MARK] }]);
 
