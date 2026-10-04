@@ -390,10 +390,9 @@ async function replaySingle(
   };
 
   // go-to-k/cdkd#4408: the op completed when it replaced or dropped the
-  // record, or found it already reverted. Anything else (a throw, a skip that
-  // left the deploy's record) leaves its holders unsettled.
+  // record, or found it already reverted. Anything else (a throw before the
+  // record moved, a skip that left the deploy's record) leaves it unsettled.
   const recordBefore = ownRecord(stateResources, op.logicalId);
-  let threw = false;
   try {
     // The three records this op can render an id of, as they stand: the op's
     // own, its previous state, and the live one. Inside the `try`, since they
@@ -504,12 +503,10 @@ async function replaySingle(
       ...(failedRoute && { provisionedBy: failedRoute }),
       error: maskedRollbackEventError(rollbackError, mask),
     });
-    threw = true;
   } finally {
     inlinePolicyWriters.noteOutcome(
       op,
-      !threw &&
-        (action === 'skip-already-done' || ownRecord(stateResources, op.logicalId) !== recordBefore)
+      action === 'skip-already-done' || ownRecord(stateResources, op.logicalId) !== recordBefore
     );
   }
 }
@@ -615,7 +612,6 @@ async function replayFailedOperationsUnbound(
     // go-to-k/cdkd#4408: the op completed when it replaced or dropped the
     // record, or found nothing applied (`skip-failed-noop`).
     const recordBefore = ownRecord(stateResources, op.logicalId);
-    let threw = false;
     try {
       addRecordNames(opMasker, op, stateResources[op.logicalId]);
       switch (action) {
@@ -1069,12 +1065,10 @@ async function replayFailedOperationsUnbound(
         ...(failedRoute && { provisionedBy: failedRoute }),
         error: maskedRollbackEventError(revertError, mask),
       });
-      threw = true;
     }
     inlinePolicyWriters.noteOutcome(
       op,
-      !threw &&
-        (action === 'skip-failed-noop' || ownRecord(stateResources, op.logicalId) !== recordBefore)
+      action === 'skip-failed-noop' || ownRecord(stateResources, op.logicalId) !== recordBefore
     );
   }
   // go-to-k/cdkd#4408: no put-back here — the caller's `replayRollback` of
