@@ -8,6 +8,7 @@ import {
   RegisterTaskDefinitionCommand,
   DeregisterTaskDefinitionCommand,
   DescribeTaskDefinitionCommand,
+  ListTaskDefinitionsCommand,
   CreateServiceCommand,
   UpdateServiceCommand,
   DeleteServiceCommand,
@@ -17,6 +18,7 @@ import {
   UntagResourceCommand,
   type DescribeClustersCommandOutput,
   type DescribeTaskDefinitionCommandOutput,
+  type RegisterTaskDefinitionCommandOutput,
   type Tag,
   type KeyValuePair,
   type PortMapping,
@@ -129,6 +131,41 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  isInsideWindow,
+  withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
+} from './ambiguous-create.js';
+import {
+  MAX_ORPHAN_LIST_PAGES,
+  orphanCommandRegionArg,
+  reportPossibleOrphans,
+} from './orphan-report.js';
+
+/**
+ * Issue #2080: `RegisterTaskDefinition` carries no idempotency token, and
+ * every call registers the family's NEXT revision. A 5xx whose request had
+ * succeeded therefore leaves an extra ACTIVE revision that no state records
+ * and `cdkd destroy` never deregisters (`RegisterTaskDefinition` refuses
+ * nothing on a replay, so nothing collides either). Armed by an ambiguous
+ * create failure; the next attempt reports candidates before registering again.
+ */
+const registerTaskDefinitionLatch = new AmbiguousCreateLatch('ecs:RegisterTaskDefinition');
+/** Task definition ARNs this process registered, never reported as orphan candidates. */
+const taskDefinitionsRegisteredByThisProcess = new RecentIdSet();
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetTaskDefinitionCreateRetryStateForTests(): void {
+  registerTaskDefinitionLatch.resetForTests();
+  taskDefinitionsRegisteredByThisProcess.resetForTests();
+}
+
+/** The family of a task definition ARN (`...:task-definition/<family>:<revision>`). */
+function familyOfTaskDefinitionArn(arn: string): string | undefined {
+  return /:task-definition\/(.+):\d+$/.exec(arn)?.[1];
+}
 
 /**
  * Convert CFn Tags (Array<{Key, Value}>) to ECS Tags (Array<{key, value}>)
@@ -399,6 +436,7 @@ export const settleRolloutDelays = {
 
 export class ECSProvider implements ResourceProvider {
   private ecsClient?: ECSClient;
+  private taskDefinitionCreateClient?: ECSClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ECSProvider');
 
@@ -515,6 +553,109 @@ export class ECSProvider implements ResourceProvider {
       });
     }
     return this.ecsClient;
+  }
+
+  /**
+   * The client `RegisterTaskDefinition` goes through: SDK retries on, except
+   * a 5xx (`withoutServerErrorRetries`, issue #2080). Separate so every other
+   * ECS call keeps the full SDK retry.
+   */
+  private getTaskDefinitionCreateClient(): ECSClient {
+    if (!this.taskDefinitionCreateClient) {
+      this.taskDefinitionCreateClient = withoutServerErrorRetries(
+        new ECSClient({
+          ...ambientClientDefaults(),
+          ...(this.providerRegion ? { region: this.providerRegion } : {}),
+        })
+      );
+    }
+    return this.taskDefinitionCreateClient;
+  }
+
+  /**
+   * Issue #2080: after an attempt at `RegisterTaskDefinition` ended AMBIGUOUS
+   * (a 5xx: ECS may have registered the revision and lost the answer), name
+   * the ACTIVE revisions of `family` registered inside the failed attempts'
+   * window (`registeredAt`) that this process did not register, and warn: a
+   * read command first, then a DEREGISTER command to run only after
+   * confirming. Detection only: a family is per account and region and is
+   * meant to be shared -- every deploy of the same family adds a revision --
+   * so a revision in the window can be another deploy's.
+   *
+   * `ListTaskDefinitions` returns ARNs only, so each candidate's
+   * `registeredAt` takes a `DescribeTaskDefinition`. Listed newest first, so
+   * the walk stops at the first revision registered before the window (or
+   * with no `registeredAt`, which only revisions older than the field carry):
+   * revision numbers only grow, so every later one is older still.
+   */
+  private async reportPossibleOrphanTaskDefinitions(
+    logicalId: string,
+    family: string,
+    window: AmbiguousCreateWindow,
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const client = this.getClient();
+    const aws = pasteableAwsCommand(log.mask);
+    const regionArg = await orphanCommandRegionArg(client, aws);
+    await reportPossibleOrphans(logicalId, window, log, {
+      action: 'RegisterTaskDefinition',
+      service: 'ECS',
+      listAction: 'ListTaskDefinitions',
+      subject: `a revision of task definition family ${log.value(family)}`,
+      noun: 'task definition revision(s)',
+      list: async () => {
+        const ids: string[] = [];
+        let nextToken: string | undefined;
+        let pages = 0;
+        do {
+          const page = await client.send(
+            new ListTaskDefinitionsCommand({
+              familyPrefix: family,
+              status: 'ACTIVE',
+              sort: 'DESC',
+              ...(nextToken && { nextToken }),
+            })
+          );
+          pages++;
+          for (const arn of page.taskDefinitionArns ?? []) {
+            // `familyPrefix` is documented as the full family name; compare
+            // exactly anyway, so a prefix match never names another family.
+            if (familyOfTaskDefinitionArn(arn) !== family) continue;
+            let registeredAt: Date | undefined;
+            let active = true;
+            try {
+              const described = await client.send(
+                new DescribeTaskDefinitionCommand({ taskDefinition: arn })
+              );
+              registeredAt = described.taskDefinition?.registeredAt;
+              // Deregistered since the listing: someone already let it go.
+              active = (described.taskDefinition?.status ?? 'ACTIVE') === 'ACTIVE';
+            } catch (error) {
+              // Deleted since the listing: not an orphan any more.
+              if (isTaskDefinitionMissingError(error)) continue;
+              throw error;
+            }
+            if (registeredAt === undefined || registeredAt.getTime() < window.floorMs) {
+              return { ids, truncated: false };
+            }
+            if (
+              active &&
+              isInsideWindow(registeredAt, window) &&
+              !taskDefinitionsRegisteredByThisProcess.has(arn)
+            ) {
+              ids.push(arn);
+            }
+          }
+          nextToken = page.nextToken;
+        } while (nextToken && pages < MAX_ORPHAN_LIST_PAGES);
+        return { ids, truncated: Boolean(nextToken) };
+      },
+      inspect: (arn) =>
+        aws`aws ecs describe-task-definition --task-definition ${arn}${regionArg}`.render(),
+      remove: (arn) =>
+        aws`aws ecs deregister-task-definition --task-definition ${arn}${regionArg}`.render(),
+      removeVerb: 'deregister it',
+    });
   }
 
   /**
@@ -1014,51 +1155,66 @@ export class ECSProvider implements ResourceProvider {
     log.debug(`Creating ECS task definition ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-    const client = this.getClient();
+    const family =
+      (properties['Family'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 255 });
 
     try {
-      const response = await client.send(
-        new RegisterTaskDefinitionCommand({
-          family:
-            (properties['Family'] as string | undefined) ||
-            generateResourceName(logicalId, { maxLength: 255 }),
-          containerDefinitions: this.convertContainerDefinitions(
-            properties['ContainerDefinitions'] as Array<Record<string, unknown>> | undefined
-          ),
-          cpu: properties['Cpu'] as string | undefined,
-          memory: properties['Memory'] as string | undefined,
-          networkMode: properties['NetworkMode'] as NetworkMode | undefined,
-          requiresCompatibilities: properties['RequiresCompatibilities'] as
-            | Compatibility[]
-            | undefined,
-          executionRoleArn: properties['ExecutionRoleArn'] as string | undefined,
-          taskRoleArn: properties['TaskRoleArn'] as string | undefined,
-          volumes: this.convertVolumes(
-            properties['Volumes'] as Array<Record<string, unknown>> | undefined
-          ),
-          placementConstraints: this.convertTaskDefinitionPlacementConstraints(
-            properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
-          ),
-          tags: convertTags(desiredTags),
-          runtimePlatform: this.convertRuntimePlatform(
-            properties['RuntimePlatform'] as Record<string, unknown> | undefined
-          ),
-          proxyConfiguration: this.convertProxyConfiguration(
-            properties['ProxyConfiguration'] as Record<string, unknown> | undefined
-          ),
-          pidMode: properties['PidMode'] as PidMode | undefined,
-          ipcMode: properties['IpcMode'] as IpcMode | undefined,
-          ephemeralStorage: this.convertEphemeralStorage(
-            properties['EphemeralStorage'] as Record<string, unknown> | undefined
-          ),
-          enableFaultInjection: properties['EnableFaultInjection'] as boolean | undefined,
-        })
-      );
+      // Issue #2080: after an earlier ambiguous attempt, name the revision it
+      // may have registered before a second RegisterTaskDefinition is sent.
+      // Detection only -- see `orphan-report.ts`.
+      const orphanWindow = registerTaskDefinitionLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await this.reportPossibleOrphanTaskDefinitions(logicalId, family, orphanWindow, log);
+      }
+      const attemptStartMs = Date.now();
+      let response: RegisterTaskDefinitionCommandOutput;
+      try {
+        response = await this.getTaskDefinitionCreateClient().send(
+          new RegisterTaskDefinitionCommand({
+            family,
+            containerDefinitions: this.convertContainerDefinitions(
+              properties['ContainerDefinitions'] as Array<Record<string, unknown>> | undefined
+            ),
+            cpu: properties['Cpu'] as string | undefined,
+            memory: properties['Memory'] as string | undefined,
+            networkMode: properties['NetworkMode'] as NetworkMode | undefined,
+            requiresCompatibilities: properties['RequiresCompatibilities'] as
+              | Compatibility[]
+              | undefined,
+            executionRoleArn: properties['ExecutionRoleArn'] as string | undefined,
+            taskRoleArn: properties['TaskRoleArn'] as string | undefined,
+            volumes: this.convertVolumes(
+              properties['Volumes'] as Array<Record<string, unknown>> | undefined
+            ),
+            placementConstraints: this.convertTaskDefinitionPlacementConstraints(
+              properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
+            ),
+            tags: convertTags(desiredTags),
+            runtimePlatform: this.convertRuntimePlatform(
+              properties['RuntimePlatform'] as Record<string, unknown> | undefined
+            ),
+            proxyConfiguration: this.convertProxyConfiguration(
+              properties['ProxyConfiguration'] as Record<string, unknown> | undefined
+            ),
+            pidMode: properties['PidMode'] as PidMode | undefined,
+            ipcMode: properties['IpcMode'] as IpcMode | undefined,
+            ephemeralStorage: this.convertEphemeralStorage(
+              properties['EphemeralStorage'] as Record<string, unknown> | undefined
+            ),
+            enableFaultInjection: properties['EnableFaultInjection'] as boolean | undefined,
+          })
+        );
+      } catch (error) {
+        registerTaskDefinitionLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
 
       const taskDef = response.taskDefinition;
       if (!taskDef || !taskDef.taskDefinitionArn) {
         throw new Error('RegisterTaskDefinition did not return task definition ARN');
       }
+      taskDefinitionsRegisteredByThisProcess.add(taskDef.taskDefinitionArn);
 
       log.debug(
         `Successfully created ECS task definition ${logicalId}: ${taskDef.taskDefinitionArn}`

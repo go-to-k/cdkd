@@ -65,6 +65,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - [A warning that an API Gateway API, authorizer, integration or deployment may be an orphan](#a-warning-that-an-api-gateway-api-authorizer-integration-or-deployment-may-be-an-orphan)
   - [A warning that an EMR cluster, instance fleet or instance group may be an orphan](#a-warning-that-an-emr-cluster-instance-fleet-or-instance-group-may-be-an-orphan)
   - [A warning that a Lambda layer version or event source mapping may be an orphan](#a-warning-that-a-lambda-layer-version-or-event-source-mapping-may-be-an-orphan)
+  - [A warning that a DLM lifecycle policy or ECS task definition revision may be an orphan](#a-warning-that-a-dlm-lifecycle-policy-or-ecs-task-definition-revision-may-be-an-orphan)
   - [`DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for](#distributionalreadyexists-on-a-cloudfront-deploy-and-a-distribution-you-did-not-ask-for)
   - [an ACM certificate deploy fails with "did not reach ISSUED status"](#an-acm-certificate-deploy-fails-with-did-not-reach-issued-status)
   - [Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`](#reverting-a-failed-no-rollback-interrupted-deploy-cdkd-rollback)
@@ -2681,6 +2682,32 @@ source (it does for an SQS queue), that create fails with
 (`aws lambda delete-event-source-mapping --uuid <uuid>`) once you have
 confirmed it is this deploy's, and re-run the deploy. The lookup needs
 `lambda:ListLayerVersions` or `lambda:ListEventSourceMappings`; without it cdkd
+warns that it could not look, and the deploy proceeds. A reset connection or a
+timeout after the request was sent is not covered, as for the creates above.
+
+### A warning that a DLM lifecycle policy or ECS task definition revision may be an orphan
+
+`CreateLifecyclePolicy` and `RegisterTaskDefinition` carry no idempotency token
+either: every `RegisterTaskDefinition` registers the family's next revision. cdkd
+turns off the AWS SDK's own retry of a 5xx for them. After one fails with HTTP
+500 / 502 / 503 / 504, cdkd's retry first lists what the failed attempt may have
+made and warns about each match:
+
+- a lifecycle policy with the same description (a policy with no description
+  matches a create with none), and the same default or custom kind, created
+  during the failed attempt that this deploy did not record. The
+  warning gives `aws dlm get-lifecycle-policy`, then
+  `aws dlm delete-lifecycle-policy`;
+- an ACTIVE revision of the same task definition family, registered during the
+  failed attempt, that this deploy did not register. The warning gives
+  `aws ecs describe-task-definition`, then `aws ecs deregister-task-definition`.
+
+Run the second command only after confirming the candidate is this deploy's
+orphan: another deploy can create a policy with the same description, or
+register a revision of the same family, in the same window. cdkd neither adopts
+nor deletes a candidate, and then creates the resource again. The lookup needs
+`dlm:GetLifecyclePolicies` + `dlm:GetLifecyclePolicy`, or
+`ecs:ListTaskDefinitions` + `ecs:DescribeTaskDefinition`; without them cdkd
 warns that it could not look, and the deploy proceeds. A reset connection or a
 timeout after the request was sent is not covered, as for the creates above.
 
