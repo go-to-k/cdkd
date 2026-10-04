@@ -22,7 +22,7 @@ import {
 } from '../../../src/deployment/recreate-targets.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { NoSuchBucket, NotFound, type S3Client } from '@aws-sdk/client-s3';
 import {
@@ -32,6 +32,8 @@ import {
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+
+const providerClasses = await loadProviderClasses();
 
 function res(
   resourceType: string,
@@ -2354,7 +2356,7 @@ describe('deploy.ts hands the probes the DEPLOY-region clients (source-level pin
 describe('--recreate-via-cc-api on a type Cloud Control cannot create (#3887)', () => {
   // The REAL registry's predicate, as deploy.ts wires it.
   const registry = new ProviderRegistry();
-  registerAllProviders(registry);
+  registerAllProviders(registry, providerClasses);
   const viaRegistry = (rt: string): string | undefined => registry.ccRouteUnavailableReason(rt);
 
   function validate(

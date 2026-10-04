@@ -3,9 +3,11 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { makeCanonicalizePropertiesFn } from '../../../src/provisioning/canonicalize-properties.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
-import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
+
+const providerClasses = await loadProviderClasses();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -392,7 +394,7 @@ describe('DiffCalculator canonicalizeDesired (#1591)', () => {
     // a lookup-contract change or a routing change for AWS::EC2::Route fails
     // here instead of passing green.
     const registry = new ProviderRegistry();
-    registerAllProviders(registry);
+    registerAllProviders(registry, providerClasses);
 
     const changes = await new DiffCalculator().calculateDiff(
       narrowedState(),

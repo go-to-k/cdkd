@@ -69,7 +69,7 @@ import {
   ProviderRegistry,
   STICKY_CC_MIGRATION_EXEMPT,
 } from '../../../../src/provisioning/provider-registry.js';
-import { registerAllProviders } from '../../../../src/provisioning/register-providers.js';
+import { loadProviderClasses, registerAllProviders } from '../../../../src/provisioning/register-providers.js';
 import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
@@ -81,6 +81,8 @@ import {
   clearResolvedResourceTimeouts,
   setResolvedResourceTimeouts,
 } from '../../../../src/provisioning/resource-timeout-registry.js';
+
+const providerClasses = await loadProviderClasses();
 
 const TYPE = 'AWS::Pipes::Pipe';
 const NAME = 'my-pipe';
@@ -668,7 +670,7 @@ describe('existing cc-api records (issue #4423)', () => {
 
   it('routes a cc-api-recorded pipe to the SDK provider, which updates it in place under the same name', async () => {
     const registry = new ProviderRegistry();
-    registerAllProviders(registry);
+    registerAllProviders(registry, providerClasses);
     const desired = {
       ...KINESIS_PREVIOUS,
       SourceParameters: { KinesisStreamParameters: { StartingPosition: 'LATEST', BatchSize: 20 } },

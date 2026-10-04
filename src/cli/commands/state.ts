@@ -71,7 +71,10 @@ import {
   type StateBucketSource,
 } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
-import { registerAllProviders } from '../../provisioning/register-providers.js';
+import {
+  loadProviderClasses,
+  registerAllProviders,
+} from '../../provisioning/register-providers.js';
 import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { withStackName } from '../../provisioning/resource-name.js';
@@ -2531,6 +2534,11 @@ async function stateDestroyCommand(
     );
   }
 
+  // After the refusal above, which needs no provider; before any stack client
+  // scope / globals are set, so provider construction below stays synchronous
+  // (see `loadProviderClasses`).
+  const providerClasses = await loadProviderClasses();
+
   const logger = getLogger();
   if (options.verbose) {
     logger.setLevel('debug');
@@ -2554,7 +2562,7 @@ async function stateDestroyCommand(
 
   const setup = await setupStateBackend(options);
   const providerRegistry = new ProviderRegistry();
-  registerAllProviders(providerRegistry);
+  registerAllProviders(providerRegistry, providerClasses);
   providerRegistry.setCustomResourceResponseBucket(setup.bucket);
   if (options.allowUnsupportedTypes?.length) {
     providerRegistry.allowUnsupportedTypes(options.allowUnsupportedTypes);
@@ -3424,6 +3432,9 @@ async function stateRefreshObservedCommand(
     verbose: boolean;
   }
 ): Promise<void> {
+  // Awaited first, so provider construction below stays synchronous once the
+  // stack client scope / globals are set (see `loadProviderClasses`).
+  const providerClasses = await loadProviderClasses();
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
@@ -3451,7 +3462,7 @@ async function stateRefreshObservedCommand(
       });
       const registry = runWithStackAwsClients(clients, () => {
         const scoped = new ProviderRegistry();
-        registerAllProviders(scoped);
+        registerAllProviders(scoped, providerClasses);
         scoped.setCustomResourceResponseBucket(setup.bucket);
         return scoped;
       });

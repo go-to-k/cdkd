@@ -85,6 +85,7 @@ vi.mock('../../../src/utils/aws-region-resolver.js', async () => {
 // never ran.
 const providerDelete = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
+  loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
 }));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({

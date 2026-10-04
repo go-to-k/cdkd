@@ -1,7 +1,7 @@
 import { displayIdent } from '../../utils/display-safe.js';
 import { SECRET_MASK, carriesSecretMask } from '../secret-redaction.js';
 import { isDynamicReferenceString } from '../secret-redaction/rules.js';
-import { parseWebACLArn } from '../../provisioning/providers/wafv2-provider.js';
+import { parseWebACLArn } from '../../provisioning/providers/wafv2-arn.js';
 import {
   COMPOSITE_ID_SEPARATOR,
   canonicalizeRoute53QueryName,

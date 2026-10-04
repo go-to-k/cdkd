@@ -420,10 +420,25 @@ export function parseNestedKeyDivergences(checkOutput, exitCode = 0) {
 }
 
 /**
+ * The source `mapTypesToProviderFiles` reads: `provider-classes.ts` holds the
+ * class -> file bindings (re-exports), `register-providers.ts` the
+ * type -> class registrations.
+ *
+ * @param {string} repoRoot
+ * @returns {string}
+ */
+export function readProviderRegistrationSource(repoRoot) {
+  return (
+    readFileSync(join(repoRoot, 'src/provisioning/provider-classes.ts'), 'utf8') +
+    readFileSync(join(repoRoot, 'src/provisioning/register-providers.ts'), 'utf8')
+  );
+}
+
+/**
  * Map each registered resource type to the provider FILE that serves it.
  *
- * Parsed from `register-providers.ts`, which is the only place that binding
- * exists: a type is registered either with a fresh instance
+ * Parsed from `provider-classes.ts` + `register-providers.ts`, the only place
+ * that binding exists: a type is registered either with a fresh instance
  * (`registry.register('AWS::X::Y', new FooProvider())`) or with a shared local
  * (`const p = new FooProvider(); registry.register('AWS::X::Y', p)`), and both
  * resolve back to the class, which the file's own imports resolve to a path.
@@ -435,13 +450,13 @@ export function parseNestedKeyDivergences(checkOutput, exitCode = 0) {
  * against `@aws-sdk/client-cloudfront`. A confident wrong answer is the one
  * outcome this report must not produce.
  *
- * @param {string} source `register-providers.ts` contents
+ * @param {string} source {@link readProviderRegistrationSource}'s output
  * @returns {Map<string, string>} resource type -> repo-relative provider path
  */
 export function mapTypesToProviderFiles(source) {
   /** @type {Map<string, string>} */
   const classToPath = new Map();
-  for (const m of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*'\.\/(providers\/[a-z0-9-]+)\.js'/g)) {
+  for (const m of source.matchAll(/(?:import|export)\s*\{([^}]+)\}\s*from\s*'\.\/(providers\/[a-z0-9-]+)\.js'/g)) {
     for (const name of m[1].split(',').map((n) => n.trim()).filter(Boolean)) {
       classToPath.set(name, `src/provisioning/${m[2]}.ts`);
     }
@@ -3769,9 +3784,7 @@ function main() {
     return readFileSync(path, 'utf8');
   };
 
-  const providerFiles = mapTypesToProviderFiles(
-    readFileSync(join(REPO_ROOT, 'src/provisioning/register-providers.ts'), 'utf8')
-  );
+  const providerFiles = mapTypesToProviderFiles(readProviderRegistrationSource(REPO_ROOT));
 
   // Which properties each provider DECLARES. A removal only needs a decision
   // when something declares the property — otherwise the property leaving the

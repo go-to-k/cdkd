@@ -39,6 +39,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { parseWebACLArn } from './wafv2-arn.js';
 
 /**
  * Translate the empty-string placeholder `readCurrentState` emits for an
@@ -443,37 +444,6 @@ function collectSdkUnsupportedRuleKeys(value: unknown, found: Set<string>): void
     if (SDK_UNSUPPORTED_RULE_KEYS.includes(key)) found.add(key);
     collectSdkUnsupportedRuleKeys(nested, found);
   }
-}
-
-/**
- * Parse WAFv2 WebACL ARN to extract Id, Name, and Scope.
- *
- * ARN format:
- *   arn:aws:wafv2:{region}:{account}:regional/webacl/{name}/{id}
- *   arn:aws:wafv2:{region}:{account}:global/webacl/{name}/{id}
- *
- * A short / malformed ARN yields `undefined` for `name` / `id` (the path
- * segments simply are not there) — callers must guard. `scope` is always
- * defined (anything not `global` maps to `REGIONAL`).
- */
-export function parseWebACLArn(arn: string): {
-  id: string | undefined;
-  name: string | undefined;
-  scope: Scope;
-} {
-  // Example: arn:aws:wafv2:us-east-1:123456789012:regional/webacl/my-acl/abc-123
-  const parts = arn.split(':');
-  // parts[5] = "regional/webacl/my-acl/abc-123" or "global/webacl/my-acl/abc-123"
-  const resourcePart = parts.slice(5).join(':');
-  const segments = resourcePart.split('/');
-  // segments: ["regional", "webacl", "my-acl", "abc-123"]
-  const scopeRaw = segments[0]; // "regional" or "global"
-  const name = segments[2];
-  const id = segments[3];
-
-  const scope: Scope = scopeRaw === 'global' ? 'CLOUDFRONT' : 'REGIONAL';
-
-  return { id, name, scope };
 }
 
 /**

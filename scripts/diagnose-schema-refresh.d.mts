@@ -60,6 +60,7 @@ export declare function parseNestedKeyDivergences(
   divergences: NestedKeyDivergence[];
   unparsedFailure: boolean;
 };
+export declare function readProviderRegistrationSource(repoRoot: string): string;
 export declare function mapTypesToProviderFiles(source: string): Map<string, string>;
 export declare function findDeclarationCandidates(
   property: string,

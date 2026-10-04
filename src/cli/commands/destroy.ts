@@ -44,7 +44,10 @@ import {
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
-import { registerAllProviders } from '../../provisioning/register-providers.js';
+import {
+  loadProviderClasses,
+  registerAllProviders,
+} from '../../provisioning/register-providers.js';
 import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -215,6 +218,9 @@ async function destroyCommand(
     resourceTimeout?: ResourceTimeoutOption;
   }
 ): Promise<void> {
+  // Awaited first, so provider construction below stays synchronous once the
+  // stack client scope / globals are set (see `loadProviderClasses`).
+  const providerClasses = await loadProviderClasses();
   const logger = getLogger();
 
   if (options.verbose) {
@@ -316,7 +322,7 @@ async function destroyCommand(
     const providerRegistry = new ProviderRegistry();
 
     // Register all SDK providers
-    registerAllProviders(providerRegistry);
+    registerAllProviders(providerRegistry, providerClasses);
 
     // Configure custom resource response handling via S3
     providerRegistry.setCustomResourceResponseBucket(stateBucket);

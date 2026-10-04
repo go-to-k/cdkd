@@ -89,9 +89,9 @@ export interface CoverageReport {
  * Static parse of `src/provisioning/register-providers.ts`.
  *
  * Returns the set of CFn resource type names passed to `registry.register(...)`
- * calls. Static parse is preferred over a dynamic import because
- * `registerAllProviders()` constructs real AWS SDK clients on import,
- * which is unnecessary and brittle in this audit context.
+ * calls. Static parse is preferred over running `registerAllProviders()`,
+ * which loads every provider module and its AWS SDK client — unnecessary and
+ * brittle in this audit context.
  */
 export function parseRegisteredTypes(source: string): Set<string> {
   const result = new Set<string>();

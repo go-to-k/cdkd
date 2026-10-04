@@ -32,6 +32,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => l };
 });
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
+  loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
 }));
 
