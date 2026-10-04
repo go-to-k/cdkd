@@ -399,12 +399,13 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
       const plain = await refusalMessage(ARN);
       expect(plain).toContain(`from an ARN (${ARN})`);
       expect(plain).toContain(`${BEFORE} ${ARN}`);
-      // An ARN forged to end in `displayIdent`'s own cut marker (the ARN cap in
-      // plain characters, plus the marker for 35 withheld): the round-trip
-      // alone admits it, and the whitespace test is what describes it.
+      // An ARN forged to end in `displayIdent`'s pre-go-to-k/cdkd#4002 cut
+      // marker (the ARN cap in plain characters, plus the marker for 35
+      // withheld): it round-tripped unchanged until the marker carried a digest
+      // of the withheld tail, and the whitespace test describes it either way.
       const prefix = 'arn:aws:ssm:us-east-1:111122223333:parameter/';
       const forged = `${prefix}${'a'.repeat(2048 - prefix.length)} [cut: 35 more characters withheld]`;
-      expect(displayIdent(forged, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })).toBe(forged);
+      expect(displayIdent(forged, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })).not.toBe(forged);
       const forgedMessage = await refusalMessage(forged);
       expect(forgedMessage).toContain('from an ARN (not shown: it is not a plain identifier)');
       expect(forgedMessage).not.toContain(BEFORE);
