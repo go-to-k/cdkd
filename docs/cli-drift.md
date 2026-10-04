@@ -137,8 +137,14 @@ answer that the resource is not there (a not-found error, or a status such as
 an ECS cluster's `INACTIVE` that the service keeps listing for a while after a
 delete). An access-denied or throttled read is never reported as deleted, and
 neither is a read that cannot tell. A deleted resource of a type cdkd has no
-reader for (a nested `AWS::CloudFormation::Stack` or an `AWS::EC2::EIP`, for
-two) still reads as **drift unknown**. See [JSON output](#json-output) for the `--json` shape change.
+reader for still reads as **drift unknown**.
+
+A nested `AWS::CloudFormation::Stack` row always reads as **drift unknown**:
+cdkd deploys a nested stack's resources itself, so no CloudFormation stack
+exists in AWS to read back. The nested stack's resources are recorded as a
+stack of their own, `<parent>~<child>`, which `cdkd drift` compares like any
+other stack. Name it (`cdkd drift 'Parent~Child'`), or pass `--all`, to check
+them; drifting the parent alone does not. See [JSON output](#json-output) for the `--json` shape change.
 
 ### Why a resource was not compared
 
@@ -798,8 +804,8 @@ the fallback:
    `drift unknown` before the Cloud Control call fires. Current entries are
    `AWS::ApiGateway::RestApi` (its `Body` / `BodyS3Location` are write-only
    inputs the response omits, while cdkd state preserves them),
-   `AWS::CloudFormation::Stack` (the response is runtime stack state — outputs
-   and status — not the template parameters cdkd stores), and
+   `AWS::CloudFormation::Stack` (cdkd deploys a nested stack itself, so no
+   CloudFormation stack exists and the row's id is a cdkd-local placeholder), and
    `AWS::EC2::LaunchTemplate` (the response carries version-bumped
    `LaunchTemplateData` plus a synthetic `LatestVersionNumber`).
 2. **Strip pass.** Known AWS-managed timestamp, owner and generated-id fields
@@ -908,10 +914,18 @@ does not touch AWS for those keys. `--revert` undoes exactly the delta
 `cdkd drift` reported and leaves non-drifted attributes alone.
 
 Per-resource failures are collected and surface as `PartialFailureError` at
-the end of the run; one resource's failure does not abort the rest. cdkd state
-is normally NOT modified — once `provider.update` succeeds, AWS matches state
-by definition, so a subsequent `cdkd drift` reports clean. The one exception
-is a provider-reported narrowing, below.
+the end of the run; one resource's failure does not abort the rest. cdkd state's
+recorded properties are normally NOT modified — once `provider.update`
+succeeds, AWS matches state by definition, so a subsequent `cdkd drift` reports
+clean. The one exception is a provider-reported narrowing, below.
+
+The record does take the physical id and attributes the update returned. A
+provider may re-create the resource to revert it — an
+`AWS::EC2::SecurityGroupIngress` rule is revoked and re-authorized under a new
+`sgr-` id — and the record then names the new resource, which a later
+`Fn::GetAtt` and `cdkd export` read. Attributes are replaced wholesale when the update
+replaced the resource and merged key by key when it updated in place. A
+`NoEcho` attribute is stored as `***`.
 
 #### A revert does not rename an IAM Role or ManagedPolicy
 
@@ -1026,8 +1040,11 @@ never behaves like `--accept`. Two further limits keep that guarantee airtight:
 
 The write is BEST-EFFORT: AWS has already been reverted by the time it runs,
 so a failed state write warns and the command carries on — under `--all`,
-aborting would skip every later stack's revert. The only cost of the warn path
-is that the narrowing re-surfaces on the next `cdkd drift`.
+aborting would skip every later stack's revert. The same write carries the
+physical id and attributes the revert returned, so the warn path costs two
+things: the narrowing re-surfaces on the next `cdkd drift`, and the record keeps
+the identity from before the revert, which a re-run cannot repair because the
+revert landed.
 
 #### Update-not-supported resources
 

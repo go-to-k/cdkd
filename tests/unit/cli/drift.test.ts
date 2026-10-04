@@ -2946,6 +2946,9 @@ describe('cdkd drift', () => {
         // shape, and the half M14 pinned in both directions.
         expect(warned).not.toContain(`re-run 'cdkd drift --revert' for this stack`);
         expect(warned).not.toMatch(/'cdkd drift[^']*--revert[^']*'/);
+        // go-to-k/cdkd#4476: no identity was returned, so the identity
+        // sentence does not print.
+        expect(warned).not.toContain('still holds the physical id');
         // The lock is still released.
         expect(mockReleaseLock).toHaveBeenCalledWith('TestStack', 'us-east-1');
       });
@@ -3176,6 +3179,606 @@ describe('cdkd drift', () => {
 
         expect(error).toBeUndefined();
         expect(mockSaveState).not.toHaveBeenCalled();
+      });
+    });
+
+    /**
+     * go-to-k/cdkd#4476: `--revert` persisted only the narrowed
+     * `effectiveProperties` delta, so the identity `update()` returned never
+     * reached state. `SecurityGroupIngress` revokes and re-authorizes on any
+     * change, minting a new `sgr-` id while the record kept the revoked one.
+     */
+    describe('identity returned by the revert (go-to-k/cdkd#4476)', () => {
+      const ingressState = (attributes: Record<string, unknown> | undefined) =>
+        makeState({
+          Ingress1: makeResource({
+            physicalId: 'sg-1|tcp|443|443|10.0.0.0/8',
+            resourceType: 'AWS::EC2::SecurityGroupIngress',
+            properties: { IpProtocol: 'tcp', FromPort: 443, Description: 'web' },
+            observedProperties: { IpProtocol: 'tcp', FromPort: 443, Description: 'web' },
+            ...(attributes && { attributes }),
+          }),
+        });
+      const driftedIngress = {
+        readCurrentState: async () => ({
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          Description: 'edited out of band',
+        }),
+      };
+
+      it('records the re-created rule id wholesale when the update replaced it', async () => {
+        infoSpy.mockClear();
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(ingressState({ Id: 'sgr-old', Stale: 'from-old-rule' }));
+        mockRegistryGetProvider.mockReturnValue({
+          ...driftedIngress,
+          update: async () => ({
+            physicalId: 'sg-1|tcp|443|443|10.0.0.0/8',
+            wasReplaced: true,
+            attributes: { Id: 'sgr-new' },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+        const [, , savedState, saveOptions] = mockSaveState.mock.calls[0]!;
+        const saved = savedState.resources['Ingress1']!;
+        // Wholesale: a key the replaced rule carried does not survive.
+        expect(saved.attributes).toEqual({ Id: 'sgr-new' });
+        expect(saved.physicalId).toBe('sg-1|tcp|443|443|10.0.0.0/8');
+        // Nothing else on the record moves.
+        expect(saved.properties).toEqual({ IpProtocol: 'tcp', FromPort: 443, Description: 'web' });
+        expect(saved.observedProperties).toEqual({
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          Description: 'web',
+        });
+        expect(saveOptions?.expectedEtag).toBe('"etag-1"');
+        const info = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(info).toContain('recorded the identity the revert returned on 1 resource(s).');
+        expect(info).not.toContain('the value the provider actually applied');
+      });
+
+      it('merges returned attributes key-wise for an in-place update', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(ingressState({ Id: 'sgr-old', Kept: 'still-true' }));
+        mockRegistryGetProvider.mockReturnValue({
+          ...driftedIngress,
+          update: async () => ({
+            physicalId: 'sg-1|tcp|443|443|10.0.0.0/8',
+            wasReplaced: false,
+            attributes: { Id: 'sgr-new' },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Ingress1']!.attributes).toEqual({
+          Id: 'sgr-new',
+          Kept: 'still-true',
+        });
+      });
+
+      it('records a replaced physical id and drops the attributes of what it removed', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(ingressState({ Id: 'sgr-old' }));
+        mockRegistryGetProvider.mockReturnValue({
+          ...driftedIngress,
+          update: async () => ({ physicalId: 'sg-2|tcp|443|443|10.0.0.0/8', wasReplaced: true }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        const saved = savedState.resources['Ingress1']!;
+        expect(saved.physicalId).toBe('sg-2|tcp|443|443|10.0.0.0/8');
+        expect('attributes' in saved).toBe(false);
+      });
+
+      it.each([
+        ['no attributes, same id', { physicalId: 'sg-1|tcp|443|443|10.0.0.0/8', wasReplaced: false }],
+        [
+          'the recorded attributes again',
+          {
+            physicalId: 'sg-1|tcp|443|443|10.0.0.0/8',
+            wasReplaced: true,
+            attributes: { Id: 'sgr-old' },
+          },
+        ],
+      ])('writes nothing when the answer carries %s', async (_label, answer) => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(ingressState({ Id: 'sgr-old' }));
+        const updateMock = vi.fn(async () => answer);
+        mockRegistryGetProvider.mockReturnValue({ ...driftedIngress, update: updateMock });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        // Positive control: the revert really ran, so the absence is the answer.
+        expect(updateMock).toHaveBeenCalledTimes(1);
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      it('masks a NoEcho attribute before it is persisted', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Bucket1: makeResource({
+              physicalId: 'phys-b',
+              resourceType: 'AWS::S3::Bucket',
+              properties: { VersioningConfiguration: { Status: 'Enabled' } },
+              observedProperties: { VersioningConfiguration: { Status: 'Enabled' } },
+              attributes: { Token: '***' },
+            }),
+          })
+        );
+        // The declaration is type-agnostic (`ResourceUpdateResult`); a bucket
+        // carries it here only because detection compares this type.
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
+          update: async () => ({
+            physicalId: 'phys-b',
+            wasReplaced: false,
+            attributes: { Token: 'handler-secret-value', Plain: 'visible-value' },
+            noEchoAttributeNames: ['Token'],
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        // Only the declared name is masked; an undeclared one is recorded.
+        expect(savedState.resources['Bucket1']!.attributes).toEqual({
+          Token: '***',
+          Plain: 'visible-value',
+        });
+        expect(JSON.stringify(savedState)).not.toContain('handler-secret-value');
+      });
+
+      it('records a narrowing and the identity in ONE write', async () => {
+        infoSpy.mockClear();
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Ingress1: makeResource({
+              physicalId: 'sgr-1',
+              resourceType: 'AWS::EC2::SecurityGroupIngress',
+              properties: { IpProtocol: 6, FromPort: 443 },
+              observedProperties: { IpProtocol: 6, FromPort: 443 },
+              attributes: { Id: 'sgr-old' },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
+          update: async () => ({
+            physicalId: 'sgr-1',
+            wasReplaced: true,
+            attributes: { Id: 'sgr-new' },
+            effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        const saved = savedState.resources['Ingress1']!;
+        expect(saved.observedProperties).toEqual({ IpProtocol: 'tcp', FromPort: 443 });
+        // The narrowing never rides `recordAfterRollbackUpdate`'s wholesale
+        // `properties` arm: the template intent stays.
+        expect(saved.properties).toEqual({ IpProtocol: 6, FromPort: 443 });
+        expect(saved.attributes).toEqual({ Id: 'sgr-new' });
+        const info = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(info).toContain(
+          'recorded the value the provider actually applied on 1 resource(s) and the identity ' +
+            'the revert returned on 1 resource(s).'
+        );
+      });
+
+      it('records a replaced physical id on a record that holds no attributes', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(ingressState(undefined));
+        mockRegistryGetProvider.mockReturnValue({
+          ...driftedIngress,
+          update: async () => ({ physicalId: 'sg-2|tcp|443|443|10.0.0.0/8', wasReplaced: true }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Ingress1']!.physicalId).toBe('sg-2|tcp|443|443|10.0.0.0/8');
+      });
+
+      it('keeps a recorded attribute an over-broad mask-only needle would otherwise mask', async () => {
+        // The revert registers the live value at a masked baseline leaf as a
+        // mask-only needle. An attribute that happens to equal it is the
+        // record's own clear value, not a secret: it must not be rewritten
+        // to `***`, and an otherwise unchanged answer writes nothing.
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Bucket1: makeResource({
+              physicalId: 'phys-b',
+              resourceType: 'AWS::S3::Bucket',
+              properties: {
+                VersioningConfiguration: { Status: 'Enabled' },
+                Tags: [{ Key: 'Owner', Value: '***' }],
+              },
+              observedProperties: {
+                VersioningConfiguration: { Status: 'Enabled' },
+                Tags: [{ Key: 'Owner', Value: '***' }],
+              },
+              attributes: { BucketName: 'shared-name-value' },
+            }),
+          })
+        );
+        const updateMock = vi.fn(async () => ({
+          physicalId: 'phys-b',
+          wasReplaced: false,
+          attributes: { BucketName: 'shared-name-value' },
+        }));
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({
+            VersioningConfiguration: { Status: 'Suspended' },
+            Tags: [{ Key: 'Owner', Value: 'shared-name-value' }],
+          }),
+          update: updateMock,
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(updateMock).toHaveBeenCalledTimes(1);
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      it('leaves a CHANGED attribute masked when it equals an over-broad needle', async () => {
+        // The keep restores only a value state already holds in the clear; a
+        // value that differs from the record stays masked (fails safe).
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Bucket1: makeResource({
+              physicalId: 'phys-b',
+              resourceType: 'AWS::S3::Bucket',
+              properties: {
+                VersioningConfiguration: { Status: 'Enabled' },
+                Tags: [{ Key: 'Owner', Value: '***' }],
+              },
+              observedProperties: {
+                VersioningConfiguration: { Status: 'Enabled' },
+                Tags: [{ Key: 'Owner', Value: '***' }],
+              },
+              attributes: { BucketName: 'old-name' },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({
+            VersioningConfiguration: { Status: 'Suspended' },
+            Tags: [{ Key: 'Owner', Value: 'shared-name-value' }],
+          }),
+          update: async () => ({
+            physicalId: 'phys-b',
+            wasReplaced: false,
+            attributes: { BucketName: 'shared-name-value' },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Bucket1']!.attributes).toEqual({ BucketName: '***' });
+      });
+
+      const maskedTagBucket = (attributes: Record<string, unknown>) =>
+        makeState({
+          Bucket1: makeResource({
+            physicalId: 'phys-b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {
+              VersioningConfiguration: { Status: 'Enabled' },
+              Tags: [{ Key: 'Owner', Value: '***' }],
+            },
+            observedProperties: {
+              VersioningConfiguration: { Status: 'Enabled' },
+              Tags: [{ Key: 'Owner', Value: '***' }],
+            },
+            attributes,
+          }),
+        });
+      const liveWithNeedle = async () => ({
+        VersioningConfiguration: { Status: 'Suspended' },
+        Tags: [{ Key: 'Owner', Value: 'shared-name-value' }],
+      });
+
+      it('masks a NoEcho-declared attribute even when the record holds it in the clear', async () => {
+        // The keep must not undo a real `NoEcho` mask: a deploy would store
+        // `***` there, so a legacy clear record is healed, not preserved.
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(maskedTagBucket({ Token: 'clear-legacy-token' }));
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: liveWithNeedle,
+          update: async () => ({
+            physicalId: 'phys-b',
+            wasReplaced: false,
+            attributes: { Token: 'clear-legacy-token' },
+            noEchoAttributeNames: ['Token'],
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Bucket1']!.attributes).toEqual({ Token: '***' });
+      });
+
+      it('masks every attribute under a whole-bag NoEcho declaration over a clear record', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(maskedTagBucket({ Token: 'clear-legacy-token' }));
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: liveWithNeedle,
+          update: async () => ({
+            physicalId: 'phys-b',
+            wasReplaced: false,
+            attributes: { Token: 'clear-legacy-token' },
+            noEchoAttributes: true,
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Bucket1']!.attributes).toEqual({ Token: '***' });
+      });
+
+      it('still keeps an UNDECLARED attribute beside a NoEcho-declared one', async () => {
+        // The other polarity: only the declared name is excluded from the keep.
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          maskedTagBucket({ Token: '***', BucketName: 'shared-name-value' })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: liveWithNeedle,
+          update: async () => ({
+            physicalId: 'phys-b',
+            wasReplaced: false,
+            attributes: { Token: 'fresh-token', BucketName: 'shared-name-value' },
+            noEchoAttributeNames: ['Token'],
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        // Token re-masks to the same `***`, BucketName keeps its clear value:
+        // nothing differs from the record, so nothing is written.
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      it('writes nothing when the answer differs from the record only in key order', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        // Wholesale (`wasReplaced`) so the answer's own key order reaches the
+        // comparison, and a nested value carrying the over-broad needle so
+        // the keep's comparison sees a reordered object too.
+        mockGetState.mockResolvedValueOnce(
+          maskedTagBucket({
+            Arn: 'arn:aws:s3:::b',
+            Cfg: { Owner: 'shared-name-value', Mode: 'x' },
+          })
+        );
+        const updateMock = vi.fn(async () => ({
+          physicalId: 'phys-b',
+          wasReplaced: true,
+          attributes: {
+            Cfg: { Mode: 'x', Owner: 'shared-name-value' },
+            Arn: 'arn:aws:s3:::b',
+            Gone: undefined,
+          },
+        }));
+        mockRegistryGetProvider.mockReturnValue({ readCurrentState: liveWithNeedle, update: updateMock });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(updateMock).toHaveBeenCalledTimes(1);
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      it('keeps the recorded physical id when an in-place answer names another', async () => {
+        // Only a `wasReplaced` answer moves the id; an in-place one never does.
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(ingressState({ Id: 'sgr-old' }));
+        mockRegistryGetProvider.mockReturnValue({
+          ...driftedIngress,
+          update: async () => ({
+            physicalId: 'sg-2|tcp|443|443|10.0.0.0/8',
+            wasReplaced: false,
+            attributes: { Id: 'sgr-new' },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Ingress1']!.physicalId).toBe('sg-1|tcp|443|443|10.0.0.0/8');
+        expect(savedState.resources['Ingress1']!.attributes).toEqual({ Id: 'sgr-new' });
+      });
+
+      it('records nothing and warns nothing when the provider answers undefined', async () => {
+        infoSpy.mockClear();
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(ingressState({ Id: 'sgr-old' }));
+        const updateMock = vi.fn(async () => undefined);
+        mockRegistryGetProvider.mockReturnValue({ ...driftedIngress, update: updateMock });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(updateMock).toHaveBeenCalledTimes(1);
+        expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('1 reverted');
+        expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('could not be recorded');
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      it('does not mask an attribute that echoes the resource\'s own input under NoEcho', async () => {
+        // `recordNoEchoAttributeValues` excludes the resource's own resolved
+        // property leaves, so a handler echoing its input into a NoEcho bag
+        // does not mask cdkd's own value back at it (go-to-k/cdkd#3938).
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Bucket1: makeResource({
+              physicalId: 'phys-b',
+              resourceType: 'AWS::S3::Bucket',
+              properties: {
+                BucketName: 'own-input-name',
+                VersioningConfiguration: { Status: 'Enabled' },
+              },
+              observedProperties: {
+                BucketName: 'own-input-name',
+                VersioningConfiguration: { Status: 'Enabled' },
+              },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({
+            BucketName: 'own-input-name',
+            VersioningConfiguration: { Status: 'Suspended' },
+          }),
+          update: async () => ({
+            physicalId: 'phys-b',
+            wasReplaced: false,
+            attributes: { Echo: 'own-input-name', Token: 'handler-only-secret' },
+            noEchoAttributes: true,
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Bucket1']!.attributes).toEqual({
+          Echo: 'own-input-name',
+          Token: '***',
+        });
+      });
+
+      it('warns and keeps the revert counted when the identity cannot be built', async () => {
+        infoSpy.mockClear();
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(ingressState({ Id: 'sgr-old' }));
+        const attributes = {};
+        Object.defineProperty(attributes, 'Id', {
+          enumerable: true,
+          get: () => {
+            throw new Error('unreadable attribute');
+          },
+        });
+        mockRegistryGetProvider.mockReturnValue({
+          ...driftedIngress,
+          update: async () => ({
+            physicalId: 'sg-1|tcp|443|443|10.0.0.0/8',
+            wasReplaced: true,
+            attributes,
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const warned = warnSpy.mock.calls.flat().join('\n');
+        expect(warned).toContain(
+          'reverted, but the attributes the provider returned could not be recorded'
+        );
+        expect(warned).toContain('unreadable attribute');
+        const info = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(info).toContain('1 reverted');
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      it('names both losses, the revert command last, when a combined write fails', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Ingress1: makeResource({
+              physicalId: 'sgr-1',
+              resourceType: 'AWS::EC2::SecurityGroupIngress',
+              properties: { IpProtocol: 6, FromPort: 443 },
+              observedProperties: { IpProtocol: 6, FromPort: 443 },
+              attributes: { Id: 'sgr-old' },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
+          update: async () => ({
+            physicalId: 'sgr-1',
+            wasReplaced: true,
+            attributes: { Id: 'sgr-new' },
+            effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
+          }),
+        });
+        mockSaveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const warned = warnSpy.mock.calls.flat().join('\n');
+        expect(warned).toContain(
+          'could not record the value the provider actually applied and the identity the ' +
+            'revert returned: PreconditionFailed.'
+        );
+        const identityAt = warned.indexOf('still holds the physical id');
+        const revertAt = warned.search(/^Revert with: /m);
+        expect(identityAt).toBeGreaterThan(-1);
+        expect(revertAt).toBeGreaterThan(identityAt);
+      });
+
+      it('warns without a revert remedy when only the identity write fails', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(ingressState({ Id: 'sgr-old' }));
+        mockRegistryGetProvider.mockReturnValue({
+          ...driftedIngress,
+          update: async () => ({
+            physicalId: 'sg-1|tcp|443|443|10.0.0.0/8',
+            wasReplaced: true,
+            attributes: { Id: 'sgr-new' },
+          }),
+        });
+        mockSaveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const warned = warnSpy.mock.calls.flat().join('\n');
+        expect(warned).toContain(
+          'could not record the identity the revert returned: PreconditionFailed.'
+        );
+        expect(warned).toContain('still holds the physical id and attributes from before');
+        // The revert landed, so the next drift has no difference to revert:
+        // neither half of the narrowing's remedy may print.
+        expect(warned).not.toContain('will report the same difference');
+        expect(warned).not.toMatch(/^Revert with: /m);
+        expect(mockReleaseLock).toHaveBeenCalledWith('TestStack', 'us-east-1');
       });
     });
   });

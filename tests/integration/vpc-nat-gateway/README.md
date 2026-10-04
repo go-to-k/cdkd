@@ -14,6 +14,7 @@ v0.31.
 | Multi-route / shared-NAT topology | 2 AZs, single NAT, both PrivateEgress subnets route through it |
 | `MaxDrainDurationSeconds` auto-route (issue #1411) | Second, L1-only NAT gateway sets it; must be provisioned via Cloud Control API |
 | Heterogeneous routing in one stack | The L2 NAT stays on the SDK provider while the L1 NAT routes via Cloud Control |
+| `cdkd drift` Elastic IP reader (issue #4447) | Both EIPs compare clean after deploy; `DriftProbeEip`, released out of band, reports `deleted` with exit 1 |
 
 ## Stack shape
 
@@ -22,7 +23,8 @@ VPC (10.50.0.0/16, 2 AZs)
 ├─ Public Subnet × 2  (one carries the NAT)
 ├─ PrivateEgress Subnet × 2  (default route → NAT)
 ├─ Internet Gateway
-├─ EIP
+├─ EIP  (the NAT's)
+├─ EIP  (`DriftProbeEip`, unassociated — released out of band by the drift arm)
 ├─ NAT Gateway × 1  (public, L2 — the SDK provider path)
 └─ NAT Gateway × 1  (private, L1 `CfnNatGateway` with
                      `MaxDrainDurationSeconds` — the Cloud Control path)

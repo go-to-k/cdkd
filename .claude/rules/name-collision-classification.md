@@ -45,7 +45,7 @@ the bounded `cause` chain for the error name and the Cloud Control
    top-level message relaying it** (issue
    [#3816](https://github.com/go-to-k/cdkd/issues/3816)). The first keeps a cdkd
    refusal quoting a template value out; the second is how a provider OPTS OUT —
-   Glue and CloudFront reword a collision delete-first cannot clear. Dropping
+   CloudFront rewords a collision delete-first cannot clear. Dropping
    either re-opens a delete. The `AlreadyExists` code matches only as a whole
    token outside a name or ARN (not after `-` `:` `/`, not before `-`).
    Residual: an AWS error echoing a template value still classifies.

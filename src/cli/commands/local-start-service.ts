@@ -9,7 +9,12 @@ import {
   type EmulatorStrategy,
   type ServiceBoot,
 } from './ecs-service-emulator.js';
-import { cdkdExtraStateProviders } from './local-state-source.js';
+import {
+  cdkdExtraStateProviders,
+  ENGINE_ACCOUNT_ID_CHANNEL,
+  ENGINE_ECS_SECRETS_CHANNEL,
+  warnEngineRoleExposure,
+} from './local-state-source.js';
 import { adoptDeprecatedRegionFlag } from '../region-options.js';
 
 /**
@@ -132,6 +137,12 @@ export function createLocalStartServiceCommand(): Command {
     );
 
   addStartServiceSpecificOptions(cmd);
+  // The workload containers take their credentials from the metadata sidecar,
+  // which the role's triple does not reach -- so no credential-triple channel.
+  warnEngineRoleExposure(cmd, 'start-service', [
+    ENGINE_ECS_SECRETS_CHANNEL,
+    ENGINE_ACCOUNT_ID_CHANNEL,
+  ]);
   // Last, so cdk-local's own `--region` has already been added and can be
   // replaced by cdkd's deprecated twin + the entry fold (issue #2522).
   return adoptDeprecatedRegionFlag(addCommonEcsServiceOptions(cmd));

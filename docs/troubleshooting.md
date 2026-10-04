@@ -2304,7 +2304,8 @@ MyAlarm (AWS::CloudWatch::Alarm): routing via Cloud Control API (cdkd's SDK Prov
 So if the field is genuinely missing from AWS, the auto-route did not fire.
 Three reasons:
 
-1. **You passed `--prefer-sdk-route <Type>:<Prop>`.** That flag
+1. **You passed
+   [`--prefer-sdk-route <Type>:<Prop>`](cli-deploy-safety.md#the-override).** That flag
    means "keep this resource on the SDK provider and accept the drop" — it is
    the opt-in to exactly this outcome.
 2. **The property is not in cdkd's committed CloudFormation schema snapshot,
@@ -2329,14 +2330,25 @@ cdkd state show MyStack    # ProvisionedBy: sdk | cc-api
 
 `sdk` means one of the three causes applies. For case 1, dropping the flag is
 enough: cdkd records only what the SDK provider actually sent, so the property
-is a genuine addition on the next deploy and the auto-route delivers it — unless
-the property is create-only, which cdkd keeps in the record because applying one
-to a live resource needs a replacement. See
-[Deploy: safety & compatibility flags](cli-deploy-safety.md#the-override) for how
-to recreate it deliberately and what that costs. For
+is a genuine addition on the next deploy and the auto-route delivers it. For
 case 2, change the value so the next deploy routes the resource through Cloud
 Control, or use `--recreate-via-cc-api <LogicalId>` to put it there
 deliberately.
+
+The case 1 exception is a create-only property. cdkd keeps it in the record,
+because applying one to a live resource needs a replacement, so the deploy
+without the flag refuses with `CREATE_ONLY_DROP_NEEDS_REPLACEMENT` rather than
+replacing the resource on its own. The refusal names the remedies:
+
+- `--recreate-via-cc-api <LogicalId>` or `--replace` replaces the resource with
+  the property applied; inside a nested stack only `--replace` reaches it.
+- `--force-stateful-recreation` is also required for a stateful type.
+- `--prefer-sdk-route` with the `<Type>:<Prop>,...` list the refusal prints keeps
+  dropping the property; that list can name more than your original flag did.
+
+See
+[`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](cli-deploy-safety.md#create-only-drop-needs-replacement)
+for what each remedy does and costs.
 
 `cc-api` means the resource is on the layer that forwards the whole property
 map, so the absence is not cdkd dropping the field.
@@ -2551,30 +2563,34 @@ cdkd uses a multi-layered approach to prevent orphaned resources:
 
 ### A warning that a KMS key, Cognito user pool or AppSync API may be an orphan
 
-`CreateKey`, `CreateUserPool` and `CreateGraphqlApi` carry no idempotency
-token. When one fails with HTTP 500 / 502 / 503 / 504, AWS may have created the
-resource and lost only the response, and cdkd's retry creates it again. cdkd
-therefore turns off the AWS SDK's own retry of a 5xx for these three calls, so
-the failure reaches cdkd's retry, and before retrying it looks for what the
-failed attempt may have made:
+`CreateKey`, `CreateUserPool`, `CreateGraphqlApi` and `CreateApiKey` carry no
+idempotency token. When one fails with HTTP 500 / 502 / 503 / 504, AWS may have
+created the resource and lost only the response, and cdkd's retry creates it
+again. cdkd therefore turns off the AWS SDK's own retry of a 5xx for these four
+calls, so the failure reaches cdkd's retry, and before retrying it looks for
+what the failed attempt may have made:
 
 - a user pool with the same name, a KMS key with the same settings, or a
   GraphQL API with the same name, created during the failed attempt (AppSync
   reports no creation time, so for it: any API with that name this deploy did
-  not record);
+  not record), or an API key on the same GraphQL API with the same
+  description that this deploy did not record;
 - each match is REPORTED at warn, with its id and a read command first
-  (`describe-user-pool`, `describe-key`, `get-graphql-api`). cdkd neither
-  adopts nor deletes it -- a name or a set of settings does not prove which
-  deploy made it -- and creates a new resource, so a user pool name is then
-  shared by two pools.
+  (`describe-user-pool`, `describe-key`, `get-graphql-api`,
+  `list-api-keys`). An API key's id is the credential clients send, so the
+  warning names a key only by its last four characters and its expiry; find
+  it in the `list-api-keys` output. cdkd neither adopts nor deletes it -- a
+  name or a set of settings does not prove which deploy made it -- and creates
+  a new resource, so a user pool name is then shared by two pools.
 
 Inspect each id the warning names, and delete it only after confirming it is
 this deploy's orphan and no other deploy's resource (for a pool: no users, the
 failed attempt's creation time, no tags another stack sets). A KMS key cannot
 be deleted immediately: `aws kms schedule-key-deletion` puts it in a
 7-to-30-day pending window. The lookup needs `kms:ListKeys` + `kms:DescribeKey`,
-`cognito-idp:ListUserPools`, or `appsync:ListGraphqlApis`; without them cdkd
-warns that it could not look, and the deploy proceeds.
+`cognito-idp:ListUserPools`, `appsync:ListGraphqlApis`, or
+`appsync:ListApiKeys`; without them cdkd warns that it could not look, and the
+deploy proceeds.
 
 Not covered: a reset connection or a timeout after the request was sent is
 just as ambiguous, but the AWS SDK retries it inside one call and cdkd's own

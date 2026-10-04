@@ -49,6 +49,7 @@ from the CHANNELS (env keys plus the INI writer in
 READS-CALLER, or a `cdkd-local-env-identity: <reason>` comment. An annotation is
 a CLAIM the fence cannot check.
 
-Residual: the four `local start-*` commands and `--from-cfn-stack` on all eight
-keep this escalation, unseen by either fence
+`--from-cfn-stack` on these four reads as the caller because
+`createLocalStateProvider` (`local-state-source.ts`) rebinds cdk-local's
+provider getters. Residual: the four engine `local start-*` commands
 ([local-engine-role-leak.md](local-engine-role-leak.md)).

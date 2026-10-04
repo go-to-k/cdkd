@@ -1154,13 +1154,17 @@
       "resourceType": "AWS::EC2::EIP",
       "integs": [
         "ec2-vpc",
-        "export"
+        "export",
+        "vpc-nat-gateway"
       ],
       "signals": {
         "ec2-vpc": [
           "l1"
         ],
         "export": [
+          "l1"
+        ],
+        "vpc-nat-gateway": [
           "l1"
         ]
       }
@@ -2256,6 +2260,7 @@
       "integs": [
         "alb",
         "drift-revert-arrays",
+        "drift-revert-vpc",
         "export",
         "rollback-replay-effective-props",
         "sg-circular-dependency"
@@ -2265,6 +2270,9 @@
           "literal"
         ],
         "drift-revert-arrays": [
+          "l1"
+        ],
+        "drift-revert-vpc": [
           "l1"
         ],
         "export": [
@@ -4171,6 +4179,7 @@
         "lambda-microvm-image",
         "lambda-snapstart",
         "local-invoke-dotnet",
+        "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
         "local-invoke-java",
         "local-invoke-provided",
@@ -4359,6 +4368,9 @@
           "literal"
         ],
         "local-invoke-dotnet": [
+          "l2"
+        ],
+        "local-invoke-from-cfn-stack": [
           "l2"
         ],
         "local-invoke-from-state": [

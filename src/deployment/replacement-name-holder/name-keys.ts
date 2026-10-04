@@ -57,7 +57,12 @@ export const REVERSE_REPLACEMENT_NAME_KEYS: Readonly<Record<string, NameKey>> = 
   'AWS::Glue::Database': { name: [['DatabaseInput', 'Name'], ['DatabaseName']] },
   'AWS::Glue::Job': flat('Name'),
   'AWS::Glue::SecurityConfiguration': flat('Name'),
-  'AWS::Glue::Table': { name: [['TableInput', 'Name']], scope: [['DatabaseName']] },
+  // The provider's precedence (`TableInput.Name ?? Name`), placed by the
+  // database AND the catalog: a `CatalogId` move is another address (#3932).
+  'AWS::Glue::Table': {
+    name: [['TableInput', 'Name'], ['Name']],
+    scope: [['DatabaseName'], ['CatalogId']],
+  },
   'AWS::Glue::Trigger': flat('Name'),
   'AWS::Glue::Workflow': flat('Name'),
   'AWS::Kinesis::StreamConsumer': { name: [['ConsumerName']], scope: [['StreamARN']] },
@@ -136,6 +141,22 @@ export const CASE_INSENSITIVE_NAME_TYPES: ReadonlySet<string> = new Set([
   'AWS::RDS::DBInstance',
   'AWS::RDS::DBSubnetGroup',
 ]);
+
+/**
+ * Types whose name space folds ASCII case only: Glue stores a table name
+ * lower-cased, and the provider's own rename check folds ASCII alone (#3932).
+ * Kept apart from {@link CASE_INSENSITIVE_NAME_TYPES}, whose full Unicode fold
+ * could equate two names the service keeps apart — a false holder, deleted.
+ */
+export const ASCII_CASE_INSENSITIVE_NAME_TYPES: ReadonlySet<string> = new Set(['AWS::Glue::Table']);
+
+/**
+ * Types whose physical id never proves the name the holder holds: a
+ * `<database>|<table>` id where either name may carry `|`, so the id's tail
+ * (`a|b` ends in `b`) or the whole id (`x|y`) can name another table (#3932).
+ * Only the recorded name proves one.
+ */
+export const NO_PHYSICAL_ID_NAME_PROOF: ReadonlySet<string> = new Set(['AWS::Glue::Table']);
 
 /**
  * Types whose SDK provider mints `applyDefaultNameForFallback`'s name VERBATIM

@@ -29,11 +29,21 @@ region and `options.profile` alone, never seeing `ignoreAssumedRole`, so with
 3. **`${AWS::AccountId}`**: cdk-local's `resolveCallerAccountId` takes
    `options.profile` only, so the id in the container env, `secrets` refs and
    ECR URIs is the ROLE's.
-4. **`--from-cfn-stack`, on ALL EIGHT commands** — its SSM client calls
-   `GetParameters` with `WithDecryption: true`.
+4. **`--from-cfn-stack`** — `GetParameters` with `WithDecryption: true`.
+   On the four cdkd-owned commands `bindCallerIdentityClients` shadows the
+   provider's PRIVATE getters; `cfnProviderShapeDrift` refuses (under a role,
+   no profile) any change to the reviewed member ALLOWLIST. It checks shape,
+   not use: a client built inline in an existing method, or cached at module
+   level, is undetectable.
+5. **`--assume-role` / `--assume-task-role`** for the workload: the STS
+   AssumeRole call itself is made as the role.
+6. **A literal layer ARN** (`local invoke` / `start-api`): cdk-local's
+   `materializeLayerFromArn` fetches the layer as the role — a residual on the
+   cdkd-owned commands too.
 
-Either profile spelling mitigates 2-4. No warning fires: it lives in
-`applyRoleArnIfSet` and is gated on a selected `AWS_PROFILE`.
+Either profile spelling mitigates 2-6. The fix is upstream
+(go-to-k/cdk-local#783); patching `CfnLocalStateProvider.prototype` would
+reach only 4, so `warnEngineRoleExposure` warns at startup meanwhile.
 
 cdkd's `--from-state` twin runs as the role **deliberately** (its
 `cdkd-local-role-identity:` sites); do NOT "fix" them — the bucket name is

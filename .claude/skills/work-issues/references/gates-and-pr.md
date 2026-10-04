@@ -2,14 +2,17 @@
 
 ## 6. Checks + PR (per lane)
 
-**Nothing blocks a commit on these checks — no hook, no marker — so they are
-self-enforced**, but they remain required procedure. CI and `integ-destroy` are
-the only mechanical merge conditions.
+**Nothing mechanical blocks a commit on these checks**, but they are required
+procedure; CI and `integ-destroy` are the only mechanical merge conditions.
 
 ```
 /check           # typecheck, lint, build, tests
 /check-docs      # only if the lane touched README / AGENTS.md / docs/ / .claude/rules/**
 ```
+
+A touched `.claude/rules/**` or skill file ends no larger than
+`git show "$(git merge-base origin/main HEAD)":<file> | wc -c`; trim in the
+same PR.
 
 - **Run the SKILL, not a hand-rolled command list** — the gap is silent, since
   your own commands all pass: step 1 adds `vp check --fix` and `vp run check`,
@@ -59,8 +62,8 @@ removals** of the peer's lines — a stale-base artifact, not deletions:
 
 ```bash
 git diff --stat $(git merge-base origin/main <branch>)..<branch>       # the real change
-# FLATTEN TO ONE COMMIT FIRST (recipe in references/ship.md, §9) -- else the
-# integ ledger re-conflicts once per commit.
+# FLATTEN FIRST (ship.md §9): `reset --soft` onto the MERGE-BASE,
+# never origin/main -- onto the tip it commits a revert of main's newer files.
 git -C "<LANE_TREE>" rebase origin/main   # the launch-mode probe's recorded path
 ```
 
@@ -72,11 +75,10 @@ lossless under the squash merge (#3813).
 
 **Re-run the SUITE after the rebase, after `pnpm install --frozen-lockfile`
 and a rebuild**: a pre-rebase green attests to a tree that no longer exists.
-`dist/` staleness is the usual failure (the `version` test reads it against a
-release commit's `package.json`); a dependency bump is the other, which
-`[ -d node_modules ]` pre-flights skip (#3951's cdk-local bump failed two
-unrelated cases). **Re-run the generators too** (`vp run gen:all-matrices`):
-`docs/_generated/**` and pages like `docs/cli-flag-coverage.md` derive from the TREE.
+Stale `dist/` is the usual failure; a dependency bump is the other, which
+`[ -d node_modules ]` pre-flights skip. **Re-run the generators too**
+(`vp run gen:all-matrices`): `docs/_generated/**` and pages like
+`docs/cli-flag-coverage.md` derive from the TREE.
 
 **A clean merge is not evidence that there was no collision**: disjoint hunks in
 one file merge cleanly, and a peer PR adding a **repo-wide check** gains
