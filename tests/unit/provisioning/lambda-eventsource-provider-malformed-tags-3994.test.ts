@@ -19,6 +19,16 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
+// Issue #2080: the create call goes through a dedicated `LambdaClient` (one
+// whose SDK retry refuses a 5xx); route it to the same mock.
+vi.mock('@aws-sdk/client-lambda', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@aws-sdk/client-lambda')>()),
+  LambdaClient: vi.fn().mockImplementation(() => ({
+    send: (command: unknown) => mockSend(command),
+    config: {},
+  })),
+}));
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
