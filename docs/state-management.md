@@ -1026,17 +1026,23 @@ parameter as its `Ref`, and these are kept as written:
   declare, directly or through another resource;
 - an `Fn::GetAtt` on a custom resource or a nested stack, whose attributes
   may be `NoEcho` (its physical id is hashed), and one whose attribute NAME is
-  built from any of these;
+  built from any of these. So a new nested-stack output a parent reads
+  (`Outputs.X`) is not sent yet
+  ([#4565](https://github.com/go-to-k/cdkd/issues/4565));
 - an input whose resolution read a secret (a `NoEcho` custom resource's
   `Data`, a redacted `***` read), and an attribute that the save redacts
   because the resource it belongs to read that secret in the same deploy;
 - in a nested stack, a parameter value its parent passed that the PARENT
-  built from any of the above, or did not classify (an older parent record, a
-  rollback) unless it equals the parameter's `Default`. The parent classifies
-  each expression in its stack row's `Parameters` by these same rules and
-  hands the result to the child; a value built only from non-secret inputs (a
-  `Ref` to a parent resource, say) enters the child's hash like any input. One
-  the parent could not read this time is not compared at all.
+  built from any of the above, and every resource and condition that reads
+  one. The parent classifies each expression in its stack row's `Parameters`
+  by these same rules and hands the result to the child; a value built only
+  from non-secret inputs (a `Ref` to a parent resource, say) enters the
+  child's hash like any input. A passed value the parent did not classify (a
+  rollback, which replays the child without the parent's template) or could
+  not read this time is neither compared nor hashed, nor is a property that
+  reads it directly or through a resource or condition, even when the value
+  equals the `Default`. A parameter the parent does not pass binds the
+  child's `Default`, which is template text, and is hashed.
 
 So these are NOT sent through the mask: a new value of a `NoEcho` parameter,
 a flip of a condition over one, and a new value of anything above. A hash

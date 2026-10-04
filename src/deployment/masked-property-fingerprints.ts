@@ -215,13 +215,6 @@ function carriesSecretValue(
   return false;
 }
 
-/** A scalar as CloudFormation spells it (`5` and `'5'` alike); anything else as JSON. */
-function scalarText(value: unknown): string {
-  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
-    ? String(value)
-    : canonicalJson(value);
-}
-
 /**
  * How every declared parameter enters an input fingerprint, and the bound
  * values of the non-secret ones (what an input node is resolved against).
@@ -231,14 +224,15 @@ function scalarText(value: unknown): string {
  * `secret`: a `NoEcho` parameter; a value carrying a `{{resolve:...}}`
  * reference or the mask; and, in a nested child (`nestedChild`), a value the
  * parent SUPPLIED that the parent classified `secret` (`passedClasses`, from
- * {@link classifyPassedParameters} over the parent's own template), or that it
- * did not classify and that differs from the `Default`. A parent can pass a
+ * {@link classifyPassedParameters} over the parent's own template). A parent can pass a
  * resolved secret, or a value embedding one, as a plain parameter, and the
  * child cannot tell that from the value (the inherited corpus can miss a short
  * ancestor secret), so only the parent's class vouches for it; the rule
  * `parentSuppliedValues` in `condition-verdicts.ts` applies for the same
  * reason. `unknown`: a parameter with no bound value, one named in `unbound`,
- * or one the parent classified `unknown`.
+ * and, in a nested child, a value the parent supplied and classified
+ * `unknown` or did not classify at all. A parameter the parent did not supply
+ * binds the child's `Default` (template text) and is a plain value.
  */
 export function parameterInputsFor(args: {
   template: CloudFormationTemplate;
@@ -264,23 +258,23 @@ export function parameterInputsFor(args: {
       (definition['NoEcho'] === true || definition['NoEcho'] === 'true');
     let secret = noEcho || carriesSecretValue(value, []);
     if (!secret && args.nestedChild === true && args.supplied !== undefined) {
+      // PASSED is decidable only here, from the parameter map the parent
+      // supplied: a name it holds was passed, any other name binds the
+      // child's `Default`, which is template text and stays clean.
       if (Object.hasOwn(args.supplied, name)) {
-        const fallback = isPlainObject(definition) ? definition['Default'] : undefined;
-        // The parent's class decides whenever it gave one, a value equal to the
-        // `Default` included: skipping it on that equality would let the hash
-        // confirm "the passed secret equals the Default". Only a value the
-        // parent did not classify falls back to the `Default` rule.
+        // Only the parent's class vouches for a passed value, a value equal to
+        // the `Default` included (comparing with it would let the hash confirm
+        // "the passed secret equals the Default"). With no class (a rollback
+        // replay binds a bag the parent never classified, or the parent had no
+        // fingerprint sources), the value is unknown: neither compared nor
+        // stamped, so nothing derived from it is hashed and a later classified
+        // deploy re-baselines rather than reading a stale form as moved.
         const passed = args.passedClasses?.get(name);
-        if (passed === 'unknown') {
+        if (passed === undefined || passed === 'unknown') {
           inputs.set(name, { kind: 'unknown' });
           continue;
         }
         if (passed === 'secret') secret = true;
-        else if (passed === undefined) {
-          const atDefault =
-            fallback !== undefined && scalarText(fallback) === scalarText(args.supplied[name]);
-          if (!atDefault) secret = true;
-        }
       }
     }
     if (secret) {
@@ -714,8 +708,8 @@ export type PassedParameterClass = 'clean' | 'secret' | 'unknown';
 /**
  * Each parameter an `AWS::CloudFormation::Stack` row passes (its template
  * `Parameters` object), classified over the PARENT's template with the
- * parent's sources. A parameter missing here reads as `secret` in the child
- * (unless it equals the child's `Default`, which is template text).
+ * parent's sources. A passed parameter missing here reads as `unknown` in the
+ * child (see {@link parameterInputsFor}).
  */
 export async function classifyPassedParameters(
   parameters: unknown,
