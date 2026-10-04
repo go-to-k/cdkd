@@ -99,6 +99,20 @@ export class DriftRevertVpcStack extends cdk.Stack {
       allowAllOutbound: true,
     });
 
+    // go-to-k/cdkd#4476: a STANDALONE ingress rule. verify.sh edits its
+    // description out of band; `cdkd drift --revert` then revokes and
+    // re-authorizes it under a new `sgr-` id, which the state record's
+    // `attributes.Id` must follow. The port is one no other rule on Sg2 uses,
+    // so verify.sh can find the live rule by it.
+    new ec2.CfnSecurityGroupIngress(this, 'DriftSgIngress', {
+      groupId: sg2.securityGroupId,
+      ipProtocol: 'tcp',
+      fromPort: 8443,
+      toPort: 8443,
+      cidrIp: '10.99.0.0/16',
+      description: 'drift-revert-vpc standalone ingress (templated)',
+    });
+
     // EFS FileSystem (L1 CfnFileSystem) — `ThroughputMode: elastic` is
     // the templated initial value; inject-drift.ts flips to 'bursting'.
     // Using L1 instead of L2 so we get exactly ONE MountTarget that we
