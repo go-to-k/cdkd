@@ -47,7 +47,7 @@ cloudtrail-trail	2026-10-02T01:44:21Z	PASS	181	verify.sh	PR #4378 removalDefault
 cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 cloudwatch-anomaly-detector	2026-09-30T12:01:08Z	PASS	65	verify.sh	rc ok, orph clean (#4228)
 codebuild-project	2026-10-03T04:24:03Z	PASS	97	verify.sh	rc ok, orph clean (#4283 PR #4449)
-codecommit	2026-10-04T02:01:00Z	PASS	165	verify.sh	rc ok, orph clean (#4521)
+codecommit	2026-10-04T16:44:59Z	PASS	157	verify.sh	rc ok, orph clean (#2080 PR #4557)
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-10-03T04:19:34Z	PASS	270	verify.sh	rc ok, orph clean (#4283 PR #4449)
 cognito-custom-attribute-add	2026-09-05T21:47:13Z	PASS	51	verify.sh	PR2662 gate run; 3 phases, destroy 0 errors, 0 orphans
@@ -81,7 +81,7 @@ deployment-events	2026-09-28T17:37:19Z	PASS	45	verify.sh	rc ok, orph clean (#395
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
 destroy-interrupt	2026-10-01T10:58:29Z	PASS	356	verify.sh	rc ok, orph clean (PR #4311 stack-lock guard)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
-dlm-lifecycle-policy	2026-10-03T04:25:59Z	PASS	112	verify.sh	rc ok, orph clean (#4283 PR #4449)
+dlm-lifecycle-policy	2026-10-04T16:44:59Z	PASS	105	verify.sh	rc ok, orph clean (#2080 PR #4557)
 docdb-neptune	2026-10-03T05:35:39Z	PASS	5713	verify.sh	rc ok, orph clean (#4283 PR #4449)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-10-04T15:13:49Z	PASS	305	verify.sh	rc ok, orph clean (#4451)
@@ -106,7 +106,7 @@ ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit 
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-09-29T11:14:03Z	PASS	60	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 ecs-bluegreen	2026-10-01T19:43:10Z	PASS	230	verify.sh	rc ok, orph clean; client-ecs 3.1144.0 (#4324)
-ecs-fargate	2026-10-03T08:36:40Z	PASS	431	verify.sh	rc ok, orph clean (#4283 PR #4449 rebased head)
+ecs-fargate	2026-10-04T16:44:59Z	PASS	434	verify.sh	rc ok, orph clean (#2080 PR #4557)
 ecs-schedule-targets	2026-10-01T19:45:46Z	PASS	80	verify.sh	rc ok, orph clean; client-ecs 3.1144.0 (#4324)
 ecs-service-update-props	2026-10-01T19:29:01Z	PASS	120	verify.sh	rc ok, orph clean; client-ecs 3.1144.0 (#4324)
 efs-immutable-replacement	2026-10-03T13:51:11Z	PASS	75	verify.sh	rc ok, orph clean; #4438 regression
