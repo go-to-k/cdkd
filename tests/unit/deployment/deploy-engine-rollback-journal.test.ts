@@ -363,6 +363,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
     const warns = (getLogger().warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     expect(warns.some((m) => m.includes('could not revert 1 operation(s)'))).toBe(true);
+    expect(warns.some((m) => m.includes('The rollback journal keeps them.'))).toBe(true);
     // The failed op is a DELETE: nothing for `--revert-failed` to act on.
     expect(warns.some((m) => m.includes('--revert-failed'))).toBe(false);
   });

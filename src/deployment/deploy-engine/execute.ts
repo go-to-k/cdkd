@@ -692,7 +692,9 @@ export async function executeDeployment(
     let autoRollbackClean = false;
     // Whether this attempt's `auto-rollback-started` segment was written: the
     // settle below pops the NEWEST segment, which without one is an OLDER
-    // attempt's revert record (go-to-k/cdkd#4356 review).
+    // attempt's revert record (go-to-k/cdkd#4356 review). The nested settle is
+    // skipped with it, so after a FAILED write a reverted child's pending
+    // segments for this run stay until the next top-level success sweeps them.
     let autoRollbackJournaled = false;
     // Resources this deploy's rollback left in AWS under `DeletionPolicy: Retain`
     // (issue #2934). Stays empty when no rollback ran, so the saves below
@@ -793,8 +795,9 @@ export async function executeDeployment(
         // top-level stack (go-to-k/cdkd#3864).
         this.logger.warn(
           safeMsg`The automatic rollback could not revert ${rollbackResult.skipped} operation(s) ` +
-            `(see the warnings above; each is recorded as a ROLLBACK_RESOURCE_SKIPPED event). ` +
-            `The rollback journal keeps them.`
+            `(see the warnings above; each is recorded as a ROLLBACK_RESOURCE_SKIPPED event).` +
+            // A failed journal write already warned that nothing was kept.
+            (autoRollbackJournaled ? ` The rollback journal keeps them.` : '')
         );
         if (
           this.options.parentStackInfo === undefined &&
