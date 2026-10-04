@@ -1367,6 +1367,35 @@ describe('cdkd scrub counts a deferred reference that goes UNRESOLVED (issue #21
     expect(JSON.stringify(saved)).not.toContain(TOKYO_PASSWORD);
   });
 
+  it('a defaulted parameter whose OWN resolution fails stays unbound without failing the stack', async () => {
+    // `Gone` is what `ssm.StringParameter.valueForStringParameter` synthesizes,
+    // over a path that no longer exists. Its per-parameter call throws; that
+    // must leave it unbound and keep binding `Env`, not escape and fail the
+    // whole scrub (on main this stack got an empty bag and carried on).
+    useState(makeLeakyState(TOKYO_PASSWORD, 'none'));
+    prime(
+      CONSUMER_REGION,
+      'GetParameterCommand',
+      Object.assign(new Error('Parameter /missing not found.'), { name: 'ParameterNotFound' })
+    );
+
+    const res = await scrub(
+      { 'Fn::Sub': '{{resolve:secretsmanager:${Env}-db:SecretString:password}}' },
+      undefined,
+      { DbName: { Ref: 'Gone' } },
+      {
+        Env: { Type: 'String', Default: 'prod' },
+        Gone: { Type: 'AWS::SSM::Parameter::Value<String>', Default: '/missing' },
+        Other: { Type: 'String' },
+      }
+    );
+
+    expect(secretSends.map((send) => (send.input as { SecretId?: string }).SecretId)).toEqual([
+      'prod-db',
+    ]);
+    expect(res).toMatchObject({ recordsChanged: 1 });
+  });
+
   it('the integ arm`s other phase: a deleted foreign SSM parameter is a counted finding', async () => {
     // `dynamic-ref-cross-region` phase 3h's shape: SSM `ParameterNotFound` from
     // the region the ARN names.

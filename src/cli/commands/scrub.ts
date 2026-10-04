@@ -4720,10 +4720,10 @@ function isNamelessDynamicReferenceFailure(err: unknown): boolean {
 // something not in state — and that throw is not a dynamic-reference failure
 // however many `{{resolve:...}}` leaves the same bag happens to carry. The
 // population is not exotic: `scrubStack` takes no `--parameters`, so every
-// `{Ref: <param>}` to a parameter with no `Default` throws (since issue #2166
-// the defaulted ones are still bound, one by one). Counting those would red `--dry-run --fail`,
-// the documented STANDING CI gate, on stacks that are entirely healthy and
-// with no way for the operator to clear it. That is the same outcome
+// `{Ref: <param>}` to a parameter with no `Default` throws (since issue
+// #2166 the defaulted ones are still bound, one by one). Counting those
+// would red `--dry-run --fail`, the documented STANDING CI gate, on stacks
+// that are entirely healthy and with no way for the operator to clear it. That is the same outcome
 // go-to-k/cdkd#3160 gives as the reason NOT to widen into a refusal.
 //
 // Hence the conjunction, and note WHO OWNS each half. The excluded set is
@@ -5073,8 +5073,8 @@ function isTemplateShapeResolutionFailure(err: unknown): boolean {
  * Deliberately just these THREE, not every shape failure the resolver can
  * raise. They are the ones that fire EN MASSE on a healthy stack:
  * scrub takes no `--parameters`, so every `{Ref: <param>}` to a
- * `Default`-less parameter throws; and `resolveGetAtt` refuses on the same condition as `resolveRef`,
- * which a branch adding a not-yet-deployed resource hits for every
+ * `Default`-less parameter throws; and `resolveGetAtt` refuses on the same
+ * condition as `resolveRef`, which a branch adding a not-yet-deployed resource hits for every
  * `Fn::GetAtt` to it. A rarer shape failure (an `Fn::Select` over a
  * non-array, say) is a genuine template defect, and counting a leaf whose
  * scan it abandoned is not wrong — the scan really did stop. Over-counting
