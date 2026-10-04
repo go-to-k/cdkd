@@ -13,6 +13,9 @@ import type { ResourceState, StackState } from '../../../src/types/state.js';
 const CREATE_ONLY: Record<string, string[]> = {
   'AWS::Test::CreateOnlyScript': ['/properties/Script'],
   'AWS::Test::NestedCreateOnly': ['/properties/Script/Inner'],
+  // A registry type the schema (here) calls create-only for the property: the
+  // registry's own classification must win.
+  'AWS::CodeCommit::Repository': ['/properties/RepositoryDescription'],
 };
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -39,14 +42,15 @@ const resolveFn = (value: unknown): Promise<unknown> =>
 async function diffOf(
   type: string,
   templateScript: unknown,
-  fingerprinted: boolean
+  fingerprinted: boolean,
+  key = 'Script'
 ): Promise<ReturnType<DiffCalculator['calculateDiff']> extends Promise<infer M> ? M : never> {
   const record: ResourceState = {
     physicalId: 'p',
     resourceType: type,
-    properties: { Name: 'n', Script: '***' },
+    properties: { Name: 'n', [key]: '***' },
     ...(fingerprinted && {
-      maskedPropertyFingerprints: { Script: maskedPropertyFingerprint(SCRIPT) },
+      maskedPropertyFingerprints: { [key]: maskedPropertyFingerprint(SCRIPT) },
     }),
   };
   const state: StackState = {
@@ -58,7 +62,7 @@ async function diffOf(
     lastModified: 0,
   };
   const template: CloudFormationTemplate = {
-    Resources: { R: { Type: type, Properties: { Name: 'n', Script: templateScript } } },
+    Resources: { R: { Type: type, Properties: { Name: 'n', [key]: templateScript } } },
   };
   return new DiffCalculator().calculateDiff(state, template, resolveFn);
 }
@@ -68,7 +72,13 @@ describe('DiffCalculator - a masked property whose template expression moved (go
     const change = (await diffOf('AWS::Test::Plain', EDITED, true)).get('R')!;
     expect(change.changeType).toBe('UPDATE');
     expect(change.propertyChanges).toEqual([
-      { path: 'Script', oldValue: '***', newValue: '***', requiresReplacement: false },
+      {
+        path: 'Script',
+        oldValue: '***',
+        newValue: '***',
+        requiresReplacement: false,
+        maskedExpressionChanged: true,
+      },
     ]);
   });
 
@@ -87,6 +97,14 @@ describe('DiffCalculator - a masked property whose template expression moved (go
   it('replaces when the property itself is create-only', async () => {
     const change = (await diffOf('AWS::Test::CreateOnlyScript', EDITED, true)).get('R')!;
     expect(change.propertyChanges?.[0]?.requiresReplacement).toBe(true);
+  });
+
+  it('takes the registry rule over the schema where the registry classifies the property', async () => {
+    const change = (
+      await diffOf('AWS::CodeCommit::Repository', EDITED, true, 'RepositoryDescription')
+    ).get('R')!;
+    expect(change.changeType).toBe('UPDATE');
+    expect(change.propertyChanges?.[0]?.requiresReplacement).toBe(false);
   });
 
   it('does not guess a replacement from a create-only path NESTED under it', async () => {

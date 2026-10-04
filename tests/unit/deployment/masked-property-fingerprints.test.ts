@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  REFUSED_FINGERPRINT,
   backfillMaskedPropertyFingerprints,
   markWrittenFromDeployedTemplate,
   maskedPropertyFingerprint,
@@ -9,6 +10,7 @@ import {
   withMaskedPropertyFingerprints,
 } from '../../../src/deployment/masked-property-fingerprints.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
 
 /** go-to-k/cdkd#4451: the helpers behind `ResourceState.maskedPropertyFingerprints`. */
 const SCRIPT = { 'Fn::Base64': { 'Fn::Join': ['', ['pw=', '{{resolve:ssm-secure:/app/pw}}']] } };
@@ -81,7 +83,7 @@ describe('maskedPropertyFingerprintsOf', () => {
     expect([
       ...maskedPropertyFingerprintsOf({
         ...record(),
-        maskedPropertyFingerprints: { Value: 'sha256:a', Bad: 7 },
+        maskedPropertyFingerprints: { Value: 'sha256:a', Bad: 7, Refused: REFUSED_FINGERPRINT },
       }),
     ]).toEqual([['Value', 'sha256:a']]);
   });
@@ -162,8 +164,8 @@ describe('backfillMaskedPropertyFingerprints', () => {
     expect(before!.maskedPropertyFingerprints).toBeUndefined();
   });
 
-  it('leaves a record that has the field, malformed included', () => {
-    for (const field of [{ Value: 'sha256:x' }, 'garbage']) {
+  it('leaves a record whose every masked property has an entry, or whose field is malformed', () => {
+    for (const field of [{ Value: 'sha256:x' }, 'garbage', ['sha256:x']]) {
       const resources = {
         R: { ...record(), maskedPropertyFingerprints: field } as unknown as ResourceState,
       };
@@ -184,5 +186,115 @@ describe('backfillMaskedPropertyFingerprints', () => {
       })
     ).toBe(0);
     expect(backfillMaskedPropertyFingerprints(resources, undefined)).toBe(0);
+  });
+});
+
+describe('withMaskedPropertyFingerprints - a template literal equal to a resolved secret (Q5)', () => {
+  const NOECHO = 'noecho-handler-token-1234';
+  const template = {
+    Name: '/app/ud',
+    Value: SCRIPT,
+    Other: `prefix-${NOECHO}`,
+  };
+  const scrubbed = (): ResourceState => ({
+    ...record(),
+    properties: { Name: '/app/ud', Value: '***', Other: '***' },
+  });
+
+  it('refuses a hash to a property whose template text holds a needle of this resource', () => {
+    const secrets = new Map([[NOECHO, '***']]);
+    const written = markWrittenFromDeployedTemplate({ Name: '/app/ud' });
+    expect(
+      withMaskedPropertyFingerprints(scrubbed(), written, template, secrets).maskedPropertyFingerprints
+    ).toEqual({ Value: maskedPropertyFingerprint(SCRIPT), Other: REFUSED_FINGERPRINT });
+  });
+
+  it('counts a NoEcho parameter value (a log-only needle) too, in its JSON-escaped spelling', () => {
+    const secrets = new Map<string, string>();
+    const quoted = 'say "noecho-param-5678"';
+    recordLogOnlyValue(secrets, quoted);
+    const written = markWrittenFromDeployedTemplate({ Name: '/app/ud' });
+    const out = withMaskedPropertyFingerprints(
+      scrubbed(),
+      written,
+      { ...template, Other: `x ${quoted} y` },
+      secrets
+    );
+    expect(out.maskedPropertyFingerprints!['Other']).toBe(REFUSED_FINGERPRINT);
+  });
+
+  it('hashes it when no needle (or only a sub-floor one) is in its text', () => {
+    const written = markWrittenFromDeployedTemplate({ Name: '/app/ud' });
+    for (const secrets of [new Map([['unrelated-secret-999', '***']]), new Map([['pr', '***']])]) {
+      expect(
+        withMaskedPropertyFingerprints(scrubbed(), written, template, secrets)
+          .maskedPropertyFingerprints!['Other']
+      ).toBe(maskedPropertyFingerprint(template.Other));
+    }
+  });
+
+  it('also refuses a CARRIED entry once the save holds the needle (a backfill could not see it)', () => {
+    const carried = {
+      ...scrubbed(),
+      maskedPropertyFingerprints: {
+        Value: maskedPropertyFingerprint(SCRIPT),
+        Other: maskedPropertyFingerprint(template.Other),
+      },
+    };
+    const out = withMaskedPropertyFingerprints(
+      carried,
+      { Name: '/app/ud' },
+      template,
+      new Map([[NOECHO, '***']])
+    );
+    expect(out.maskedPropertyFingerprints).toEqual({
+      Value: maskedPropertyFingerprint(SCRIPT),
+      Other: REFUSED_FINGERPRINT,
+    });
+    // Unchanged when nothing is refused: the very same record object.
+    expect(withMaskedPropertyFingerprints(carried, { Name: '/app/ud' }, template, new Map())).toBe(
+      carried
+    );
+  });
+
+  it('a refused entry is never compared and never replaced by the backfill', () => {
+    const refused = record({ maskedPropertyFingerprints: { Value: REFUSED_FINGERPRINT } });
+    expect(movedMaskedProperties(refused, { Name: '/app/ud', Value: EDITED })).toEqual([]);
+    const resources: Record<string, ResourceState> = { R: refused };
+    expect(
+      backfillMaskedPropertyFingerprints(resources, {
+        Resources: { R: { Type: 'AWS::SSM::Parameter', Properties: { Value: SCRIPT } } },
+      })
+    ).toBe(0);
+    expect(resources['R']).toBe(refused);
+  });
+});
+
+describe('backfillMaskedPropertyFingerprints - per property (Q1)', () => {
+  it('adds an entry for a masked property the field lacks, keeping the existing ones', () => {
+    // A was stamped; B was masked later (a `cdkd scrub` of a leaked value,
+    // carried by spread with the field as it was).
+    const resources: Record<string, ResourceState> = {
+      R: {
+        ...record(),
+        properties: { Name: '/app/ud', Value: '***', Other: '***' },
+        maskedPropertyFingerprints: { Value: 'sha256:kept' },
+      },
+    };
+    const template = {
+      Resources: {
+        R: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: '/app/ud', Value: SCRIPT, Other: EDITED },
+        },
+      },
+    };
+    expect(backfillMaskedPropertyFingerprints(resources, template)).toBe(1);
+    expect(resources['R']!.maskedPropertyFingerprints).toEqual({
+      Value: 'sha256:kept',
+      Other: maskedPropertyFingerprint(EDITED),
+    });
+    // Idempotent.
+    expect(backfillMaskedPropertyFingerprints(resources, template)).toBe(0);
   });
 });

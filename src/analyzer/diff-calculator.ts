@@ -619,9 +619,10 @@ export class DiffCalculator {
               oldValue,
               newValue
             ),
+            maskedExpressionChanged: true,
           });
           this.logger.debug(
-            `${logicalId}: ${key} is recorded masked and its template expression changed (go-to-k/cdkd#4451)`
+            safeMsg`${logicalId}: ${key} is recorded masked and its template expression changed (go-to-k/cdkd#4451)`
           );
         }
 

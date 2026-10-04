@@ -17,9 +17,13 @@
  *
  * WHAT IS HASHED is the template value only, never a resolved one. The
  * template holds a secret as its `{{resolve:...}}` token and a `NoEcho`
- * parameter as its `Ref`, so no plaintext, and nothing derived from one,
- * enters the hash: it is no confirm oracle, unlike a salted hash beside the
- * mask (`.claude/rules/layout-deployment-secrets.md`).
+ * parameter as its `Ref`, so nothing the deploy resolved enters the hash: it
+ * is no confirm oracle, unlike a salted hash beside the mask
+ * (`.claude/rules/layout-deployment-secrets.md`). The one way a secret can
+ * still reach it is a template LITERAL equal to a value the same resource
+ * resolved as a secret; such a property is refused a hash
+ * ({@link REFUSED_FINGERPRINT}) whenever the save holds that resource's
+ * needles, and keeps the pre-#4451 comparison.
  *
  * COMPATIBILITY. A record with no fingerprint for a masked property (every
  * record an older cdkd wrote) is compared exactly as before. The deploy
@@ -28,7 +32,12 @@
  * version sends what it sent before, and a later edit is detected.
  */
 import { createHash } from 'node:crypto';
-import { carriesSecretMask } from './secret-redaction.js';
+import {
+  carriesSecretMask,
+  MIN_NEEDLE_LENGTH,
+  printingCorpusOf,
+  type RecordedSecretValues,
+} from './secret-redaction.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState } from '../types/state.js';
 
@@ -53,12 +62,37 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
+/**
+ * The entry a property gets instead of a hash when its template value
+ * contains a value the same resource resolved as a secret. Read as no
+ * fingerprint (the pre-#4451 comparison), and an entry the backfill does not
+ * replace.
+ */
+export const REFUSED_FINGERPRINT = 'refused:secret-in-template';
+
+const FINGERPRINT_PREFIX = 'sha256:';
+
+/**
+ * Whether `templateValue` contains, as text, a needle of `secrets` at or above
+ * the needle floor (the plain and the JSON-escaped spelling, since the hash
+ * reads the canonical JSON). The printing corpus, so a `NoEcho` parameter's
+ * value counts too.
+ */
+function templateCarriesNeedle(templateValue: unknown, secrets: RecordedSecretValues): boolean {
+  const text = canonicalJson(templateValue);
+  for (const needle of printingCorpusOf(secrets).keys()) {
+    if (needle.length < MIN_NEEDLE_LENGTH) continue;
+    if (text.includes(needle) || text.includes(JSON.stringify(needle).slice(1, -1))) return true;
+  }
+  return false;
+}
+
 /** `sha256:<hex>` over one property's UNRESOLVED template value. */
 export function maskedPropertyFingerprint(templateValue: unknown): string {
   const digest = createHash('sha256')
     .update(canonicalJson({ layout: FINGERPRINT_LAYOUT, value: templateValue }))
     .digest('hex');
-  return `sha256:${digest}`;
+  return `${FINGERPRINT_PREFIX}${digest}`;
 }
 
 /**
@@ -82,8 +116,9 @@ export function maskedPropertyFingerprintsFor(
 }
 
 /**
- * The record's fingerprints. A missing field, a non-object, or a non-string
- * entry is no fingerprint, which keeps the pre-#4451 comparison for it.
+ * The record's fingerprints. A missing field, a non-object, a non-string entry
+ * or a {@link REFUSED_FINGERPRINT} is no fingerprint, which keeps the pre-#4451
+ * comparison for it.
  */
 export function maskedPropertyFingerprintsOf(record: unknown): ReadonlyMap<string, string> {
   const read = new Map<string, string>();
@@ -91,7 +126,7 @@ export function maskedPropertyFingerprintsOf(record: unknown): ReadonlyMap<strin
   const field = (record as { maskedPropertyFingerprints?: unknown }).maskedPropertyFingerprints;
   if (field === null || typeof field !== 'object' || Array.isArray(field)) return read;
   for (const [key, value] of Object.entries(field as Record<string, unknown>)) {
-    if (typeof value === 'string') read.set(key, value);
+    if (typeof value === 'string' && value.startsWith(FINGERPRINT_PREFIX)) read.set(key, value);
   }
   return read;
 }
@@ -144,27 +179,59 @@ export function markWrittenFromDeployedTemplate<T extends object>(bag: T): T {
 export function withMaskedPropertyFingerprints(
   scrubbed: ResourceState,
   writtenBag: unknown,
-  templateProps: Record<string, unknown> | undefined
+  templateProps: Record<string, unknown> | undefined,
+  secrets?: RecordedSecretValues
 ): ResourceState {
   if (templateProps === undefined) return scrubbed;
-  if (writtenBag === null || typeof writtenBag !== 'object') return scrubbed;
-  if (!writtenFromDeployedTemplate.has(writtenBag)) return scrubbed;
-  const fingerprints = maskedPropertyFingerprintsFor(scrubbed.properties, templateProps);
-  const { maskedPropertyFingerprints: _previous, ...rest } = scrubbed;
+  const written =
+    writtenBag !== null &&
+    typeof writtenBag === 'object' &&
+    writtenFromDeployedTemplate.has(writtenBag);
+  const { maskedPropertyFingerprints: previous, ...rest } = scrubbed;
+  let fingerprints: Record<string, string> | undefined;
+  if (written) {
+    fingerprints = maskedPropertyFingerprintsFor(scrubbed.properties, templateProps);
+  } else {
+    // Carried as it was, except that this save may hold the needles a
+    // backfill or an earlier save could not see.
+    if (previous === undefined || previous === null || typeof previous !== 'object') {
+      return scrubbed;
+    }
+    if (secrets === undefined) return scrubbed;
+    fingerprints = { ...(previous as Record<string, string>) };
+  }
+  if (fingerprints !== undefined && secrets !== undefined) {
+    const refused = Object.keys(fingerprints).filter(
+      (key) =>
+        Object.hasOwn(templateProps, key) && templateCarriesNeedle(templateProps[key], secrets)
+    );
+    if (refused.length > 0) {
+      fingerprints = Object.fromEntries(
+        Object.entries(fingerprints).map(([key, value]) => [
+          key,
+          refused.includes(key) ? REFUSED_FINGERPRINT : value,
+        ])
+      );
+    }
+  }
+  if (!written && JSON.stringify(fingerprints) === JSON.stringify(previous)) return scrubbed;
   return fingerprints === undefined ? rest : { ...rest, maskedPropertyFingerprints: fingerprints };
 }
 
 /**
- * The deploy-start backfill for a record no cdkd version with this field
- * wrote: each masked property gets the fingerprint of today's template value.
- * That asserts AWS holds what today's template describes, which is exactly
- * what the unchanged comparison of this same deploy concludes for it, so this
- * deploy sends what it sent before and the next edit is seen.
+ * The deploy-start backfill: each masked property with NO entry (every
+ * property of a record an older cdkd wrote, or one a later writer such as
+ * `cdkd scrub` masked after the record was stamped) gets the fingerprint of
+ * today's template value. That asserts AWS holds what today's template
+ * describes, which is exactly what the unchanged comparison of this same
+ * deploy concludes for it, so this deploy sends what it sent before and the
+ * next edit is seen. An existing entry, a {@link REFUSED_FINGERPRINT}
+ * included, is kept.
  *
- * Only a record with NO field (a malformed one keeps the old comparison and is
- * left alone), whose logical id the template defines with the same type. The
- * RECORD object is replaced, the container updated in place. Returns how many
- * were stamped, so the no-change path knows to save.
+ * Only a record whose field is absent or a plain object (a malformed one keeps
+ * the old comparison and is left alone), whose logical id the template defines
+ * with the same type. The RECORD object is replaced, the container updated in
+ * place. Returns how many were stamped, so the no-change path knows to save.
  */
 export function backfillMaskedPropertyFingerprints(
   resources: Record<string, ResourceState>,
@@ -175,11 +242,14 @@ export function backfillMaskedPropertyFingerprints(
   let stamped = 0;
   for (const [logicalId, record] of Object.entries(resources)) {
     if (record === null || typeof record !== 'object') continue;
+    const field = (record as { maskedPropertyFingerprints?: unknown }).maskedPropertyFingerprints;
     if (
-      (record as { maskedPropertyFingerprints?: unknown }).maskedPropertyFingerprints !== undefined
+      field !== undefined &&
+      (field === null || typeof field !== 'object' || Array.isArray(field))
     ) {
       continue;
     }
+    const existing = (field ?? {}) as Record<string, unknown>;
     if (!Object.hasOwn(declared, logicalId)) continue;
     const definition = declared[logicalId];
     if (definition === undefined || definition.Type !== record.resourceType) continue;
@@ -192,7 +262,15 @@ export function backfillMaskedPropertyFingerprints(
       definition.Properties ?? {}
     );
     if (fingerprints === undefined) continue;
-    resources[logicalId] = { ...record, maskedPropertyFingerprints: fingerprints };
+    const added = Object.entries(fingerprints).filter(([key]) => !Object.hasOwn(existing, key));
+    if (added.length === 0) continue;
+    resources[logicalId] = {
+      ...record,
+      maskedPropertyFingerprints: Object.fromEntries([
+        ...Object.entries(existing),
+        ...added,
+      ]) as Record<string, string>,
+    };
     stamped++;
   }
   return stamped;

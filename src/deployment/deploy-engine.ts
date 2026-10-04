@@ -889,11 +889,13 @@ export class DeployEngine {
       // go-to-k/cdkd#4451: the masked properties' template fingerprints, read
       // off the SCRUBBED bag (only it holds `***`), and rebuilt only for a
       // record this deploy wrote; a failed update keeps the previous bag and
-      // its previous fingerprints.
+      // its previous fingerprints. This resource's needles refuse a hash to a
+      // template value that holds one as a literal.
       resources[logicalId] = withMaskedPropertyFingerprints(
         scrubbed,
         record.properties,
-        templateProps
+        templateProps,
+        secrets
       );
     }
     // `outputs` is also secret-bearing: a `CfnOutput` whose Value resolves a
@@ -955,7 +957,8 @@ export class DeployEngine {
             orphanTemplateProps
           ),
           entry.state.properties,
-          orphanTemplateProps
+          orphanTemplateProps,
+          sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined
         ),
       };
     });

@@ -278,7 +278,6 @@ export async function provisionUpdate(
   // below may fire for it. A record with no fingerprint (an older cdkd's)
   // reads as unmoved, the comparison it always had.
   const movedMasked = new Set(movedMaskedProperties(currentResource, desiredProps));
-  const maskedEditMoved = movedMasked.size > 0;
   const desiredForSkipCheck = redactSecretsForState(
     markSameGenerationBag({ ...resolvedProps }),
     updateSecrets,
@@ -315,6 +314,13 @@ export async function provisionUpdate(
           allowedForRecord,
           createOnlyEvidence
         );
+  // What both no-change skips require of the bags: equal redacted values, and
+  // no masked property whose template expression moved (go-to-k/cdkd#4451),
+  // since `***` equals `***` whatever the edit. ONE predicate, so the two
+  // skips cannot disagree on it.
+  const recordMatchesDesired =
+    movedMasked.size === 0 &&
+    keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten);
   // The metadata-only arm both no-change skips share: refresh the record's
   // template attributes and call no provider.
   const applyAttributeOnlyUpdate = (
@@ -339,10 +345,9 @@ export async function provisionUpdate(
   if (
     !typeChanged &&
     !suppliesFreshMaskOnlyValue &&
-    !maskedEditMoved &&
     lostChild === undefined &&
     this.recreateDirectionFor(stackName, logicalId) === undefined &&
-    keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten)
+    recordMatchesDesired
   ) {
     // Attribute-only change (schema v5+): `DeletionPolicy` /
     // `UpdateReplacePolicy` may have flipped without any AWS-side
@@ -511,10 +516,9 @@ export async function provisionUpdate(
   if (
     noEchoHeldPaths.size > 0 &&
     !typeChanged &&
-    !maskedEditMoved &&
     lostChild === undefined &&
     this.recreateDirectionFor(stackName, logicalId) === undefined &&
-    keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten) &&
+    recordMatchesDesired &&
     Object.entries(resolvedProps).every(
       ([key, value]) =>
         noEchoHeldPaths.has(key) || freshNoEchoLeafPositions(value, updateSecrets).length === 0

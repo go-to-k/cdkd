@@ -1273,4 +1273,12 @@ export interface PropertyChange {
    * same treatment, since their seed can be such a ceiling too.
    */
   inPlacePropagated?: boolean;
+
+  /**
+   * Set on a change only the record's `maskedPropertyFingerprints` detects
+   * (go-to-k/cdkd#4451): both sides read `***`, but the property's template
+   * expression changed (the text around a secret reference, or its target).
+   * The diff renderer labels it, since `*** -> ***` reads as no change.
+   */
+  maskedExpressionChanged?: true;
 }

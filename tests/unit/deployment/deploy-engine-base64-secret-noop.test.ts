@@ -293,15 +293,90 @@ describe('DeployEngine - a rollback-orphaned record this deploy created keeps it
   });
 });
 
+describe('DeployEngine - review-round pins (go-to-k/cdkd#4451)', () => {
+  const EDITED = { ...PROPS, Value: base64Value('echo B\npw=') };
+
+  it('stamps a record whose provider reported effectiveProperties, so the edit is not re-sent (Q7)', async () => {
+    const h = harness();
+    // A provider that reports what it sent: the resolved bag as written.
+    h.provider.create.mockImplementation((_id: string, _type: string, props: object) =>
+      Promise.resolve({ physicalId: 'p', effectiveProperties: { ...props } })
+    );
+    h.provider.update.mockImplementation(
+      (_id: string, _pid: string, _type: string, props: object) =>
+        Promise.resolve({ physicalId: 'p', wasReplaced: false, effectiveProperties: { ...props } })
+    );
+    const created = await h.deploy(PROPS);
+    expect(created.resources['R']!.maskedPropertyFingerprints).toEqual({
+      Value: maskedPropertyFingerprint(PROPS.Value),
+    });
+    const edited = await h.deploy(EDITED);
+    expect(h.provider.update).toHaveBeenCalledTimes(1);
+    expect(edited.resources['R']!.maskedPropertyFingerprints).toEqual({
+      Value: maskedPropertyFingerprint(EDITED.Value),
+    });
+    await h.deploy(EDITED);
+    expect(h.provider.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports one row for an embedded leaf both comparisons see (Q8)', async () => {
+    const h = harness();
+    await h.deploy(EMBEDDED_PROPS);
+    await h.deploy(embedded(base64Value('echo B\npw=')));
+    const rows = h.lastChange()?.propertyChanges ?? [];
+    expect(rows.filter((pc) => pc.path === 'Value')).toHaveLength(1);
+  });
+
+  it('keeps a propagated replacement ceiling on a masked property whose expression moved (Q8)', async () => {
+    const h = harness();
+    await h.deploy(PROPS);
+    // The masked row as a CEILING (an attribute it reads may move): only the
+    // fingerprint says the value moved, so the ceiling must stand.
+    h.onDiff((changes) => {
+      const row = changes.get('R')?.propertyChanges?.find((pc) => pc.path === 'Value');
+      if (row) Object.assign(row, { requiresReplacement: true, inPlacePropagated: true });
+    });
+    // The replacement stands, so the engine's stateful guard refuses it; the
+    // lowered in-place update it would otherwise send never happens.
+    await expect(h.deploy(EDITED)).rejects.toMatchObject({
+      cause: { code: 'STATEFUL_REPLACE_BLOCKED' },
+    });
+    expect(h.provider.update).not.toHaveBeenCalled();
+  });
+
+  it('backfills a field-less record a rollback left as an orphan once it is adopted (Q8)', async () => {
+    // No explicit Name: adoption takes only a resource cdkd names itself.
+    const unnamed = { Type: 'String', Value: PROPS.Value };
+    const h = harness();
+    const created = await h.deploy(unnamed);
+    const { maskedPropertyFingerprints: _dropped, ...legacy } = created.resources['R']!;
+    h.setState({
+      ...created,
+      resources: {},
+      orphans: [{ logicalId: 'R', orphanedAt: 0, state: legacy }],
+    });
+    const adopted = await h.deploy(unnamed);
+    expect(h.provider.import).toHaveBeenCalled();
+    expect(adopted.orphans ?? []).toHaveLength(0);
+    expect(adopted.resources['R']!.maskedPropertyFingerprints).toEqual({
+      Value: maskedPropertyFingerprint(PROPS.Value),
+    });
+  });
+});
+
 interface Harness {
   deploy(props: Record<string, unknown>, options?: { noRollback?: boolean }): Promise<StackState>;
   saved(): StackState;
   saveCount(): number;
+  deployTemplate(template: CloudFormationTemplate): Promise<StackState>;
+  /** Runs on every REAL diff result before the engine reads it. */
+  onDiff(hook: (changes: Map<string, ResourceChange>) => void): void;
   setState(state: StackState): void;
   lastChange(): ResourceChange | undefined;
   provider: {
     create: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
+    import: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -316,6 +391,7 @@ function harness(): Harness {
     delete: vi.fn(),
     getAttribute: vi.fn(),
     readCurrentState: vi.fn().mockResolvedValue(undefined),
+    import: vi.fn().mockResolvedValue({ physicalId: 'p', attributes: {} }),
   };
   let state: StackState | null = null;
   const saveState = vi.fn((_stack: string, _region: string, saved: StackState) => {
@@ -327,11 +403,13 @@ function harness(): Harness {
   );
   const real = new DiffCalculator();
   let last: Map<string, ResourceChange> | undefined;
+  let onDiff: ((changes: Map<string, ResourceChange>) => void) | undefined;
   const diff = {
     calculateDiff: vi.fn(async (...args: unknown[]) => {
       last = await (
         real.calculateDiff as (...x: unknown[]) => Promise<Map<string, ResourceChange>>
       ).apply(real, args);
+      onDiff?.(last);
       return last;
     }),
     hasChanges: vi.fn((c: unknown) => real.hasChanges(c as never)),
@@ -375,6 +453,13 @@ function harness(): Harness {
       };
       await makeEngine(options?.noRollback ?? false).deploy('s', template);
       return state!;
+    },
+    async deployTemplate(template) {
+      await makeEngine(false).deploy('s', template);
+      return state!;
+    },
+    onDiff(hook) {
+      onDiff = hook;
     },
     saved: () => state!,
     saveCount: () => saveState.mock.calls.length,
