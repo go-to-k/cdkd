@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vite-plus/test';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -81,6 +89,43 @@ describe('pruneOtherVersions', () => {
       expect(existsSync(join(root, '0.294.7', 'sub', 'entry'))).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // rmSync removes a symlinked entry itself and never descends into its target.
+  it('removes a symlinked entry without touching what it points at', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'cdkd-compile-cache-link-'));
+    try {
+      const root = join(base, 'root');
+      const outside = join(base, 'outside');
+      mkdirSync(join(root, '0.294.7'), { recursive: true });
+      mkdirSync(outside);
+      writeFileSync(join(outside, 'keep-me'), 'x');
+      symlinkSync(outside, join(root, 'link'));
+
+      pruneOtherVersions(root, '0.294.7');
+
+      expect(await settled(root, ['0.294.7'])).toEqual(['0.294.7']);
+      expect(existsSync(join(outside, 'keep-me'))).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  // readdirSync follows a symlinked root, so pruning through one would empty
+  // whatever directory a misconfigured XDG_CACHE_HOME points at.
+  it('deletes nothing when the root itself is a symlink', () => {
+    const base = mkdtempSync(join(tmpdir(), 'cdkd-compile-cache-rootlink-'));
+    try {
+      const target = join(base, 'somewhere');
+      mkdirSync(join(target, 'unrelated'), { recursive: true });
+      symlinkSync(target, join(base, 'root'));
+
+      pruneOtherVersions(join(base, 'root'), '0.294.7');
+
+      expect(readdirSync(target)).toEqual(['unrelated']);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
     }
   });
 

@@ -1,4 +1,4 @@
-import { readdirSync, rmSync } from 'node:fs';
+import { lstatSync, readdirSync, rmSync } from 'node:fs';
 import { enableCompileCache } from 'node:module';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
@@ -59,13 +59,20 @@ export function compileCacheVersionDirectory(root: string, version: string): str
  * a command like `--help` exits before a background delete would finish; it
  * costs time only on the first run after an upgrade, when there is something
  * to delete. Every failure is ignored, since a leftover entry only costs
- * disk. Two cdkd
+ * disk. Nothing is deleted when `root` is a symlink or belongs to another
+ * user: `readdirSync` follows a symlinked root, so a misconfigured
+ * `XDG_CACHE_HOME` would otherwise empty whatever directory it points at.
+ * Two cdkd
  * versions used side by side delete each other's cache, so each runs cold —
  * the same as with no cache at all.
  */
 export function pruneOtherVersions(root: string, keep: string): void {
   let entries: string[];
   try {
+    const stat = lstatSync(root);
+    if (!stat.isDirectory()) return;
+    const uid = process.getuid?.();
+    if (uid !== undefined && stat.uid !== uid) return;
     entries = readdirSync(root);
   } catch {
     return;
