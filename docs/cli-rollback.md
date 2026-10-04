@@ -186,9 +186,19 @@ These are surfaced in the plan rather than applied silently.
   user in the failed deploy (two `AWS::IAM::Policy` resources swapping names, or
   a policy renamed away from a name the role's own `Policies` took) is kept by
   each revert that would remove it once another revert of the same rollback has
-  put it back. A policy CREATED under a name another policy still held is
-  deleted with that name, so the other policy loses its grant until it next
-  changes or `cdkd drift --revert` runs.
+  put it back. When a revert or delete removes a name another resource's state
+  record still holds on that principal (a policy CREATED under a name another
+  policy still held, say), the rollback puts back the document that record
+  holds in cdkd STATE (not a copy of what AWS held) at the end, logs
+  `Rollback: put back the inline policy <logicalId> records on its role`, and
+  records a `ROLLBACK_RESOURCE_SUCCEEDED` event for that logical id. Nothing is
+  put back, and the rollback warns, when the records holding the name disagree
+  on its document, when the document or a name is redacted, or when that
+  record's own rollback has not completed (it failed, or the rollback was
+  interrupted first), since its record may still be the failed deploy's. The
+  principal then lacks that policy until the resource next changes or
+  `cdkd drift --revert` runs. A rollback killed between such a removal and the
+  put-back also leaves the policy off: a re-run does not repeat the removal.
 - A re-run after a snapshot succeeded but its delete failed **re-snapshots** the
   name-keyed types (Redshift, ElastiCache), which resume only an in-flight
   snapshot. EBS volumes are reused via their `cdkd:final-snapshot-of` tag. The
