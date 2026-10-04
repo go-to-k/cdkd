@@ -64,7 +64,7 @@ cross-region-concurrent-stacks	2026-10-03T04:18:45Z	PASS	208	verify.sh	rc ok, or
 cross-region-state-bucket	2026-10-03T07:02:29Z	PASS	32	verify.sh	rc ok, orph clean (#4283 PR #4449)
 cross-stack-cfn-fallback	2026-10-02T23:48:50Z	PASS	150	verify.sh	rc ok, orph clean (#4475)
 cross-stack-references	2026-10-03T09:48:51Z	PASS	40	std-flow	rc ok, orph clean (#4505)
-cross-stack-secret-import	2026-10-03T10:40:20Z	PASS	381	verify.sh	rc ok, orph clean (#4508)
+cross-stack-secret-import	2026-10-04T03:39:13Z	PASS	391	verify.sh	rc ok, orph clean (#2298)
 custom-resource-getatt-data	2026-10-03T06:00:30Z	PASS	110	verify.sh	rc ok, orph clean (#4497)
 custom-resource-masked-service-token	2026-09-28T21:40:21Z	PASS	156	verify.sh	rc ok, orph clean; #3938 + #3976 refusal + #3960 seeded arms; pre-#3976 probe RED at R1
 custom-resource-noecho-nested	2026-10-03T13:11:36Z	PASS	896	verify.sh	rc ok, orph clean; #4474 deploy/diff/destroy --all over 4 top-level stacks (two earlier runs voided by a peer machine destroying the fixture mid-run)
@@ -84,7 +84,7 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-10-03T04:25:59Z	PASS	112	verify.sh	rc ok, orph clean (#4283 PR #4449)
 docdb-neptune	2026-10-03T05:35:39Z	PASS	5713	verify.sh	rc ok, orph clean (#4283 PR #4449)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-03T18:30:14Z	PASS	330	verify.sh	rc ok, orph clean, #2102 step 5b embedded look-alike token kept live
+drift-revert	2026-10-04T03:39:13Z	PASS	310	verify.sh	rc ok, orph clean (#2298)
 drift-revert-arrays	2026-10-03T18:30:14Z	PASS	190	verify.sh	rc ok, orph clean
 drift-revert-vpc	2026-10-03T18:30:14Z	PASS	366	verify.sh	rc ok, orph clean
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
@@ -244,7 +244,7 @@ nested-stack-3level	2026-10-04T01:59:33Z	PASS	320	verify.sh	rc ok, orph clean (#
 nested-stack-deep	2026-09-30T10:20:59Z	PASS	105	verify.sh	rc ok, orph clean; PR #4221 (#4094 bound child params + conditions)
 nested-stack-replace-guard	2026-09-25T14:59:50Z	PASS	55	verify.sh	rc ok, orph clean; pre-fix probe red at the fixture's own assertion
 nested-stack-rollback	2026-10-02T13:42:45Z	PASS	110	verify.sh	rc ok, orph clean (#4436)
-nested-stack-secret	2026-10-03T18:30:14Z	PASS	255	verify.sh	rc ok, orph clean
+nested-stack-secret	2026-10-04T03:39:13Z	PASS	231	verify.sh	rc ok, orph clean, #2298 EmbedSecretPair arm; reverted-fix run RED at EmbedSecretPair.Description
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 noecho-parameter-masking	2026-10-03T10:36:00Z	PASS	121	verify.sh	rc ok, orph clean (#4508)
