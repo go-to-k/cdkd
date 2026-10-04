@@ -495,16 +495,21 @@ const CUT_DIGEST_HEX_CHARS = 32;
  * the tail without showing any of it.
  *
  * Pass it ONLY where the rendering serves as an IDENTITY (`displayIdent` and
- * `export.ts`'s record-value renderer), over text that has
- * ALREADY been through whatever masking its site applies. A cut is not a
- * secrecy control — every mask runs upstream of the render, and a value short
- * enough to fit is printed whole — so a digest over post-mask text confirms
- * nothing the same value would not print in the clear under the cap. It is
- * still a CONFIRM ORACLE over that text (the concern go-to-k/cdkd#3729 records
- * for a salted hash beside a mask), so free-form text — AWS's error messages,
- * which can echo a submitted payload that a BOUNDED masker missed — takes the
- * bare marker: two messages rendering alike spoofs no identity, so the digest
- * would buy nothing there.
+ * `export.ts`'s record-value renderer), over text that has ALREADY been
+ * through whatever masking its site applies, and never where a message-level
+ * masker (`maskSecretsInError`) runs DOWNSTREAM of the render: the digest is a
+ * CONFIRM and brute-force ORACLE over whatever the mask left in the tail (a
+ * secret under the needle floor, a derived spelling it missed) — the concern
+ * go-to-k/cdkd#3729 records for a salted hash beside a mask. That is accepted
+ * here only because every digesting site masks before the cut (or replaces the
+ * whole rendered token, as `stack-output.ts` does), and no legitimate value
+ * reaches an identifier cap. Free-form text — AWS's error messages, which can
+ * echo a submitted payload a BOUNDED masker missed — takes the bare marker:
+ * two messages rendering alike spoof no identity, so the digest would buy
+ * nothing there.
+ *
+ * `digestOf` must be ASCII or otherwise free of lone surrogates: hashing
+ * encodes it as UTF-8, which maps each one to U+FFFD.
  */
 export function cutMarker(withheld: number, digestOf?: string): string {
   const digest =

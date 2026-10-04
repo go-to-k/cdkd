@@ -570,6 +570,17 @@ describe('preDeletedLine renders the recorded physical id with its own boundary'
     );
   });
 
+  it('renders two ids differing only past the cap by a lone surrogate apart (go-to-k/cdkd#4002)', () => {
+    // Hashing a raw string encodes it as UTF-8, which maps every lone
+    // surrogate to U+FFFD; the tail digest is over the ESCAPED tail instead.
+    const prefix = 'a'.repeat(2048);
+    const high = preDeletedLine(`${prefix}\ud800`);
+    const low = preDeletedLine(`${prefix}\udc00`);
+    expect(high).toBe(`✓ deleted "${prefix}" ${cutMarker(1, '\\ud800')}`);
+    expect(low).toBe(`✓ deleted "${prefix}" ${cutMarker(1, '\\udc00')}`);
+    expect(high).not.toBe(low);
+  });
+
   it('caps a planted multi-kilobyte id', () => {
     expect(preDeletedLine('z'.repeat(3000))).toContain(
       cutMarker(3000 - 2048, 'z'.repeat(3000 - 2048))

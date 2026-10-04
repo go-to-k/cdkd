@@ -3961,23 +3961,27 @@ function showRecordValue(value: unknown): string {
   // Built one code point at a time, so the cut never splits an escape or a
   // surrogate pair.
   const codePoints = Array.from(value);
+  const escape = (cp: string): string =>
+    JSON.stringify(cp)
+      .slice(1, -1)
+      .replace(/[^ -~]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
   let body = '';
   let kept = 0;
   for (const cp of codePoints) {
-    const piece = JSON.stringify(cp)
-      .slice(1, -1)
-      .replace(/[^ -~]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    const piece = escape(cp);
     if (body.length + piece.length > RECORD_VALUE_MAX_CODE_POINTS) break;
     body += piece;
     kept += 1;
   }
   const withheld = codePoints.length - kept;
-  // The digest is over the RAW withheld code points, which this renderer keeps
-  // recoverable rather than blanking, so two distinct ids stay distinct past
-  // the cap too (go-to-k/cdkd#4002).
+  // The digest is over the withheld code points ESCAPED as the body escapes
+  // them, so two distinct ids stay distinct past the cap too
+  // (go-to-k/cdkd#4002). Not over the raw text: hashing encodes it as UTF-8,
+  // which maps every lone surrogate to U+FFFD, so `\ud800` and `\udc00` tails
+  // would digest alike. The escaped form is ASCII and injective.
   return withheld === 0
     ? `"${body}"`
-    : `"${body}" ${cutMarker(withheld, codePoints.slice(kept).join(''))}`;
+    : `"${body}" ${cutMarker(withheld, codePoints.slice(kept).map(escape).join(''))}`;
 }
 
 /**
