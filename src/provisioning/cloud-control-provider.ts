@@ -72,6 +72,7 @@ import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { unchangedBehindSecretReference } from './secret-reference-immutable.js';
+import { isSecretDerivedValue, maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
 import {
   getTopLevelKeysHoldingUnreadableCreateOnly,
   getTopLevelWriteOnlyProperties,
@@ -1183,9 +1184,18 @@ export class CloudControlProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(
-      `Updating resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`
+    // Every debug line this update prints that can name the identifier goes
+    // through `idLog` (go-to-k/cdkd#3869): the opening line here, and the
+    // read-back / enrichment lines below, which interpolate the id and values
+    // built from it (an ARN).
+    const idLog = updateIdLogSink(
+      this.logger,
+      physicalId,
+      properties,
+      previousProperties,
+      context?.maskSecrets
     );
+    idLog.debug(`Updating resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`);
 
     // Issue #2301 item 1. Ahead of EVERY call this method makes -- including
     // the `DescribeType` behind `getTopLevelWriteOnlyProperties` -- because a
@@ -1367,7 +1377,7 @@ export class CloudControlProvider implements ResourceProvider {
       };
 
       if (progressEvent.ResourceModel) {
-        result.attributes = this.parseResourceModel(progressEvent.ResourceModel);
+        result.attributes = this.parseResourceModel(progressEvent.ResourceModel, idLog);
       }
 
       // Generic sparse-model read-back (issue #1105). Also covers UPDATE
@@ -1377,14 +1387,16 @@ export class CloudControlProvider implements ResourceProvider {
       result.attributes = await this.mergeSparseModelReadback(
         resourceType,
         physicalId,
-        result.attributes || {}
+        result.attributes || {},
+        idLog
       );
 
       // Enrich attributes with computed values for specific resource types
       result.attributes = await this.enrichResourceAttributes(
         resourceType,
         physicalId,
-        result.attributes
+        result.attributes,
+        idLog
       );
 
       return result;
@@ -3111,7 +3123,10 @@ export class CloudControlProvider implements ResourceProvider {
    * keeps the line diagnostic (it says WHICH document failed to parse) without
    * carrying anything sensitive.
    */
-  private parseResourceModel(resourceModel: string): Record<string, unknown> {
+  private parseResourceModel(
+    resourceModel: string,
+    log: IdLogSink = this.logger
+  ): Record<string, unknown> {
     try {
       return JSON.parse(resourceModel) as Record<string, unknown>;
     } catch (error) {
@@ -3126,11 +3141,17 @@ export class CloudControlProvider implements ResourceProvider {
       // uses, and the `Model shape:` clause below already carries the
       // diagnosis this line exists for — WHICH document failed to parse.
       const described = describeAwsFailure(error);
-      this.logger.warn(
+      log.warn(
         `Failed to parse resource model: ${described.redacted ? described.summary : error instanceof Error ? error.name : 'Error'}\n` +
           `Model shape: ${resourceModel.length} chars, ${describeJsonKeys(resourceModel)}`
       );
-      this.logger.debug(`Resource model parse failure detail: ${displaySafe(described.detail)}`);
+      // Not at all when the update withholds its id (go-to-k/cdkd#3869): V8
+      // TRUNCATES its echo, so the first characters of a longer secret-derived
+      // name can print, and no needle matches a prefix. The WARN above already
+      // names which document failed.
+      if (log.withheld !== true) {
+        log.debug(`Resource model parse failure detail: ${displaySafe(described.detail)}`);
+      }
       return {};
     }
   }
@@ -3155,7 +3176,8 @@ export class CloudControlProvider implements ResourceProvider {
   private async accountInfoForSynthesizedArn(
     resourceType: string,
     attributeName: string,
-    physicalId: string
+    physicalId: string,
+    log: IdLogSink = this.logger
   ): Promise<AwsAccountInfo | undefined> {
     // The provider's OWN region, not the ambient one. `getAccountInfo()` with no
     // override resolves `process.env['AWS_REGION']`, which is process-wide and
@@ -3171,7 +3193,7 @@ export class CloudControlProvider implements ResourceProvider {
       return await getAccountInfo(region);
     } catch (error) {
       if (!(error instanceof AccountIdUnavailableError)) throw error;
-      this.logger.warn(
+      log.warn(
         `Not enriching ${resourceType} ${attributeName} for ${physicalId}: ${error.message} ` +
           `The resource itself is unaffected; the record heals on its next update.`
       );
@@ -3198,7 +3220,8 @@ export class CloudControlProvider implements ResourceProvider {
   private async enrichResourceAttributes(
     resourceType: string,
     physicalId: string,
-    attributes: Record<string, unknown>
+    attributes: Record<string, unknown>,
+    log: IdLogSink = this.logger
   ): Promise<Record<string, unknown>> {
     const enriched: Record<string, unknown> = { ...attributes };
 
@@ -3219,7 +3242,7 @@ export class CloudControlProvider implements ResourceProvider {
               await this.cloudControlClient.config.region()
             );
           } catch (error) {
-            this.logger.debug(
+            log.debug(
               `Failed to construct S3 Bucket Arn for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
@@ -3265,14 +3288,14 @@ export class CloudControlProvider implements ResourceProvider {
             if (cluster.DbClusterResourceId) {
               enriched['DBClusterResourceId'] = cluster.DbClusterResourceId;
             }
-            this.logger.debug(
+            log.debug(
               `Enriched RDS DBCluster ${physicalId} with Endpoint/Port/Arn from DescribeDBClusters`
             );
           }
         } catch (error) {
           // Best-effort: a failed Describe shouldn't fail the deploy.
           // The resolver's nested-path walk is the second line of defence.
-          this.logger.debug(
+          log.debug(
             `Failed to enrich RDS DBCluster ${physicalId}: ${describeAwsFailure(error).detail}`
           );
         }
@@ -3313,13 +3336,13 @@ export class CloudControlProvider implements ResourceProvider {
               enriched['Endpoint.HostedZoneId'] = inst.Endpoint.HostedZoneId;
             }
             if (inst.DBInstanceArn) enriched['Arn'] = inst.DBInstanceArn;
-            this.logger.debug(
+            log.debug(
               `Enriched RDS DBInstance ${physicalId} with Endpoint/Port/Arn from DescribeDBInstances`
             );
           }
         } catch (error) {
           // Best-effort: a failed Describe shouldn't fail the deploy.
-          this.logger.debug(
+          log.debug(
             `Failed to enrich RDS DBInstance ${physicalId}: ${describeAwsFailure(error).detail}`
           );
         }
@@ -3337,13 +3360,11 @@ export class CloudControlProvider implements ResourceProvider {
             const latestStreamArn = describeResponse.Table?.LatestStreamArn;
             if (latestStreamArn) {
               enriched['StreamArn'] = latestStreamArn;
-              this.logger.debug(
-                `Enriched DynamoDB StreamArn for ${physicalId}: ${latestStreamArn}`
-              );
+              log.debug(`Enriched DynamoDB StreamArn for ${physicalId}: ${latestStreamArn}`);
             }
           } catch (error) {
             // Best-effort: don't fail the operation if DescribeTable fails
-            this.logger.debug(
+            log.debug(
               `Failed to get DynamoDB StreamArn for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
@@ -3361,13 +3382,13 @@ export class CloudControlProvider implements ResourceProvider {
             );
             if (getRestApiResponse.rootResourceId) {
               enriched['RootResourceId'] = getRestApiResponse.rootResourceId;
-              this.logger.debug(
+              log.debug(
                 `Enriched RestApi RootResourceId for ${physicalId}: ${getRestApiResponse.rootResourceId}`
               );
             }
           } catch (error) {
             // Best-effort: don't fail the operation if GetRestApi fails
-            this.logger.debug(
+            log.debug(
               `Failed to get RestApi RootResourceId for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
@@ -3390,13 +3411,13 @@ export class CloudControlProvider implements ResourceProvider {
             const s3CanonicalUserId = oaiResponse.CloudFrontOriginAccessIdentity?.S3CanonicalUserId;
             if (s3CanonicalUserId) {
               enriched['S3CanonicalUserId'] = s3CanonicalUserId;
-              this.logger.debug(
+              log.debug(
                 `Enriched CloudFront OAI S3CanonicalUserId for ${physicalId}: ${s3CanonicalUserId}`
               );
             }
           } catch (error) {
             // Best-effort: don't fail the operation
-            this.logger.debug(
+            log.debug(
               `Failed to get CloudFront OAI S3CanonicalUserId for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
@@ -3411,7 +3432,8 @@ export class CloudControlProvider implements ResourceProvider {
             const kmsAccountInfo = await this.accountInfoForSynthesizedArn(
               resourceType,
               'Arn',
-              physicalId
+              physicalId,
+              log
             );
             if (kmsAccountInfo) {
               // The region segment is FOLDED (issue #1850). The SOURCE folds too
@@ -3435,12 +3457,10 @@ export class CloudControlProvider implements ResourceProvider {
               // a no-op, which is what makes the two safe side by side.
               enriched['Arn'] =
                 `arn:${kmsAccountInfo.partition}:kms:${canonicalizeRegion(kmsAccountInfo.region)}:${kmsAccountInfo.accountId}:key/${physicalId}`;
-              this.logger.debug(
-                `Enriched KMS Key Arn for ${physicalId}: ${String(enriched['Arn'])}`
-              );
+              log.debug(`Enriched KMS Key Arn for ${physicalId}: ${String(enriched['Arn'])}`);
             }
           } catch (error) {
-            this.logger.debug(
+            log.debug(
               `Failed to construct KMS Key Arn for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
@@ -3467,18 +3487,19 @@ export class CloudControlProvider implements ResourceProvider {
             const ecrAccountInfo = await this.accountInfoForSynthesizedArn(
               resourceType,
               'Arn',
-              physicalId
+              physicalId,
+              log
             );
             if (ecrAccountInfo) {
               // Region segment folded — see the KMS Key branch above (issue #1850).
               enriched['Arn'] =
                 `arn:${ecrAccountInfo.partition}:ecr:${canonicalizeRegion(ecrAccountInfo.region)}:${ecrAccountInfo.accountId}:repository/${physicalId}`;
-              this.logger.debug(
+              log.debug(
                 `Enriched ECR Repository Arn for ${physicalId}: ${String(enriched['Arn'])}`
               );
             }
           } catch (error) {
-            this.logger.debug(
+            log.debug(
               `Failed to construct ECR Repository Arn: ${describeAwsFailure(error).detail}`
             );
           }
@@ -3488,7 +3509,8 @@ export class CloudControlProvider implements ResourceProvider {
             const ecrAccountInfo = await this.accountInfoForSynthesizedArn(
               resourceType,
               'RepositoryUri',
-              physicalId
+              physicalId,
+              log
             );
             if (ecrAccountInfo) {
               // URL suffix derived, not hardcoded — `amazonaws.com.cn` in
@@ -3523,9 +3545,7 @@ export class CloudControlProvider implements ResourceProvider {
           const [publicIp, allocationId] = physicalId.split('|');
           if (!enriched['AllocationId']) enriched['AllocationId'] = allocationId;
           if (!enriched['PublicIp']) enriched['PublicIp'] = publicIp;
-          this.logger.debug(
-            `Enriched EIP attributes: AllocationId=${allocationId}, PublicIp=${publicIp}`
-          );
+          log.debug(`Enriched EIP attributes: AllocationId=${allocationId}, PublicIp=${publicIp}`);
         }
         break;
 
@@ -3537,7 +3557,7 @@ export class CloudControlProvider implements ResourceProvider {
           const versionSegments = physicalId.split(':');
           const versionNumber = versionSegments[versionSegments.length - 1];
           enriched['Version'] = versionNumber;
-          this.logger.debug(`Enriched Lambda Version for ${physicalId}: ${versionNumber}`);
+          log.debug(`Enriched Lambda Version for ${physicalId}: ${versionNumber}`);
         }
         break;
 
@@ -3549,18 +3569,19 @@ export class CloudControlProvider implements ResourceProvider {
             const kinesisAccountInfo = await this.accountInfoForSynthesizedArn(
               resourceType,
               'Arn',
-              physicalId
+              physicalId,
+              log
             );
             if (kinesisAccountInfo) {
               // Region segment folded — see the KMS Key branch above (issue #1850).
               enriched['Arn'] =
                 `arn:${kinesisAccountInfo.partition}:kinesis:${canonicalizeRegion(kinesisAccountInfo.region)}:${kinesisAccountInfo.accountId}:stream/${physicalId}`;
-              this.logger.debug(
+              log.debug(
                 `Enriched Kinesis Stream Arn for ${physicalId}: ${String(enriched['Arn'])}`
               );
             }
           } catch (error) {
-            this.logger.debug(
+            log.debug(
               `Failed to construct Kinesis Stream Arn for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
@@ -3579,7 +3600,7 @@ export class CloudControlProvider implements ResourceProvider {
             );
             if (urlConfig.FunctionUrl) {
               enriched['FunctionUrl'] = urlConfig.FunctionUrl;
-              this.logger.debug(
+              log.debug(
                 `Enriched Lambda URL FunctionUrl for ${physicalId}: ${urlConfig.FunctionUrl}`
               );
             }
@@ -3587,7 +3608,7 @@ export class CloudControlProvider implements ResourceProvider {
               enriched['FunctionArn'] = urlConfig.FunctionArn;
             }
           } catch (error) {
-            this.logger.debug(
+            log.debug(
               `Failed to get Lambda URL config for ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
@@ -3632,11 +3653,11 @@ export class CloudControlProvider implements ResourceProvider {
             if (conn.SecretArn && !enriched['SecretArn']) {
               enriched['SecretArn'] = conn.SecretArn;
             }
-            this.logger.debug(
+            log.debug(
               `Enriched Events Connection ${physicalId} with Arn/SecretArn/ArnForPolicy from DescribeConnection`
             );
           } catch (error) {
-            this.logger.debug(
+            log.debug(
               `Failed to enrich Events Connection ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
@@ -3666,11 +3687,11 @@ export class CloudControlProvider implements ResourceProvider {
                 }
               }
             }
-            this.logger.debug(
+            log.debug(
               `Enriched Events ApiDestination ${physicalId} with Arn/ArnForPolicy from DescribeApiDestination`
             );
           } catch (error) {
-            this.logger.debug(
+            log.debug(
               `Failed to enrich Events ApiDestination ${physicalId}: ${describeAwsFailure(error).detail}`
             );
           }
@@ -3746,12 +3767,12 @@ export class CloudControlProvider implements ResourceProvider {
             if (readPorts.length > 0) {
               enriched['ReadEndPoint.Ports'] = readPorts.map(String).join(',');
             }
-            this.logger.debug(
+            log.debug(
               `Enriched ElastiCache ReplicationGroup ${physicalId} with endpoint attributes from DescribeReplicationGroups`
             );
           }
         } catch (error) {
-          this.logger.debug(
+          log.debug(
             `Failed to enrich ElastiCache ReplicationGroup ${physicalId}: ${describeAwsFailure(error).detail}`
           );
         }
@@ -3783,12 +3804,12 @@ export class CloudControlProvider implements ResourceProvider {
             if (cluster.Endpoint.Port !== undefined) {
               enriched['Endpoint.Port'] = String(cluster.Endpoint.Port);
             }
-            this.logger.debug(
+            log.debug(
               `Enriched Redshift Cluster ${physicalId} with Endpoint.Address/Port from DescribeClusters`
             );
           }
         } catch (error) {
-          this.logger.debug(
+          log.debug(
             `Failed to enrich Redshift Cluster ${physicalId}: ${describeAwsFailure(error).detail}`
           );
         }
@@ -3832,12 +3853,12 @@ export class CloudControlProvider implements ResourceProvider {
             if (domain.DomainId) {
               enriched['Id'] = domain.DomainId;
             }
-            this.logger.debug(
+            log.debug(
               `Enriched OpenSearch Domain ${physicalId} with DomainEndpoint/Arn from DescribeDomain`
             );
           }
         } catch (error) {
-          this.logger.debug(
+          log.debug(
             `Failed to enrich OpenSearch Domain ${physicalId}: ${describeAwsFailure(error).detail}`
           );
         }
@@ -3860,7 +3881,7 @@ export class CloudControlProvider implements ResourceProvider {
         // failed read leaves the CC-API attribute shape unchanged and never
         // fails the deploy.
         if (!enriched['BackupVaultArn']) {
-          const model = await this.readCcResourceModel(resourceType, physicalId);
+          const model = await this.readCcResourceModel(resourceType, physicalId, log);
           if (model) {
             if (typeof model['BackupVaultArn'] === 'string') {
               enriched['BackupVaultArn'] = model['BackupVaultArn'];
@@ -3870,7 +3891,7 @@ export class CloudControlProvider implements ResourceProvider {
             if (!enriched['BackupVaultName'] && typeof model['BackupVaultName'] === 'string') {
               enriched['BackupVaultName'] = model['BackupVaultName'];
             }
-            this.logger.debug(
+            log.debug(
               `Enriched Backup BackupVault ${physicalId} with BackupVaultArn from CC GetResource`
             );
           }
@@ -3888,7 +3909,7 @@ export class CloudControlProvider implements ResourceProvider {
         // the physicalId (the BackupPlanId). Overlay both from a CC
         // GetResource read-back. Best-effort.
         if (!enriched['BackupPlanArn'] || !enriched['VersionId']) {
-          const model = await this.readCcResourceModel(resourceType, physicalId);
+          const model = await this.readCcResourceModel(resourceType, physicalId, log);
           if (model) {
             if (!enriched['BackupPlanArn'] && typeof model['BackupPlanArn'] === 'string') {
               enriched['BackupPlanArn'] = model['BackupPlanArn'];
@@ -3899,7 +3920,7 @@ export class CloudControlProvider implements ResourceProvider {
             if (!enriched['BackupPlanId'] && typeof model['BackupPlanId'] === 'string') {
               enriched['BackupPlanId'] = model['BackupPlanId'];
             }
-            this.logger.debug(
+            log.debug(
               `Enriched Backup BackupPlan ${physicalId} with BackupPlanArn/VersionId from CC GetResource`
             );
           }
@@ -3929,7 +3950,7 @@ export class CloudControlProvider implements ResourceProvider {
               enriched['BackupPlanId'] = physicalId.substring(firstUnderscore + 1);
             }
           }
-          const model = await this.readCcResourceModel(resourceType, physicalId);
+          const model = await this.readCcResourceModel(resourceType, physicalId, log);
           if (model) {
             if (typeof model['SelectionId'] === 'string') {
               enriched['SelectionId'] = model['SelectionId'];
@@ -3937,7 +3958,7 @@ export class CloudControlProvider implements ResourceProvider {
             if (typeof model['BackupPlanId'] === 'string') {
               enriched['BackupPlanId'] = model['BackupPlanId'];
             }
-            this.logger.debug(
+            log.debug(
               `Enriched Backup BackupSelection ${physicalId} with SelectionId from CC GetResource`
             );
           }
@@ -3958,7 +3979,7 @@ export class CloudControlProvider implements ResourceProvider {
         // GetResource read-back. Best-effort: a failed read leaves the
         // attribute shape unchanged and never fails the deploy. (issue #1103)
         if (!enriched['Arn']) {
-          const model = await this.readCcResourceModel(resourceType, physicalId);
+          const model = await this.readCcResourceModel(resourceType, physicalId, log);
           if (model) {
             if (typeof model['Arn'] === 'string') {
               enriched['Arn'] = model['Arn'];
@@ -3975,7 +3996,7 @@ export class CloudControlProvider implements ResourceProvider {
             if (!enriched['LastModifiedTime'] && typeof model['LastModifiedTime'] === 'string') {
               enriched['LastModifiedTime'] = model['LastModifiedTime'];
             }
-            this.logger.debug(`Enriched Pipes Pipe ${physicalId} with Arn from CC GetResource`);
+            log.debug(`Enriched Pipes Pipe ${physicalId} with Arn from CC GetResource`);
           }
         }
         break;
@@ -3988,7 +4009,7 @@ export class CloudControlProvider implements ResourceProvider {
         // `...-s3alias` bucket-style name handed to S3 clients), so falling
         // back to the bare name breaks consumers silently. (issue #1103)
         if (!enriched['Arn'] || !enriched['Alias']) {
-          const model = await this.readCcResourceModel(resourceType, physicalId);
+          const model = await this.readCcResourceModel(resourceType, physicalId, log);
           if (model) {
             if (!enriched['Arn'] && typeof model['Arn'] === 'string') {
               enriched['Arn'] = model['Arn'];
@@ -3999,9 +4020,7 @@ export class CloudControlProvider implements ResourceProvider {
             if (!enriched['NetworkOrigin'] && typeof model['NetworkOrigin'] === 'string') {
               enriched['NetworkOrigin'] = model['NetworkOrigin'];
             }
-            this.logger.debug(
-              `Enriched S3 AccessPoint ${physicalId} with Arn/Alias from CC GetResource`
-            );
+            log.debug(`Enriched S3 AccessPoint ${physicalId} with Arn/Alias from CC GetResource`);
           }
         }
         break;
@@ -4013,14 +4032,12 @@ export class CloudControlProvider implements ResourceProvider {
         // it, so the resolver would hand the bare name to consumers that
         // need the ARN (e.g. IAM policies). (issue #1103)
         if (!enriched['Arn']) {
-          const model = await this.readCcResourceModel(resourceType, physicalId);
+          const model = await this.readCcResourceModel(resourceType, physicalId, log);
           if (model) {
             if (typeof model['Arn'] === 'string') {
               enriched['Arn'] = model['Arn'];
             }
-            this.logger.debug(
-              `Enriched ResourceGroups Group ${physicalId} with Arn from CC GetResource`
-            );
+            log.debug(`Enriched ResourceGroups Group ${physicalId} with Arn from CC GetResource`);
           }
         }
         break;
@@ -4049,16 +4066,17 @@ export class CloudControlProvider implements ResourceProvider {
   private async mergeSparseModelReadback(
     resourceType: string,
     physicalId: string,
-    attributes: Record<string, unknown>
+    attributes: Record<string, unknown>,
+    log: IdLogSink = this.logger
   ): Promise<Record<string, unknown>> {
     if (!this.isSparseAttributeMap(attributes, physicalId)) {
       return attributes;
     }
-    const model = await this.readCcResourceModel(resourceType, physicalId);
+    const model = await this.readCcResourceModel(resourceType, physicalId, log);
     if (!model) {
       return attributes;
     }
-    this.logger.debug(
+    log.debug(
       `Merged CC GetResource read-back over sparse ${resourceType} attributes for ${physicalId}`
     );
     // Read-back wins: the sparseness predicate admits nothing beyond
@@ -4103,7 +4121,8 @@ export class CloudControlProvider implements ResourceProvider {
    */
   private async readCcResourceModel(
     resourceType: string,
-    physicalId: string
+    physicalId: string,
+    log: IdLogSink = this.logger
   ): Promise<Record<string, unknown> | undefined> {
     try {
       const response = await this.cloudControlClient.send(
@@ -4122,7 +4141,7 @@ export class CloudControlProvider implements ResourceProvider {
       }
       return parsed as Record<string, unknown>;
     } catch (error) {
-      this.logger.debug(
+      log.debug(
         `Failed to read CC model for ${resourceType} ${physicalId}: ${describeAwsFailure(error).detail}`
       );
       return undefined;
@@ -4618,6 +4637,99 @@ export class CloudControlProvider implements ResourceProvider {
     }
     return masked;
   }
+}
+
+/** The logger methods the update-path read-back and enrichment use. */
+interface IdLogSink {
+  debug(message: string): void;
+  warn(message: string): void;
+  /** `true` when this update withholds its id; absent on a plain logger. */
+  readonly withheld?: boolean;
+}
+
+/**
+ * The sink every `update()` line that can name the identifier goes through
+ * (go-to-k/cdkd#3869): the opening line, the sparse read-back merge, the
+ * `GetResource` failure line, the enrichment lines, which interpolate the id
+ * and values built from it (an ARN, an endpoint), and the account-lookup WARN
+ * of `accountInfoForSynthesizedArn`, which prints at default verbosity.
+ *
+ * A Cloud Control identifier can carry a name taken from a secret
+ * (`AWS::Logs::MetricFilter` is `<LogGroupName>|<FilterName>`). After a
+ * rotation under an unchanged reference that name is the PRE-rotation value,
+ * which this deploy never resolved, so `maskSecrets` cannot recognise it. So
+ * the id is withheld, since nothing here says which identifier part came from
+ * a secret, whenever EITHER bag holds a secret-derived string leaf or key
+ * (`isSecretDerivedValue`):
+ *
+ *  - a `{{resolve:` reference or `***`: a deploy's previous bag is the state
+ *    record, which keeps a secret leaf that way;
+ *  - a value the masker recognises: a rollback revert hands over RESOLVED
+ *    bags, and `drift --revert` an AWS readback as the previous side, so there
+ *    the evidence is the CURRENT secret in the desired or resolved bag.
+ *
+ * Every message goes through the caller's masker FIRST, so a current secret
+ * is masked whole before an id part could split it. Withheld then means every
+ * occurrence of the whole id and of each non-empty `|` part, in its raw and
+ * its masked spelling, becomes `***`, at any length: a line naming one part
+ * (an ARN built from a name, an AWS error quoting it) is caught too, and
+ * over-masking a log line is the safe direction.
+ */
+function updateIdLogSink(
+  logger: IdLogSink,
+  physicalId: string,
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  maskSecrets: MaskerFn | undefined
+): IdLogSink {
+  const mask = maskerOrIdentity(maskSecrets);
+  const raw = updateIdWithheld(properties, previousProperties, mask)
+    ? [physicalId, ...physicalId.split('|')].filter((needle) => needle !== '')
+    : [];
+  // Each needle's MASKED spelling too: the masker runs first, so where a
+  // current secret is a SUBSTRING of an id part it has already rewritten that
+  // part (`prod-old-filter` -> `***-old-filter`), and the raw needle no longer
+  // matches. Longest first, so a part inside a longer part (`ab` in `ab-c`)
+  // cannot leave the longer one's remainder.
+  const masked = raw.map((needle) => mask(needle));
+  const needles = [
+    ...new Set([...raw, ...masked.filter((m, i) => m !== '' && m !== raw[i] && m !== SECRET_MASK)]),
+  ].sort((a, b) => b.length - a.length);
+  const scrub = (message: string): string =>
+    needles.reduce((text, needle) => text.split(needle).join(SECRET_MASK), mask(message));
+  return {
+    debug: (message: string) => logger.debug(scrub(message)),
+    warn: (message: string) => logger.warn(scrub(message)),
+    withheld: needles.length > 0,
+  };
+}
+
+/** Does either bag carry a secret, so `update()` withholds its id? See {@link updateIdLogSink}. */
+function updateIdWithheld(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  mask: MaskerFn
+): boolean {
+  return (
+    holdsSecretDerivedLeaf(properties, mask) || holdsSecretDerivedLeaf(previousProperties, mask)
+  );
+}
+
+/**
+ * Does any string leaf or key of `value` satisfy `isSecretDerivedValue`?
+ * Past depth 64 (as `holdsSecretDerivedEntry` bounds its walk) the answer
+ * is `true`: for a log line, withholding is the safe direction.
+ */
+function holdsSecretDerivedLeaf(value: unknown, mask: MaskerFn, depth = 0): boolean {
+  if (typeof value === 'string') return isSecretDerivedValue(value, mask);
+  if (value === null || typeof value !== 'object') return false;
+  if (depth > 64) return true;
+  if (Array.isArray(value))
+    return value.some((entry) => holdsSecretDerivedLeaf(entry, mask, depth + 1));
+  return Object.entries(value as Record<string, unknown>).some(
+    ([key, entry]) =>
+      isSecretDerivedValue(key, mask) || holdsSecretDerivedLeaf(entry, mask, depth + 1)
+  );
 }
 
 /**

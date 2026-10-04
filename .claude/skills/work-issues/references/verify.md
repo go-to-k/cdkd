@@ -23,19 +23,19 @@ live fixture's directory, and stage only its own test files, since the
 integ's ledger row lands in the same tree (#4302). A lane REPORTS
 `mise exec -- markgate status integ-destroy --explain`'s line, never "integ
 not needed": comment-only edits count (#3873). Bare `markgate` can resolve to
-a stale PATH copy that dies `unknown hash "diff"` (#4477's lane, three
-reports). The gate's `hash: diff` stales on a rebase only when main changed a
-scoped file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
+a stale PATH copy that dies `unknown hash "diff"` (#4477).
+The gate's `hash: diff` stales on a rebase only when main changed a scoped
+file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
 rebase (`mise exec -- markgate status`) — unless main changed code the fixture
 EXERCISES: re-run it on the rebased head (#3726).
 
 - **DECLARE the tree final, in words, to whoever is still editing it** — every
-  scoped touch buys another real-AWS run, comment-only deltas included. The one
-  exception to §8-h's "nits included": a COMMENT-ONLY nit found after the integ
-  may ride this run's next lane on that file, whose integ re-runs anyway, named
-  in that lane's PR body (#3977); with no such lane, fix it here and
-  re-run. Scope the reviewers to the delta and paste its COMMIT MESSAGE into the
-  brief: they read `gh pr diff`, not `git log`.
+  scoped touch buys another real-AWS run. The one exception to §8-h's "nits
+  included": a COMMENT-ONLY nit found after the integ may ride this run's next
+  lane on that file, whose integ re-runs anyway, named in that lane's PR body
+  (#3977); with no such lane, fix it here and re-run. Scope the reviewers to the
+  delta and paste its COMMIT MESSAGE into the brief: they read `gh pr diff`, not
+  `git log`.
 
 ### 8-c. The live-test tiers
 
@@ -52,8 +52,8 @@ tests passing is necessary but NOT sufficient:
   **`/run-integ <name>`** — never raw `cdkd deploy` / `cdkd destroy`, the
   bypass being not those NAMES but **any real-AWS work outside a fixture**.
   `/pick-integ` picks the fixture(s); never one it marks maintainer-only (no
-  `verify.sh` or `run.sh`, so no agent can run it) — run its check on EVERY
-  name you report, picked there or not.
+  `verify.sh` / `run.sh` to run) — run its check on EVERY name you report,
+  picked there or not.
 - **Non-deletion source change** → still live-test the fixed path end to end
   (deploy → the redeploy that reproduced the bug → destroy). A lane barred from
   real-AWS RUNS still WRITES the arm; the parent runs it. "No fixture can reach
@@ -61,14 +61,14 @@ tests passing is necessary but NOT sufficient:
   first (`Certificate`, not `AWS::CertificateManager::Certificate`, which an
   L2 fixture need not spell; a type an L2 creates IMPLICITLY needs a synthed
   template grepped instead) — an existing fixture takes the new arm
-  (go-to-k/cdkd#4369).
+  (#4369).
 - **A change to what cdkd PRINTS or DECIDES** (a message's text or line split,
   a refuse / adopt outcome) → `grep -rlF --include='*.sh' --include='*.ts'
   --include='*.mjs' --exclude-dir=node_modules '<old text>' tests/integration`
-  (`verify.sh`, `run.sh` and helpers such as `inject-drift.ts` read output; a
-  hit in a top-level helper means every fixture sourcing it) and run each fixture it names before merge, whatever the
+  (`.ts` / `.mjs` helpers read output; a top-level helper's hit means every
+  fixture sourcing it) and run each fixture it names before merge, whatever the
   change's own tier: no vitest run executes them, so a reshaped line leaves a
-  fixture red on `main` until the next lane runs it (go-to-k/cdkd#4394).
+  fixture red on `main` until the next lane runs it (#4394).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
   tests, config) → exempt from the tiers above, never from `/verify-pr` step 9;
   never conclude a CI job cannot fail on your diff from its NAME. Both arms
@@ -89,7 +89,7 @@ tests passing is necessary but NOT sufficient:
 
 Revert the fix, rebuild, run, confirm the arm goes RED **at YOUR assertion —
 read which one fired**, then restore and rebuild. A failure HINT's needle is
-copied from that red run, never reasoned (go-to-k/cdkd#4336); a refusal the
+copied from that red run, never reasoned (#4336); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
 `s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert by
 COPY, from a COMMITTED, clean lane**, inside `bash -c` (zsh does not word-split an
@@ -106,21 +106,23 @@ for f in $(git diff --name-only --no-renames --diff-filter=M "$B" HEAD -- src/);
 done'
 ```
 
-`R=$B` reverts, refusing a tree with uncommitted edits (the restore reads
-`HEAD`, so it would destroy them); the same loop with `R=HEAD` restores — run
-it once; `git status --porcelain` must then be EMPTY. For §8-c's hook / CI BEFORE tree, replace
-`src/` with the changed command's own paths. A file NEW in the PR stays,
-unimported by pre-fix code; one the fix DELETED or moved is restored by hand.
-The pre-fix run executes the BUG on real AWS and can mint resources the
-fixture's sweep cannot name, so scan the account by stack prefix and resource
-family too. Probe each HALF of a multi-part fix separately, and add a NEGATIVE
-CONTROL. Where the fix SKIPS something, give the fixture a second, ORDINARY
-difference — a phase redeploying a byte-identical template diffs as `NO_CHANGE`
-and never reads the flag under test. Two more vacuity shapes:
+Run it UNNARROWED on the FINAL diff: a lane's file list is a hint, stale after a
+fix round. `R=$B` reverts, refusing a tree with uncommitted edits (the restore
+reads `HEAD`, so it would destroy them); the same loop with `R=HEAD` restores —
+run it once; `git status --porcelain` must then be EMPTY. For §8-c's hook / CI
+BEFORE tree, replace `src/` with the changed command's own paths. A file NEW in
+the PR stays, unimported by pre-fix code; one the fix DELETED or moved is
+restored by hand. The pre-fix run can mint resources the fixture's sweep cannot
+name: scan the account by stack prefix and resource family too. Probe each HALF
+of a multi-part fix separately, and add a NEGATIVE CONTROL. Where the fix SKIPS
+something, give the fixture a second, ORDINARY difference — a phase redeploying
+a byte-identical template diffs as `NO_CHANGE` and never reads the flag under
+test. Two more vacuity shapes:
 
 - **Every assertion PREDATES your change → the run is somebody else's
   regression net.** `git diff origin/main -- <fixture>`, then add the one that
-  could only pass AFTER it, guarded against vacuity.
+  could only pass AFTER it, guarded against vacuity — a `NOTE` naming your
+  issue is that slot: make it a `FAIL` before the run (#4548).
 - **When a fix REMOVES a behaviour, an assertion that it HAPPENS goes
   over-determined, not red.**
 
