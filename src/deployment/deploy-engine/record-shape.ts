@@ -10,6 +10,7 @@ import { acceptedCreateOnlyDropsOf, type ResourceState } from '../../types/state
 import type { CloudFormationTemplate, EffectivePropertiesResult } from '../../types/resource.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markSameGenerationBag } from '../secret-redaction.js';
+import { markWrittenFromDeployedTemplate } from '../masked-property-fingerprints.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -154,16 +155,24 @@ export function propertiesToRecord(
   // so a mark taken first would sit on an object the record never holds.
   // Narrowing a bag this pass resolved leaves it this pass's own, so the
   // mark is still the engine's to make.
+  //
+  // Every branch is also marked as written from this deploy's template
+  // (go-to-k/cdkd#4451), which licenses the save to rebuild the record's
+  // `maskedPropertyFingerprints` from that template. Unlike the
+  // same-generation mark this vouches for no leaf, so an
+  // `effectiveProperties` bag takes it too.
   if (result.effectiveProperties) {
-    return provisionedBy === 'sdk'
-      ? withoutSilentDropProperties(resourceType, result.effectiveProperties)
-      : result.effectiveProperties;
+    return markWrittenFromDeployedTemplate(
+      provisionedBy === 'sdk'
+        ? withoutSilentDropProperties(resourceType, result.effectiveProperties)
+        : result.effectiveProperties
+    );
   }
   const written =
     provisionedBy === 'sdk'
       ? withoutSilentDropProperties(resourceType, desiredProperties)
       : desiredProperties;
-  return markSameGenerationBag(written);
+  return markWrittenFromDeployedTemplate(markSameGenerationBag(written));
 }
 
 /**

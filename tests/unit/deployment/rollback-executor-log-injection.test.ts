@@ -1064,9 +1064,10 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // terminal (M1 of the go-to-k/cdkd#3764 review) while every line of it is
     // still sanitized. Both call sites, and both arms, are pinned by shape.
     expect((src.match(wrapped) ?? []).length).toBe(2);
-    // Since issue #4037 both call sites reach it through `maskedFailureText`.
+    // Since issue #4037 both call sites reach it through `maskedFailureText`,
+    // and so does the inline-policy put-back's failure line (go-to-k/cdkd#4408).
     expect((src.match(/^\s+(?:rollbackError|revertError),\n\s+mask\n\s+\)/gm) ?? []).length).toBe(2);
-    expect((src.match(/maskedFailureText\(\n/g) ?? []).length).toBe(2);
+    expect((src.match(/maskedFailureText\(\n/g) ?? []).length).toBe(3);
     expect(src).toContain('const text = rollbackFailureText(error);');
     expect(src).toContain('return displaySafe(error instanceof Error ? error.message : String(error));');
     expect(src).toContain('.map((line) => displaySafe(line))');

@@ -449,13 +449,12 @@ export async function resolveBase64(
   // so such a resource diffed UPDATE on every run and `cdkd diff --fail`
   // was permanently red. Answering the mask compares like-for-like.
   //
-  // The cost, accepted: `***` cannot say which expression it came from, so
-  // an edit to the text around, or the target of, a secret reference inside
-  // the same `Fn::Base64` no longer diffs (nor does a rotated value). The deploy's
-  // own no-change skip already compared `***` with `***` for it
-  // (go-to-k/cdkd#4451), so for an input carrying no fresh `NoEcho` value
-  // (below) this moves no deploy verdict; it stops the preview promising an
-  // UPDATE the deploy then skips.
+  // `***` cannot say which expression it came from, so an edit to the text
+  // around, or the target of, a secret reference inside the same
+  // `Fn::Base64` compares equal HERE (as does a rotated value). The record's
+  // `maskedPropertyFingerprints` (go-to-k/cdkd#4451), a hash of the
+  // UNRESOLVED template value, is what tells the diff and the deploy's
+  // no-change skip that such an edit happened.
   //
   // Only a token of a service the deploy RESOLVES counts: one of any other
   // service is left as written on BOTH paths, so its encoding already

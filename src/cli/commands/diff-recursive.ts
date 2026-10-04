@@ -3847,11 +3847,15 @@ export function renderChangeLines(
             // literal edit, and the JSON field (`inPlacePropagated`) is one
             // flag. The old side is the resolved value, the new side the
             // reading intrinsic.
+            // go-to-k/cdkd#4451: both sides are the mask, so the label is
+            // what says this is a change at all.
             const propagated = propChange.replacementPropagated
               ? ' [replacement propagated]'
               : propChange.inPlacePropagated
                 ? ' [attribute propagated]'
-                : '';
+                : propChange.maskedExpressionChanged === true
+                  ? ' [template expression changed]'
+                  : '';
             const indent = '              ';
             const [oldFiltered, newFiltered] = stripUnchangedValuePair(
               propChange.oldValue,
