@@ -3937,7 +3937,19 @@ export function buildReadCurrentStateContext(
       attributes: res.attributes ?? {},
     };
   }
-  return { siblings };
+  // go-to-k/cdkd#4447: the read resource's own recorded attributes, through
+  // the same readability gate as a sibling's.
+  const own: unknown = (state.resources ?? {})[excludedLogicalId];
+  const ownAttributesValue = isReadableResourceEntry(own)
+    ? (own as { attributes?: unknown }).attributes
+    : undefined;
+  const ownAttributes =
+    typeof ownAttributesValue === 'object' &&
+    ownAttributesValue !== null &&
+    !Array.isArray(ownAttributesValue)
+      ? (ownAttributesValue as Record<string, unknown>)
+      : undefined;
+  return { siblings, ...(ownAttributes && { attributes: ownAttributes }) };
 }
 
 /**

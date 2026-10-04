@@ -247,8 +247,7 @@ export function hasReplayMayCollide(error: unknown): boolean {
  *    a DELETE, acted on by the `--replace`
  *    delete-first fallback and the rollback's delete-new-first arm. The
  *    top-level half keeps a provider's opt-out: one that rewords an AWS
- *    collision it knows delete-first cannot clear (Glue's occupied table
- *    name, #3750) stays unclassified.
+ *    collision it knows delete-first cannot clear stays unclassified.
  *
  * Providers must thread the caught SDK error as `cause`
  * (`scripts/check-provider-error-cause.ts`), which is what makes the walk reach

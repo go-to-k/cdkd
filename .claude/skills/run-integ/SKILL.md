@@ -26,10 +26,10 @@ verify, clean up.
    stale base verifies code other than what will merge, and nothing warns.
    Then `vp run build` so `dist/` is current. **Never build beside a live
    fixture in this tree**: any build (`/check`, `/verify-pr`, `vp run verify`,
-   `vp run runtime:smoke`, a building `verify.sh`, …) rewrites `dist/`, and the
+   `vp run runtime:smoke`, a building fixture, …) rewrites `dist/`, and the
    fixture's next `node dist/cli.js` (its cleanup trap's too) dies
-   `ERR_MODULE_NOT_FOUND`. In a set, run each building `verify.sh`
-   (`grep -lE '^\s*\(cd [^)]*&& vp run build\)' <dir>/verify.sh`; a bare
+   `ERR_MODULE_NOT_FOUND`. In a set, run each building fixture
+   (`grep -lE '^\s*\(cd [^)]*&& vp run build[ )]' <dir>/*.sh`; a bare
    `vp run build` also matches error text) alone, BEFORE the others. After a
    build beside a live run, re-scan per steps 6-7, record that fixture `FAIL`,
    and re-run it.
