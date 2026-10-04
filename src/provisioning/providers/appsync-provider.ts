@@ -64,7 +64,6 @@ import {
 } from '@aws-sdk/client-appsync';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { parse as graphqlParse, print as graphqlPrint } from 'graphql';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -3701,10 +3700,17 @@ export class AppSyncProvider implements ResourceProvider {
    * ordering of types and fields. Returns the raw input on parse
    * failure (logged at debug) so the caller can still produce SOMETHING
    * to diff against.
+   *
+   * `graphql` is imported here, not at module scope: every provider module
+   * is evaluated at startup by `registerAllProviders()`, and graphql-js is
+   * ~70 ms of CPU that only an AppSync schema drift read needs. The import
+   * sits OUTSIDE the `try` so a failure to load it is not mistaken for an
+   * unparseable SDL.
    */
-  private canonicalizeSdl(sdl: string, source: 'state' | 'aws'): string {
+  private async canonicalizeSdl(sdl: string, source: 'state' | 'aws'): Promise<string> {
+    const { parse, print } = await import('graphql');
     try {
-      return graphqlPrint(graphqlParse(sdl));
+      return print(parse(sdl));
     } catch (err) {
       this.logger.debug(
         `Failed to parse ${source} SDL via graphql-js (falling back to raw): ${
@@ -3736,7 +3742,7 @@ export class AppSyncProvider implements ResourceProvider {
     // graphql-js parse → print so cosmetic differences (whitespace,
     // comments, blank lines) do not fire false drift.
     const awsSdl = new TextDecoder().decode(schemaBytes);
-    const canonicalAws = this.canonicalizeSdl(awsSdl, 'aws');
+    const canonicalAws = await this.canonicalizeSdl(awsSdl, 'aws');
 
     // The drift comparator descends into keys present in state and
     // diffs leaf values byte-for-byte. To produce a no-drift result on
@@ -3757,7 +3763,7 @@ export class AppSyncProvider implements ResourceProvider {
     const stateDefinition = properties?.['Definition'];
     let definitionToReturn = canonicalAws;
     if (typeof stateDefinition === 'string' && stateDefinition.length > 0) {
-      const canonicalState = this.canonicalizeSdl(stateDefinition, 'state');
+      const canonicalState = await this.canonicalizeSdl(stateDefinition, 'state');
       if (canonicalState === canonicalAws) {
         definitionToReturn = stateDefinition;
       }
