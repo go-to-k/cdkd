@@ -153,6 +153,7 @@ const createInterfaceMock = vi.hoisted(() =>
 vi.mock('node:readline/promises', () => ({ createInterface: createInterfaceMock }));
 
 import { createExportCommand } from '../../../src/cli/commands/export.js';
+import { cutMarker } from '../../../src/utils/display-safe.js';
 
 const STACK = 'Exported';
 const REGION = 'us-east-1';
@@ -382,7 +383,7 @@ describe('cdkd export --dry-run renders recorded ids in the plan with their own 
     bucketPhysicalId = 'b'.repeat(5000);
     expect(await runExport(dryRunArgs())).toBeUndefined();
     const planRow = infoLines().find((l) => l.startsWith('  MyBucket (AWS::S3::Bucket) ← '))!;
-    expect(planRow).toContain(`[cut: ${5000 - 2048} more characters withheld]`);
+    expect(planRow).toContain(cutMarker(5000 - 2048, 'b'.repeat(5000 - 2048)));
     expect(planRow).not.toContain('b'.repeat(2049));
   });
 });

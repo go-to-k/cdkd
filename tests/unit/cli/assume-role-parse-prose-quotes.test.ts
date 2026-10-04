@@ -103,9 +103,10 @@ describe('--assume-role refusals never put an operand inside cdkd double quotes 
     expect(autoRefusal(long)).toContain(`but --assume-role "${long}" also names`);
   }, 120_000);
 
-  it("describes an operand ending in displayIdent's own cut marker, which round-trips unchanged", () => {
+  it("describes an operand ending in displayIdent's pre-digest cut marker", () => {
     // Exactly the role-ARN cap of plain characters, then the 35-character
-    // suffix `displayIdent` appends when it cuts 35: the render is the value.
+    // suffix `displayIdent` appended when it cut 35 before go-to-k/cdkd#4002
+    // added the tail digest: the render was the value.
     const forged = `arn:${'a'.repeat(ROLE_ARN_MAX_CODE_POINTS - 4)} [cut: 35 more characters withheld]`;
     expect(forged.length - ROLE_ARN_MAX_CODE_POINTS).toBe(35);
     const message = refusal(`Fn=${forged}`);

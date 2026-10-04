@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { readAtKeyRegion } from '../_state-read-double.js';
-import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
+import { STACK_REF_MAX_CODE_POINTS, cutMarker } from '../../../src/utils/display-safe.js';
 import {
   applyImportOverlayForPhase2,
   buildCdkdStateStackTree,
@@ -3123,7 +3123,7 @@ describe('reportDriftBaselineGaps', () => {
     // CloudFormation's own logical-id limit, not at a region's 128. A legitimate
     // 129-to-255-character CDK id cut shorter names a row the record does not
     // hold.
-    expect(all).toContain(`${'L'.repeat(255)} [cut: 4745 more characters withheld]`);
+    expect(all).toContain(`${'L'.repeat(255)} ${cutMarker(4745, 'L'.repeat(4745))}`);
     expect(all).not.toContain('L'.repeat(256));
     // An id with nothing renderable left becomes the named stand-in rather than
     // an empty bullet naming nothing.
@@ -3305,10 +3305,12 @@ describe('reportDriftBaselineGaps', () => {
       const row = messages.find((m) => m.trim().startsWith(ch));
       expect(row, `the ${label} list printed no row`).toBeDefined();
       expect(row, `the ${label} id is no longer capped`).toContain(
-        `${ch.repeat(255)} [cut: 4745 more characters withheld]`
+        `${ch.repeat(255)} ${cutMarker(4745, ch.repeat(4745))}`
       );
       expect(row, `the ${label} id is no longer capped at all`).not.toContain(ch.repeat(256));
-      expect(row!.length).toBeLessThan(300);
+      // 255 kept characters plus the cut marker and its 32-hex tail digest
+      // (go-to-k/cdkd#4002), with room for the row's indent and suffix.
+      expect(row!.length).toBeLessThan(360);
     }
   });
 
