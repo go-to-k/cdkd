@@ -1259,3 +1259,89 @@ describe('the cross-region refusals name the stack and the record inside their o
     expect(err.message.split(SHOWN).join('')).not.toContain('nothing refused');
   });
 });
+
+/**
+ * Issue [#2166](https://github.com/go-to-k/cdkd/issues/2166), end to end
+ * through the REAL resolver: a placeholder `resolveSub` keeps inside a
+ * reference throws nothing and forms no fetchable token, so before the
+ * resolver reported it the stack came back with every count at zero -- and
+ * `scrubCommand` printed it clean.
+ *
+ * The leaf whose REGION refuses the read is here too, as the regression net
+ * for the other shape the issue names: since go-to-k/cdkd#3181 that failed
+ * lookup is a counted `token` unit, and this pins that it stays one for a
+ * reference the pre-pass DEFERRED.
+ */
+describe('cdkd scrub counts a deferred reference that goes UNRESOLVED (issue #2166)', () => {
+  it('a placeholder KEPT inside the reference is a counted finding, and nothing is fetched', async () => {
+    useState(makeLeakyState(IRELAND_PASSWORD, 'none'));
+
+    const res = await scrub({
+      'Fn::Sub': '{{resolve:secretsmanager:${Undeclared}-db:SecretString:password}}',
+    });
+
+    expect(res).toMatchObject({ unverifiableLeaves: 1, recordsChanged: 0 });
+    expect(secretSends).toHaveLength(0);
+    expect(logLines.join('\n')).toContain('ABANDONED');
+  });
+
+  it('the integ arm`s own leaf: a kept prefix before a BOUND ARN, foreign evidence on record', async () => {
+    // `dynamic-ref-cross-region` phase 3g's spelling. The ARN half is bound,
+    // the prefix is not, so the assembled text carries no whole token and the
+    // region classifier never runs -- nothing refuses, nothing is fetched.
+    useState(makeLeakyState(IRELAND_PASSWORD, 'outputReads'));
+
+    const res = await scrub({
+      'Fn::Sub': [
+        '{{resolve:ssm:${UndeclaredPrefix}${TargetArn}}}',
+        { TargetArn: PRODUCER_SSM_ARN },
+      ],
+    });
+
+    expect(res).toMatchObject({ unverifiableLeaves: 1 });
+    expect(ssmSends).toHaveLength(0);
+  });
+
+  it('a TRAILING kept placeholder is counted too, not merely warned about', async () => {
+    useState(makeLeakyState(IRELAND_PASSWORD, 'none'));
+
+    const res = await scrub({
+      'Fn::Sub': `{{resolve:secretsmanager:${PRODUCER_ARN}:SecretString:\${Undeclared}}}`,
+    });
+
+    expect(res).toMatchObject({ unverifiableLeaves: 1 });
+  });
+
+  it('CONTROL: the same reference with the variable BOUND scrubs, with no finding', async () => {
+    useState(makeLeakyState(IRELAND_PASSWORD, 'imports'));
+
+    const res = await scrub(SUB_ASSEMBLED_FOREIGN_ARN_EXPR);
+
+    expect(res).toMatchObject({ unverifiableLeaves: 0, recordsChanged: 1 });
+  });
+
+  it('CONTROL: prose mentioning the opening beside a kept placeholder is no finding', async () => {
+    useState(makeLeakyState(IRELAND_PASSWORD, 'none'));
+
+    const res = await scrub({ 'Fn::Sub': 'Use {{resolve:secretsmanager:${Undeclared}' });
+
+    expect(res).toMatchObject({ unverifiableLeaves: 0 });
+  });
+
+  it('a deferred reference whose NAMED region refuses the read stays a counted finding', async () => {
+    useState(makeLeakyState(IRELAND_PASSWORD, 'imports'));
+    prime(
+      PRODUCER_REGION,
+      'GetSecretValueCommand',
+      Object.assign(new Error('User is not authorized to read this secret'), {
+        name: 'AccessDeniedException',
+      })
+    );
+
+    const res = await scrub(SUB_ASSEMBLED_FOREIGN_ARN_EXPR);
+
+    // The producer region was asked, the consumer region never was.
+    expect(secretSends.map((s) => s.ctorRegion)).toEqual([PRODUCER_REGION]);
+    expect(res).toMatchObject({ unverifiableLeaves: 1, recordsChanged: 0 });
+  });
+});

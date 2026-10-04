@@ -1,6 +1,10 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
-import { type ResolverContext, isUnboundTemplateParameter } from './support.js';
+import {
+  type ResolverContext,
+  isUnboundTemplateParameter,
+  sitsInsideResolvableReference,
+} from './support.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { type IntrinsicLeafResolution } from '../secret-redaction.js';
 import {
@@ -392,6 +396,8 @@ export async function resolveSub(
     twin: string;
     record?: Pick<IntrinsicLeafResolution, 'input' | 'substitutions' | 'complete'>;
     parameterSpans: ParameterSpans;
+    /** Set by the two warn-and-keep arms: why the placeholder was kept (issue #2166). */
+    keptBecause?: unknown;
   }> = [];
   // Match BOTH the literal-escape form `${!X}` and the variable form `${X}`.
   // The CloudFormation rule: a `${` immediately followed by `!` is an escape —
@@ -433,6 +439,7 @@ export async function resolveSub(
     let twinReplacement: string | undefined;
     let record: Pick<IntrinsicLeafResolution, 'input' | 'substitutions' | 'complete'> | undefined;
     let parameterSpans: ParameterSpans = [];
+    let keptBecause: unknown;
 
     // Check explicit variables first. `Object.hasOwn` rather than `in`
     // (issue #2776), on all three maps. UNFALSIFIABLE while they carry no
@@ -538,6 +545,7 @@ export async function resolveSub(
                 this.displayMasked(this.subPlaceholderWarning(varNameStr, getAttError), context)
               );
               replacement = match[0]; // Keep original placeholder
+              keptBecause = getAttError;
             }
           } else {
             // Issue #2270's other half, on the SAME terms as the dotted arm
@@ -553,6 +561,7 @@ export async function resolveSub(
               this.displayMasked(this.subPlaceholderWarning(varNameStr, refError), context)
             );
             replacement = match[0]; // Keep original placeholder
+            keptBecause = refError;
           }
         }
       }
@@ -564,6 +573,7 @@ export async function resolveSub(
       twin: twinReplacement ?? replacement,
       ...(record ? { record } : {}),
       parameterSpans,
+      ...(keptBecause === undefined ? {} : { keptBecause }),
     });
   }
 
@@ -580,6 +590,8 @@ export async function resolveSub(
   let cursor = 0;
   let shift = 0;
   let parameterSpans: ParameterSpans[number][] | undefined = [];
+  // Where each KEPT placeholder lands on `result` (issue #2166).
+  const kept: Array<{ start: number; end: number; text: string; because: unknown }> = [];
   let result = template.replace(
     /\$\{(!)?([^}]*)\}/g,
     (whole: string, _bang: unknown, _name: unknown, at: number) => {
@@ -591,6 +603,14 @@ export async function resolveSub(
       if (entry === undefined) parameterSpans = undefined;
       else if (parameterSpans !== undefined) {
         appendShiftedSpans(parameterSpans, entry.parameterSpans, at + shift);
+      }
+      if (entry?.keptBecause !== undefined) {
+        kept.push({
+          start: at + shift,
+          end: at + shift + replacement.length,
+          text: replacement,
+          because: entry.keptBecause,
+        });
       }
       shift += replacement.length - whole.length;
       return replacement;
@@ -618,6 +638,36 @@ export async function resolveSub(
   });
   const substitutions = replacements.flatMap((entry) => entry.record?.substitutions ?? []);
   let complete = replacements.every((entry) => entry.record?.complete ?? true);
+
+  // Issue #2166: a placeholder KEPT inside a `{{resolve:...}}` reference leaves
+  // that reference unevaluable — no token forms, or one naming `${...}` — so
+  // nothing below looks it up and nothing throws. Reported to a caller that
+  // collects abandoned units (`cdkd scrub`, which counts it rather than
+  // printing the stack clean over a reference it never resolved). The
+  // placeholder is a name the template declares nowhere, so fixing the
+  // template clears it. No bag, no report: deploy keeps the warn-and-keep.
+  if (context?.abandonedResolutions !== undefined) {
+    for (const placeholder of kept) {
+      if (!sitsInsideResolvableReference(result, placeholder.start, placeholder.end)) continue;
+      const reason =
+        placeholder.because instanceof Error
+          ? placeholder.because.message
+          : String(placeholder.because);
+      context.abandonedResolutions.push(
+        this.abandonedUnit(
+          'placeholder',
+          placeholder.text,
+          new Error(
+            `Fn::Sub kept the placeholder ${placeholder.text} (${reason}) inside a ` +
+              `{{resolve:...}} reference, so that reference was never resolved`,
+            { cause: placeholder.because }
+          ),
+          context,
+          result
+        )
+      );
+    }
+  }
 
   // Resolve any dynamic references in the substituted result (secret refs are
   // left unresolved per-reference when skipDynamicReferences is set).

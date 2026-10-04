@@ -320,6 +320,10 @@ SCRUB_C_LOG=""
 # Phase 3f's `cdkd diff` stderr. Held for diagnostics only, printed after the
 # same plaintext scan as the payload, and shredded by `cleanup`.
 REV_DIFF_ERR=""
+# The issue #2166 scrub LOGS (phases 3g / 3h), scanned for a plaintext like
+# SCRUB_C_LOG and shredded by `cleanup` for the same reason.
+SCRUB_G_LOG=""
+SCRUB_H_LOG=""
 cleanup() {
   rc=$?
   # The INT / TERM traps call `cleanup` and then `exit`, which re-fires the EXIT
@@ -334,7 +338,7 @@ cleanup() {
   # which is slow and can itself fail. `|| true` matches the rest of this
   # function: a cleanup step must never abort the steps after it.
   rm -f "${SEEDED_STATE}" "${LEGACY_STATE}" "${SEEDED_STATE_C}" "${LEGACY_STATE_C}" \
-    "${SCRUB_C_LOG}" "${REV_DIFF_ERR}" >/dev/null 2>&1 || true
+    "${SCRUB_C_LOG}" "${REV_DIFF_ERR}" "${SCRUB_G_LOG}" "${SCRUB_H_LOG}" >/dev/null 2>&1 || true
   # Best-effort stack teardown first, so the echo parameters go with their
   # stacks and cdkd state is not left pointing at deleted resources.
   ${CLI} destroy "${STACK_A}" "${STACK_B}" "${STACK_C}" \
@@ -959,6 +963,77 @@ fi
 rm -f "${REV_DIFF_ERR}"
 REV_DIFF_ERR=""
 echo "    OK: each region's diff answered the reversed mixed-type name from its own region"
+
+# Run `cdkd scrub ${STACK_C} --dry-run --fail` into the log file named by $1,
+# leaving its exit code in SCRUB_UNRESOLVED_RC. Shared by phases 3g and 3h, the
+# two issue #2166 arms. Extra env for the synth goes in front of the call.
+run_unresolved_scrub() {
+  SCRUB_UNRESOLVED_RC=0
+  AWS_REGION="${REGION_A}" ${CLI} scrub "${STACK_C}" \
+    --state-bucket "${STATE_BUCKET}" --dry-run --fail >"$1" 2>&1 || SCRUB_UNRESOLVED_RC=$?
+}
+# Assert that log $1 (phase label $2) reports the stack UNRESOLVED rather than
+# clean: exit 1 (a `--fail` FINDING, not the exit-2 refusal), the ABANDONED
+# finding present, and neither clean line. The positive marker is the sentinel
+# for the negative one, so reworded output cannot make the absence pass.
+assert_unresolved_finding() {
+  local log="$1" label="$2"
+  for secret_needle in "${EXPECTED_SECURE_B}" "${EXPECTED_SECURE_A}"; do
+    if grep -F -q "${secret_needle}" "${log}"; then
+      echo "FAIL: ${label}: the scrub output carries a SecureString plaintext" >&2
+      return 1
+    fi
+  done
+  if [ "${SCRUB_UNRESOLVED_RC}" -ne 1 ] || ! grep -qF "ABANDONED" "${log}" \
+    || grep -qF "No plaintext secrets found" "${log}"; then
+    sed 's/^/    /' "${log}" >&2 || true
+    echo "FAIL: ${label}: 'cdkd scrub ${STACK_C} --dry-run --fail' exited ${SCRUB_UNRESOLVED_RC}," >&2
+    echo "      expected 1 with an ABANDONED finding and no 'No plaintext secrets found' line -" >&2
+    echo "      a reference nothing resolved was reported clean (issue #2166)" >&2
+    return 1
+  fi
+}
+
+echo "==> Phase 3g: an Fn::Sub placeholder KEPT inside the reference is a finding, not clean (issue #2166)"
+# THE #2166 ARM. The scrub re-synthesizes STACK_C with
+# `CDKD_IT_DYNREF_KEPT_PLACEHOLDER=1`, which spells its one reference
+# `{{resolve:ssm:${UndeclaredPrefix}${TargetArn}}}` -- a placeholder no variable
+# binds, MID-string, so `resolveSub` keeps it with a warning, no whole token
+# forms, nothing is looked up and nothing throws. Before #2166 the run recorded
+# nothing for it, printed `No plaintext secrets found` and exited 0 under
+# `--fail`, over a record whose plaintext it never looked for. `--dry-run`
+# writes nothing, so the deployed record and phase 3h are unaffected.
+SCRUB_G_LOG="$(mktemp)"
+CDKD_IT_DYNREF_KEPT_PLACEHOLDER=1 run_unresolved_scrub "${SCRUB_G_LOG}"
+# PREMISE: the toggle reached the synth. Without the warning this phase would
+# be scrubbing the ordinary template, where a clean result is correct.
+if ! grep -qF "keeping placeholder" "${SCRUB_G_LOG}"; then
+  sed 's/^/    /' "${SCRUB_G_LOG}" >&2 || true
+  echo "FAIL: phase 3g: no 'keeping placeholder' warning, so the kept-placeholder template" >&2
+  echo "      was not what scrub synthesized and the phase would measure nothing" >&2
+  exit 1
+fi
+assert_unresolved_finding "${SCRUB_G_LOG}" "phase 3g"
+rm -f "${SCRUB_G_LOG}"
+SCRUB_G_LOG=""
+echo "    OK: the kept placeholder was reported as a finding and --fail exited 1"
+
+echo "==> Phase 3h: a deferred reference whose lookup FAILS is a finding, not clean (issue #2166)"
+# The issue's other shape, and a REGRESSION NET rather than a discriminator:
+# since go-to-k/cdkd#3181 a failed lookup is a counted abandoned token, so this
+# phase passes on the pre-#2166 code too. Deleting region B's copy of the
+# SecureString OUT OF BAND makes the assembled foreign reference's lookup
+# genuinely fail. The parameter is put back right after, with the same value,
+# so phase 4's teardown sees the world it expects (cleanup deletes it anyway).
+aws ssm delete-parameter --name "${SECURE_PARAM}" --region "${REGION_B}" >/dev/null
+SCRUB_H_LOG="$(mktemp)"
+run_unresolved_scrub "${SCRUB_H_LOG}"
+aws ssm put-parameter --name "${SECURE_PARAM}" --type SecureString \
+  --value "${EXPECTED_SECURE_B}" --overwrite --region "${REGION_B}" >/dev/null
+assert_unresolved_finding "${SCRUB_H_LOG}" "phase 3h"
+rm -f "${SCRUB_H_LOG}"
+SCRUB_H_LOG=""
+echo "    OK: the failed foreign lookup was reported as a finding and --fail exited 1"
 
 echo "==> Phase 4: destroy both stacks"
 ${CLI} destroy "${STACK_A}" "${STACK_B}" "${STACK_C}" \

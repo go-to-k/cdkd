@@ -140,6 +140,33 @@ const DEPLOY_RESOLVED_REFERENCE_SERVICES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Does the span `[start, end)` of `text` sit INSIDE a `{{resolve:...}}`
+ * reference the deploy could resolve (issue
+ * [#2166](https://github.com/go-to-k/cdkd/issues/2166))?
+ *
+ * Asked by `resolveSub` of a placeholder it KEPT, on the substituted string.
+ * Inside means: the nearest `{{resolve:` opening before the span is not closed
+ * before it, a `}}` closes it after the span before any later opening, and the
+ * opening names a resolvable service — or the span IS the service, which no
+ * one can classify. The closing `}}` keeps prose that merely mentions the
+ * opening (`Use the {{resolve:secretsmanager: prefix`) out.
+ */
+export function sitsInsideResolvableReference(text: string, start: number, end: number): boolean {
+  const OPENING = '{{resolve:';
+  const opening = text.lastIndexOf(OPENING, start);
+  if (opening < 0) return false;
+  const head = text.slice(opening + OPENING.length, start);
+  if (head.includes('}}')) return false;
+  // No `:` yet: the span is (part of) the SERVICE, so it is unknown, not public.
+  const colon = head.indexOf(':');
+  if (colon >= 0 && !DEPLOY_RESOLVED_REFERENCE_SERVICES.has(head.slice(0, colon))) return false;
+  const close = text.indexOf('}}', end);
+  if (close < 0) return false;
+  const nextOpening = text.indexOf(OPENING, end);
+  return nextOpening < 0 || close < nextOpening;
+}
+
+/**
  * True when text RESOLVED by a `skipDynamicReferences` pass
  * still carries a token of a service the deploy resolves (issue
  * [#4056](https://github.com/go-to-k/cdkd/issues/4056)).
@@ -237,8 +264,14 @@ export function selectIndexPosition(value: unknown): number | undefined {
  * both prior attempts at that coupling shipped a defect.
  */
 export interface AbandonedResolution {
-  /** Which walk abandoned this unit. */
-  readonly unit: 'token' | 'key';
+  /**
+   * Which walk abandoned this unit. A `placeholder` is the one unit nothing
+   * THREW for (issue [#2166](https://github.com/go-to-k/cdkd/issues/2166)):
+   * `resolveSub` KEPT an undeclared `${...}` inside a `{{resolve:...}}`
+   * reference, so that reference cannot be evaluated and was never looked up.
+   * Its `subject` is the placeholder as the template spells it.
+   */
+  readonly unit: 'token' | 'key' | 'placeholder';
   /**
    * For `'token'`, the reference as the log twin would PRINT it — never the raw
    * one: `resolveSub` / `resolveJoin` re-enter with an ASSEMBLED string, so

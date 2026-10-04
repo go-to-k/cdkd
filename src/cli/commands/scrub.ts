@@ -2971,45 +2971,25 @@ async function resolveForeignRegionTokens(
   // the region its ARN names, or refused per reference by the resolver's own
   // `DYNAMIC_REFERENCE_REGION_AMBIGUOUS`.
   //
-  // WHAT IS PRESERVED, AND WHAT IS NOT -- stated because the first three cuts of
-  // this change each asserted the wrong half of it.
+  // WHAT IS PRESERVED -- stated because the first three cuts of this change
+  // each asserted the wrong half of it.
   //
-  // PRESERVED, and over strictly MORE information: a reference whose region
+  // The region safety, over strictly MORE information: a reference whose region
   // cannot be established is never resolved in the stack's own region. The
   // resolver classifies the ASSEMBLED expression rather than the raw leaf, and
   // `classifyReplaySecretRegion` verdicts an ARN-form token `named-region`
   // whatever evidence it holds, so a deferred reference cannot be answered by
   // the wrong region.
   //
-  // NOT PRESERVED: LOUDNESS when the downstream lookup FAILS. The refusal fired
-  // BEFORE any attempt; deferring moves the attempt inside `scrubStack`'s
-  // best-effort `catch { logger.debug }`, so a producer region answering
-  // AccessDenied becomes a VERBOSE-ONLY line under a `No plaintext secrets
-  // found` summary. The neighbouring shape -- an `Fn::Sub` placeholder scrub
-  // cannot evaluate, which `resolveSub` warn-and-KEEPS without throwing at all
-  // -- is less bad than that, and worth stating separately rather than lumping
-  // in: `resolveSub` warns at DEFAULT verbosity (`subPlaceholderWarning`), so
-  // the user does see a line, just not one that stops the summary from claiming
-  // the stack is clean.
-  //
-  // That residual is TRACKED, not fixed here, and the reason is worth recording
-  // because three rounds of review were spent on it: every attempt to detect
-  // "this reference went unresolved" from OUTSIDE the resolver was a proxy, and
-  // each proxy was wrong in BOTH directions. Keying on "the resolution threw"
-  // missed the warn-and-keep shape and over-reported an unrelated `Ref` failure
-  // sharing the bag; keying on "the raw leaf text survived" missed a leaf a
-  // downstream intrinsic rewrote without resolving, broke on JSON escaping, and
-  // -- worst -- fired permanently on PROSE that merely mentions
-  // `{{resolve:secretsmanager:`, which is the unactionable-refusal class
-  // {@link SECRET_REFERENCE_OPENINGS} already records as unacceptable. Only the
-  // resolver knows which references it declined, so the fix belongs there:
-  // issue [#2166](https://github.com/go-to-k/cdkd/issues/2166).
-  //
-  // Shipping without it is not a new silent class. `classifyReplaySecretRegion`
-  // verdicts an ARN-form token `named-region` regardless of evidence, so a stack
-  // with no cross-stack read on record ALREADY reached the same silent outcome
-  // for the same leaf; this widens that existing population rather than creating
-  // one, which is the same inconsistency the paragraph below removes.
+  // LOUDNESS when the deferred reference then goes UNRESOLVED is kept by the
+  // RESOLVER, which reports what it declined into the abandoned-unit bag
+  // `scrubStack` opts into, never by a proxy here (issue
+  // [#2166](https://github.com/go-to-k/cdkd/issues/2166): keying on "it threw"
+  // or "the raw text survived" was wrong both ways, and fired permanently on
+  // prose). A lookup that FAILS is a `token` unit; a placeholder `resolveSub`
+  // KEPT inside the reference, where nothing throws, is a `placeholder` unit.
+  // Both are counted findings: the stack is not printed clean and `--fail`
+  // exits non-zero.
   //
   // Deferring is unconditional on evidence, unlike the refusal it replaces.
   // The refusal was gated on `foreignProducerRegions.length > 0` to keep it
@@ -4971,6 +4951,13 @@ function abandonedScanVerdict(source: unknown, err: unknown): 'count' | 'warn' |
  */
 function abandonedUnitVerdict(entry: AbandonedResolution): 'count' | 'warn' | 'silent' {
   if (!entry.carriedDynamicReference) return 'silent';
+  // Issue #2166: an `Fn::Sub` placeholder KEPT inside a reference names
+  // nothing the template declares, so its error is template-shaped and its
+  // token unfetchable -- both of which would say `warn`. But unlike a
+  // `Default`-less parameter it needs no `--parameters` to clear: fixing the
+  // template does. Counted, so the stack is not printed clean over a
+  // reference nothing resolved.
+  if (entry.unit === 'placeholder') return 'count';
   if (isTemplateShapeResolutionFailure(entry.error) || !entry.carriedFetchableReference) {
     return 'warn';
   }
