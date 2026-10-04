@@ -1072,9 +1072,10 @@ them through [`cdk-local`](https://www.npmjs.com/package/cdk-local) — the
 local-emulation engine cdkd depends on at runtime. It depends on
 `@aws-cdk/toolkit-lib` and `@aws-cdk/cloud-assembly-api` directly, reaches
 `@aws-cdk/cdk-assets-lib` through the former, and declares `aws-cdk-lib` /
-`constructs` as non-optional peers, which npm and pnpm install automatically.
-So a tree inspected after `npm install @go-to-k/cdkd` contains all four, and
-`npm explain <package>` names `cdk-local` at the root of every chain.
+`constructs` as optional peers, which npm and pnpm do not install. So a tree
+inspected after `npm install @go-to-k/cdkd` contains those three `@aws-cdk/*`
+packages but no `aws-cdk-lib`, and `npm explain <package>` names `cdk-local`
+at the root of every chain.
 
 Re-derive the set rather than trusting this paragraph — it moves with
 cdk-local's own dependencies, and the hop count is what goes stale first:
