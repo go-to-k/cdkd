@@ -6,9 +6,6 @@ import {
 } from '../stale-attribute-heal.js';
 import {
   dynamicReferenceTokens,
-  recordSecretExpression,
-  forgetSecretExpression,
-  isRecordedSecretExpression,
   clearRecordedSecretExpressions,
   errorCauseChain,
   type DynamicReferenceSubstitution,
@@ -927,12 +924,10 @@ export interface NamedRequestMasks {
  * files each verdict under the resolver's SCOPE (region + credential
  * identity) and `isKnownSecret` reads only that scope, since another region's
  * `SecureString` under the same parameter name says nothing about this one.
- * `has` here still answers the bare, last-writer set the redaction path reads.
+ * Only `clear` is left here: an unscoped `add` / `delete` would write the
+ * bare set behind the scoped half's back.
  */
 export const recordedSecretExpressions = {
-  has: (expression: string): boolean => isRecordedSecretExpression(expression),
-  add: (expression: string): void => recordSecretExpression(expression),
-  delete: (expression: string): void => forgetSecretExpression(expression),
   clear: (): void => clearRecordedSecretExpressions(),
 };
 

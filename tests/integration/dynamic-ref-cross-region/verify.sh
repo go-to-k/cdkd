@@ -646,6 +646,13 @@ if [ "${ACTUAL_MIXED_REV_A}" != "${EXPECTED_MIXED_REV_SECRET_A}" ]; then
   exit 1
 fi
 ACTUAL_MIXED_REV_A=""
+# Guard BEFORE the message below, which prints the value: a wrong-region answer
+# would be region A's SecureString plaintext.
+if [ "${ACTUAL_MIXED_REV_B}" = "${EXPECTED_MIXED_REV_SECRET_A}" ]; then
+  echo "FAIL: ${MIXED_REV_ECHO_PARAM_B} (${REGION_B}) carries region A's SecureString value —" >&2
+  echo "      its reference was answered by the wrong region." >&2
+  exit 1
+fi
 if [ "${ACTUAL_MIXED_REV_B}" != "${EXPECTED_MIXED_REV_PUBLIC_B}" ]; then
   echo "FAIL: ${MIXED_REV_ECHO_PARAM_B} (${REGION_B}) resolved to '${ACTUAL_MIXED_REV_B}', expected" >&2
   echo "      the region-local public String value '${EXPECTED_MIXED_REV_PUBLIC_B}'" >&2
