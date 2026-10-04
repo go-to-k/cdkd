@@ -133,6 +133,7 @@ export {
   dynamicReferenceTokens,
 } from './secret-redaction/redact-path.js';
 export { spanNamesResolvableService } from './secret-redaction/anchors.js';
+export { liveMatchesUnresolvedTokenFrame } from './secret-redaction/unresolved-token-frame.js';
 export { redactSecretsForState, scrubResourceRecord } from './secret-redaction/redact-state.js';
 export {
   maskSecretsInText,
