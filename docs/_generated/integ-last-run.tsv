@@ -33,8 +33,8 @@ bootstrap-free-region	2026-09-01T14:50:59Z	PASS	240	verify.sh	PR#2398 arm 2/6: b
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
 budgets	2026-09-30T11:59:39Z	PASS	70	verify.sh	rc ok, orph clean (#4228)
 cache-streaming	2026-09-29T15:04:16Z	PASS	652	verify.sh	rc ok, orph clean (#4029 PR #4080: ElastiCache delete wait)
-cc-api-fallback	2026-10-04T11:14:43Z	PASS	45	verify.sh	rc ok, orph clean
-cc-api-fallback-transitions	2026-10-04T11:14:43Z	PASS	100	verify.sh	rc ok, orph clean
+cc-api-fallback	2026-10-04T12:10:42Z	PASS	45	verify.sh	rc ok, orph clean
+cc-api-fallback-transitions	2026-10-04T12:10:42Z	PASS	110	verify.sh	rc ok, orph clean
 cc-final-snapshot-handlers	2026-09-30T17:44:01Z	PASS	1223	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
 cc-getatt-readback	2026-10-03T09:34:47Z	PASS	115	verify.sh	rc ok, orph clean (#4423)
 cc-protection-flip	2026-10-03T00:39:18Z	PASS	556	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
@@ -264,7 +264,7 @@ recreate-mixed-direction	2026-10-02T20:40:31Z	PASS	111	verify.sh	rc ok, orph cle
 recreate-nested-logical-id-collision	2026-10-02T20:42:43Z	PASS	130	verify.sh	rc ok, orph clean (#4468)
 recreate-parent-child-permission	2026-10-03T13:19:14Z	PASS	100	verify.sh	rc ok, orph clean; #4461 regression
 recreate-target-readers	2026-10-02T20:44:14Z	PASS	86	verify.sh	rc ok, orph clean (#4468)
-recreate-via-cc-api	2026-10-04T11:14:43Z	PASS	110	verify.sh	rc ok, orph clean
+recreate-via-cc-api	2026-10-04T12:10:42Z	PASS	115	verify.sh	rc ok, orph clean
 recreate-via-sdk-provider	2026-10-02T20:42:07Z	PASS	100	verify.sh	rc ok, orph clean (#4468)
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
@@ -309,7 +309,7 @@ schema-v9-to-v10-migration	2026-09-29T06:42:58Z	PASS	215	verify.sh	rc ok, orph c
 scrub-nested-child	2026-10-03T20:21:35Z	PASS	161	verify.sh	rc ok, orph clean (#4479; pre-fix probe red at phase 1b)
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-10-04T06:31:24Z	PASS	225	verify.sh	rc ok, orph clean (#2790 PR #4516 phases 7-10)
-secret-derived-immutable-names	2026-10-04T11:14:43Z	PASS	115	verify.sh	rc ok, orph clean (#3869 pre-rotation FilterName absent from update log)
+secret-derived-immutable-names	2026-10-04T12:10:42Z	PASS	115	verify.sh	rc ok, orph clean (#3869 pre-rotation FilterName absent from update log)
 secrets-array-nested	2026-10-03T18:30:14Z	PASS	425	verify.sh	rc ok, orph clean
 secrets-dynamic-ref	2026-10-03T18:30:14Z	PASS	591	verify.sh	rc ok, orph clean, 0 state versions
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
