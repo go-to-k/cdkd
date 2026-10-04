@@ -4672,7 +4672,9 @@ function isRegionAmbiguousRefusal(err: unknown): boolean {
  * refusal, never a silent clean run) and the shape is a rare one, so it is
  * accepted rather than worked around; go-to-k/cdkd#3160 carries it alongside
  * the sibling class, which needs a countable unverifiable-leaf finding rather
- * than a refusal.
+ * than a refusal. `bindDefaultedParametersOneByOne` does NOT widen it: beside a
+ * `Default`-less sibling it leaves a `Default: ''` parameter unbound, as the
+ * failed whole-bag call always did (issue #2166).
  *
  * It is a loudness REGRESSION rather than a new gap: before go-to-k/cdkd#2689
  * fixed `ssmParameterName`, this input produced a bogus `secretName` and
@@ -4883,9 +4885,9 @@ function abandonedScanStackNote(verdict: 'count' | 'warn', scans: number): strin
  * B: '{{resolve:secretsmanager:prod/db:...}}'}` has `B` abandoned by a failure
  * that is nothing to do with `B`. Excluding it means `B` records no needle, its
  * legacy plaintext is never rewritten, and the stack can still print
- * `No plaintext secrets found` at exit 0. Reachable accidentally (one
- * `Default`-less parameter empties the bag, so every `{Ref: <param>}` throws)
- * and, on a repo whose CI runs `--dry-run --fail`, defeatable on purpose by
+ * `No plaintext secrets found` at exit 0. Reachable accidentally (scrub
+ * takes no `--parameters`, so every `{Ref: <param>}` to a `Default`-less
+ * parameter throws) and, on a repo whose CI runs `--dry-run --fail`, defeatable on purpose by
  * adding one dangling `Ref` ahead of the secret. That loss is REAL and is not
  * repaired by making it visible — go-to-k/cdkd#3196 tracks scoping the resolve
  * per property so the sibling reference is still scanned.
@@ -4971,7 +4973,7 @@ function abandonedUnitVerdict(entry: AbandonedResolution): 'count' | 'warn' | 's
  * folding to the most severe is what stops a gateable finding hiding behind an
  * ungateable one recorded before it. That is not a hypothetical ordering
  * concern: `isTemplateShapeResolutionFailure` fires EN MASSE on healthy stacks
- * (one `Default`-less parameter makes every `{Ref: <param>}` throw), so a
+ * (every `{Ref: <param>}` to a `Default`-less parameter throws), so a
  * `warn` at index 0 is the common case, and the per-unit recovery exists
  * precisely to keep walking past it to the reference that matters.
  */
@@ -5996,6 +5998,11 @@ async function bindDefaultedParametersOneByOne(
     if (definition === null || typeof definition !== 'object' || !('Default' in definition)) {
       continue;
     }
+    // An EMPTY `Default` stays unbound, as it did when the whole-bag call
+    // failed: bound, `{{resolve:ssm-secure:${P}}}` assembles a NAMELESS
+    // reference, which refuses the whole stack -- a refusal scrub's missing
+    // `--parameters` would make unclearable.
+    if ((definition as { Default?: unknown }).Default === '') continue;
     try {
       const one = await resolver.resolveParameters({
         ...template,
@@ -6939,9 +6946,9 @@ export async function scrubStack(
         // unresolvable `Ref` in property A abandoned the `{{resolve:...}}` in
         // property B — B recorded no needle, its legacy plaintext was never
         // rewritten, and the stack could still print `No plaintext secrets
-        // found` at exit 0. Reachable by accident (one `Default`-less parameter
-        // empties the parameter bag, so every `{Ref: <param>}` throws) and, on a
-        // repo whose CI runs `--dry-run --fail`, defeatable on purpose by
+        // found` at exit 0. Reachable by accident (every `{Ref: <param>}` to a
+        // `Default`-less parameter throws, since scrub takes no `--parameters`)
+        // and, on a repo whose CI runs `--dry-run --fail`, defeatable on purpose by
         // putting one dangling `Ref` ahead of the secret.
         //
         // BOUNDED TO THE TOP LEVEL, and the residual is real: `resolveValue`'s
@@ -7078,8 +7085,8 @@ export async function scrubStack(
             // An earlier cut judged `abandoned[0]` against the whole property
             // and called that "the count is unchanged". It was the defect. The
             // verdict turns on `isTemplateShapeResolutionFailure`, and that
-            // class fires EN MASSE on healthy stacks — one `Default`-less
-            // parameter makes every `{Ref: <param>}` throw — so entry 0 is
+            // class fires EN MASSE on healthy stacks — every `{Ref: <param>}`
+            // to a `Default`-less parameter throws — so entry 0 is
             // routinely a `warn`, which gates nothing. Recovery then reaches a
             // genuinely unfetched reference later in the same property, and
             // judging only entry 0 discarded exactly the finding this PR

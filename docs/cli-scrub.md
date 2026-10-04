@@ -688,6 +688,11 @@ reference is never looked up and the only sign is the `keeping placeholder`
 warning. Run
 `cdkd scrub --verbose` when a stack you expect findings from reports clean.
 
+A defaulted parameter is resolved with its `Default`. If the deploy overrode
+it, scrub looks up a DIFFERENT reference than the one the deploy resolved and
+cannot tell: the plaintext the deploy wrote can stay in state while the stack
+prints clean.
+
 ### A read cdkd declines by design is a finding, not a refusal
 
 The cross-account `Fn::GetStackOutput` of a redacted value is never resolved:

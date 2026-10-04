@@ -1367,6 +1367,24 @@ describe('cdkd scrub counts a deferred reference that goes UNRESOLVED (issue #21
     expect(JSON.stringify(saved)).not.toContain(TOKYO_PASSWORD);
   });
 
+  it('an EMPTY Default beside a Default-less sibling stays unbound, so no nameless reference refuses the stack', async () => {
+    // Bound, `{{resolve:ssm-secure:${P}}}` would assemble the nameless
+    // `{{resolve:ssm-secure:}}`, which scrub re-raises as a whole-stack
+    // refusal that no `--parameters` could clear.
+    useState(makeLeakyState(IRELAND_PASSWORD, 'none'));
+
+    const res = await scrub(
+      { 'Fn::Sub': '{{resolve:ssm-secure:${P}}}' },
+      undefined,
+      undefined,
+      { P: { Type: 'String', Default: '' }, Other: { Type: 'String' } }
+    );
+
+    // Unbound, `${P}` is a placeholder naming a declared parameter: warn-only,
+    // as it was before the per-parameter fallback.
+    expect(res).toMatchObject({ recordsChanged: 0, unverifiableLeaves: 0 });
+  });
+
   it('a defaulted parameter whose OWN resolution fails stays unbound without failing the stack', async () => {
     // `Gone` is what `ssm.StringParameter.valueForStringParameter` synthesizes,
     // over a path that no longer exists. Its per-parameter call throws; that
