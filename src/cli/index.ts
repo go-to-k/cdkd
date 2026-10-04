@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { enableCompileCache } from 'node:module';
 import { installPipeCloseHandler } from './pipe-close-handler.js';
 import { runCli } from './run-cli.js';
 import { getCdkdVersion, isVersionOnlyInvocation } from '../version.js';
@@ -63,6 +64,16 @@ async function main(): Promise<void> {
     console.log(getCdkdVersion());
     return;
   }
+
+  // Every command evaluates the same large module graph (the command tree,
+  // every provider, the externalised @aws-sdk/* packages), so Node's on-disk
+  // compile cache pays for itself from the second run: V8 reuses the cached
+  // code instead of re-compiling each module. It must be enabled BEFORE that
+  // graph is imported, since only modules loaded afterwards are cached. Node
+  // validates entries against the source and honours
+  // NODE_DISABLE_COMPILE_CACHE; a cache directory it cannot write only
+  // reports a failure status, never throws.
+  enableCompileCache?.();
 
   const { buildProgram } = await import('./program.js');
   const program = buildProgram();
