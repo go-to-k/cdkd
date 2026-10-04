@@ -804,8 +804,8 @@ the fallback:
    `drift unknown` before the Cloud Control call fires. Current entries are
    `AWS::ApiGateway::RestApi` (its `Body` / `BodyS3Location` are write-only
    inputs the response omits, while cdkd state preserves them),
-   `AWS::CloudFormation::Stack` (the response is runtime stack state — outputs
-   and status — not the template parameters cdkd stores), and
+   `AWS::CloudFormation::Stack` (cdkd deploys a nested stack itself, so no
+   CloudFormation stack exists and the row's id is a cdkd-local placeholder), and
    `AWS::EC2::LaunchTemplate` (the response carries version-bumped
    `LaunchTemplateData` plus a synthetic `LatestVersionNumber`).
 2. **Strip pass.** Known AWS-managed timestamp, owner and generated-id fields
