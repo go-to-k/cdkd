@@ -2332,6 +2332,7 @@
         "remove-protection",
         "replacement-rename-onto-holder",
         "rollback-failure-injection",
+        "sdk-to-cc-autoroute",
         "sg-circular-dependency",
         "stack-copy-create-tokens",
         "vpc-lambda",
@@ -2492,6 +2493,10 @@
         ],
         "rollback-failure-injection": [
           "l2"
+        ],
+        "sdk-to-cc-autoroute": [
+          "l1",
+          "literal"
         ],
         "sg-circular-dependency": [
           "l2"
@@ -2780,6 +2785,7 @@
         "replacement-rename-onto-holder",
         "rollback-failure-injection",
         "rollback-replay-effective-props",
+        "sdk-to-cc-autoroute",
         "servicediscovery",
         "sg-circular-dependency",
         "stack-copy-create-tokens",
@@ -2954,6 +2960,9 @@
           "l2"
         ],
         "rollback-replay-effective-props": [
+          "l1"
+        ],
+        "sdk-to-cc-autoroute": [
           "l1"
         ],
         "servicediscovery": [
