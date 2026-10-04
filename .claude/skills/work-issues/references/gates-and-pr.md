@@ -11,7 +11,8 @@ procedure; CI and `integ-destroy` are the only mechanical merge conditions.
 ```
 
 A touched `.claude/rules/**` or skill file ends no larger than
-`git show "$(git merge-base origin/main HEAD)":<file> | wc -c` (Tooling Policy 3).
+`git show "$(git merge-base origin/main HEAD)":<file> | wc -c`; trim in the
+same PR.
 
 - **Run the SKILL, not a hand-rolled command list** — the gap is silent, since
   your own commands all pass: step 1 adds `vp check --fix` and `vp run check`,
@@ -74,7 +75,7 @@ lossless under the squash merge (#3813).
 
 **Re-run the SUITE after the rebase, after `pnpm install --frozen-lockfile`
 and a rebuild**: a pre-rebase green attests to a tree that no longer exists.
-A stale `dist/` is the usual failure; a dependency bump is the other, which
+Stale `dist/` is the usual failure; a dependency bump is the other, which
 `[ -d node_modules ]` pre-flights skip. **Re-run the generators too**
 (`vp run gen:all-matrices`): `docs/_generated/**` and pages like
 `docs/cli-flag-coverage.md` derive from the TREE.

@@ -106,17 +106,18 @@ for f in $(git diff --name-only --no-renames --diff-filter=M "$B" HEAD -- src/);
 done'
 ```
 
-Run it UNNARROWED on the FINAL diff: a lane's file list is a hint, stale after
-a fix round. `R=$B` reverts, refusing a tree with uncommitted edits (the
-restore reads `HEAD`, so it would destroy them); the same loop with `R=HEAD` restores — run
-it once; `git status --porcelain` must then be EMPTY. For §8-c's hook / CI BEFORE tree, replace
-`src/` with the changed command's own paths. A file NEW in the PR stays,
-unimported by pre-fix code; one the fix DELETED or moved is restored by hand.
-The pre-fix run can mint resources the fixture's sweep cannot name: scan the
-account by stack prefix and resource family too. Probe each HALF of a
-multi-part fix separately, and add a NEGATIVE CONTROL. Where the fix SKIPS something, give the fixture a second, ORDINARY
-difference — a phase redeploying a byte-identical template diffs as `NO_CHANGE`
-and never reads the flag under test. Two more vacuity shapes:
+Run it UNNARROWED on the FINAL diff: a lane's file list is a hint, stale after a
+fix round. `R=$B` reverts, refusing a tree with uncommitted edits (the restore
+reads `HEAD`, so it would destroy them); the same loop with `R=HEAD` restores —
+run it once; `git status --porcelain` must then be EMPTY. For §8-c's hook / CI
+BEFORE tree, replace `src/` with the changed command's own paths. A file NEW in
+the PR stays, unimported by pre-fix code; one the fix DELETED or moved is
+restored by hand. The pre-fix run can mint resources the fixture's sweep cannot
+name: scan the account by stack prefix and resource family too. Probe each HALF
+of a multi-part fix separately, and add a NEGATIVE CONTROL. Where the fix SKIPS
+something, give the fixture a second, ORDINARY difference — a phase redeploying
+a byte-identical template diffs as `NO_CHANGE` and never reads the flag under
+test. Two more vacuity shapes:
 
 - **Every assertion PREDATES your change → the run is somebody else's
   regression net.** `git diff origin/main -- <fixture>`, then add the one that
