@@ -172,7 +172,9 @@ export function backfillMaskedPropertyFingerprints(
   let stamped = 0;
   for (const [logicalId, record] of Object.entries(resources)) {
     if (record === null || typeof record !== 'object') continue;
-    if ((record as { maskedPropertyFingerprints?: unknown }).maskedPropertyFingerprints !== undefined) {
+    if (
+      (record as { maskedPropertyFingerprints?: unknown }).maskedPropertyFingerprints !== undefined
+    ) {
       continue;
     }
     if (!Object.hasOwn(declared, logicalId)) continue;

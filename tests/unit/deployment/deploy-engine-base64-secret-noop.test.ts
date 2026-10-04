@@ -174,12 +174,19 @@ describe('DeployEngine - an edit around a secret reference inside Fn::Base64 is 
     const created = await h.deploy(PROPS);
     // What an older cdkd wrote: the same record without the field.
     const { maskedPropertyFingerprints: _dropped, ...legacy } = created.resources['R']!;
-    h.setState({ ...created, resources: { R: legacy } });
+    // With a baseline, so no observed-state refresh saves this run for it.
+    h.setState({
+      ...created,
+      resources: { R: { ...legacy, observedProperties: { Name: '/app/ud', Type: 'String' } } },
+    });
+    const saves = h.saveCount();
 
     // The upgrade deploy of an UNCHANGED template sends nothing...
     const upgraded = await h.deploy(PROPS);
     expect(h.provider.update).not.toHaveBeenCalled();
     // ...and saves the backfilled fingerprint (the no-change path's trigger).
+    expect(h.lastChange()?.changeType).toBe('NO_CHANGE');
+    expect(h.saveCount()).toBeGreaterThan(saves);
     expect(upgraded.resources['R']!.maskedPropertyFingerprints).toEqual({
       Value: maskedPropertyFingerprint(PROPS.Value),
     });
@@ -226,6 +233,7 @@ describe('DeployEngine - an edit around a secret reference inside Fn::Base64 is 
 interface Harness {
   deploy(props: Record<string, unknown>, options?: { noRollback?: boolean }): Promise<StackState>;
   saved(): StackState;
+  saveCount(): number;
   setState(state: StackState): void;
   lastChange(): ResourceChange | undefined;
   provider: {
@@ -306,6 +314,7 @@ function harness(): Harness {
       return state!;
     },
     saved: () => state!,
+    saveCount: () => saveState.mock.calls.length,
     setState(next) {
       state = next;
     },
