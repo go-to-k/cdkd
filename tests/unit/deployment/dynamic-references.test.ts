@@ -10,7 +10,13 @@ import {
   isSecretExpressionByVerdictOrSpelling,
   isRecordedSecretExpression,
   clearRecordedSecretExpressions,
+  recordSecretExpression,
+  forgetSecretExpression,
 } from '../../../src/deployment/secret-redaction.js';
+import {
+  isScopedSecretVerdict,
+  pinScopedSecretVerdict,
+} from '../../../src/deployment/secret-redaction/mask-only.js';
 import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -39,10 +45,14 @@ vi.mock('../../../src/utils/logger.js', () => ({
 // Mock functions for AWS clients
 const mockSecretsManagerSend = vi.fn();
 const mockSSMSend = vi.fn();
+// The ambient credential identity `getAwsClients()` reports. Mutable so the
+// issue #4105 cases can switch ACCOUNT under one region; reset per test.
+let mockCredentialConfig: { profile?: string } | undefined;
 
 // Mock AWS clients
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
+    credentialConfig: mockCredentialConfig,
     sts: {
       send: vi.fn().mockResolvedValue({
         Account: '123456789012',
@@ -77,6 +87,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
   beforeEach(() => {
     resolver = new IntrinsicFunctionResolver();
     resetAccountInfoCache();
+    mockCredentialConfig = undefined;
     mockSecretsManagerSend.mockReset();
     mockSSMSend.mockReset();
     mockLoggerWarn.mockReset();
@@ -1610,6 +1621,171 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       expect(mockSSMSend).toHaveBeenCalledTimes(2);
     });
   });
+  describe('secret verdict scope (issue #4105)', () => {
+    const sharedName = '{{resolve:ssm:/shared/app/token}}';
+    const skip = { ...defaultContext, skipDynamicReferences: true };
+    /** The `WithDecryption` value of the Nth GetParameter call. */
+    const decryptionOf = (n: number): unknown =>
+      (mockSSMSend.mock.calls[n]![0] as { input: { WithDecryption?: unknown } }).input
+        .WithDecryption;
+
+    it("resolves another region's PUBLIC parameter on the skip path after a SecureString pin", async () => {
+      // Region A pins the name as a SecureString on the deploy path...
+      mockSSMSend
+        .mockResolvedValueOnce({ Parameter: { Value: 'a-secret', Type: 'SecureString' } })
+        .mockResolvedValueOnce({ Parameter: { Value: 'b-public', Type: 'String' } });
+      const regionA = new IntrinsicFunctionResolver('ap-northeast-1');
+      const regionB = new IntrinsicFunctionResolver('us-east-1');
+      await regionA.resolveDynamicReferences(sharedName, defaultContext);
+      expect(isRecordedSecretExpression(sharedName)).toBe(true);
+
+      // ...and region B's diff must still read ITS parameter, a plain String.
+      // Keyed by the token text alone, B skipped the lookup and kept the token,
+      // which the diff then compared against the resolved value in state.
+      const result = await regionB.resolveDynamicReferences(sharedName, skip);
+
+      expect(result).toBe('b-public');
+      expect(mockSSMSend).toHaveBeenCalledTimes(2);
+      // The lookup B makes on the skip path never decrypts.
+      expect(decryptionOf(1)).toBe(false);
+    });
+
+    it('still skips the lookup for a SecureString pinned in the SAME region', async () => {
+      // The other polarity: scoping must not disable the memo. A second
+      // stack in the pinning region, with its own (empty) value cache, leaves
+      // the token unresolved without asking AWS.
+      mockSSMSend.mockResolvedValueOnce({
+        Parameter: { Value: 'a-secret', Type: 'SecureString' },
+      });
+      await new IntrinsicFunctionResolver('ap-northeast-1').resolveDynamicReferences(
+        sharedName,
+        defaultContext
+      );
+
+      const sameRegion = new IntrinsicFunctionResolver('AP-NORTHEAST-1');
+      const result = await sameRegion.resolveDynamicReferences(sharedName, skip);
+
+      expect(result).toBe(sharedName);
+      expect(mockSSMSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not share a verdict between two ACCOUNTS in one region', async () => {
+      mockSSMSend
+        .mockResolvedValueOnce({ Parameter: { Value: 'a-secret', Type: 'SecureString' } })
+        .mockResolvedValueOnce({ Parameter: { Value: 'b-public', Type: 'String' } });
+      mockCredentialConfig = { profile: 'account-a' };
+      await new IntrinsicFunctionResolver('us-east-1').resolveDynamicReferences(
+        sharedName,
+        defaultContext
+      );
+
+      mockCredentialConfig = { profile: 'account-b' };
+      const result = await new IntrinsicFunctionResolver('us-east-1').resolveDynamicReferences(
+        sharedName,
+        skip
+      );
+
+      expect(result).toBe('b-public');
+      expect(mockSSMSend).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps region A's own verdict after region B finds a public String", async () => {
+      // B's definitive public answer (on the deploy path, as before the fix)
+      // retracts the bare process-wide entry, last writer wins, exactly as it
+      // did. It must not take region A's SCOPED verdict with it: a later stack
+      // in region A still skips the lookup on the comparison path.
+      mockSSMSend
+        .mockResolvedValueOnce({ Parameter: { Value: 'a-secret', Type: 'SecureString' } })
+        .mockResolvedValueOnce({ Parameter: { Value: 'b-public', Type: 'String' } });
+      await new IntrinsicFunctionResolver('ap-northeast-1').resolveDynamicReferences(
+        sharedName,
+        defaultContext
+      );
+      await new IntrinsicFunctionResolver('us-east-1').resolveDynamicReferences(
+        sharedName,
+        defaultContext
+      );
+      expect(isRecordedSecretExpression(sharedName)).toBe(false);
+
+      const laterInA = new IntrinsicFunctionResolver('ap-northeast-1');
+      const result = await laterInA.resolveDynamicReferences(sharedName, skip);
+
+      expect(result).toBe(sharedName);
+      expect(mockSSMSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('still retracts the verdict when the SAME region later reports a public String', async () => {
+      // A parameter retyped SecureString -> String, seen by a fresh resolver
+      // in the region that pinned it: the stale memo must go, or its public
+      // value would be judged secret for the rest of the process.
+      mockSSMSend
+        .mockResolvedValueOnce({ Parameter: { Value: 'was-secret', Type: 'SecureString' } })
+        .mockResolvedValueOnce({ Parameter: { Value: 'now-public', Type: 'String' } });
+      await new IntrinsicFunctionResolver('ap-northeast-1').resolveDynamicReferences(
+        sharedName,
+        defaultContext
+      );
+      await new IntrinsicFunctionResolver('ap-northeast-1').resolveDynamicReferences(
+        sharedName,
+        defaultContext
+      );
+
+      expect(isRecordedSecretExpression(sharedName)).toBe(false);
+      // The SCOPED entry must go too, or a later comparison pass in this
+      // region would still skip and keep the now-public token unresolved.
+      mockSSMSend.mockResolvedValueOnce({ Parameter: { Value: 'now-public', Type: 'String' } });
+      const laterInRegion = new IntrinsicFunctionResolver('ap-northeast-1');
+      expect(await laterInRegion.resolveDynamicReferences(sharedName, skip)).toBe('now-public');
+      expect(mockSSMSend).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe('scoped verdict store (issue #4105)', () => {
+    const expr = '{{resolve:ssm:/scoped/token}}';
+
+    it('answers the scoped read only for the scope that pinned', () => {
+      pinScopedSecretVerdict('scope-a', expr, true);
+
+      expect(isScopedSecretVerdict('scope-a', expr)).toBe(true);
+      expect(isScopedSecretVerdict('scope-b', expr)).toBe(false);
+      expect(isRecordedSecretExpression(expr)).toBe(true);
+    });
+
+    it("retracts the bare entry on any scope's public verdict, but only that scope's own entry", () => {
+      pinScopedSecretVerdict('scope-a', expr, true);
+      pinScopedSecretVerdict('scope-b', expr, true);
+
+      pinScopedSecretVerdict('scope-a', expr, false);
+      // The bare set is last-writer, as before the scope existed.
+      expect(isRecordedSecretExpression(expr)).toBe(false);
+      expect(isScopedSecretVerdict('scope-a', expr)).toBe(false);
+      expect(isScopedSecretVerdict('scope-b', expr)).toBe(true);
+    });
+
+    it('forgets every scope on an unscoped forget', () => {
+      pinScopedSecretVerdict('scope-a', expr, true);
+      forgetSecretExpression(expr);
+
+      expect(isScopedSecretVerdict('scope-a', expr)).toBe(false);
+      expect(isRecordedSecretExpression(expr)).toBe(false);
+    });
+
+    it('retracts an UNSCOPED bare entry on a public verdict, as before', () => {
+      recordSecretExpression(expr);
+      pinScopedSecretVerdict('scope-a', expr, false);
+
+      expect(isRecordedSecretExpression(expr)).toBe(false);
+    });
+
+    it('clears the scoped half with the bare store', () => {
+      pinScopedSecretVerdict('scope-a', expr, true);
+      clearRecordedSecretExpressions();
+
+      expect(isScopedSecretVerdict('scope-a', expr)).toBe(false);
+      expect(isRecordedSecretExpression(expr)).toBe(false);
+    });
+  });
+
   // Call VOLUME rose with the per-resolver cache (one lookup per stack, not per
   // process) and with the refusal to cache an unclassifiable ssm `Type` (one per
   // OCCURRENCE, so the next pass re-asks). Both make a bare `send` a worse deal

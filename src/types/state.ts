@@ -755,6 +755,32 @@ export interface ResourceState {
    * (`refusedBaselineRemedy`, issue #3465).
    */
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution' | undefined;
+
+  /**
+   * The CREATE-ONLY silent drops in `properties` that the SDK route was told to
+   * drop (`--prefer-sdk-route`) when this record was written, and so never sent
+   * to AWS (issue [#2790](https://github.com/go-to-k/cdkd/issues/2790)).
+   * Optional, no schema bump.
+   *
+   * It is EVIDENCE, and only evidence licenses the #2790 rule: a deploy that no
+   * longer accepts the drop reads such a key as an addition, which is a
+   * replacement it refuses unless opted into. Without it the key is presumed
+   * to be in AWS — a `cdkd import` record holds the template's full bag with
+   * `provisionedBy: 'sdk'`, a pre-v7 record may have been created by Cloud
+   * Control, and an older binary wrote no marker — so ABSENT (or malformed,
+   * read through {@link acceptedCreateOnlyDropsOf}) keeps the pre-#2790
+   * behaviour.
+   *
+   * Writers: an SDK-route CREATE or REPLACEMENT records every create-only drop
+   * it kept; an SDK-route IN-PLACE update carries the previous record's
+   * entries that are still in `properties` (an in-place update cannot set a
+   * create-only key, so it adds no evidence); a Cloud Control write clears it,
+   * since Cloud Control sends the full bag. A writer that spreads an existing
+   * record (an attribute-only refresh, a heal, `cdkd drift`, orphan adoption)
+   * carries it. Entries are property NAMES from the schema snapshot, never
+   * values.
+   */
+  acceptedCreateOnlyDrops?: string[] | undefined;
 }
 
 /**
@@ -1026,6 +1052,18 @@ export function importableOutputKeys(state: Pick<StackState, 'outputs' | 'export
   return state.exportNames.filter(
     (name) => typeof name === 'string' && Object.hasOwn(outputs, name)
   );
+}
+
+/**
+ * The record's {@link ResourceState.acceptedCreateOnlyDrops} as a set. A
+ * missing field, a non-array, or a non-string entry is NO evidence: the field
+ * licenses a refusal, so an unreadable one must not.
+ */
+export function acceptedCreateOnlyDropsOf(record: unknown): ReadonlySet<string> {
+  if (record === null || typeof record !== 'object') return new Set();
+  const value = (record as { acceptedCreateOnlyDrops?: unknown }).acceptedCreateOnlyDrops;
+  if (!Array.isArray(value)) return new Set();
+  return new Set(value.filter((entry): entry is string => typeof entry === 'string'));
 }
 
 /**

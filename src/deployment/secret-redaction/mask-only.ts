@@ -53,34 +53,79 @@ import { MIN_NEEDLE_LENGTH } from './rules.js';
  * Process-wide is therefore CHOSEN here rather than inherited, and the choice
  * is what makes a stale verdict correctable: a resolver whose fresh
  * `GetParameter` reports a public `Type` RETRACTS the entry
- * ({@link forgetSecretExpression}) for every later reader, which a per-region
- * store would scope away. It is still not strictly sound across regions or
- * accounts in one run — the same expression can name a `SecureString` in one
- * region and a plain `String` in another — but note which way the imprecision
- * points in EACH direction now that the two stores can disagree. An entry only
- * ever GRANTS "persist the source leaf verbatim", so a verdict inherited from
- * another region can at worst store a public reference as an expression (a
- * spurious UPDATE, issue #1901's class), never a secret as plaintext. And the
- * opposite move — another region RETRACTING a verdict this stack still needs —
- * cannot un-redact anything either, because each of the resolver's own cache
- * entries carries the verdict that produced it and re-records on a hit without
- * consulting this set.
+ * ({@link pinScopedSecretVerdict}) for every later reader of THIS set. It is
+ * still not strictly sound across regions or accounts in one run — the same
+ * expression can name a `SecureString` in one region and a plain `String` in
+ * another — but note which way the imprecision points in EACH direction now
+ * that the two stores can disagree. An entry only ever GRANTS "persist the
+ * source leaf verbatim", so a verdict inherited from another region can at
+ * worst store a public reference as an expression (a spurious UPDATE, issue
+ * #1901's class), never a secret as plaintext. And the opposite move — another
+ * region RETRACTING a verdict this stack still needs — cannot un-redact
+ * anything either, because each of the resolver's own cache entries carries the
+ * verdict that produced it and re-records on a hit without consulting this set.
+ *
+ * The RESOLVER does not read this set (issue
+ * [#4105](https://github.com/go-to-k/cdkd/issues/4105)). Its skip arm asks
+ * {@link isScopedSecretVerdict} for its OWN scope instead, because there a
+ * foreign region's `SecureString` verdict skipped the lookup and left a public
+ * `String` token unresolved on every diff. The scoped half is written beside
+ * this set by the same call and is never retracted by another scope, so a
+ * stack keeps its own verdict whatever another region last said.
  */
 export const recordedSecretExpressions = new Set<string>();
 
-/** Remember that `expression` resolves to a secret. Called by the resolver. */
+/**
+ * expression -> the SCOPES that pinned a definitive SECRET verdict for it
+ * (issue #4105). Written only beside {@link recordedSecretExpressions}, by
+ * {@link pinScopedSecretVerdict}.
+ */
+const secretVerdictScopes = new Map<string, Set<string>>();
+
+/** Remember that `expression` resolves to a secret, with no scope. */
 export function recordSecretExpression(expression: string): void {
   recordedSecretExpressions.add(expression);
 }
 
 /**
- * Forget a previously recorded expression — the resolver's `SecureString`
- * verdict going the other way (an ssm parameter that turns out to be a plain
- * `String` / `StringList`, i.e. public config that must stay RESOLVED in
- * state).
+ * Forget a previously recorded expression, in every scope — the resolver's
+ * `SecureString` verdict going the other way (an ssm parameter that turns out
+ * to be a plain `String` / `StringList`, i.e. public config that must stay
+ * RESOLVED in state). The resolver itself retracts through
+ * {@link pinScopedSecretVerdict}, which keeps other scopes' entries.
  */
 export function forgetSecretExpression(expression: string): void {
   recordedSecretExpressions.delete(expression);
+  secretVerdictScopes.delete(expression);
+}
+
+/**
+ * Pin `scope`'s DEFINITIVE verdict on `expression` (issue #4105). `scope`
+ * names where the answer was read — the resolver's region and credential
+ * identity — and is opaque here.
+ *
+ * The process-wide set takes the verdict exactly as before the scope existed:
+ * added on secret, deleted on public, whichever scope last answered. The
+ * scoped half changes only `scope`'s own entry.
+ */
+export function pinScopedSecretVerdict(scope: string, expression: string, secret: boolean): void {
+  const scopes = secretVerdictScopes.get(expression);
+  if (secret) {
+    if (scopes) scopes.add(scope);
+    else secretVerdictScopes.set(expression, new Set([scope]));
+    recordedSecretExpressions.add(expression);
+    return;
+  }
+  if (scopes?.delete(scope) && scopes.size === 0) secretVerdictScopes.delete(expression);
+  recordedSecretExpressions.delete(expression);
+}
+
+/**
+ * Has `scope` ITSELF pinned `expression` as secret? False for a verdict another
+ * scope pinned, and for an unscoped {@link recordSecretExpression} entry.
+ */
+export function isScopedSecretVerdict(scope: string, expression: string): boolean {
+  return secretVerdictScopes.get(expression)?.has(scope) === true;
 }
 
 /** Has `expression` been PROVEN to resolve to a secret this process? */
@@ -91,6 +136,7 @@ export function isRecordedSecretExpression(expression: string): boolean {
 /** Drop every remembered verdict. Paired with the resolver's cache reset. */
 export function clearRecordedSecretExpressions(): void {
   recordedSecretExpressions.clear();
+  secretVerdictScopes.clear();
 }
 
 /**
@@ -597,8 +643,8 @@ export function isKnownSecretExpression(
  * bounded to a spurious UPDATE (#1901's class) and can never be a plaintext:
  * the answer persisted is still an EXPRESSION, and the presence test beside
  * this one at the seam still requires the pass to have resolved it to a real
- * needle. Closing it means keying the verdict store by region, which is a
- * change to a store this function only reads.
+ * needle. Closing it means a scope-aware read here; the resolver's own read is
+ * scoped since issue #4105, but this reader has no resolver and so no scope.
  */
 export function isSecretExpressionByVerdictOrSpelling(expression: string): boolean {
   return (
