@@ -248,6 +248,9 @@ describe('cdkd drift --revert on an unrevertable WarmThroughput (issue #1768)', 
       { resources: Record<string, ResourceState> },
     ];
     const saved = savedState.resources['Table1']!;
+    // The write is for the identity the update returned, not a baseline.
+    expect(saved.physicalId).toBe(TABLE_NAME);
+    expect(saved.attributes?.['Arn']).toBe(TABLE_ARN);
     expect(saved.observedProperties).toEqual(resource.observedProperties);
     expect(saved.properties).toEqual(resource.properties);
   });

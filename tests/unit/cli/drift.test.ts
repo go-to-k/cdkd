@@ -3483,6 +3483,204 @@ describe('cdkd drift', () => {
         expect(savedState.resources['Bucket1']!.attributes).toEqual({ BucketName: '***' });
       });
 
+      const maskedTagBucket = (attributes: Record<string, unknown>) =>
+        makeState({
+          Bucket1: makeResource({
+            physicalId: 'phys-b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {
+              VersioningConfiguration: { Status: 'Enabled' },
+              Tags: [{ Key: 'Owner', Value: '***' }],
+            },
+            observedProperties: {
+              VersioningConfiguration: { Status: 'Enabled' },
+              Tags: [{ Key: 'Owner', Value: '***' }],
+            },
+            attributes,
+          }),
+        });
+      const liveWithNeedle = async () => ({
+        VersioningConfiguration: { Status: 'Suspended' },
+        Tags: [{ Key: 'Owner', Value: 'shared-name-value' }],
+      });
+
+      it('masks a NoEcho-declared attribute even when the record holds it in the clear', async () => {
+        // The keep must not undo a real `NoEcho` mask: a deploy would store
+        // `***` there, so a legacy clear record is healed, not preserved.
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(maskedTagBucket({ Token: 'clear-legacy-token' }));
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: liveWithNeedle,
+          update: async () => ({
+            physicalId: 'phys-b',
+            wasReplaced: false,
+            attributes: { Token: 'clear-legacy-token' },
+            noEchoAttributeNames: ['Token'],
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Bucket1']!.attributes).toEqual({ Token: '***' });
+      });
+
+      it('masks every attribute under a whole-bag NoEcho declaration over a clear record', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(maskedTagBucket({ Token: 'clear-legacy-token' }));
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: liveWithNeedle,
+          update: async () => ({
+            physicalId: 'phys-b',
+            wasReplaced: false,
+            attributes: { Token: 'clear-legacy-token' },
+            noEchoAttributes: true,
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Bucket1']!.attributes).toEqual({ Token: '***' });
+      });
+
+      it('still keeps an UNDECLARED attribute beside a NoEcho-declared one', async () => {
+        // The other polarity: only the declared name is excluded from the keep.
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          maskedTagBucket({ Token: '***', BucketName: 'shared-name-value' })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: liveWithNeedle,
+          update: async () => ({
+            physicalId: 'phys-b',
+            wasReplaced: false,
+            attributes: { Token: 'fresh-token', BucketName: 'shared-name-value' },
+            noEchoAttributeNames: ['Token'],
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        // Token re-masks to the same `***`, BucketName keeps its clear value:
+        // nothing differs from the record, so nothing is written.
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      it('writes nothing when the answer differs from the record only in key order', async () => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        // Wholesale (`wasReplaced`) so the answer's own key order reaches the
+        // comparison, and a nested value carrying the over-broad needle so
+        // the keep's comparison sees a reordered object too.
+        mockGetState.mockResolvedValueOnce(
+          maskedTagBucket({
+            Arn: 'arn:aws:s3:::b',
+            Cfg: { Owner: 'shared-name-value', Mode: 'x' },
+          })
+        );
+        const updateMock = vi.fn(async () => ({
+          physicalId: 'phys-b',
+          wasReplaced: true,
+          attributes: {
+            Cfg: { Mode: 'x', Owner: 'shared-name-value' },
+            Arn: 'arn:aws:s3:::b',
+            Gone: undefined,
+          },
+        }));
+        mockRegistryGetProvider.mockReturnValue({ readCurrentState: liveWithNeedle, update: updateMock });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(updateMock).toHaveBeenCalledTimes(1);
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      it('keeps the recorded physical id when an in-place answer names another', async () => {
+        // Only a `wasReplaced` answer moves the id; an in-place one never does.
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(ingressState({ Id: 'sgr-old' }));
+        mockRegistryGetProvider.mockReturnValue({
+          ...driftedIngress,
+          update: async () => ({
+            physicalId: 'sg-2|tcp|443|443|10.0.0.0/8',
+            wasReplaced: false,
+            attributes: { Id: 'sgr-new' },
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Ingress1']!.physicalId).toBe('sg-1|tcp|443|443|10.0.0.0/8');
+        expect(savedState.resources['Ingress1']!.attributes).toEqual({ Id: 'sgr-new' });
+      });
+
+      it('records nothing and warns nothing when the provider answers undefined', async () => {
+        infoSpy.mockClear();
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(ingressState({ Id: 'sgr-old' }));
+        const updateMock = vi.fn(async () => undefined);
+        mockRegistryGetProvider.mockReturnValue({ ...driftedIngress, update: updateMock });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        expect(updateMock).toHaveBeenCalledTimes(1);
+        expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('1 reverted');
+        expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('could not be recorded');
+        expect(mockSaveState).not.toHaveBeenCalled();
+      });
+
+      it('does not mask an attribute that echoes the resource\'s own input under NoEcho', async () => {
+        // `recordNoEchoAttributeValues` excludes the resource's own resolved
+        // property leaves, so a handler echoing its input into a NoEcho bag
+        // does not mask cdkd's own value back at it (go-to-k/cdkd#3938).
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Bucket1: makeResource({
+              physicalId: 'phys-b',
+              resourceType: 'AWS::S3::Bucket',
+              properties: {
+                BucketName: 'own-input-name',
+                VersioningConfiguration: { Status: 'Enabled' },
+              },
+              observedProperties: {
+                BucketName: 'own-input-name',
+                VersioningConfiguration: { Status: 'Enabled' },
+              },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({
+            BucketName: 'own-input-name',
+            VersioningConfiguration: { Status: 'Suspended' },
+          }),
+          update: async () => ({
+            physicalId: 'phys-b',
+            wasReplaced: false,
+            attributes: { Echo: 'own-input-name', Token: 'handler-only-secret' },
+            noEchoAttributes: true,
+          }),
+        });
+
+        const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+        expect(error).toBeUndefined();
+        const [, , savedState] = mockSaveState.mock.calls[0]!;
+        expect(savedState.resources['Bucket1']!.attributes).toEqual({
+          Echo: 'own-input-name',
+          Token: '***',
+        });
+      });
+
       it('warns and keeps the revert counted when the identity cannot be built', async () => {
         infoSpy.mockClear();
         mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);

@@ -6005,18 +6005,33 @@ function deepEqualUnordered(a: unknown, b: unknown): boolean {
 function keepRecordedAttributesOverMask(
   redacted: Record<string, unknown>,
   plaintext: Record<string, unknown>,
-  recorded: Record<string, unknown> | undefined
+  recorded: Record<string, unknown> | undefined,
+  noEchoDeclared: true | Set<string> | undefined
 ): Record<string, unknown> {
-  if (recorded === undefined) return redacted;
+  // A key the provider DECLARED `NoEcho` is masked on purpose, as a deploy
+  // would mask it, even where an older record holds it in the clear.
+  if (recorded === undefined || noEchoDeclared === true) return redacted;
   const out: Record<string, unknown> = { ...redacted };
   for (const key of Object.keys(redacted)) {
+    if (noEchoDeclared?.has(key)) continue;
     if (!hasOwnKey(recorded, key) || !carriesSecretMask(redacted[key])) continue;
     if (carriesSecretMask(recorded[key])) continue;
-    if (JSON.stringify(plaintext[key]) === JSON.stringify(recorded[key])) {
+    if (sameRecordedJson(plaintext[key], recorded[key])) {
       defineOwnKey(out, key, recorded[key]);
     }
   }
   return out;
+}
+
+/**
+ * Equality between a value about to be persisted and the one `state.json`
+ * holds: the candidate goes through the JSON round-trip the write applies
+ * (an `undefined` member is dropped), then compares ignoring key order.
+ */
+function sameRecordedJson(candidate: unknown, recorded: unknown): boolean {
+  const persisted: unknown =
+    candidate === undefined ? undefined : JSON.parse(JSON.stringify(candidate));
+  return deepEqualUnordered(persisted, recorded);
 }
 
 /**
@@ -6906,7 +6921,11 @@ async function runRevert(
                 // redaction below, as the deploy engine and the rollback
                 // replay register it, or a custom resource's masked `Data`
                 // lands in `state.json` in the clear.
-                recordNoEchoAttributeValues(updateResult, secrets, newProperties);
+                const noEchoDeclared = recordNoEchoAttributeValues(
+                  updateResult,
+                  secrets,
+                  newProperties
+                );
                 const next = recordAfterRollbackUpdate(stateResource, updateResult);
                 // The attributes alone are scrubbed, by value, with the
                 // revert's resolved secrets — `scrubResourceRecord`'s
@@ -6918,11 +6937,12 @@ async function runRevert(
                     : keepRecordedAttributesOverMask(
                         redactSecretsForState(next.attributes, secrets),
                         next.attributes,
-                        stateResource.attributes
+                        stateResource.attributes,
+                        noEchoDeclared
                       );
                 if (
                   next.physicalId !== stateResource.physicalId ||
-                  JSON.stringify(attributes) !== JSON.stringify(stateResource.attributes)
+                  !sameRecordedJson(attributes, stateResource.attributes)
                 ) {
                   reRecordedByLogicalId.set(outcome.logicalId, {
                     physicalId: next.physicalId,
@@ -7079,8 +7099,10 @@ async function runRevert(
           // convergence step, so a failure must not abort the command — under
           // `--all` a throw here would skip every later stack's revert entirely,
           // which is a regression against the pre-#1644 behavior of not writing
-          // at all. The cost of the warn path is only that the narrowing
-          // re-surfaces on the next `cdkd drift`, i.e. exactly the pre-fix state.
+          // at all. The warn path costs two things: a narrowing re-surfaces on
+          // the next `cdkd drift` (the pre-#1644 state), and a returned identity
+          // (go-to-k/cdkd#4476) is lost, which a re-run cannot repair because
+          // the revert landed — the warning below says both.
           try {
             await stateBackend.saveState(report.stackName, report.region, newState, saveOptions);
             logger.info(

@@ -171,11 +171,30 @@ ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
 echo "[verify] step 5b: the record's ingress Id follows the re-created rule"
 INGRESS_REC="$(ingress_record)"
 read -r _ RECORDED_INGRESS_ID <<<"${INGRESS_REC}"
-LIVE_INGRESS_ID="$(live_ingress_ids "${INGRESS_SG}")"
-if [ -z "${LIVE_INGRESS_ID}" ] || [ "${LIVE_INGRESS_ID}" = "${OLD_INGRESS_ID}" ]; then
-  echo "[verify] FAIL: step 5b: expected the revert to re-create the rule under a new id (old '${OLD_INGRESS_ID}', live '${LIVE_INGRESS_ID}')"
-  exit 1
-fi
+# EC2 reads lag a revoke + re-authorize: right after the revert the rule list
+# can be empty, or still carry the old rule beside the new one. Poll until it
+# holds exactly one rule that is not the old one.
+wait_new_ingress_id() { # $1 = group id, $2 = old rule id -> the one new rule id
+  local ids="" n i
+  for i in $(seq 1 12); do
+    ids="$(live_ingress_ids "$1")" || return 1
+    n=$(printf '%s\n' ${ids} | grep -c . || true)
+    if [ "${n}" = 1 ] && [ "${ids}" != "$2" ]; then
+      printf '%s\n' "${ids}"
+      return 0
+    fi
+    sleep 5
+  done
+  if [ -z "${ids}" ]; then
+    echo "[verify] FAIL: step 5b: no live port-8443 ingress rule on $1 after the revert" >&2
+  elif [ "${n}" -gt 1 ]; then
+    echo "[verify] FAIL: step 5b: ${n} live port-8443 ingress rules on $1 after the revert (${ids}); expected the old one revoked" >&2
+  else
+    echo "[verify] FAIL: step 5b: expected the revert to re-create the rule under a new id; the live rule is still '$2'" >&2
+  fi
+  return 1
+}
+LIVE_INGRESS_ID="$(wait_new_ingress_id "${INGRESS_SG}" "${OLD_INGRESS_ID}")"
 if [ "${RECORDED_INGRESS_ID}" != "${LIVE_INGRESS_ID}" ]; then
   echo "[verify] FAIL: step 5b: the record names '${RECORDED_INGRESS_ID}', the live rule is '${LIVE_INGRESS_ID}' (#4476)"
   exit 1

@@ -919,8 +919,7 @@ provider may re-create the resource to revert it — an
 `sgr-` id — and the record then names the new resource, which a later
 `Fn::GetAtt` and `cdkd export` read. Attributes are replaced wholesale when the update
 replaced the resource and merged key by key when it updated in place. A
-`NoEcho` attribute is stored as `***`, unless the record already holds that
-same value in the clear.
+`NoEcho` attribute is stored as `***`.
 
 #### A revert does not rename an IAM Role or ManagedPolicy
 
