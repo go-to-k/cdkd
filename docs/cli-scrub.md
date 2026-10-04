@@ -502,7 +502,7 @@ cannot rewrite. Five shapes qualify, and all five are also reported in words:
   it gets only the `keeping placeholder` warning. No `ABANDONED` line is
   printed, `--fail` does not count it, and the stack can still print
   `No plaintext secrets found`. A parameter that
-  has a `Default` is bound even when another parameter of the stack has none.
+  has a non-empty `Default` is bound even when another parameter of the stack has none.
 
 - a **cross-stack read name holding a secret's value from before a
   rotation**: `N cross-stack read name(s) in <stack> hold a plaintext scrub
@@ -578,6 +578,18 @@ pre-pass walks `Fn::If` the way the resolver does, selected branch only.
 Neither does an `Fn::ImportValue` inside an output that this run's conditions
 SUPPRESS — such an output wrote no state key, so there is nothing behind it to
 protect.
+
+### A reference built from a parameter
+
+A parameter is resolved from today's template: its `Default`, or for an
+SSM-typed parameter the value Parameter Store holds now. If the deploy used a
+different value (`--parameters`, an older `Default`, or an SSM value that has
+since changed), scrub looks up a DIFFERENT reference than the deploy resolved
+and cannot tell: the plaintext the deploy wrote can stay in state while the
+stack prints clean. This holds for any reference built from a parameter, in the
+stack's own region too. There is no flag for it: for a stack deployed with
+non-default parameters, inspect the record with `cdkd state show` rather than
+trusting a clean result.
 
 ### Which `Fn::If` branch scrub selects
 
@@ -688,10 +700,8 @@ reference is never looked up and the only sign is the `keeping placeholder`
 warning. Run
 `cdkd scrub --verbose` when a stack you expect findings from reports clean.
 
-A defaulted parameter is resolved with its `Default`. If the deploy overrode
-it, scrub looks up a DIFFERENT reference than the one the deploy resolved and
-cannot tell: the plaintext the deploy wrote can stay in state while the stack
-prints clean.
+A reference built from a parameter has the limit described in
+[A reference built from a parameter](#a-reference-built-from-a-parameter).
 
 ### A read cdkd declines by design is a finding, not a refusal
 
