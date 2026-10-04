@@ -2796,7 +2796,11 @@ of the confirmation flags.
   An op skipped with a warning (e.g. a resource whose physical id changed
   after a later fix-forward attempt, or an unrecoverable DELETE) would be
   skipped again by a re-run, so its segment is cleared and the skip is
-  recorded as a `ROLLBACK_RESOURCE_SKIPPED` event (`cdkd events`).
+  recorded as a `ROLLBACK_RESOURCE_SKIPPED` event (`cdkd events`). A
+  reverted op that left a resource cdkd no longer tracks (a new copy retained
+  by `UpdateReplacePolicy: Retain`, or one whose delete failed) exits `2` too;
+  its `ROLLBACK_RESOURCE_SUCCEEDED` event carries the survivor's id and a
+  `reason`.
 - Use `--orphan <logicalId>` (repeatable) to leave a specific resource alone
   during the revert (mirrors `cdk rollback --orphan`).
 - **Secret dynamic references need live access at rollback time.** A resource

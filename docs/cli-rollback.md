@@ -322,7 +322,7 @@ almost certainly not what you want exported; roll back or re-deploy first.
 | --- | --- |
 | `0` | Fully clean. The journal is deleted. |
 | `1` | Hard error: no journal for the named stack, several journaled stacks and no stack argument, the lock held by another run, a journal written by a newer cdkd, credentials, and so on. |
-| `2` | Partial: one or more operations failed, or the run was interrupted, and the journal is kept so you can re-run; or an operation was skipped with a warning, which a re-run would skip again, so its segment is cleared and the skip is recorded as a `ROLLBACK_RESOURCE_SKIPPED` event (`cdkd events`). |
+| `2` | Partial: one or more operations failed, or the run was interrupted, and the journal is kept so you can re-run; or an operation was skipped with a warning, which a re-run would skip again, so its segment is cleared and the skip is recorded as a `ROLLBACK_RESOURCE_SKIPPED` event (`cdkd events`); or an operation was reverted but left a resource cdkd no longer tracks (a new copy retained by `UpdateReplacePolicy: Retain`, or one whose delete failed), recorded as a `ROLLBACK_RESOURCE_SUCCEEDED` event carrying a `reason`. |
 
 A bare `cdkd rollback` on an account where **no** stack has a journal is not an
 error: it prints "nothing to roll back" and exits `0`. Declining the confirmation

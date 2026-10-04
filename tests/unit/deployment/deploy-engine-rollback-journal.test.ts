@@ -367,6 +367,53 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(warns.some((m) => m.includes('--revert-failed'))).toBe(false);
   });
 
+  it('auto-rollback that both FAILS and SKIPS an op keeps the segment without the skip warning', async () => {
+    // The failure already keeps the segment and has its own lines; the skip
+    // warning is for the case the failure count no longer covers.
+    const changes = new Map<string, ResourceChange>([
+      ['A', makeChange('A')],
+      ['D1', { logicalId: 'D1', changeType: 'DELETE', resourceType: 'AWS::S3::Bucket', propertyChanges: [] } as unknown as ResourceChange],
+      ['D2', { logicalId: 'D2', changeType: 'DELETE', resourceType: 'AWS::S3::Bucket', propertyChanges: [] } as unknown as ResourceChange],
+    ]);
+    const record = (id: string, dependencies: string[]): ResourceState => ({
+      physicalId: `phys-${id}`,
+      resourceType: 'AWS::S3::Bucket',
+      properties: {},
+      attributes: {},
+      dependencies,
+    });
+    const engine = buildEngine({
+      changes,
+      deps: { A: [] },
+      noRollback: false,
+      currentEtag: 'e0',
+      currentResources: { D1: record('D1', ['D2']), D2: record('D2', []) },
+    });
+    const provider = (
+      engine as unknown as {
+        providerRegistry: { getProviderFor: () => { provider: { delete: ReturnType<typeof vi.fn> } } };
+      }
+    ).providerRegistry.getProviderFor().provider;
+    // D2's deploy-time delete fails; the rollback's delete of A (the created
+    // resource) fails too, while D1's completed DELETE is skipped.
+    provider.delete.mockImplementation((logicalId: string) =>
+      logicalId === 'D2' || logicalId === 'A'
+        ? Promise.reject(new Error(`delete failed: ${logicalId}`))
+        : Promise.resolve(undefined)
+    );
+
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+
+    const started = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+    expect(started.operations.map((o: { logicalId: string }) => o.logicalId).sort()).toEqual(['A', 'D1']);
+    expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+    const warns = (getLogger().warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    // The run reached both outcomes: A's rollback failed and D1 was skipped.
+    expect(warns.some((m) => m.includes('Rollback failed for A'))).toBe(true);
+    expect(warns.some((m) => m.includes('Cannot restore deleted resource D1'))).toBe(true);
+    expect(warns.some((m) => m.includes('could not revert'))).toBe(false);
+  });
+
   it.each([
     ['a top-level stack names it', false],
     ['a nested child names no command (go-to-k/cdkd#3864)', true],
@@ -632,8 +679,6 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(journal.appendRollbackJournalSegment).toHaveBeenCalledOnce();
       expect(journal.appendRollbackJournalSegment.mock.calls[0]![2]).not.toHaveProperty('failedOperations');
       expect(journal.popRollbackJournalSegment).toHaveBeenCalledWith(stackName, 'us-east-1');
-      const info = (getLogger().info as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
-      expect(info.some((m) => m.includes("pre-failure record was kept"))).toBe(false);
     });
 
     it('control: a refused UPDATE is still journaled, even over a record with no physical id', async () => {

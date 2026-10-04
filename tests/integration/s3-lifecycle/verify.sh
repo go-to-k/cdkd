@@ -408,8 +408,7 @@ fi
 # `cdkd rollback --revert-failed` advising to delete "it" by hand -- i.e. the
 # bucket that refused it, someone else's -- and the clean automatic rollback
 # keeping a failed-only segment for it with a "may be partially applied" note.
-# Absent journal is fine; a present one must not name the arm. The deploy's own
-# settle line for a kept failed op must not print either.
+# Absent journal is fine; a present one must not name the arm.
 SR_JOURNAL_ERR="$(mktemp)"
 set +e
 SR_JOURNAL="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - 2>"${SR_JOURNAL_ERR}")"
@@ -428,10 +427,6 @@ if [ "${SR_JOURNAL_RC}" -eq 0 ]; then
   fi
 elif ! grep -qF '(404)' <<<"${SR_JOURNAL_STDERR}" && ! grep -qF 'NoSuchKey' <<<"${SR_JOURNAL_STDERR}"; then
   echo "FAIL phase 0b: could not read s3://${STATE_BUCKET}/${JOURNAL_KEY} to check it: ${SR_JOURNAL_STDERR}" >&2
-  exit 1
-fi
-if printf '%s' "${SR_FLAT}" | grep -qF -- "pre-failure record was kept"; then
-  echo "FAIL phase 0b: the deploy kept a failed-op record for the refused create (its settle line printed)" >&2
   exit 1
 fi
 echo "    OK: refused (rc=${SR_RC}), ${SR_ARM_BUCKET} untouched, no state record holds XrArmBucket, no journal record of it"

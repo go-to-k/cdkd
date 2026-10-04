@@ -51,12 +51,14 @@ function res(overrides: Partial<ResourceState> = {}): ResourceState {
 function makeCtx(provider: Record<string, unknown> = {}): {
   ctx: RollbackExecutorContext;
   events: Recorded[];
+  warns: string[];
 } {
   const events: Recorded[] = [];
+  const warns: string[] = [];
   const logger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: vi.fn((m: string) => warns.push(m)),
     error: vi.fn(),
     setLevel: vi.fn(),
     child: () => logger,
@@ -71,6 +73,7 @@ function makeCtx(provider: Record<string, unknown> = {}): {
       recordEvent: (e) => events.push(e),
     },
     events,
+    warns,
   };
 }
 
@@ -163,7 +166,7 @@ describe('replayRollback records a ROLLBACK_RESOURCE_SKIPPED event per declined 
 
   it('revert whose recorded previous state has no properties bag (issue #3203)', async () => {
     const update = vi.fn();
-    const { ctx, events } = makeCtx({ update });
+    const { ctx, events, warns } = makeCtx({ update });
     const op: CompletedOperation = {
       logicalId: 'U',
       changeType: 'UPDATE',
@@ -176,12 +179,14 @@ describe('replayRollback records a ROLLBACK_RESOURCE_SKIPPED event per declined 
     expect(update).not.toHaveBeenCalled();
     expect(result).toMatchObject({ failures: 0, warnings: 1, skipped: 1 });
     expectOneSkip(events, 'U', 'UPDATE', 'no `properties` bag');
+    // The arm's own consequence: a re-classification to another arm reds.
+    expect(warns.join('\n')).toContain('a patch provider removes every property');
   });
 
   it('reverse-replacement whose recorded previous state has no properties bag (issue #3203)', async () => {
     const create = vi.fn();
     const del = vi.fn();
-    const { ctx, events } = makeCtx({ create, delete: del });
+    const { ctx, events, warns } = makeCtx({ create, delete: del });
     const op: CompletedOperation = {
       logicalId: 'R',
       changeType: 'UPDATE',
@@ -195,6 +200,8 @@ describe('replayRollback records a ROLLBACK_RESOURCE_SKIPPED event per declined 
     expect(del).not.toHaveBeenCalled();
     expect(result).toMatchObject({ failures: 0, warnings: 1, skipped: 1 });
     expectOneSkip(events, 'R', 'UPDATE', 'no `properties` bag');
+    // The arm's own consequence: a re-classification to another arm reds.
+    expect(warns.join('\n')).toContain('create a default-configured resource and then delete the live one');
   });
 
   it('delete of a rolled-back CREATE that recorded no physical id', async () => {
@@ -308,7 +315,7 @@ describe('replayFailedOperations records a ROLLBACK_RESOURCE_SKIPPED event per d
 
   it('revert-failed-update whose recorded previous state has no properties bag (issue #3203)', async () => {
     const update = vi.fn();
-    const { ctx, events } = makeCtx({ update });
+    const { ctx, events, warns } = makeCtx({ update });
     const op: FailedOperation = {
       logicalId: 'F',
       changeType: 'UPDATE',
@@ -321,6 +328,8 @@ describe('replayFailedOperations records a ROLLBACK_RESOURCE_SKIPPED event per d
     expect(update).not.toHaveBeenCalled();
     expect(result).toMatchObject({ failures: 0, warnings: 1, skipped: 1 });
     expectOneSkip(events, 'F', 'UPDATE', 'no `properties` bag');
+    // The arm's own remedy: a re-classification to another arm reds.
+    expect(warns.join('\n')).toContain('this op died mid-flight');
   });
 
   it('control: a failed op with nothing to revert is neither a warning nor a skip', async () => {

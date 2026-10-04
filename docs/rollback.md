@@ -99,7 +99,8 @@ left running and untracked.
 Exit codes: `0` = fully clean
 (journal deleted), `2` = partial (some ops failed — the journal is kept so
 you can re-run — or were skipped, each recorded as a
-`ROLLBACK_RESOURCE_SKIPPED` event), `1` = hard error. See
+`ROLLBACK_RESOURCE_SKIPPED` event, or left an untracked new copy behind,
+recorded on its `ROLLBACK_RESOURCE_SUCCEEDED` event's `reason`), `1` = hard error. See
 [`cdkd rollback`](cli-rollback.md) for the
 full reference and known limitations (a DELETE that already happened
 cannot be restored).
