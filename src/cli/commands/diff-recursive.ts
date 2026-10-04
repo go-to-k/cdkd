@@ -23,6 +23,7 @@ import type {
 } from '../../types/state.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
+  acceptedCreateOnlyDropsOf,
   hasReadableExportSet,
   importableOutputKeys,
   isReadableBag,
@@ -79,7 +80,10 @@ import {
   rewriteTemplateAssetReferences,
   type AssetRedirectMap,
 } from '../../assets/asset-redirect.js';
-import { findActionableSilentDrops } from '../../provisioning/property-coverage.js';
+import {
+  findActionableSilentDrops,
+  unwrittenCreateOnlyReplacement,
+} from '../../provisioning/property-coverage.js';
 import { wouldReturnToSdkProvider } from '../../provisioning/provider-registry.js';
 import {
   prefetchCreateOnlyPropertyPaths,
@@ -356,6 +360,70 @@ function nestedStackTypeChangeReason(tc: NestedStackTypeChange): string {
     `${NESTED_STACK_RESOURCE_TYPE} (issue #2668); give the new resource a different logical ` +
     `id, or remove it in one deploy and add its replacement in the next.`
   );
+}
+
+/**
+ * One warning per row `cdkd deploy` refuses with
+ * `CREATE_ONLY_DROP_NEEDS_REPLACEMENT` (issue #2790), decided by
+ * `unwrittenCreateOnlyReplacement` — the engine's own predicate — with the
+ * flag-less allow set this preview stands for. Ids and types are template- or
+ * state-chosen, so each takes `displayIdent`; the property names come from the
+ * record's evidence field, so they do too. Exported for its unit test.
+ */
+export function findUnwrittenCreateOnlyRefusals(
+  changes: ReadonlyMap<string, ResourceChange>,
+  stateResources: Record<string, ResourceState>
+): string[] {
+  const reasons: string[] = [];
+  for (const [logicalId, change] of changes) {
+    if (change.changeType !== 'UPDATE') continue;
+    if (!Object.hasOwn(stateResources, logicalId)) continue;
+    const record = stateResources[logicalId];
+    if (record === undefined || record.provisionedBy === 'cc-api') continue;
+    if (record.resourceType !== change.resourceType) continue;
+    // `requiresReplacement` is read before the engine's ceiling lowering, and
+    // `desired` is the raw template plus each change's new value, so a row the
+    // engine would lower or resolve differently can go unwarned: this
+    // preview under-reports, never over-reports.
+    // No `lostWithParent` gate, unlike the engine: no type a recreated
+    // parent takes with it has a create-only silent drop, so none can carry
+    // evidence (fenced in tests/unit/deployment/accepted-create-only-drops.test.ts).
+    const propertyChanges = change.propertyChanges ?? [];
+    const desired: Record<string, unknown> = { ...(change.desiredProperties ?? {}) };
+    for (const pc of propertyChanges) desired[pc.path] = pc.newValue;
+    const keys = unwrittenCreateOnlyReplacement(
+      change.resourceType,
+      record.properties ?? {},
+      desired,
+      new Set<string>(),
+      acceptedCreateOnlyDropsOf(record),
+      propertyChanges.filter((pc) => pc.requiresReplacement).map((pc) => pc.path)
+    );
+    if (keys.length === 0) continue;
+    // The keep-dropping list the engine's refusal names: the route is per
+    // RESOURCE, so the deploy stays on the SDK provider only with every
+    // route-driving key allow-listed, not just the unwritten ones.
+    const routeDriving = findActionableSilentDrops(
+      change.resourceType,
+      desired,
+      new Set<string>(),
+      record.properties ?? {}
+    ).map(({ property }) => property);
+    const keep = [...new Set([...keys, ...routeDriving])]
+      .sort((a, b) => a.localeCompare(b))
+      .map((property) => displayIdent(`${change.resourceType}:${property}`))
+      .join(',');
+    const one = keys.length === 1;
+    reasons.push(
+      `${displayIdent(logicalId)} (${displayIdent(change.resourceType)}): this previews a ` +
+        `replacement that would apply create-only ${keys.map((k) => displayIdent(k)).join(', ')}, ` +
+        `which the state record holds although the SDK provider never wrote ` +
+        `${one ? 'it' : 'them'}, so AWS does not. A deploy without --prefer-sdk-route ` +
+        `refuses it (CREATE_ONLY_DROP_NEEDS_REPLACEMENT) unless --recreate-via-cc-api or ` +
+        `--replace opts in; a deploy passing --prefer-sdk-route ${keep} changes nothing.`
+    );
+  }
+  return reasons;
 }
 
 /**
@@ -1853,6 +1921,18 @@ export async function computeStackDiff(
   });
   if (nestedStackTypeChanges.length > 0) {
     blocking = [...blocking, ...nestedStackTypeChanges.map(nestedStackTypeChangeReason)];
+  }
+
+  // The deploy's create-only drop refusal (issue #2790), through the SAME
+  // predicate the engine refuses on, over this diff's rows and records. The
+  // diff takes no `--prefer-sdk-route`, so it previews the flag-less deploy:
+  // such a row shows a replacement that deploy refuses. A WARNING, not a
+  // `blocking` reason: blocking means exit 3 ("cdkd deploy would refuse to
+  // start"), but this deploy refuses only without the flag and only when it
+  // reaches the resource, so a stack always deployed WITH the flag would
+  // otherwise exit 3 on every `cdkd diff`.
+  for (const reason of findUnwrittenCreateOnlyRefusals(changes, stateForDiff.resources)) {
+    logger.warn(printing.mask(reason));
   }
 
   // Issue #1921: the Outputs section, resolved through the SAME resolver /

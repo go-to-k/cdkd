@@ -21,6 +21,7 @@ import {
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import {
+  crossStackSourceKey,
   inheritNestedStackParameterAssociations,
   intrinsicLeafResolutionOf,
   recordDerivedMaskOnlyValue,
@@ -35,6 +36,9 @@ import { redactParametersForDiff } from '../../../src/deployment/deploy-engine/m
 import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
+
+/** The association key a parameter span carries (issue #4527). */
+const refKey = (parameter: string): string => crossStackSourceKey({ Ref: parameter })!;
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -267,8 +271,8 @@ describe('nested-stack child: an embedding leaf positioned by the RESOLVER\'s pa
     const record = intrinsicLeafResolutionOf(childBag, leaf);
     expect(record?.output).toBe(resolved['P1']);
     expect(record?.parameterSpans).toEqual([
-      { start: 0, length: 3, parameter: 'User' },
-      { start: 4, length: SHARED.length, parameter: 'A' },
+      { start: 0, length: 3, key: refKey('User') },
+      { start: 4, length: SHARED.length, key: refKey('A') },
     ]);
   });
 
@@ -280,7 +284,7 @@ describe('nested-stack child: an embedding leaf positioned by the RESOLVER\'s pa
     const record = intrinsicLeafResolutionOf(childBag, leaf);
     expect(record?.output).toBe(resolved['P1']);
     expect(record?.parameterSpans).toEqual([
-      { start: 'db-4446-ChildStack-'.length, length: SHARED.length, parameter: 'A' },
+      { start: 'db-4446-ChildStack-'.length, length: SHARED.length, key: refKey('A') },
     ]);
   });
 
@@ -329,7 +333,7 @@ describe('nested-stack child: an embedding leaf positioned by the RESOLVER\'s pa
         output: leaf,
         substitutions: [],
         complete: true,
-        parameterSpans: [{ start: at, length: SHARED.length, parameter: 'A' }],
+        parameterSpans: [{ start: at, length: SHARED.length, key: refKey('A') }],
       });
       const persisted = redactSecretsForState({ P1: leaf }, childBag, { P1: source }) as Record<
         string,
@@ -340,23 +344,23 @@ describe('nested-stack child: an embedding leaf positioned by the RESOLVER\'s pa
 
     it.each([
       ['overlapping spans', [
-        { start: at, length: SHARED.length, parameter: 'A' },
-        { start: at + 1, length: SHARED.length - 1, parameter: 'A' },
+        { start: at, length: SHARED.length, key: refKey('A') },
+        { start: at + 1, length: SHARED.length - 1, key: refKey('A') },
       ]],
       // The clamped slice is not A's plaintext, so it is refused by certification
       // as much as by the bound (stated beside the bound in positions.ts).
-      ['a span past the end (uncertifiable once clamped)', [{ start: at, length: leaf.length, parameter: 'A' }]],
+      ['a span past the end (uncertifiable once clamped)', [{ start: at, length: leaf.length, key: refKey('A') }]],
       ['an empty span', [
-        { start: 0, length: 0, parameter: 'A' },
-        { start: at, length: SHARED.length, parameter: 'A' },
+        { start: 0, length: 0, key: refKey('A') },
+        { start: at, length: SHARED.length, key: refKey('A') },
       ]],
       ['an UNCERTIFIED span overlapping the next', [
-        { start: 0, length: at + 2, parameter: 'User' },
-        { start: at, length: SHARED.length, parameter: 'A' },
+        { start: 0, length: at + 2, key: refKey('User') },
+        { start: at, length: SHARED.length, key: refKey('A') },
       ]],
       ['descending spans', [
-        { start: at, length: SHARED.length, parameter: 'A' },
-        { start: 0, length: 3, parameter: 'User' },
+        { start: at, length: SHARED.length, key: refKey('A') },
+        { start: 0, length: 3, key: refKey('User') },
       ]],
     ])('REFUSES %s (the value scan answers)', (_, parameterSpans) => {
       const childBag = childBagWithSlot();
@@ -385,7 +389,7 @@ describe('nested-stack child: an embedding leaf positioned by the RESOLVER\'s pa
         output: short,
         substitutions: [],
         complete: true,
-        parameterSpans: [{ start: 4, length: SHARED.length + 5, parameter: 'A' }],
+        parameterSpans: [{ start: 4, length: SHARED.length + 5, key: refKey('A') }],
       });
       const persisted = redactSecretsForState({ P1: short }, childBag, { P1: source }) as Record<
         string,
@@ -404,8 +408,8 @@ describe('nested-stack child: an embedding leaf positioned by the RESOLVER\'s pa
         complete: true,
         // `app` is not A's plaintext: A's association refuses that span.
         parameterSpans: [
-          { start: 0, length: 3, parameter: 'A' },
-          { start: at, length: SHARED.length, parameter: 'A' },
+          { start: 0, length: 3, key: refKey('A') },
+          { start: at, length: SHARED.length, key: refKey('A') },
         ],
       });
       const persisted = redactSecretsForState({ P1: leaf }, childBag, { P1: source }) as Record<
@@ -421,7 +425,7 @@ describe('nested-stack child: an embedding leaf positioned by the RESOLVER\'s pa
       const base = { input: leaf, output: leaf, substitutions: [], complete: true };
       recordIntrinsicLeafResolution(childBag, source, {
         ...base,
-        parameterSpans: [{ start: at, length: SHARED.length, parameter: 'A' }],
+        parameterSpans: [{ start: at, length: SHARED.length, key: refKey('A') }],
       });
       recordIntrinsicLeafResolution(childBag, source, base);
       expect(intrinsicLeafResolutionOf(childBag, source)).toBeUndefined();
@@ -433,11 +437,11 @@ describe('nested-stack child: an embedding leaf positioned by the RESOLVER\'s pa
       const base = { input: leaf, output: leaf, substitutions: [], complete: true };
       recordIntrinsicLeafResolution(childBag, source, {
         ...base,
-        parameterSpans: [{ start: at, length: SHARED.length, parameter: 'A' }],
+        parameterSpans: [{ start: at, length: SHARED.length, key: refKey('A') }],
       });
       recordIntrinsicLeafResolution(childBag, source, {
         ...base,
-        parameterSpans: [{ start: at, length: SHARED.length, parameter: 'B' }],
+        parameterSpans: [{ start: at, length: SHARED.length, key: refKey('B') }],
       });
       expect(intrinsicLeafResolutionOf(childBag, source)).toBeUndefined();
       const persisted = redactSecretsForState({ P1: leaf }, childBag, { P1: source }) as Record<

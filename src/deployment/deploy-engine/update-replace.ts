@@ -12,6 +12,7 @@ import {
 } from '../../provisioning/stateful-types.js';
 import type { CloudFormationTemplate, ResourceDeleteResult } from '../../types/resource.js';
 import { type ResourceChange, type ResourceState } from '../../types/state.js';
+import { acceptedCreateOnlyDropsField } from './record-shape.js';
 import { bold, gray, green, yellow } from '../../utils/colors.js';
 import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
@@ -917,14 +918,22 @@ export async function updateByReplacement(
     this.recreatedUnderSameId.add(logicalId);
   }
 
+  const recordedReplacementProperties = this.propertiesToRecord(
+    resolvedProps,
+    createResult,
+    resourceType,
+    replaceDecision.provisionedBy
+  );
   stateResources[logicalId] = {
     physicalId: createResult.physicalId,
     resourceType,
-    properties: this.propertiesToRecord(
-      resolvedProps,
-      createResult,
+    properties: recordedReplacementProperties,
+    // #2790: a new physical resource, so its evidence is rebuilt, never carried.
+    ...acceptedCreateOnlyDropsField(
+      recordedReplacementProperties,
       resourceType,
-      replaceDecision.provisionedBy
+      replaceDecision.provisionedBy,
+      'new-resource'
     ),
     ...(createResult.attributes && { attributes: createResult.attributes }),
     ...(dependencies && dependencies.length > 0 && { dependencies }),

@@ -546,10 +546,13 @@ describe('cdkd state orphan', () => {
       }
     });
 
-    it("describes an owner or operation that is displayIdent's own cut output, which renders unchanged (go-to-k/cdkd#4109)", async () => {
+    it("describes an owner or operation forged as displayIdent's own cut output (go-to-k/cdkd#4109)", async () => {
+      // The pre-go-to-k/cdkd#4002 marker: it rendered unchanged until the
+      // marker carried a digest of the withheld tail, and the whitespace test
+      // refuses it either way.
       const suffix = ' [cut: 35 more characters withheld]';
       const forged = 'a'.repeat(IDENT_MAX_CODE_POINTS) + suffix;
-      expect(displayIdent(forged)).toBe(forged);
+      expect(displayIdent(forged)).not.toBe(forged);
       for (const [field, lock, expected] of [
         [
           'owner',

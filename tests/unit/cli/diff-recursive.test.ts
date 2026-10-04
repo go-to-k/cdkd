@@ -81,6 +81,7 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { cutMarker } from '../../../src/utils/display-safe.js';
 
 const NESTED = 'AWS::CloudFormation::Stack';
 
@@ -4775,7 +4776,7 @@ describe('buildDiffTree over a record with an unreadable entry (issue #3018)', (
     renderDiffTree(node, true, (m) => lines.push(m));
     const preview = lines.join('\n');
     expect(preview).toContain(
-      `could not be read: "Bucket", Queue, ${'L'.repeat(255)} [cut: 4745 more characters withheld].`
+      `could not be read: "Bucket", Queue, ${'L'.repeat(255)} ${cutMarker(4745, 'L'.repeat(4745))}.`
     );
     expect(preview).not.toContain('L'.repeat(256));
   });
@@ -5098,5 +5099,45 @@ describe('buildDiffTree replacement routing and the nested-stack Type-change ref
     const TYPE = 'AWS::SQS::Queue. Fine ';
     const node = await tree({ Resources: { R: { Type: TYPE, Properties: {} } } }, { R: res(NESTED, {}) });
     expect(node.blocking[0]).toContain(`to ${JSON.stringify(TYPE.trim())}. cdkd`);
+  });
+});
+
+/**
+ * go-to-k/cdkd#2790: `cdkd diff` previews the flag-less deploy, so a row the
+ * deploy refuses with `CREATE_ONLY_DROP_NEEDS_REPLACEMENT` is a WARNING, never
+ * a `blocking` reason — blocking means exit 3, and a stack always deployed
+ * with `--prefer-sdk-route` would exit 3 on every diff.
+ */
+describe('the create-only drop refusal preview (go-to-k/cdkd#2790)', () => {
+  const SUBNET = 'AWS::EC2::Subnet';
+  const declared = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', AvailabilityZoneId: 'use1-az1' };
+
+  it('warns about the refused row and leaves blocking empty', async () => {
+    const state = st('S', {
+      MySubnet: {
+        ...res(SUBNET, declared),
+        provisionedBy: 'sdk',
+        acceptedCreateOnlyDrops: ['AvailabilityZoneId'],
+      },
+    });
+    const tmpl: CloudFormationTemplate = {
+      Resources: { MySubnet: { Type: SUBNET, Properties: declared } },
+    };
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    const { changes, blocking } = await computeStackDiff(
+      state,
+      tmpl,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator()
+    );
+
+    const pc = changes.get('MySubnet')!.propertyChanges!;
+    expect(pc.map((c) => [c.path, c.requiresReplacement])).toEqual([['AvailabilityZoneId', true]]);
+    expect(blocking).toEqual([]);
+    const lines = warn.mock.calls.map((call) => String(call[0]));
+    expect(lines.filter((line) => line.includes('CREATE_ONLY_DROP_NEEDS_REPLACEMENT'))).toHaveLength(1);
   });
 });

@@ -94,9 +94,10 @@ describe('renderNameHeldElsewhere never puts a name inside cdkd quotes (go-to-k/
     );
   });
 
-  it("describes a name that ends in displayIdent's own cut marker, which round-trips unchanged", () => {
-    // `displayIdent` cuts at the stack-ref cap and appends exactly this
-    // suffix, so the round-trip alone reads the value as plain.
+  it("describes a name that ends in displayIdent's pre-digest cut marker", () => {
+    // `displayIdent` cut at the stack-ref cap and appended exactly this suffix
+    // before go-to-k/cdkd#4002 added the tail digest, so the round-trip alone
+    // read the value as plain.
     const forged = `${'a'.repeat(1152)} [cut: 35 more characters withheld]`;
     for (const change of [
       { ...base, desiredName: forged },

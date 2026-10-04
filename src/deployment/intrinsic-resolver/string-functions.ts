@@ -15,6 +15,7 @@ import {
   intrinsicLeafResolutionOf,
   SECRET_MASK,
   carryLogOnlyValues,
+  crossStackSourceKey,
   hasLogOnlyValues,
   recordLogOnlySplitFragments,
 } from '../secret-redaction.js';
@@ -22,10 +23,12 @@ import {
 export type ParameterSpans = NonNullable<IntrinsicLeafResolution['parameterSpans']>;
 
 /**
- * The parameter spans `part`'s own record places on `resolved`, the string it
- * contributed to an enclosing `Fn::Join` / `Fn::Sub` (issue #4446): the
- * record a `{Ref}` answered by a parameter, or a nested `Fn::Join` / `Fn::Sub`
- * / `Fn::If`, wrote for that object in this pass. `[]` whenever it places
+ * The reference spans `part`'s own record places on `resolved`, the string it
+ * contributed to an enclosing `Fn::Join` / `Fn::Sub` (issues #4446, #4527):
+ * the record a `{Ref}` answered by a parameter, a cross-stack read (an
+ * `Fn::ImportValue` / `Fn::GetStackOutput` / `Fn::GetAtt` object), or a
+ * nested `Fn::Join` / `Fn::Sub` / `Fn::If`, wrote for that object in this
+ * pass. `[]` whenever it places
  * none it can vouch for -- no record (a poisoned one reads as none), a record
  * without spans (a string-selected `Fn::If`, a part its own dynamic-reference
  * pass rewrote), or one of another output -- so the part's text is a GAP the
@@ -47,6 +50,28 @@ export function partParameterSpans(
   return own.parameterSpans ?? [];
 }
 
+/**
+ * The span a reference places when its WHOLE resolved value is `value`: one
+ * span keyed by `crossStackSourceKey(source)`, the RAW intrinsic the resolver
+ * answered (issues #4446, #4527). `source` is `{Ref: <Param>}` for a parameter
+ * the parameter arm answered, or the cross-stack read itself (an
+ * `Fn::ImportValue` / `Fn::GetStackOutput` / `Fn::GetAtt` object, or a dotted
+ * `${Res.Attr}` placeholder as `{'Fn::GetAtt': 'Res.Attr'}`, the spelling
+ * `resolveSub` hands `resolveGetAtt`). `[]` for a value that is not a
+ * non-empty string, or a source with no key. The span says only WHERE that
+ * reference's text lies; whether it is a secret is the association store's
+ * answer, read under the same key, so a span with no association (a
+ * same-stack attribute, a public output) stays text on the persist side.
+ */
+export function wholeReferenceSpans(
+  source: Record<string, unknown>,
+  value: unknown
+): ParameterSpans {
+  if (typeof value !== 'string' || value === '') return [];
+  const key = crossStackSourceKey(source);
+  return key === undefined ? [] : [{ start: 0, length: value.length, key }];
+}
+
 /** `spans` moved `by` characters to the right, appended to `out`. */
 export function appendShiftedSpans(
   out: ParameterSpans[number][],
@@ -54,7 +79,7 @@ export function appendShiftedSpans(
   by: number
 ): void {
   for (const span of spans) {
-    out.push({ start: span.start + by, length: span.length, parameter: span.parameter });
+    out.push({ start: span.start + by, length: span.length, key: span.key });
   }
 }
 

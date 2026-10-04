@@ -1,7 +1,8 @@
 /**
  * Make an untrusted value safe to render in a terminal or persist into a log.
  *
- * A LEAF module with no imports, and deliberately in `src/utils/` rather than
+ * A LEAF module importing nothing from cdkd (only `node:crypto`, for
+ * {@link cutMarker}'s digest), and deliberately in `src/utils/` rather than
  * beside its first caller: issue [#2170](https://github.com/go-to-k/cdkd/issues/2170)'s
  * review found the same rule being widened BY HAND one module at a time and
  * missing an instance every round — the change sanitized 1 of 5 readers of
@@ -40,6 +41,8 @@
  * -- widening this helper would alter every caller that merely wants a
  * terminal-safe string.
  */
+
+import { createHash } from 'node:crypto';
 
 /**
  * Stand-in for a value with nothing renderable left after sanitization. Named
@@ -381,7 +384,7 @@ export const STACK_REF_MAX_CODE_POINTS = 128 + 4 * (1 + IDENT_MAX_CODE_POINTS);
  * AWS bounds a role PATH at 512 characters and a role NAME at 64, on top of the
  * `arn:<partition>:iam::<12-digit account>:role` prefix -- so a perfectly valid
  * ARN reaches ~612 and `displayIdent`'s default would render
- * `[cut: N more characters withheld]` inside the very message that says WHICH
+ * `[cut: N more characters withheld, ...]` inside the very message that says WHICH
  * role failed to assume (go-to-k/cdkd#3390 round 3). Cutting the identifier out
  * of the sentence whose only job is to identify it is the failure this constant
  * exists to avoid, and it is the same argument `STACK_REF_MAX_CODE_POINTS`
@@ -414,7 +417,7 @@ export const ROLE_ARN_MAX_CODE_POINTS = 27 + 10 + 512 + 64;
  * A separate constant from {@link ROLE_ARN_MAX_CODE_POINTS} because the grammar
  * is genuinely different and the role figure is too small: an SSM parameter NAME
  * runs to 1011 characters on its own, and AWS caps an ARN at 2048. Rendering
- * `[cut: N more characters withheld]` in the message that says WHICH secret
+ * `[cut: N more characters withheld, ...]` in the message that says WHICH secret
  * failed to resolve is the failure both constants exist to avoid
  * (go-to-k/cdkd#3390 round 4).
  *
@@ -459,15 +462,63 @@ export const AWS_MESSAGE_MAX_CODE_POINTS = 4096;
  * complete — which on a diagnostic is worse than the flood it prevents, since
  * the reader acts on a sentence whose second half is missing.
  *
- * The marker is spelled exactly as `displayIdent`'s, so the two cannot teach a
- * reader two different things about the same event.
+ * The marker is {@link cutMarker}'s, so the two cannot teach a reader two
+ * different things about the same event — WITHOUT the tail digest, which is
+ * for an identity (see there).
  */
 export function displayAwsMessage(value: unknown): string {
   const sanitized = displaySafe(value);
   const { text, truncated } = truncateCodePoints(sanitized, AWS_MESSAGE_MAX_CODE_POINTS);
   if (!truncated) return text;
   const withheld = Array.from(sanitized).length - Array.from(text).length;
-  return `${text} [cut: ${withheld} more characters withheld]`;
+  return `${text} ${cutMarker(withheld)}`;
+}
+
+/**
+ * How many hex characters of the tail's SHA-256 {@link cutMarker} prints: 128
+ * bits. The two values it separates are BOTH planted — no legitimate value
+ * reaches an identifier cap — so the property needed is collision resistance
+ * against a party choosing both inputs, and a birthday search on a short
+ * prefix is cheap (8 hex characters falls to about 2^16 tries).
+ */
+const CUT_DIGEST_HEX_CHARS = 32;
+
+/**
+ * The ONE spelling of the marker a display cap appends where it cut a value:
+ * `[cut: N more characters withheld]`, with no leading space (the caller
+ * separates it from the kept text).
+ *
+ * `digestOf` is the WITHHELD TAIL, and passing it appends
+ * `, tail sha256:<hex>` (go-to-k/cdkd#4002). Without it, two values sharing
+ * the kept prefix and their length rendered byte-identically — the collapse
+ * go-to-k/cdkd#3164 closed below the cap, reopened above it. The digest names
+ * the tail without showing any of it.
+ *
+ * Pass it ONLY where the rendering serves as an IDENTITY (`displayIdent` and
+ * `export.ts`'s record-value renderer), over text that either has ALREADY
+ * been through whatever masking its site applies or is an identifier that
+ * holds no secret. A message-level masker running DOWNSTREAM of the render
+ * (`maskSecretsInError`, the logger's whole-line mask) never sees the tail:
+ * the digest is a CONFIRM and brute-force ORACLE over whatever reaches it
+ * unmasked (a secret under the needle floor, a derived spelling a mask missed)
+ * — the concern go-to-k/cdkd#3729 records for a salted hash beside a mask.
+ * That is accepted only because every digesting site renders an identifier,
+ * or masks before the cut (or replaces the whole rendered token, as
+ * `stack-output.ts` does), and no legitimate value reaches an identifier cap.
+ * Free-form text — AWS's error messages, which can echo a submitted payload a
+ * BOUNDED masker missed — takes the bare marker:
+ * two messages rendering alike spoof no identity, so the digest would buy
+ * nothing there.
+ *
+ * `digestOf` must be ASCII or otherwise free of lone surrogates: hashing
+ * encodes it as UTF-8, which maps each one to U+FFFD.
+ */
+export function cutMarker(withheld: number, digestOf?: string): string {
+  const digest =
+    digestOf === undefined
+      ? ''
+      : `, tail sha256:${createHash('sha256').update(digestOf).digest('hex').slice(0, CUT_DIGEST_HEX_CHARS)}`;
+  return `[cut: ${withheld} more characters withheld${digest}]`;
 }
 
 /**
@@ -504,8 +555,10 @@ const PLAIN_IDENT = /^[A-Za-z0-9:_@./+=,~-]+$/;
  *    with nothing renderable left -- the same allowlist + fallback every
  *    caller used to spell for itself.
  * 2. A value longer than `opts.maxCodePoints` (default `IDENT_MAX_CODE_POINTS`)
- *    is CUT there and the count of withheld characters appended, bounding the
- *    PAYLOAD a planted id can put on the line. It does not bound what a
+ *    is CUT there and {@link cutMarker} appended with the count of withheld
+ *    characters and a digest of them, bounding the PAYLOAD a planted id can
+ *    put on the line while two cut values sharing the kept prefix and length
+ *    still render apart. It does not bound what a
  *    terminal then WRAPS: a long quoted value can still wrap so that a visual
  *    line reads like a genuine row with the quotes off-screen, at either cap.
  *    A caller whose identifier has a LONGER legitimate grammar passes its own
@@ -598,9 +651,10 @@ export function displayIdent(
   const altered = clean !== raw;
   const plain = PLAIN_IDENT.test(text) && !(opts?.listMember === true && text.includes(','));
   const shown = !altered && plain ? text : JSON.stringify(text);
-  // `clean` is ASCII here, so `.length` counts characters.
+  // `clean` is ASCII here, so `.length` counts characters, and `text` is its
+  // prefix, so the slice is exactly the withheld tail.
   return truncated
-    ? `${shown} [cut: ${clean.length - text.length} more characters withheld]`
+    ? `${shown} ${cutMarker(clean.length - text.length, clean.slice(text.length))}`
     : shown;
 }
 
@@ -622,8 +676,9 @@ export function displayStackName(value: unknown): string {
  * them: a `lock.json` owner `x (operation: deploy), expired 3h ago` made a live
  * lock read as expired. Wider than `isPasteableIdent`, which refuses the `@`
  * and `:` a genuine `user@host:pid` owner carries. Whitespace is refused first
- * because the round-trip alone admits `displayIdent`'s own cut output
- * (go-to-k/cdkd#4109, go-to-k/cdkd#4115).
+ * so that `displayIdent`'s own cut output is refused without resting on the
+ * cut marker's tail digest, which is what makes the round-trip alone refuse it
+ * (go-to-k/cdkd#4109, go-to-k/cdkd#4115, go-to-k/cdkd#4002).
  */
 export function plainIdentOr(
   value: string,

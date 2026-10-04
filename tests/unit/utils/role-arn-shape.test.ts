@@ -162,7 +162,7 @@ describe('refusedRoleArnMessage', () => {
     const huge = `${PREFIX}${'a'.repeat(1_000_000)}`;
     const message = refusedRoleArnMessage(huge);
     expect(message.length).toBeLessThan(1_000);
-    expect(message).toMatch(/\[cut: \d+ more characters withheld\]/);
+    expect(message).toMatch(/\[cut: \d+ more characters withheld, tail sha256:[0-9a-f]{32}\]/);
   });
 });
 
