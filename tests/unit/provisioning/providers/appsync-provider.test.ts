@@ -26,10 +26,10 @@ vi.mock('@aws-sdk/client-appsync', async (importOriginal) => {
 //
 // Stated plainly, since a comment here previously claimed otherwise: NO assertion
 // in this file distinguishes the two polarities. Measured — the file is green with
-// this mock resolving and green with it rejecting. The failure arm would flag the
-// fallback id `fabricated: true` (`src/provisioning/providers/appsync-provider.ts`
-// refuses ARN building on that flag), but nothing here reaches an assertion that
-// can tell the difference. The choice is therefore about fidelity to a real
+// this mock resolving and green with it rejecting. The failure arm would make
+// `getAccountInfo` refuse (issue #1730), which `buildAppSyncArn` callers turn
+// into an omitted ARN, but nothing here reaches an assertion that can tell the
+// difference. The choice is therefore about fidelity to a real
 // deploy, not about discrimination — do not read it as a covered branch.
 const stsMockSend = vi.hoisted(() =>
   vi.fn(async () => ({

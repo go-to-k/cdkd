@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { AccountIdUnavailableError } from '../../../src/utils/error-handler.js';
 
 const mockSend = vi.fn();
 
@@ -547,21 +548,13 @@ describe('AppSyncProvider.import records the child ARN attributes (issue #1728)'
     );
   });
 
-  // THE arm that matters, and the one a `try` alone does not cover (review
-  // finding). The real `getAccountInfo` CATCHES its own STS failure and returns
-  // the hardcoded `123456789012` with `fabricated: true` — it does NOT reject —
-  // so the test above pins a path production cannot reach on an STS outage.
-  //
-  // A fabricated ARN carries no wildcard, so `isPlaceholderArn` can never catch
-  // it downstream: recording it would hand every later `Ref` / `Fn::GetAtt` a
-  // confidently-wrong ARN. Recording NOTHING is the honest answer.
-  it('import records NO ARN when STS was unreachable and the account is fabricated', async () => {
-    mockGetAccountInfo.mockResolvedValue({
-      accountId: '123456789012',
-      region: 'us-east-1',
-      partition: 'aws',
-      fabricated: true,
-    });
+  // The production shape of an STS outage (issue #1730): `getAccountInfo`
+  // REJECTS with `AccountIdUnavailableError`. Recording NOTHING is the honest
+  // answer, and `Name` (not account-derived) is kept.
+  it('import records NO ARN when STS could not name the account', async () => {
+    mockGetAccountInfo.mockRejectedValue(
+      new AccountIdUnavailableError('Cannot determine the AWS account id: STS unreachable.')
+    );
 
     const result = await provider.import(
       importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource')
@@ -579,17 +572,14 @@ describe('AppSyncProvider.import records the child ARN attributes (issue #1728)'
 
   // The arm the refusal actually exists for. UPDATE rebuilds the ARN on every
   // in-place update and its attribute map REPLACES the record's wholesale, so a
-  // fabricated account mid-deploy would overwrite a correct, create-time ARN —
+  // wrong account mid-deploy would overwrite a correct, create-time ARN —
   // destroying a known-good value rather than failing to write a missing one.
   // Reporting NO attributes makes the engine carry the existing ones forward.
-  it('update reports NO attributes when the account is fabricated', async () => {
+  it('update reports NO attributes when the account is unknown', async () => {
     mockSend.mockResolvedValue({});
-    mockGetAccountInfo.mockResolvedValue({
-      accountId: '123456789012',
-      region: 'us-east-1',
-      partition: 'aws',
-      fabricated: true,
-    });
+    mockGetAccountInfo.mockRejectedValue(
+      new AccountIdUnavailableError('Cannot determine the AWS account id: STS unreachable.')
+    );
 
     const result = await provider.update(
       'X',

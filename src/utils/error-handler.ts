@@ -26,6 +26,30 @@ export class CdkdError extends Error {
 }
 
 /**
+ * `getAccountInfo` could not name the deploy's AWS account: STS failed (or
+ * answered with no `Account`) and `AWS_ACCOUNT_ID` is unset or malformed (issue
+ * [#1730](https://github.com/go-to-k/cdkd/issues/1730)).
+ *
+ * There is no placeholder account to fall back to, so every caller either gets
+ * the real id or this. A caller that can degrade WITHOUT the account (omit an
+ * ARN attribute it would record, leave an import-time name unresolved) matches
+ * on this class; everything else lets it propagate.
+ *
+ * Carries NO `cause`: `formatError` renders a cause at default verbosity, and
+ * the STS failure's text may be AWS-authored. The message names the failure by
+ * `describeAwsFailure(...).summary`, which withholds AWS-authored message text
+ * (a cdkd- or SDK-authored one such as `ECONNREFUSED` passes through whole),
+ * and the full text goes to the debug log.
+ */
+export class AccountIdUnavailableError extends CdkdError {
+  constructor(message: string) {
+    super(message, 'ACCOUNT_ID_UNAVAILABLE');
+    this.name = 'AccountIdUnavailableError';
+    Object.setPrototypeOf(this, AccountIdUnavailableError.prototype);
+  }
+}
+
+/**
  * State management errors
  */
 export class StateError extends CdkdError {
@@ -248,8 +272,8 @@ function formatDuration(ms: number): string {
  *    the laundering fix above is actually about: `guardedPhysicalIdFallback`'s
  *    ARN / URL shape hard-fail (the #1103 class), the `--strict-getatt`
  *    rejection, `rejectPlaceholderArnAttribute` (#1729), the
- *    fabricated-account guard (#1730), which refuses to build a value from the
- *    placeholder account id when STS did not answer, and the nested-stack
+ *    unknown-account guard (#1730), which refuses a constructed value that
+ *    needs the account id when STS did not answer, and the nested-stack
  *    MISSING-OUTPUT refusal
  *    ([#2270](https://github.com/go-to-k/cdkd/issues/2270)), which refuses an
  *    `Outputs.<Key>` the child does not declare rather than letting
@@ -304,9 +328,9 @@ function formatDuration(ms: number): string {
  *
  * The class is deliberately NOT `markNonRetryable` at construction, unlike
  * {@link ResourceUpdateNotSupportedError}: two kinds of throw site are
- * genuinely time-dependent — the fabricated-account guard, where
- * `getAccountInfo` caches a fabricated answer for only 10s precisely so a
- * later attempt can heal, and since issue #3096 the LIVE-READ refusals
+ * genuinely time-dependent — the unknown-account guard, where
+ * `getAccountInfo` never caches a failed lookup precisely so a later attempt
+ * can heal, and since issue #3096 the LIVE-READ refusals
  * (`refuseUnservedAttribute`), where a `pending` instance settles seconds
  * later and a failed describe can succeed on the next attempt — so a
  * constructor-level marker would wrongly DECLARE those terminal (whether

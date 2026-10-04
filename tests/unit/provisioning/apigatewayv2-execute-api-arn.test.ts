@@ -49,6 +49,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 const { ApiGatewayV2Provider } = await import(
   '../../../src/provisioning/providers/apigatewayv2-provider.js'
 );
+const { AccountIdUnavailableError } = await import('../../../src/utils/error-handler.js');
 
 const createApi = async () => {
   const provider = new ApiGatewayV2Provider();
@@ -71,7 +72,6 @@ describe('AWS::ApiGatewayV2::Api ExecuteApiArn', () => {
       accountId: '111122223333',
       region: 'us-east-1',
       partition: 'aws',
-      fabricated: false,
     });
     const result = await createApi();
     expect(result.attributes).toEqual({
@@ -94,7 +94,6 @@ describe('AWS::ApiGatewayV2::Api ExecuteApiArn', () => {
       accountId: '111122223333',
       region: 'ap-northeast-1',
       partition: 'aws',
-      fabricated: false,
     });
     const result = await createApi();
     expect(mockGetAccountInfo).toHaveBeenCalledWith('ap-northeast-1');
@@ -110,7 +109,6 @@ describe('AWS::ApiGatewayV2::Api ExecuteApiArn', () => {
       accountId: '111122223333',
       region: 'cn-north-1',
       partition: 'aws-cn',
-      fabricated: false,
     });
     const result = await createApi();
     expect(result.attributes?.['ExecuteApiArn']).toBe(
@@ -129,7 +127,6 @@ describe('AWS::ApiGatewayV2::Api ExecuteApiArn', () => {
       accountId: '111122223333',
       region: 'US-EAST-1',
       partition: 'aws',
-      fabricated: false,
     });
     const result = await createApi();
     expect(result.attributes?.['ExecuteApiArn']).toBe(
@@ -137,29 +134,40 @@ describe('AWS::ApiGatewayV2::Api ExecuteApiArn', () => {
     );
   });
 
-  it('records NOTHING and warns when the account is fabricated', async () => {
-    // An ARN naming a placeholder account is worse than an absent one: it is
-    // persisted and looks real. Same refusal `SSMParameterProvider` makes.
-    mockGetAccountInfo.mockResolvedValue({
-      accountId: '123456789012',
-      region: 'us-east-1',
-      partition: 'aws',
-      fabricated: true,
-    });
+  it('records NOTHING and warns when the account is unknown (issue #1730)', async () => {
+    // `getAccountInfo` REJECTS when STS cannot name the account. The API
+    // exists by now, so that must cost the ARN, not the create.
+    mockGetAccountInfo.mockRejectedValue(
+      new AccountIdUnavailableError('Cannot determine the AWS account id: STS unreachable.')
+    );
     const result = await createApi();
     expect(result.attributes).toEqual({
       ApiId: 'abc123',
       ApiEndpoint: 'https://abc123.example',
     });
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ExecuteApiArn'));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /^The ExecuteApiArn attribute for API abc123 is NOT recorded: Cannot determine the AWS account id/
+      )
+    );
+  });
+
+  it('does NOT report a non-account failure as the unknown-account omission', async () => {
+    // Only `AccountIdUnavailableError` takes the "is NOT recorded:" arm; any
+    // other rejection goes to the generic catch, which names its class.
+    mockGetAccountInfo.mockRejectedValue(new TypeError('x'));
+    const result = await createApi();
+    expect(result.attributes?.['ExecuteApiArn']).toBeUndefined();
+    const warned = warn.mock.calls.map((call) => String(call[0]));
+    expect(warned.some((m) => m.includes('is NOT recorded:'))).toBe(false);
+    expect(warned).toContainEqual(
+      expect.stringContaining('Could not build the ExecuteApiArn attribute for API abc123 (TypeError)')
+    );
   });
 
   it('still creates the API when the ARN cannot be built, and WARNS', async () => {
-    // Pointed at `config.region()` rejecting, which is the reachable throw:
-    // `getAccountInfo` does NOT reject when STS is unreachable, it returns
-    // `{ fabricated: true }` — the case above. An earlier version of this case
-    // rejected `getAccountInfo` and so exercised the catch through a shape the
-    // dependency never produces.
+    // Pointed at `config.region()` rejecting: the OTHER reachable throw, which
+    // takes the generic catch rather than the unknown-account arm above.
     //
     // The API exists by the time this runs, so a failure must not fail the
     // CREATE. It must not be SILENT either: without the warn the only symptom
@@ -180,7 +188,6 @@ describe('AWS::ApiGatewayV2::Api ExecuteApiArn', () => {
       accountId: '111122223333',
       region: 'us-east-1',
       partition: 'aws',
-      fabricated: false,
     });
     mockSend.mockResolvedValue({ ApiId: 'fromResponse', ApiEndpoint: 'https://x.example' });
     const result = await createApi();
@@ -194,7 +201,6 @@ describe('AWS::ApiGatewayV2::Api ExecuteApiArn on the import and update paths', 
     accountId: '111122223333',
     region: 'us-east-1',
     partition: 'aws',
-    fabricated: false,
   };
 
   beforeEach(() => {
@@ -283,20 +289,22 @@ describe('AWS::ApiGatewayV2::Api ExecuteApiArn on the import and update paths', 
     // this the gate could be made unconditional and every case above still
     // passes: the account resolves, the ARN is built, `apiEndpoint === undefined`
     // still declines, and `attributes` is still undefined — so the only lost
-    // behavior (an STS round trip and a fabricated-account warn about an
+    // behavior (an STS round trip and an unknown-account warn about an
     // attribute that will not be written) would go unwatched.
     expect(mockGetAccountInfo).not.toHaveBeenCalled();
   });
 
   it('carries the old map forward when the ARN cannot be built, rather than erasing it', async () => {
     // The destructive shape, and it is REACHABLE and TRANSIENT: `getAccountInfo`
-    // does not reject when STS is unreachable, it returns `fabricated: true`.
+    // rejects when STS cannot name the account (issue #1730).
     // Writing `{ ApiId, ApiEndpoint }` here REPLACES the stored map (the engine
     // does not merge), so an `ExecuteApiArn` an earlier deploy recorded
     // correctly is erased — and a consumer's `Fn::GetAtt` reading the freshly
     // written attributes in the SAME deploy hard-throws, with the loss
     // persisted. Worse than not healing at all.
-    mockGetAccountInfo.mockResolvedValue({ ...ACCOUNT, fabricated: true });
+    mockGetAccountInfo.mockRejectedValue(
+      new AccountIdUnavailableError('Cannot determine the AWS account id: STS unreachable.')
+    );
     mockSend.mockResolvedValue({ ApiId: 'api1', ApiEndpoint: 'https://healed.example' });
     const provider = new ApiGatewayV2Provider();
     const result = await provider.update(

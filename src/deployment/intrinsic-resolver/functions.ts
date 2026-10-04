@@ -9,6 +9,7 @@ import {
   AWS_NO_VALUE,
   type ResolverContext,
   cachedAvailabilityZones,
+  effectiveAccountInfoRegion,
   getAccountInfo,
   isClientSafeRegion,
   quotedRender,
@@ -662,9 +663,10 @@ export async function resolveGetAZs(
     clientRegion = requested;
     loggedRegionText = this.regionLogText(resolvedValue, context);
   } else {
-    // Empty string or non-string: use current region
-    const accountInfo = await getAccountInfo(this.resolverRegion);
-    region = accountInfo.region;
+    // Empty string or non-string: use current region. The SAME value
+    // `AWS::Region` answers, and like it, with no STS hop: an AZ list needs no
+    // account, so an STS outage must not refuse it (issue #1730).
+    region = effectiveAccountInfoRegion(this.resolverRegion);
     clientRegion = this.explicitRegion;
   }
 
@@ -771,20 +773,25 @@ export async function resolvePseudoParameter(
   context?: ResolverContext
 ): Promise<string | string[] | symbol | undefined> {
   switch (name) {
-    case 'AWS::Region': {
-      const accountInfo = await getAccountInfo(this.resolverRegion);
-      return accountInfo.region;
-    }
+    // `AWS::Region` and `AWS::Partition` need no account, so they take no STS
+    // hop: `getAccountInfo` REFUSES when STS cannot name the account (issue
+    // #1730), and a template that never names the account must not fail on
+    // that. The values are the ones `getAccountInfo` would have answered —
+    // `accountInfoFor` derives both from this same helper.
+    case 'AWS::Region':
+      return effectiveAccountInfoRegion(this.resolverRegion);
 
+    // REFUSES (throws `AccountIdUnavailableError`) when STS cannot name the
+    // account and `AWS_ACCOUNT_ID` is unset: there is no placeholder account
+    // (issue #1730). Outside any catch in `resolveSub`, so `${AWS::AccountId}`
+    // refuses there too rather than staying a literal.
     case 'AWS::AccountId': {
       const accountInfo = await getAccountInfo(this.resolverRegion);
       return accountInfo.accountId;
     }
 
-    case 'AWS::Partition': {
-      const accountInfo = await getAccountInfo(this.resolverRegion);
-      return accountInfo.partition;
-    }
+    case 'AWS::Partition':
+      return derivePartitionAndUrlSuffix(effectiveAccountInfoRegion(this.resolverRegion)).partition;
 
     case 'AWS::StackName':
       return context?.stackName ?? 'UnknownStack';
@@ -807,9 +814,9 @@ export async function resolvePseudoParameter(
       // Derived rather than hardcoded (issue #1730 review): `amazonaws.com.cn`
       // in `aws-cn`, and CloudFormation resolves `${AWS::URLSuffix}` through
       // exactly this mapping. Deliberately NO `getAccountInfo` hop, unlike
-      // `AWS::Partition` / `AWS::StackId` which need the account: the suffix is
-      // a pure function of the region. The round trip could only add latency
-      // and, on an STS outage, a warning.
+      // `AWS::StackId` which needs the account: the suffix is a pure function
+      // of the region. The round trip could only add latency and, on an STS
+      // outage, a refusal (issue #1730).
       //
       // An earlier revision justified that by saying `resolverRegion` is what
       // `getAccountInfo(this.resolverRegion)` "would have set `region` to

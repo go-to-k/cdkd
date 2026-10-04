@@ -499,11 +499,11 @@ export function describeSplitValueSource(
  * `withRetry` — so inside a nested stack each retry re-runs a full child
  * deploy plus rollback, up to the ~47s schedule, on a path that cannot
  * succeed. Marked at the THROW rather than in the constructor because the
- * class is retryable in general: its fabricated-account arm (see
+ * class is retryable in general: its unknown-account arm (see
  * `constructGuardedAttribute`) IS genuinely time-dependent
- * (`getAccountInfo` caches a fabricated answer for only 10s precisely so a
- * later attempt can heal), so a constructor-level marker would wrongly make
- * that one terminal too.
+ * (`getAccountInfo` never caches a failed lookup precisely so a later attempt
+ * can heal), so a constructor-level marker would wrongly make that one
+ * terminal too.
  */
 export async function resolveSplit(
   this: IntrinsicFunctionResolver,
