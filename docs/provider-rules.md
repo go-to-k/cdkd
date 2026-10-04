@@ -1206,9 +1206,10 @@ Where the API has no token and nothing can be deleted safely,
 `src/provisioning/providers/ambiguous-create.ts` is the shared shape (issue
 [#2080](https://github.com/go-to-k/cdkd/issues/2080): `CreateKey`,
 `CreateUserPool`, `CreateGraphqlApi`, and API Gateway's `CreateAuthorizer`,
-`CreateDeployment`, `CreateApi` and `CreateIntegration`, and EMR's
-`RunJobFlow`, `AddInstanceFleet` and `AddInstanceGroups`, whose shared report
-is `orphan-report.ts`):
+`CreateDeployment`, `CreateApi` and `CreateIntegration`, EMR's
+`RunJobFlow`, `AddInstanceFleet` and `AddInstanceGroups`, Lambda's
+`PublishLayerVersion` and `CreateEventSourceMapping`, and AppSync's
+`CreateApiKey`, whose shared report is `orphan-report.ts`):
 
 - **Keep the SDK from replaying a 5xx.** Send the create through a dedicated
   client wrapped by `withoutServerErrorRetries`: the SDK's own retry of a 5xx
@@ -1237,8 +1238,8 @@ is `orphan-report.ts`):
 - **Lead the report with a READ command**, and offer a delete command only
   after it, conditional on confirming the candidate is this deploy's orphan: a
   candidate may belong to another deploy. Where there is no window at all
-  (no creation date: `GraphqlApi`, an API Gateway authorizer, an API Gateway
-  v2 integration) print no delete command.
+  (no creation date: `GraphqlApi`, an AppSync API key, an API Gateway
+  authorizer, an API Gateway v2 integration) print no delete command.
 - **A lookup that fails, transiently or not, warns and lets the create
   proceed**: nothing adopts, so a failed lookup has no stake worth failing a
   create over. Say only what was LISTED: list APIs are eventually

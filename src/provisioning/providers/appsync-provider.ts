@@ -57,6 +57,7 @@ import {
   type CreateDataSourceCommandInput,
   type CreateResolverCommandInput,
   type CreateApiKeyCommandInput,
+  type CreateApiKeyCommandOutput,
   type UpdateGraphqlApiCommandInput,
   type UpdateDataSourceCommandInput,
   type UpdateResolverCommandInput,
@@ -90,10 +91,17 @@ import type {
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  maskDeep,
+  maskerOrIdentity,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { injectiveKey } from '../../state/record-keys.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import {
   AmbiguousCreateLatch,
@@ -101,6 +109,11 @@ import {
   withoutServerErrorRetries,
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
+import {
+  collectOrphanIds,
+  orphanCommandRegionArg,
+  reportPossibleOrphans,
+} from './orphan-report.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { isSecretDerivedValue } from '../masked-retry-logger.js';
@@ -123,10 +136,21 @@ const MAX_GRAPHQL_API_LIST_PAGES = 40;
 /** Most API ids one orphan report names. */
 const MAX_REPORTED_ORPHAN_APIS = 5;
 
-/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+/**
+ * The same for `CreateApiKey`, which has no idempotency token either and
+ * whose keys carry no name at all (issue #2080); see
+ * `AppSyncProvider.reportPossibleOrphanApiKeys`.
+ */
+const createApiKeyLatch = new AmbiguousCreateLatch('CreateApiKey');
+/** Keys this process created and recorded, as `injectiveKey(apiId, keyId)`, never reported as orphan candidates. */
+const apiKeysCreatedByThisProcess = new RecentIdSet();
+
+/** Reset the module-scoped retry-safety state (`CreateGraphqlApi` and `CreateApiKey`). TEST-ONLY. */
 export function resetGraphqlApiCreateRetryStateForTests(): void {
   createGraphqlApiLatch.resetForTests();
   graphqlApisCreatedByThisProcess.resetForTests();
+  createApiKeyLatch.resetForTests();
+  apiKeysCreatedByThisProcess.resetForTests();
 }
 
 /** Shapes of the three `AWS::AppSync::*` child composite physicalIds (issue #1657). */
@@ -317,7 +341,8 @@ export class AppSyncProvider implements ResourceProvider {
   }
 
   /**
-   * The client `CreateGraphqlApi` goes through: SDK retries on, except a 5xx
+   * The client the two tokenless creates, `CreateGraphqlApi` and
+   * `CreateApiKey`, go through: SDK retries on, except a 5xx
    * (`withoutServerErrorRetries`, issue #2080). Separate so every other call
    * keeps the full SDK retry.
    */
@@ -3505,9 +3530,28 @@ export class AppSyncProvider implements ResourceProvider {
         input.expires = properties['Expires'] as number;
       }
 
-      const response = await this.getClient().send(new CreateApiKeyCommand(input));
+      // Issue #2080: after an earlier ambiguous attempt, name the key it may
+      // have made before a second CreateApiKey is sent. Detection only.
+      const orphanWindow = createApiKeyLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await this.reportPossibleOrphanApiKeys(
+          logicalId,
+          input,
+          orphanWindow,
+          createMaskedLogSinks(this.logger, context?.maskSecrets)
+        );
+      }
+      const attemptStartMs = Date.now();
+      let response: CreateApiKeyCommandOutput;
+      try {
+        response = await this.getCreateClient().send(new CreateApiKeyCommand(input));
+      } catch (error) {
+        createApiKeyLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
 
       apiKeyId = response.apiKey!.id!;
+      apiKeysCreatedByThisProcess.add(injectiveKey(apiId, apiKeyId));
       this.logger.debug(`Successfully created ApiKey ${logicalId}: ${apiKeyId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -3571,6 +3615,66 @@ export class AppSyncProvider implements ResourceProvider {
         ...(apiKeyArn !== undefined && { Arn: apiKeyArn }),
       },
     };
+  }
+
+  /**
+   * After an attempt at `CreateApiKey` ended AMBIGUOUS (a 5xx: AppSync may
+   * have made the key and lost the answer), name the keys on the same API that
+   * could be its orphan (issue
+   * [#2080](https://github.com/go-to-k/cdkd/issues/2080)). Detection only, and
+   * undated: an `ApiKey` has no name and no creation date, so the candidates
+   * are the keys on `input.apiId` with the same description that this process
+   * did not record -- which can include this stack's own key from an earlier
+   * process or another stack's key on a shared API. Hence a read command and
+   * no delete command (`orphan-report.ts`).
+   *
+   * `expires` is not used to narrow the set: AWS rounds it down to the hour,
+   * so neither an explicit value nor the 7-day default pins one attempt.
+   *
+   * A key's id IS the credential a client sends as `x-api-key`, so the report
+   * never prints one: each candidate is named by its last four characters and
+   * its expiry, enough to find it in `list-api-keys` output, which the read
+   * command prints.
+   */
+  private async reportPossibleOrphanApiKeys(
+    logicalId: string,
+    input: CreateApiKeyCommandInput,
+    window: AmbiguousCreateWindow,
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const apiId = String(input.apiId);
+    const description = input.description ?? '';
+    const aws = pasteableAwsCommand(log.mask);
+    const regionArg = await orphanCommandRegionArg(this.getClient(), aws);
+    await reportPossibleOrphans(logicalId, window, log, {
+      action: 'CreateApiKey',
+      service: 'AppSync',
+      listAction: 'ListApiKeys',
+      subject: `an API key on GraphQL API ${log.value(apiId)}${
+        description === '' ? '' : ` described ${log.value(description)}`
+      }`,
+      noun: 'API key(s)',
+      list: () =>
+        collectOrphanIds(
+          async (nextToken) => {
+            const page = await this.getClient().send(
+              new ListApiKeysCommand({ apiId, maxResults: 25, ...(nextToken && { nextToken }) })
+            );
+            return { items: page.apiKeys ?? [], next: page.nextToken };
+          },
+          (key) =>
+            key.id &&
+            (key.description ?? '') === description &&
+            !apiKeysCreatedByThisProcess.has(injectiveKey(apiId, key.id))
+              ? `****${key.id.slice(-4)}${
+                  key.expires === undefined || !Number.isFinite(key.expires)
+                    ? ''
+                    : ` (expires ${new Date(key.expires * 1000).toISOString()})`
+                }`
+              : undefined
+        ),
+      inspect: () => aws`aws appsync list-api-keys --api-id ${apiId}${regionArg}`.render(),
+    });
   }
 
   private async deleteApiKey(

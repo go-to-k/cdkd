@@ -4,9 +4,10 @@
  * [#2080](https://github.com/go-to-k/cdkd/issues/2080), Plan C: v1
  * `CreateAuthorizer` / `CreateDeployment`, v2 `CreateApi` /
  * `CreateIntegration` / `CreateAuthorizer`), and the EMR providers reuse for
- * `RunJobFlow` / `AddInstanceFleet` / `AddInstanceGroups` and the Lambda
- * providers for `PublishLayerVersion` / `CreateEventSourceMapping` (naming
- * their service through {@link OrphanLookup.service}). The latch, the 5xx-refusing
+ * `RunJobFlow` / `AddInstanceFleet` / `AddInstanceGroups`, the Lambda
+ * providers for `PublishLayerVersion` / `CreateEventSourceMapping` and the
+ * AppSync provider for `CreateApiKey` (naming their service through
+ * {@link OrphanLookup.service}). The latch, the 5xx-refusing
  * client and the window come from `ambiguous-create.ts`; this module is only
  * the lookup-and-report step a provider runs at the top of the next attempt.
  *
