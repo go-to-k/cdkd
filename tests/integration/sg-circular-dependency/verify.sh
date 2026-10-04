@@ -1125,11 +1125,19 @@ fi
 echo "    OK: a completed op's bag did not count as evidence"
 # The journal must SURVIVE the refused deploy: that attempt journaled nothing,
 # so its clean auto-rollback may not settle (pop) the seeded segment, which is
-# an older attempt's record (the #4522 review's B1). A 404 here is that bug.
+# an older attempt's record (the #4522 review's B1). A 404, or a segment count
+# or newest segment that differs from what was seeded, is that bug.
 if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
   echo "FAIL: could not read the rollback journal after the STALE arm's refused deploy: ${ADOPT_JOURNAL}" >&2
   exit 1
 fi
+STALE_SEEDED_COUNT=$(printf '%s' "${STALE_JOURNAL}" | jq '.segments | length')
+if [ "$(printf '%s' "${ADOPT_JOURNAL}" | jq --argjson n "${STALE_SEEDED_COUNT}" \
+  '(.segments | length) == $n and .segments[-1].timestamp == 1 and .segments[-1].reason == "no-rollback-failure"')" != true ]; then
+  echo "FAIL: the STALE arm's refused deploy changed the seeded journal (expected ${STALE_SEEDED_COUNT} segment(s), newest timestamp 1): ${ADOPT_JOURNAL}" >&2
+  exit 1
+fi
+echo "    OK: the refused deploy left the seeded journal as it was"
 
 # The same, for the shape a removed newer segment leaves (#4402): a FAILED
 # attempt of the identical rule whose segment carries `supersededLogicalIds`
@@ -1169,6 +1177,13 @@ if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback
   echo "FAIL: could not read the rollback journal after the STALE-2 arm's refused deploy: ${ADOPT_JOURNAL}" >&2
   exit 1
 fi
+STALE2_SEEDED_COUNT=$(printf '%s' "${SUPERSEDED_JOURNAL}" | jq '.segments | length')
+if [ "$(printf '%s' "${ADOPT_JOURNAL}" | jq --argjson n "${STALE2_SEEDED_COUNT}" \
+  '(.segments | length) == $n and .segments[-1].timestamp == 2 and ((.segments[-1].supersededLogicalIds // []) | index("StrangerIngress")) != null')" != true ]; then
+  echo "FAIL: the STALE-2 arm's refused deploy changed the seeded journal (expected ${STALE2_SEEDED_COUNT} segment(s), newest timestamp 2 superseding StrangerIngress): ${ADOPT_JOURNAL}" >&2
+  exit 1
+fi
+echo "    OK: the refused deploy left the seeded journal as it was"
 
 # The refused deploys journaled nothing (go-to-k/cdkd#4356), so append the
 # segment a deploy whose Authorize landed but whose response was lost leaves:

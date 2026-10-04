@@ -410,13 +410,15 @@ export async function settleJournalAfterCleanRollback(
     );
     return false;
   }
-  await this.writeRollbackJournalSegment(
+  const kept = await this.writeRollbackJournalSegment(
     stackName,
     [],
     failedOperations,
     'auto-rollback-clean',
     initialDeploy
   );
+  // The write warns on its own failure; claiming a kept record would contradict it.
+  if (!kept) return true;
   this.logger.info(
     `The automatic rollback restored the pre-deploy state. The failed resource's pre-failure ` +
       `record was kept — if it was left partially applied, revert it.` +

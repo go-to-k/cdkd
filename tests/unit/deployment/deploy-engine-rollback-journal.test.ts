@@ -293,6 +293,26 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(retained.reason).toBe('auto-rollback-clean');
     expect(retained.operations).toEqual([]);
     expect(retained.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
+    const infos = (getLogger().info as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(infos.some((m) => m.includes('pre-failure record was kept'))).toBe(true);
+  });
+
+  it('clean auto-rollback whose failed-only re-write FAILS claims no kept record', async () => {
+    const changes = new Map([
+      ['A', makeChange('A')],
+      ['B', makeChange('B')],
+    ]);
+    const engine = buildEngine({ changes, deps: { A: [], B: [] }, failOn: new Set(['B']), noRollback: false, currentEtag: 'e0' });
+    // The auto-rollback-started write lands; the failed-only re-write after the pop does not.
+    journal.appendRollbackJournalSegment
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('S3 down'));
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+    expect(journal.popRollbackJournalSegment).toHaveBeenCalledWith(stackName, 'us-east-1');
+    expect(journal.appendRollbackJournalSegment).toHaveBeenCalledTimes(2);
+    const infos = (getLogger().info as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(infos.some((m) => m.includes('pre-failure record was kept'))).toBe(false);
+    expect(infos.some((m) => m.includes('--revert-failed'))).toBe(false);
   });
 
   it('clean auto-rollback with NO failed ops pops only THIS segment, preserving older ones (issue #1215)', async () => {
