@@ -171,7 +171,7 @@ A missing record comes about in one of two ways, and the remedy differs:
 
 | How the record went missing | What to do |
 | --- | --- |
-| A `cdkd import --migrate-from-cloudformation` stopped part-way: it records the parent before its nested stacks | Re-run the import; the resources are still live in the source CloudFormation stack. |
+| A `cdkd import --migrate-from-cloudformation` stopped part-way: it records the parent before its nested stacks | Re-run that import with `--force` (the parent record already exists); the resources are still live in the source CloudFormation stack. |
 | The record was removed after a deploy: by hand, or by `cdkd state orphan` (which a failed nested destroy suggests) | Its resources are no longer tracked by cdkd and may still exist in AWS; check before recreating the nested stack. |
 
 `--accept` and `--revert` refuse that row by name, as they refuse any deleted

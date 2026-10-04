@@ -1469,7 +1469,8 @@ const DELETED_RESOURCE_REMEDY =
  */
 const NESTED_RECORD_MISSING_REMEDY =
   `If the parent was imported with 'cdkd import --migrate-from-cloudformation' and that ` +
-  `import stopped part-way, its nested stacks were not recorded yet: re-run the import. ` +
+  `import stopped part-way, its nested stacks were not recorded yet: re-run that import ` +
+  `with --force, which rebuilds the parent record from the stack and then records them. ` +
   `Otherwise the resources the nested stack held are no longer tracked by cdkd and may ` +
   `still exist in AWS, and recreating it can collide with them. A deploy that does not ` +
   `change the nested stack will not recreate it: to recreate it, remove it from the CDK ` +
@@ -1484,7 +1485,7 @@ function nestedRecordMissingClause(
   return safeMsg`its nested stack's own state record ${reportIdent(
     nestedChildStackName(report.stackName, outcome.logicalId),
     STACK_REF_MAX_CODE_POINTS
-  )} no longer exists.`;
+  )} is not in state.`;
 }
 
 /**

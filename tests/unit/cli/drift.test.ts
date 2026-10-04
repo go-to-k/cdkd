@@ -4313,7 +4313,7 @@ describe('cdkd drift', () => {
       expect(output).toContain('Parent (us-east-1): drift detected on 1 resource');
       expect(output).toContain(
         `  - Child (${NESTED_ROW}) — RECORD MISSING: its nested stack's own state record ` +
-          'Parent~Child no longer exists.'
+          'Parent~Child is not in state.'
       );
       // `cdkd state orphan` is one way the record goes: cdkd, not "outside cdkd".
       expect(output).not.toContain(`Child (${NESTED_ROW}) — DELETED outside cdkd`);
@@ -4564,14 +4564,15 @@ describe('cdkd drift', () => {
 
       expect(mockSaveState).not.toHaveBeenCalled();
       expect(warned()).toContain(
-        `Child (${NESTED_ROW}): NOT reverted — its nested stack's own state record Parent~Child no longer exists.`
+        `Child (${NESTED_ROW}): NOT reverted — its nested stack's own state record Parent~Child is not in state.`
       );
       // An interrupted `--migrate-from-cloudformation` import leaves this shape
       // with the resources live: the remedy names that route BEFORE any
       // untracked-resource advice, and never tells the user to delete them.
       expect(warned()).toContain(
         "If the parent was imported with 'cdkd import --migrate-from-cloudformation' and that " +
-          'import stopped part-way, its nested stacks were not recorded yet: re-run the import.'
+          'import stopped part-way, its nested stacks were not recorded yet: re-run that import ' +
+          'with --force, which rebuilds the parent record from the stack and then records them.'
       );
       expect(warned()).toContain('may still exist in AWS');
       expect(warned()).not.toMatch(/delete them/);
@@ -4593,7 +4594,7 @@ describe('cdkd drift', () => {
 
       expect(mockSaveState).not.toHaveBeenCalled();
       expect(warned()).toContain(
-        `Child (${NESTED_ROW}): NOT accepted — its nested stack's own state record Parent~Child no longer exists.`
+        `Child (${NESTED_ROW}): NOT accepted — its nested stack's own state record Parent~Child is not in state.`
       );
       expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
         '1 nested stack(s) whose state record is gone were not accepted; each is named above.'
