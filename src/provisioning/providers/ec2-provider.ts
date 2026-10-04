@@ -7335,11 +7335,27 @@ export class EC2Provider implements ResourceProvider {
         // level, unlike the inline-rule case).
         return { GroupId: groupId, ...match };
       }
-      // No exact match — `undefined` ("cannot tell") rather than false drift on
-      // a different rule sharing the (protocol, ports) tuple, and NOT the
-      // gone sentinel: the whole-key compare also misses an ordinary
-      // same-account SG-to-SG rule, whose template omits the peer owner AWS
-      // always reports (see `securityGroupRuleMatchesCfnIngress`).
+      // No exact match: retry on the rule's IDENTITY (issue #4447). AWS keys a
+      // rule by its permission, so `Description` is a mutable attribute of it
+      // (two rules differing only in it cannot coexist) and an out-of-band
+      // description edit must read back as drift on THIS rule, not as "cannot
+      // tell" — which also kept `drift --revert` from ever restoring it. The
+      // peer owner AWS always reports is dropped too when the template does
+      // not declare it: the ordinary same-account SG-to-SG rule omits it (see
+      // `securityGroupRuleMatchesCfnIngress`). Only `sgRuleKey`'s READER use
+      // changes; its ownership / reorder callers still key on the whole rule.
+      const identity = (rule: CfnSgRule): string => {
+        const key = JSON.parse(sgRuleKey(rule, 'ingress')) as Record<string, unknown>;
+        delete key['d'];
+        if (properties['SourceSecurityGroupOwnerId'] == null) delete key['peerOwner'];
+        return JSON.stringify(key);
+      };
+      const wanted = identity(properties);
+      const identityMatches = flat.filter((r) => identity(r) === wanted);
+      if (identityMatches.length === 1) return { GroupId: groupId, ...identityMatches[0]! };
+      // Still none, or more than one: `undefined` ("cannot tell") rather than
+      // false drift on a different rule sharing the (protocol, ports) tuple,
+      // and NOT the gone sentinel.
       return undefined;
     }
 

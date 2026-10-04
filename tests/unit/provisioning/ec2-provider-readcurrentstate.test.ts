@@ -1425,6 +1425,164 @@ describe('EC2Provider.readCurrentState', () => {
         }
       );
       expect(result).not.toBe(RESOURCE_NOT_FOUND);
+      // go-to-k/cdkd#4447: the identity match (peer owner undeclared) reads it back.
+      expect(result).toEqual({
+        GroupId: 'sg-db',
+        IpProtocol: 'tcp',
+        FromPort: 5432,
+        ToPort: 5432,
+        SourceSecurityGroupId: 'sg-app',
+        SourceSecurityGroupOwnerId: '111122223333',
+        Description: 'from sg-app:5432',
+      });
+    });
+
+    describe('a Description edited out of band (go-to-k/cdkd#4447)', () => {
+      const declared = {
+        GroupId: 'sg-1',
+        IpProtocol: 'tcp',
+        FromPort: 443,
+        ToPort: 443,
+        CidrIp: '10.0.0.0/16',
+        Description: 'from the VPC',
+      };
+
+      it('returns the live rule with its new Description, so the difference reports as drift', async () => {
+        mockSend.mockResolvedValueOnce({
+          SecurityGroups: [
+            {
+              GroupId: 'sg-1',
+              IpPermissions: [
+                {
+                  IpProtocol: 'tcp',
+                  FromPort: 443,
+                  ToPort: 443,
+                  IpRanges: [
+                    { CidrIp: '10.0.0.0/16', Description: 'edited in the console' },
+                    { CidrIp: '192.168.0.0/16', Description: 'from the VPC' },
+                  ],
+                },
+              ],
+            },
+          ],
+        });
+
+        const result = await provider.readCurrentState(
+          'sg-1|tcp|443|443',
+          'Logical',
+          'AWS::EC2::SecurityGroupIngress',
+          declared
+        );
+
+        expect(result).toEqual({
+          GroupId: 'sg-1',
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          CidrIp: '10.0.0.0/16',
+          Description: 'edited in the console',
+        });
+      });
+
+      it('returns the live rule without a Description when it was removed', async () => {
+        mockSend.mockResolvedValueOnce({
+          SecurityGroups: [
+            {
+              GroupId: 'sg-1',
+              IpPermissions: [
+                { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: '10.0.0.0/16' }] },
+              ],
+            },
+          ],
+        });
+
+        const result = bagOf(
+          await provider.readCurrentState(
+            'sg-1|tcp|443|443',
+            'Logical',
+            'AWS::EC2::SecurityGroupIngress',
+            declared
+          )
+        );
+
+        expect(result).toEqual({
+          GroupId: 'sg-1',
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          CidrIp: '10.0.0.0/16',
+        });
+      });
+
+      it('keeps undefined when more than one live rule shares the identity', async () => {
+        // Two same-identity peers differing only in owner: undeclared owner
+        // makes both identity matches, so the reader cannot tell which is ours.
+        mockSend.mockResolvedValueOnce({
+          SecurityGroups: [
+            {
+              GroupId: 'sg-1',
+              IpPermissions: [
+                {
+                  IpProtocol: 'tcp',
+                  FromPort: 443,
+                  ToPort: 443,
+                  UserIdGroupPairs: [
+                    { GroupId: 'sg-peer', UserId: '111122223333', Description: 'a' },
+                    { GroupId: 'sg-peer', UserId: '444455556666', Description: 'b' },
+                  ],
+                },
+              ],
+            },
+          ],
+        });
+
+        const result = bagOf(
+          await provider.readCurrentState(
+            'sg-1|tcp|443|443',
+            'Logical',
+            'AWS::EC2::SecurityGroupIngress',
+            {
+              GroupId: 'sg-1',
+              IpProtocol: 'tcp',
+              FromPort: 443,
+              ToPort: 443,
+              SourceSecurityGroupId: 'sg-peer',
+              Description: 'c',
+            }
+          )
+        );
+
+        expect(result).toBeUndefined();
+      });
+
+      it('keeps undefined when no live rule shares the identity', async () => {
+        mockSend.mockResolvedValueOnce({
+          SecurityGroups: [
+            {
+              GroupId: 'sg-1',
+              IpPermissions: [
+                {
+                  IpProtocol: 'tcp',
+                  FromPort: 443,
+                  ToPort: 443,
+                  IpRanges: [{ CidrIp: '192.168.0.0/16', Description: 'from the VPC' }],
+                },
+              ],
+            },
+          ],
+        });
+
+        const result = bagOf(
+          await provider.readCurrentState(
+            'sg-1|tcp|443|443',
+            'Logical',
+            'AWS::EC2::SecurityGroupIngress',
+            declared
+          )
+        );
+
+        expect(result).toBeUndefined();
+      });
     });
   });
 
