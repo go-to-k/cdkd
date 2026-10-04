@@ -57,6 +57,8 @@ describe('EC2Provider.readCurrentState', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Also drop queued `mockResolvedValueOnce` answers a failing case left unconsumed.
+    mockSend.mockReset();
     provider = new EC2Provider();
   });
 
