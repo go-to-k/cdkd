@@ -161,7 +161,7 @@ import-lambda-url-attributes	2026-10-01T10:13:53Z	PASS	105	verify.sh	PR #4302 (#
 import-migrate-vpc	2026-09-28T17:48:20Z	PASS	350	verify.sh	rc ok, orph clean (#3950 lane B)
 import-nested-stack	2026-10-04T19:49:12Z	PASS	141	verify.sh	rc ok, orph clean (#4547)
 import-reimport-masked-attrs	2026-09-28T18:03:10Z	PASS	186	verify.sh	PR #4007 merge-gate run; new fixture; pre-fix binary red at phase 2; rc ok, orph clean
-import-retain-destroy	2026-10-04T19:49:12Z	PASS	115	verify.sh	rc ok, orph clean (#4547); arm R red at origin/main (R2 no imported mark, R3 imported param deleted)
+import-retain-destroy	2026-10-04T20:48:56Z	PASS	135	verify.sh	rc ok, orph clean (#4566); R3b red at origin/main (rollback --revert-failed exited 0, want 2)
 import-secret-observed	2026-10-03T10:38:15Z	PASS	135	verify.sh	rc ok, orph clean (#4508)
 import-value-strong-ref	2026-10-04T19:49:12Z	PASS	155	verify.sh	rc ok, orph clean (#4547)
 importvalue-chain	2026-10-02T23:53:44Z	PASS	145	verify.sh	rc ok, orph clean (#4475)
@@ -277,7 +277,7 @@ replacement-immutable-name	2026-10-02T19:47:13Z	PASS	216	verify.sh	rc ok, orph c
 replacement-rename-onto-holder	2026-10-04T09:21:25Z	PASS	641	verify.sh	rc ok, orph clean (#3932)
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
-rollback-command	2026-10-04T19:49:12Z	PASS	195	verify.sh	rc ok, orph clean (#4547)
+rollback-command	2026-10-04T20:48:56Z	PASS	200	verify.sh	rc ok, orph clean (#4566)
 rollback-cross-region-secret	2026-10-02T23:58:52Z	PASS	295	verify.sh	rc ok, orph clean (#4475)
 rollback-deletion-policy-snapshot	2026-10-02T13:55:47Z	PASS	141	verify.sh	rc ok, orph clean (#4436)
 rollback-explicit-name-rewrite	2026-10-04T17:04:46Z	PASS	201	verify.sh	rc ok, orph clean (#4408)
