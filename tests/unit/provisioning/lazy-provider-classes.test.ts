@@ -27,7 +27,7 @@ const PROVIDER_CLASSES = '../../../src/provisioning/provider-classes.js';
  * `extractLocalDeletionProtection` from this provider; moving that helper out
  * costs the provider file its `handledProperties` wiring evidence, and the
  * provider's SDK client (`@aws-sdk/client-dynamodb`) is on the startup path
- * anyway through `dynamodb-index-busy-delete.ts`.
+ * anyway, through `src/utils/aws-clients.ts`.
  */
 const STATICALLY_REACHED = new Set([
   '../../../src/provisioning/providers/dynamodb-globaltable-provider.js',
@@ -51,6 +51,8 @@ describe('provider classes stay off the command tree', () => {
     const { buildProgram } = await import('../../../src/cli/program.js');
     buildProgram();
     expect([...loaded].filter((p) => !STATICALLY_REACHED.has(p))).toEqual([]);
+    // The allow-list must still be needed: an entry nothing reaches is stale.
+    expect([...STATICALLY_REACHED].filter((p) => !loaded.has(p))).toEqual([]);
 
     // Positive control: every probed module is reached through the classes.
     const { loadProviderClasses } = await import(
