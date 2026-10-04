@@ -661,10 +661,13 @@ export async function revertNestedChildFromJournal(args: {
       recordDisplacedSkips(execCtx.recordEvent, childStackName, split.displaced);
       for (const op of split.displaced) {
         const shownId = displacedPhysicalIdShown(op, logger);
-        const recorded = shownId !== undefined ? safeMsg`${shownId}, which` : 'no physical id, and';
+        const recorded =
+          shownId !== undefined
+            ? safeMsg`${shownId}, which cdkd import has since replaced under this id`
+            : 'no physical id, and cdkd import has since put another resource under this id';
         logger.warn(
-          safeMsg`Nested stack ${childStackName}: ${op.logicalId} recorded ${recorded} cdkd import ` +
-            'has since replaced under this id; not reverted, check that resource by hand'
+          safeMsg`Nested stack ${childStackName}: ${op.logicalId} recorded ${recorded}; ` +
+            'not reverted, check that resource by hand'
         );
       }
     }
