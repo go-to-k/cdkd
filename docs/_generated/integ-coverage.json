@@ -2256,6 +2256,7 @@
       "integs": [
         "alb",
         "drift-revert-arrays",
+        "drift-revert-vpc",
         "export",
         "rollback-replay-effective-props",
         "sg-circular-dependency"
@@ -2265,6 +2266,9 @@
           "literal"
         ],
         "drift-revert-arrays": [
+          "l1"
+        ],
+        "drift-revert-vpc": [
           "l1"
         ],
         "export": [

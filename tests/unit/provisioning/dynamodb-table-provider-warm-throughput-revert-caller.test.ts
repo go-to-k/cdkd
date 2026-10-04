@@ -236,9 +236,19 @@ describe('cdkd drift --revert on an unrevertable WarmThroughput (issue #1768)', 
       'decreasing WarmThroughput is not supported'
     );
 
-    // 3. Nothing was recorded, so the NEXT drift still reports it — which is
-    //    what the provider's warning now says (and what makes `--revert`
-    //    honest rather than silently converging).
-    expect(mockSaveState).not.toHaveBeenCalled();
+    // 3. The skipped value was not recorded, so the NEXT drift still reports
+    //    it — which is what the provider's warning now says (and what makes
+    //    `--revert` honest rather than silently converging). The one write the
+    //    revert makes is the table's returned attributes (go-to-k/cdkd#4476),
+    //    which leaves both property baselines as they were.
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const [, , savedState] = mockSaveState.mock.calls[0] as unknown as [
+      string,
+      string,
+      { resources: Record<string, ResourceState> },
+    ];
+    const saved = savedState.resources['Table1']!;
+    expect(saved.observedProperties).toEqual(resource.observedProperties);
+    expect(saved.properties).toEqual(resource.properties);
   });
 });

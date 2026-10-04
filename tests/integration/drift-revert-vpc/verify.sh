@@ -7,9 +7,12 @@
 # Steps:
 #   1. install + build cdkd (root) + install fixture deps
 #   2. cdkd deploy CdkdDriftRevertVpcExample
-#   3. inject drift via direct AWS SDK calls
+#   3. inject drift via direct AWS SDK calls, and edit the standalone
+#      ingress rule's description out of band
 #   4. cdkd drift  -> assert exit 1 (drift detected)
 #   5. cdkd drift --revert -y  -> assert exit 0
+#   5b. the revert re-created the ingress rule under a new id, and the record's
+#       attributes.Id names the live rule, not the revoked one (#4476)
 #   6. cdkd drift  -> assert exit 0 (clean)
 #   6b. attach tg2 out-of-band, rewrite the recorded TargetGroupARNs to an
 #       import-style [{Ref}], cdkd deploy -> tg1 and tg2 stay attached, the
@@ -121,6 +124,30 @@ echo "[verify] step 2 ok: EnabledMetrics holds every known metric, and the obser
 echo "[verify] step 3: inject drift"
 node inject-drift.ts
 
+# go-to-k/cdkd#4476: the standalone ingress rule (port 8443 on Sg2). Its
+# recorded id must be the live rule's before the edit, or step 5b's comparison
+# proves nothing.
+ingress_record() { # prints "<groupId> <recorded attributes.Id>"
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | python3 -c "
+import json, sys
+r = json.load(sys.stdin)['resources']['DriftSgIngress']
+print(r['properties']['GroupId'], (r.get('attributes') or {}).get('Id', ''))"
+}
+live_ingress_ids() { # $1 = group id -> the live port-8443 ingress rule ids
+  aws ec2 describe-security-group-rules --filters "Name=group-id,Values=$1" --region "${REGION}" \
+    --query "SecurityGroupRules[?IsEgress==\`false\` && FromPort==\`8443\`].SecurityGroupRuleId" \
+    --output text
+}
+read -r INGRESS_SG OLD_INGRESS_ID <<<"$(ingress_record)"
+LIVE_INGRESS_ID="$(live_ingress_ids "${INGRESS_SG}")"
+if [ -z "${OLD_INGRESS_ID}" ] || [ "${LIVE_INGRESS_ID}" != "${OLD_INGRESS_ID}" ]; then
+  echo "[verify] FAIL: step 3: the recorded ingress Id '${OLD_INGRESS_ID}' is not the one live rule '${LIVE_INGRESS_ID}'"
+  exit 1
+fi
+aws ec2 update-security-group-rule-descriptions-ingress --group-id "${INGRESS_SG}" \
+  --security-group-rule-descriptions "SecurityGroupRuleId=${OLD_INGRESS_ID},Description=drift-revert-vpc-DRIFTED" \
+  --region "${REGION}" >/dev/null
+
 echo "[verify] step 4: cdkd drift (expect exit 1)"
 set +e
 ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
@@ -134,6 +161,28 @@ echo "[verify] step 4 ok: exit ${rc}"
 
 echo "[verify] step 5: cdkd drift --revert -y (expect exit 0)"
 ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
+
+# go-to-k/cdkd#4476: reverting the description revokes and re-authorizes the
+# rule, so AWS holds a NEW id; the record must name it. Before the fix the
+# record kept the revoked one.
+echo "[verify] step 5b: the record's ingress Id follows the re-created rule"
+read -r _ RECORDED_INGRESS_ID <<<"$(ingress_record)"
+LIVE_INGRESS_ID="$(live_ingress_ids "${INGRESS_SG}")"
+if [ -z "${LIVE_INGRESS_ID}" ] || [ "${LIVE_INGRESS_ID}" = "${OLD_INGRESS_ID}" ]; then
+  echo "[verify] FAIL: step 5b: expected the revert to re-create the rule under a new id (old '${OLD_INGRESS_ID}', live '${LIVE_INGRESS_ID}')"
+  exit 1
+fi
+if [ "${RECORDED_INGRESS_ID}" != "${LIVE_INGRESS_ID}" ]; then
+  echo "[verify] FAIL: step 5b: the record names '${RECORDED_INGRESS_ID}', the live rule is '${LIVE_INGRESS_ID}' (#4476)"
+  exit 1
+fi
+LIVE_INGRESS_DESC="$(aws ec2 describe-security-group-rules --security-group-rule-ids "${LIVE_INGRESS_ID}" \
+  --region "${REGION}" --query 'SecurityGroupRules[0].Description' --output text)"
+if [ "${LIVE_INGRESS_DESC}" != "drift-revert-vpc standalone ingress (templated)" ]; then
+  echo "[verify] FAIL: step 5b: the re-created rule's description is '${LIVE_INGRESS_DESC}'"
+  exit 1
+fi
+echo "[verify] step 5b ok: the record names the live rule ${LIVE_INGRESS_ID} (was ${OLD_INGRESS_ID})"
 
 # Known intermittent failure (go-to-k/cdkd#4147): AWS returns the ALB's
 # undeclared `ddos_protection.syn_cookie.mode` attribute only some of the time.

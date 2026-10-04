@@ -98,6 +98,7 @@ import {
   classifyReplaySecretRegion,
   producerRegionsFromState,
 } from '../../deployment/rollback-executor.js';
+import { recordAfterRollbackUpdate } from '../../deployment/rollback-executor/replay-retry.js';
 import { regionLessSecretName } from '../../deployment/secret-region-classification.js';
 import {
   inheritProducerRegions,
@@ -126,6 +127,7 @@ import {
   recordLogOnlyValue,
   recordMaskOnlyValue,
   recordMaskOnlyValuesIn,
+  recordNoEchoAttributeValues,
   redactSecretsForState,
   SECRET_MASK,
   STATE_SOURCED_BASELINE_RULES,
@@ -6122,6 +6124,15 @@ async function runRevert(
       // Collected inside the concurrent tasks and applied to state ONCE, under
       // the same lock, after they all settle.
       const narrowedByLogicalId = new Map<string, Record<string, unknown>>();
+      // go-to-k/cdkd#4476: the identity half of each revert's answer — the
+      // physical id and the redacted `attributes` the record takes from
+      // `update()`'s result, keyed by logical id and present only where they
+      // differ from the record. Applied in the same single write as the
+      // narrowings above.
+      const reRecordedByLogicalId = new Map<
+        string,
+        { physicalId: string; attributes: Record<string, unknown> | undefined }
+      >();
       // Issue #1914: one resolver per stack, re-resolving the secret expressions
       // the state baseline stores so the provider is handed the concrete value.
       // Deliberately NOT the drift-detection run's map: that one is keyed
@@ -6845,6 +6856,50 @@ async function runRevert(
                   `${maskSecretsInText(captureErr instanceof Error ? captureErr.message : String(captureErr), secrets)}`
               );
             }
+            // go-to-k/cdkd#4476: the record takes the identity `update()`
+            // returned, as the rollback replay's does (go-to-k/cdkd#4434) — a
+            // provider that re-creates on update (`SecurityGroupIngress`
+            // revokes and re-authorizes, minting a new `sgr-` id) otherwise
+            // leaves the record naming what it removed, which `cdkd export` and
+            // a later `Fn::GetAtt` read. `recordAfterRollbackUpdate` owns the
+            // merge (wholesale on `wasReplaced`, key-wise in place, untouched
+            // when none is returned, and the replaced physical id). Only its
+            // `physicalId` and `attributes` are taken: this command records a
+            // narrowing per key above, never the `properties` bag wholesale.
+            //
+            // In its own try for the same reason as the capture above: AWS has
+            // already been reverted.
+            try {
+              if (updateResult !== undefined) {
+                // A `NoEcho` declaration becomes mask-only needles BEFORE the
+                // redaction below, as the deploy engine and the rollback
+                // replay register it, or a custom resource's masked `Data`
+                // lands in `state.json` in the clear.
+                recordNoEchoAttributeValues(updateResult, secrets, newProperties);
+                const next = recordAfterRollbackUpdate(stateResource, updateResult);
+                // The attributes alone are scrubbed, by value, with the
+                // revert's resolved secrets — `scrubResourceRecord`'s
+                // `attributes` arm. The rest of the record is the one state
+                // already holds, redacted when it was written.
+                const attributes =
+                  next.attributes === undefined
+                    ? undefined
+                    : redactSecretsForState(next.attributes, secrets);
+                if (
+                  next.physicalId !== stateResource.physicalId ||
+                  JSON.stringify(attributes) !== JSON.stringify(stateResource.attributes)
+                ) {
+                  reRecordedByLogicalId.set(outcome.logicalId, {
+                    physicalId: next.physicalId,
+                    attributes,
+                  });
+                }
+              }
+            } catch (recordErr) {
+              logger.warn(
+                safeMsg`  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but the attributes the provider returned could not be recorded — ${maskSecretsInText(recordErr instanceof Error ? recordErr.message : String(recordErr), secrets)}`
+              );
+            }
           } catch (err) {
             // Distinguish "the AWS update failed" from "this resource type
             // does not support in-place update at all". The latter cannot be
@@ -6879,7 +6934,10 @@ async function runRevert(
         // is left alone when an observed capture exists: it is the user's
         // last-deployed TEMPLATE intent, and a narrowing is an AWS-side fact,
         // not a template edit.
-        if (narrowedByLogicalId.size > 0) {
+        //
+        // The same write carries each revert's returned identity
+        // (go-to-k/cdkd#4476), applied after the narrowing to the same record.
+        if (narrowedByLogicalId.size > 0 || reRecordedByLogicalId.size > 0) {
           const resources: Record<string, ResourceState> = { ...report.state.resources };
           let recordedCount = 0;
           for (const [logicalId, delta] of narrowedByLogicalId) {
@@ -6927,12 +6985,39 @@ async function runRevert(
               ? { ...existing, observedProperties: newBaseline }
               : { ...existing, properties: newBaseline };
           }
+          let reRecordedCount = 0;
+          for (const [logicalId, identity] of reRecordedByLogicalId) {
+            const existing = resources[logicalId];
+            if (!existing) continue;
+            reRecordedCount++;
+            // Absent rather than `undefined` when the answer dropped them —
+            // `recordAfterRollbackUpdate`'s shape for a replaced resource that
+            // reported none.
+            const { attributes: _replaced, ...rest } = existing;
+            resources[logicalId] = {
+              ...rest,
+              physicalId: identity.physicalId,
+              ...(identity.attributes !== undefined && { attributes: identity.attributes }),
+            };
+          }
 
-          if (recordedCount === 0) {
+          if (recordedCount === 0 && reRecordedCount === 0) {
             // Every reported narrowing was on a key state does not track, or was
             // a value on a template-only baseline — nothing to persist.
             return;
           }
+          const recordedParts: string[] = [];
+          if (recordedCount > 0) {
+            recordedParts.push(
+              `the value the provider actually applied on ${recordedCount} resource(s)`
+            );
+          }
+          if (reRecordedCount > 0) {
+            recordedParts.push(
+              `the identity the revert returned on ${reRecordedCount} resource(s)`
+            );
+          }
+          const recordedWhat = recordedParts.join(' and ');
 
           // `skippedOutputs` (issue #2740) is dropped here for the same reason
           // `--accept` drops it above: every writer that rebuilds state OUTSIDE
@@ -6964,22 +7049,34 @@ async function runRevert(
           try {
             await stateBackend.saveState(report.stackName, report.region, newState, saveOptions);
             logger.info(
-              `✓ State updated for ${report.stackName} (${report.region}): recorded the value the ` +
-                `provider actually applied on ${recordedCount} resource(s).`
+              `✓ State updated for ${report.stackName} (${report.region}): recorded ${recordedWhat}.`
             );
           } catch (err) {
             // Same treatment as site 2, and the same gate. The untrusted value in
             // this block is the STATE-WRITE error message -- the provider update
             // already succeeded; this is `saveState` failing after it.
             const revertAgain = revertCommandLine(report.stackName, report.region);
+            const unrecorded = [
+              ...(recordedCount > 0 ? ['the value the provider actually applied'] : []),
+              ...(reRecordedCount > 0 ? ['the identity the revert returned'] : []),
+            ].join(' and ');
             logger.warn(
-              `Reverted ${report.stackName} (${report.region}), but could not record the value the ` +
-                `provider actually applied: ${err instanceof Error ? err.message : String(err)}. ` +
-                `The next 'cdkd drift' will report the same difference — ` +
-                (revertAgain === undefined
-                  ? `re-run 'cdkd drift --revert' for this stack once the state write can succeed.`
-                  : `re-run the command below once the state write can succeed.` +
-                    `\nRevert with: ${revertAgain}`)
+              `Reverted ${report.stackName} (${report.region}), but could not record ${unrecorded}: ` +
+                `${err instanceof Error ? err.message : String(err)}.` +
+                // Before the narrowing's tail, whose `Revert with:` line must
+                // print last. No re-run helps here: the revert landed, so the
+                // next drift reports no difference to revert.
+                (reRecordedCount > 0
+                  ? ` The state record still holds the physical id and attributes from before ` +
+                    `the revert, which a later 'Fn::GetAtt' and 'cdkd export' read.`
+                  : '') +
+                (recordedCount > 0
+                  ? ` The next 'cdkd drift' will report the same difference — ` +
+                    (revertAgain === undefined
+                      ? `re-run 'cdkd drift --revert' for this stack once the state write can succeed.`
+                      : `re-run the command below once the state write can succeed.` +
+                        `\nRevert with: ${revertAgain}`)
+                  : '')
             );
           }
         }

@@ -2074,6 +2074,7 @@
     "--secret",
     "--secret-id",
     "--secret-string",
+    "--security-group-rule-descriptions",
     "--security-group-rule-ids",
     "--select",
     "--selection-id",
