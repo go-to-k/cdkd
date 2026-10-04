@@ -45,12 +45,10 @@ verify, clean up.
    orphans matching the stack about to deploy, and cdkd's diff does not see them,
    so the deploy attempts CREATE and collides. **Pick the region
    first**: `us-east-1`, unless the fixture's `verify.sh` header names a
-   constraint (`asset-bootstrap` needs a region with no cdkd asset storage,
-   #4063; its last ledger note shows a region that passed). In a parallel
-   set, each fixture whose header carries that SAFETY NOTE gets its OWN
-   region, probed free of the cdkd marker / asset bucket / repo and, where
-   the header asks, CDK's SSM parameter and bucket, passed via `AWS_REGION`
-   or the header's region variable. Every
+   constraint; its last ledger note shows a region that passed. In a parallel
+   set, each fixture whose header has a `SAFETY NOTE` (#4063) gets its OWN
+   region, probed for what that header needs absent or present, passed via
+   `AWS_REGION` or the header's region variable. Every
    resource-scan `--region`, `AWS_REGION` and synth/deploy/destroy `--region`
    in steps 4-7 then uses that region. Synth first (for the stack name and
    resource types), then scan:
