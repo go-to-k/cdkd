@@ -1068,7 +1068,9 @@ describe('a rollback puts back an inline policy its removal took from a record t
     expect(holding()).toEqual({ n: 'docOld' });
   });
 
-  it('an interrupted --revert-failed replay puts back what it removed (no completed-op replay follows)', async () => {
+  it('an interrupted --revert-failed replay warns for what it removed and puts nothing back', async () => {
+    // No completed-op replay follows, and the segment's completed ops are not
+    // reverted, so a holder's record may still be the failed deploy's (S1).
     const state: Record<string, ResourceState> = {
       Old: policyRecord('n', 'docOld'),
       New: policyRecord('n', 'docNew'),
@@ -1094,7 +1096,10 @@ describe('a rollback puts back an inline policy its removal took from a record t
     const result = await replayFailedOperations(failed, state, 'S', ctx, { isInterrupted: () => ops > 0 });
 
     expect(result.interrupted).toBe(true);
-    expect(holding()).toEqual({ n: 'docOld', q: 'docNew2' });
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(holding()).toEqual({ q: 'docNew2' });
+    expect(result.warnings).toBe(1);
+    expect(warned()).toContain('recorded by Old, but the rollback of Old has not completed');
   });
 
   it('CONTROL: an uninterrupted --revert-failed replay leaves the put-back to the completed-op replay', async () => {
@@ -1118,6 +1123,132 @@ describe('a rollback puts back an inline policy its removal took from a record t
 
     expect(result.interrupted).toBe(false);
     expect(policyProvider.create).not.toHaveBeenCalled();
+  });
+
+  it('S1: a holder whose own revert FAILED is not put back from (its record is the deploy\'s)', async () => {
+    // Deploy: A updated `x` d0 -> d1; B was created under `x`. Rollback: A's
+    // revert throws, so A's record stays the deploy's (d1); B's delete then
+    // removes `x`. Putting d1 back would write a grant the state before the
+    // deploy never held.
+    const state: Record<string, ResourceState> = {
+      A: policyRecord('x', 'd1'),
+      B: policyRecord('x', 'dB'),
+    };
+    put('x', 'dB');
+    policyProvider.update.mockRejectedValueOnce(new Error('throttled'));
+
+    const result = await replayRollback(
+      [updateOp('A', policyRecord('x', 'd0'), state['A']!), createOp('B', state['B']!)],
+      state,
+      'S',
+      ctx
+    );
+
+    expect(result.failures).toBe(1);
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(holding()).toEqual({});
+    expect(warned()).toContain('recorded by A, but the rollback of A has not completed');
+  });
+
+  const revertOps = (): { state: Record<string, ResourceState>; ops: CompletedOperation[] } => {
+    // Deploy: A updated `x` d0 -> d1 (A stays on the role), then the role R
+    // took `x` into its Policies. Rollback, newest first: R's revert drops
+    // `x` (a removal no writer claims), then A's revert.
+    const state: Record<string, ResourceState> = {
+      A: policyRecord('x', 'd1'),
+      R: roleRecord([{ PolicyName: 'x', PolicyDocument: 'docRole' }]),
+    };
+    put('x', 'docRole');
+    return {
+      state,
+      ops: [updateOp('A', policyRecord('x', 'd0'), state['A']!), updateOp('R', roleRecord([]), state['R']!)],
+    };
+  };
+
+  it('S1: an interrupt with the holder\'s revert still pending puts nothing back, and warns', async () => {
+    const { state, ops } = revertOps();
+    let reverted = 0;
+    roleProvider.update.mockImplementationOnce(async (...args: Parameters<typeof roleProvider.update>) => {
+      reverted++;
+      const [, physicalId, , props, prev, c] = args;
+      for (const p of prev.Policies) {
+        if (props.Policies.some((q) => q.PolicyName === p.PolicyName)) continue;
+        if (asked(c)?.('role', physicalId, p.PolicyName) === true) continue;
+        remove(p.PolicyName);
+      }
+      return { physicalId, wasReplaced: false };
+    });
+
+    const result = await replayRollback(ops, state, 'S', ctx, { isInterrupted: () => reverted > 0 });
+
+    expect(result.interrupted).toBe(true);
+    expect(policyProvider.update).not.toHaveBeenCalled();
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(holding()).toEqual({});
+    expect(warned()).toContain('recorded by A, but the rollback of A has not completed');
+  });
+
+  it('S1 CONTROL: once the holder\'s revert completed, its (pre-deploy) document is put back', async () => {
+    const { state, ops } = revertOps();
+    const events: unknown[] = [];
+
+    const result = await replayRollback(ops, state, 'S', { ...ctx, recordEvent: (e) => events.push(e) });
+
+    expect(result.warnings).toBe(0);
+    expect(policyProvider.create).toHaveBeenCalledTimes(1);
+    expect(policyProvider.create.mock.calls[0]![2]).toMatchObject({ PolicyName: 'x', PolicyDocument: 'd0' });
+    expect(holding()).toEqual({ x: 'd0' });
+    // S8: the grant the put-back wrote is in `cdkd events`, by logical id.
+    expect(events).toContainEqual({
+      eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+      stackName: 'S',
+      operation: 'UPDATE',
+      logicalId: 'A',
+      resourceType: POLICY,
+      provisionedBy: 'sdk',
+      reason: 'Put back the inline policy this resource records on its role, which the rollback had removed from it.',
+    });
+  });
+
+  it('S8: a refused or failed put-back records no success event', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+    policyProvider.create.mockRejectedValueOnce(new Error('denied'));
+    const events: Array<{ eventType: string; logicalId?: string }> = [];
+
+    await replayRollback([createOp('New', state['New']!)], state, 'S', {
+      ...ctx,
+      recordEvent: (e) => events.push(e),
+    });
+
+    expect(events.filter((e) => e.logicalId === 'Old')).toEqual([]);
+  });
+
+  it('S9: a put-back failure masks a secret-derived name only the holder\'s record carries', async () => {
+    // Old's name is secret-derived: its record keeps the reference as
+    // PolicyName and the resolved name as its physical id. The AWS error
+    // quotes it; only the holder's own record makes it a needle.
+    const state: Record<string, ResourceState> = {
+      Old: {
+        ...policyRecord('resolved-secret-name', 'docOld'),
+        properties: {
+          PolicyName: '{{resolve:secretsmanager:pn}}',
+          PolicyDocument: 'docOld',
+          Roles: [ROLE_PHYS],
+        },
+      },
+    };
+    const writers = new RollbackInlinePolicyWriters();
+    writers.claimedFor(POLICY, 'Gone', {})!('role', ROLE_PHYS, 'resolved-secret-name');
+    policyProvider.create.mockRejectedValueOnce(new Error('NoSuchEntity: resolved-secret-name'));
+
+    await replayRollback([], state, 'S', ctx, { inlinePolicyWriters: writers });
+
+    expect(warned()).toContain('could not put back the inline policy Old');
+    expect(warned()).not.toContain('resolved-secret-name');
   });
 
   it('a Cloud Control record holds the name too: the put-back writes what it records', async () => {
@@ -1244,6 +1375,11 @@ describe('a rollback puts back an inline policy its removal took from a record t
     ['the mask', { Statement: [{ Resource: '***' }] }],
     ['no document', undefined],
     ['an empty string', ''],
+    ['the mask as the whole document', '***'],
+    ['a secret reference as the whole document', '{{resolve:secretsmanager:s}}'],
+    ['null', null],
+    ['a number', 42],
+    ['an array', ['Statement']],
   ])('a recorded document holding %s is not put back, and it warns', async (_label, document) => {
     const state: Record<string, ResourceState> = {
       Old: { ...policyRecord('n', 'docOld'), properties: { PolicyName: 'n', PolicyDocument: document, Roles: [ROLE_PHYS] } },
@@ -1347,6 +1483,7 @@ describe('RollbackInlinePolicyWriters.takeHeldRemovals (go-to-k/cdkd#4408)', () 
         kind: 'role',
         holders: [{ logicalId: 'Old', principal: 'ROLE-PHYS', policyName: 'N', document: 'docOld' }],
         unreadable: [],
+        unsettled: [],
       },
     ]);
     expect(writers.takeHeldRemovals(state)).toEqual([]);

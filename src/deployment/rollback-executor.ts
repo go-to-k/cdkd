@@ -205,7 +205,7 @@ async function replayRollbackUnbound(
   if (operations.length === 0) {
     ctx.logger.info('No completed operations to roll back.');
     // go-to-k/cdkd#4408: a failed-only segment's removals (see below).
-    await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, ctx, result);
+    await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, stackName, ctx, result);
     return result;
   }
 
@@ -226,6 +226,10 @@ async function replayRollbackUnbound(
   // have, and both loops below are strictly sequential, so sharing adds no
   // concurrency exposure the failed-op sibling does not already carry.
   const resolver = new ReplayResolvers(ctx.region);
+
+  // go-to-k/cdkd#4408: until an op completes, its resource's record is the
+  // failed deploy's, which the put-back at the end never reads from.
+  inlinePolicyWriters.notePending(operations);
 
   const { createOps, otherOps } = partitionOps(operations);
 
@@ -277,8 +281,9 @@ async function replayRollbackUnbound(
   // go-to-k/cdkd#4408: an inline policy a removal above (or the segment's
   // failed-op replay before it, which shares `inlinePolicyWriters`) took off a
   // principal while a record still holds it there goes back, with that
-  // record's document. Interrupted too: what ran is final for this replay.
-  await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, ctx, result);
+  // record's document. Interrupted too: what ran is final for this replay,
+  // and an op it never reached is still pending, so its record holds nothing.
+  await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, stackName, ctx, result);
 
   ctx.logger.info('Rollback completed. Some resources may remain if deletion failed.');
   ctx.recordEvent?.({ eventType: 'ROLLBACK_FINISHED', stackName });
@@ -384,6 +389,11 @@ async function replaySingle(
     createRollbackRoute: undefined,
   };
 
+  // go-to-k/cdkd#4408: the op completed when it replaced or dropped the
+  // record, or found it already reverted. Anything else (a throw, a skip that
+  // left the deploy's record) leaves its holders unsettled.
+  const recordBefore = ownRecord(stateResources, op.logicalId);
+  let threw = false;
   try {
     // The three records this op can render an id of, as they stand: the op's
     // own, its previous state, and the live one. Inside the `try`, since they
@@ -494,7 +504,22 @@ async function replaySingle(
       ...(failedRoute && { provisionedBy: failedRoute }),
       error: maskedRollbackEventError(rollbackError, mask),
     });
+    threw = true;
+  } finally {
+    inlinePolicyWriters.noteOutcome(
+      op,
+      !threw &&
+        (action === 'skip-already-done' || ownRecord(stateResources, op.logicalId) !== recordBefore)
+    );
   }
+}
+
+/** The bag's own record for `logicalId`, never an inherited property. */
+function ownRecord(
+  stateResources: Record<string, ResourceState>,
+  logicalId: string
+): ResourceState | undefined {
+  return Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
 }
 
 /**
@@ -560,6 +585,8 @@ async function replayFailedOperationsUnbound(
   // has nothing left to act on and its warning was already shown once) is
   // considered handled and drops out of the journal.
   const pending = new Set<FailedOperation>();
+  // go-to-k/cdkd#4408: as in `replayRollback`.
+  inlinePolicyWriters.notePending(failedOps);
 
   for (let i = failedOps.length - 1; i >= 0; i--) {
     if (options.isInterrupted?.()) {
@@ -587,6 +614,10 @@ async function replayFailedOperationsUnbound(
     // ROLLBACK_RESOURCE_FAILED names the route the delete was going to take —
     // the one a Snapshot refusal is about. Undefined on the UPDATE arm.
     let createRollbackRoute: 'sdk' | 'cc-api' | undefined;
+    // go-to-k/cdkd#4408: the op completed when it replaced or dropped the
+    // record, or found nothing applied (`skip-failed-noop`).
+    const recordBefore = ownRecord(stateResources, op.logicalId);
+    let threw = false;
     try {
       addRecordNames(opMasker, op, stateResources[op.logicalId]);
       switch (action) {
@@ -1040,15 +1071,25 @@ async function replayFailedOperationsUnbound(
         ...(failedRoute && { provisionedBy: failedRoute }),
         error: maskedRollbackEventError(revertError, mask),
       });
+      threw = true;
     }
+    inlinePolicyWriters.noteOutcome(
+      op,
+      !threw &&
+        (action === 'skip-failed-noop' || ownRecord(stateResources, op.logicalId) !== recordBefore)
+    );
   }
   // go-to-k/cdkd#4408: no put-back here — the caller's `replayRollback` of
   // the segment's completed ops runs next over the same writers and does it,
   // once their records are final. An interrupt returns before that replay
   // (`cdkd rollback`), and the handled ops leave the journal, so a re-run
-  // would never repeat their removals: put back what they removed now.
+  // would never repeat their removals. Their holders' records may still be
+  // the failed deploy's (the segment's completed ops are not reverted), so
+  // each is warned about, not put back.
   if (result.interrupted) {
-    await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, ctx, result);
+    await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, stackName, ctx, result, {
+      refuseAll: true,
+    });
   }
   if (emitEnvelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_FINISHED', stackName });
   result.remainingFailedOps = failedOps.filter((op) => pending.has(op));

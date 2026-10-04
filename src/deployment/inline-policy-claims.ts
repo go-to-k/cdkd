@@ -143,6 +143,34 @@ export class RollbackInlinePolicyWriters {
       removers: Map<string, ResourceState | undefined>;
     }
   >();
+  /**
+   * The journaled ops of the replays over this bag that have not COMPLETED:
+   * `'pending'` until attempted, `'failed'` when attempted and not completed.
+   * Keyed by the op OBJECT, so registering one twice is a no-op.
+   */
+  private readonly unsettled = new Map<
+    object,
+    { logicalId: string; state: 'pending' | 'failed' }
+  >();
+
+  /**
+   * go-to-k/cdkd#4408: a replay registers its ops before running any. Until
+   * an op completes, its resource's record is the failed DEPLOY's post-op
+   * record, not the state before that deploy, so it is no holder to put back
+   * from ({@link takeHeldRemovals}).
+   */
+  notePending(ops: ReadonlyArray<{ logicalId: string }>): void {
+    for (const op of ops) {
+      if (!this.unsettled.has(op))
+        this.unsettled.set(op, { logicalId: op.logicalId, state: 'pending' });
+    }
+  }
+
+  /** How a registered op ended: `completed` settles it, otherwise it failed. */
+  noteOutcome(op: { logicalId: string }, completed: boolean): void {
+    if (completed) this.unsettled.delete(op);
+    else this.unsettled.set(op, { logicalId: op.logicalId, state: 'failed' });
+  }
 
   /**
    * Record a completed provider write. `record` is the object the caller has
@@ -236,11 +264,16 @@ export class RollbackInlinePolicyWriters {
    * the record that holds it).
    *
    * A REMOVER never holds its own removal while its record is still the one
-   * it had when it asked: the removal is noted BEFORE the call, so a delete or
-   * revert that failed or was skipped part-way (one principal detached, the
-   * next refused) keeps that record, and putting its document back would
-   * re-grant what this rollback had just revoked. A remover that completed
-   * replaced or dropped its record, which then no longer names the removal.
+   * it had when it asked: the removal is noted BEFORE the call, so a delete
+   * that failed or was skipped part-way (one principal detached, the next
+   * refused) keeps that record, and putting its document back would re-grant
+   * what this rollback had just revoked. A remover that completed replaced or
+   * dropped its record, which then no longer names the removal.
+   *
+   * A holder whose own op of this rollback has not completed
+   * ({@link notePending}) holds the failed deploy's grant, not the state
+   * before it: such a removal is handed out with that holder in `unsettled`,
+   * and nothing is put back.
    */
   takeHeldRemovals(stateResources: Record<string, ResourceState>): HeldInlinePolicyRemoval[] {
     const held: HeldInlinePolicyRemoval[] = [];
@@ -253,13 +286,13 @@ export class RollbackInlinePolicyWriters {
       );
       const others = holders.filter(
         (h) =>
-          !removers.has(h.logicalId) ||
-          removers.get(h.logicalId) === undefined ||
-          stateResources[h.logicalId] !== removers.get(h.logicalId)
+          !removers.has(h.logicalId) || stateResources[h.logicalId] !== removers.get(h.logicalId)
       );
       if (others.length === 0) continue;
       this.removals.delete(key);
-      held.push({ kind, holders: others, unreadable });
+      const open = new Set([...this.unsettled.values()].map((u) => u.logicalId));
+      const unsettled = [...new Set(others.map((h) => h.logicalId))].filter((id) => open.has(id));
+      held.push({ kind, holders: others, unreadable, unsettled });
     }
     return held;
   }
@@ -276,6 +309,11 @@ export interface HeldInlinePolicyRemoval {
    * be compared.
    */
   unreadable: string[];
+  /**
+   * Holders whose own op of this rollback has not completed, so their record
+   * is the failed deploy's, not the state before it.
+   */
+  unsettled: string[];
 }
 
 /** One record's claim to an inline policy name on a principal. */
@@ -378,7 +416,7 @@ function removalKey(
 /** IAM's role / group / user / inline policy name charset. */
 const IAM_NAME = /^[\w+=,.@-]+$/;
 
-const POLICY_LIST_FIELDS: Record<InlinePolicyPrincipalKind, string> = {
+export const POLICY_LIST_FIELDS: Record<InlinePolicyPrincipalKind, string> = {
   role: 'Roles',
   group: 'Groups',
   user: 'Users',

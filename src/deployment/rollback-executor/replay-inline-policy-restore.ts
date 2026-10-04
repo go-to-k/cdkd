@@ -2,28 +2,37 @@ import { isRedactedRecordedValue } from '../../provisioning/redacted-delete-addr
 import { safeMsg } from '../../utils/display-safe.js';
 import { carryLogOnlyValues, type RecordedSecretValues } from '../secret-redaction.js';
 import type { ResourceState } from '../../types/state.js';
-import type {
-  HeldInlinePolicyRemoval,
-  RollbackInlinePolicyWriters,
+import {
+  POLICY_LIST_FIELDS,
+  type HeldInlinePolicyRemoval,
+  type RollbackInlinePolicyWriters,
 } from '../inline-policy-claims.js';
 import { maskedFailureText, safe } from './messages.js';
 import { addRecordNames, createOpMasker } from './names.js';
 import type { RollbackExecutorContext, RollbackReplayResult } from './types.js';
 
-const LIST_FIELD = { role: 'Roles', group: 'Groups', user: 'Users' } as const;
-
 /**
  * go-to-k/cdkd#4408: put back each inline policy a removal of this rollback
  * took off a principal while a record still holds it there
  * ({@link RollbackInlinePolicyWriters.takeHeldRemovals}), with that record's
- * RECORDED document — what cdkd state says the principal holds. Run at the end
- * of each completed-op replay over the bag (`replayRollback`, never
- * `replayFailedOperations`, which runs BEFORE its segment's completed ops), so
- * every record of the segment is the one the rollback leaves.
+ * RECORDED document — what cdkd state says the principal holds, which need
+ * not be what AWS held before. Run at the end of each completed-op replay over
+ * the bag (`replayRollback`), when every record of the segment is the one the
+ * rollback leaves. `replayFailedOperations` runs BEFORE its segment's
+ * completed ops, so it calls this only when interrupted (no completed-op
+ * replay follows), with `refuseAll`: the records it would read may still be
+ * the failed deploy's, so it warns for each and puts nothing back.
+ *
+ * A holder whose own op of this rollback has not completed is not put back
+ * from either (`unsettled`): its record is the failed deploy's post-op one,
+ * and the rollback never writes a grant the state before that deploy lacked.
  *
  * The put is `IAMPolicyProvider.create` with a one-principal bag naming the
  * holder's name explicitly: exactly one `Put{Role,Group,User}Policy`, the same
  * serialization the role / group / user providers use for a `Policies` entry.
+ *
+ * A successful put is recorded as a `ROLLBACK_RESOURCE_SUCCEEDED` event on
+ * the holder's logical id, so `cdkd events` shows the grant it wrote.
  *
  * It puts nothing, and warns, when the holders' documents differ, or one is
  * absent or redacted (a `{{resolve:...}}` reference or the mask, which would
@@ -34,19 +43,23 @@ const LIST_FIELD = { role: 'Roles', group: 'Groups', user: 'Users' } as const;
 export async function restoreHeldInlinePolicies(
   writers: RollbackInlinePolicyWriters,
   stateResources: Record<string, ResourceState>,
+  stackName: string,
   ctx: RollbackExecutorContext,
-  result: Pick<RollbackReplayResult, 'warnings'>
+  result: Pick<RollbackReplayResult, 'warnings'>,
+  options: { refuseAll?: boolean } = {}
 ): Promise<void> {
   for (const removal of writers.takeHeldRemovals(stateResources)) {
-    await restoreOne(removal, stateResources, ctx, result);
+    await restoreOne(removal, stateResources, stackName, ctx, result, options.refuseAll === true);
   }
 }
 
 async function restoreOne(
-  { kind, holders, unreadable }: HeldInlinePolicyRemoval,
+  { kind, holders, unreadable, unsettled }: HeldInlinePolicyRemoval,
   stateResources: Record<string, ResourceState>,
+  stackName: string,
   ctx: RollbackExecutorContext,
-  result: Pick<RollbackReplayResult, 'warnings'>
+  result: Pick<RollbackReplayResult, 'warnings'>,
+  refuseAll: boolean
 ): Promise<void> {
   const { logger } = ctx;
   // Logical ids only: a policy or principal name can be secret-derived.
@@ -54,6 +67,16 @@ async function restoreOne(
   const lost =
     safeMsg`the ${kind} it is on lacks that inline policy until the resource is next updated, or ` +
     `'cdkd drift <stack> --revert' restores it`;
+  if (refuseAll || unsettled.length > 0) {
+    const pending = refuseAll ? ids : unsettled.map((id) => safe(id)).join(', ');
+    logger.warn(
+      safeMsg`  Rollback: an inline policy this rollback removed is recorded by ${ids}, but the ` +
+        safeMsg`rollback of ${pending} has not completed, so that record may be the failed ` +
+        safeMsg`deploy's and cdkd did not put it back; ${lost}.`
+    );
+    result.warnings++;
+    return;
+  }
   if (unreadable.length > 0) {
     logger.warn(
       safeMsg`  Rollback: an inline policy this rollback removed is recorded by ${ids}, and ` +
@@ -115,7 +138,7 @@ async function restoreOne(
       {
         PolicyName: holder.policyName,
         PolicyDocument: holder.document,
-        [LIST_FIELD[kind]]: [holder.principal],
+        [POLICY_LIST_FIELDS[kind]]: [holder.principal],
       },
       { maskSecrets: masker.mask }
     );
@@ -132,6 +155,17 @@ async function restoreOne(
     return;
   }
   logger.info(safeMsg`  Rollback: put back the inline policy ${ids} records on its ${kind}`);
+  // Logical id and kind only, as the lines above: no name or document.
+  const holderType = stateResources[holder.logicalId]?.resourceType;
+  ctx.recordEvent?.({
+    eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+    stackName,
+    operation: 'UPDATE',
+    logicalId: holder.logicalId,
+    ...(typeof holderType === 'string' && { resourceType: holderType }),
+    provisionedBy: 'sdk',
+    reason: `Put back the inline policy this resource records on its ${kind}, which the rollback had removed from it.`,
+  });
 }
 
 /**

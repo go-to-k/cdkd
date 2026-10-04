@@ -138,7 +138,7 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
     // failure stops it before HandoffOld's delete, and the rollback deletes
     // HandoffNew, removing the name HandoffOld still records: the rollback
     // must put HandoffOld's document back (go-to-k/cdkd#4408).
-    const handoffNew = handoff
+    const handoffPolicy = handoff
       ? inlinePolicy('HandoffNew', 'cdkd-iam-drift-clean-handoff', 'sqs:DeleteMessage')
       : inlinePolicy('HandoffOld', 'cdkd-iam-drift-clean-handoff', 'sqs:ChangeMessageVisibility');
     const toRole = inlinePolicy(
@@ -157,7 +157,7 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
       });
       failing.addDependency(swapB);
       failing.addDependency(toRole);
-      failing.addDependency(handoffNew);
+      failing.addDependency(handoffPolicy);
       failing.addDependency(role.node.defaultChild as cdk.CfnResource);
     }
 
