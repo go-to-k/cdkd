@@ -381,6 +381,9 @@ export function findUnwrittenCreateOnlyRefusals(
     const record = stateResources[logicalId];
     if (record === undefined || record.provisionedBy === 'cc-api') continue;
     if (record.resourceType !== change.resourceType) continue;
+    // No `lostWithParent` gate, unlike the engine: no type a recreated
+    // parent takes with it has a create-only silent drop, so none can carry
+    // evidence (fenced in tests/unit/deployment/accepted-create-only-drops.test.ts).
     const propertyChanges = change.propertyChanges ?? [];
     const desired: Record<string, unknown> = { ...(change.desiredProperties ?? {}) };
     for (const pc of propertyChanges) desired[pc.path] = pc.newValue;
@@ -393,12 +396,26 @@ export function findUnwrittenCreateOnlyRefusals(
       propertyChanges.filter((pc) => pc.requiresReplacement).map((pc) => pc.path)
     );
     if (keys.length === 0) continue;
+    // The keep-dropping list the engine's refusal names: the route is per
+    // RESOURCE, so the deploy stays on the SDK provider only with every
+    // route-driving key allow-listed, not just the unwritten ones.
+    const routeDriving = findActionableSilentDrops(
+      change.resourceType,
+      desired,
+      new Set<string>(),
+      record.properties ?? {}
+    ).map(({ property }) => property);
+    const keep = [...new Set([...keys, ...routeDriving])]
+      .sort((a, b) => a.localeCompare(b))
+      .map((property) => displayIdent(`${change.resourceType}:${property}`))
+      .join(',');
     reasons.push(
       `${displayIdent(logicalId)} (${displayIdent(change.resourceType)}): the replacement above ` +
-        `would apply create-only ${keys.map((k) => displayIdent(k)).join(', ')}, which an ` +
-        `earlier deploy kept off AWS with --prefer-sdk-route. 'cdkd deploy' refuses it ` +
-        `(CREATE_ONLY_DROP_NEEDS_REPLACEMENT) unless --recreate-via-cc-api or --replace opts ` +
-        `in; a deploy that still passes --prefer-sdk-route for it changes nothing.`
+        `would apply create-only ${keys.map((k) => displayIdent(k)).join(', ')}, which the ` +
+        `state record holds although the SDK provider never wrote it, so AWS does not. ` +
+        `'cdkd deploy' refuses it (CREATE_ONLY_DROP_NEEDS_REPLACEMENT) unless ` +
+        `--recreate-via-cc-api or --replace opts in; a deploy passing --prefer-sdk-route ` +
+        `${keep} changes nothing.`
     );
   }
   return reasons;

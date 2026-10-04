@@ -394,6 +394,22 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
       expect(records['MySubnet']!['acceptedCreateOnlyDrops']).toEqual([CREATE_ONLY]);
     });
 
+    it('the carried evidence is what a following flag-less deploy refuses on', async () => {
+      const first = await provision(sdkEngine(), { desired: TAGGED, changes: IN_PLACE });
+      const written = first['MySubnet']!;
+      // The next deploy drops the flag; its diff reports the key as added.
+      allowed = new Set();
+      callOrder = [];
+      const err = await refusal(makeEngine(), {
+        recorded: written['properties'] as Record<string, unknown>,
+        desired: TAGGED,
+        evidence: written['acceptedCreateOnlyDrops'] as string[],
+        provisionedBy: written['provisionedBy'] as 'sdk',
+      });
+      expect(err!.cause?.code).toBe('CREATE_ONLY_DROP_NEEDS_REPLACEMENT');
+      expect(callOrder).toEqual([]);
+    });
+
     it('never ASSERTS evidence for an imported record the update did not create', async () => {
       const records = await provision(sdkEngine(), {
         desired: TAGGED,
@@ -499,10 +515,11 @@ describe('unwrittenCreateOnlyRefusal', () => {
     );
   });
 
-  it('never claims an earlier --prefer-sdk-route deploy put the key there', () => {
-    // A record written before that flag existed holds one too.
+  it('states the cause as the route, never as this deploy omitting the key', () => {
+    // A sibling drop the flags do not cover routes the resource too, so
+    // "this deploy no longer accepts the drop" would be false for it.
     const msg = unwrittenCreateOnlyRefusal({ ...base, unwritten: ['DBName'] });
-    expect(msg).not.toContain('earlier deploy');
+    expect(msg).toContain('This deploy routes the resource through Cloud Control');
     expect(msg).not.toContain('no longer accepts');
   });
 

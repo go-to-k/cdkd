@@ -309,8 +309,8 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
   /**
    * The remedy is per property, because "remove the override" is not enough
    * for a create-only one: with the flag gone it can only be applied by a
-   * REPLACEMENT, which the deploy refuses until it is opted into
-   * (go-to-k/cdkd#2790).
+   * REPLACEMENT, which the deploy refuses until it is opted into where cdkd
+   * created the resource without it (go-to-k/cdkd#2790).
    */
   it('tells a create-only drop it needs a RECREATE, not a flag removal', () => {
     const fx = pickCreateOnlyDropFixture();
@@ -329,6 +329,10 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     expect(msg).toContain(fx.property);
     expect(msg).toContain('create-only');
     expect(msg).toContain('can only be applied by recreating the resource');
+    // Scoped: an imported record carries no evidence and is never refused.
+    expect(msg).toContain(
+      'Where cdkd created the resource without it, a deploy without the override refuses'
+    );
     // The false remedy must be GONE for this property, not merely joined by the
     // true one — it is the sentence a user would act on.
     expect(msg).not.toContain('Remove the override');

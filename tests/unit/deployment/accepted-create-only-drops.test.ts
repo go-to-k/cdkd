@@ -5,6 +5,7 @@ import {
   unwrittenCreateOnlyReplacement,
 } from '../../../src/provisioning/property-coverage.js';
 import { acceptedCreateOnlyDropsOf } from '../../../src/types/state.js';
+import { childStoredInParentTypes } from '../../../src/deployment/child-of-recreated-parent.js';
 
 /**
  * go-to-k/cdkd#2790 — `ResourceState.acceptedCreateOnlyDrops`, the evidence
@@ -134,4 +135,19 @@ describe('unwrittenCreateOnlyReplacement (the shared refusal predicate)', () => 
   it('does not fire with nothing replacing', () => {
     expect(unwrittenCreateOnlyReplacement(TYPE, RECORD, RECORD, NONE, EVIDENCE, [])).toEqual([]);
   });
+});
+
+/**
+ * `cdkd diff`'s label (`findUnwrittenCreateOnlyRefusals`) omits the engine's
+ * `lostWithParent` exclusion because the two populations are disjoint: a
+ * child the engine re-creates with its parent is one of these types, and none
+ * of them has a create-only silent drop, so none can carry evidence. A type
+ * gaining one here must add the exclusion to the diff label.
+ */
+it('no child-of-a-recreated-parent type has a create-only silent drop', () => {
+  const types = childStoredInParentTypes();
+  expect(types.length).toBeGreaterThan(5);
+  expect(
+    types.filter((type) => (getPropertyCoverage(type)?.createOnlyDrops.size ?? 0) > 0)
+  ).toEqual([]);
 });

@@ -1163,10 +1163,14 @@ export class ProviderRegistry {
       if (overridden.length > 0) {
         // The REMEDY is per property, because "remove the override" is not
         // enough for a create-only one (issue #2790): with the flag gone the
-        // property can only be applied by a REPLACEMENT, and the deploy
-        // refuses that until it is opted into (`unwrittenCreateOnlyRefusal`
-        // in `deploy-engine/update.ts`, which names the flags with their
-        // conditions at the moment they apply).
+        // property can only be applied by a REPLACEMENT. Where the record
+        // shows cdkd itself created the resource without it
+        // (`acceptedCreateOnlyDrops`), the deploy refuses that replacement
+        // until it is opted into (`unwrittenCreateOnlyRefusal` in
+        // `deploy-engine/update.ts`, which names the flags with their
+        // conditions); an imported or older record carries no such evidence
+        // and diffs unchanged. This line cannot tell the two apart, so it says
+        // which case the refusal is.
         //
         // The create-only sentence deliberately prescribes NO COMMAND. The
         // obvious one, `--recreate-via-cc-api <LogicalId>`, is REFUSED by
@@ -1212,8 +1216,9 @@ export class ProviderRegistry {
             `${needsRecreate.join(', ')} ${one ? 'is' : 'are'} create-only, so ` +
               `removing the override does not apply ${one ? 'it' : 'them'} in place ` +
               `-- a create-only property can only be applied by recreating the ` +
-              `resource, and a deploy without the override refuses unless something ` +
-              `else already forces a replacement or the recreate is opted into.`
+              `resource. Where cdkd created the resource without ${one ? 'it' : 'them'}, ` +
+              `a deploy without the override refuses unless something else already ` +
+              `forces a replacement or the recreate is opted into.`
           );
         }
         this.logger.warn(

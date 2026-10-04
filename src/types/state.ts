@@ -1045,6 +1045,15 @@ export function describeRegionValueKind(value: unknown): string {
  *    publish the bag's `"0"` key. The filter is the identity on every healthy
  *    `string[]`.
  */
+export function importableOutputKeys(state: Pick<StackState, 'outputs' | 'exportNames'>): string[] {
+  if (!hasReadableExportSet(state)) return [];
+  const outputs = state.outputs;
+  if (state.exportNames === undefined) return Object.keys(outputs);
+  return state.exportNames.filter(
+    (name) => typeof name === 'string' && Object.hasOwn(outputs, name)
+  );
+}
+
 /**
  * The record's {@link ResourceState.acceptedCreateOnlyDrops} as a set. A
  * missing field, a non-array, or a non-string entry is NO evidence: the field
@@ -1055,15 +1064,6 @@ export function acceptedCreateOnlyDropsOf(record: unknown): ReadonlySet<string> 
   const value = (record as { acceptedCreateOnlyDrops?: unknown }).acceptedCreateOnlyDrops;
   if (!Array.isArray(value)) return new Set();
   return new Set(value.filter((entry): entry is string => typeof entry === 'string'));
-}
-
-export function importableOutputKeys(state: Pick<StackState, 'outputs' | 'exportNames'>): string[] {
-  if (!hasReadableExportSet(state)) return [];
-  const outputs = state.outputs;
-  if (state.exportNames === undefined) return Object.keys(outputs);
-  return state.exportNames.filter(
-    (name) => typeof name === 'string' && Object.hasOwn(outputs, name)
-  );
 }
 
 /**

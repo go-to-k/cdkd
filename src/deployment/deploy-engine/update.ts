@@ -756,10 +756,9 @@ export async function provisionUpdate(
  *
  * It states only what holds in every case it fires on: the record holds the
  * key, the SDK provider never writes it, and this deploy routes the resource
- * through Cloud Control. It does NOT claim an earlier `--prefer-sdk-route`
- * deploy put the key there — a record written before that flag existed holds
- * one too — nor that this deploy's flags omit it, since a sibling drop the
- * flags do not cover routes the resource just the same.
+ * through Cloud Control. It does NOT claim this deploy's flags omit the key,
+ * since a sibling drop the flags do not cover routes the resource just the
+ * same.
  *
  * `routeDriving` is every key that sends the resource to Cloud Control on this
  * deploy. Keeping the resource on its SDK provider needs ALL of them, and the

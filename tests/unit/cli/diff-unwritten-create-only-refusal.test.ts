@@ -60,6 +60,24 @@ describe('findUnwrittenCreateOnlyRefusals', () => {
     ).toEqual([]);
   });
 
+  it('names every route-driving key in the keep list, an un-allowed sibling drop included', () => {
+    const row: ResourceChange = {
+      ...ROW,
+      desiredProperties: { ...DECLARED, EnableDns64: true },
+      propertyChanges: [
+        ...ROW.propertyChanges!,
+        { path: 'EnableDns64', oldValue: undefined, newValue: true, requiresReplacement: false },
+      ],
+    };
+    const reasons = findUnwrittenCreateOnlyRefusals(new Map([['MySubnet', row]]), {
+      MySubnet: record(),
+    });
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain(
+      '--prefer-sdk-route AWS::EC2::Subnet:AvailabilityZoneId,AWS::EC2::Subnet:EnableDns64 changes nothing'
+    );
+  });
+
   it('does not label a row another property also replaces', () => {
     const row = change([
       ['AvailabilityZoneId', 'use1-az1'],
