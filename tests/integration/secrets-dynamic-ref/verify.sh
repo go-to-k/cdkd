@@ -1281,13 +1281,22 @@ no_b64_in_state "state.json after the unchanged redeploy" "${B64_EDIT_STATE}"
 # declared again, for the later `diff --fail` guard.
 jq 'del(.outputs.Base64Secret, .outputs.Base64Pin)
   | del(.resources.Base64UserDataParam.maskedPropertyFingerprints)' "${B64_EDIT_STATE}" > "${B64_TRIMMED}"
-if jq -e '(.resources.Base64UserDataParam | has("maskedPropertyFingerprints"))
-  or (.resources.Base64UserDataParam.properties.Value != "***")' "${B64_TRIMMED}" >/dev/null; then
+# `jq -e` exits 5 on an error (a missing record would make `has` fail), and
+# an `if` reads that as false: so the record's ABSENCE is a premise failure
+# stated in the filter, and the premise is asserted as a positive `true`.
+if [ "$(jq -r '(.resources.Base64UserDataParam // null) as $r
+  | ($r != null and ($r | has("maskedPropertyFingerprints") | not)
+     and $r.properties.Value == "***")' "${B64_TRIMMED}")" != "true" ]; then
   echo "FAIL: premise: could not strip the fingerprint from a masked Base64UserDataParam record -- the legacy-upgrade arm would test nothing (issue #4451)" >&2
   exit 1
 fi
 aws s3 cp "${B64_TRIMMED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
 # An unchanged deploy over the legacy record: nothing sent, field restored.
+# This deploy's no-change save is ALSO triggered by the two probe outputs it
+# declares again (`outputsChanged`), so it does not prove the backfill alone
+# triggers a save; the unit test in
+# `tests/unit/deployment/deploy-engine-base64-secret-noop.test.ts` pins that.
+# What it does prove is the live half: no version bump, the field restored.
 if ! DEPLOY_OUT_B64_LEGACY=$(CDKD_TEST_BASE64_LEAK=true CDKD_TEST_BASE64_EDIT=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes 2>&1); then
   no_b64_leak "the failed legacy-upgrade deploy's log" "${DEPLOY_OUT_B64_LEGACY}"

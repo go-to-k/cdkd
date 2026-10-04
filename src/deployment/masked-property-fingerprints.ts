@@ -20,10 +20,11 @@
  * parameter as its `Ref`, so nothing the deploy resolved enters the hash: it
  * is no confirm oracle, unlike a salted hash beside the mask
  * (`.claude/rules/layout-deployment-secrets.md`). The one way a secret can
- * still reach it is a template LITERAL equal to a value the same resource
- * resolved as a secret; such a property is refused a hash
- * ({@link REFUSED_FINGERPRINT}) whenever the save holds that resource's
- * needles, and keeps the pre-#4451 comparison.
+ * still reach it is a template LITERAL equal to a `NoEcho` parameter's value
+ * or to a value the same resource resolved as a secret; such a property is
+ * refused a hash ({@link REFUSED_FINGERPRINT}) and keeps the pre-#4451
+ * comparison. The parameter values are known from deploy start (backfill and
+ * every save); a resolved value only to a save that resolved the resource.
  *
  * COMPATIBILITY. A record with no fingerprint for a masked property (every
  * record an older cdkd wrote) is compared exactly as before. The deploy

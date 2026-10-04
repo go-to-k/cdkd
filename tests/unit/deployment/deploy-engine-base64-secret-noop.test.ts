@@ -6,7 +6,10 @@ import {
   markWrittenFromDeployedTemplate,
   maskedPropertyFingerprint,
 } from '../../../src/deployment/masked-property-fingerprints.js';
-import { recordFreshNoEchoValuesIn } from '../../../src/deployment/secret-redaction.js';
+import {
+  recordFreshNoEchoValuesIn,
+  recordLogOnlyValue,
+} from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 
@@ -242,7 +245,8 @@ describe('DeployEngine - a rollback-orphaned record this deploy created keeps it
     bag: Record<string, unknown>,
     resolvedType: string,
     templateProps: Record<string, unknown> = PROPS,
-    secrets: Map<string, string> = new Map()
+    secrets: Map<string, string> = new Map(),
+    noEchoValues?: Map<string, string>
   ): StackState {
     const engine = new DeployEngine(
       {} as never,
@@ -256,6 +260,7 @@ describe('DeployEngine - a rollback-orphaned record this deploy created keeps it
     engine.perResourceTemplateProps.set('R', templateProps);
     engine.perResourceResolvedType.set('R', resolvedType);
     engine.perResourceSecrets.set('R', secrets);
+    engine.fingerprintNoEchoValues = noEchoValues;
     const state: StackState = {
       version: 10,
       stackName: 's',
@@ -293,6 +298,21 @@ describe('DeployEngine - a rollback-orphaned record this deploy created keeps it
       'AWS::SSM::Parameter',
       literal,
       new Map([['pw-secret-value', '{{resolve:ssm-secure:/app/pw}}']])
+    );
+    expect(saved.orphans![0]!.state.maskedPropertyFingerprints).toEqual({
+      Value: REFUSED_FINGERPRINT,
+    });
+  });
+
+  it('refuses a hash to an orphan whose template spells a NoEcho parameter value (R4)', () => {
+    const noEcho = new Map<string, string>();
+    recordLogOnlyValue(noEcho, 'noecho-param-value-42');
+    const saved = persistOrphan(
+      markWrittenFromDeployedTemplate({ Name: '/app/ud', Type: 'String', Value: '***' }),
+      'AWS::SSM::Parameter',
+      { ...PROPS, Value: base64Value('p=noecho-param-value-42;') },
+      new Map(),
+      noEcho
     );
     expect(saved.orphans![0]!.state.maskedPropertyFingerprints).toEqual({
       Value: REFUSED_FINGERPRINT,

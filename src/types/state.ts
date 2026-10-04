@@ -793,7 +793,8 @@ export interface ResourceState {
    * property whose template hash moved as changed; a rotated secret behind an
    * unchanged template leaves it equal. Only template text is hashed, never a
    * resolved value; a property whose template text holds, as a literal, a
-   * value the same resource resolved as a secret gets `REFUSED_FINGERPRINT`
+   * `NoEcho` parameter value or a value the same resource resolved as a
+   * secret gets `REFUSED_FINGERPRINT`
    * instead of a hash, so the field is no oracle for the secret.
    *
    * ABSENT (or malformed, or refused, read through
