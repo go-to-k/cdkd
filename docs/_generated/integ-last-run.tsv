@@ -84,9 +84,9 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-10-04T16:44:59Z	PASS	105	verify.sh	rc ok, orph clean (#2080 PR #4557)
 docdb-neptune	2026-10-03T05:35:39Z	PASS	5713	verify.sh	rc ok, orph clean (#4283 PR #4449)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-04T17:04:46Z	PASS	311	verify.sh	rc ok, orph clean (#4408)
+drift-revert	2026-10-04T17:56:15Z	PASS	310	verify.sh	rc ok, orph clean (#4533)
 drift-revert-arrays	2026-10-04T10:29:43Z	PASS	185	verify.sh	rc ok, orph clean (#4476)
-drift-revert-vpc	2026-10-04T17:04:46Z	PASS	370	verify.sh	rc ok, orph clean (#4408)
+drift-revert-vpc	2026-10-04T17:56:15Z	PASS	356	verify.sh	rc ok, orph clean (#4533)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-04T06:42:40Z	PASS	206	verify.sh	rc ok, orph clean, #4105 reversed mixed-type arm; reverted-fix run RED at phase 3f
 dynamodb-autoscaling	2026-10-03T04:27:36Z	PASS	83	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -239,7 +239,7 @@ multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 sta
 multi-resource	2026-10-03T09:39:45Z	PASS	65	std-flow	rc ok, orph clean (#4505)
 multi-stack-deps	2026-10-03T09:41:05Z	PASS	80	std-flow	rc ok, orph clean (#4505)
 nested-required-preflight	2026-09-23T18:43:53Z	PASS	53	verify.sh	rc ok, orph clean (#1802)
-nested-stack	2026-10-04T03:21:48Z	PASS	65	verify.sh	rc ok, orph clean (#4521 lazy provider classes)
+nested-stack	2026-10-04T17:56:15Z	PASS	75	verify.sh	rc ok, orph clean (#4533)
 nested-stack-3level	2026-10-04T01:59:33Z	PASS	320	verify.sh	rc ok, orph clean (#1989 PR #4524)
 nested-stack-deep	2026-10-04T03:21:48Z	PASS	105	verify.sh	rc ok, orph clean (#4521; first run failed on the pre-#4252 arrow grep, fixed here)
 nested-stack-replace-guard	2026-10-04T09:21:25Z	PASS	65	verify.sh	rc ok, orph clean (#3932)
