@@ -1,4 +1,5 @@
 import { isRedactedRecordedValue } from '../../provisioning/redacted-delete-address.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import type { ResourceState } from '../../types/state.js';
 import type {
   HeldInlinePolicyRemoval,
@@ -48,21 +49,21 @@ async function restoreOne(
   // Logical ids only: a policy or principal name can be secret-derived.
   const ids = [...new Set(holders.map((h) => h.logicalId))].map((id) => safe(id)).join(', ');
   const lost =
-    `the ${kind} it is on lacks that inline policy until the resource is next updated, or ` +
+    safeMsg`the ${kind} it is on lacks that inline policy until the resource is next updated, or ` +
     `'cdkd drift <stack> --revert' restores it`;
   const documents = holders.map((h) => serializedDocument(h.document));
   if (documents.some((d) => d === undefined)) {
     logger.warn(
-      `  Rollback: an inline policy this rollback removed is still recorded by ${ids}, but its ` +
-        `recorded document is absent or redacted, so cdkd did not put it back; ${lost}.`
+      safeMsg`  Rollback: an inline policy this rollback removed is still recorded by ${ids}, but its ` +
+        safeMsg`recorded document is absent or redacted, so cdkd did not put it back; ${lost}.`
     );
     result.warnings++;
     return;
   }
   if (new Set(documents).size > 1) {
     logger.warn(
-      `  Rollback: an inline policy this rollback removed is recorded by ${ids} with different ` +
-        `documents under one name on one ${kind}, so cdkd put neither back; ${lost}.`
+      safeMsg`  Rollback: an inline policy this rollback removed is recorded by ${ids} with different ` +
+        safeMsg`documents under one name on one ${kind}, so cdkd put neither back; ${lost}.`
     );
     result.warnings++;
     return;
@@ -102,8 +103,8 @@ async function restoreOne(
   } catch (error) {
     logger.warn(
       maskedFailureText(
-        `  Rollback: could not put back the inline policy ${ids} records on its ${kind} ` +
-          `(${lost}): `,
+        safeMsg`  Rollback: could not put back the inline policy ${ids} records on its ${kind} ` +
+          safeMsg`(${lost}): `,
         error,
         masker.mask
       )
@@ -112,7 +113,7 @@ async function restoreOne(
     return;
   }
   logger.info(
-    `  Rollback: put back the inline policy ${ids} records on its ${kind}, which this rollback had removed`
+    safeMsg`  Rollback: put back the inline policy ${ids} records on its ${kind}, which this rollback had removed`
   );
 }
 
