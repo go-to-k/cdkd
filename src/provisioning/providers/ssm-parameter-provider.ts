@@ -874,11 +874,11 @@ export class SSMParameterProvider implements ResourceProvider {
     // command below and the `--resource` remedy. So `explicit` is shown, and
     // named in the read command, only when it is plain in `displayIdent`'s
     // sense (every character literal inside single quotes, no whitespace,
-    // tested first because the round-trip alone admits a value ending in
-    // `displayIdent`'s own cut marker); otherwise it is described and the
-    // console wording replaces the command. The logical id follows the
-    // `--resource` fragment's own predicate, `isPasteableIdent`, so it is
-    // either named in both or in neither. Displayed, a JSON-bounded `$( )`
+    // tested first so a value that IS `displayIdent`'s own cut output is
+    // refused without resting on the marker's tail digest); otherwise it is
+    // described and the console wording replaces the command. The logical id
+    // follows the `--resource` fragment's own predicate, `isPasteableIdent`,
+    // so it is either named in both or in neither. Displayed, a JSON-bounded `$( )`
     // value ran when the sentence was pasted into zsh, which the `(` around
     // it does not stop.
     const explicitPlain =

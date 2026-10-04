@@ -2062,10 +2062,13 @@ describe('marker-derived values are never inside cdkd quotes (go-to-k/cdkd#3950)
     );
   }, 120_000);
 
-  it("describes a value that is displayIdent's own cut output, which renders unchanged (go-to-k/cdkd#4109)", async () => {
+  it("describes a value forged as displayIdent's own cut output (go-to-k/cdkd#4109)", async () => {
+    // The pre-go-to-k/cdkd#4002 marker: it rendered unchanged until the marker
+    // carried a digest of the withheld tail, and the whitespace test refuses it
+    // either way.
     const suffix = ' [cut: 35 more characters withheld]';
     const forged = 'a'.repeat(STACK_REF_MAX_CODE_POINTS) + suffix;
-    expect(displayIdent(forged, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })).toBe(forged);
+    expect(displayIdent(forged, { maxCodePoints: STACK_REF_MAX_CODE_POINTS })).not.toBe(forged);
     // The bucket / repo sites. `messagesFor`'s marker-key sites prefix the value,
     // which pushes it past the cap, so they are driven directly below.
     const messages = await messagesFor(forged);

@@ -545,9 +545,10 @@ export function renderNameHeldElsewhere(change: ReplacementNameChange): string {
 /**
  * True when `value` has no whitespace and `displayIdent` renders it unchanged:
  * only characters that are literal inside double quotes. The whitespace test
- * comes FIRST because the round-trip alone admits a value that ends in
- * `displayIdent`'s own cut marker (`<1152 plain characters> [cut: N more
- * characters withheld]` renders as itself). The cap is the stack-ref one, so a
+ * comes FIRST, so a value that IS `displayIdent`'s own cut output
+ * (`<1152 plain characters> [cut: N more characters withheld, tail
+ * sha256:<hex>]`) is refused without resting on the marker's tail digest
+ * (go-to-k/cdkd#4002). The cap is the stack-ref one, so a
  * long ARN physical id is not cut.
  */
 export function isPlainName(value: string): boolean {
