@@ -66,6 +66,9 @@ const UPDATED_TAG_MAP = { env: 'integ-updated', owner: 'cdkd' };
  *     one value, drops one key and adds one, and verify.sh asserts the exact
  *     tag set AWS holds afterwards. The Workflow update used to drop Tags
  *     altogether; which calls produced the set is pinned by unit tests.
+ * 14. A Glue Table replacement that keeps its address (issue #3932):
+ *     CDKD_TEST_TOPLEVEL_NAME adds the top-level `Name`. The collision is with
+ *     the table itself, so `--replace` deletes it first and re-creates it.
  *
  * All resources are idle (no schedule, ON_DEMAND trigger), so deploy + destroy
  * is fast and clean — no quota, no running jobs.
@@ -245,6 +248,16 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       },
     });
     renameTable.addDependency(tableDb);
+    // 14. CDKD_TEST_TOPLEVEL_NAME=true adds the top-level `Name` (createOnly,
+    //     which CDK's L1 does not emit) equal to `TableInput.Name`: a
+    //     replacement that KEEPS the table's address (issue #3932), so its
+    //     create-first attempt collides with this very table.
+    if (process.env.CDKD_TEST_TOPLEVEL_NAME === 'true') {
+      renameTable.addPropertyOverride(
+        'Name',
+        `${this.stackName}-rename-${renameSuffix}`.toLowerCase()
+      );
+    }
 
     // 11. A table NAME containing cdkd's composite-id separator (issue #1672).
     //     The id is `<db>|<name>`, so `<db>|sep|table`: every reader must place

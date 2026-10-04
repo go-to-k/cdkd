@@ -25,7 +25,13 @@ import {
   isArn,
   DEPLOY_VOICE,
 } from './holder-probe.js';
-import { CASE_INSENSITIVE_NAME_TYPES, ownEntry, SENT_NAME_REWRITTEN } from './name-keys.js';
+import {
+  ASCII_CASE_INSENSITIVE_NAME_TYPES,
+  CASE_INSENSITIVE_NAME_TYPES,
+  NO_PHYSICAL_ID_NAME_PROOF,
+  ownEntry,
+  SENT_NAME_REWRITTEN,
+} from './name-keys.js';
 import { reverseReplacementTrustsGeneratedName } from './rewritten.js';
 import type { ReplacementNameChange } from './deploy-name.js';
 
@@ -212,8 +218,10 @@ function rewrittenNameHolds(
  *   same key is the same name, or — for the name alone — when its physical id
  *   names it (the deploy side's rule: equal, a final segment after `|`, or
  *   after `:` / `/` in an ARN or URL; plus the ELBv2 ARN's name segment), the
- *   proof for a generated name, which a recorded bag never holds. Names
- *   compare exactly, except for `CASE_INSENSITIVE_NAME_TYPES`. Every scope
+ *   proof for a generated name, which a recorded bag never holds — never for
+ *   a type in `NO_PHYSICAL_ID_NAME_PROOF`. Names compare exactly, except for
+ *   `CASE_INSENSITIVE_NAME_TYPES` and the ASCII-only
+ *   `ASCII_CASE_INSENSITIVE_NAME_TYPES`. Every scope
  *   value must be exactly equal (absent on both sides counts as equal, and an
  *   ARN against a bare value is undecided).
  * - `AWS::Route53::RecordSet` compares the zone and the DNS name; then a CNAME
@@ -382,12 +390,13 @@ function holderVerdict(
     ? `${v.create} named no ${labels}, and the cdkd naming rule generates ` +
       `${r.shown(namePath.join('.'))} ${r.quoted(wantName)} for it`
     : `${v.create} asked for ${r.shown(namePath.join('.'))} ${r.quoted(wantName)}`;
-  const same = CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType)
-    ? (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
-    : (a: string, b: string): boolean => a === b;
+  const asciiFold = ASCII_CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType);
   const inCase = CASE_INSENSITIVE_NAME_TYPES.has(oldResourceType)
     ? (value: string): string => value.toLowerCase()
-    : (value: string): string => value;
+    : asciiFold
+      ? (value: string): string => value.replace(/[A-Z]/g, (c) => c.toLowerCase())
+      : (value: string): string => value;
+  const same = (a: string, b: string): boolean => inCase(a) === inCase(b);
   // A record and a read-back that name the holder DIFFERENTLY (renamed out
   // of band, or a drifted record) cannot say which name it holds now: the
   // physical id would still name the recorded one. Undecided, in both
@@ -407,11 +416,18 @@ function holderVerdict(
         `it holds`
     );
   }
-  const held = newKey.name.map((path) => heldAt(recorded, observed, path));
-  const haveName = held.find((h) => h.value !== undefined)?.value;
+  // The FIRST path the holder answers on is its name, as a provider's `??`
+  // reads it: one it holds unreadably (a redacted name) leaves the name
+  // unknown — only the physical id can still prove it — and a later path must
+  // not stand in for it.
+  const haveName = newKey.name
+    .map((path) => heldAt(recorded, observed, path))
+    .find((h) => h.value !== undefined || h.unreadable)?.value;
   const nameHeld =
     (haveName !== undefined && same(haveName, wantName)) ||
-    (physicalId !== '' && holderIdNames(inCase(physicalId), inCase(wantName)));
+    (physicalId !== '' &&
+      !NO_PHYSICAL_ID_NAME_PROOF.has(newResourceType) &&
+      holderIdNames(inCase(physicalId), inCase(wantName)));
   if (!nameHeld) {
     return haveName !== undefined && !generatedName
       ? elsewhere(`${wanted}, while ${newResource} holds ${r.quoted(haveName)}`)

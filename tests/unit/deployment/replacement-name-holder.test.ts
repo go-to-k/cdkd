@@ -333,6 +333,102 @@ describe('replacementOldHoldsSentName', () => {
     expect(other.holds === false && other.known).toBe(true);
   });
 
+  // Issue #3932: Glue's provider relays CreateTable's `AlreadyExistsException`
+  // to the engine, so this proof alone decides `--replace` for a table. Its
+  // address is the provider's: `TableInput.Name ?? Name`, in `DatabaseName`, in
+  // `CatalogId`.
+  describe('a Glue table (issue #3932)', () => {
+    const TABLE = 'AWS::Glue::Table';
+    const OLD = { CatalogId: '123456789012', DatabaseName: 'db', TableInput: { Name: 't' } };
+    const table = (
+      requested: Record<string, unknown>,
+      recorded: Record<string, unknown> = OLD,
+      physicalId = 'db|t'
+    ) => holds({ createType: TABLE, holderType: TABLE, requested, recorded, physicalId });
+
+    it('holds on a replacement that keeps the address (a top-level Name change)', () => {
+      expect(table({ ...OLD, Name: 'renamed-identifier' })).toEqual({ holds: true });
+    });
+
+    it('holds for a table named by the top-level Name alone, as the provider sends it', () => {
+      const old = { DatabaseName: 'db', TableInput: {}, Name: 't' };
+      expect(table({ ...old, TableInput: { Description: 'x' } }, old)).toEqual({ holds: true });
+    });
+
+    it('a rename is elsewhere', () => {
+      const verdict = table({ ...OLD, TableInput: { Name: 'u' } });
+      expect(verdict.holds === false && verdict.known).toBe(true);
+    });
+
+    it('another database is elsewhere', () => {
+      const verdict = table({ ...OLD, DatabaseName: 'other' });
+      expect(verdict.holds === false && verdict.known).toBe(true);
+      expect(verdict.holds === false && verdict.diagnosis).toContain('DatabaseName');
+    });
+
+    it('another Data Catalog is elsewhere: deleting the old table frees nothing there', () => {
+      const verdict = table({ ...OLD, CatalogId: '210987654321' });
+      expect(verdict.holds === false && verdict.known).toBe(true);
+      expect(verdict.holds === false && verdict.diagnosis).toContain('CatalogId');
+    });
+
+    it('a CatalogId on one side only is undecided, never held', () => {
+      const { CatalogId: _omit, ...noCatalog } = OLD;
+      for (const verdict of [table(noCatalog), table(OLD, noCatalog)]) {
+        expect(verdict.holds).toBe(false);
+        expect(verdict.holds === false && verdict.known).toBe(false);
+      }
+      // Absent on both sides is the same (default) catalog.
+      expect(table(noCatalog, noCatalog)).toEqual({ holds: true });
+    });
+
+    // Review B1: either name may carry `|`, so the `<db>|<table>` id proves
+    // nothing — its tail or the whole id can name ANOTHER table.
+    it('the id tail does not prove a holder: table `a|b` does not hold `b`', () => {
+      const old = { DatabaseName: 'x', TableInput: { Name: 'a|b' } };
+      const verdict = table({ DatabaseName: 'x', TableInput: { Name: 'b' } }, old, 'x|a|b');
+      expect(verdict.holds).toBe(false);
+    });
+
+    it('the whole id does not prove a holder: table `y` does not hold `x|y`', () => {
+      const old = { DatabaseName: 'x', TableInput: { Name: 'y' } };
+      const verdict = table({ DatabaseName: 'x', TableInput: { Name: 'x|y' } }, old, 'x|y');
+      expect(verdict.holds).toBe(false);
+    });
+
+    it('a redacted recorded name is undecided, and the top-level Name cannot stand in for it', () => {
+      const req = { ...OLD, TableInput: { Name: 'b' }, Name: 'b' };
+      for (const recorded of [
+        { ...OLD, TableInput: { Name: SECRET_MASK } },
+        { ...OLD, TableInput: { Name: SECRET_MASK }, Name: 'b' },
+      ]) {
+        const verdict = table(req, recorded, 'db|b');
+        expect(verdict.holds).toBe(false);
+        expect(verdict.holds === false && verdict.known).toBe(false);
+      }
+    });
+
+    // Review M1: Glue stores names lower-cased, and folds ASCII only.
+    it('folds ASCII case: a recorded MyTable read back as mytable holds', () => {
+      const old = { ...OLD, TableInput: { Name: 'MyTable' } };
+      const verdict = holds({
+        createType: TABLE,
+        holderType: TABLE,
+        requested: { ...old, Name: 'MyTable' },
+        recorded: old,
+        observed: { ...OLD, TableInput: { Name: 'mytable' } },
+        physicalId: 'db|MyTable',
+      });
+      expect(verdict).toEqual({ holds: true });
+      expect(table({ ...OLD, TableInput: { Name: 'T' } })).toEqual({ holds: true });
+    });
+
+    it('does not fold non-ASCII case, which Glue may keep apart', () => {
+      const old = { ...OLD, TableInput: { Name: 'ä' } };
+      expect(table({ ...OLD, TableInput: { Name: 'Ä' } }, old, 'db|ä').holds).toBe(false);
+    });
+  });
+
   it('speaks of the create and the resource being replaced, not the rollback', () => {
     const verdict = holds({ requested: { FunctionName: 'other' } });
     expect(verdict).toEqual({

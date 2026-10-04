@@ -864,8 +864,8 @@ describe('isNameCollisionErrorFrom — reading the ERROR, not the message (#3208
     });
 
     it('does NOT credit a buried SDK collision the top level does not relay', () => {
-      // A provider's opt-out: Glue rewords an occupied table name delete-first
-      // cannot clear (#3750), so the wrapper carries no phrase.
+      // A provider's opt-out: one rewording a collision delete-first cannot
+      // clear carries no phrase in its wrapper.
       const reworded = new Error("a table named 'taken' is present in database 'mydb'", {
         cause: awsSdkError('Table already exists.', 'AlreadyExistsException'),
       });

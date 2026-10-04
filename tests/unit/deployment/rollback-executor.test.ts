@@ -3065,7 +3065,8 @@ describe('rollback of a Glue replacement that kept the id (issue #3892)', () => 
     ]
       .map((c) => String(c[0]))
       .join('\n');
-    expect(logged).toContain('is under DatabaseName');
+    // The shared id proves no name (#3932): the new table's recorded name does.
+    expect(logged).toContain('holds "orders"');
     expect(logged).toContain('Nothing was deleted');
     expect(state.B).toMatchObject({ physicalId: ID, properties: NEW });
   });
