@@ -785,16 +785,16 @@ export function unwrittenCreateOnlyRefusal(input: {
     .map((property) => `${resourceType}:${property}`)
     .join(',');
   // `--recreate-via-cc-api` deletes the old resource first; `--replace` takes
-  // the property-driven path, which creates the new one first and so collides
-  // where the new one must hold a unique value the old one still holds (a
-  // subnet's CIDR block, a fixed name). Inside a nested child only `--replace`
-  // reaches the resource.
+  // the property-driven path, which creates the new one first. A NAME
+  // collision there is retried delete-first under `--replace`, but any other
+  // unique value the old one still holds (a subnet's CIDR block) collides.
+  // Inside a nested child only `--replace` reaches the resource.
   const replaceFlags = nested
     ? '--replace (which creates the new resource before deleting the old one, so a ' +
-      'resource holding a unique value such as a fixed name or CIDR block collides)'
+      'resource holding a unique value other than its name, such as a CIDR block, collides)'
     : `--recreate-via-cc-api ${logicalId}, which deletes the old resource first ` +
       '(--replace also works, but creates the new one first, so a resource holding a ' +
-      'unique value such as a fixed name or CIDR block collides)';
+      'unique value other than its name, such as a CIDR block, collides)';
   const routed = [...routeDriving].sort((a, b) => a.localeCompare(b)).join(', ');
   return (
     `${logicalId} (${resourceType}): ${list} ${one ? 'is' : 'are'} create-only, and the ` +

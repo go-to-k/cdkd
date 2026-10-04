@@ -424,8 +424,11 @@ and that the template still asks for unchanged. That happens when the flag is
 removed, and also when another silent-drop property it does not cover is added,
 since one uncovered property routes the whole resource through Cloud Control.
 cdkd knows a property was kept off AWS only when the deploy that created the
-resource recorded it so; an imported resource's create-only properties, and
-those of a record an older cdkd wrote, are taken to be in AWS and never refused.
+resource recorded it so. An imported resource's create-only properties, and
+those of a record an older cdkd wrote, are taken to be in AWS and never refused
+— so for a resource an older cdkd created with the flag, the property may still
+be missing while the deploy without the flag reports no change.
+[`--recreate-via-cc-api`](#recreate-via-cc-api-deploy) is what applies it there.
 
 The refusal comes when the deploy reaches that resource. This resource is not
 touched, but other resources of the same deploy may already have changed, and
@@ -434,14 +437,15 @@ they roll back as for any failure. The error names:
 | Remedy | What it does |
 | --- | --- |
 | `--recreate-via-cc-api <LogicalId>` | Deletes the resource, then re-creates it through Cloud Control with the property applied |
-| `--replace` | Replaces every such resource in the deploy, nested stacks included; creates the new one first, so it collides where the resource holds a unique value (a fixed name, a subnet's CIDR block) |
+| `--replace` | Replaces every such resource in the deploy, nested stacks included; creates the new one first, so it collides where the resource holds a unique value other than its name, such as a subnet's CIDR block |
 | `--force-stateful-recreation` | Also required for a stateful type |
 | `--prefer-sdk-route <Type>:<Prop>,...` | Keeps the resource on its SDK provider and keeps dropping the property |
 
 A replacement something else in the template already requires goes ahead and
 applies the property too, and a template that removes such a property does not
 replace the resource. `cdkd diff` previews the flag-less deploy, so it shows
-the replacement and says the deploy refuses it.
+the replacement and warns that the deploy refuses it; the warning does not
+change `cdkd diff`'s exit code.
 
 Reach for the flag when the auto-routed **update** cannot deliver the property,
 which is a narrower case:

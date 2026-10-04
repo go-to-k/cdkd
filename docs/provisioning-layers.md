@@ -56,7 +56,8 @@ The layer is decided per resource, per deploy, in this order:
    reaches that resource, so other resources of the same deploy may already
    have changed and roll back with it. It applies only to a property the
    earlier deploy recorded as dropped: an imported resource's create-only
-   properties are taken to be in AWS
+   properties, and those of a record an older cdkd wrote, are taken to be in
+   AWS
    ([the override](cli-deploy-safety.md#the-override) lists the exceptions).
    Measured on a live resource by
    [`tests/integration/sdk-to-cc-autoroute/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sdk-to-cc-autoroute/).
