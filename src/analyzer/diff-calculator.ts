@@ -27,7 +27,11 @@ import {
   refuseMalformedResourceProperties,
 } from '../state/malformed-resources-bag.js';
 import { SECRET_MASK, splitGetAttStringForm } from '../deployment/secret-redaction.js';
-import { movedMaskedProperties } from '../deployment/masked-property-fingerprints.js';
+import {
+  inputFingerprinter,
+  movedMaskedProperties,
+  type MaskedInputSources,
+} from '../deployment/masked-property-fingerprints.js';
 import { AWS_NO_VALUE } from '../deployment/intrinsic-function-resolver.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../provisioning/masked-retry-logger.js';
 import { safeMsg } from '../utils/display-safe.js';
@@ -293,7 +297,20 @@ export class DiffCalculator {
      * The target's own row is left as diffed: the engine routes it to the
      * replacement from the flag, not from this set.
      */
-    recreateTargets?: ReadonlySet<string>
+    recreateTargets?: ReadonlySet<string>,
+    /**
+     * Where a masked property's resolved inputs come from (go-to-k/cdkd#4543):
+     * with it, a record's layout-2 fingerprint is compared against today's
+     * inputs, so a changed parameter, a replaced resource's `Ref` or a flipped
+     * condition behind unchanged template text diffs. Each layout-1
+     * fingerprint whose text is unchanged is re-baselined into `rebaselined`
+     * (logical id -> property -> fingerprint), which only the deploy passes
+     * and stamps. Absent, a layout-2 fingerprint reads as unmoved.
+     */
+    maskedInputs?: {
+      sources: MaskedInputSources;
+      rebaselined?: Map<string, Record<string, string>>;
+    }
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
 
@@ -602,8 +619,21 @@ export class DiffCalculator {
         // template value it was written from says whether that edit happened.
         // Only a property both compared sides still hold equal is added; a
         // record with no fingerprint (an older cdkd's) adds nothing.
+        // go-to-k/cdkd#4543: and, where the record's fingerprint covers the
+        // inputs, whether a parameter, a referenced resource or a condition
+        // behind that text moved.
         const reported = new Set(propertyChanges.map((pc) => pc.path));
-        for (const key of movedMaskedProperties(currentResource, rawDesiredProps)) {
+        const rebaselined: Array<[string, string]> = [];
+        const moved = await movedMaskedProperties(
+          currentResource,
+          rawDesiredProps,
+          maskedInputs && inputFingerprinter(rawDesiredProps, maskedInputs.sources),
+          maskedInputs?.rebaselined && ((key, fingerprint) => rebaselined.push([key, fingerprint]))
+        );
+        if (rebaselined.length > 0) {
+          maskedInputs!.rebaselined!.set(logicalId, Object.fromEntries(rebaselined));
+        }
+        for (const key of moved) {
           if (reported.has(key)) continue;
           if (!Object.hasOwn(currentPropsForCompare, key)) continue;
           if (!Object.hasOwn(desiredPropsForCompare, key)) continue;
@@ -622,7 +652,7 @@ export class DiffCalculator {
             maskedExpressionChanged: true,
           });
           this.logger.debug(
-            safeMsg`${logicalId}: ${key} is recorded masked and its template expression changed (go-to-k/cdkd#4451)`
+            safeMsg`${logicalId}: ${key} is recorded masked and its template expression or a resolved input changed (go-to-k/cdkd#4451, go-to-k/cdkd#4543)`
           );
         }
 

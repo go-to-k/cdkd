@@ -1,12 +1,19 @@
 import type { DeployEngine } from '../deploy-engine.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceState } from '../../types/state.js';
-import { hasMaskableValues, inheritNestedStackParameterAssociations } from '../secret-redaction.js';
+import {
+  hasMaskableValues,
+  inheritNestedStackParameterAssociations,
+  type RecordedSecretValues,
+} from '../secret-redaction.js';
+import type { MaskedInputSources } from '../masked-property-fingerprints.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
     buildResolverContext: OmitThisParameter<typeof buildResolverContext>;
+    /** @internal */
+    maskedInputSources: OmitThisParameter<typeof maskedInputSources>;
   }
 }
 
@@ -164,5 +171,58 @@ export function buildResolverContext(
     ...(base.redactedAttributeReads && {
       redactedAttributeReads: base.redactedAttributeReads,
     }),
+  };
+}
+
+/**
+ * The sources a masked property's INPUT fingerprint is computed from
+ * (go-to-k/cdkd#4543), for the deploy's diff pass and its provisioning arms
+ * alike: the parameter classes {@link DeployEngine.fingerprintParameters}
+ * recorded, the evaluated `conditions`, and a resolver over `resources`.
+ *
+ * Each input node resolves through a FRESH context of its own, so nothing it
+ * records (secrets, imports, output reads) reaches the resource's own
+ * resolution, and its bag holds only what THAT node read: a value it records a
+ * secret for is kept as written. It never resolves a `{{resolve:...}}`
+ * reference (`skipDynamicReferences`), as the diff pass never does, so both
+ * sides resolve an input the same way; the one difference is `resources`,
+ * which on the provisioning side holds what this deploy already replaced.
+ * `undefined` before the parameters resolve.
+ */
+/** @internal */
+export function maskedInputSources(
+  this: DeployEngine,
+  template: CloudFormationTemplate,
+  resources: Record<string, ResourceState>,
+  conditions: Record<string, boolean> | undefined,
+  stackName: string
+): MaskedInputSources | undefined {
+  const parameters = this.fingerprintParameters;
+  if (parameters === undefined) return undefined;
+  return {
+    template,
+    parameterInput: parameters.parameterInput,
+    conditions,
+    corpora: [this.fingerprintNoEchoValues, this.options.inheritedSecrets],
+    resolve: async (node: unknown) => {
+      const context = {
+        ...this.buildResolverContext(
+          {
+            template,
+            resources,
+            parameters: parameters.bound,
+            ...(conditions && { conditions }),
+          },
+          stackName
+        ),
+        recordedImports: [],
+        recordedOutputReads: [],
+        bestEffort: true,
+        skipDynamicReferences: true,
+      };
+      const value = await this.resolver.resolve(structuredClone(node), context);
+      const secrets: RecordedSecretValues | undefined = context.recordedSecretValues;
+      return { value, ...(secrets && { secrets }) };
+    },
   };
 }

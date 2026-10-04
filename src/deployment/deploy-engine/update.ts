@@ -38,7 +38,12 @@ import {
   recordNestedStackParameterExpressions,
   redactSecretsForState,
 } from '../secret-redaction.js';
-import { movedMaskedProperties } from '../masked-property-fingerprints.js';
+import {
+  inputFingerprinter,
+  maskedInputFingerprintsFor,
+  movedMaskedProperties,
+  possiblyMaskedKeys,
+} from '../masked-property-fingerprints.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -277,7 +282,35 @@ export async function provisionUpdate(
   // inside one `Fn::Base64`, or the reference's target), so neither skip
   // below may fire for it. A record with no fingerprint (an older cdkd's)
   // reads as unmoved, the comparison it always had.
-  const movedMasked = new Set(movedMaskedProperties(currentResource, desiredProps));
+  // go-to-k/cdkd#4543: a layout-2 fingerprint also covers the property's
+  // resolved non-secret inputs, read here against THIS deploy's state, so a
+  // `Ref` to a resource the deploy just replaced (the diff saw the old one)
+  // moves it too.
+  const fingerprintSources = this.maskedInputSources(
+    template!,
+    stateResources,
+    conditions,
+    stackName
+  );
+  const fingerprints = fingerprintSources && inputFingerprinter(desiredProps, fingerprintSources);
+  const movedMasked = new Set(
+    await movedMaskedProperties(currentResource, desiredProps, fingerprints)
+  );
+  // What the save stamps if this deploy writes the record: the input
+  // fingerprint of each property it may record as the mask.
+  if (fingerprints !== undefined) {
+    this.perResourceInputFingerprints.set(
+      logicalId,
+      await maskedInputFingerprintsFor(
+        possiblyMaskedKeys(resolvedProps, [
+          updateSecrets,
+          this.fingerprintNoEchoValues,
+          this.options.inheritedSecrets,
+        ]),
+        fingerprints
+      )
+    );
+  }
   const desiredForSkipCheck = redactSecretsForState(
     markSameGenerationBag({ ...resolvedProps }),
     updateSecrets,

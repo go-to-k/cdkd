@@ -784,25 +784,33 @@ export interface ResourceState {
 
   /**
    * Per top-level property `properties` holds as the secret mask `***`, a
-   * `sha256:<hex>` over the UNRESOLVED template value it was written from
-   * (go-to-k/cdkd#4451). Optional, no schema bump.
+   * fingerprint of what it was written from. Optional, no schema bump.
+   * `sha256:<hex>` hashes the template value's TEXT (go-to-k/cdkd#4451);
+   * `inputs-sha256:<hex>+sha256:<hex>` hashes the template value with its
+   * NON-SECRET inputs resolved (a parameter value, a `Ref` / `Fn::GetAtt`
+   * result, an evaluated condition's branch, go-to-k/cdkd#4543), then the
+   * text hash.
    *
    * The mask identifies nothing, so without it an edit around a secret
-   * reference inside one `Fn::Base64` (EC2 `UserData`) compared `***` with
-   * `***` and was never sent. The diff and the deploy's no-change skip treat a
-   * property whose template hash moved as changed; a rotated secret behind an
-   * unchanged template leaves it equal. Only template text is hashed, never a
-   * resolved value; a property whose template text holds, as a literal, a
-   * `NoEcho` parameter value or a value the same resource resolved as a
-   * secret gets `REFUSED_FINGERPRINT`
-   * instead of a hash, so the field is no oracle for the secret.
+   * reference inside one `Fn::Base64` (EC2 `UserData`), or a changed input
+   * the script reads, compared `***` with `***` and was never sent. The diff
+   * and the deploy's no-change skip treat a property whose fingerprint moved
+   * as changed; a rotated secret behind an unchanged template leaves it
+   * equal. No secret-derived value is hashed: a `NoEcho` parameter, a
+   * `{{resolve:...}}` reference and an input whose value carries a secret
+   * stay in template form, and a property whose template text holds, as a
+   * literal, a `NoEcho` parameter value or a value the same resource resolved
+   * as a secret gets `REFUSED_FINGERPRINT` instead of a hash, so the field is
+   * no oracle for the secret.
    *
    * ABSENT (or malformed, or refused, read through
    * `maskedPropertyFingerprintsOf`) keeps the pre-#4451 comparison, and a
    * deploy backfills each masked property with no entry from the template it
-   * deploys. Writers: the save rebuilds it for a record this deploy wrote
-   * through `propertiesToRecord`; every writer that spreads a record carries
-   * it. Helpers: `src/deployment/masked-property-fingerprints.ts`.
+   * deploys. A `sha256:` entry whose text still matches is re-baselined to
+   * the input form by the deploy's diff, without sending. Writers: the save
+   * rebuilds it for a record this deploy wrote through `propertiesToRecord`;
+   * every writer that spreads a record carries it. Helpers:
+   * `src/deployment/masked-property-fingerprints.ts`.
    */
   maskedPropertyFingerprints?: Record<string, string> | undefined;
 }
@@ -1281,8 +1289,9 @@ export interface PropertyChange {
   /**
    * Set on a change only the record's `maskedPropertyFingerprints` detects
    * (go-to-k/cdkd#4451): both sides read `***`, but the property's template
-   * expression changed (the text around a secret reference, or its target).
-   * The diff renderer labels it, since `*** -> ***` reads as no change.
+   * expression changed (the text around a secret reference, or its target),
+   * or a non-secret input it reads did (go-to-k/cdkd#4543). The diff
+   * renderer labels it, since `*** -> ***` reads as no change.
    */
   maskedExpressionChanged?: true;
 }

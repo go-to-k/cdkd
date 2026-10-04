@@ -123,6 +123,9 @@ PARAM_NAME="cdkd-test-dynref-param-${ACCOUNT_ID}"
 # deletes it). Its value is the base64 of a script carrying the password, so
 # cleanup sweeps it on every path. Must match the stack's own spelling.
 B64_UD_PARAM_NAME="cdkd-test-dynref-b64-ud-${ACCOUNT_ID}"
+# Issue #4543: its sibling reading the `UdInput` template parameter, same gate,
+# same sweep. Must match the stack's own spelling.
+B64_IN_PARAM_NAME="cdkd-test-dynref-b64-in-${ACCOUNT_ID}"
 # SecureString counterpart (issue #1901). Created by THIS script, not by the
 # stack: CloudFormation cannot create a SecureString parameter, so the fixture
 # only references it.
@@ -524,6 +527,7 @@ cleanup() {
     --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${B64_UD_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${B64_IN_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   # The SecureString parameter is created by this script, so cdkd never deletes
   # it — the ONLY thing that keeps it from being an orphan is this sweep.
   aws ssm delete-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -1165,7 +1169,7 @@ ud_live_version() {
     --query 'Parameter.Version' --output text
 }
 UD_FP_BEFORE=$(jq -r '.resources.Base64UserDataParam.maskedPropertyFingerprints.Value // "<absent>"' "${B64_STATE}")
-if [[ "${UD_FP_BEFORE}" != sha256:* ]]; then
+if [[ "${UD_FP_BEFORE}" != inputs-sha256:* ]]; then
   echo "FAIL: the record of Base64UserDataParam carries no fingerprint for its masked Value (read '${UD_FP_BEFORE}') -- the deploy did not record one (issue #4451)" >&2
   exit 1
 fi
@@ -1250,7 +1254,7 @@ no_b64_in_state() {
 no_b64_in_state "state.json after the edit" "${B64_EDIT_STATE}"
 UD_EDIT_PERSISTED=$(jq -r '.resources.Base64UserDataParam.properties.Value // "<absent>"' "${B64_EDIT_STATE}")
 UD_FP_EDITED=$(jq -r '.resources.Base64UserDataParam.maskedPropertyFingerprints.Value // "<absent>"' "${B64_EDIT_STATE}")
-if [ "${UD_EDIT_PERSISTED}" != "***" ] || [[ "${UD_FP_EDITED}" != sha256:* ]] \
+if [ "${UD_EDIT_PERSISTED}" != "***" ] || [[ "${UD_FP_EDITED}" != inputs-sha256:* ]] \
   || [ "${UD_FP_EDITED}" = "${UD_FP_BEFORE}" ]; then
   echo "FAIL: after the edit the record should hold '***' with a NEW fingerprint (fingerprint ${UD_FP_BEFORE} -> ${UD_FP_EDITED}) (issue #4451)" >&2
   exit 1
@@ -1312,8 +1316,11 @@ fi
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${B64_EDIT_STATE}" --quiet
 no_b64_in_state "state.json after the legacy-upgrade deploy" "${B64_EDIT_STATE}"
 UD_FP_RESTORED=$(jq -r '.resources.Base64UserDataParam.maskedPropertyFingerprints.Value // "<absent>"' "${B64_EDIT_STATE}")
+# The backfill writes the text fingerprint and the same deploy's diff
+# re-baselines it to the input fingerprint (issue #4543), which equals the one
+# the edit deploy stamped.
 if [ "${UD_FP_RESTORED}" != "${UD_FP_EDITED}" ]; then
-  echo "FAIL: the legacy-upgrade deploy did not backfill the fingerprint of the deployed template (${UD_FP_EDITED} expected, read ${UD_FP_RESTORED}) (issue #4451)" >&2
+  echo "FAIL: the legacy-upgrade deploy did not backfill and re-baseline the fingerprint of the deployed template (${UD_FP_EDITED} expected, read ${UD_FP_RESTORED}) (issues #4451, #4543)" >&2
   exit 1
 fi
 echo "    OK: a fingerprint-less record: the unchanged deploy sent nothing and backfilled the field"
@@ -1348,6 +1355,179 @@ no_b64_in_state "state.json after the post-upgrade edit" "${B64_EDIT_STATE}"
 jq 'del(.outputs.Base64Secret, .outputs.Base64Pin)' "${B64_EDIT_STATE}" > "${B64_TRIMMED}"
 if jq -e 'has("outputs") and ((.outputs | has("Base64Secret")) or (.outputs | has("Base64Pin")))' "${B64_TRIMMED}" >/dev/null; then
   echo "FAIL: could not drop Base64Secret / Base64Pin from the persisted outputs after Phase 1b2c -- the diff --fail guard later would red on them" >&2
+  exit 1
+fi
+aws s3 cp "${B64_TRIMMED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+
+# --- Phase 1b2d: a PARAMETER the masked script reads changes (issue #4543) --
+# `B64InputUdParam` is `Fn::Base64` over a script joining the `UdInput`
+# parameter and the password reference, persisted as `***`. A new value of the
+# parameter leaves the property's template text as it was, so the #4451 text
+# fingerprint did not move and the deploy kept the old script under a green
+# run. The fingerprint now covers the parameter's resolved value (a non-secret
+# input). `CDKD_TEST_UD_INPUT` changes only the parameter's `Default`.
+# Asserted on the parameter AWS holds; the live value is compared, never
+# printed (it decodes to the password).
+echo "==> Phase 1b2d: a new value of a parameter the masked script reads reaches AWS (issue #4543)"
+in_script() { printf '#!/bin/bash\nINPUT=%s\nPW=%s\n' "$1" "${EXPECTED_PASSWORD}"; }
+EXPECTED_IN_ONE_B64=$(in_script one | base64 | tr -d '\n')
+EXPECTED_IN_TWO_B64=$(in_script two | base64 | tr -d '\n')
+if [ -z "${EXPECTED_IN_ONE_B64}" ] || [ -z "${EXPECTED_IN_TWO_B64}" ] \
+  || [ "${EXPECTED_IN_ONE_B64}" = "${EXPECTED_IN_TWO_B64}" ] \
+  || [ "$(printf '%s' "${EXPECTED_IN_TWO_B64}" | base64 --decode)" != "$(in_script two)" ]; then
+  echo "FAIL: premise: could not derive two distinct, round-tripping encodings of the parameter-reading script -- the #4543 arm would be vacuous" >&2
+  exit 1
+fi
+# no_in_leak <what> <text>: neither encoding, nor the password, nor the #4451
+# arm's encodings. Checked BEFORE any `diag_output`, which withholds none of
+# the script encodings.
+no_in_leak() {
+  no_b64_leak "$1" "$2"
+  if [[ "$2" == *"${EXPECTED_IN_ONE_B64}"* ]] || [[ "$2" == *"${EXPECTED_IN_TWO_B64}"* ]]; then
+    echo "FAIL: $1 carries an encoding of the parameter-reading script, which holds the password (issue #4543)" >&2
+    exit 1
+  fi
+}
+no_in_in_state() {
+  no_b64_in_state "$1" "$2"
+  if grep -qF "${EXPECTED_IN_ONE_B64}" "$2" || grep -qF "${EXPECTED_IN_TWO_B64}" "$2"; then
+    echo "FAIL: $1 carries an encoding of the parameter-reading script, which holds the password (issue #4543)" >&2
+    exit 1
+  fi
+}
+in_live_value() {
+  aws ssm get-parameter --name "${B64_IN_PARAM_NAME}" --region "${REGION}" \
+    --query 'Parameter.Value' --output text
+}
+in_live_version() {
+  aws ssm get-parameter --name "${B64_IN_PARAM_NAME}" --region "${REGION}" \
+    --query 'Parameter.Version' --output text
+}
+IN_STATE=$(mktemp)
+SCRATCH_FILES+=("${IN_STATE}")
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${IN_STATE}" --quiet
+no_in_in_state "state.json before the parameter change" "${IN_STATE}"
+# The property and the parameter as the last deploy synthesized them
+# (INPUT=one); compared with the changed deploy's synth below, the premise
+# that only the parameter's Default moved.
+in_synth() { jq -c "$1" "${SYNTH_TEMPLATE}" 2>/dev/null; }
+IN_SYNTH_ONE=$(in_synth '.Resources.B64InputUdParam.Properties.Value')
+IN_DEFAULT_ONE=$(in_synth '.Parameters.UdInput.Default')
+if [ -z "${IN_SYNTH_ONE}" ] || [ "${IN_SYNTH_ONE}" = "null" ] \
+  || [[ "${IN_SYNTH_ONE}" != *'"Ref":"UdInput"'* ]] || [ "${IN_DEFAULT_ONE}" != '"one"' ]; then
+  echo "FAIL: premise: the last synth's B64InputUdParam.Value does not read {Ref: UdInput}, or UdInput's Default is not \"one\" (${IN_DEFAULT_ONE}) (issue #4543)" >&2
+  exit 1
+fi
+IN_FP_BEFORE=$(jq -r '.resources.B64InputUdParam.maskedPropertyFingerprints.Value // "<absent>"' "${IN_STATE}")
+IN_PERSISTED=$(jq -r '.resources.B64InputUdParam.properties.Value // "<absent>"' "${IN_STATE}")
+if [ "${IN_PERSISTED}" != "***" ] || [[ "${IN_FP_BEFORE}" != inputs-sha256:* ]]; then
+  echo "FAIL: premise: B64InputUdParam should be recorded as '***' with an input fingerprint (value '${IN_PERSISTED}', fingerprint '${IN_FP_BEFORE}') (issue #4543)" >&2
+  exit 1
+fi
+if [ "$(in_live_value)" != "${EXPECTED_IN_ONE_B64}" ]; then
+  echo "FAIL: premise: B64InputUdParam does not hold the script for INPUT=one before the change (issue #4543)" >&2
+  exit 1
+fi
+IN_VERSION_BEFORE=$(in_live_version)
+echo "    OK: premise: the property reads {Ref: UdInput}, is recorded '***' with an input fingerprint, and AWS holds INPUT=one (version ${IN_VERSION_BEFORE})"
+# The DIFF half, with its control; both runs name the re-declared probe
+# output (dropped from state after Phase 1b2c), the sentinel that the diff
+# ran to completion.
+set +e
+IN_DIFF_OUT=$(CDKD_TEST_BASE64_LEAK=true CDKD_TEST_UD_INPUT=two node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+IN_DIFF_RC=$?
+IN_SAME_DIFF_OUT=$(CDKD_TEST_BASE64_LEAK=true node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+IN_SAME_DIFF_RC=$?
+set -e
+no_in_leak "the changed-parameter diff" "${IN_DIFF_OUT}"
+no_in_leak "the unchanged-parameter diff" "${IN_SAME_DIFF_OUT}"
+if [ "${IN_DIFF_RC}" -ne 1 ] || [ "${IN_SAME_DIFF_RC}" -ne 1 ] \
+  || [[ "${IN_DIFF_OUT}" != *"Base64Secret"* ]] || [[ "${IN_SAME_DIFF_OUT}" != *"Base64Secret"* ]]; then
+  echo "FAIL: premise: both 'cdkd diff --fail' runs must exit 1 and name the re-declared Base64Secret output (changed rc=${IN_DIFF_RC}, unchanged rc=${IN_SAME_DIFF_RC}) (issue #4543)" >&2
+  diag_output "${IN_DIFF_OUT}"
+  diag_output "${IN_SAME_DIFF_OUT}"
+  exit 1
+fi
+if [[ "${IN_DIFF_OUT}" != *"B64InputUdParam"* ]] \
+  || [[ "${IN_DIFF_OUT}" != *"[template expression changed]"* ]]; then
+  echo "FAIL: 'cdkd diff' with the new parameter value does not report B64InputUdParam, labelled -- the masked property reads as unchanged (issue #4543)" >&2
+  diag_output "${IN_DIFF_OUT}"
+  exit 1
+fi
+if [[ "${IN_SAME_DIFF_OUT}" == *"B64InputUdParam"* ]]; then
+  echo "FAIL: 'cdkd diff' with the UNCHANGED parameter reports B64InputUdParam -- the row above is not evidence of the input fingerprint (issue #4543)" >&2
+  diag_output "${IN_SAME_DIFF_OUT}"
+  exit 1
+fi
+echo "    OK: the diff reports the parameter change on the masked property, and not the unchanged one"
+# The DEPLOY half.
+if ! DEPLOY_OUT_IN=$(CDKD_TEST_BASE64_LEAK=true CDKD_TEST_UD_INPUT=two node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes 2>&1); then
+  no_in_leak "the failed changed-parameter deploy's log" "${DEPLOY_OUT_IN}"
+  echo "FAIL: the changed-parameter deploy exited non-zero (issue #4543)" >&2
+  diag_output "${DEPLOY_OUT_IN}"
+  exit 1
+fi
+no_in_leak "the changed-parameter deploy's --verbose log" "${DEPLOY_OUT_IN}"
+# Premise: that deploy synthesized the SAME property text and only a new
+# Default, so what moved is the resolved input, not a template edit.
+if [ "$(in_synth '.Resources.B64InputUdParam.Properties.Value')" != "${IN_SYNTH_ONE}" ] \
+  || [ "$(in_synth '.Parameters.UdInput.Default')" != '"two"' ]; then
+  echo "FAIL: premise: the changed-parameter deploy synthesized a different B64InputUdParam.Value, or UdInput's Default is not \"two\" -- the arm would test a template edit (issue #4543)" >&2
+  exit 1
+fi
+if [ "$(in_live_value)" != "${EXPECTED_IN_TWO_B64}" ]; then
+  echo "FAIL: after a green deploy with the new parameter value, B64InputUdParam does not hold the script for INPUT=two -- the changed input was never sent (issue #4543)" >&2
+  exit 1
+fi
+IN_VERSION_AFTER=$(in_live_version)
+case "${IN_VERSION_BEFORE}${IN_VERSION_AFTER}" in
+  '' | *[!0-9]*)
+    echo "FAIL: premise: B64InputUdParam's version did not read as a number (${IN_VERSION_BEFORE} / ${IN_VERSION_AFTER}) (issue #4543)" >&2
+    exit 1
+    ;;
+esac
+if [ "${IN_VERSION_AFTER}" -le "${IN_VERSION_BEFORE}" ]; then
+  echo "FAIL: B64InputUdParam's version did not advance with the parameter change (${IN_VERSION_BEFORE} -> ${IN_VERSION_AFTER}) (issue #4543)" >&2
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${IN_STATE}" --quiet
+no_in_in_state "state.json after the parameter change" "${IN_STATE}"
+IN_FP_AFTER=$(jq -r '.resources.B64InputUdParam.maskedPropertyFingerprints.Value // "<absent>"' "${IN_STATE}")
+if [ "$(jq -r '.resources.B64InputUdParam.properties.Value // "<absent>"' "${IN_STATE}")" != "***" ] \
+  || [[ "${IN_FP_AFTER}" != inputs-sha256:* ]] || [ "${IN_FP_AFTER}" = "${IN_FP_BEFORE}" ]; then
+  echo "FAIL: after the parameter change the record should hold '***' with a NEW input fingerprint (${IN_FP_BEFORE} -> ${IN_FP_AFTER}) (issue #4543)" >&2
+  exit 1
+fi
+# The text half of the entry did not move: the template text is the same.
+if [ "${IN_FP_AFTER#*+}" != "${IN_FP_BEFORE#*+}" ]; then
+  echo "FAIL: the text half of the fingerprint moved although the property's template text did not (issue #4543)" >&2
+  exit 1
+fi
+echo "    OK: the new parameter value reached AWS (version ${IN_VERSION_BEFORE} -> ${IN_VERSION_AFTER}); the input half moved, the text half did not"
+# The no-churn half: an unchanged redeploy with the new value sends nothing.
+if ! DEPLOY_OUT_IN_SAME=$(CDKD_TEST_BASE64_LEAK=true CDKD_TEST_UD_INPUT=two node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes 2>&1); then
+  no_in_leak "the failed unchanged-parameter redeploy's log" "${DEPLOY_OUT_IN_SAME}"
+  echo "FAIL: the unchanged redeploy with the new parameter value exited non-zero (issue #4543)" >&2
+  diag_output "${DEPLOY_OUT_IN_SAME}"
+  exit 1
+fi
+no_in_leak "the unchanged-parameter redeploy's --verbose log" "${DEPLOY_OUT_IN_SAME}"
+if [ "$(in_live_version)" != "${IN_VERSION_AFTER}" ]; then
+  echo "FAIL: an unchanged redeploy re-sent B64InputUdParam -- the input fingerprint churns (issue #4543)" >&2
+  exit 1
+fi
+echo "    OK: the unchanged redeploy sent nothing (version stays ${IN_VERSION_AFTER})"
+# Drop the two probe outputs these deploys declared again, for the later
+# `diff --fail` guard.
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${IN_STATE}" --quiet
+no_in_in_state "state.json after the unchanged-parameter redeploy" "${IN_STATE}"
+jq 'del(.outputs.Base64Secret, .outputs.Base64Pin)' "${IN_STATE}" > "${B64_TRIMMED}"
+if jq -e 'has("outputs") and ((.outputs | has("Base64Secret")) or (.outputs | has("Base64Pin")))' "${B64_TRIMMED}" >/dev/null; then
+  echo "FAIL: could not drop Base64Secret / Base64Pin from the persisted outputs after Phase 1b2d -- the diff --fail guard later would red on them" >&2
   exit 1
 fi
 aws s3 cp "${B64_TRIMMED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
@@ -1472,6 +1652,8 @@ if ! jq -e '.resources | has("Base64UserDataParam") | not' "${SPAN_STATE}" >/dev
 fi
 assert_gone "SSM parameter '${B64_UD_PARAM_NAME}' (base64 of a script carrying the password) still exists after the deploy that undeclared it (issue #2909)" \
   aws ssm get-parameter --name "${B64_UD_PARAM_NAME}" --region "${REGION}"
+assert_gone "SSM parameter '${B64_IN_PARAM_NAME}' (base64 of a script carrying the password) still exists after the deploy that undeclared it (issue #4543)" \
+  aws ssm get-parameter --name "${B64_IN_PARAM_NAME}" --region "${REGION}"
 echo "    OK: Base64UserDataParam is gone from state and from AWS (#2909)"
 assert_password_paths "state.json after the service-span OUTPUT probe deploy" by-design "${SPAN_STATE}"
 SPAN_PERSISTED=$(jq -r '.outputs | has("ServiceSpanLeak")' "${SPAN_STATE}")

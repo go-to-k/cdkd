@@ -25,6 +25,12 @@ import {
   maskSecretsInText,
   recordNestedStackParameterExpressions,
 } from '../secret-redaction.js';
+import {
+  inputFingerprinter,
+  maskedInputFingerprintsFor,
+  possiblyMaskedKeys,
+} from '../masked-property-fingerprints.js';
+
 declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
@@ -96,6 +102,27 @@ export async function provisionCreate(
   this.refuseRedactedAttributeReads(logicalId, resourceType, context);
   // Capture the UNRESOLVED bag as the redaction position source (#1904).
   this.perResourceTemplateProps.set(logicalId, desiredProps);
+  // go-to-k/cdkd#4543: the input fingerprint of each property the save may
+  // record as the mask, resolved against this deploy's state.
+  const fingerprintSources = this.maskedInputSources(
+    template!,
+    stateResources,
+    conditions,
+    stackName
+  );
+  if (fingerprintSources !== undefined) {
+    this.perResourceInputFingerprints.set(
+      logicalId,
+      await maskedInputFingerprintsFor(
+        possiblyMaskedKeys(resolvedProps, [
+          context.recordedSecretValues,
+          this.fingerprintNoEchoValues,
+          this.options.inheritedSecrets,
+        ]),
+        inputFingerprinter(desiredProps, fingerprintSources)
+      )
+    );
+  }
   this.perResourceResolvedType.set(logicalId, resourceType);
   // Named so the provider call below can bind the SAME bag into its
   // masker (issue #1932 item 3), mirroring `updateSecrets` on the UPDATE

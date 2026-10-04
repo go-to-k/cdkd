@@ -4,6 +4,7 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import {
   REFUSED_FINGERPRINT,
   markWrittenFromDeployedTemplate,
+  maskedInputFingerprint,
   maskedPropertyFingerprint,
 } from '../../../src/deployment/masked-property-fingerprints.js';
 import {
@@ -81,6 +82,17 @@ const embedded = (inner: unknown): Record<string, unknown> => ({
   Value: { 'Fn::Join': ['', ['#!/bin/bash\nUD=', inner, '\n']] },
 });
 const EMBEDDED_PROPS = embedded(PROPS.Value);
+/**
+ * The layout-2 fingerprint (go-to-k/cdkd#4543) a deploy stamps on a value
+ * reading no input: the `Fn::Base64` / `Fn::Join` shape and its text.
+ */
+const inputFp = (value: unknown): Promise<string | undefined> =>
+  maskedInputFingerprint(value, {
+    template: { Resources: {} },
+    parameterInput: () => ({ kind: 'unknown' }),
+    corpora: [],
+    resolve: () => Promise.reject(new Error('no input to resolve')),
+  });
 const encoded = Buffer.from('pw=pw-secret-value').toString('base64');
 
 describe('DeployEngine - a Base64-encoded secret is not re-sent on an unchanged redeploy', () => {
@@ -102,7 +114,7 @@ describe('DeployEngine - a Base64-encoded secret is not re-sent on an unchanged 
     const h = harness();
     const created = await h.deploy(PROPS);
     expect(created.resources['R']!.maskedPropertyFingerprints).toEqual({
-      Value: maskedPropertyFingerprint(PROPS.Value),
+      Value: await inputFp(PROPS.Value),
     });
     // Only the masked property is fingerprinted.
     expect(Object.keys(created.resources['R']!.maskedPropertyFingerprints!)).toEqual(['Value']);
@@ -119,7 +131,7 @@ describe('DeployEngine - a Base64-encoded secret is not re-sent on an unchanged 
       const after = await h.deploy(props);
       expect(h.provider.update).not.toHaveBeenCalled();
       expect(after.resources['R']!.maskedPropertyFingerprints).toEqual({
-        Value: maskedPropertyFingerprint(props.Value),
+        Value: await inputFp(props.Value),
       });
     }
   });
@@ -170,7 +182,7 @@ describe('DeployEngine - an edit around a secret reference inside Fn::Base64 is 
       // a no-op again.
       expect(after.resources['R']!.properties['Value']).toBe('***');
       expect(after.resources['R']!.maskedPropertyFingerprints).toEqual({
-        Value: maskedPropertyFingerprint(c.after['Value']),
+        Value: await inputFp(c.after['Value']),
       });
       await h.deploy(c.after);
       expect(h.provider.update).toHaveBeenCalledTimes(1);
@@ -196,7 +208,7 @@ describe('DeployEngine - an edit around a secret reference inside Fn::Base64 is 
     expect(h.lastChange()?.changeType).toBe('NO_CHANGE');
     expect(h.saveCount()).toBeGreaterThan(saves);
     expect(upgraded.resources['R']!.maskedPropertyFingerprints).toEqual({
-      Value: maskedPropertyFingerprint(PROPS.Value),
+      Value: await inputFp(PROPS.Value),
     });
 
     // The next edit around the reference reaches AWS.
@@ -229,7 +241,7 @@ describe('DeployEngine - an edit around a secret reference inside Fn::Base64 is 
     await expect(h.deploy(edited, { noRollback: true })).rejects.toThrow();
     const failed = h.saved();
     expect(failed.resources['R']!.maskedPropertyFingerprints).toEqual({
-      Value: maskedPropertyFingerprint(PROPS.Value),
+      Value: await inputFp(PROPS.Value),
     });
     expect(h.provider.update).toHaveBeenCalledTimes(1);
 
@@ -348,12 +360,12 @@ describe('DeployEngine - review-round pins (go-to-k/cdkd#4451)', () => {
     );
     const created = await h.deploy(PROPS);
     expect(created.resources['R']!.maskedPropertyFingerprints).toEqual({
-      Value: maskedPropertyFingerprint(PROPS.Value),
+      Value: await inputFp(PROPS.Value),
     });
     const edited = await h.deploy(EDITED);
     expect(h.provider.update).toHaveBeenCalledTimes(1);
     expect(edited.resources['R']!.maskedPropertyFingerprints).toEqual({
-      Value: maskedPropertyFingerprint(EDITED.Value),
+      Value: await inputFp(EDITED.Value),
     });
     await h.deploy(EDITED);
     expect(h.provider.update).toHaveBeenCalledTimes(1);
@@ -395,7 +407,7 @@ describe('DeployEngine - review-round pins (go-to-k/cdkd#4451)', () => {
     // Control: a template not spelling it is hashed.
     const plain = await harness().deployTemplate(template(PROPS.Value));
     expect(plain.resources['R']!.maskedPropertyFingerprints).toEqual({
-      Value: maskedPropertyFingerprint(PROPS.Value),
+      Value: await inputFp(PROPS.Value),
     });
   });
 
@@ -465,8 +477,170 @@ describe('DeployEngine - review-round pins (go-to-k/cdkd#4451)', () => {
     expect(h.provider.import).toHaveBeenCalled();
     expect(adopted.orphans ?? []).toHaveLength(0);
     expect(adopted.resources['R']!.maskedPropertyFingerprints).toEqual({
-      Value: maskedPropertyFingerprint(PROPS.Value),
+      Value: await inputFp(PROPS.Value),
     });
+  });
+});
+
+describe('DeployEngine - a resolved input behind unchanged template text is sent (go-to-k/cdkd#4543)', () => {
+  const SECRET = '{{resolve:ssm-secure:/app/pw}}';
+  /** `Fn::Base64` over a script reading `input`, then the secret reference. */
+  const script = (input: unknown): unknown => ({
+    'Fn::Base64': { 'Fn::Join': ['', ['b=', input, ';pw=', SECRET]] },
+  });
+  const withParameter = (
+    value: string,
+    extra: Record<string, unknown> = {}
+  ): CloudFormationTemplate => ({
+    Parameters: { P: { Type: 'String', Default: value, ...extra } },
+    Resources: {
+      R: {
+        Type: 'AWS::SSM::Parameter',
+        Properties: { Name: '/app/ud', Type: 'String', Value: script({ Ref: 'P' }) },
+      },
+    },
+  });
+  const sentValue = (h: Harness, call: number): unknown =>
+    (h.provider.update.mock.calls[call]![3] as Record<string, unknown>)['Value'];
+
+  it('a parameter value change is sent, and the redeploy after it is a no-op', async () => {
+    const h = harness();
+    await h.deployTemplate(withParameter('one'));
+    const after = await h.deployTemplate(withParameter('two'));
+    expect(h.lastChange()?.changeType).toBe('UPDATE');
+    expect(h.provider.update).toHaveBeenCalledTimes(1);
+    expect(sentValue(h, 0)).toBe(Buffer.from('b=two;pw=pw-secret-value').toString('base64'));
+    expect(after.resources['R']!.properties['Value']).toBe('***');
+    // The hash holds the parameter's value, never the secret's.
+    expect(JSON.stringify(after)).not.toContain('pw-secret-value');
+    await h.deployTemplate(withParameter('two'));
+    expect(h.provider.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('a condition flip is sent, the property text reading only the condition', async () => {
+    const template = (env: string): CloudFormationTemplate => ({
+      Parameters: { Env: { Type: 'String', Default: env } },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Env' }, 'prod'] } },
+      Resources: {
+        R: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: '/app/ud',
+            Type: 'String',
+            Value: script({ 'Fn::If': ['IsProd', 'big', 'small'] }),
+          },
+        },
+      },
+    });
+    const h = harness();
+    await h.deployTemplate(template('dev'));
+    await h.deployTemplate(template('prod'));
+    expect(h.provider.update).toHaveBeenCalledTimes(1);
+    expect(sentValue(h, 0)).toBe(Buffer.from('b=big;pw=pw-secret-value').toString('base64'));
+    // An input that moves nothing the property reads is no change.
+    await h.deployTemplate(template('prod'));
+    expect(h.provider.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Ref to a resource this deploy replaces is sent, though the diff saw the old id', async () => {
+    const template = (name: string): CloudFormationTemplate => ({
+      Resources: {
+        A: { Type: 'AWS::SNS::Topic', Properties: { TopicName: name } },
+        R: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: '/app/ud', Type: 'String', Value: script({ Ref: 'A' }) },
+        },
+      },
+    });
+    const h = harness({ levels: [['A'], ['R']], deps: { R: ['A'] }, physicalIdFromName: true });
+    // No other resource holds the topic names this test creates.
+    h.provider.import.mockResolvedValue(null);
+    await h.deployTemplate(template('a-one'));
+    // `TopicName` is create-only: A is replaced under a new physical id.
+    const after = await h.deployTemplate(template('a-two'));
+    const sentToR = h.provider.update.mock.calls.filter((c) => c[0] === 'R');
+    const createdA = h.provider.create.mock.calls.filter((c) => c[0] === 'A');
+    expect(createdA).toHaveLength(2);
+    expect(sentToR).toHaveLength(1);
+    expect((sentToR[0]![3] as Record<string, unknown>)['Value']).toBe(
+      Buffer.from('b=a-two;pw=pw-secret-value').toString('base64')
+    );
+    expect(after.resources['A']!.physicalId).toBe('a-two');
+    await h.deployTemplate(template('a-two'));
+    expect(h.provider.update.mock.calls.filter((c) => c[0] === 'R')).toHaveLength(1);
+  });
+
+  it('a NoEcho parameter stays out of the hash: its change is not sent (documented)', async () => {
+    const h = harness();
+    const first = await h.deployTemplate(withParameter('noecho-one-value', { NoEcho: true }));
+    const second = await h.deployTemplate(withParameter('noecho-two-value', { NoEcho: true }));
+    expect(h.provider.update).not.toHaveBeenCalled();
+    // The same entry for both values: `{Ref: P}` is hashed, never the value.
+    expect(second.resources['R']!.maskedPropertyFingerprints).toEqual(
+      first.resources['R']!.maskedPropertyFingerprints
+    );
+    expect(first.resources['R']!.maskedPropertyFingerprints!['Value']).toMatch(
+      /^inputs-sha256:/
+    );
+  });
+
+  it('a rotated secret behind unchanged inputs sends nothing', async () => {
+    const h = harness();
+    await h.deployTemplate(withParameter('one'));
+    secretValues.set('/app/pw', 'rotated-secret-value');
+    await h.deployTemplate(withParameter('one'));
+    expect(h.provider.update).not.toHaveBeenCalled();
+  });
+
+  it('a layout-1 (#4451) fingerprint re-baselines without sending, then moves with the next input', async () => {
+    const h = harness();
+    const created = await h.deployTemplate(withParameter('one'));
+    const value = (withParameter('one').Resources['R']!.Properties as Record<string, unknown>)[
+      'Value'
+    ];
+    // What #4451 wrote: the text hash, with a baseline so no observed refresh saves.
+    h.setState({
+      ...created,
+      resources: {
+        R: {
+          ...created.resources['R']!,
+          observedProperties: { Name: '/app/ud', Type: 'String' },
+          maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(value) },
+        },
+      },
+    });
+    const saves = h.saveCount();
+    const upgraded = await h.deployTemplate(withParameter('one'));
+    expect(h.provider.update).not.toHaveBeenCalled();
+    expect(h.saveCount()).toBeGreaterThan(saves);
+    expect(upgraded.resources['R']!.maskedPropertyFingerprints).toEqual(
+      created.resources['R']!.maskedPropertyFingerprints
+    );
+    await h.deployTemplate(withParameter('two'));
+    expect(h.provider.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('a layout-1 fingerprint whose TEXT moved is still sent, as #4451 sent it', async () => {
+    const h = harness();
+    const created = await h.deployTemplate(withParameter('one'));
+    const value = (withParameter('one').Resources['R']!.Properties as Record<string, unknown>)[
+      'Value'
+    ];
+    h.setState({
+      ...created,
+      resources: {
+        R: {
+          ...created.resources['R']!,
+          maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(value) },
+        },
+      },
+    });
+    const edited = withParameter('one');
+    (edited.Resources['R']!.Properties as Record<string, unknown>)['Value'] = script({
+      'Fn::Join': ['-', [{ Ref: 'P' }, 'x']],
+    });
+    await h.deployTemplate(edited);
+    expect(h.provider.update).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -493,9 +667,19 @@ interface Harness {
  * The real resolver and diff, with the state backend, lock and provider
  * doubled. Each `deploy` reads the state the previous one saved.
  */
-function harness(): Harness {
+function harness(
+  options: {
+    levels?: string[][];
+    deps?: Record<string, string[]>;
+    physicalIdFromName?: boolean;
+  } = {}
+): Harness {
   const provider = {
-    create: vi.fn().mockResolvedValue({ physicalId: 'p' }),
+    create: options.physicalIdFromName
+      ? vi.fn((_id: string, _type: string, props: Record<string, unknown>) =>
+          Promise.resolve({ physicalId: String(props['Name'] ?? props['TopicName'] ?? 'p') })
+        )
+      : vi.fn().mockResolvedValue({ physicalId: 'p' }),
     update: vi.fn().mockResolvedValue({ physicalId: 'p', wasReplaced: false }),
     delete: vi.fn(),
     getAttribute: vi.fn(),
@@ -559,8 +743,8 @@ function harness(): Harness {
       { acquireLockWithRetry: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() } as never,
       {
         buildGraph: vi.fn().mockReturnValue({}),
-        getExecutionLevels: vi.fn().mockReturnValue([['R']]),
-        getDirectDependencies: vi.fn().mockReturnValue([]),
+        getExecutionLevels: vi.fn().mockReturnValue(options.levels ?? [['R']]),
+        getDirectDependencies: vi.fn((_dag: unknown, id: string) => options.deps?.[id] ?? []),
       } as never,
       diff as never,
       {

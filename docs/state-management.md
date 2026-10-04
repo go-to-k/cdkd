@@ -998,14 +998,31 @@ record as a reference is persisted as `***`. The common case is the EC2
 `UserData` shape: `Fn::Base64` over a script that embeds a
 `{{resolve:...}}` reference, whose encoding decodes straight back to the
 secret. `***` identifies nothing, so for each such top-level property the
-record also keeps `sha256:` over the property's UNRESOLVED template value.
+record also keeps a fingerprint of what the property was built from.
 `cdkd diff` and `cdkd deploy` treat a property whose recorded fingerprint no
-longer matches the template as changed, so an edit to the script around the
-reference, or a retarget of the reference, is shown and sent. A secret rotated
+longer matches as changed, so the change is shown and sent. A secret rotated
 behind an unchanged template leaves it equal and sends nothing, as
-CloudFormation does. Only template text is hashed: a secret appears there as
-its reference and a `NoEcho` parameter as its `Ref`, so the hash says nothing
-about a value. A property whose template text holds, as a literal, the value
+CloudFormation does.
+
+The fingerprint (`inputs-sha256:`, then the plain text hash after a `+`)
+hashes the property's template value with
+each NON-SECRET input replaced by what it resolved to: a parameter's value, a
+`Ref` / `Fn::GetAtt` result (so a `Ref` to a resource the deploy replaced), a
+cross-stack read, and the branch an evaluated condition selects. So an edit to
+the script around the reference, a retarget of the reference, a new parameter
+value, a replaced resource's new name and a flipped condition are all sent.
+Secrets stay in their template form and never reach the hash: a
+`{{resolve:...}}` reference is hashed as the reference, a `NoEcho` parameter as
+its `Ref`, a condition that reads a `NoEcho` parameter or a reference as its
+whole `Fn::If`, and an input whose resolved value carries a secret (a value
+containing one, a redacted `***` read, a resource whose own definition reads a
+secret) as written. So a new value of a `NoEcho` parameter, or a flip of a
+condition over one, is NOT sent through the mask: CloudFormation would update
+the resource, but a hash that moved with the value would let anyone holding
+the state file test guesses of it. Change the property's template text, or
+replace the resource, to push one.
+
+A property whose template text holds, as a literal, the value
 of one of the stack's `NoEcho` parameters, or a value the same resource
 resolved as a secret, is the exception: it gets no hash and is compared as
 before the field existed. A `NoEcho` parameter value is known when the deploy
@@ -1015,11 +1032,7 @@ version filled in for a resource it did not change is checked by the next
 deploy that resolves it.
 The check is a plain text match, so a short secret that also occurs as
 ordinary text in the property (a word in a script) costs that property its
-hash too, and edits to it are not seen through the mask. Because only
-template text is hashed, a change that leaves the property's template text as
-it was (a new parameter value, a `Ref` to a resource that was replaced, a
-condition that flipped) is not seen through the mask yet, although
-CloudFormation would update the resource.
+hash too, and edits to it are not seen through the mask.
 
 - **Written** by the save of a deploy that created, updated or replaced the
   resource, from the template it deployed. A failed update keeps the previous
@@ -1031,6 +1044,21 @@ CloudFormation would update the resource.
   since the last deploy, so such an edit is not sent until the property
   changes again. To push one anyway, change the property once more, or replace
   the resource with `--recreate-via-cc-api` / `--recreate-via-sdk-provider`.
+- **The earlier text-only fingerprint** (`sha256:`, written by cdkd before the
+  input fingerprint existed) is still compared as text, so an edit to the
+  template is sent as before. When the text is unchanged, the deploy replaces
+  it with the input fingerprint of today's inputs and sends nothing: it cannot
+  tell whether an input moved since the record was written (a parameter
+  changed under the older cdkd), so such a change is sent only once the input
+  moves again. An older cdkd ignores an `inputs-sha256:` entry and compares
+  the property as `***`, so downgrading sends nothing either.
+- **`cdkd diff`** compares the input fingerprint for the stack it was given.
+  The entry also carries the text fingerprint, which `cdkd diff` compares for
+  a nested child and wherever it cannot bind an input (a parameter it cannot
+  resolve): the child's deploy treats a value its parent supplied as
+  secret-derived when the child inherits secrets, which the preview cannot
+  tell. So there a template edit shows, but an input change shows only when
+  the deploy sends it.
 - **Nested stacks.** A nested child is deployed only when its parent row
   changed, which is usually because the child's own template changed. So the
   first deploy that reaches a child last deployed by an older cdkd is, most
@@ -1476,7 +1504,7 @@ interface ResourceState {
   observedBaselineRefused?: true               // v10+: `cdkd import` declined to capture a baseline
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution' // optional, no bump: only the first survives an in-place UPDATE
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
-  maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its unresolved template value (issue #4451)
+  maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template value with its non-secret inputs resolved (issues #4451, #4543)
 }
 ```
 

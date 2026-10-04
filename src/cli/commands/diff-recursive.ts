@@ -96,6 +96,7 @@ import {
   parentSuppliedValues,
   readRecordedConditionVerdicts,
 } from '../../deployment/condition-verdicts.js';
+import { parameterInputsFor } from '../../deployment/masked-property-fingerprints.js';
 import {
   findNestedStackTypeChanges,
   type NestedStackTypeChange,
@@ -1264,6 +1265,14 @@ export async function computeStackDiff(
      * never reads one.
      */
     parentUnresolvedParameters?: ReadonlySet<string>;
+    /**
+     * Compare a masked property's layout-2 fingerprint against this node's
+     * resolved inputs (go-to-k/cdkd#4543). Set for the stack the user named
+     * only: a nested child's deploy classifies a parameter the parent supplied
+     * by secrets this preview never resolves, so a child reads such a
+     * fingerprint as unmoved rather than risk a change the deploy never makes.
+     */
+    previewMaskedInputs?: boolean;
   } = {}
 ): Promise<StackDiffResult> {
   const {
@@ -1895,6 +1904,46 @@ export async function computeStackDiff(
     }
   }
 
+  // go-to-k/cdkd#4543: the deploy's input fingerprint, recomputed from this
+  // node's parameters, verdicts and state, through the same classification
+  // (`parameterInputsFor`) and the same resolution rules (no `{{resolve:...}}`
+  // reference resolved, a fresh bag per input). An unbound parameter is an
+  // unknown input, so a property reading one is not compared.
+  let maskedInputs: Parameters<DiffCalculator['calculateDiff']>[8];
+  if (options.previewMaskedInputs === true) {
+    const classified = parameterInputsFor({
+      template,
+      values: mergedParameters,
+      unbound: unboundParameterNames,
+    });
+    const resourcesForInputs = stateForDiff.resources;
+    maskedInputs = {
+      sources: {
+        template: effectiveTemplate,
+        parameterInput: classified.parameterInput,
+        conditions,
+        corpora: [
+          noEchoParameterValueSeed(template.Parameters, mergedParameters, undefined, parameters),
+        ],
+        resolve: async (node: unknown) => {
+          const secrets: RecordedSecretValues = new Map();
+          const value = await intrinsicResolver.resolve(structuredClone(node), {
+            recordedSecretValues: secrets,
+            template: effectiveTemplate,
+            resources: resourcesForInputs,
+            stateBackend,
+            stackName,
+            bestEffort: true,
+            ...(Object.keys(classified.bound).length > 0 && { parameters: classified.bound }),
+            ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
+            skipDynamicReferences: true,
+            ...(attributeHealer && { attributeHealer }),
+          });
+          return { value, secrets };
+        },
+      },
+    };
+  }
   const changes = await diffCalculator.calculateDiff(
     stateForDiff,
     effectiveTemplate,
@@ -1904,7 +1953,9 @@ export async function computeStackDiff(
     undefined,
     // `--verbose`'s `requires replacement (from <old> to <new>)` line prints
     // resolved values (go-to-k/cdkd#4049).
-    maskForLog
+    maskForLog,
+    undefined,
+    maskedInputs
   );
 
   // The deploy's nested-stack Type-change refusal (go-to-k/cdkd#3453), read
@@ -2941,6 +2992,7 @@ export async function buildDiffTree(args: {
         // A live template of its own, so this node decides for itself; the
         // inherited flag only matters for the DELETED children below.
         inheritSecretBearingTemplate: false,
+        previewMaskedInputs: !isNestedChild,
       }
     );
   } finally {
