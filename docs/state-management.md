@@ -192,9 +192,11 @@ carries the op(s) that **FAILED** mid-deploy (`failedOperations[]` — pre-op
 state + attempted properties; an additive field, no `journalVersion` bump)
 so `cdkd rollback --revert-failed` can optionally revert them too. The one
 place a deploy acts on the journal's contents while provisioning is an `AWS::EC2::SecurityGroupIngress` create that
-AWS rejects as a duplicate: it adopts the existing rule only when a segment holds
-a FAILED attempt of the same logical id at the same rule that no later completed
-op of the id superseded, and refuses otherwise. A completed op is never that
+AWS rejects as a duplicate: from the journal, it adopts the existing rule only
+when a segment holds a FAILED attempt of the same logical id at the same rule that
+no later completed op of the id superseded. (It also adopts a rule another record
+of the same stack already holds, which is state rather than the journal.)
+Otherwise it refuses. A completed op is never that
 evidence: the failed deploy recorded its resource in state, so a later create of
 the id means the resource was reverted, destroyed or replaced. Neither is a failed
 CREATE that carries a physical id, nor a failed replacement UPDATE whose physical
@@ -645,8 +647,10 @@ conditional the escape is:
   `AWS::Scheduler::Schedule` (a schedule in a custom `ScheduleGroup` is
   unaddressable via Cloud Control), `AWS::RDS::DBProxyTargetGroup` (the
   read and delete handlers cannot derive the proxy name from the
-  TargetGroupArn) and `AWS::Lambda::EventInvokeConfig` (every Cloud Control
-  update fails validation) are the members today.
+  TargetGroupArn), `AWS::Lambda::EventInvokeConfig` (every Cloud Control
+  update fails validation) and `AWS::Pipes::Pipe` (a Cloud Control UPDATE
+  cannot change a stream or broker source's write-only `SourceParameters`)
+  are the members today.
 - **`'sdk-coverage'`** — Cloud Control manages the type correctly and is merely
   slower; cdkd has since gained full property coverage. The escape is
   conditional on **this resource**: it happens only on a mutating deploy where
@@ -953,6 +957,36 @@ but the quiet arm, a resolver returning nothing for an attribute it cannot
 construct, emits none, so for that one there is no signal at all until the next
 deploy re-resolves the output.
 
+### `conditionVerdicts` (no version bump)
+
+A condition that reads a parameter fed a secret `{{resolve:...}}` reference
+has no verdict at plan time: `cdkd diff` never resolves a secret. The deploy
+evaluates it against the real value and records, for each such condition the
+diff reads (by an `Fn::If`, or a resource's or output's `Condition`), its
+`verdict` and a `fingerprint`: `sha256:` over the condition's definition,
+every condition it names, and the inputs of the parameters they read. A
+secret-fed parameter contributes its `{{resolve:...}}` reference, never its
+value, and a value carrying a secret is never an input, except a value equal
+to the parameter's `Default`, which is template text. `cdkd diff` reuses a
+verdict only when the fingerprint it recomputes is equal; otherwise it takes
+the condition's FALSE branch, as before
+([`cdkd diff`](cli-diff.md#conditions-over-a-secret-fed-parameter)).
+
+- **Written** by a deploy's final save and by its no-change save (the latter
+  also when only the record changed). Only a nested child records anything,
+  since only a child receives a secret-fed parameter. A parent skips an
+  unchanged nested-stack row, so a child last deployed by an older cdkd gains
+  its record on the next deploy that changes it.
+- **Dropped** by every other save: the per-resource, rollback and
+  output-failure saves rebuild state without it. So a failed or interrupted
+  deploy leaves NO record, and the next diff falls back to the FALSE branch,
+  never to a stale verdict.
+- **No version bump.** An older binary ignores the field and drops it on its
+  next save; this binary reads its absence, or any malformed shape, as no
+  record. A writer that carries the loaded record forward (rollback, drift,
+  scrub, orphan rewrite, `state refresh-observed`) may carry it, since none of
+  them changes a definition or an input the fingerprint covers.
+
 ## State Schema
 
 ### StackState (`state.json`)
@@ -969,6 +1003,7 @@ interface StackState {
   exportNames?: string[]                   // v9+: which `outputs` keys are Export.Name aliases — the ONLY names Fn::ImportValue may bind to (undefined = pre-v9 record, every key importable until its next deploy; [] = exports nothing)
   skippedOutputs?: Record<string, string>  // informational, no version bump: Outputs keys the last deploy could not resolve and skipped → digest of their template inputs (issue #2740); absent = nothing skipped, or a record older than the field
   orphans?: StackOrphanRecord[]            // no version bump: resources a rollback retained under `Retain` and moved out of `resources`, kept so a later deploy can re-adopt one instead of colliding with the name it holds; absent = none
+  conditionVerdicts?: Record<string, { verdict: boolean; fingerprint: string }> // no version bump: the deployed verdict of each condition `cdkd diff` reads that depends on a secret-fed parameter, with a fingerprint of its definitions and inputs (issue #4479); absent = no record
   parentStack?: string                     // v6+: populated on nested-stack child state records (undefined on top-level)
   parentLogicalId?: string                 // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string                    // v6+: parent's region (always equals `region` until cross-region nested stacks ship)

@@ -16,8 +16,9 @@
  *    the rest;
  *  - an UNKNOWN verdict never prunes (no phantom DELETE), directly or through
  *    a `{Condition: X}` chain, while a KNOWN false one still does;
- *  - an `Fn::If` on an UNKNOWN condition still takes its FALSE branch, as on
- *    main: that residual is out of scope here.
+ *  - an UNKNOWN condition stays out of the returned `conditions` when state
+ *    holds no recorded verdict for it. Reusing a recorded one is
+ *    go-to-k/cdkd#4479's, pinned in `diff-recorded-verdicts-4479.test.ts`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
