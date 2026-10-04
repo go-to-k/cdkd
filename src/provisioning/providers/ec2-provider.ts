@@ -7364,8 +7364,9 @@ export class EC2Provider implements ResourceProvider {
    *   `DescribeSecurityGroupRules`, an ingress rule of this group matching the
    *   template's identity and carrying the SAME description as the one live
    *   identity match. A stale id (the rule was re-created) answers nothing;
-   * - no sibling `AWS::EC2::SecurityGroupIngress`, and no inline rule of the
-   *   group's own `AWS::EC2::SecurityGroup` record, declares the same rule
+   * - no sibling `AWS::EC2::SecurityGroupIngress` declares the same rule or
+   *   records the same rule id, and no inline rule of the group's own
+   *   `AWS::EC2::SecurityGroup` record declares it
    *   (go-to-k/cdkd#4492): AWS keeps one rule for both, with the first
    *   description, so the other record would read false drift and its revert
    *   would revoke the shared rule.
@@ -7400,9 +7401,17 @@ export class EC2Provider implements ResourceProvider {
     const matches = flat.filter((r) => identity(r) === wanted);
     if (matches.length !== 1) return undefined;
     const match = matches[0]!;
+    const siblings = Object.entries(context?.siblings ?? {});
     if (
-      stackIngressRuleHolder(Object.entries(context?.siblings ?? {}), '', groupId, properties) !==
-      undefined
+      stackIngressRuleHolder(siblings, '', groupId, properties) !== undefined ||
+      // The same rule spelled another way (a group name for its id, a CIDR
+      // written differently) does not pair by identity, but a record sharing
+      // it recorded the same rule id.
+      siblings.some(
+        ([, sibling]) =>
+          sibling.resourceType === 'AWS::EC2::SecurityGroupIngress' &&
+          recordedSgRuleId(sibling.attributes) === recordedId
+      )
     ) {
       return undefined;
     }

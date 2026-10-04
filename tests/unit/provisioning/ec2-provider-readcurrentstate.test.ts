@@ -1637,6 +1637,28 @@ describe('EC2Provider.readCurrentState', () => {
         expect(mockSend).toHaveBeenCalledTimes(1);
       });
 
+      it('keeps undefined when a sibling records the same rule id under another spelling (#4492)', async () => {
+        mockSend.mockResolvedValueOnce(edited);
+
+        const result = bagOf(
+          await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, {
+            ...own,
+            siblings: {
+              Twin: {
+                resourceType: TYPE,
+                physicalId: PHYS,
+                // The same rule, its CIDR spelled with host bits: no identity pairing.
+                properties: { ...declared, CidrIp: '10.0.0.1/16' },
+                attributes: { Id: ID },
+              },
+            },
+          })
+        );
+
+        expect(result).toBeUndefined();
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
       it('keeps undefined when the group’s own SecurityGroup record declares the rule inline (#4492)', async () => {
         mockSend.mockResolvedValueOnce(edited);
 
