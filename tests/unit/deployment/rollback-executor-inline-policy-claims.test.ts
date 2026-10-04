@@ -1024,6 +1024,102 @@ describe('a rollback puts back an inline policy its removal took from a record t
     expect(holding()).toEqual({ n: 'docOld', q: 'docLater' });
   });
 
+  it.each([
+    [
+      'a policy whose name (its physical id) is redacted',
+      { ...policyRecord('n', 'docS'), physicalId: '{{resolve:secretsmanager:s}}' },
+    ],
+    [
+      'a role whose name (its physical id) is redacted',
+      { ...roleRecord([{ PolicyName: 'n', PolicyDocument: 'docS' }]), physicalId: '***' },
+    ],
+  ])('%s may shadow the holder, so nothing is put back', async (_label, shadow) => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      S: shadow as ResourceState,
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+
+    const result = await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(policyProvider.create).not.toHaveBeenCalled();
+    expect(result.warnings).toBe(1);
+    expect(warned()).toContain('S may record it too under a redacted name');
+  });
+
+  it.each([
+    ['a redacted-name policy listing another role', { ...policyRecord('n', 'docS', ['other']), physicalId: '***' }],
+    ['a redacted-name role holding another policy name', {
+      ...roleRecord([{ PolicyName: 'other', PolicyDocument: 'docS' }]),
+      physicalId: '***',
+    }],
+  ])('CONTROL: %s shadows nothing', async (_label, unrelated) => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      S: unrelated as ResourceState,
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+
+    const result = await replayRollback([createOp('New', state['New']!)], state, 'S', ctx);
+
+    expect(result.warnings).toBe(0);
+    expect(holding()).toEqual({ n: 'docOld' });
+  });
+
+  it('an interrupted --revert-failed replay puts back what it removed (no completed-op replay follows)', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      New: policyRecord('n', 'docNew'),
+      New2: policyRecord('q', 'docNew2'),
+    };
+    put('n', 'docNew');
+    put('q', 'docNew2');
+    let ops = 0;
+    policyProvider.delete.mockImplementationOnce(async (_l, physicalId, _t, props: PolicyProps, c) => {
+      ops++;
+      asked(c)?.('role', props.Roles[0]!, physicalId);
+      remove(physicalId);
+    });
+    const failed = (['New2', 'New'] as const).map((lid) => ({
+      logicalId: lid,
+      changeType: 'CREATE',
+      resourceType: POLICY,
+      physicalId: state[lid]!.physicalId,
+      attemptedProperties: state[lid]!.properties,
+      provisionedBy: 'sdk',
+    })) as FailedOperation[];
+
+    const result = await replayFailedOperations(failed, state, 'S', ctx, { isInterrupted: () => ops > 0 });
+
+    expect(result.interrupted).toBe(true);
+    expect(holding()).toEqual({ n: 'docOld', q: 'docNew2' });
+  });
+
+  it('CONTROL: an uninterrupted --revert-failed replay leaves the put-back to the completed-op replay', async () => {
+    const state: Record<string, ResourceState> = {
+      Old: policyRecord('n', 'docOld'),
+      New: policyRecord('n', 'docNew'),
+    };
+    put('n', 'docNew');
+    const failed = [
+      {
+        logicalId: 'New',
+        changeType: 'CREATE',
+        resourceType: POLICY,
+        physicalId: 'n',
+        attemptedProperties: state['New']!.properties,
+        provisionedBy: 'sdk',
+      },
+    ] as FailedOperation[];
+
+    const result = await replayFailedOperations(failed, state, 'S', ctx);
+
+    expect(result.interrupted).toBe(false);
+    expect(policyProvider.create).not.toHaveBeenCalled();
+  });
+
   it('a Cloud Control record holds the name too: the put-back writes what it records', async () => {
     const state: Record<string, ResourceState> = {
       Old: { ...policyRecord('n', 'docOld'), provisionedBy: 'cc-api' },

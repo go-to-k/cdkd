@@ -298,8 +298,9 @@ export interface InlinePolicyHolder {
  * a record holds is what cdkd state says the principal holds, whoever wrote
  * it last. A Cloud Control record holds too: the put-back writes what it
  * records, it does not trust a write it made. `unreadable` names the records
- * of that shape whose principal entry or policy name is not an IAM name (a
- * redacted value), which may hold it unseen.
+ * that may hold it unseen: one whose policy name or principal (either can be
+ * its physical id) or principal-list entry is not an IAM name (a redacted
+ * value) where the rest of the record would match.
  */
 export function inlinePolicyHolders(
   stateResources: Record<string, ResourceState>,
@@ -314,43 +315,44 @@ export function inlinePolicyHolders(
     if (record === null || typeof record !== 'object') continue;
     const props = record.properties ?? {};
     if (record.resourceType === 'AWS::IAM::Policy') {
-      if (!sameIamName(record.physicalId, policyName)) continue;
+      // The physical id IS the policy name; a redacted one may name it unseen.
+      const nameMatches = sameIamName(record.physicalId, policyName);
+      if (!nameMatches && !unnamed(record.physicalId)) continue;
       const listed = props[POLICY_LIST_FIELDS[kind]];
-      const named = Array.isArray(listed)
-        ? (listed as unknown[]).find((p) => sameIamName(p, principal))
-        : undefined;
-      if (typeof named !== 'string') {
-        if (Array.isArray(listed) && (listed as unknown[]).some(unnamed))
-          unreadable.push(logicalId);
-        continue;
+      const entries = Array.isArray(listed) ? (listed as unknown[]) : [];
+      const named = entries.find((p) => sameIamName(p, principal));
+      if (nameMatches && typeof named === 'string') {
+        holders.push({
+          logicalId,
+          principal: named,
+          policyName: record.physicalId,
+          document: props['PolicyDocument'],
+        });
+      } else if (named !== undefined || entries.some(unnamed)) {
+        unreadable.push(logicalId);
       }
-      holders.push({
-        logicalId,
-        principal: named,
-        policyName: record.physicalId,
-        document: props['PolicyDocument'],
-      });
       continue;
     }
     if (!Object.hasOwn(PRINCIPAL_KINDS, record.resourceType)) continue;
     if (PRINCIPAL_KINDS[record.resourceType] !== kind) continue;
-    if (!sameIamName(record.physicalId, principal)) continue;
+    // The physical id IS the principal; a redacted one may name it unseen.
+    const principalMatches = sameIamName(record.physicalId, principal);
+    if (!principalMatches && !unnamed(record.physicalId)) continue;
     const policies = props['Policies'];
     if (!Array.isArray(policies)) continue;
     for (const entry of policies as unknown[]) {
       if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
       const name = (entry as Record<string, unknown>)['PolicyName'];
-      if (unnamed(name)) {
+      if (principalMatches && sameIamName(name, policyName)) {
+        holders.push({
+          logicalId,
+          principal: record.physicalId,
+          policyName: name as string,
+          document: (entry as Record<string, unknown>)['PolicyDocument'],
+        });
+      } else if (unnamed(name) || sameIamName(name, policyName)) {
         unreadable.push(logicalId);
-        continue;
       }
-      if (!sameIamName(name, policyName)) continue;
-      holders.push({
-        logicalId,
-        principal: record.physicalId,
-        policyName: name as string,
-        document: (entry as Record<string, unknown>)['PolicyDocument'],
-      });
     }
   }
   return { holders, unreadable: [...new Set(unreadable)] };

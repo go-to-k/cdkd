@@ -1042,6 +1042,14 @@ async function replayFailedOperationsUnbound(
       });
     }
   }
+  // go-to-k/cdkd#4408: no put-back here — the caller's `replayRollback` of
+  // the segment's completed ops runs next over the same writers and does it,
+  // once their records are final. An interrupt returns before that replay
+  // (`cdkd rollback`), and the handled ops leave the journal, so a re-run
+  // would never repeat their removals: put back what they removed now.
+  if (result.interrupted) {
+    await restoreHeldInlinePolicies(inlinePolicyWriters, stateResources, ctx, result);
+  }
   if (emitEnvelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_FINISHED', stackName });
   result.remainingFailedOps = failedOps.filter((op) => pending.has(op));
   return result;
