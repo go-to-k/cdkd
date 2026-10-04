@@ -18,6 +18,7 @@ import {
   IntrinsicResolutionRefusalError,
 } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
+import { producerRecordKey } from '../../state/record-keys.js';
 import { LockManager } from '../../state/lock-manager.js';
 import {
   isReadableResourceEntry,
@@ -425,7 +426,17 @@ export type DriftOutcome =
    * `--revert` cannot act on it and REFUSE it by name: neither can recreate a
    * resource (and nor does a deploy that leaves its template unchanged).
    */
-  | { kind: 'deleted'; logicalId: string; resourceType: string }
+  | {
+      kind: 'deleted';
+      logicalId: string;
+      resourceType: string;
+      /**
+       * go-to-k/cdkd#4533: set on a nested `AWS::CloudFormation::Stack` row
+       * whose own `<parent>~<child>` record is gone from state. No AWS read
+       * stands behind it, so the report must not say AWS answered.
+       */
+      nestedStackRecordMissing?: true;
+    }
   /**
    * `skipped` is reserved for resource types where drift detection is not
    * conceptually applicable (currently: `Custom::*`). Unlike `unsupported`
@@ -1137,6 +1148,15 @@ async function driftCommand(
 
     const stateRefs = await stateBackend.listStacks();
     const targetRefs = resolveTargetRefs(stacks, stateRefs, options);
+    // go-to-k/cdkd#4533: what a nested `AWS::CloudFormation::Stack` row's own
+    // `<parent>~<child>` record is in THIS run, decided once over the listing.
+    const selectedKeys = new Set(targetRefs.map(stackRefKey));
+    const stateKeys = new Set(stateRefs.map(stackRefKey));
+    const nestedChildRecord = (childStackName: string, region: string): NestedChildRecord => {
+      const key = stackRefKey({ stackName: childStackName, region });
+      if (selectedKeys.has(key)) return 'selected';
+      return stateKeys.has(key) ? 'unselected' : 'missing';
+    };
 
     const reports: StackDriftReport[] = [];
     for (const ref of targetRefs) {
@@ -1218,7 +1238,8 @@ async function driftCommand(
           // only place that knows whether this run can reach a `saveState`. The
           // two flags are mutually exclusive (checked above), so either one alone
           // makes the run write-capable.
-          options.accept || options.revert ? 'refuse' : 'repair'
+          options.accept || options.revert ? 'refuse' : 'repair',
+          nestedChildRecord
         )
       );
       reports.push(report);
@@ -1369,6 +1390,16 @@ function refuseDeletedForRemediation(
     for (const outcome of report.outcomes) {
       if (outcome.kind !== 'deleted') continue;
       refused += 1;
+      if (outcome.nestedStackRecordMissing === true) {
+        // go-to-k/cdkd#4533: no AWS read stands behind this one, so it does
+        // not say AWS answered, and the remedy is the nested stack's own.
+        logger.warn(
+          safeMsg`  ! ${reportHeading(report)} ${reportResource(outcome)}: NOT ` +
+            (mode === 'revert' ? 'reverted' : 'accepted') +
+            safeMsg` — ${nestedRecordMissingClause(report, outcome)} ${NESTED_RECORD_MISSING_REMEDY}`
+        );
+        continue;
+      }
       logger.warn(
         safeMsg`  ! ${reportHeading(report)} ${reportResource(outcome)}: NOT ` +
           (mode === 'revert'
@@ -1408,11 +1439,110 @@ const DELETED_RESOURCE_REMEDY =
   `deploys is enough. Anything in the app that references it has to come out with it, and ` +
   `that deploy DELETES those resources too.`;
 
+/** The row type `NestedStackProvider` records a nested stack under. */
+const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
+
+/**
+ * What to do about a nested stack whose own `<parent>~<child>` record is gone
+ * (go-to-k/cdkd#4533). cdkd no longer tracks its resources, which may still
+ * exist, so recreating it can collide with them.
+ */
+const NESTED_RECORD_MISSING_REMEDY =
+  `The resources it held are no longer tracked by cdkd and may still exist in AWS: find ` +
+  `and delete them first. A deploy that does not change the nested stack will not recreate ` +
+  `it: to recreate it, remove it from the CDK app and deploy, then restore it and deploy ` +
+  `again; if it is meant to be gone, the first of those deploys is enough.`;
+
+/** The sentence a nested row with no record of its own reports (go-to-k/cdkd#4533). */
+function nestedRecordMissingClause(
+  report: StackDriftReport,
+  outcome: { logicalId: string }
+): string {
+  return safeMsg`its nested stack's own state record ${reportIdent(
+    nestedChildStackName(report.stackName, outcome.logicalId),
+    STACK_REF_MAX_CODE_POINTS
+  )} no longer exists.`;
+}
+
+/**
+ * The state record a nested `AWS::CloudFormation::Stack` row deploys into:
+ * `NestedStackProvider`'s `<parent>~<logicalId>` key, in the parent's region.
+ */
+function nestedChildStackName(parentStackName: string, logicalId: string): string {
+  return `${parentStackName}~${logicalId}`;
+}
+
+/** What a nested row's own record is in this run (go-to-k/cdkd#4533). */
+type NestedChildRecord = 'selected' | 'unselected' | 'missing';
+
+/**
+ * One state record's identity, for the selection sets. A legacy record's
+ * missing region reads as `''`, which no region-scoped key carries.
+ */
+function stackRefKey(ref: StackStateRef): string {
+  return producerRecordKey(ref.stackName, ref.region ?? '');
+}
+
+/**
+ * Whether `ref` is a nested stack under `ancestor`, at any depth
+ * (go-to-k/cdkd#4533). By KEY, as `cdkd scrub` matches them: a child is
+ * recorded as `<parent>~<logicalId>` in its parent's region, and CDK's
+ * stack-name rule bars `~`, so no top-level stack can carry that prefix. A
+ * legacy region-less record has no nested stacks (they arrived with schema v6).
+ */
+function isNestedDescendantOf(ref: StackStateRef, ancestor: StackStateRef): boolean {
+  return (
+    ancestor.region !== undefined &&
+    ref.region === ancestor.region &&
+    ref.stackName.startsWith(`${ancestor.stackName}~`)
+  );
+}
+
+/** Parent before child, siblings by name: a segment-wise order of `~` keys. */
+function compareNestedStackNames(a: string, b: string): number {
+  const as = a.split('~');
+  const bs = b.split('~');
+  for (let i = 0; i < Math.min(as.length, bs.length); i++) {
+    const c = as[i]!.localeCompare(bs[i]!);
+    if (c !== 0) return c;
+  }
+  return as.length - bs.length;
+}
+
+/**
+ * Each selected record followed by every nested stack under it, each record
+ * once (go-to-k/cdkd#4533). `cdkd diff` and `cdkd destroy` both act on a
+ * parent's nested stacks with it, so `cdkd drift <Parent>` compares them too:
+ * a resource deleted inside one is drift of the stack the user named.
+ */
+function withNestedDescendants(
+  selected: StackStateRef[],
+  stateRefs: StackStateRef[]
+): StackStateRef[] {
+  const out: StackStateRef[] = [];
+  const seen = new Set<string>();
+  const add = (ref: StackStateRef): void => {
+    const key = stackRefKey(ref);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(ref);
+  };
+  for (const ref of selected) {
+    add(ref);
+    stateRefs
+      .filter((r) => isNestedDescendantOf(r, ref))
+      .sort((a, b) => compareNestedStackNames(a.stackName, b.stackName))
+      .forEach(add);
+  }
+  return out;
+}
+
 /**
  * Resolve the set of `(stackName, region)` pairs the command should
  * inspect. With `--all`, every state record qualifies; without `--all`,
  * each positional pattern is matched against the state index using the
- * same exact-name + region disambiguation rules as `state destroy`.
+ * same exact-name + region disambiguation rules as `state destroy`, and
+ * each named stack brings its nested stacks with it (go-to-k/cdkd#4533).
  */
 function resolveTargetRefs(
   stacks: string[],
@@ -1441,10 +1571,16 @@ function resolveTargetRefs(
         'No stacks found in state bucket. Run `cdkd deploy` first, or pass --all explicitly.'
       );
     }
-    if (candidates.length === 1) {
-      return [candidates[0]!];
+    // go-to-k/cdkd#4533: a nested stack's record is part of its parent's, so
+    // one parent with nested stacks is still "the single stack in state". A
+    // record whose parent's record is gone counts as a stack of its own.
+    const roots = candidates.filter(
+      (r) => !candidates.some((a) => a !== r && isNestedDescendantOf(r, a))
+    );
+    if (roots.length === 1) {
+      return withNestedDescendants([roots[0]!], candidates);
     }
-    const listing = candidates
+    const listing = roots
       .map((r) => `${r.stackName}${r.region ? ` (${r.region})` : ''}`)
       .join(', ');
     throw new Error(
@@ -1486,7 +1622,7 @@ function resolveTargetRefs(
         `Re-run with --stack-region ${commandHole('region')} to disambiguate.`
     );
   }
-  return out;
+  return withNestedDescendants(out, stateRefs);
 }
 
 /**
@@ -2863,7 +2999,10 @@ async function runDriftForStack(
   // only one — what differs is that scrub's split is decidable from its own
   // write gate at the site, while this one is a FLAG pair the loader cannot
   // see. Hence a parameter: the decision is made once, beside the flags.
-  malformedRecordMode: 'repair' | 'refuse'
+  malformedRecordMode: 'repair' | 'refuse',
+  // go-to-k/cdkd#4533: what this stack's nested rows' own records are in the
+  // run — decided by the driver, the one place that holds the selection.
+  nestedChildRecord: (childStackName: string, region: string) => NestedChildRecord
 ): Promise<StackDriftReport> {
   const result = await stateBackend.getState(stackName, region);
   if (!result) {
@@ -3062,6 +3201,30 @@ async function runDriftForStack(
           resourceType: resource.resourceType,
         });
         continue;
+      }
+
+      // go-to-k/cdkd#4533: a nested stack's row has nothing in AWS to read
+      // (cdkd deploys its resources itself), and its resources are compared as
+      // their own `<parent>~<child>` stack in this same run. So the row is
+      // `skipped` when that record is selected — its block covers it — and
+      // `deleted` when the record is gone, since `NestedStackProvider` writes
+      // it before the row exists. A record present but not selected cannot
+      // arise from this command's selection; it keeps the `unsupported` path.
+      if (resource.resourceType === NESTED_STACK_RESOURCE_TYPE) {
+        const child = nestedChildRecord(nestedChildStackName(stackName, logicalId), region);
+        if (child === 'selected') {
+          outcomes.push({ kind: 'skipped', logicalId, resourceType: resource.resourceType });
+          continue;
+        }
+        if (child === 'missing') {
+          outcomes.push({
+            kind: 'deleted',
+            logicalId,
+            resourceType: resource.resourceType,
+            nestedStackRecordMissing: true,
+          });
+          continue;
+        }
       }
 
       let provider;
@@ -8248,7 +8411,9 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
       // and wording, never the `drift unknown` block it used to fall into.
       for (const o of deleted) {
         process.stdout.write(
-          `  - ${reportResource(o)} — DELETED outside cdkd: AWS reports it does not exist.\n\n`
+          o.nestedStackRecordMissing === true
+            ? `  - ${reportResource(o)} — DELETED outside cdkd: ${nestedRecordMissingClause(report, o)}\n\n`
+            : `  - ${reportResource(o)} — DELETED outside cdkd: AWS reports it does not exist.\n\n`
         );
       }
       for (const o of drifted) {
