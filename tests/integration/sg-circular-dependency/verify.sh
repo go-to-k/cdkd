@@ -68,8 +68,8 @@
 #          name them.
 #   5. OWNERSHIP (issue #4355), phase 1e: a rule added by hand to the
 #      ambiguity-arm SG, then `CdkdSgIngressStrangerExample` declaring the
-#      identical rule. Both deploys must refuse naming it (the first journaled
-#      without its attempted bag), an UPDATE onto it from another range must
+#      identical rule. Both deploys must refuse naming it (a refusal journals
+#      no failed op, #4356), an UPDATE onto it from another range must
 #      refuse too, and it must survive each such destroy. A journal holding
 #      the rule only as a COMPLETED CREATE, or as a failed attempt a removed
 #      newer segment superseded, must still refuse (#4402). A POP arm adopts in
@@ -1272,15 +1272,30 @@ if node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
   echo "FAIL: the POP arm's first deploy SUCCEEDED over ${STRANGER_RULE_ID} with no journal evidence" >&2
   exit 1
 fi
+# The refusal journals no failed op (go-to-k/cdkd#4356): the journal is absent
+# or holds no StrangerIngress failed op, so the attempt is appended by hand.
 if ! POP_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
-  echo "FAIL: could not read the rollback journal for the POP arm: ${POP_JOURNAL}" >&2
+  if printf '%s' "${POP_JOURNAL}" | grep -qE '\(404\)|NoSuchKey|Not Found'; then
+    POP_JOURNAL=$(jq -n --arg s "${STRANGER_STACK}" --arg r "${REGION}" \
+      '{journalVersion: 1, stackName: $s, region: $r, segments: []}')
+  else
+    echo "FAIL: could not read the rollback journal for the POP arm: ${POP_JOURNAL}" >&2
+    exit 1
+  fi
+fi
+if [ "$(printf '%s' "${POP_JOURNAL}" | jq '[.segments[].failedOperations[]? | select(.logicalId == "StrangerIngress")] | length')" != 0 ]; then
+  echo "FAIL: the POP arm's refused create was journaled as a failed op (go-to-k/cdkd#4356): ${POP_JOURNAL}" >&2
   exit 1
 fi
 POP_JOURNAL=$(printf '%s' "${POP_JOURNAL}" | jq --arg g "${STRANGER_GROUP_ID}" '
-  .segments |= map(.failedOperations |= ((. // []) | map(
-    if .logicalId == "StrangerIngress" and .changeType == "CREATE"
-    then .attemptedProperties = {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
-    else . end)))')
+  .segments += [{
+    timestamp: 4, reason: "no-rollback-failure", initialDeploy: false, operations: [],
+    failedOperations: [{
+      logicalId: "StrangerIngress", changeType: "CREATE",
+      resourceType: "AWS::EC2::SecurityGroupIngress",
+      attemptedProperties: {GroupId: $g, IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, CidrIp: "10.63.0.0/16"}
+    }]
+  }]')
 printf '%s' "${POP_JOURNAL}" | aws s3 cp - "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" \
   --content-type application/json >/dev/null
 
