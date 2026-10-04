@@ -165,7 +165,8 @@ export const UNSHOWABLE_VALUE = 'a value that cannot be shown safely here';
  * ({@link UNSHOWABLE_VALUE}): a selection starting after `arn:x: ` would begin
  * inside the quotes and run the rest. The RENDER is tested, not the raw value,
  * because `displayIdent` makes breaks of its own (a tab becomes a space, and a
- * cut appends `[cut: N more characters withheld]`).
+ * cut appends `cutMarker`'s `[cut: N more characters withheld, tail
+ * sha256:<hex>]`).
  */
 export function shellBoundedDisplay(shown: string): string {
   if (hasClauseBreak(shown)) return UNSHOWABLE_VALUE;

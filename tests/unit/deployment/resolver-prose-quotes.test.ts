@@ -260,9 +260,10 @@ describe('the resolver never puts a render inside cdkd quotes (go-to-k/cdkd#3950
     });
   }, 120_000);
 
-  it("describes an unsupported intrinsic key ending in displayIdent's own cut marker", async () => {
-    // 255 plain characters, then exactly the suffix `displayIdent` appends
-    // when it cuts 35: the round-trip alone reads the key as plain.
+  it("describes an unsupported intrinsic key ending in displayIdent's pre-digest cut marker", async () => {
+    // 255 plain characters, then exactly the suffix `displayIdent` appended
+    // when it cut 35 before go-to-k/cdkd#4002 added the tail digest: the
+    // round-trip alone read the key as plain.
     const forged = `Fn::${'a'.repeat(251)} [cut: 35 more characters withheld]`;
     expect(forged.length - 255).toBe(35);
     const message = await refusal({ [forged]: 1 });
@@ -272,10 +273,11 @@ describe('the resolver never puts a render inside cdkd quotes (go-to-k/cdkd#3950
     expect(message).not.toContain(`"${forged}"`);
   });
 
-  it("describes a refused RoleArn that is displayIdent's own cut output", async () => {
+  it("describes a refused RoleArn forged as displayIdent's pre-digest cut output", async () => {
     // The role-ARN cap's worth of plain characters, then exactly the suffix
-    // `displayIdent` appends when it cuts 35: it round-trips unchanged, fails
-    // `parseIamRoleArn` (the space), and reaches the RoleArn refusal.
+    // `displayIdent` appended when it cut 35 before go-to-k/cdkd#4002 added the
+    // tail digest: it fails `parseIamRoleArn` (the space) and reaches the
+    // RoleArn refusal.
     const prefix = 'arn:aws:iam::123456789012:role/';
     const forged = `${prefix}${'a'.repeat(ROLE_ARN_MAX_CODE_POINTS - prefix.length)} [cut: 35 more characters withheld]`;
     expect(forged.length - ROLE_ARN_MAX_CODE_POINTS).toBe(35);

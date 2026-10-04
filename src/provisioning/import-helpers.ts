@@ -46,8 +46,9 @@ export function remedyLogicalId(logicalId: string): string {
  * refusal line that also carries a `--resource` remedy (go-to-k/cdkd#4226):
  * no whitespace, and `displayIdent` renders it unchanged at the ARN ceiling,
  * so every character is literal inside cdkd's own `'...'` and a legitimate ARN
- * or queue URL is never cut. Whitespace is tested first because the round-trip
- * alone admits a value ending in `displayIdent`'s own cut marker. A value this
+ * or queue URL is never cut. Whitespace is tested first, so a value that IS
+ * `displayIdent`'s own cut output is refused without resting on the cut
+ * marker's tail digest (go-to-k/cdkd#4002). A value this
  * refuses is described with {@link VALUE_NOT_SHOWN} instead.
  */
 export function isPlainImportValue(value: string): boolean {

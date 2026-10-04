@@ -121,11 +121,12 @@ describe('StackHasActiveImportsError — no non-plain record value inside cdkd q
   });
 
   it('describes an export name forged to end in displayIdent’s own cut marker', () => {
-    // 255 plain characters (the default cap) plus the 35-character marker for
-    // 35 withheld characters: `displayIdent` cuts it to exactly itself, so the
-    // round-trip alone admits it and the whitespace test is what refuses it.
+    // 255 plain characters (the default cap) plus the pre-go-to-k/cdkd#4002
+    // marker for 35 withheld characters: `displayIdent` cut it to exactly
+    // itself until the marker carried a digest of the withheld tail, and the
+    // whitespace test refuses it either way.
     const forged = `${'a'.repeat(255)} [cut: 35 more characters withheld]`;
-    expect(displayIdent(forged)).toBe(forged);
+    expect(displayIdent(forged)).not.toBe(forged);
     const message = refusal('Producer', 'us-east-1', { ...CONSUMER, exportName: forged });
     expect(message).toContain('imports an export whose name is not a plain identifier');
     expect(message).not.toContain(forged);

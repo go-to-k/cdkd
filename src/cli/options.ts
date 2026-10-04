@@ -1408,8 +1408,9 @@ export function parseAssumeRoleToken(
  */
 function quotedArgv(value: string, maxCodePoints?: number): string {
   const shown = displayIdent(value, maxCodePoints === undefined ? undefined : { maxCodePoints });
-  // Whitespace FIRST: the round-trip alone admits a value ending in
-  // `displayIdent`'s own cut marker, which renders as itself.
+  // Whitespace FIRST: a value that IS `displayIdent`'s own cut output is then
+  // refused without resting on the marker's tail digest, the only thing
+  // keeping the round-trip from admitting it (go-to-k/cdkd#4002).
   return !/\s/.test(value) && shown === value ? `"${value}"` : shellBoundedDisplay(shown);
 }
 
