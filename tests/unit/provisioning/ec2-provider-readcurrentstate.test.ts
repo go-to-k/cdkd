@@ -10,6 +10,7 @@ import {
   DescribeInstancesCommand,
   DescribeNetworkAclsCommand,
   DescribeAddressesCommand,
+  DescribeSecurityGroupRulesCommand,
 } from '@aws-sdk/client-ec2';
 
 const mockSend = vi.fn();
@@ -1425,19 +1426,12 @@ describe('EC2Provider.readCurrentState', () => {
         }
       );
       expect(result).not.toBe(RESOURCE_NOT_FOUND);
-      // go-to-k/cdkd#4447: the identity match (peer owner undeclared) reads it back.
-      expect(result).toEqual({
-        GroupId: 'sg-db',
-        IpProtocol: 'tcp',
-        FromPort: 5432,
-        ToPort: 5432,
-        SourceSecurityGroupId: 'sg-app',
-        SourceSecurityGroupOwnerId: '111122223333',
-        Description: 'from sg-app:5432',
-      });
     });
 
-    describe('a Description edited out of band (go-to-k/cdkd#4447)', () => {
+    describe('the identity fallback (go-to-k/cdkd#4447)', () => {
+      const ID = 'sgr-0a1b2c3d4e5f60718';
+      const TYPE = 'AWS::EC2::SecurityGroupIngress';
+      const PHYS = 'sg-1|tcp|443|443';
       const declared = {
         GroupId: 'sg-1',
         IpProtocol: 'tcp',
@@ -1446,33 +1440,44 @@ describe('EC2Provider.readCurrentState', () => {
         CidrIp: '10.0.0.0/16',
         Description: 'from the VPC',
       };
+      const own = { attributes: { Id: ID } };
+      const liveGroup = (ranges: Array<Record<string, unknown>>): Record<string, unknown> => ({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            IpPermissions: [{ IpProtocol: 'tcp', FromPort: 443, ToPort: 443, IpRanges: ranges }],
+          },
+        ],
+      });
+      const byId = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+        SecurityGroupRules: [
+          {
+            SecurityGroupRuleId: ID,
+            GroupId: 'sg-1',
+            IsEgress: false,
+            IpProtocol: 'tcp',
+            FromPort: 443,
+            ToPort: 443,
+            CidrIpv4: '10.0.0.0/16',
+            Description: 'edited in the console',
+            ...overrides,
+          },
+        ],
+      });
+      const edited = liveGroup([
+        { CidrIp: '10.0.0.0/16', Description: 'edited in the console' },
+        { CidrIp: '192.168.0.0/16', Description: 'from the VPC' },
+      ]);
+      const awsError = (name: string, message: string): Error => {
+        const err = new Error(message);
+        err.name = name;
+        return err;
+      };
 
-      it('returns the live rule with its new Description, so the difference reports as drift', async () => {
-        mockSend.mockResolvedValueOnce({
-          SecurityGroups: [
-            {
-              GroupId: 'sg-1',
-              IpPermissions: [
-                {
-                  IpProtocol: 'tcp',
-                  FromPort: 443,
-                  ToPort: 443,
-                  IpRanges: [
-                    { CidrIp: '10.0.0.0/16', Description: 'edited in the console' },
-                    { CidrIp: '192.168.0.0/16', Description: 'from the VPC' },
-                  ],
-                },
-              ],
-            },
-          ],
-        });
+      it('returns the live rule when the recorded Id proves it ours, so a Description edit is drift', async () => {
+        mockSend.mockResolvedValueOnce(edited).mockResolvedValueOnce(byId());
 
-        const result = await provider.readCurrentState(
-          'sg-1|tcp|443|443',
-          'Logical',
-          'AWS::EC2::SecurityGroupIngress',
-          declared
-        );
+        const result = await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, own);
 
         expect(result).toEqual({
           GroupId: 'sg-1',
@@ -1482,113 +1487,19 @@ describe('EC2Provider.readCurrentState', () => {
           CidrIp: '10.0.0.0/16',
           Description: 'edited in the console',
         });
-      });
-
-      it('keeps undefined for a Description mismatch right after cdkd’s own write (#4112)', async () => {
-        // A Description-only update revokes and re-authorizes; a lagging read
-        // still carrying the OLD text must not become the baseline.
-        const lagging = {
-          SecurityGroups: [
-            {
-              GroupId: 'sg-1',
-              IpPermissions: [
-                {
-                  IpProtocol: 'tcp',
-                  FromPort: 443,
-                  ToPort: 443,
-                  IpRanges: [{ CidrIp: '10.0.0.0/16', Description: 'the old text' }],
-                },
-              ],
-            },
-          ],
-        };
-        mockSend.mockResolvedValueOnce(lagging);
-
-        const captured = bagOf(
-          await provider.readCurrentState(
-            'sg-1|tcp|443|443',
-            'Logical',
-            'AWS::EC2::SecurityGroupIngress',
-            declared,
-            { afterOwnWrite: true }
-          )
-        );
-        expect(captured).toBeUndefined();
-
-        mockSend.mockResolvedValueOnce(lagging);
-        const drifted = bagOf(
-          await provider.readCurrentState(
-            'sg-1|tcp|443|443',
-            'Logical',
-            'AWS::EC2::SecurityGroupIngress',
-            declared
-          )
-        );
-        expect(drifted).toMatchObject({ CidrIp: '10.0.0.0/16', Description: 'the old text' });
-      });
-
-      it('still matches an undeclared peer owner right after cdkd’s own write', async () => {
-        mockSend.mockResolvedValueOnce({
-          SecurityGroups: [
-            {
-              GroupId: 'sg-1',
-              IpPermissions: [
-                {
-                  IpProtocol: 'tcp',
-                  FromPort: 443,
-                  ToPort: 443,
-                  UserIdGroupPairs: [
-                    { GroupId: 'sg-peer', UserId: '111122223333', Description: 'from peer' },
-                  ],
-                },
-              ],
-            },
-          ],
-        });
-
-        const result = bagOf(
-          await provider.readCurrentState(
-            'sg-1|tcp|443|443',
-            'Logical',
-            'AWS::EC2::SecurityGroupIngress',
-            {
-              GroupId: 'sg-1',
-              IpProtocol: 'tcp',
-              FromPort: 443,
-              ToPort: 443,
-              SourceSecurityGroupId: 'sg-peer',
-              Description: 'from peer',
-            },
-            { afterOwnWrite: true }
-          )
-        );
-
-        expect(result).toMatchObject({
-          SourceSecurityGroupId: 'sg-peer',
-          SourceSecurityGroupOwnerId: '111122223333',
+        const call = mockSend.mock.calls[1]?.[0];
+        expect(call).toBeInstanceOf(DescribeSecurityGroupRulesCommand);
+        expect((call as DescribeSecurityGroupRulesCommand).input).toEqual({
+          SecurityGroupRuleIds: [ID],
         });
       });
 
       it('returns the live rule without a Description when it was removed', async () => {
-        mockSend.mockResolvedValueOnce({
-          SecurityGroups: [
-            {
-              GroupId: 'sg-1',
-              IpPermissions: [
-                { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: '10.0.0.0/16' }] },
-              ],
-            },
-          ],
-        });
+        mockSend
+          .mockResolvedValueOnce(liveGroup([{ CidrIp: '10.0.0.0/16' }]))
+          .mockResolvedValueOnce(byId({ Description: undefined }));
 
-        const result = bagOf(
-          await provider.readCurrentState(
-            'sg-1|tcp|443|443',
-            'Logical',
-            'AWS::EC2::SecurityGroupIngress',
-            declared
-          )
-        );
+        const result = bagOf(await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, own));
 
         expect(result).toEqual({
           GroupId: 'sg-1',
@@ -1599,9 +1510,77 @@ describe('EC2Provider.readCurrentState', () => {
         });
       });
 
+      it('lets an exact match win first, with no by-id call (a stale Id, description unchanged)', async () => {
+        mockSend.mockResolvedValueOnce(liveGroup([{ CidrIp: '10.0.0.0/16', Description: 'from the VPC' }]));
+
+        const result = bagOf(
+          await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, {
+            attributes: { Id: 'sgr-0ffffffffffffffff' },
+          })
+        );
+
+        expect(result).toMatchObject({ CidrIp: '10.0.0.0/16', Description: 'from the VPC' });
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([
+        ['InvalidSecurityGroupRuleId.NotFound', `The security group rule ID '${ID}' does not exist`],
+        ['InvalidSecurityGroupRuleId.Malformed', `Invalid id: "${ID}"`],
+        ['UnauthorizedOperation', 'You are not authorized to perform this operation.'],
+      ])('keeps undefined, never gone, when the by-id read fails with %s (a stranger’s rule)', async (name, message) => {
+        mockSend.mockResolvedValueOnce(edited).mockRejectedValueOnce(awsError(name, message));
+
+        const result = await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, own);
+
+        expect(result).toBeUndefined();
+      });
+
+      it('keeps undefined with no recorded Id (a legacy record), and makes no by-id call', async () => {
+        mockSend.mockResolvedValueOnce(edited);
+
+        const result = bagOf(await provider.readCurrentState(PHYS, 'Logical', TYPE, declared));
+
+        expect(result).toBeUndefined();
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      it('keeps undefined on the deploy capture (afterOwnWrite), with no by-id call', async () => {
+        mockSend.mockResolvedValueOnce(edited);
+
+        const result = bagOf(
+          await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, {
+            ...own,
+            afterOwnWrite: true,
+          })
+        );
+
+        expect(result).toBeUndefined();
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([
+        ['another description', { Description: 'something else' }],
+        ['an egress rule', { IsEgress: true }],
+        ['another group', { GroupId: 'sg-2' }],
+        ['another source', { CidrIpv4: '172.16.0.0/12' }],
+      ])('keeps undefined when the recorded rule carries %s', async (_label, overrides) => {
+        mockSend.mockResolvedValueOnce(edited).mockResolvedValueOnce(byId(overrides));
+
+        const result = bagOf(await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, own));
+
+        expect(result).toBeUndefined();
+      });
+
+      it('keeps undefined when no live rule shares the identity', async () => {
+        mockSend.mockResolvedValueOnce(liveGroup([{ CidrIp: '192.168.0.0/16', Description: 'x' }]));
+
+        const result = bagOf(await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, own));
+
+        expect(result).toBeUndefined();
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
       it('keeps undefined when more than one live rule shares the identity', async () => {
-        // Two same-identity peers differing only in owner: undeclared owner
-        // makes both identity matches, so the reader cannot tell which is ours.
         mockSend.mockResolvedValueOnce({
           SecurityGroups: [
             {
@@ -1623,50 +1602,152 @@ describe('EC2Provider.readCurrentState', () => {
 
         const result = bagOf(
           await provider.readCurrentState(
-            'sg-1|tcp|443|443',
+            PHYS,
             'Logical',
-            'AWS::EC2::SecurityGroupIngress',
+            TYPE,
+            { ...declared, CidrIp: undefined, SourceSecurityGroupId: 'sg-peer', Description: 'c' },
+            own
+          )
+        );
+
+        expect(result).toBeUndefined();
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      it('keeps undefined when a sibling SecurityGroupIngress declares the same rule (#4492)', async () => {
+        mockSend.mockResolvedValueOnce(edited);
+
+        const result = bagOf(
+          await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, {
+            ...own,
+            siblings: {
+              Twin: {
+                resourceType: TYPE,
+                physicalId: PHYS,
+                properties: { ...declared, Description: 'edited in the console' },
+                attributes: { Id: ID },
+              },
+            },
+          })
+        );
+
+        expect(result).toBeUndefined();
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      it('keeps undefined when the group’s own SecurityGroup record declares the rule inline (#4492)', async () => {
+        mockSend.mockResolvedValueOnce(edited);
+
+        const result = bagOf(
+          await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, {
+            ...own,
+            siblings: {
+              Group: {
+                resourceType: 'AWS::EC2::SecurityGroup',
+                physicalId: 'sg-1',
+                properties: {
+                  GroupDescription: 'g',
+                  SecurityGroupIngress: [
+                    { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, CidrIp: '10.0.0.0/16' },
+                  ],
+                },
+              },
+            },
+          })
+        );
+
+        expect(result).toBeUndefined();
+      });
+
+      it('still answers when an unrelated sibling rule is declared', async () => {
+        mockSend.mockResolvedValueOnce(edited).mockResolvedValueOnce(byId());
+
+        const result = bagOf(
+          await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, {
+            ...own,
+            siblings: {
+              Other: {
+                resourceType: TYPE,
+                physicalId: 'sg-1|tcp|443|443',
+                properties: { ...declared, CidrIp: '192.168.0.0/16' },
+                attributes: { Id: 'sgr-0ffffffffffffffff' },
+              },
+            },
+          })
+        );
+
+        expect(result).toMatchObject({ Description: 'edited in the console' });
+      });
+
+      it('matches a token-resolved string port numerically (FromPort: "443")', async () => {
+        mockSend.mockResolvedValueOnce(edited).mockResolvedValueOnce(byId());
+
+        const result = bagOf(
+          await provider.readCurrentState(
+            PHYS,
+            'Logical',
+            TYPE,
+            { ...declared, FromPort: '443', ToPort: '443' },
+            own
+          )
+        );
+
+        expect(result).toMatchObject({ CidrIp: '10.0.0.0/16', Description: 'edited in the console' });
+      });
+
+      it('matches a same-account SG-to-SG rule whose template omits the peer owner', async () => {
+        mockSend
+          .mockResolvedValueOnce({
+            SecurityGroups: [
+              {
+                GroupId: 'sg-1',
+                IpPermissions: [
+                  {
+                    IpProtocol: 'tcp',
+                    FromPort: 443,
+                    ToPort: 443,
+                    UserIdGroupPairs: [
+                      { GroupId: 'sg-peer', UserId: '111122223333', Description: 'from peer' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          })
+          .mockResolvedValueOnce(
+            byId({
+              CidrIpv4: undefined,
+              ReferencedGroupInfo: { GroupId: 'sg-peer', UserId: '111122223333' },
+              Description: 'from peer',
+            })
+          );
+
+        const result = bagOf(
+          await provider.readCurrentState(
+            PHYS,
+            'Logical',
+            TYPE,
             {
               GroupId: 'sg-1',
               IpProtocol: 'tcp',
               FromPort: 443,
               ToPort: 443,
               SourceSecurityGroupId: 'sg-peer',
-              Description: 'c',
-            }
-          )
-        );
-
-        expect(result).toBeUndefined();
-      });
-
-      it('keeps undefined when no live rule shares the identity', async () => {
-        mockSend.mockResolvedValueOnce({
-          SecurityGroups: [
-            {
-              GroupId: 'sg-1',
-              IpPermissions: [
-                {
-                  IpProtocol: 'tcp',
-                  FromPort: 443,
-                  ToPort: 443,
-                  IpRanges: [{ CidrIp: '192.168.0.0/16', Description: 'from the VPC' }],
-                },
-              ],
+              Description: 'from peer',
             },
-          ],
-        });
-
-        const result = bagOf(
-          await provider.readCurrentState(
-            'sg-1|tcp|443|443',
-            'Logical',
-            'AWS::EC2::SecurityGroupIngress',
-            declared
+            own
           )
         );
 
-        expect(result).toBeUndefined();
+        expect(result).toEqual({
+          GroupId: 'sg-1',
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          SourceSecurityGroupId: 'sg-peer',
+          SourceSecurityGroupOwnerId: '111122223333',
+          Description: 'from peer',
+        });
       });
     });
   });
@@ -1895,9 +1976,9 @@ describe('EC2Provider.readCurrentState', () => {
       const cmd = mockSend.mock.calls[0]?.[0];
       expect(cmd).toBeInstanceOf(DescribeAddressesCommand);
       expect((cmd as DescribeAddressesCommand).input).toEqual({ AllocationIds: [ALLOC] });
+      // No properties were passed, so the association is not this EIP's to report.
       expect(result).toEqual({
         Domain: 'vpc',
-        InstanceId: 'i-0123456789abcdef0',
         NetworkBorderGroup: 'us-east-1',
         PublicIpv4Pool: 'amazon',
         Tags: [{ Key: 'Name', Value: 'Stack/Vpc/PublicSubnet1' }],
@@ -1990,7 +2071,7 @@ describe('EC2Provider.readCurrentState', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    describe('InstanceId right after cdkd’s own write (afterOwnWrite)', () => {
+    describe('InstanceId only when the template declares it', () => {
       const associated = {
         Addresses: [
           { AllocationId: ALLOC, PublicIp: IP, Domain: 'vpc', InstanceId: 'i-0123456789abcdef0' },
@@ -2029,11 +2110,24 @@ describe('EC2Provider.readCurrentState', () => {
         expect(result).toEqual({ Domain: 'vpc', InstanceId: 'i-0123456789abcdef0' });
       });
 
-      it('reports an undeclared association on every other read', async () => {
+      it('omits an undeclared association on every other read too (import, refresh, drift)', async () => {
         mockSend.mockResolvedValueOnce(associated);
 
         const result = bagOf(
           await provider.readCurrentState(PHYSICAL, 'Eip', 'AWS::EC2::EIP', { Domain: 'vpc' })
+        );
+
+        expect(result).toEqual({ Domain: 'vpc' });
+      });
+
+      it('reports a declared association on a non-capture read', async () => {
+        mockSend.mockResolvedValueOnce(associated);
+
+        const result = bagOf(
+          await provider.readCurrentState(PHYSICAL, 'Eip', 'AWS::EC2::EIP', {
+            Domain: 'vpc',
+            InstanceId: 'i-0fedcba9876543210',
+          })
         );
 
         expect(result).toEqual({ Domain: 'vpc', InstanceId: 'i-0123456789abcdef0' });
@@ -2073,7 +2167,7 @@ describe('EC2Provider.readCurrentState', () => {
         expect(result).toEqual({ Domain: 'vpc' });
       });
 
-      it('prefers the live tags over the declared ones when the capture read has them', async () => {
+      it('keeps the declared Tags when the capture read still shows OLD tags (in-place update)', async () => {
         mockSend.mockResolvedValueOnce({
           Addresses: [
             {
@@ -2093,6 +2187,57 @@ describe('EC2Provider.readCurrentState', () => {
             { Tags: declaredTags },
             { afterOwnWrite: true }
           )
+        );
+
+        expect(result).toEqual({ Domain: 'vpc', Tags: declaredTags });
+      });
+
+      it('reads the declared pairs back on the capture when AWS lists them in another order', async () => {
+        const declaredTwo = [
+          { Key: 'A', Value: '1' },
+          { Key: 'B', Value: '2' },
+        ];
+        mockSend.mockResolvedValueOnce({
+          Addresses: [
+            {
+              AllocationId: ALLOC,
+              PublicIp: IP,
+              Domain: 'vpc',
+              Tags: [
+                { Key: 'B', Value: '2' },
+                { Key: 'A', Value: '1' },
+              ],
+            },
+          ],
+        });
+
+        const result = bagOf(
+          await provider.readCurrentState(
+            PHYSICAL,
+            'Eip',
+            'AWS::EC2::EIP',
+            { Tags: declaredTwo },
+            { afterOwnWrite: true }
+          )
+        );
+
+        expect(result).toEqual({ Domain: 'vpc', Tags: declaredTwo });
+      });
+
+      it('reports live tags that differ from the declared ones on a non-capture read', async () => {
+        mockSend.mockResolvedValueOnce({
+          Addresses: [
+            {
+              AllocationId: ALLOC,
+              PublicIp: IP,
+              Domain: 'vpc',
+              Tags: [{ Key: 'Name', Value: 'live' }],
+            },
+          ],
+        });
+
+        const result = bagOf(
+          await provider.readCurrentState(PHYSICAL, 'Eip', 'AWS::EC2::EIP', { Tags: declaredTags })
         );
 
         expect(result).toEqual({ Domain: 'vpc', Tags: [{ Key: 'Name', Value: 'live' }] });

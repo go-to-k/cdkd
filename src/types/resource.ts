@@ -982,6 +982,15 @@ export interface ReadCurrentStateContext {
    * live answer must be believed so a member that really is gone reports.
    */
   afterOwnWrite?: boolean;
+  /**
+   * The read resource's OWN recorded `attributes` (cdkd state), set by
+   * `buildReadCurrentStateContext` on drift / import / `state refresh-observed`
+   * reads. A provider may use an id recorded there as ownership evidence
+   * before it binds a live object the physicalId alone cannot single out
+   * (go-to-k/cdkd#4447: a standalone `AWS::EC2::SecurityGroupIngress`'s `Id`).
+   * Absent on the deploy capture and on records that carry none.
+   */
+  attributes?: Readonly<Record<string, unknown>>;
 }
 
 /**

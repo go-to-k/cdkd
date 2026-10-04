@@ -6484,11 +6484,7 @@ export class EC2Provider implements ResourceProvider {
         case 'AWS::EC2::SubnetRouteTableAssociation':
           return await this.readSubnetRouteTableAssociationCurrentState(physicalId);
         case 'AWS::EC2::SecurityGroupIngress':
-          return await this.readSecurityGroupIngressCurrentState(
-            physicalId,
-            properties,
-            context?.afterOwnWrite === true
-          );
+          return await this.readSecurityGroupIngressCurrentState(physicalId, properties, context);
         case 'AWS::EC2::NetworkAclEntry':
           return await this.readNetworkAclEntryCurrentState(physicalId);
         case 'AWS::EC2::SubnetNetworkAclAssociation':
@@ -6737,12 +6733,18 @@ export class EC2Provider implements ResourceProvider {
    * `InvalidAddress.NotFound` (both reach `readCurrentState`'s `.NotFound`
    * catch), or a response that does not list the address asked for.
    *
+   * `InstanceId` is emitted only when the template declares it, on EVERY read:
+   * an undeclared association belongs to another resource (an
+   * `AWS::EC2::EIPAssociation`), and freezing it into this EIP's baseline (by
+   * the deploy capture, `cdkd import` or `state refresh-observed`) would make
+   * `drift --revert` re-associate the address to whatever instance it named.
+   *
    * `Tags` follows the SecurityGroup reader: emitted only when AWS reports at
    * least one non-`aws:` tag. Right after cdkd's own write (`afterOwnWrite`,
-   * issue #4112) a read reporting NO tags while the deployed template declares
-   * some keeps the declared list: `CreateTags` runs after `AllocateAddress`, and
-   * freezing a lagging "absent" into the baseline would report every later
-   * read's tags as drift.
+   * issue #4112) a read whose tags differ from the declared list keeps the
+   * declared one: `CreateTags` / `DeleteTags` run after the address call, and
+   * freezing a lagging read (no tags yet, or the OLD tags of an in-place
+   * update) into the baseline would report every later read as drift.
    */
   private async readEipCurrentState(
     physicalId: string,
@@ -6763,11 +6765,7 @@ export class EC2Provider implements ResourceProvider {
 
     const result: Record<string, unknown> = {};
     if (addr.Domain !== undefined) result['Domain'] = addr.Domain;
-    // Right after cdkd's own write, an `InstanceId` the template does not
-    // declare is another resource's association (an `AWS::EC2::EIPAssociation`
-    // can land before this capture read, or not), so baselining it would depend
-    // on timing and later read as drift that `--revert` re-associates.
-    if (addr.InstanceId !== undefined && (!afterOwnWrite || properties?.['InstanceId'] != null)) {
+    if (addr.InstanceId !== undefined && properties?.['InstanceId'] != null) {
       result['InstanceId'] = addr.InstanceId;
     }
     if (addr.NetworkBorderGroup !== undefined) {
@@ -6775,12 +6773,10 @@ export class EC2Provider implements ResourceProvider {
     }
     if (addr.PublicIpv4Pool !== undefined) result['PublicIpv4Pool'] = addr.PublicIpv4Pool;
     const tags = normalizeAwsTagsToCfn(addr.Tags);
-    if (tags.length > 0) {
-      result['Tags'] = tags;
-    } else if (afterOwnWrite) {
-      const declared = properties?.['Tags'];
-      if (Array.isArray(declared) && declared.length > 0) result['Tags'] = declared;
-    }
+    const declared = properties?.['Tags'];
+    const bag =
+      afterOwnWrite && Array.isArray(declared) && !tagListsMatch(tags, declared) ? declared : tags;
+    if (bag.length > 0) result['Tags'] = bag;
     return result;
   }
 
@@ -7286,7 +7282,7 @@ export class EC2Provider implements ResourceProvider {
   private async readSecurityGroupIngressCurrentState(
     physicalId: string,
     properties?: Record<string, unknown>,
-    afterOwnWrite = false
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const parts = physicalId.split('|');
     if (parts.length < 4) return undefined;
@@ -7340,35 +7336,98 @@ export class EC2Provider implements ResourceProvider {
         // level, unlike the inline-rule case).
         return { GroupId: groupId, ...match };
       }
-      // No exact match: retry on the rule's IDENTITY (issue #4447). AWS keys a
-      // rule by its permission, so `Description` is a mutable attribute of it
-      // (two rules differing only in it cannot coexist) and an out-of-band
-      // description edit must read back as drift on THIS rule, not as "cannot
-      // tell" — which also kept `drift --revert` from ever restoring it. The
-      // peer owner AWS always reports is dropped too when the template does
-      // not declare it: the ordinary same-account SG-to-SG rule omits it (see
-      // `securityGroupRuleMatchesCfnIngress`). Only `sgRuleKey`'s READER use
-      // changes; its ownership / reorder callers still key on the whole rule.
-      // Right after cdkd's own write (`afterOwnWrite`, #4112) `Description`
-      // stays in the key: a Description-only update revokes and re-authorizes,
-      // and a lagging read still showing the OLD text must not be frozen into
-      // the baseline, where `drift --revert` would write it back.
-      const identity = (rule: CfnSgRule): string => {
-        const key = JSON.parse(sgRuleKey(rule, 'ingress')) as Record<string, unknown>;
-        if (!afterOwnWrite) delete key['d'];
-        if (properties['SourceSecurityGroupOwnerId'] == null) delete key['peerOwner'];
-        return JSON.stringify(key);
-      };
-      const wanted = identity(properties);
-      const identityMatches = flat.filter((r) => identity(r) === wanted);
-      if (identityMatches.length === 1) return { GroupId: groupId, ...identityMatches[0]! };
-      // Still none, or more than one: `undefined` ("cannot tell") rather than
-      // false drift on a different rule sharing the (protocol, ports) tuple,
-      // and NOT the gone sentinel.
-      return undefined;
+      // No exact match: the identity fallback (issue #4447).
+      const fallback = await this.readSgIngressByIdentity(groupId, flat, properties, context);
+      return fallback === undefined ? undefined : { GroupId: groupId, ...fallback };
     }
 
     return { GroupId: groupId, ...flat[0]! };
+  }
+
+  /**
+   * The identity fallback of {@link readSecurityGroupIngressCurrentState}
+   * (issue #4447), for a rule the whole-rule key did not match: AWS keys a rule
+   * by its permission, so `Description` is a mutable attribute of it, and an
+   * out-of-band description edit should read back as drift on THIS rule rather
+   * than as "cannot tell" (which also kept `drift --revert` from restoring it).
+   * The peer owner AWS always reports is dropped when the template does not
+   * declare it (the ordinary same-account SG-to-SG rule), and ports compare
+   * numerically, so a token-resolved `FromPort: "3306"` matches AWS's `3306`.
+   *
+   * A rule matching only by identity may not be OURS: a stranger can re-add the
+   * same permission after cdkd's rule was revoked, and `drift --revert`'s
+   * revoke would then remove the stranger's rule. So the fallback answers only
+   * with ownership evidence, and `undefined` ("cannot tell") otherwise:
+   * - never on the deploy capture (`afterOwnWrite`): a lagging read must not
+   *   freeze a stale description into the baseline (#4112);
+   * - the record's own recorded `sgr-` `Id` (`context.attributes`) names, per
+   *   `DescribeSecurityGroupRules`, an ingress rule of this group matching the
+   *   template's identity and carrying the SAME description as the one live
+   *   identity match. A stale id (the rule was re-created) answers nothing;
+   * - no sibling `AWS::EC2::SecurityGroupIngress`, and no inline rule of the
+   *   group's own `AWS::EC2::SecurityGroup` record, declares the same rule
+   *   (go-to-k/cdkd#4492): AWS keeps one rule for both, with the first
+   *   description, so the other record would read false drift and its revert
+   *   would revoke the shared rule.
+   *
+   * The by-id call has its own catch: `readCurrentState`'s maps
+   * `InvalidSecurityGroupRuleId.NotFound` to GONE, which a stale id is not.
+   */
+  private async readSgIngressByIdentity(
+    groupId: string,
+    flat: CfnSgRule[],
+    properties: Record<string, unknown>,
+    context: ReadCurrentStateContext | undefined
+  ): Promise<CfnSgRule | undefined> {
+    if (context?.afterOwnWrite === true) return undefined;
+    const recordedId = recordedSgRuleId(context?.attributes);
+    if (recordedId === undefined) return undefined;
+    if (
+      !Number.isFinite(cfnIngressPortValue(properties['FromPort'])) ||
+      !Number.isFinite(cfnIngressPortValue(properties['ToPort']))
+    ) {
+      return undefined;
+    }
+    const identity = (rule: CfnSgRule): string => {
+      const key = JSON.parse(sgRuleKey(rule, 'ingress')) as Record<string, unknown>;
+      delete key['d'];
+      if (properties['SourceSecurityGroupOwnerId'] == null) delete key['peerOwner'];
+      key['f'] = cfnIngressPortValue(rule['FromPort']);
+      key['t'] = cfnIngressPortValue(rule['ToPort']);
+      return JSON.stringify(key);
+    };
+    const wanted = identity(properties);
+    const matches = flat.filter((r) => identity(r) === wanted);
+    if (matches.length !== 1) return undefined;
+    const match = matches[0]!;
+    if (
+      stackIngressRuleHolder(Object.entries(context?.siblings ?? {}), '', groupId, properties) !==
+      undefined
+    ) {
+      return undefined;
+    }
+    let owned: SecurityGroupRule | undefined;
+    try {
+      const resp = await this.ec2Client.send(
+        new DescribeSecurityGroupRulesCommand({ SecurityGroupRuleIds: [recordedId] })
+      );
+      owned = resp.SecurityGroupRules?.find((r) => r.SecurityGroupRuleId === recordedId);
+    } catch (err) {
+      this.logger.debug(
+        `readCurrentState: recorded rule ${recordedId} could not be read (${err instanceof Error ? err.name : String(err)}); the ingress rule stays unknown`
+      );
+      return undefined;
+    }
+    if (
+      owned === undefined ||
+      owned.IsEgress === true ||
+      owned.GroupId !== groupId ||
+      !securityGroupRuleMatchesCfnIngress(owned, properties) ||
+      descriptionKey(owned.Description) !== descriptionKey(match['Description'])
+    ) {
+      return undefined;
+    }
+    return match;
   }
 
   /**
@@ -8022,6 +8081,11 @@ function survivingRecordOfRuleId(
  */
 type HolderRuleIdCheck = { live: string | undefined } | { own: string | undefined };
 
+/** The record fields {@link stackIngressRuleHolder} reads (a `ResourceState` or a read-context sibling). */
+type IngressHolderRecord = Pick<ResourceState, 'resourceType' | 'properties' | 'attributes'> & {
+  physicalId?: string | undefined;
+};
+
 /**
  * go-to-k/cdkd#4492: a record in `records`, other than `selfLogicalId`'s, that
  * holds the ingress rule `rule` describes on `groupId`: an
@@ -8032,7 +8096,7 @@ type HolderRuleIdCheck = { live: string | undefined } | { own: string | undefine
  * qualifies, so the rule is on a group this stack created.
  */
 function stackIngressRuleHolder(
-  records: Iterable<readonly [string, ResourceState]> | undefined,
+  records: Iterable<readonly [string, IngressHolderRecord]> | undefined,
   selfLogicalId: string,
   groupId: string | undefined,
   rule: Record<string, unknown>,
@@ -8066,6 +8130,24 @@ function stackIngressRuleHolder(
     }
   }
   return undefined;
+}
+
+/**
+ * Do two CFn `[{Key, Value}]` tag lists hold the same pairs, in any order? A
+ * malformed entry on either side makes them differ.
+ */
+function tagListsMatch(live: ReadonlyArray<unknown>, declared: ReadonlyArray<unknown>): boolean {
+  const pairs = (list: ReadonlyArray<unknown>): string[] | undefined => {
+    const out: string[] = [];
+    for (const entry of list) {
+      if (!isPlainRecord(entry) || typeof entry['Key'] !== 'string') return undefined;
+      out.push(JSON.stringify([entry['Key'], entry['Value'] ?? '']));
+    }
+    return out.sort();
+  };
+  const a = pairs(live);
+  const b = pairs(declared);
+  return a !== undefined && b !== undefined && JSON.stringify(a) === JSON.stringify(b);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
