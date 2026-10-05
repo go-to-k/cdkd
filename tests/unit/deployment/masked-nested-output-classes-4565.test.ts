@@ -188,8 +188,8 @@ const CHILD: CloudFormationTemplate = {
     SubVarClean: { Value: { 'Fn::Sub': ['${V}-${Target.Arn}', { V: { Ref: 'Defaulted' } }] } },
     SubReference: { Value: { 'Fn::Sub': 'x-{{resolve:ssm-secure:/x}}' } },
     IfMalformed: { Value: { 'Fn::If': 'CleanCond' } },
-    CondMalformed: { Condition: 5, Value: 'x' },
-    NoValue: { Description: 'no value' },
+    CondMalformed: { Condition: 5 as unknown as string, Value: 'x' },
+    NoValue: { Description: 'no value' } as unknown as { Value: string },
     GrandNotOutputPrefixed: { Value: { 'Fn::GetAtt': ['Grand', 'Foobars.Y'] } },
   },
 };
