@@ -277,7 +277,7 @@ replacement-immutable-name	2026-10-05T02:29:22Z	PASS	135	verify.sh	rc ok, orph c
 replacement-rename-onto-holder	2026-10-05T02:29:22Z	PASS	626	verify.sh	rc ok, orph clean (#4569 @480676155)
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
-rollback-command	2026-10-05T02:29:22Z	PASS	195	verify.sh	rc ok, orph clean (#4569 @070626749)
+rollback-command	2026-10-05T16:06:19Z	PASS	260	verify.sh	PR #4586 (#1710 proven orphan, Phase O); rc 0, destroy clean, orph clean; discrimination proof: pre-fix src RED at O1 journal assertion
 rollback-cross-region-secret	2026-10-05T10:27:06Z	PASS	195	verify.sh	rc ok, orph clean (#2624 PR #4572)
 rollback-deletion-policy-snapshot	2026-10-02T13:55:47Z	PASS	141	verify.sh	rc ok, orph clean (#4436)
 rollback-explicit-name-rewrite	2026-10-04T17:04:46Z	PASS	201	verify.sh	rc ok, orph clean (#4408)
