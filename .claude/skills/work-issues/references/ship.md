@@ -13,8 +13,9 @@ marker set and ledger push follow `/run-integ` step 9. While that tree is
 busy with a follow-up branch, ship from a SECOND sibling on the PR's branch
 (`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
 running BOTH the integ and the merge there (the marker is per tree). A fix
-round DURING that tree's integ edits a `--detach` sibling and pushes
-`HEAD:<branch>`: bash reads `verify.sh` as it runs (#4561, #4568). Never two
+round DURING that tree's integ edits a `--detach` sibling, pushes
+`HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards that tree
+before the marker, re-running an integ the fix touches (#4561). Never two
 lanes' integs or merges at once; when a turn will hold for HOURS, tell the user
 unasked its ETA and the PRs queued.
 
@@ -116,8 +117,8 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   `--delete-branch` prints `fatal: 'main' is already used by worktree ...` over
   a SUCCESS.
 - **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
-  onto it. A RED check can equally be a peer's just-merged content your local
-  green never saw — fetch, rebase, re-run.
+  onto it. A RED check may be a peer's just-merged content: fetch, rebase,
+  re-run.
 
 - **An OUTSIDE reporter's issue is thanked after the RELEASE, not the merge**:
   merge the release PR, confirm the npm version, then comment on the issue in
@@ -147,8 +148,8 @@ git -C "$MAIN" pull origin main
 ( cd "$MAIN" && pnpm install --frozen-lockfile && vp run build )
 ```
 
-That pull fails outright if the shared main tree is dirty (§7); do not restore
-the offending path, which is another session's uncommitted work.
+A dirty shared main tree fails that pull (§7); never restore the offending
+path: it is another session's work.
 
 ### Cleanup
 
@@ -206,8 +207,9 @@ git fetch origin \
   && git branch -D <each branch this run created in THIS tree>
 ```
 
-Never pull, fast-forward, rebase or delete `<LAUNCH_BRANCH>`. **AS-IS is the whole rule: RESTORE, never
-ADJUST.** **This step runs LAST, not per-lane**: §10-d branches in this tree.
+Never pull, fast-forward, rebase or delete `<LAUNCH_BRANCH>`. **AS-IS is the
+whole rule: RESTORE, never ADJUST.** **This step runs LAST, not per-lane**:
+§10-d branches in this tree.
 
 ### Release the claims
 

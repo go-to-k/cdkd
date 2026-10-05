@@ -139,11 +139,11 @@ with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
 
 **Guardrails every lane prompt must carry:**
 
-- **Name the §5-8 stage files and `/check`, never your own command list** —
-  fix rounds too: one dropped `typecheck:test` and `gen:all-matrices`, and CI
-  failed (#4561, #4568). **Forbid the FULL SUITE; run it yourself, serially** —
-  concurrent suites trip the 600s watchdog in untouched files. Each agent runs
-  `vp test run <its own suite>`.
+- **Name the §5-8 stage files and `/check` steps 0-3, never your own command
+  list** — fix rounds too: one dropped `gen:all-matrices`, another
+  `typecheck:test` (#4561). **Forbid step 4, the FULL SUITE; run it yourself,
+  serially** — concurrent suites trip the 600s watchdog in untouched files.
+  Each runs `vp test run <its own suite>`.
 - A lane is killed at 600s of silence inside a tool call: background long runs
   via `run_in_background` with a log redirect and wake on ITS exit — never a
   per-line watcher (`tail -F`, a line-emitting `Monitor`), waking it per line.
