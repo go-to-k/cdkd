@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import {
   withResourceDeadline,
   InvalidResourceDeadlineError,
+  whileEnclosingDeadlinesPaused,
+  enclosingDeadlineExpired,
 } from '../../../src/deployment/resource-deadline.js';
 
 describe('withResourceDeadline', () => {
@@ -202,5 +204,81 @@ describe('withResourceDeadline', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(onWarn).not.toHaveBeenCalled();
     expect(onTimeout).not.toHaveBeenCalled();
+  });
+});
+
+describe('whileEnclosingDeadlinesPaused', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('stops every enclosing clock while a prompt is open, then resumes with the budget left', async () => {
+    const outerTimeout = vi.fn(() => new Error('outer timeout'));
+    const innerTimeout = vi.fn(() => new Error('inner timeout'));
+    const innerWarn = vi.fn();
+    let answer!: (v: boolean) => void;
+    let release!: () => void;
+    const done = new Promise<void>((r) => (release = r));
+    const outer = withResourceDeadline(
+      () =>
+        withResourceDeadline(
+          async () => {
+            await vi.advanceTimersByTimeAsync(0);
+            const answered = await whileEnclosingDeadlinesPaused(
+              () => new Promise<boolean>((r) => (answer = r))
+            );
+            await done;
+            return answered;
+          },
+          { warnAfterMs: 2_000, timeoutMs: 5_000, onWarn: innerWarn, onTimeout: innerTimeout }
+        ),
+      { warnAfterMs: 1_000, timeoutMs: 6_000, onTimeout: outerTimeout }
+    );
+    const outerSettled = expect(outer).rejects.toThrow('inner timeout');
+    await vi.advanceTimersByTimeAsync(1_000);
+    // An hour with the question open fires nothing.
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1_000);
+    expect(innerWarn).not.toHaveBeenCalled();
+    expect(innerTimeout).not.toHaveBeenCalled();
+    expect(outerTimeout).not.toHaveBeenCalled();
+    answer(true);
+    // Resumed: the inner warn is due 2s after start, not 2s after resume.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(innerWarn).toHaveBeenCalledTimes(1);
+    // And the inner timeout fires on what was left of its budget.
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(innerTimeout).toHaveBeenCalledTimes(1);
+    release();
+    await outerSettled;
+    expect(outerTimeout).not.toHaveBeenCalled();
+  });
+
+  it('runs the function directly outside any deadline', async () => {
+    await expect(whileEnclosingDeadlinesPaused(async () => 'x')).resolves.toBe('x');
+    expect(enclosingDeadlineExpired()).toBe(false);
+  });
+
+  it('reports a deadline that expired while the operation kept running', async () => {
+    const seen: boolean[] = [];
+    let release!: () => void;
+    const late = new Promise<void>((r) => (release = r));
+    const deadline = withResourceDeadline(
+      async () => {
+        seen.push(enclosingDeadlineExpired());
+        await late;
+        seen.push(enclosingDeadlineExpired());
+      },
+      { warnAfterMs: 1_000, timeoutMs: 2_000, onTimeout: () => new Error('timed out') }
+    );
+    const settled = expect(deadline).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(2_000);
+    await settled;
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([false, true]);
   });
 });

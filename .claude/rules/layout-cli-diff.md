@@ -8,10 +8,11 @@ paths:
 # `cdkd diff`
 
 `diff-recursive.ts` holds the recursive helpers; `diff.ts` is glue (synth,
-`buildDiffTree` per stack, render / JSON / `--fail`). `--fail` exits 1 on any
-change; plain `cdkd diff` exits 0, **or 3** when the preview finds a condition
+`buildDiffTree` per stack, render / JSON / `--fail-on`). `--fail-on=destructive`
+reads each node's `destructiveChanges` and forces the nested walk; plain
+`cdkd diff` exits 0, **or 3** when the preview finds a condition
 that would make `cdkd deploy` refuse to start (`DeployRefusalPreviewError`, on
-`blockingCount > 0`, ranked ABOVE `--fail`).
+`blockingCount > 0`, ranked ABOVE `--fail-on`).
 
 `buildDiffTree` walks each `AWS::CloudFormation::Stack` row to the child
 template and its state at

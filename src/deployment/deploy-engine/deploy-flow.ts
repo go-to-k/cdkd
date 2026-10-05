@@ -1,6 +1,5 @@
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
 import { skippedOutputsEqual } from '../../analyzer/skipped-outputs.js';
-import { findDestructiveChanges } from '../../analyzer/destructive-changes.js';
 import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
 import type { CreateOnlyPrefetch } from '../../provisioning/create-only-properties.js';
 import {
@@ -35,6 +34,7 @@ import {
   mergeNoChangeOutputs,
 } from '../no-change-outputs-merge.js';
 import { refuseNoValueOutputs } from '../output-value-preflight.js';
+import { requireDeploymentApproval } from '../deployment-approval.js';
 import {
   buildConditionVerdictRecord,
   conditionInputsFrom,
@@ -1122,40 +1122,16 @@ export async function doDeployWithPrefetch(
       };
     }
 
-    // `--require-approval` (AWS CDK CLI parity): asked on the diff this deploy
-    // will execute, after the dry-run return and before any provider call, so
-    // a declined deploy changes nothing. The lock is released by the `finally`.
-    const requireApproval = this.options.requireApproval ?? 'never';
-    if (requireApproval !== 'never' && this.options.approveDeployment) {
-      const destructiveChanges = findDestructiveChanges(
-        stackName,
-        changes.values(),
-        currentState.resources,
-        effectiveTemplate
-      );
-      if (requireApproval === 'any-change' || destructiveChanges.length > 0) {
-        const approved = await this.options.approveDeployment({
-          stackName,
-          level: requireApproval,
-          counts: {
-            create: createChanges.length,
-            update: updateChanges.length,
-            delete: deleteChanges.length,
-          },
-          destructiveChanges,
-        });
-        if (!approved) {
-          // Non-retryable: the operator's answer is not a transient failure,
-          // and the message carries a template-chosen stack name.
-          throw markNonRetryable(
-            new CdkdError(
-              safeMsg`Deployment of stack ${stackName} was not approved (--require-approval=${requireApproval}). Nothing was changed.`,
-              'DEPLOY_NOT_APPROVED'
-            )
-          );
-        }
-      }
-    }
+    // `--require-approval`: asked on the diff this deploy executes, before any
+    // provider call. The lock is released by the `finally`.
+    await requireDeploymentApproval({
+      options: this.options,
+      stackName,
+      changes: changes.values(),
+      records: currentState.resources,
+      template: effectiveTemplate,
+      recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
+    });
 
     // Issue #1111 item 3 (review fix): the diff phase above resolves
     // intrinsics through the SAME counted resolver, so a warn-path

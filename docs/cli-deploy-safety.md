@@ -2024,11 +2024,13 @@ deployed, matching `cdk deploy --require-approval`. It is also read from
 | Level | Asks when the stack has |
 | --- | --- |
 | `never` (default) | nothing — cdkd deploys without asking. |
-| `any-change` | any resource change. |
+| `any-change` | any resource change. An Outputs-only change deploys without asking. |
 | `destructive` | a change that replaces, deletes or orphans an existing resource. |
 
 `destructive` uses the classification of
-[`cdkd diff --fail-on=destructive`](cli-diff.md#destructive) and lists the
+[`cdkd diff --fail-on=destructive`](cli-diff.md#destructive), counts a
+`--recreate-via-cc-api` / `--recreate-via-sdk-provider` target as a
+replacement, and lists the
 affected resources before the question, so additions and in-place updates
 deploy unattended while anything that could lose data stops for a human:
 
@@ -2036,7 +2038,7 @@ deploy unattended while anything that could lose data stops for a human:
 $ cdkd deploy --require-approval=destructive
 ...
 Destructive changes:
-  MyStack: AWS::DynamoDB::Table Table MyTable794EDED1 will be orphaned
+  MyStack: AWS::DynamoDB::Table MyTable794EDED1 will be orphaned
 
 Stack MyStack: 0 to create, 1 to update, 1 to delete.
 Stack includes destructive updates and "--require-approval" is set to 'destructive'.
@@ -2050,7 +2052,9 @@ Do you wish to deploy these changes? (y/n)
   CI. `--yes` approves without asking.
 - **A nested stack asks for its own changes** when the parent's deploy reaches
   it. Declining fails that nested-stack row, and the parent rolls back like
-  any other failure.
+  any other failure. The row's `--resource-timeout` clock stops while the
+  question is open. Under `any-change`, a parent whose only changes are
+  nested-stack updates does not ask for them itself.
 - **Stacks deployed in parallel ask one at a time.**
 - **`broadening`, the AWS CDK CLI's default, is not available**: cdkd does not
   compute a security diff. The flag refuses it; a `"requireApproval":

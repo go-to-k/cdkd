@@ -16,7 +16,7 @@ import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import type { Logger } from '../../types/config.js';
 import { loadCdkJson } from '../config-loader.js';
-import { confirmOrRefuse } from './confirm-prompt.js';
+import { confirmOrRefuse, serializePrompt } from './confirm-prompt.js';
 
 export const REQUIRE_APPROVAL_VALUES = ['never', 'any-change', 'destructive'] as const;
 
@@ -70,10 +70,9 @@ export function resolveRequireApproval(
 export function createApprovalPrompter(options: {
   yes: boolean;
 }): (request: DeploymentApprovalRequest) => Promise<boolean> {
-  let queue: Promise<unknown> = Promise.resolve();
   return (request) => {
     if (options.yes) return Promise.resolve(true);
-    const asked = queue.then(() =>
+    return serializePrompt(() =>
       getLiveRenderer().suspendWhile(async () => {
         process.stdout.write(renderApprovalRequest(request));
         return confirmOrRefuse('Do you wish to deploy these changes?', {
@@ -85,9 +84,6 @@ export function createApprovalPrompter(options: {
         });
       })
     );
-    // The next prompt waits for this one to settle, whichever way.
-    queue = asked.catch(() => undefined);
-    return asked;
   };
 }
 

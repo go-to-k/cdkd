@@ -10,7 +10,12 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { StackState } from '../../../src/types/state.js';
 
 const mockLoggerError = vi.hoisted(() => vi.fn());
-const stateForDiff = vi.hoisted(() => ({ value: null as StackState | null }));
+const stateForDiff = vi.hoisted(() => ({
+  value: null as StackState | null,
+  // Per state stack name, for a nested child's record; `value` otherwise.
+  byStack: {} as Record<string, StackState>,
+  reads: [] as string[],
+}));
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
@@ -51,9 +56,11 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
-    getState: vi.fn(async () =>
-      stateForDiff.value ? { state: stateForDiff.value, etag: 'fake' } : null
-    ),
+    getState: vi.fn(async (stackName: string) => {
+      stateForDiff.reads.push(stackName);
+      const state = stateForDiff.byStack[stackName] ?? stateForDiff.value;
+      return state ? { state, etag: 'fake' } : null;
+    }),
     listStacks: vi.fn(async () => []),
   })),
 }));
@@ -143,6 +150,8 @@ const QUEUE_TEMPLATE = {
 describe('cdkd diff --fail-on', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    stateForDiff.byStack = {};
+    stateForDiff.reads = [];
   });
 
   describe('an addition only (not destructive)', () => {
@@ -199,6 +208,34 @@ describe('cdkd diff --fail-on', () => {
     expect(said).toContain('  S: AWS::SQS::Queue Queue Q will be replaced');
   }, 30_000);
 
+  it('walks nested stacks without --recursive, listing a removed child\'s resources', async () => {
+    stateForDiff.value = stateWith({
+      Q: queue(),
+      Child: queue({ physicalId: 'S~Child', resourceType: 'AWS::CloudFormation::Stack' }),
+    });
+    stateForDiff.byStack = {
+      'S~Child': { ...stateWith({ Inner: queue({ physicalId: 'i' }) }), stackName: 'S~Child' },
+    };
+    synthTemplate({ Q: QUEUE_TEMPLATE });
+    const { code, said } = await runDiff(['S', '--fail-on', 'destructive']);
+    expect(code).toBe(1);
+    expect(said).toContain('  S: AWS::CloudFormation::Stack Child will be destroyed');
+    expect(said).toContain('  S~Child: AWS::SQS::Queue Inner will be destroyed');
+    expect(stateForDiff.reads).toContain('S~Child');
+  }, 30_000);
+
+  it('does not walk nested stacks for any-change without --recursive', async () => {
+    stateForDiff.value = stateWith({
+      Q: queue(),
+      Child: queue({ physicalId: 'S~Child', resourceType: 'AWS::CloudFormation::Stack' }),
+    });
+    synthTemplate({ Q: QUEUE_TEMPLATE });
+    const { code } = await runDiff(['S', '--fail-on', 'any-change']);
+    expect(code).toBe(1);
+    // The child record was never read.
+    expect(stateForDiff.reads).not.toContain('S~Child');
+  }, 30_000);
+
   it('passes --fail-on=destructive when nothing changed', async () => {
     stateForDiff.value = stateWith({ Q: queue() });
     synthTemplate({ Q: QUEUE_TEMPLATE });
@@ -227,6 +264,7 @@ describe('cdkd diff --fail-on', () => {
       expect(said).toContain(
         '--no-fail cannot be used with --fail-on, use --fail-on=never instead of --no-fail'
       );
+      expect(mockSynthesize).not.toHaveBeenCalled();
     });
 
     it('refuses a repeated --fail-on rather than letting the last one win', async () => {
@@ -246,6 +284,7 @@ describe('cdkd diff --fail-on', () => {
       const { code, said } = await runDiff(['S', '--fail-on', 'broadening']);
       expect(code).toBe(1);
       expect(said).toContain('Allowed choices are never, any-change, destructive.');
+      expect(mockSynthesize).not.toHaveBeenCalled();
     });
   });
 });

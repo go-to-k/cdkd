@@ -113,6 +113,7 @@ describe('DeployEngine --require-approval', () => {
     getAttribute: ReturnType<typeof vi.fn>;
   };
   let approve: ReturnType<typeof vi.fn<(r: DeploymentApprovalRequest) => Promise<boolean>>>;
+  let releaseLock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -136,6 +137,7 @@ describe('DeployEngine --require-approval', () => {
       saveState: vi.fn().mockResolvedValue('etag-new'),
     };
     approve = vi.fn();
+    releaseLock = vi.fn().mockResolvedValue(undefined);
   });
 
   function makeEngine(options: Record<string, unknown>) {
@@ -143,7 +145,7 @@ describe('DeployEngine --require-approval', () => {
       mockStateBackend as never,
       {
         acquireLockWithRetry: vi.fn().mockResolvedValue(true),
-        releaseLock: vi.fn().mockResolvedValue(undefined),
+        releaseLock,
       } as never,
       {
         buildGraph: vi.fn().mockReturnValue({}),
@@ -224,6 +226,8 @@ describe('DeployEngine --require-approval', () => {
     expect(provider.update).not.toHaveBeenCalled();
     expect(provider.delete).not.toHaveBeenCalled();
     expect(mockStateBackend.saveState).not.toHaveBeenCalled();
+    // The stack lock is released on the way out.
+    expect(releaseLock).toHaveBeenCalledWith(STACK_NAME, 'us-east-1');
   });
 
   it('any-change: asks for an in-place update too', async () => {

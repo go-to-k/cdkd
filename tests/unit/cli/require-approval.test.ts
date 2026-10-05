@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import type { DeploymentApprovalRequest } from '../../../src/deployment/deploy-engine/options.js';
 
 const mockConfirm = vi.hoisted(() => vi.fn());
-vi.mock('../../../src/cli/commands/confirm-prompt.js', () => ({ confirmOrRefuse: mockConfirm }));
+vi.mock('../../../src/cli/commands/confirm-prompt.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/cli/commands/confirm-prompt.js')>()),
+  confirmOrRefuse: mockConfirm,
+}));
 vi.mock('../../../src/cli/config-loader.js', () => ({ loadCdkJson: vi.fn(() => null) }));
 
 import {

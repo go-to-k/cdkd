@@ -438,7 +438,10 @@ async function diffCommand(
       inRegion: (healRegion, fn) =>
         runWithStackAwsClients(stackRegionScope(healRegion).clients, fn),
     });
-    const recursive = options.recursive ?? false;
+    // `--fail-on=destructive` walks nested stacks whether or not `--recursive`
+    // was given: it is a gate on losing a resource, and `cdk diff` checks
+    // nested stacks too, so a destructive change inside a child must not pass.
+    const recursive = (options.recursive ?? false) || failOn === 'destructive';
 
     // Issue #1002 PR 2 — when a stack's region is in cdkd-assets mode, the
     // §7 asset-reference rewrite is applied to the template before diffing
@@ -584,7 +587,7 @@ export function createDiffCommand(): Command {
     .addOption(
       new Option(
         '--fail-on <kind>',
-        'Exit with code 1 when the diff contains the given kind of change: "any-change" fails on any difference, "destructive" only on changes that replace, delete or orphan a resource, "never" does not fail (default). With --recursive, considers the whole nested-stack tree. Cannot be used with --fail / --no-fail.'
+        'Exit with code 1 when the diff contains the given kind of change: "any-change" fails on any difference, "destructive" only on changes that replace, delete or orphan a resource, "never" does not fail (default). "destructive" always checks nested stacks (as --recursive); the others do with --recursive. Cannot be used with --fail / --no-fail.'
       )
         // `choices` for the help text; the `argParser` after it replaces the
         // parser `choices` installs, so it also refuses a repeated flag.

@@ -29,6 +29,21 @@
 import * as readline from 'node:readline/promises';
 import { CdkdError } from '../../utils/error-handler.js';
 
+let promptQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Run an interactive prompt only after every earlier one has settled. Stacks
+ * deploy concurrently and each can ask on the one stdin, where two open
+ * questions would both take the next typed line. Every per-stack prompt that
+ * can run during a deploy goes through this queue.
+ */
+export function serializePrompt<T>(ask: () => Promise<T>): Promise<T> {
+  const asked = promptQueue.then(ask);
+  // The next prompt waits for this one to settle, whichever way.
+  promptQueue = asked.catch(() => undefined);
+  return asked;
+}
+
 /**
  * Default-YES confirmation prompt (`[Y/n]`, empty input = yes).
  *

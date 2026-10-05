@@ -682,11 +682,12 @@ only once; either mistake is refused before synthesis. The AWS CDK CLI's
 Whatever the value, a condition that would make `cdkd deploy` refuse exits `3`
 (see [Exit codes](#exit-codes)).
 
-With `--recursive`, every value considers the whole nested-stack tree, so CI
-can gate on it with a single command:
+`destructive` always walks nested stacks, as if `--recursive` were given: a
+destructive change inside a child must not pass the gate. `any-change`
+considers the whole nested-stack tree with `--recursive`:
 
 ```bash
-cdkd diff ParentStack --recursive --fail-on=destructive
+cdkd diff ParentStack --recursive --fail-on=any-change
 ```
 
 ### `any-change`
@@ -709,8 +710,11 @@ $ cdkd diff --fail-on=destructive MyStack
 ...
 ❌  Found 2 destructive change(s) (--fail-on=destructive):
   MyStack: AWS::S3::Bucket Bucket MyBucketF68F3FF0 will be replaced
-  MyStack: AWS::DynamoDB::Table Table MyTable794EDED1 will be orphaned
+  MyStack: AWS::DynamoDB::Table MyTable794EDED1 will be orphaned
 ```
+
+A removed resource is listed without its construct path: the template no
+longer declares it, and cdkd's state does not record the path.
 
 | Impact | When |
 | --- | --- |

@@ -50,7 +50,9 @@ export function findDestructiveChanges(
   stackName: string,
   changes: Iterable<ResourceChange>,
   records: Readonly<Record<string, ResourceState>>,
-  template?: CloudFormationTemplate
+  template?: CloudFormationTemplate,
+  /** `--recreate-via-*` targets: replaced by the deploy whatever their properties say. */
+  recreateTargets: ReadonlySet<string> = new Set()
 ): DestructiveChange[] {
   const found: DestructiveChange[] = [];
   for (const change of changes) {
@@ -62,7 +64,10 @@ export function findDestructiveChanges(
     ) {
       continue;
     }
-    const impact = destructiveImpactOf(change, record);
+    const impact =
+      change.changeType === 'UPDATE' && recreateTargets.has(change.logicalId)
+        ? 'WILL_REPLACE'
+        : destructiveImpactOf(change, record);
     if (impact === undefined) continue;
     const constructPath = constructPathOf(template, change.logicalId);
     found.push({
