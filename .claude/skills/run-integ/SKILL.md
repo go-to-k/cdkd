@@ -49,9 +49,10 @@ verify, clean up.
    set, each fixture whose header has a `SAFETY NOTE` (bootstrap-marker or
    asset-storage ownership, #4063) gets its OWN region, probed for what that
    header needs absent or present, passed via `AWS_REGION` or the header's
-   region variable. Every
+   region variable. A fixture that runs `cdkd gc` runs ALONE, after the set:
+   gc refuses while ANY stack holds a lock, its batch-mates' included. Every
    resource-scan `--region`, `AWS_REGION` and synth/deploy/destroy `--region`
-   in steps 4-7 then uses that region. Synth first (for the stack name and
+   in steps 4-7 then uses the fixture's region. Synth first (for the stack name and
    resource types), then scan:
 
    ```bash
@@ -363,7 +364,7 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   destroy after deploy; if deploy fails, still attempt destroy to clean up
   partial state — unless it failed on a peer's lock (step 7).
 - **A run blocked BEFORE its assertions is not a test failure — say which it
-  was.** (A peer's lock — `cdkd gc` refuses on ANY stack's.) Record it as
+  was.** (A peer's lock, step 4's gc rule.) Record it as
   `FAIL` (the bar is exit-code-based) with a ledger note naming the blocker
   and any hand-removed resources, WAIT for the blocker to clear, then clean up
   what the aborted run leaked (step 7 says when). Never
