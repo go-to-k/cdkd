@@ -3149,7 +3149,8 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       // The `DeployEngine` rollback mixin (#4200) reads the container only inside
       // `adoptRollbackOrphans`, reachable only through the engine's
       // `this.adoptRollbackOrphans(` — the ROW anchor below, pinned under the
-      // engine's guard. Pinned in the next case.
+      // engine's guard — and `settleJournalAfterSuccess` (#4600), reached only
+      // from the deploy flow below its guard. Pinned in the next case.
       if (file === 'src/deployment/deploy-engine/rollback.ts') return false;
       // The engine host reads the container only in `redactStateForPersist`,
       // and `deploy-engine/execute.ts` only inside `executeDeployment` /
@@ -3238,14 +3239,36 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     const fnEnd = rollback.indexOf('\n}\n', fnAt);
     expect(fnEnd, 'the end of adoptRollbackOrphans was not found').toBeGreaterThan(fnAt);
     const fnBody = rollback.slice(fnAt, fnEnd);
+    // go-to-k/cdkd#4600: `settleJournalAfterSuccess` reads the stack's own
+    // container (guarded by the deploy flow, its only caller, below) and each
+    // nested child's, which it guards itself with `hasReadableOrphans(`.
+    const settleAt = rollback.indexOf('export async function settleJournalAfterSuccess(');
+    expect(settleAt, 'settleJournalAfterSuccess moved or was renamed').toBeGreaterThan(-1);
+    const settleBody = rollback.slice(settleAt, rollback.indexOf('\n}\n', settleAt));
+    const childRead = settleBody.indexOf('childState?.orphans');
+    expect(childRead, 'the nested child read moved').toBeGreaterThan(-1);
+    expect(settleBody.indexOf('hasReadableOrphans(childRecord)'), 'the child read lost its guard').toBeGreaterThan(-1);
+    expect(settleBody.indexOf('hasReadableOrphans(childRecord)')).toBeLessThan(childRead);
     // The SAME pattern the population derivation matches (`reads` above), so
     // every shape the exclusion hides is counted.
     expect(reads(rollback), 'the rollback mixin no longer reads the container').toBeGreaterThan(0);
     expect(
       reads(rollback),
-      'deploy-engine/rollback.ts reads the orphans container outside adoptRollbackOrphans, ' +
-        'on a path the engine anchor does not cover: give it its own ANCHORS entry.'
-    ).toBe(reads(fnBody));
+      'deploy-engine/rollback.ts reads the orphans container outside adoptRollbackOrphans / ' +
+        'settleJournalAfterSuccess, on a path the engine anchor does not cover: give it its own ANCHORS entry.'
+    ).toBe(reads(fnBody) + reads(settleBody));
+    const settleCallers = spawnSync('git', ['grep', '-l', 'settleJournalAfterSuccess(', '--', 'src'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    })
+      .stdout.split('\n')
+      .filter(Boolean)
+      .sort();
+    expect(settleCallers, 'settleJournalAfterSuccess gained a caller outside the deploy flow').toEqual([
+      'src/deployment/deploy-engine/deploy-flow.ts',
+      'src/deployment/deploy-engine/rollback.ts',
+    ]);
+    expect(flow.indexOf('refuseMalformedOrphans(')).toBeLessThan(flow.indexOf('this.settleJournalAfterSuccess('));
     // ...and the premise that its ONLY caller is the engine's ROW-anchored call:
     // `private` enforced that before the move, and an `@internal` prototype
     // member does not, so a caller elsewhere would reach it unguarded.

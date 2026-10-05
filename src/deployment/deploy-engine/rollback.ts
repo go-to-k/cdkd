@@ -32,6 +32,7 @@ import {
 } from '../rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import { settleJournaledOrphansOnSuccess } from '../rollback-executor/journaled-orphans.js';
+import { hasReadableOrphans } from '../../state/malformed-resources-bag.js';
 import {
   STATE_SOURCED_READBACK_RULES,
   markSameGenerationBag,
@@ -363,12 +364,14 @@ export async function settleJournalAfterSuccess(
   const [ownLeft] = await Promise.all([
     (async (): Promise<number> => {
       // `previousState.orphans` is the surviving set `adoptRollbackOrphans`
-      // left: what the saved record holds.
+      // left: what the saved record holds. The deploy flow guarded it before
+      // either of this method's call sites.
       const left = await settleJournaledOrphansOnSuccess({
         stateBackend: this.stateBackend,
         stackName,
         region: this.stackRegion,
-        state: { resources: finalResources, orphans: previousState.orphans },
+        stateResources: finalResources,
+        rollbackOrphans: previousState.orphans,
         newerOperations: completedOperations,
         ctx: this.rollbackExecutorContext(previousState, stackName),
         logger: this.logger,
@@ -391,12 +394,17 @@ export async function settleJournalAfterSuccess(
       region: this.stackRegion,
       resources: finalResources,
       logger: this.logger,
-      beforeDelete: async (child, childState) => {
+      beforeDelete: async (child, childRecord) => {
+        // An unreadable orphans container is an unreadable record: a rollback-
+        // orphan record in it may own the resource, so nothing is deleted.
+        const childState =
+          childRecord !== undefined && hasReadableOrphans(childRecord) ? childRecord : undefined;
         const left = await settleJournaledOrphansOnSuccess({
           stateBackend: this.stateBackend,
           stackName: child,
           region: this.stackRegion,
-          state: childState,
+          stateResources: childState?.resources,
+          rollbackOrphans: childState?.orphans,
           // The child's own success appended its completed ops as a newer
           // segment of its journal.
           newerOperations: [],

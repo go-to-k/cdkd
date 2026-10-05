@@ -772,6 +772,40 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       expect(result.deleteSkipped).toBe(1);
     });
 
+    it('a child record whose orphans container is unreadable deletes nothing either', async () => {
+      const h = build({
+        nested: false,
+        changes: new Map([['Q', createChange('Q')]]),
+        resources: { Child: record('Child', NESTED) },
+        childState: {
+          version: 8,
+          stackName: `${STACK}~Child`,
+          region: REGION,
+          resources: { Leaf: record('Leaf') },
+          outputs: {},
+          orphans: 'not-a-list' as never,
+          lastModified: 0,
+        },
+        childJournal: {
+          segments: [
+            {
+              timestamp: 1,
+              reason: 'no-rollback-failure',
+              initialDeploy: false,
+              operations: [],
+              failedOperations: [childOrphan as never],
+            },
+          ],
+        },
+      });
+
+      const result = await h.engine.deploy(STACK, templateOf(['Q']));
+
+      expect(childOrphanDeletes(h.provider)).toHaveLength(0);
+      expect(h.backend.deleteRollbackJournal.mock.calls.map((c) => c[0])).toEqual([STACK]);
+      expect(result.deleteSkipped).toBe(1);
+    });
+
     it('an unreadable child state deletes nothing: a record may own it, so the journal is kept', async () => {
       const h = harness();
       h.backend.getState.mockImplementation((name: string) =>
