@@ -97,6 +97,7 @@ function backends(state: StackState): { stateBackend: unknown; lockManager: unkn
     stateBackend: {
       getState: vi.fn().mockResolvedValue({ state, etag: 'etag-1' }),
       saveState: vi.fn().mockResolvedValue('etag-2'),
+      purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
       // Read when a record has an undeclared output key to DROP
       // (go-to-k/cdkd#4120): no other stack reads it.
       listStacks: vi.fn().mockResolvedValue([]),

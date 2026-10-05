@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import {
   type PasteableCommand,
   pasteableCommand,
@@ -44,6 +44,7 @@ import {
 } from '../../synthesis/synthesizer.js';
 import { StageLoadError } from '../../synthesis/failed-stages.js';
 import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
+import { isAmbiguousOutcomeError } from '../../deployment/retryable-errors.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { ExportIndexStore, type ExportIndexEntry } from '../../state/export-index-store.js';
@@ -252,6 +253,8 @@ export interface ScrubOptions {
   all?: boolean;
   dryRun?: boolean;
   fail?: boolean;
+  /** go-to-k/cdkd#2624: also purge the history of every record examined, rewritten or not. */
+  purgeHistory?: boolean;
   yes?: boolean;
   region?: string;
   profile?: string;
@@ -466,7 +469,7 @@ async function repairExportIndexForStack(
   stackName: string,
   producerRegion: string,
   outputs: Record<string, unknown> | undefined,
-  opts: { dryRun: boolean }
+  opts: { dryRun: boolean; onWriteAttempt?: () => void }
 ): Promise<ExportIndexRepairPlan & { unwritten: string[] }> {
   const entries = await store.readPersistedEntries();
   if (!entries) return { examined: [], findings: [], unwritten: [] };
@@ -500,6 +503,10 @@ async function repairExportIndexForStack(
     // export name in that window is kept by the store with only a warning
     // (issue #2193). Without it the retry would resurrect this stack's value
     // over the new producer's.
+    //
+    // Reported BEFORE the write, so a write that fails still has its region's
+    // superseded versions purged (go-to-k/cdkd#2624).
+    opts.onWriteAttempt?.();
     const written = await store.patchEntry(
       finding.exportName,
       { ...entry, value: finding.stateValue },
@@ -508,6 +515,168 @@ async function repairExportIndexForStack(
     if (!written) unwritten.push(finding.exportName);
   }
   return { ...plan, unwritten };
+}
+
+/**
+ * What the superseded `state.json` versions scrub purges may hold, for the
+ * purge's own warnings (go-to-k/cdkd#2624).
+ */
+export const SCRUBBED_STATE_OBJECT_DESCRIPTION =
+  "the stack's earlier state.json versions, which may hold a plaintext secret";
+
+/** The same, for the region's shared exports index. */
+export const SCRUBBED_EXPORT_INDEX_OBJECT_DESCRIPTION =
+  "the region's pre-scrub exports index, which may hold the plaintext secret scrub rewrote";
+
+/**
+ * `S3StateBackend`'s `getStateKey`, which is private. A unit test pins the two
+ * together, so a change to the layout fails there rather than purging a key
+ * nothing writes.
+ */
+export function scrubbedStateKey(backend: S3StateBackend, stackName: string, region: string) {
+  return `${backend.prefix}/${stackName}/${region}/state.json`;
+}
+
+/**
+ * `S3StateBackend`'s `getLegacyStateKey` (the pre-region layout), pinned the
+ * same way. A record `getState` loaded from it (`migrationPending`) is saved to
+ * the region-scoped key and the legacy key is deleted, which on a versioned
+ * bucket leaves its plaintext body behind as a noncurrent version.
+ */
+export function scrubbedLegacyStateKey(backend: S3StateBackend, stackName: string) {
+  return `${backend.prefix}/${stackName}/state.json`;
+}
+
+/**
+ * Every key whose history a scrub of this record purges: the region-scoped key,
+ * plus the legacy key when the record was loaded from it.
+ */
+function stateHistoryKeys(
+  backend: S3StateBackend,
+  stackName: string,
+  region: string,
+  migrationPending: boolean | undefined
+): string[] {
+  return [
+    scrubbedStateKey(backend, stackName, region),
+    ...(migrationPending ? [scrubbedLegacyStateKey(backend, stackName)] : []),
+  ];
+}
+
+/** `ExportIndexStore`'s `indexKey`, pinned the same way. */
+export function scrubbedExportIndexKey(backend: S3StateBackend, region: string) {
+  return `${backend.prefix}/_index/${region}/exports.json`;
+}
+
+/**
+ * Did the AWS SDK retry the request that ended in `err`? It stamps
+ * `$metadata.attempts` on the error it finally throws; any link of the cause
+ * chain counts, since `saveState` wraps the SDK error.
+ */
+function wasRetriedBySdk(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < 8 && typeof current === 'object' && current !== null; depth++) {
+    const attempts = (current as { $metadata?: { attempts?: unknown } }).$metadata?.attempts;
+    if (typeof attempts === 'number' && attempts > 1) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * Every `cdkd scrub` write of a `state.json` (go-to-k/cdkd#2624, site 1).
+ *
+ * Saves the scrubbed record, then purges the key's NONCURRENT versions: on a
+ * versioned state bucket the PUT only supersedes the pre-scrub body, which stays
+ * readable with `GetObject` and a `VersionId`, and removing the plaintext is
+ * this command's whole purpose. The maintainer's decision on that issue is to
+ * purge here and NOT on a deploy's implicit scrub, where those versions stay
+ * the state-recovery capability.
+ *
+ * The purge runs in a `finally` once the PUT MAY have landed: after a save
+ * that succeeded, and after one that failed AMBIGUOUSLY (a 5xx, a timeout or a
+ * dropped socket: `isAmbiguousOutcomeError`), since the plaintext body may be
+ * noncurrent already. So does any failure the SDK reached after RETRYING
+ * (`$metadata.attempts > 1`): an attempt that committed but answered with a
+ * 5xx or a reset is retried with the same `IfMatch`, and the retry's 412 is
+ * all the classifier sees. Only a DEFINITE refusal on the FIRST attempt
+ * (PreconditionFailed, an AccessDenied) proves nothing was written, so that
+ * record keeps its recovery history, as every record scrub does not rewrite. It removes only
+ * entries with `IsLatest === false`, so the current record is never touched.
+ * It never throws and warns for itself (missing `s3:ListBucketVersions` /
+ * `s3:DeleteObjectVersion`, a replicated bucket), so those warnings print
+ * before the summary line and the save's own outcome is what reaches the
+ * caller. On an unversioned bucket the listing holds only the current version,
+ * so it deletes nothing. Callers hold the stack lock, and never call this
+ * under `--dry-run`.
+ */
+async function saveScrubbedState(
+  stateBackend: S3StateBackend,
+  stackName: string,
+  region: string,
+  state: StackState,
+  loaded: { etag: string; migrationPending?: boolean | undefined }
+): Promise<void> {
+  let mayHaveWritten = false;
+  try {
+    // A LEGACY-layout record (`migrationPending`) is migrated the way every
+    // other state writer migrates it (`state.ts`, `orphan.ts`, `drift.ts`):
+    // its etag belongs to the legacy key, so an `IfMatch` on the new key could
+    // only fail, and the legacy key — the one holding the plaintext — is
+    // deleted once the new key is written.
+    try {
+      await stateBackend.saveState(stackName, region, state, {
+        expectedEtag: loaded.etag,
+        ...(loaded.migrationPending && { migrateLegacy: true }),
+      });
+    } catch (err) {
+      mayHaveWritten = isAmbiguousOutcomeError(err) || wasRetriedBySdk(err);
+      throw err;
+    }
+    mayHaveWritten = true;
+    // `saveState`'s legacy delete is best-effort and only warns. Here a
+    // surviving legacy key still holds the pre-scrub plaintext as its CURRENT
+    // object, readable with no VersionId, while every later `getState` reads
+    // the clean new key, so `--dry-run --fail` would go green over it. Checked,
+    // and raised as this stack's failure, rather than left to that warning.
+    if (loaded.migrationPending) {
+      const legacyKey = scrubbedLegacyStateKey(stateBackend, stackName);
+      let survives: boolean;
+      try {
+        survives = (await stateBackend.getRawObject(legacyKey)) !== null;
+      } catch (err) {
+        // The write LANDED, so a re-run reads the clean region-scoped key and
+        // never looks at the legacy one again: an unverified check has to be
+        // reported now, as this stack's failure, and say what to check.
+        throw new ScrubRefusalError(
+          safeMsg`${displayStackName(stackName)} was rewritten to the region-scoped state key, ` +
+            safeMsg`but whether its legacy key ${legacyKey} still holds the pre-scrub record ` +
+            safeMsg`could not be verified (${err instanceof Error ? err.message : String(err)}). ` +
+            `Check that key yourself and, if it exists, delete it (aws s3api delete-object ` +
+            `--bucket <state-bucket> --key <that key>), then purge its earlier versions as ` +
+            `docs/cli-scrub.md describes. A re-run will not check it again.`,
+          'SCRUB_LEGACY_STATE_KEY_UNVERIFIED'
+        );
+      }
+      if (survives) {
+        throw new ScrubRefusalError(
+          safeMsg`${displayStackName(stackName)} was rewritten to the region-scoped state key, ` +
+            safeMsg`but its legacy key ${legacyKey} could not be deleted and still holds the ` +
+            `pre-scrub record as its CURRENT object. Delete it (aws s3api delete-object ` +
+            `--bucket <state-bucket> --key <that key>), then purge its earlier versions as ` +
+            `docs/cli-scrub.md describes.`,
+          'SCRUB_LEGACY_STATE_KEY_SURVIVES'
+        );
+      }
+    }
+  } finally {
+    if (mayHaveWritten) {
+      await stateBackend.purgeNoncurrentVersions(
+        stateHistoryKeys(stateBackend, stackName, region, loaded.migrationPending),
+        { objectDescription: SCRUBBED_STATE_OBJECT_DESCRIPTION }
+      );
+    }
+  }
 }
 
 /** `AWS::CloudFormation::Stack`, the row a nested child is deployed by. */
@@ -713,6 +882,7 @@ async function repairParentOutputAttributes(
     | {
         state: StackState;
         etag: string;
+        migrationPending?: boolean | undefined;
         attributes: Record<string, unknown>;
         changed: number;
         unmatched: string[];
@@ -757,7 +927,14 @@ async function repairParentOutputAttributes(
       if (child.holdsRecordedPlaintext(stored)) unmatched.push(attributeName);
     }
     return changed > 0 || unmatched.length > 0
-      ? { state: loaded.state, etag: loaded.etag, attributes, changed, unmatched }
+      ? {
+          state: loaded.state,
+          etag: loaded.etag,
+          migrationPending: loaded.migrationPending,
+          attributes,
+          changed,
+          unmatched,
+        }
       : undefined;
   };
   // Decided WITHOUT the lock first: the common case has nothing to rewrite,
@@ -774,7 +951,8 @@ async function repairParentOutputAttributes(
     if (!locked) return none;
     if (locked.changed > 0) {
       const row = locked.state.resources[parentRow.logicalId]!;
-      await stateBackend.saveState(
+      await saveScrubbedState(
+        stateBackend,
         parentRow.stackName,
         region,
         {
@@ -785,7 +963,7 @@ async function repairParentOutputAttributes(
           },
           lastModified: Date.now(),
         },
-        { expectedEtag: locked.etag }
+        locked
       );
     }
     return { changed: locked.changed, unmatched: locked.unmatched };
@@ -1245,6 +1423,10 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // it — a stack whose scrub threw contributes none.
   const examinedIndexNames = new Map<string, Set<string>>();
   let totalIndexEntriesConverged = 0;
+  // Records `--purge-history` purged without rewriting them (go-to-k/cdkd#2624).
+  // A SET, read minus `rewrittenStacks` at summary time: a parent whose own
+  // pass was clean can still be rewritten later by its child's row repair.
+  const historyPurgedStacks = new Set<string>();
   let totalIndexEntriesAbsent = 0;
   // The subset of those whose value still holds a recorded plaintext
   // (go-to-k/cdkd#4120): a FINDING, unlike the rest.
@@ -1255,6 +1437,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // that decided the rendering is out of scope.
   const indexUnwritten: Array<{ region: string; shown: string }> = [];
   const indexUnreadable: Array<{ region: string; reason: string }> = [];
+  // Regions whose index this run went to write, attempted or not succeeded
+  // alike: their superseded versions are purged once, after every stack's pass
+  // (go-to-k/cdkd#2624). Never populated under `--dry-run`, which issues no
+  // `patchEntry`.
+  const indexRegionsWritten = new Set<string>();
 
   // The WORK LIST: the targets, with each stack's nested children spliced in
   // directly after it once its own scrub returns (go-to-k/cdkd#2252), so a
@@ -1296,6 +1483,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       scrubbedStack = stack;
       scrubbed = await scrubStack(stack, stackRegion, stateBackend, lockManager, {
         dryRun: options.dryRun ?? false,
+        purgeHistory: options.purgeHistory ?? false,
         roleArn: options.roleArn,
         logger,
         // Every stack of the APP, not just this run's targets: the producer of
@@ -1307,8 +1495,10 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     } catch (err) {
       // EVERY error, not only a `CdkdError` refusal. A stack whose state could
       // not be read, or whose lock is held, is in the same position as a
-      // refused one: nothing was written for it, the remaining stacks are
-      // independent, and the run must not exit 0. `scrubStack` releases its own
+      // refused one: nothing was written for it (or, for
+      // `SCRUB_LEGACY_STATE_KEY_SURVIVES`, the write left its plaintext at the
+      // legacy key), the remaining stacks are independent, and the run must not
+      // exit 0. `scrubStack` releases its own
       // lock in a `finally`, so nothing is left held.
       //
       // The CAUSE CHAIN, not just `err.message` (issue #2109 review). This is
@@ -1420,7 +1610,10 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         stackName,
         stackRegion,
         scrubbed.outputs,
-        { dryRun: options.dryRun ?? false }
+        {
+          dryRun: options.dryRun ?? false,
+          onWriteAttempt: () => indexRegionsWritten.add(stackRegion),
+        }
       );
       const seen = examinedIndexNames.get(stackRegion) ?? new Set<string>();
       for (const name of repair.examined) seen.add(name);
@@ -1480,8 +1673,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
             // THE SUMMARY COUNT, incremented HERE and not beside
             // `indexConverged` above (issue #2667 review). The summary line it
             // feeds asserts a PutObject happened -- "converged to the
-            // producer's state.outputs value ... the pre-repair body survives
-            // as a noncurrent version" -- so counting an entry the write
+            // producer's state.outputs value, and ... the index's earlier
+            // versions were purged" -- so counting an entry the write
             // refused made the run claim a write it did not perform, at higher
             // prominence than the warn beside it and directly before the error
             // saying the entry is unwritten. That is the same defect the
@@ -1598,6 +1791,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     // NOT on secrets-found: a resource whose reference is already stored as its
     // `{{resolve:...}}` expression resolves the same secret again but needs no
     // rewrite. Only a state record still holding the plaintext counts.
+    if (scrubbed.historyPurged) historyPurgedStacks.add(stackName);
     if (scrubbed.recordsChanged > 0) {
       if (!rewrittenStacks.has(stackName)) totalStacksScrubbed++;
       rewrittenStacks.add(stackName);
@@ -1729,6 +1923,37 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     }
   }
 
+  // The exports index's superseded versions, once per region this run wrote
+  // (go-to-k/cdkd#2624). Each `patchEntry` PUT supersedes the body that held
+  // the plaintext, as `saveScrubbedState` explains for `state.json`. The index
+  // is a SHARED object per region, so its history also carries other stacks'
+  // entries; purging it costs no recovery capability, because the index is a
+  // derived view `ExportIndexStore.rebuild()` regenerates from the state
+  // records, and the `IsLatest` filter leaves a concurrent writer's current
+  // object alone. Here, after the per-stack loop, so a region several stacks
+  // patched is walked once, and above the summary so the purge's own warnings
+  // print before it.
+  for (const indexRegion of indexRegionsWritten) {
+    await stateBackend.purgeNoncurrentVersions(
+      [scrubbedExportIndexKey(stateBackend, indexRegion)],
+      {
+        objectDescription: SCRUBBED_EXPORT_INDEX_OBJECT_DESCRIPTION,
+      }
+    );
+  }
+
+  // What `--purge-history` did beyond the rewrites, for every summary line.
+  // Counted per record from `historyPurged`, so it never claims a record the
+  // run refused; bounded by the purge's own warnings like the rewrite claim.
+  const historyNote = (): string => {
+    const purgedOnly = [...historyPurgedStacks].filter((n) => !rewrittenStacks.has(n)).length;
+    return purgedOnly > 0
+      ? ` --purge-history: on a VERSIONED state bucket, the earlier state.json versions of ` +
+          `${purgedOnly} examined record(s) scrub did not rewrite were purged too, unless a ` +
+          `warning above says otherwise.`
+      : '';
+  };
+
   // COVERAGE, not detection (issue #2667). `--all` targets every stack in the
   // SYNTHESIZED APP (`docs/cli-scrub.md`), not every stack with a state
   // record, and one bucket and region are legitimately shared by several CDK
@@ -1809,12 +2034,14 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     // got through, which is the same false-success the refusal exists to
     // prevent — so the sentence narrows to the stacks it actually reached.
     if (failures.length === 0) {
-      logger.info('\nNo plaintext secrets found in any target stack state. Nothing to scrub.');
+      logger.info(
+        safeMsg`\nNo plaintext secrets found in any target stack state. Nothing to scrub.${historyNote()}`
+      );
       return;
     }
     logger.info(
       `\nNo plaintext secrets found in the ${work.length - failures.length} stack(s) this ` +
-        `run could examine. ${failures.length} stack(s) could NOT be scrubbed — see the errors above.`
+        `run could examine. ${failures.length} stack(s) could NOT be scrubbed — see the errors above.${historyNote()}`
     );
     throw scrubStacksFailedError(failures);
   }
@@ -1890,9 +2117,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
               `differ from the producer's scrubbed state.outputs and would be converged to it ` +
               `(--dry-run, nothing written).`
           : ` ${totalIndexEntriesConverged} exports index entr${totalIndexEntriesConverged === 1 ? 'y' : 'ies'} ` +
-              `converged to the producer's state.outputs value. exports.json is written with the ` +
-              `same PutObject state.json is, so on a VERSIONED bucket the pre-repair body survives ` +
-              `as a noncurrent version and stays readable with GetObject and a VersionId.`
+              `converged to the producer's state.outputs value, and on a VERSIONED bucket the ` +
+              `index's earlier versions were purged, unless a warning above says otherwise.`
       );
     }
     if (totalIndexEntriesAbsent > 0) {
@@ -1981,30 +2207,27 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // plaintext was removed would be the same false claim the masking invariant
   // forbids.
   //
-  // What a successful run CAN claim is bounded by S3 versioning, which is why
-  // this line no longer says "the plaintext is no longer stored there" (issue
-  // [#2624](https://github.com/go-to-k/cdkd/issues/2624)). The rewrite is
-  // `saveState`, a plain `PutObjectCommand`, and `cdkd bootstrap` turns
-  // versioning on: the PUT makes the pre-scrub body NONCURRENT, not gone, and
-  // it stays readable to anyone who can `GetObject` the state key with a
-  // `VersionId`. Nothing here purges it — whether it SHOULD is the open half of
-  // that issue — so the message states the bound and names rotation as the
-  // remedy that actually applies to a copy cdkd cannot reach. See
-  // docs/cli-scrub.md, "Scrubbing supersedes the plaintext, it does not erase it".
+  // What a successful run CAN claim (go-to-k/cdkd#2624). The rewrite is a
+  // `PutObject` on a bucket `cdkd bootstrap` versions, so it supersedes the
+  // pre-scrub body rather than erasing it; `saveScrubbedState` and the index
+  // pass then purge the rewritten keys' noncurrent versions. That purge is
+  // fail-soft and warns for itself (missing grants, a replicated bucket) ABOVE
+  // this line, so the claim is qualified by those warnings rather than made
+  // unconditionally. Rotation stays the remedy for every copy cdkd cannot
+  // reach. See docs/cli-scrub.md, "What a real run removes, and what it cannot".
   if (totalStacksScrubbed > 0) {
     logger.info(
       `\nDone: scrubbed ${totalStacksScrubbed} stack(s). ` +
-        `The CURRENT state.json no longer holds the plaintext. Where the state bucket is ` +
-        `VERSIONED — which bootstrapping with cdkd enables — the pre-scrub body survives as a ` +
-        `noncurrent version, stays readable with GetObject and a VersionId, and scrub does ` +
-        `not purge it. So a value that was ever persisted must be treated as compromised — ` +
-        `ROTATE it in Secrets Manager (scrub matches the current value, so scrub BEFORE ` +
-        `rotating); rotation is what makes any surviving version ` +
-        `harmless.${keyNote}${unverifiableNote}${readNameNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote}`
+        `The rewritten state.json no longer holds the plaintext, and on a VERSIONED state ` +
+        `bucket its earlier versions were purged, unless a warning above says otherwise. ` +
+        `A value that was ` +
+        `ever persisted must still be treated as compromised — ROTATE it in Secrets ` +
+        `Manager (scrub matches the current value, so scrub BEFORE rotating); rotation is ` +
+        `what makes any copy cdkd cannot reach harmless.${historyNote()}${keyNote}${unverifiableNote}${readNameNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote}`
     );
   } else {
     logger.info(
-      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${readNameNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
+      `\nNo state record was rewritten.${historyNote()}${keyNote}${unverifiableNote}${readNameNote}${outputKeyNote}${parentAttributeNote}${leafNote}${indexNote}${failureNote} ROTATE any exposed secret.`
     );
   }
   // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
@@ -6206,6 +6429,11 @@ export interface ScrubStackResult {
    * is reached by no row, and the refusal says why in those words.
    */
   noRecord?: true;
+  /**
+   * `--purge-history` purged this record's noncurrent versions although the
+   * run did not rewrite it (go-to-k/cdkd#2624).
+   */
+  historyPurged?: true;
 }
 
 /**
@@ -6266,6 +6494,12 @@ export async function scrubStack(
   lockManager: LockManager,
   opts: {
     dryRun: boolean;
+    /**
+     * `--purge-history` (go-to-k/cdkd#2624): purge the noncurrent versions of
+     * this record even when the run does not rewrite it. A rewrite purges
+     * regardless. Ignored under `dryRun`.
+     */
+    purgeHistory?: boolean | undefined;
     roleArn?: string | undefined;
     logger: ReturnType<typeof getLogger>;
     /**
@@ -6459,6 +6693,21 @@ export async function scrubStack(
     if (ungateableAbandonedScans > 0) {
       logger.warn(abandonedScanStackNote('warn', ungateableAbandonedScans));
     }
+  };
+  // `--purge-history` (go-to-k/cdkd#2624) on a record this run EXAMINED and
+  // did not rewrite: a rewrite purges through `saveScrubbedState` already.
+  // Called on the two RETURN paths only, never from a refusal: a record scrub
+  // refused may be the evidence a refusal exists to keep, and its history is
+  // the only copy of what it held. Under the lock, which a real run holds.
+  const purgeExaminedHistory = async (
+    migrationPending: boolean | undefined
+  ): Promise<{ historyPurged?: true }> => {
+    if (opts.dryRun || !opts.purgeHistory) return {};
+    await stateBackend.purgeNoncurrentVersions(
+      stateHistoryKeys(stateBackend, stack.stackName, region, migrationPending),
+      { objectDescription: SCRUBBED_STATE_OBJECT_DESCRIPTION }
+    );
+    return { historyPurged: true };
   };
   try {
     const loaded = await stateBackend.getState(stack.stackName, region);
@@ -7833,7 +8082,9 @@ export async function scrubStack(
       // `totalSecrets === 0` is exactly what it produces. The rationale above
       // covers both, and it is why the per-stack notes are emitted here too.
       emitAbandonedScanNotes();
+      const zeroSecretPurge = await purgeExaminedHistory(loaded.migrationPending);
       return {
+        ...zeroSecretPurge,
         recordsChanged: 0,
         secretsFound: 0,
         secretBearingKeys: secretBearingKeys.length,
@@ -8353,12 +8604,13 @@ export async function scrubStack(
         ...(newExportNames !== state.exportNames && { exportNames: newExportNames as string[] }),
         lastModified: Date.now(),
       };
-      await stateBackend.saveState(stack.stackName, region, nextState, {
-        expectedEtag: loaded.etag,
-      });
+      await saveScrubbedState(stateBackend, stack.stackName, region, nextState, loaded);
     }
+    const examinedPurge =
+      recordsChanged > 0 ? {} : await purgeExaminedHistory(loaded.migrationPending);
 
     return {
+      ...examinedPurge,
       recordsChanged,
       secretsFound: totalSecrets,
       secretBearingKeys: secretBearingKeys.length,
@@ -8440,6 +8692,12 @@ export function createScrubCommand(): Command {
     )
     .option('--all', 'Scrub every stack in the synthesized app', false)
     .option('--dry-run', 'Report what would be scrubbed without writing state')
+    .addOption(
+      new Option(
+        '--purge-history',
+        "Also purge the earlier S3 versions of every examined stack's state.json, not only the ones scrub rewrites (drops their state-recovery history; a record scrub refuses is never purged)"
+      ).conflicts('dryRun')
+    )
     .option(
       '--fail',
       'With --dry-run, exit non-zero if any plaintext secret is found (CI gate). ' +

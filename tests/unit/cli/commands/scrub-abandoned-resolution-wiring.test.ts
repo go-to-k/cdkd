@@ -168,7 +168,11 @@ function stateWithStoredPlaintext(): StackState {
 }
 
 describe('cdkd scrub opts in to per-unit recovery (go-to-k/cdkd#3181 / go-to-k/cdkd#3218)', () => {
-  let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
+  let stateBackend: {
+    getState: ReturnType<typeof vi.fn>;
+    saveState: ReturnType<typeof vi.fn>;
+    purgeNoncurrentVersions: ReturnType<typeof vi.fn>;
+  };
   let lockManager: {
     acquireLockWithRetry: ReturnType<typeof vi.fn>;
     releaseLock: ReturnType<typeof vi.fn>;
@@ -177,7 +181,11 @@ describe('cdkd scrub opts in to per-unit recovery (go-to-k/cdkd#3181 / go-to-k/c
   beforeEach(() => {
     vi.clearAllMocks();
     resolveImpl = undefined;
-    stateBackend = { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag-2') };
+    stateBackend = {
+      getState: vi.fn(),
+      saveState: vi.fn().mockResolvedValue('etag-2'),
+      purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
+    };
     lockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
       releaseLock: vi.fn().mockResolvedValue(undefined),

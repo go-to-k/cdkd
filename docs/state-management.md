@@ -258,8 +258,9 @@ through `GetObject` with a `VersionId` — and `failedOperations[]` holds the
 attempted properties of the FAILED write verbatim, which is where a literal
 password lands when the resource that failed had one. Unlike `state.json`,
 whose noncurrent versions ARE the recovery capability versioning exists for
-and are deliberately left alone, the journal is transient by design, so
-nothing weighs against removing them. Like the sidecar purge above it fails
+and are left alone everywhere except an explicit
+[`cdkd scrub`](cli-scrub.md#what-a-real-run-removes-and-what-it-cannot), the
+journal is transient by design, so nothing weighs against removing them. Like the sidecar purge above it fails
 soft: without the two version grants the deploy / rollback / destroy still
 succeeds and a warning names them.
 
@@ -2416,7 +2417,12 @@ Two consequences worth knowing:
 
   Still deliberately NOT purged: `state.json` itself and the v1 -> v2 migration
   delete, because those noncurrent versions ARE
-  the state-recovery capability versioning is enabled for.
+  the state-recovery capability versioning is enabled for. The one exception
+  is an explicit `cdkd scrub`, which purges the history of a `state.json` it
+  rewrites (and, under `--purge-history`, of every record it examines and does
+  not refuse), short of deleting the bucket itself (`cdkd bootstrap --destroy`,
+  `cdkd state migrate --remove-legacy`) — see
+  [`cdkd scrub`](cli-scrub.md#what-a-real-run-removes-and-what-it-cannot).
 
 If the holding process dies without releasing, the lock stops being renewed and
 is reclaimed by the next `cdkd` invocation once `expiresAt` passes -- or
@@ -2874,7 +2880,8 @@ this policy that is:
   fails without it.
 
 **Six kinds of object need those two version actions, not one** — the five in
-this table and the `deployments/**` event store below it. The set has grown
+this table and the `deployments/**` event store below it, plus `state.json` and
+the exports index for a principal that runs `cdkd scrub`. The set has grown
 over time, and the ordinary
 commands are now in it:
 
@@ -2890,7 +2897,9 @@ The journal is the one to note if you are deciding whether this matters to you:
 it is written by an ORDINARY failed or interrupted deploy, not by an opt-in
 feature, and it is swept by an ordinary `cdkd destroy`. `state.json` is
 deliberately NOT in this table — its previous versions are the state-recovery
-capability versioning is enabled for.
+capability versioning is enabled for, and short of deleting the bucket only an
+explicit `cdkd scrub` purges them (see
+[`cdkd scrub`](cli-scrub.md#what-a-real-run-removes-and-what-it-cannot)).
 
 **The `deployments/**` event store needs the two version actions as well.**
 Every path that deletes from it — the writer's self-bounding prune,
@@ -2903,21 +2912,22 @@ this content as sensitive: see
 [Deleting a run stream also purges its earlier versions](deployment-events.md#deleting-a-run-stream-also-purges-its-earlier-versions)
 for what that purge does not reach.
 
-**One other key family is not in the table either, and for neither reason.**
-`state.json` is a deliberate exemption; this one is simply not purged, so its
-previous versions accumulate and stay readable:
+**One other key family is not in the table either.** Short of deleting the
+bucket, only `cdkd scrub` purges it, so the previous versions every other write leaves accumulate and
+stay readable:
 
 - `_index/{region}/exports.json` — the exports index, which holds resolved
   Output values. `cdkd deploy` rewrites it, and so does `cdkd scrub`, one entry
-  at a time, for the stacks that run scrubbed; each such write leaves the
+  at a time, for the stacks that run scrubbed. A deploy's write leaves the
   previous body as a noncurrent version of a key SHARED by every
-  cdkd-managed stack in the region. See
+  cdkd-managed stack in the region; `cdkd scrub` purges the key's noncurrent
+  versions once per region whose entries it wrote. See
   [`cdkd scrub`](cli-scrub.md#the-exports-index).
 
 **Without the two grants, nothing fails — and that is the point to
 understand.** The purge runs on a cleanup path and must never abort the
 operation it follows, so it logs a warning and the deploy, diff, rollback,
-destroy, `cdkd import`, `cdkd export`, `cdkd gc` or `cdkd events prune` run still succeeds. What does not
+destroy, `cdkd import`, `cdkd export`, `cdkd gc`, `cdkd events prune` or `cdkd scrub` run still succeeds. What does not
 happen is the removal: the value stays retrievable by anyone who can read the
 state bucket with a `VersionId`. The warning counts KEYS, names them (a
 prefix-wide sweep whose listing failed is counted as `every key under 1

@@ -148,6 +148,7 @@ let producerOutputs: Record<string, unknown>;
 let stateBackend: {
   getState: ReturnType<typeof vi.fn>;
   saveState: ReturnType<typeof vi.fn>;
+  purgeNoncurrentVersions: ReturnType<typeof vi.fn>;
   listStacks: ReturnType<typeof vi.fn>;
 };
 const lockManager = {
@@ -220,6 +221,7 @@ beforeEach(() => {
       return Promise.resolve({ state: consumerState, etag: 'c-1' });
     }),
     saveState: vi.fn().mockResolvedValue('etag-2'),
+    purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
     listStacks: vi.fn().mockResolvedValue([{ stackName: PRODUCER, region: REGION }]),
   };
   backendHolder.backend = stateBackend;

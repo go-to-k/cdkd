@@ -2034,6 +2034,7 @@
     "--protocol",
     "--provider",
     "--purge-events",
+    "--purge-history",
     "--qualifier",
     "--query",
     "--queue-name",

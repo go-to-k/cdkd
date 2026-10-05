@@ -170,6 +170,7 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
   let stateBackend: {
     getState: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
+    purgeNoncurrentVersions: ReturnType<typeof vi.fn>;
     listStacks: ReturnType<typeof vi.fn>;
   };
   let lockManager: {
@@ -182,6 +183,7 @@ describe('cdkd scrub - a stored output key the template cannot account for (issu
     stateBackend = {
       getState: vi.fn(),
       saveState: vi.fn().mockResolvedValue('etag-2'),
+      purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
       // Read when a record has an undeclared output key to DROP
       // (go-to-k/cdkd#4120): no other stack reads it.
       listStacks: vi.fn().mockResolvedValue([]),

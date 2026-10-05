@@ -89,8 +89,12 @@ vi.mock('../../../../src/utils/role-arn.js', () => ({ applyRoleArnIfSet: vi.fn()
 /** The state bucket: `<stack>|<region>` -> the stored record. */
 const stateStore = vi.hoisted(() => new Map<string, unknown>());
 const stateBackend = vi.hoisted(() => ({
+  prefix: 'cdkd',
   getState: vi.fn(),
   saveState: vi.fn(),
+  purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
+  // The post-migration check of a legacy key: gone.
+  getRawObject: vi.fn().mockResolvedValue(null),
   listStacks: vi.fn(),
 }));
 vi.mock('../../../../src/state/s3-state-backend.js', () => ({
@@ -297,6 +301,7 @@ beforeEach(() => {
       return Promise.resolve('etag-next');
     });
   stateBackend.listStacks.mockReset().mockResolvedValue([]);
+  stateBackend.purgeNoncurrentVersions.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -525,6 +530,54 @@ describe('cdkd scrub - nested-stack child records (go-to-k/cdkd#2252)', () => {
       Environment: { Variables: { A: SECRET_EXPR, B: STAGED_EXPR } },
     });
     expect(stored(CHILD)!.outputs).toEqual({ OA: SECRET_EXPR, OB: STAGED_EXPR });
+  });
+
+  it('--purge-history purges a CLEAN child record and its parent, writing neither (go-to-k/cdkd#2624)', async () => {
+    const childPath = writeTemplate('ChildStack.nested.template.json', {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { Environment: { Variables: { KEY: API_EXPR } } },
+        },
+      },
+    } as CloudFormationTemplate);
+    synthStacks.push(
+      parentStack(
+        {
+          ChildStack: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'https://example.invalid/child.json' },
+            Metadata: { 'aws:asset:path': path.basename(childPath) },
+          },
+        },
+        { ChildStack: childPath }
+      )
+    );
+    seed(PARENT, parentRecord({}));
+    // Already the expression: a deploy rewrote it, so there is nothing to scrub.
+    seed(
+      CHILD,
+      record(CHILD, {
+        Fn: {
+          physicalId: 'child-fn',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { Environment: { Variables: { KEY: API_EXPR } } },
+          attributes: {},
+        },
+      })
+    );
+
+    expect(await run([PARENT], { purgeHistory: true })).toBeUndefined();
+
+    expect(stateBackend.saveState).not.toHaveBeenCalled();
+    expect(
+      stateBackend.purgeNoncurrentVersions.mock.calls.map((c) => (c[0] as string[])[0]).sort()
+    ).toEqual([`cdkd/${CHILD}/${REGION}/state.json`, `cdkd/${PARENT}/${REGION}/state.json`].sort());
+
+    // And without the flag, neither is touched.
+    stateBackend.purgeNoncurrentVersions.mockClear();
+    expect(await run([PARENT])).toBeUndefined();
+    expect(stateBackend.purgeNoncurrentVersions).not.toHaveBeenCalled();
   });
 
   it('scrubs a child whose row passes NO Parameters, and reports it clean when it is', async () => {
@@ -781,6 +834,15 @@ describe('cdkd scrub - nested-stack child records (go-to-k/cdkd#2252)', () => {
     expect(JSON.stringify(stored(PARENT))).not.toContain(API_KEY);
     // The parent is locked AGAIN, for the row rewrite, after the child ran.
     expect(lockCalls).toEqual([PARENT, CHILD, PARENT]);
+    // go-to-k/cdkd#2624: every write, the parent-row repair included, purges
+    // the superseded versions of the key it wrote.
+    const savedKeys = stateBackend.saveState.mock.calls.map(
+      (c) => `cdkd/${String(c[0])}/${String(c[1])}/state.json`
+    );
+    expect(savedKeys).toHaveLength(3);
+    expect(stateBackend.purgeNoncurrentVersions.mock.calls.map((c) => (c[0] as string[])[0])).toEqual(
+      savedKeys
+    );
     expect(logLines.join('\n')).toContain(
       // ONE: the parameter-fed `PwOut` was already rewritten by the parent's own pass.
       `Scrubbed 1 nested-stack output attribute(s) in ${PARENT} (row ChildStack), from ${CHILD}'s outputs`
@@ -845,6 +907,53 @@ describe('cdkd scrub - nested-stack child records (go-to-k/cdkd#2252)', () => {
         'Outputs.Cur': API_EXPR,
         'Outputs.Staged': STAGED_API_EXPR,
       });
+    });
+
+    it('--purge-history counts a parent its row repair REWROTE as rewritten, not as history-only (go-to-k/cdkd#2624)', async () => {
+      // The parent's own pass is clean (purged by the flag), the child is clean
+      // (purged by the flag), and the child's run then rewrites the parent's
+      // row. Only the child is a record scrub did not rewrite.
+      appWithChildSecretOutput();
+      const parent = parentRecord();
+      parent.resources['ChildStack']!.attributes = {
+        'Outputs.PwOut': SECRET_EXPR,
+        'Outputs.ApiOut': API_KEY,
+      };
+      seed(PARENT, parent);
+      seed(CHILD, cleanChild());
+
+      expect(await run([PARENT], { purgeHistory: true })).toBeUndefined();
+
+      expect(stored(PARENT)!.resources['ChildStack']!.attributes!['Outputs.ApiOut']).toBe(API_EXPR);
+      const log = logLines.join('\n');
+      expect(log).toContain('Done: scrubbed 1 stack(s).');
+      expect(log).toContain(
+        '--purge-history: on a VERSIONED state bucket, the earlier state.json versions of 1 examined record(s) scrub did not rewrite were purged too'
+      );
+    });
+
+    it('migrates a LEGACY-layout parent the row repair rewrites (go-to-k/cdkd#2624)', async () => {
+      appWithChildSecretOutput();
+      const parent = parentRecord();
+      parent.resources['ChildStack']!.attributes = {
+        'Outputs.PwOut': SECRET_EXPR,
+        'Outputs.ApiOut': API_KEY,
+      };
+      seed(PARENT, parent);
+      seed(CHILD, cleanChild());
+      // The parent is read from the pre-region key: its etag is that key's.
+      const base = stateBackend.getState.getMockImplementation()!;
+      stateBackend.getState.mockImplementation(async (stack: string, region: string) => {
+        const loaded = await base(stack, region);
+        return stack === PARENT && loaded ? { ...loaded, migrationPending: true } : loaded;
+      });
+
+      expect(await run([PARENT])).toBeUndefined();
+
+      const parentSave = stateBackend.saveState.mock.calls.find((c) => c[0] === PARENT);
+      expect(parentSave?.[3]).toEqual({ expectedEtag: `etag-${PARENT}`, migrateLegacy: true });
+      const purgedKeys = stateBackend.purgeNoncurrentVersions.mock.calls.flatMap((c) => c[0] as string[]);
+      expect(purgedKeys).toContain(`cdkd/${PARENT}/state.json`);
     });
 
     it('turns --dry-run --fail RED when ONLY the parent attribute holds the plaintext', async () => {

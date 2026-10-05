@@ -141,7 +141,11 @@ function makeLeakyState(): StackState {
 }
 
 describe('cdkd scrub - scrubStack', () => {
-  let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
+  let stateBackend: {
+    getState: ReturnType<typeof vi.fn>;
+    saveState: ReturnType<typeof vi.fn>;
+    purgeNoncurrentVersions: ReturnType<typeof vi.fn>;
+  };
   let lockManager: {
     acquireLockWithRetry: ReturnType<typeof vi.fn>;
     releaseLock: ReturnType<typeof vi.fn>;
@@ -152,6 +156,7 @@ describe('cdkd scrub - scrubStack', () => {
     stateBackend = {
       getState: vi.fn().mockResolvedValue({ state: makeLeakyState(), etag: 'etag-1' }),
       saveState: vi.fn().mockResolvedValue('etag-2'),
+      purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
     };
     lockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
@@ -384,7 +389,11 @@ describe('cdkd scrub - scrubStack', () => {
  * persisted with the whole unit suite green.
  */
 describe('cdkd scrub - orphan records (go-to-k/cdkd#2943)', () => {
-  let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
+  let stateBackend: {
+    getState: ReturnType<typeof vi.fn>;
+    saveState: ReturnType<typeof vi.fn>;
+    purgeNoncurrentVersions: ReturnType<typeof vi.fn>;
+  };
   let lockManager: {
     acquireLockWithRetry: ReturnType<typeof vi.fn>;
     releaseLock: ReturnType<typeof vi.fn>;
@@ -425,6 +434,7 @@ describe('cdkd scrub - orphan records (go-to-k/cdkd#2943)', () => {
     stateBackend = {
       getState: vi.fn(),
       saveState: vi.fn().mockResolvedValue('etag-2'),
+      purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
     };
   });
 
@@ -543,6 +553,7 @@ describe('cdkd scrub - orphan needles reach the masking boundary (go-to-k/cdkd#2
         etag: 'etag-1',
       }),
       saveState: vi.fn().mockResolvedValue('etag-2'),
+      purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
     };
     const lockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),

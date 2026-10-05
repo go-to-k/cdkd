@@ -109,7 +109,11 @@ function envOf(state: StackState, logicalId: string): Record<string, unknown> {
  * older flags and differs only on the one that matters here.
  */
 describe('cdkd scrub - generation skew between state and template (issue #1917)', () => {
-  let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
+  let stateBackend: {
+    getState: ReturnType<typeof vi.fn>;
+    saveState: ReturnType<typeof vi.fn>;
+    purgeNoncurrentVersions: ReturnType<typeof vi.fn>;
+  };
   let lockManager: {
     acquireLockWithRetry: ReturnType<typeof vi.fn>;
     releaseLock: ReturnType<typeof vi.fn>;
@@ -154,6 +158,7 @@ describe('cdkd scrub - generation skew between state and template (issue #1917)'
     stateBackend = {
       getState: vi.fn().mockResolvedValue({ state: makeState(), etag: 'etag-1' }),
       saveState: vi.fn().mockResolvedValue('etag-2'),
+      purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
     };
     lockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
