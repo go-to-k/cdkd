@@ -55,6 +55,7 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
 import {
   CustomResourceProvider,
   CR_DELETE_HANDLER_FAILED_SKIP_REASON,
+  CR_BACKING_LAMBDA_GONE_SKIP_REASON,
 } from '../../../src/provisioning/providers/custom-resource-provider.js';
 import { deleteSkipReason } from '../../../src/deployment/delete-outcome.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
@@ -174,21 +175,25 @@ describe('CustomResourceProvider delete: a handler that answers FAILED (issue #2
     expect(warnings()).toContain('LEFT IN PLACE');
   });
 
-  it('keeps the skip reason clear of every already-deleted phrase the callers match on', () => {
-    for (const phrase of [
-      'does not exist',
-      'was not found',
-      'not found',
-      'No policy found',
-      'NoSuchEntity',
-      'NotFoundException',
-      'ResourceNotFoundException',
-    ]) {
-      expect(CR_DELETE_HANDLER_FAILED_SKIP_REASON.toLowerCase()).not.toContain(
-        phrase.toLowerCase()
-      );
+  it.each([
+    ['handler-FAILED', CR_DELETE_HANDLER_FAILED_SKIP_REASON],
+    ['backing-Lambda-gone', CR_BACKING_LAMBDA_GONE_SKIP_REASON],
+  ])(
+    'keeps the %s skip reason clear of every already-deleted phrase the callers match on',
+    (_label, reason) => {
+      for (const phrase of [
+        'does not exist',
+        'was not found',
+        'not found',
+        'No policy found',
+        'NoSuchEntity',
+        'NotFoundException',
+        'ResourceNotFoundException',
+      ]) {
+        expect(reason.toLowerCase()).not.toContain(phrase.toLowerCase());
+      }
     }
-  });
+  );
 
   it('names the remedy that exists on the DESTROY path, not the deploy-only flag', () => {
     // `--allow-unaddressed` is deploy-only (`src/cli/options.ts`); `cdkd
@@ -212,22 +217,13 @@ describe('CustomResourceProvider delete: a handler that answers FAILED (issue #2
     expect(result).not.toBeUndefined();
   });
 
-  it('the NEXT destroy drops the kept record — the known bound, stated LOUDLY', async () => {
+  it('the NEXT stack destroy, with the backing Lambda gone, skips again and KEEPS the record (issue #2115)', async () => {
     // Run 1 skips and keeps the record. But `destroy-runner.ts` walks every
     // reverse-DAG level regardless of skips, so that SAME run deletes the
-    // backing Lambda. Run 2 therefore reaches the issue-#804 pre-check, finds
-    // the function gone, and drops the record — the silent orphan #2054
-    // removed one run earlier, reached one run later.
-    //
-    // It is deliberately still a DELETE (see the in-code note): flipping it to
-    // a skip would turn a legitimate shape red too — a shared provider stack
-    // destroyed before its consumers, where the ServiceToken points at a
-    // Lambda another stack already removed — and that trade is the
-    // maintainer's. Closing it properly needs a durable "a prior run skipped
-    // this" signal, which lives in the state schema or in `DeleteContext`.
-    //
-    // So what this pins is the two halves that ARE in reach: the outcome is
-    // unchanged, and the run is no longer SILENT about what it just dropped.
+    // backing Lambda. Run 2 therefore reaches the issue-#804 pre-check and
+    // finds the function gone. It used to answer DELETED there — dropping the
+    // record and exiting 0 over the resource the handler had refused to remove.
+    // The maintainer's decision on #2115 (option 1): a skip, unconditionally.
     mockS3Send.mockImplementation(() => Promise.resolve({}));
     mockLambdaSend.mockImplementation((cmd: { constructor: { name: string } }) => {
       if (cmd.constructor.name === 'GetFunctionCommand') {
@@ -239,26 +235,87 @@ describe('CustomResourceProvider delete: a handler that answers FAILED (issue #2
     });
     const provider = makeProvider();
 
-    const result = await provider.delete('CrResource', 'phys-123', 'Custom::CrResource', {
-      ServiceToken: SERVICE_TOKEN,
-    });
+    const result = await provider.delete(
+      'CrResource',
+      'phys-123',
+      'Custom::CrResource',
+      { ServiceToken: SERVICE_TOKEN },
+      // What `destroy-runner.ts` passes: the skip is scoped to a stack destroy.
+      { stackDestroy: true }
+    );
 
-    // The bound itself: still reported as deleted, so the record is dropped.
-    expect(result).toBeUndefined();
-    expect(deleteSkipReason(result)).toBeUndefined();
+    // THE discriminator, read through the helper the destroy runner uses: a
+    // `void` here is what dropped the record.
+    expect(result).toEqual({ outcome: 'skipped', reason: CR_BACKING_LAMBDA_GONE_SKIP_REASON });
+    expect(deleteSkipReason(result)).toBe(CR_BACKING_LAMBDA_GONE_SKIP_REASON);
 
-    // ...but the run says so, and says what it means. Before this it read as a
-    // clean success, so a record kept by a skip vanished with no hint at all.
-    expect(warnings()).toContain('DROPPING its state record');
-    expect(warnings()).toContain('still');
+    // Still fail-fast (issue #804): the one GetFunction, no waiter, no invoke.
+    expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+    expect(
+      (mockLambdaSend.mock.calls[0]![0] as { constructor: { name: string } }).constructor.name
+    ).toBe('GetFunctionCommand');
+
+    // The warning tells the truth about the record and names the escape.
+    expect(warnings()).not.toContain('DROPPING');
+    expect(warnings()).toContain('KEEPING the state record');
     expect(warnings()).toContain('LIVE');
-    expect(warnings()).toContain('2054');
+    expect(warnings()).toContain('DELETE_FAILED');
+    expect(warnings()).toContain("'cdkd state orphan <stack> --stack-region <region>'");
+    expect(warnings()).toContain('EVERY record for the stack in that region');
+    // Reached only from a destroy, so it carries no deploy-side caveat.
+    expect(warnings()).not.toContain('ALSO reached from cdkd deploy');
+  });
+
+  it.each([
+    ['no context', undefined],
+    ['a deploy-engine context', { expectedRegion: 'us-east-1', deletionPolicy: 'Delete' }],
+    ['stackDestroy: false', { stackDestroy: false }],
+  ])(
+    'outside a stack destroy (%s) the gone-Lambda pre-check keeps the LOUD warn-and-drop',
+    async (_label, context) => {
+      // A deploy-engine delete (template removal, replacement, rollback): a
+      // kept record there would fail every later deploy, and CloudFormation
+      // ignores delete failures in an update's cleanup phase (issue #2115).
+      mockS3Send.mockImplementation(() => Promise.resolve({}));
+      mockLambdaSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name === 'GetFunctionCommand') {
+          return Promise.reject(
+            Object.assign(new Error('Function not found'), { name: 'ResourceNotFoundException' })
+          );
+        }
+        return Promise.resolve({});
+      });
+      const provider = makeProvider();
+
+      const result = await provider.delete(
+        'CrResource',
+        'phys-123',
+        'Custom::CrResource',
+        { ServiceToken: SERVICE_TOKEN },
+        context
+      );
+
+      expect(result).toBeUndefined();
+      expect(deleteSkipReason(result)).toBeUndefined();
+      expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+      expect(warnings()).toContain('DROPPING its state record');
+      expect(warnings()).toContain('LIVE');
+      expect(warnings()).toContain("update's cleanup phase");
+      expect(warnings()).not.toContain('KEEPING the state record');
+    }
+  );
+
+  it('names the backing-Lambda-gone reason apart from every sibling CR skip', () => {
+    expect(CR_BACKING_LAMBDA_GONE_SKIP_REASON).not.toBe(CR_DELETE_HANDLER_FAILED_SKIP_REASON);
+    expect(CR_BACKING_LAMBDA_GONE_SKIP_REASON).toMatch(/not invoked/);
+    expect(CR_BACKING_LAMBDA_GONE_SKIP_REASON.length).toBeLessThanOrEqual(64);
   });
 
   it('promises no retry it cannot keep on the destroy path', async () => {
     // The warn used to say "cdkd is KEEPING the state record so a re-run can
     // retry it". On `cdkd destroy` that is false for the reason the case above
-    // measures, and destroy has no `--allow-unaddressed` to soften it.
+    // measures — the re-run skips at the pre-check and never reaches the
+    // handler — and destroy has no `--allow-unaddressed` to soften it.
     wireHandlerResponse({ Status: 'FAILED', Reason: 'the upstream API refused the teardown' });
     const provider = makeProvider();
 
@@ -268,6 +325,9 @@ describe('CustomResourceProvider delete: a handler that answers FAILED (issue #2
 
     expect(warnings()).not.toContain('a re-run can retry it');
     expect(warnings()).toContain('POINTER, not a retry');
+    // ...and no longer claims the next destroy drops the record (issue #2115).
+    expect(warnings()).not.toContain('DROPS this record');
+    expect(warnings()).toContain('skips this resource again and keeps the record');
     expect(warnings()).toContain('cdkd state orphan <stack> --stack-region <region>');
     // ...and it says what that command actually does, which is not a
     // single-record drop.

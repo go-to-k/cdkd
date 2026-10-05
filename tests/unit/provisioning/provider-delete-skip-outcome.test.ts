@@ -77,6 +77,7 @@ import {
   CustomResourceProvider,
   CR_NO_PROPERTIES_SKIP_REASON,
   CR_NO_SERVICE_TOKEN_SKIP_REASON,
+  CR_BACKING_LAMBDA_GONE_SKIP_REASON,
 } from '../../../src/provisioning/providers/custom-resource-provider.js';
 import {
   IAMPolicyProvider,
@@ -481,13 +482,12 @@ describe('inverted controls: a well-formed input still runs the real delete (iss
     expect(input['StatementId']).toBe('AllowInvoke');
   });
 
-  it('Custom::Thing: a ServiceToken in state reaches AWS and does NOT report a skip', async () => {
+  it('Custom::Thing: a ServiceToken in state reaches AWS and reports the backing-Lambda-gone skip, not a guard skip', async () => {
     // The first AWS call on the well-formed path is the backing-Lambda
     // pre-check (issue #804). Answering it `ResourceNotFoundException` takes
-    // the "already deleted" arm — which is deliberately still a `deleted`
-    // (the handler can never run again, so the resource IS gone), and is the
-    // out-of-scope half of issue #1770. Reaching it at all proves the two
-    // skip guards above did not fire.
+    // the backing-Lambda-gone arm — a skip of its own since issue #2115, with
+    // its own reason. Reaching it at all (that reason, not the no-properties /
+    // no-ServiceToken one) proves the two skip guards above did not fire.
     const notFound = Object.assign(new Error('not found'), {
       name: 'ResourceNotFoundException',
     });
@@ -496,8 +496,9 @@ describe('inverted controls: a well-formed input still runs the real delete (iss
     await expect(
       new CustomResourceProvider().delete('MyCr', 'cr-physical-id', 'Custom::Thing', {
         ServiceToken: LAMBDA_ARN,
-      })
-    ).resolves.toBeUndefined();
+        // The backing-Lambda-gone skip is a stack-destroy answer (#2115).
+      }, { stackDestroy: true })
+    ).resolves.toEqual({ outcome: 'skipped', reason: CR_BACKING_LAMBDA_GONE_SKIP_REASON });
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0]![0].input as Record<string, unknown>).toEqual({

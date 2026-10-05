@@ -217,6 +217,41 @@ export const CR_DELETE_HANDLER_FAILED_SKIP_REASON =
   'Delete handler reported FAILED — resource unproven';
 
 /**
+ * Fifth sibling, for the issue-#804 pre-check: `GetFunction` on the
+ * ServiceToken answered `ResourceNotFoundException`, so the Delete handler can
+ * never be invoked (go-to-k/cdkd#2115).
+ *
+ * That arm used to return `undefined`, which `deleteSkipReason` reads as
+ * DELETED, on the reasoning that a handler which can never run again leaves
+ * nothing to track. It inverted the burden of proof: cdkd cannot invoke the
+ * handler, so it cannot know that what the handler manages is gone. Its most
+ * common caller made that concrete — a record a PRIOR destroy kept because the
+ * handler refused (#2054) or the invoke failed (#2033), after which that same
+ * run deleted the backing Lambda; the next destroy dropped the record and exited
+ * 0 over a resource the handler had explicitly refused to remove.
+ *
+ * **Scoped to a STACK DESTROY** (`DeleteContext.stackDestroy`), following
+ * CloudFormation where the phases differ. There a custom resource whose delete
+ * cannot be confirmed leaves a stack DELETE `DELETE_FAILED` and the user
+ * retries with `RetainResources`; cdkd's escape is
+ * `cdkd state orphan <stack> --stack-region <region>`, safe there because only
+ * the records the destroy kept remain. Within a destroy it is unconditional —
+ * no "a prior run skipped this" classifier, which would need a durable signal
+ * in the state schema — so the legitimate shape turns red too (a shared
+ * provider stack destroyed before its consumers).
+ *
+ * A deploy-engine delete (template removal, replacement, rollback) keeps the
+ * older warn-and-drop: CloudFormation ignores delete failures in an update's
+ * cleanup phase, and a kept record there would fail EVERY later deploy with no
+ * escape short of orphaning the whole live stack.
+ *
+ * Fixed wording, clear of every already-deleted phrase the deploy-side
+ * classifiers substring-match (see {@link CR_DELETE_INVOKE_FAILED_SKIP_REASON}).
+ */
+export const CR_BACKING_LAMBDA_GONE_SKIP_REASON =
+  'backing Lambda function is gone — Delete handler not invoked';
+
+/**
  * The deploy-side caveat both skip warnings in this file carry (issue
  * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
  *
@@ -236,22 +271,16 @@ export const CR_DELETE_HANDLER_FAILED_SKIP_REASON =
  * it is false in the direction that matters. `destroy-runner.ts` walks every
  * reverse-DAG level regardless of skips, so the SAME run that skipped the
  * custom resource goes on to delete its backing Lambda. The next
- * `cdkd destroy` therefore reaches the issue-#804 pre-check above, finds the
- * function gone, and treats the resource as already deleted — dropping the
- * record and exiting 0 over a resource the handler explicitly refused to
- * remove, which is the very silent orphan #2054 removed one run earlier.
- *
- * Closing it properly means making that pre-check answer `'skipped'` when the
- * teardown was never PROVEN, which needs a durable "a prior run skipped this"
- * signal. Every candidate is outside this file: a `ResourceState` field (a
- * state-schema bump), or a `DeleteContext` flag threaded from
- * `destroy-runner.ts`. So the record is described here as what it actually is
- * — a POINTER to something that has to be torn down by hand — rather than as a
- * retry that will not happen.
+ * `cdkd destroy` therefore reaches the issue-#804 pre-check, finds the
+ * function gone, and — since go-to-k/cdkd#2115 — skips the resource again
+ * ({@link CR_BACKING_LAMBDA_GONE_SKIP_REASON}): the record is kept and the run
+ * exits non-zero, but the handler is never reached. So the record is described
+ * here as what it actually is — a POINTER to something that has to be torn
+ * down by hand — rather than as a retry that will not happen.
  */
 const CR_SKIP_NOT_A_RETRY_CAVEAT =
   `NOTE this record is a POINTER, not a retry: the same destroy run deletes the backing Lambda, ` +
-  `so the next 'cdkd destroy' finds the handler gone and DROPS this record (issue 804 pre-check). ` +
+  `so the next 'cdkd destroy' cannot reach the handler either: it skips this resource again and keeps the record (issue 2115). ` +
   `Tear the resource down by hand, then clear the stack's records with 'cdkd state orphan <stack> --stack-region <region>' ` +
   `— that command drops EVERY record for the stack in that region, not just this one.`;
 
@@ -919,10 +948,10 @@ export const customResourceRetryDelays = {
  * `getAccountInfo` refuses (issue [#1730](https://github.com/go-to-k/cdkd/issues/1730)).
  *
  * A refused Delete is never sent, so the resource is reported `skipped` — and
- * the same destroy run deletes the backing Lambda, after which the next destroy
- * drops the record (see {@link CR_SKIP_NOT_A_RETRY_CAVEAT}). A transient STS
- * blip would therefore become an untracked orphan of whatever the handler
- * manages. `getAccountInfo` never caches a failure, so asking again can
+ * the same destroy run deletes the backing Lambda, after which no later
+ * destroy can reach the handler (see {@link CR_SKIP_NOT_A_RETRY_CAVEAT}). A
+ * transient STS blip would therefore leave whatever the handler manages to be
+ * torn down by hand. `getAccountInfo` never caches a failure, so asking again can
  * recover; create / update need no such loop, because their refusal fails
  * before anything exists and the next deploy simply retries.
  */
@@ -1771,7 +1800,7 @@ export class CustomResourceProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
-    _context?: DeleteContext
+    context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
     // Custom resources delegate deletion to a user-provided Lambda handler.
     // The Lambda invocation itself does not surface a `*NotFound` for the
@@ -1786,9 +1815,9 @@ export class CustomResourceProvider implements ResourceProvider {
     // way to reach it is `ServiceToken`. Without it the handler never sees a
     // `Delete` request, so whatever the resource manages (records in a
     // third-party API, objects in another account, a DNS entry) is untouched.
-    // Contrast the backing-Lambda-is-gone pre-check further down, which stays
-    // a `deleted`: there the handler CANNOT run ever again, so the record is
-    // dead weight rather than a live resource.
+    // The backing-Lambda-is-gone pre-check further down is a skip too on a
+    // stack destroy (go-to-k/cdkd#2115): a handler that can never run again
+    // proves nothing about what it manages.
     //
     // "LEFT IN PLACE" is unconditional for these two, unlike the
     // Lambda-permission / IAM-policy arms which qualify it: what survives is
@@ -1833,8 +1862,8 @@ export class CustomResourceProvider implements ResourceProvider {
     // above — what names the handler is not in the record. The mask must never
     // reach Lambda: it names no function, so the issue-#804 pre-check and the
     // invoke fail with an AWS error that says nothing about the mask, and a
-    // `ResourceNotFoundException` there would read as "backing Lambda gone"
-    // and DROP the record over a live resource. Re-deploying does not repair
+    // `ResourceNotFoundException` there would be reported as "backing Lambda
+    // gone", naming the wrong cause and the wrong repair. Re-deploying does not repair
     // the record while the NoEcho attribute still carries that value: the
     // same needle masks the same leaf again.
     if (carriesSecretMask(serviceToken)) {
@@ -1887,27 +1916,35 @@ export class CustomResourceProvider implements ResourceProvider {
     // `ResourceNotFoundException` as RETRY (no error acceptor) and poll
     // GetFunction for the full 10-minute `maxWaitTime` before the lenient
     // catch below swallows the timeout. One GetFunction up front turns that
-    // stall into the same instant warn-and-continue every other provider's
-    // "not found" path gets. Delete-only: create / update against a missing
-    // function must keep failing loudly through the normal invoke path.
+    // stall into an instant answer. Delete-only: create / update against a
+    // missing function must keep failing loudly through the normal invoke path.
+    //
+    // On a STACK DESTROY the answer is a SKIP (go-to-k/cdkd#2115); on a
+    // deploy-engine delete it stays a loud warn-and-drop. See
+    // {@link CR_BACKING_LAMBDA_GONE_SKIP_REASON} for why the phases differ.
     if (!this.isSnsServiceToken(serviceToken) && (await this.isBackingLambdaGone(serviceToken))) {
-      // Still a DELETE, deliberately — see {@link CR_SKIP_NOT_A_RETRY_CAVEAT}
-      // for why the honest answer (`'skipped'`) is not taken here. Flipping it
-      // would turn a currently-green teardown red for the legitimate shape too
-      // (a shared provider stack destroyed before its consumers, where the
-      // ServiceToken points at a Lambda another stack already removed), and
-      // that trade is the maintainer's call, not this arm's.
-      //
-      // What IS fixed here is the silence: this used to read as a clean
-      // success, so a record kept by a skip one run earlier disappeared with no
-      // hint that anything survived.
+      if (context?.stackDestroy === true) {
+        // No DEPLOY_SKIP_CAVEAT: this arm is reached only from a destroy.
+        this.logger.warn(
+          safeMsg`Backing Lambda for custom resource ${logicalId} no longer exists (${serviceToken}), so ` +
+            `its Delete handler cannot be invoked and cdkd cannot confirm the resource was ` +
+            `deleted; skipping deletion — anything this custom resource manages may still be ` +
+            `LIVE. cdkd is KEEPING the state record and the run exits non-zero, as CloudFormation ` +
+            `leaves such a stack DELETE_FAILED. A re-run skips it again unless a function with ` +
+            `that exact ARN exists again (e.g. a shared provider stack destroyed before this one, ` +
+            `then redeployed). Otherwise confirm by hand that whatever it manages is gone (or tear ` +
+            `it down), then clear the stack's records with 'cdkd state orphan <stack> ` +
+            `--stack-region <region>' — that command drops EVERY record for the stack in that ` +
+            `region, not just this one.`
+        );
+        return { outcome: 'skipped', reason: CR_BACKING_LAMBDA_GONE_SKIP_REASON };
+      }
       this.logger.warn(
-        `Backing Lambda for custom resource ${logicalId} no longer exists (${serviceToken}); ` +
-          `treating the custom resource as already deleted and DROPPING its state record. The ` +
-          `handler can never run again, so if its teardown was never PROVEN — e.g. an earlier ` +
-          `run reported this resource as skipped (issue 2054) — whatever it manages is still ` +
-          `LIVE and is now untracked by cdkd. Check for leftovers before treating the stack as ` +
-          `gone.`
+        safeMsg`Backing Lambda for custom resource ${logicalId} no longer exists (${serviceToken}); ` +
+          `treating the custom resource as already deleted and DROPPING its state record, as ` +
+          `CloudFormation ignores a delete failure in an update's cleanup phase. The handler ` +
+          `can never run again, so if its teardown was never PROVEN, whatever it manages may ` +
+          `still be LIVE and is now untracked by cdkd. Check for leftovers by hand.`
       );
       return;
     }

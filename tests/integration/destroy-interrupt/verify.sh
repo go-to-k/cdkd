@@ -524,10 +524,12 @@ fi
 # --- Phase 3: re-run / resume (CR fail-fast, #804) --------------------
 #
 # If state still exists (the interrupt landed), re-run destroy to
-# completion and assert it RESUMES cleanly, the CR delete does NOT stall
-# ~10 minutes against the already-deleted backing Lambda, and the stack
-# ends fully gone. If state is already gone (race above), this is a
-# no-op fast path that still confirms the clean end state.
+# completion and assert it RESUMES cleanly, does NOT stall ~10 minutes on
+# the CR (#804), and the stack ends fully gone. On a successful CR delete
+# its record is persisted away before its Lambda's level starts, so the
+# re-run never meets a CR whose backing Lambda is gone; one that did would
+# now exit 2 by design (#2115). If state is already gone (race above), this
+# is a no-op fast path that still confirms the clean end state.
 if state_exists; then
   echo "==> Phase 3: re-run destroy to completion (assert resume + CR fail-fast)"
   RERUN_LOG="$(mktemp)"

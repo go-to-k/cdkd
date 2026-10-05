@@ -722,6 +722,32 @@ describe('NestedStackProvider', () => {
       }
     });
 
+    // go-to-k/cdkd#2115: the stack-destroy flag reaches the child runner ONLY
+    // from this delete's own context, so a nested child a DEPLOY removes keeps
+    // the deploy-side warn-and-drop.
+    it.each([
+      ['a deploy-reached removal (no flag on the delete context)', {}, false],
+      ['a deploy-reached removal (explicit false)', { stackDestroy: false }, false],
+      ['a stack destroy', { stackDestroy: true }, true],
+    ])('%s: forwards stackDestroy only when its own context sets it', async (_what, deleteCtx, forwarded) => {
+      const provider = new NestedStackProvider();
+      await withNestedStackContext(makeContext(), () =>
+        provider.delete(
+          'Child',
+          'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+          'AWS::CloudFormation::Stack',
+          undefined,
+          { expectedRegion: 'us-east-1', ...deleteCtx }
+        )
+      );
+      expect(destroyCalls.length).toBe(1);
+      if (forwarded) {
+        expect(destroyCalls[0]!.destroyCtx['stackDestroy']).toBe(true);
+      } else {
+        expect(destroyCalls[0]!.destroyCtx).not.toHaveProperty('stackDestroy');
+      }
+    });
+
     // Issue #1752: the child runner reports a resource it could not address as
     // `skippedCount`. Swallowing it here re-creates the mis-report one level
     // up — the PARENT would print `✓ Child (AWS::CloudFormation::Stack)

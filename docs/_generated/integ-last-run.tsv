@@ -65,11 +65,11 @@ cross-region-state-bucket	2026-10-03T07:02:29Z	PASS	32	verify.sh	rc ok, orph cle
 cross-stack-cfn-fallback	2026-10-02T23:48:50Z	PASS	150	verify.sh	rc ok, orph clean (#4475)
 cross-stack-references	2026-10-03T09:48:51Z	PASS	40	std-flow	rc ok, orph clean (#4505)
 cross-stack-secret-import	2026-10-05T15:24:10Z	PASS	396	verify.sh	rc ok, orph clean (#2868 PR #4588)
-custom-resource-getatt-data	2026-10-04T15:13:49Z	PASS	90	verify.sh	rc ok, orph clean (#4451)
-custom-resource-masked-service-token	2026-09-28T21:40:21Z	PASS	156	verify.sh	rc ok, orph clean; #3938 + #3976 refusal + #3960 seeded arms; pre-#3976 probe RED at R1
-custom-resource-noecho-nested	2026-10-04T15:13:49Z	PASS	886	verify.sh	rc ok, orph clean (#4451)
-custom-resource-provider	2026-10-04T02:52:14Z	PASS	576	verify.sh	rc ok, orph clean (#1730)
-custom-resource-resolved-secret	2026-10-03T18:30:14Z	PASS	376	verify.sh	rc ok, orph clean
+custom-resource-getatt-data	2026-10-05T18:13:45Z	PASS	95	verify.sh	rc ok, orph clean (#2115 PR #4589)
+custom-resource-masked-service-token	2026-10-05T18:15:00Z	PASS	170	verify.sh	rc ok, orph clean (#2115 PR #4589)
+custom-resource-noecho-nested	2026-10-05T18:42:03Z	PASS	957	verify.sh	rc ok, orph clean (#2115 PR #4589)
+custom-resource-provider	2026-10-05T18:24:22Z	PASS	732	verify.sh	rc ok, orph clean (#2115 PR #4589)
+custom-resource-resolved-secret	2026-10-05T18:18:01Z	PASS	351	verify.sh	rc ok, orph clean (#2115 PR #4589)
 data-analytics	2026-09-29T12:11:12Z	PASS	226	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-10-03T05:56:47Z	PASS	80	verify.sh	rc ok, orph clean (#4497)
@@ -79,15 +79,15 @@ deletion-policy-snapshot	2026-09-29T08:18:12Z	PASS	241	verify.sh	rc ok, orph cle
 deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Redshift+ElastiCache RepGroup pre-delete snapshots verified; found 4 live defects across 5 runs
 deployment-events	2026-09-28T17:37:19Z	PASS	45	verify.sh	rc ok, orph clean (#3950 lane B)
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
-destroy-interrupt	2026-10-01T10:58:29Z	PASS	356	verify.sh	rc ok, orph clean (PR #4311 stack-lock guard)
+destroy-interrupt	2026-10-05T18:18:46Z	PASS	396	verify.sh	rc ok, orph clean (#2115 PR #4589)
 diff-fail-on-destructive	2026-10-05T17:32:16Z	PASS	80	verify.sh	rc ok, orph clean (#4429 PR #4593)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-10-04T16:44:59Z	PASS	105	verify.sh	rc ok, orph clean (#2080 PR #4557)
 docdb-neptune	2026-10-03T05:35:39Z	PASS	5713	verify.sh	rc ok, orph clean (#4283 PR #4449)
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-05T14:52:34Z	PASS	311	verify.sh	rc ok, orph clean (#3211 PR #4590)
+drift-revert	2026-10-05T17:51:03Z	PASS	326	verify.sh	rc ok, orph clean (#2115 PR #4589)
 drift-revert-arrays	2026-10-04T10:29:43Z	PASS	185	verify.sh	rc ok, orph clean (#4476)
-drift-revert-vpc	2026-10-05T14:58:55Z	PASS	376	verify.sh	rc ok, orph clean (#3211 PR #4590)
+drift-revert-vpc	2026-10-05T17:57:13Z	PASS	365	verify.sh	rc ok, orph clean (#2115 PR #4589)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-05T15:21:15Z	PASS	221	verify.sh	rc ok, orph clean (#2868 PR #4588)
 dynamodb-autoscaling	2026-10-03T04:27:36Z	PASS	83	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -127,7 +127,7 @@ eventbridge-pipes	2026-10-03T09:34:47Z	PASS	175	verify.sh	rc ok, orph clean (#44
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-03T19:15:22Z	PASS	100	verify.sh	rc ok, orph clean (#2080 PR #4515)
-export	2026-10-05T15:02:52Z	PASS	235	verify.sh	rc ok, orph clean (#3211 PR #4590)
+export	2026-10-05T18:01:21Z	PASS	245	verify.sh	rc ok, orph clean (#2115 PR #4589)
 export-nested-stack	2026-10-04T19:49:12Z	PASS	181	verify.sh	rc ok, orph clean (#4547)
 fallback-recreate-children	2026-10-05T02:29:22Z	PASS	105	verify.sh	rc ok, orph clean (#4569 @480676155)
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
@@ -174,7 +174,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kinesis-stream-mode-switch	2026-10-03T04:24:24Z	PASS	102	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-05T17:32:16Z	PASS	105	verify.sh	rc ok, orph clean (#4429 PR #4593)
+lambda	2026-10-05T18:13:55Z	PASS	105	verify.sh	rc ok, orph clean (#2115 PR #4589)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
@@ -240,11 +240,11 @@ multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 sta
 multi-resource	2026-10-03T09:39:45Z	PASS	65	std-flow	rc ok, orph clean (#4505)
 multi-stack-deps	2026-10-03T09:41:05Z	PASS	80	std-flow	rc ok, orph clean (#4505)
 nested-required-preflight	2026-09-23T18:43:53Z	PASS	53	verify.sh	rc ok, orph clean (#1802)
-nested-stack	2026-10-05T00:22:20Z	PASS	70	verify.sh	rc ok, orph clean (#4568 @c26fb0c29)
-nested-stack-3level	2026-10-05T00:22:20Z	PASS	477	verify.sh	rc ok, orph clean (#4568 @8f9f47be8); Step 4e red at origin/main (root never sent the new output value)
-nested-stack-deep	2026-10-04T03:21:48Z	PASS	105	verify.sh	rc ok, orph clean (#4521; first run failed on the pre-#4252 arrow grep, fixed here)
+nested-stack	2026-10-05T18:13:25Z	PASS	75	verify.sh	rc ok, orph clean (#2115 PR #4589)
+nested-stack-3level	2026-10-05T18:10:14Z	PASS	531	verify.sh	rc ok, orph clean (#2115 PR #4589)
+nested-stack-deep	2026-10-05T18:26:04Z	PASS	100	verify.sh	rc ok, orph clean (#2115 PR #4589)
 nested-stack-replace-guard	2026-10-04T09:21:25Z	PASS	65	verify.sh	rc ok, orph clean (#3932)
-nested-stack-rollback	2026-10-05T02:29:22Z	PASS	95	verify.sh	rc ok, orph clean (#4569 @480676155)
+nested-stack-rollback	2026-10-05T18:12:02Z	PASS	106	verify.sh	rc ok, orph clean (#2115 PR #4589)
 nested-stack-secret	2026-10-04T15:13:49Z	PASS	231	verify.sh	rc ok, orph clean (#4451)
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
@@ -269,7 +269,7 @@ recreate-via-cc-api	2026-10-05T15:03:08Z	PASS	100	verify.sh	PR #4585 (#3869 CC c
 recreate-via-sdk-provider	2026-10-05T02:29:22Z	PASS	95	verify.sh	rc ok, orph clean (#4569 @480676155)
 redacted-delete-address	2026-09-28T21:11:30Z	PASS	95	verify.sh	rc ok, orph clean; pre-fix probe RED at destroy #1 (stage reported deleted, exit 0)
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
-remove-protection	2026-10-05T14:47:19Z	PASS	2105	verify.sh	rc ok, orph clean (#3211 PR #4590)
+remove-protection	2026-10-05T17:45:33Z	PASS	2114	verify.sh	rc ok, orph clean (#2115 PR #4589)
 remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-10-05T02:29:22Z	PASS	65	verify.sh	rc ok, orph clean (#4569 @480676155)

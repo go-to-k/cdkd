@@ -558,6 +558,8 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(mockRunDestroyForStack.mock.calls[0]?.[2].removeProtection).toBe(true);
     // go-to-k/cdkd#4150: a top-level destroy opts in to secret-principal resolution.
     expect(mockRunDestroyForStack.mock.calls[0]?.[2].resolveSecretDerivedPrincipals).toEqual({});
+    // go-to-k/cdkd#2115: a top-level destroy is a whole-stack teardown.
+    expect(mockRunDestroyForStack.mock.calls[0]?.[2].stackDestroy).toBe(true);
 
     // No exit-2 on the bypass path.
     expect(exitSpy).not.toHaveBeenCalled();

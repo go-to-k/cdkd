@@ -938,6 +938,10 @@ async function destroyCommand(
                 // go-to-k/cdkd#4150: a top-level destroy may resolve a
                 // secret-derived principal list; a deploy never does.
                 resolveSecretDerivedPrincipals: {},
+                // go-to-k/cdkd#2115: a whole-stack teardown, where a delete cdkd
+                // cannot confirm keeps its record (CloudFormation DELETE_FAILED);
+                // a deploy-engine delete never sets it.
+                stackDestroy: true,
                 exportIndexStore,
                 ...(options.allowUnsupportedTypes?.length && {
                   allowUnsupportedTypes: options.allowUnsupportedTypes,

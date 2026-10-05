@@ -21,6 +21,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - ["The following resources declare mutually exclusive properties"](#the-following-resources-declare-mutually-exclusive-properties)
   - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
   - ["Custom resource X: Y resolved to the value of a secret"](#custom-resource-x-y-resolved-to-the-value-of-a-secret)
+  - ["Backing Lambda for custom resource X no longer exists" on destroy](#backing-lambda-for-custom-resource-x-no-longer-exists-on-destroy)
   - ["The following resources declare a nested property block without a member it requires"](#the-following-resources-declare-a-nested-property-block-without-a-member-it-requires)
   - ["Properties validation failed": a list where an object is expected, or the reverse](#properties-validation-failed-a-list-where-an-object-is-expected-or-the-reverse)
   - ["Resource already exists" Error](#resource-already-exists-error)
@@ -668,6 +669,39 @@ downgraded, since the downgrade would send the value.
   read the value itself.
 - For a nested stack, pass the name down as the parameter, not the resolved
   value.
+
+### "Backing Lambda for custom resource X no longer exists" on destroy
+
+**Symptoms:**
+
+```
+Backing Lambda for custom resource X no longer exists (arn:aws:lambda:...), so its Delete handler cannot be invoked and cdkd cannot confirm the resource was deleted; skipping deletion ...
+```
+
+The row reads `skipped (backing Lambda function is gone — Delete handler not
+invoked)`, the state record is kept, and `cdkd destroy` exits `2`.
+
+**Causes:**
+
+The function named by the custom resource's `ServiceToken` is gone, so its
+`Delete` handler can never run. Usually an earlier destroy skipped this
+resource (its handler reported `FAILED`, or the invoke did not complete) and
+went on to delete the backing Lambda in the same run. It also happens when a
+shared provider stack is destroyed before the stacks that use it. cdkd cannot
+tell whether what the handler manages still exists, so it keeps the record
+rather than report a delete nobody confirmed — as CloudFormation leaves such a
+stack `DELETE_FAILED`. Earlier versions dropped the record and exited `0`.
+A `cdkd deploy` delete keeps that behavior with a warning instead, since
+CloudFormation ignores delete failures in an update's cleanup phase.
+
+**Solutions:**
+
+- If the handler's function can come back at the same ARN (redeploy the shared
+  provider stack), do that and re-run `cdkd destroy`.
+- Otherwise confirm by hand that what the handler manages is gone, or tear it
+  down, then drop the stack's records with
+  `cdkd state orphan '<stack>' --stack-region <region>` — it drops every record
+  for the stack in that region, not just this one.
 
 ### "The following resources declare a nested property block without a member it requires"
 

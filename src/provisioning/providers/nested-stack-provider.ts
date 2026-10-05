@@ -575,6 +575,11 @@ export class NestedStackProvider implements ResourceProvider {
               deleteContext.resolveSecretDerivedPrincipals.importedProducerRegions,
           },
         }),
+        // go-to-k/cdkd#2115: likewise forwarded ONLY from this delete's own
+        // context. A nested child of a real stack destroy inherits it; one a
+        // deploy removes stays on the deploy-side warn-and-drop, since
+        // CloudFormation ignores delete failures in an update's cleanup phase.
+        ...(deleteContext?.stackDestroy === true && { stackDestroy: true }),
         // `--skip-final-snapshot` reaches a whole-nested-stack removal from
         // BOTH directions: `cdkd destroy` / `state destroy` thread it via
         // ctx.destroyOptions, while `cdkd deploy` (template-removal delete of

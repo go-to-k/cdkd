@@ -300,6 +300,8 @@ describe('cdkd state destroy', () => {
     expect(callArgs?.[2].removeProtection).toBe(false);
     // go-to-k/cdkd#4150: a top-level state destroy opts in to secret-principal resolution.
     expect(callArgs?.[2].resolveSecretDerivedPrincipals).toEqual({});
+    // go-to-k/cdkd#2115: a top-level state destroy is a whole-stack teardown.
+    expect(callArgs?.[2].stackDestroy).toBe(true);
   });
 
   /**

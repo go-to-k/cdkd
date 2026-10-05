@@ -21,13 +21,13 @@ Run it with `verify.sh` (the assertions live there); a bare
   `Status: 'FAILED'` and leaves its SSM parameter alive. `cdkd destroy` must
   KEEP the state record, print the row as `skipped`, and exit 2 — the parameter
   is then read back BY ITS REAL AWS NAME to show the refusal was truthful.
-- **...and the NEXT destroy drops that record anyway** — the bound #2054 does
-  not close. The same run deletes the backing Lambda (the runner walks every
-  reverse-DAG level regardless of skips), so run 2 hits the issue-#804
-  pre-check, treats the resource as already deleted and exits 0 **with the
-  parameter still live**. Phase 4 pins exactly that, and pins that the drop is
-  no longer SILENT. Closing it properly needs a durable "a prior run skipped
-  this" signal, which lives in the state schema or in `DeleteContext`.
+- **...and the NEXT destroy keeps that record too** (issue #2115). The same
+  run deletes the backing Lambda (the runner walks every reverse-DAG level
+  regardless of skips), so run 2 hits the issue-#804 pre-check and finds the
+  handler gone. Before #2115 it treated the resource as already deleted and
+  exited 0 **with the parameter still live**; phase 4 now asserts exit 2, the
+  record kept and the parameter live, then clears the record with
+  `cdkd state orphan` — the escape the warning names.
 - **CDK's own `autoDeleteObjects` still works against the new StackId** — issue
   #1866's own verification bar. The bucket holds an object AWS would refuse to
   delete, so "the bucket is gone" is a statement about that handler.

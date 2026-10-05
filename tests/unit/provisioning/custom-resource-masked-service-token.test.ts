@@ -55,11 +55,22 @@ import {
   CR_NO_SERVICE_TOKEN_SKIP_REASON,
   CR_DELETE_INVOKE_FAILED_SKIP_REASON,
   CR_DELETE_HANDLER_FAILED_SKIP_REASON,
+  CR_BACKING_LAMBDA_GONE_SKIP_REASON,
 } from '../../../src/provisioning/providers/custom-resource-provider.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { deleteSkipReason } from '../../../src/deployment/delete-outcome.js';
 import { withCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+
+/**
+ * What the issue-#804 pre-check answers when `GetFunction` says
+ * `ResourceNotFoundException` on a stack destroy (a skip since go-to-k/cdkd#2115). The cases below
+ * use that answer only to prove the token REACHED AWS; its own reason, not the
+ * mask / reference one, is what shows the guard stayed out.
+ */
+const GONE_SKIP = { outcome: 'skipped', reason: CR_BACKING_LAMBDA_GONE_SKIP_REASON };
+/** The skip is a STACK-DESTROY answer (#2115); a deploy delete drops instead. */
+const STACK_DESTROY = { stackDestroy: true };
 
 const LAMBDA_ARN = 'arn:aws:lambda:us-east-1:111122223333:function:my-handler';
 
@@ -97,7 +108,7 @@ describe('CustomResourceProvider.delete: a masked ServiceToken (issue #3938)', (
     expect(text).toContain('LEFT IN PLACE');
     expect(text).toContain("'cdkd state orphan <stack> --stack-region <region>'");
     // The restore remedy is bounded: a destroy deletes the backing Lambda in
-    // the same run, after which the issue-#804 pre-check drops the record.
+    // the same run, after which the issue-#804 pre-check can only skip again.
     expect(text).toContain('helps only while that handler still exists');
     // The deploy-side caveat every skip in this file carries (issue #1762).
     expect(text).toContain('https://github.com/go-to-k/cdkd/issues/1762');
@@ -114,6 +125,7 @@ describe('CustomResourceProvider.delete: a masked ServiceToken (issue #3938)', (
       CR_NO_SERVICE_TOKEN_SKIP_REASON,
       CR_DELETE_INVOKE_FAILED_SKIP_REASON,
       CR_DELETE_HANDLER_FAILED_SKIP_REASON,
+      CR_BACKING_LAMBDA_GONE_SKIP_REASON,
     ];
     expect(siblings).not.toContain(CR_MASKED_SERVICE_TOKEN_SKIP_REASON);
     // A reason is rendered into an Error whose catch classifies "already
@@ -125,8 +137,8 @@ describe('CustomResourceProvider.delete: a masked ServiceToken (issue #3938)', (
     // `carriesSecretMask` is whole-leaf equality. A token that merely CONTAINS
     // the three characters is not a mask this codebase wrote, and must reach
     // AWS exactly as before. The first call is the issue-#804 pre-check;
-    // answering it `ResourceNotFoundException` ends the delete there (as
-    // "already deleted"), so reaching it at all proves the guard stayed out.
+    // answering it `ResourceNotFoundException` ends the delete there (as the
+    // backing-Lambda-gone skip), so reaching it at all proves the guard stayed out.
     const notFound = () =>
       Object.assign(new Error('not found'), { name: 'ResourceNotFoundException' });
 
@@ -140,8 +152,8 @@ describe('CustomResourceProvider.delete: a masked ServiceToken (issue #3938)', (
       await expect(
         new CustomResourceProvider().delete('MyCr', 'cr-physical-id', 'Custom::Thing', {
           ServiceToken: token,
-        })
-      ).resolves.toBeUndefined();
+        }, STACK_DESTROY)
+      ).resolves.toEqual(GONE_SKIP);
 
       expect(send).toHaveBeenCalledTimes(1);
       expect(send.mock.calls[0]![0].input).toEqual({ FunctionName: token });
@@ -157,8 +169,8 @@ describe('CustomResourceProvider.delete: a masked ServiceToken (issue #3938)', (
         new CustomResourceProvider().delete('MyCr', 'cr-physical-id', 'Custom::Thing', {
           ServiceToken: LAMBDA_ARN,
           Upstream: SECRET_MASK,
-        })
-      ).resolves.toBeUndefined();
+        }, STACK_DESTROY)
+      ).resolves.toEqual(GONE_SKIP);
 
       expect(send).toHaveBeenCalledTimes(1);
       expect(send.mock.calls[0]![0].input).toEqual({ FunctionName: LAMBDA_ARN });
@@ -241,6 +253,7 @@ describe('CustomResourceProvider.delete: a secret-reference ServiceToken (issue 
       CR_NO_SERVICE_TOKEN_SKIP_REASON,
       CR_DELETE_INVOKE_FAILED_SKIP_REASON,
       CR_DELETE_HANDLER_FAILED_SKIP_REASON,
+      CR_BACKING_LAMBDA_GONE_SKIP_REASON,
     ]).not.toContain(CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON);
     expect(CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON).not.toMatch(/not found|does not exist|NotFound/i);
   });
@@ -256,8 +269,8 @@ describe('CustomResourceProvider.delete: a secret-reference ServiceToken (issue 
     await expect(
       new CustomResourceProvider().delete('MyCr', 'cr-physical-id', 'Custom::Thing', {
         ServiceToken: token,
-      })
-    ).resolves.toBeUndefined();
+      }, STACK_DESTROY)
+    ).resolves.toEqual(GONE_SKIP);
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0]![0].input).toEqual({ FunctionName: token });
@@ -272,8 +285,8 @@ describe('CustomResourceProvider.delete: a secret-reference ServiceToken (issue 
       new CustomResourceProvider().delete('MyCr', 'cr-physical-id', 'Custom::Thing', {
         ServiceToken: LAMBDA_ARN,
         Password: SECRET_REF,
-      })
-    ).resolves.toBeUndefined();
+      }, STACK_DESTROY)
+    ).resolves.toEqual(GONE_SKIP);
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0]![0].input).toEqual({ FunctionName: LAMBDA_ARN });

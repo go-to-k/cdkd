@@ -2803,6 +2803,8 @@ async function stateDestroyCommand(
                   // go-to-k/cdkd#4150: a top-level destroy may resolve a
                   // secret-derived principal list; a deploy never does.
                   resolveSecretDerivedPrincipals: {},
+                  // go-to-k/cdkd#2115: a whole-stack teardown (see destroy.ts).
+                  stackDestroy: true,
                   exportIndexStore: setup.exportIndexStore,
                   ...(options.allowUnsupportedTypes?.length && {
                     allowUnsupportedTypes: options.allowUnsupportedTypes,

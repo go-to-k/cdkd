@@ -30,9 +30,10 @@
 #      handler, not about the bucket.
 #
 # PHASES. Deploy -> arm the refusal -> destroy #1 (exits 2, record kept,
-# parameter alive) -> destroy #2 (the KNOWN BOUND: the issue-#804 pre-check
-# drops the kept record and exits 0 while the parameter is STILL ALIVE) ->
-# out-of-band removal -> deploy fresh -> destroy #3, CLEAN.
+# parameter alive) -> destroy #2 (issue #2115: the backing Lambda is gone, so
+# the issue-#804 pre-check SKIPS again — exits 2, record still kept, parameter
+# still alive) -> `cdkd state orphan` clears the record -> out-of-band removal
+# -> deploy fresh -> destroy #3, CLEAN.
 #
 # WHY DESTROY #3 EXISTS. `/run-integ` flips `integ-destroy` only for a run whose
 # destroy finished with 0 errors and left no orphans, and destroys #1 and #2
@@ -401,14 +402,15 @@ if [ "${SURVIVOR}" != "${EXPECTED_STACK_ID}" ]; then
 fi
 echo "    OK: ${PARAM} survived the destroy, exactly as the handler reported"
 
-# --- Phase 4: the KNOWN BOUND — the next destroy drops the kept record ------
+# --- Phase 4: the NEXT destroy keeps the record too (issue #2115) ----------
 # Destroy #1 deleted the backing Lambda in the same run (the runner walks every
 # reverse-DAG level regardless of skips — phase 3 asserted exactly that), so
-# this run hits the issue-#804 pre-check, treats the custom resource as already
-# deleted and drops the record. That is the bound issue #2054 does NOT close:
-# closing it needs a durable "a prior run skipped this" signal, which lives in
-# the state schema or in `DeleteContext`. What IS fixed is the silence.
-echo "==> Phase 4: destroy again — the kept record is dropped (documented bound)"
+# this run hits the issue-#804 pre-check and finds the handler gone. Before
+# #2115 that pre-check reported the resource DELETED: the record was dropped and
+# this destroy exited 0 while the parameter was still live. Now it is a skip,
+# like every other delete cdkd cannot confirm — exit 2, record kept — which is
+# how CloudFormation leaves such a stack (DELETE_FAILED).
+echo "==> Phase 4: destroy again — the handler is gone, so the record is KEPT (issue #2115)"
 set +e
 DESTROY2_OUT=$(node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -419,33 +421,77 @@ set -e
 printf '%s\n' "${DESTROY2_OUT}"
 DESTROY2_TXT=$(printf '%s' "${DESTROY2_OUT}" | sed $'s/\033\[[0-9;]*m//g')
 
-if [ "${DESTROY2_RC}" -ne 0 ]; then
-  echo "FAIL: the second destroy exited ${DESTROY2_RC}, expected 0." >&2
-  echo "    If this now exits non-zero the BOUND has been closed — that is an" >&2
-  echo "    improvement, not a regression: update this phase and the notes on" >&2
-  echo "    CR_SKIP_NOT_A_RETRY_CAVEAT rather than reverting the fix." >&2
+if [ "${DESTROY2_RC}" -ne 2 ]; then
+  echo "FAIL: the second destroy exited ${DESTROY2_RC}, expected 2 (issue #2115)." >&2
+  echo "    => exit 0 here is the pre-#2115 behaviour: the record of a resource the" >&2
+  echo "       handler refused to delete was dropped because its backing Lambda was gone." >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY2_TXT}" | grep -q 'DROPPING its state record'; then
-  echo "FAIL: the record was dropped SILENTLY — the issue-#804 pre-check warning" >&2
-  echo "    must say the resource may still be live and is now untracked." >&2
-  exit 1
-fi
-echo "    OK: the record was dropped, and loudly"
+echo "    OK: the second destroy exited 2"
 
-# THE point of this phase: the resource the handler refused is STILL THERE,
-# and cdkd no longer names it anywhere.
+# The row comes from the provider's skip reason; the positive marker first, so
+# a reworded reason fails HERE rather than passing the negative below blind.
+if ! printf '%s' "${DESTROY2_TXT}" | grep -q 'skipped (backing Lambda function is gone'; then
+  echo "FAIL: destroy output carried no '... skipped (backing Lambda function is gone' row" >&2
+  exit 1
+fi
+if ! printf '%s' "${DESTROY2_TXT}" | grep -q "Backing Lambda for custom resource ${CR_LOGICAL_ID} no longer exists"; then
+  echo "FAIL: the provider's backing-Lambda-gone warning did not name ${CR_LOGICAL_ID}" >&2
+  exit 1
+fi
+if ! printf '%s' "${DESTROY2_TXT}" | grep -q 'KEEPING the state record'; then
+  echo "FAIL: the backing-Lambda-gone warning did not say the record is kept (issue #2115)" >&2
+  exit 1
+fi
+if ! printf '%s' "${DESTROY2_TXT}" | grep -q 'Destroy skipped 1 entr'; then
+  echo "FAIL: expected EXACTLY ONE skipped entry (the refusing custom resource)" >&2
+  exit 1
+fi
+if printf '%s' "${DESTROY2_TXT}" | grep -q 'DROPPING its state record'; then
+  echo "FAIL: the pre-#2115 'DROPPING its state record' warning is still printed" >&2
+  exit 1
+fi
+echo "    OK: the row and the summary report the skip"
+
+STATE_AFTER2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${STATE_AFTER2}" ]; then
+  echo "FAIL: state file was deleted by the second destroy (issue #2115)" >&2
+  exit 1
+fi
+KEPT2=$(printf '%s' "${STATE_AFTER2}" \
+  | jq -r '[.resources | keys[]] | join(",")')
+if [ "${KEPT2}" != "${CR_LOGICAL_ID}" ]; then
+  echo "FAIL: after the second destroy state holds '${KEPT2}', expected exactly '${CR_LOGICAL_ID}'" >&2
+  exit 1
+fi
+echo "    OK: ${CR_LOGICAL_ID} is still the stack's only record"
+
+# The resource the handler refused is STILL THERE — and cdkd still names it.
 SURVIVOR2=$(aws ssm get-parameter --region "${REGION}" --name "${PARAM}" \
   --query 'Parameter.Value' --output text)
 if [ "${SURVIVOR2}" != "${EXPECTED_STACK_ID}" ]; then
   echo "FAIL: ${PARAM} reads '${SURVIVOR2}' after the second destroy" >&2
   exit 1
 fi
-echo "    OK: ${PARAM} is still live, now untracked — the orphan this bound leaves"
+echo "    OK: ${PARAM} is still live, and still tracked"
 
-assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after the second destroy" \
+# The escape the warning names: `cdkd state orphan` drops the kept record.
+echo "==> Phase 4: clear the kept record with 'cdkd state orphan'"
+set +e
+ORPHAN_OUT=$(node "${LOCAL_DIST}" state orphan "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --stack-region "${REGION}" \
+  --force 2>&1)
+ORPHAN_RC=$?
+set -e
+printf '%s\n' "${ORPHAN_OUT}"
+if [ "${ORPHAN_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd state orphan' exited ${ORPHAN_RC}, expected 0" >&2
+  exit 1
+fi
+assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after 'cdkd state orphan'" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-echo "    OK: state file is gone"
+echo "    OK: 'cdkd state orphan' cleared the record and the state file"
 
 # --- Phase 5: remove the orphan out of band --------------------------------
 echo "==> Phase 5: delete the refused resource by hand (cdkd never will)"
