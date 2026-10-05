@@ -235,8 +235,13 @@ export async function settleJournaledOrphansOnSuccess(args: {
         unreadableOutcome: 'the successful deploy removes the journal',
       }
     );
-  } catch {
-    return 0; // `loadJournaledOrphans` catches its own read; nothing else throws.
+  } catch (err) {
+    // `loadJournaledOrphans` catches its own read, so this is unexpected: keep
+    // the journal (fail closed) and count it as one entry left.
+    logger.warn(
+      safeMsg`Could not act on the rollback journal of stack ${stack}: ${errorDetail(err)}. It is kept.`
+    );
+    return 1;
   }
   if (orphans.count === 0) return 0;
   const all = orphans.segments.flatMap(({ segment, ops }) => ops.map((op) => ({ segment, op })));
@@ -264,6 +269,7 @@ export async function settleJournaledOrphansOnSuccess(args: {
   }
   if (pending.length === 0) return 0;
   const supersededIds = newerOperations.map((op) => op.logicalId);
+  let reduced = false;
   try {
     await stateBackend.reduceRollbackJournalToFailedOperations(
       stackName,
@@ -271,6 +277,7 @@ export async function settleJournaledOrphansOnSuccess(args: {
       (op, segment) => isHandledOrphan(pending, segment, op),
       supersededIds
     );
+    reduced = true;
   } catch (err) {
     logger.warn(
       safeMsg`Failed to reduce the rollback journal of stack ${stack} to its undeleted resources: ` +
@@ -285,7 +292,9 @@ export async function settleJournaledOrphansOnSuccess(args: {
   }
   logger.warn(
     safeMsg`${pending.length} resource(s) a failed deploy of stack ${stack} created were not deleted ` +
-      `(see above). The rollback journal, their only record, is kept with just them; the next ` +
+      (reduced
+        ? '(see above). The rollback journal, their only record, is kept with just them; the next '
+        : '(see above). The rollback journal, their only record, is kept; the next ') +
       safeMsg`successful deploy retries, as does:\n  ${
         pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command
       }`

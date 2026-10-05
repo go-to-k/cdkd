@@ -970,9 +970,43 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
     expect(t.logger.warn).not.toHaveBeenCalled();
   });
 
+  it('hands beforeDelete the record re-read under the child lock, not the walk snapshot', async () => {
+    const t = tree();
+    const fresh = { state: { resources: { Imported: { resourceType: 'AWS::Kinesis::Stream' } } } };
+    let locked = false;
+    t.lockManager.acquireLockWithRetry.mockImplementation(async () => {
+      locked = true;
+      return true;
+    });
+    t.lockManager.releaseLock.mockImplementation(async () => {
+      locked = false;
+    });
+    const base = t.stateBackend.getState.getMockImplementation()!;
+    t.stateBackend.getState.mockImplementation(async (name: string) =>
+      name === 'Root~Child' && locked ? fresh : base(name)
+    );
+    const beforeDelete = vi.fn(async () => true);
+
+    await dropNestedChildJournals({
+      stateBackend: t.stateBackend as never,
+      lockManager: t.lockManager as never,
+      parentStackName: 'Root',
+      region: REGION,
+      resources: t.resources as never,
+      logger: t.logger,
+      beforeDelete,
+    });
+
+    expect(beforeDelete).toHaveBeenCalledWith('Root~Child', fresh.state);
+  });
+
   it('hands beforeDelete no record when the child state cannot be read', async () => {
     const t = tree();
-    t.stateBackend.getState.mockRejectedValueOnce(new Error('unparseable state.json'));
+    const base = t.stateBackend.getState.getMockImplementation()!;
+    t.stateBackend.getState.mockImplementation(async (name: string) => {
+      if (name === 'Root~Child') throw new Error('unparseable state.json');
+      return base(name);
+    });
     const beforeDelete = vi.fn(async () => true);
 
     await dropNestedChildJournals({

@@ -319,7 +319,8 @@ export async function dropNestedChildJournals(args: {
   logger: Pick<Logger, 'debug' | 'warn'>;
   /**
    * Run under the child's lock before its journal is deleted, with the
-   * child's record (undefined when it cannot be read); `false` keeps the
+   * child's record re-read under that lock (undefined when it cannot be
+   * read or is not the child's); `false` keeps the
    * journal (go-to-k/cdkd#4600: a proven orphan it still records was not
    * deleted).
    */
@@ -334,7 +335,6 @@ export async function dropNestedChildJournals(args: {
   for (const [logicalId, record] of Object.entries(resources)) {
     if (!isPlainRecord(record) || record['resourceType'] !== NESTED_STACK_TYPE) continue;
     const child = nestedChildStackName(parentStackName, logicalId);
-    let childState: StackState | undefined;
     try {
       const data = await stateBackend.getState(child, region);
       // Recurse only into a record that IS this child's: one whose body names
@@ -345,7 +345,6 @@ export async function dropNestedChildJournals(args: {
         isPlainRecord(data.state.resources) &&
         (data.state.stackName === undefined || data.state.stackName === child)
       ) {
-        childState = data.state;
         await dropNestedChildJournals({
           ...args,
           parentStackName: child,
@@ -360,7 +359,13 @@ export async function dropNestedChildJournals(args: {
     // (so its descendants cannot be walked) still has its OWN journal deleted.
     try {
       const deleted = await withChildLock(args.lockManager, child, region, logger, async () => {
-        if (args.beforeDelete && !(await args.beforeDelete(child, childState))) return false;
+        if (args.beforeDelete) {
+          // Re-read under the lock: what decides whether a record owns a
+          // resource must be the record no other command can be rewriting.
+          if (!(await args.beforeDelete(child, await readOwnRecord(stateBackend, child, region)))) {
+            return false;
+          }
+        }
         await stateBackend.deleteRollbackJournal(child, region);
         return true;
       });
@@ -371,6 +376,28 @@ export async function dropNestedChildJournals(args: {
       warnUncleared(logger, child, error);
     }
   }
+}
+
+/** `child`'s record when it reads as its own, else undefined (never throws). */
+async function readOwnRecord(
+  stateBackend: S3StateBackend,
+  child: string,
+  region: string
+): Promise<StackState | undefined> {
+  try {
+    const data = await stateBackend.getState(child, region);
+    if (
+      data &&
+      isPlainRecord(data.state) &&
+      isPlainRecord(data.state.resources) &&
+      (data.state.stackName === undefined || data.state.stackName === child)
+    ) {
+      return data.state;
+    }
+  } catch {
+    // Unreadable: the caller treats it as a record that may own anything.
+  }
+  return undefined;
 }
 
 /**

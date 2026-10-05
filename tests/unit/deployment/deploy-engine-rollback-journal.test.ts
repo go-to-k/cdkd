@@ -1645,6 +1645,21 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
       expect(journal.markRollbackJournalSuperseded).toHaveBeenCalledWith(stackName, 'us-east-1', ['A']);
       expect(result.deleteSkipped).toBe(1);
+      const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+      const kept = warned.find((w) => w.includes('were not deleted'));
+      expect(kept).toContain('is kept; the next');
+      expect(kept).not.toContain('with just them');
+    });
+
+    it('an unexpected failure acting on the journal keeps it and counts one entry', async () => {
+      const engine = noChangeEngine();
+      // Parsed but not walkable: the supersede pass throws.
+      journal.loadRollbackJournal.mockResolvedValue({ journalVersion: 1, segments: 'x' });
+
+      const result = await engine.deploy(stackName, template);
+
+      expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
+      expect(result.deleteSkipped).toBe(1);
     });
 
     it('a DeletionPolicy: Retain orphan is kept in AWS and the journal is still removed', async () => {

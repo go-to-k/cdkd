@@ -2249,6 +2249,34 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
       expect([...only.supersededLogicalIds].sort()).toEqual(['Before', 'Mid', 'Newest', 'Old', 'Run']);
     });
 
+    it('never carries a kept op own id, so the next read does not demote it', async () => {
+      const orphan = { ...fop('Orphan'), physicalId: 'orphan-stream', physicalIdRecoveredFromError: true };
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [
+            {
+              ...segment('no-rollback-failure', [{ ...op('Orphan'), changeType: 'DELETE' }, op('Other')]),
+              failedOperations: [orphan],
+            },
+            { ...segment('no-rollback-failure', [{ ...op('Orphan'), changeType: 'UPDATE' }]), timestamp: 2 },
+          ],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+
+      await backend.reduceRollbackJournalToFailedOperations('S', 'us-east-1', () => true, ['Orphan', 'Run']);
+
+      const body = putBody();
+      expect([...body.segments[0].supersededLogicalIds].sort()).toEqual(['Other', 'Run']);
+      // The reader that would act on it next keeps it a proven orphan.
+      const { demoteSupersededOrphans } = await import('../../../src/deployment/rollback-executor/plan.js');
+      expect(demoteSupersededOrphans(body.segments)).toBe(0);
+      expect(body.segments[0].failedOperations[0].physicalIdRecoveredFromError).toBe(true);
+    });
+
     it('drops a restored-outputs snapshot from a kept segment', async () => {
       s3Client.send.mockResolvedValueOnce({
         Body: rawBody({

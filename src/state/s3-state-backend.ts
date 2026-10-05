@@ -1391,7 +1391,8 @@ export class S3StateBackend {
    * (`initialDeploy: false`, no restored outputs). As a segment removal
    * carries them, each kept segment records as `supersededLogicalIds` the ids
    * of the completed ops removed from it and from every newer segment, plus
-   * `supersededLogicalIds` (the deploy's own completed ids). Deletes the
+   * `supersededLogicalIds` (the deploy's own completed ids), except a kept
+   * op's own id, which would demote it. Deletes the
    * journal when nothing is kept. Returns the number of failed ops kept.
    */
   async reduceRollbackJournalToFailedOperations(
@@ -1405,11 +1406,18 @@ export class S3StateBackend {
     const carried = new Set(supersededLogicalIds);
     const kept: RollbackJournalSegment[] = [];
     let count = 0;
+    const keptBySegment = journal.segments.map((segment) =>
+      (segment.failedOperations ?? []).filter((op) => keep(op, segment))
+    );
+    // A kept op's own id is never carried: `demoteSupersededOrphans` reads a
+    // segment's `supersededLogicalIds` against its own ops too, so carrying it
+    // would demote the very entry this keeps on the next read.
+    const keptIds = new Set(keptBySegment.flat().map((op) => op.logicalId));
     for (let s = journal.segments.length - 1; s >= 0; s--) {
       const segment = journal.segments[s]!;
       for (const op of segment.operations) carried.add(op.logicalId);
       for (const id of segment.supersededLogicalIds ?? []) carried.add(id);
-      const failed = (segment.failedOperations ?? []).filter((op) => keep(op, segment));
+      const failed = keptBySegment[s]!;
       if (failed.length === 0) continue;
       const reduced: RollbackJournalSegment = {
         ...segment,
@@ -1419,7 +1427,10 @@ export class S3StateBackend {
       };
       delete reduced.previousOutputs;
       delete reduced.previousCrossStackReads;
-      addSupersededIds(reduced, [...carried]);
+      addSupersededIds(
+        reduced,
+        [...carried].filter((id) => !keptIds.has(id) || segment.supersededLogicalIds?.includes(id))
+      );
       kept.unshift(reduced);
       count += failed.length;
     }
