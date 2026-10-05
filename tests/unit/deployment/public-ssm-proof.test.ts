@@ -83,6 +83,7 @@ import { PublicSsmProver } from '../../../src/deployment/public-ssm-proof.js';
 import {
   clearRecordedSecretExpressions,
   isProvenPublicExpression,
+  provenPublicValue,
 } from '../../../src/deployment/secret-redaction/mask-only.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 
@@ -125,12 +126,13 @@ afterEach(() => {
 });
 
 describe('PublicSsmProver (refresh-observed / import)', () => {
-  const prover = (region = HOME, producerRegions: string[] = []): PublicSsmProver =>
-    new PublicSsmProver(region, producerRegions, { debug });
+  const prover = (region = HOME, producerRegions: string[] = [], complete = true): PublicSsmProver =>
+    new PublicSsmProver(region, { regions: producerRegions, complete }, { debug });
 
   it('proves a String parameter in a MIXED leaf, asking WITHOUT decryption in the record region', async () => {
     const bag = await prover().proofBagFor({ Url: `https://${PUBLIC}/x` });
-    expect(isProvenPublicExpression(bag, PUBLIC)).toBe(true);
+    // The proof carries the VALUE the lookup returned: the reader compares it.
+    expect(provenPublicValue(bag, PUBLIC)).toBe('db.public.internal');
     expect(bag.size).toBe(0);
     expect(ssmSends).toHaveLength(1);
     expect(ssmSends[0]!.input).toEqual({ Name: PUBLIC_NAME, WithDecryption: false });
@@ -151,6 +153,7 @@ describe('PublicSsmProver (refresh-observed / import)', () => {
   it('an absent Type is NO proof', async () => {
     const bag = await prover().proofBagFor({ V: `x-${ODD}` });
     expect(isProvenPublicExpression(bag, ODD)).toBe(false);
+    expect(ssmSends).toHaveLength(1);
   });
 
   it('an AccessDenied is NO proof, never throws, and logs ONE line that names no parameter', async () => {
@@ -204,6 +207,26 @@ describe('PublicSsmProver (refresh-observed / import)', () => {
     expect(isProvenPublicExpression(bag, arn)).toBe(false);
   });
 
+  it('INCOMPLETE evidence: a region-less reference is not asked about and proves nothing', async () => {
+    const bag = await prover(HOME, [], false).proofBagFor({ U: `x-${PUBLIC}` });
+    expect(ssmSends).toHaveLength(0);
+    expect(isProvenPublicExpression(bag, PUBLIC)).toBe(false);
+  });
+
+  it('INCOMPLETE evidence still proves a same-region ARN, which names its own region', async () => {
+    const arnName = `arn:aws:ssm:${HOME}:123456789012:parameter${PUBLIC_NAME}`;
+    const arn = `{{resolve:ssm:${arnName}}}`;
+    prime(HOME, arnName, { Parameter: { Value: 'by-arn', Type: 'String' } });
+    const bag = await prover(HOME, [], false).proofBagFor({ U: `x-${arn}` });
+    expect(provenPublicValue(bag, arn)).toBe('by-arn');
+  });
+
+  it('an expression this run resolved AS A SECRET for the record is contradicted, not proven', async () => {
+    const bag = await prover().proofBagFor({ U: `x-${PUBLIC}` }, [PUBLIC]);
+    expect(ssmSends).toHaveLength(1);
+    expect(isProvenPublicExpression(bag, PUBLIC)).toBe(false);
+  });
+
   it('asks in the PROVER region, not the ambient clients region', async () => {
     prime('us-west-2', PUBLIC_NAME, { Parameter: { Value: 'west', Type: 'String' } });
     const bag = await prover('us-west-2').proofBagFor({ U: `x-${PUBLIC}` });
@@ -251,6 +274,20 @@ describe('the resolver files the per-bag proof (cdkd drift)', () => {
     const bag: RecordedSecretValues = new Map();
     await resolver.resolveDynamicReferences(`x-${ODD}`, ctx(bag));
     expect(isProvenPublicExpression(bag, ODD)).toBe(false);
+  });
+
+  it('a SecureString CACHE HIT files no proof, even with every other veto removed', async () => {
+    prime(HOME, SECURE_NAME, { Parameter: { Value: 'decrypted', Type: 'SecureString' } });
+    const resolver = new IntrinsicFunctionResolver(HOME);
+    await resolver.resolveDynamicReferences(SECURE, ctx(new Map()));
+    const later: RecordedSecretValues = new Map();
+    await resolver.resolveDynamicReferences(`pw=${SECURE}`, ctx(later));
+    expect(ssmSends).toHaveLength(1);
+    // Strip the two vetoes that would hide a proof filed by mistake: the
+    // bag's own secret pair and the process-wide verdict.
+    later.clear();
+    clearRecordedSecretExpressions();
+    expect(isProvenPublicExpression(later, SECURE)).toBe(false);
   });
 
   it('a LATER SecureString answer in the same bag voids an earlier proof (comparison path)', async () => {

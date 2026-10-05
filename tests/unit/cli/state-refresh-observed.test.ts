@@ -142,8 +142,11 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
 // `tests/unit/deployment/public-ssm-proof.test.ts` and
 // `tests/unit/cli/import-public-ssm-proof.test.ts`.
 const publicSsmProof = vi.hoisted(() => ({
-  proven: new Set<string>(),
-  built: [] as Array<{ region: string; producerRegions: readonly string[] }>,
+  proven: new Map<string, string>(),
+  built: [] as Array<{
+    region: string;
+    evidence: { regions: readonly string[]; complete: boolean };
+  }>,
   askedAbout: [] as unknown[],
 }));
 vi.mock('../../../src/deployment/public-ssm-proof.js', async () => {
@@ -152,13 +155,15 @@ vi.mock('../../../src/deployment/public-ssm-proof.js', async () => {
   );
   return {
     PublicSsmProver: class {
-      constructor(region: string, producerRegions: readonly string[]) {
-        publicSsmProof.built.push({ region, producerRegions });
+      constructor(region: string, evidence: { regions: readonly string[]; complete: boolean }) {
+        publicSsmProof.built.push({ region, evidence });
       }
       async proofBagFor(source: unknown): Promise<Map<string, string>> {
         publicSsmProof.askedAbout.push(source);
         const bag = new Map<string, string>();
-        for (const token of publicSsmProof.proven) recordProvenPublicExpression(bag, token);
+        for (const [token, value] of publicSsmProof.proven) {
+          recordProvenPublicExpression(bag, token, value);
+        }
         return bag;
       }
     },
@@ -1191,7 +1196,7 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
     });
 
     it('keeps the value AWS holds when the stack prover proves the parameter public', async () => {
-      publicSsmProof.proven.add(PUBLIC);
+      publicSsmProof.proven.set(PUBLIC, 'db.public.internal');
       const properties = { Environment: { Variables: { URL: MIXED } } };
       const observed = await refreshWith(properties, {
         Environment: { Variables: { URL: RESOLVED } },
@@ -1199,7 +1204,9 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
       expect(observed).toEqual({ Environment: { Variables: { URL: RESOLVED } } });
       // Built ONCE for the stack, in its own region, and asked about the
       // record's OWN properties — the bag the readback is positioned against.
-      expect(publicSsmProof.built).toEqual([{ region: 'us-east-1', producerRegions: [] }]);
+      expect(publicSsmProof.built).toEqual([
+        { region: 'us-east-1', evidence: { regions: [], complete: true } },
+      ]);
       expect(publicSsmProof.askedAbout).toEqual([properties]);
     });
 
@@ -1224,7 +1231,25 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
       const { error } = await runRefresh(['TestStack']);
       expect(error).toBeUndefined();
       expect(publicSsmProof.built).toEqual([
-        { region: 'us-east-1', producerRegions: ['eu-west-1'] },
+        { region: 'us-east-1', evidence: { regions: ['eu-west-1'], complete: true } },
+      ]);
+    });
+
+    it('a NESTED child whose parent record cannot be read gets INCOMPLETE evidence (go-to-k/cdkd#4213)', async () => {
+      const child = makeState({
+        R: makeResource({ physicalId: 'r', resourceType: 'AWS::Lambda::Function' }),
+      });
+      child.state.stackName = 'TestStack~Child';
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack~Child', region: 'us-east-1' }]);
+      mockGetState.mockImplementation(async (name: string) =>
+        name === 'TestStack~Child' ? child : null
+      );
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
+      const { error } = await runRefresh(['TestStack~Child']);
+      mockGetState.mockReset();
+      expect(error).toBeUndefined();
+      expect(publicSsmProof.built).toEqual([
+        { region: 'us-east-1', evidence: { regions: [], complete: false } },
       ]);
     });
   });

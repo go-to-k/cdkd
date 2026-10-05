@@ -142,8 +142,9 @@ export function clearRecordedSecretExpressions(): void {
 /**
  * `{{resolve:ssm:...}}` expressions PROVEN to name a public (`String` /
  * `StringList`) parameter, per bag INSTANCE (issue
- * [#2036](https://github.com/go-to-k/cdkd/issues/2036)). `true` is a proof,
- * `false` a contradiction that no later proof can lift.
+ * [#2036](https://github.com/go-to-k/cdkd/issues/2036)), each with the public
+ * VALUE the proving lookup returned. `false` is a contradiction no later proof
+ * can lift.
  *
  * Keyed by the bag, never by the bare expression, and that is the whole
  * design. PR #2415 withdrew a process-wide public store because the same
@@ -151,58 +152,85 @@ export function clearRecordedSecretExpressions(): void {
  * verdict written in one scope and never contradicted un-redacted the other.
  * A bag is one resource's pass, and its writers are the lookups made FOR that
  * bag — the resolver resolving that record's own references in the region
- * that answers for them (`cdkd drift`), or `provePublicSsmReferences` asking
- * in the record's own region (`cdkd state refresh-observed`, `cdkd import`).
- * So a proof is about the parameter the record names, and nothing outside the
- * bag can read it. A view or copy of a bag does NOT inherit it: the reader
- * then finds no proof and over-redacts, which is the safe direction.
+ * that answers for them (`cdkd drift`), or `PublicSsmProver.proofBagFor`
+ * asking in the record's own region (`cdkd state refresh-observed`, `cdkd
+ * import`). A view or copy of a bag does NOT inherit it: the reader then finds
+ * no proof and over-redacts, which is the safe direction.
  *
- * Read only by {@link isProvenPublicExpression}, from the EMPTY-map arm of
- * `mixedLeafMayCarryPublicReference`.
+ * The VALUE is what makes a TYPE answer usable as evidence about a READBACK.
+ * The type is read now, while the readback holds whatever the last deploy
+ * resolved, and a parameter retyped since (a SecureString recreated as a
+ * `String`), or a same-named public parameter in the wrong region, answers
+ * "public" about a value that was a secret. So the reader admits a leaf only
+ * when the readback EQUALS the source with every token replaced by its proven
+ * value (`mixedLeafProvenPublic` in `redact-path.ts`): a public parameter's own value, not a
+ * statement about some other one.
+ *
+ * Read through {@link provenPublicValue} — by `mixedLeafMayCarryPublicReference`'s
+ * empty-map arm and by the prover copying a probe's proof into a record bag.
  */
-const provenPublicExpressions = new WeakMap<RecordedSecretValues, Map<string, boolean>>();
+const provenPublicExpressions = new WeakMap<RecordedSecretValues, Map<string, string | false>>();
 
-/** Record that this pass's lookup proved `expression` names a public parameter. */
-export function recordProvenPublicExpression(bag: RecordedSecretValues, expression: string): void {
+function proofsOf(bag: RecordedSecretValues): Map<string, string | false> {
   let proofs = provenPublicExpressions.get(bag);
   if (!proofs) {
     proofs = new Map();
     provenPublicExpressions.set(bag, proofs);
   }
-  if (proofs.get(expression) !== false) proofs.set(expression, true);
+  return proofs;
+}
+
+/**
+ * Record that this pass's lookup proved `expression` names a public parameter
+ * whose value is `value`. A second proof with a DIFFERENT value is a
+ * contradiction: the pass cannot say which value the readback holds.
+ */
+export function recordProvenPublicExpression(
+  bag: RecordedSecretValues,
+  expression: string,
+  value: string
+): void {
+  const proofs = proofsOf(bag);
+  const prior = proofs.get(expression);
+  if (prior === false) return;
+  proofs.set(expression, prior === undefined || prior === value ? value : false);
 }
 
 /**
  * Record that this pass saw `expression` answer anything OTHER than a public
- * type (a `SecureString`, or a type too anomalous to classify). Sticky: a
- * parameter that answered both ways inside one pass proves nothing.
+ * type (a `SecureString`, or a type too anomalous to classify), or that it was
+ * resolved as a secret elsewhere in this record. Sticky.
  */
 export function contradictProvenPublicExpression(
   bag: RecordedSecretValues,
   expression: string
 ): void {
-  let proofs = provenPublicExpressions.get(bag);
-  if (!proofs) {
-    proofs = new Map();
-    provenPublicExpressions.set(bag, proofs);
-  }
-  proofs.set(expression, false);
+  proofsOf(bag).set(expression, false);
 }
 
 /**
- * Is `expression` PROVEN public for this bag? Every doubt answers `false`:
- * no proof, a contradiction, the bag itself holding a resolved secret under
- * this expression, or any scope's process-wide SECRET verdict for it. The last
- * one can only cost an over-redaction, which is the direction this module is
- * allowed to be wrong in.
+ * The PROVEN public value of `expression` for this bag, or `undefined` on any
+ * doubt: no proof, a contradiction, the bag itself holding a resolved secret
+ * under this expression, or any scope's process-wide SECRET verdict for it.
+ * The last one can only cost an over-redaction, which is the direction this
+ * module is allowed to be wrong in.
  */
-export function isProvenPublicExpression(bag: RecordedSecretValues, expression: string): boolean {
-  if (provenPublicExpressions.get(bag)?.get(expression) !== true) return false;
-  if (recordedSecretExpressions.has(expression)) return false;
+export function provenPublicValue(
+  bag: RecordedSecretValues,
+  expression: string
+): string | undefined {
+  const value = provenPublicExpressions.get(bag)?.get(expression);
+  if (value === undefined || value === false) return undefined;
+  if (recordedSecretExpressions.has(expression)) return undefined;
   for (const recorded of bag.values()) {
-    if (recorded === expression) return false;
+    if (recorded === expression) return undefined;
   }
-  return true;
+  return value;
+}
+
+/** Is `expression` PROVEN public for this bag? See {@link provenPublicValue}. */
+export function isProvenPublicExpression(bag: RecordedSecretValues, expression: string): boolean {
+  return provenPublicValue(bag, expression) !== undefined;
 }
 
 /**

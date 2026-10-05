@@ -464,19 +464,18 @@ export function refuseUncertifiedReadbackPositions(
       return mark ? POSITION_DECIDED : source;
     }
     // A MIXED leaf embedding something that may be PUBLIC config: keep the
-    // resolved value AWS actually holds. See the predicate's own doc.
+    // resolved value AWS actually holds. See the predicate's own doc. Not
+    // LEARNED from: it is not a secret's resolved form.
     //
-    // NOT MARKED DECIDED, so on an EMPTY map (issue #2036's proof arm, the
-    // only one where the mark tree runs) the derived VALUE scan still owns
-    // this leaf: a needle learned from a certified secret position elsewhere
-    // in the record is applied to it by {@link preferPositionDecisions}, and
-    // with no needle in it the scan returns it unchanged. On a POPULATED map
-    // the real value scan already ran over `bag` in `redactByPath`. Marking it
-    // decided would make a proven-public leaf the one string in an empty-map
-    // record no needle can reach, so a secret plaintext embedded in it would
-    // survive. Not LEARNED from either: it is not a secret's resolved form.
-    if (mixedLeafMayCarryPublicReference(source, secrets)) {
-      return bag;
+    // MARKED DECIDED, like every other position this arm takes. On an EMPTY map
+    // (issue #2036's proof arm, the only one where the mark tree runs) the
+    // predicate has already shown the leaf is EXACTLY the source's literal text
+    // plus public parameter values, so nothing in it is a resolved secret. Left
+    // to the derived scan instead, a certified needle that merely coincides
+    // with that literal text would splice an expression into it — the
+    // fabricated-baseline shape {@link preferPositionDecisions} documents.
+    if (mixedLeafMayCarryPublicReference(source, secrets, bag)) {
+      return mark ? POSITION_DECIDED : bag;
     }
     if (learn) learnMixedLeafNeedle(learn, bag, source);
     return mark ? POSITION_DECIDED : source;

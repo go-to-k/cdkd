@@ -468,7 +468,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         // same reason the secret pair does: a later pass's bag must not lose
         // it to the cache. See the fresh-lookup arm's twin note.
         if (service === 'ssm' && !cached.secret && recorded && !this.producerRegionGuest) {
-          recordProvenPublicExpression(recorded, fullMatch);
+          recordProvenPublicExpression(recorded, fullMatch, cached.value);
         }
         // Replacer FUNCTION, not a string: `String.replace` interprets `$&`,
         // "$`", `$'` and `$1` inside a replacement STRING, so a resolved value
@@ -548,9 +548,10 @@ export async function resolveDynamicReferencesWithLogTwin(
           // resolver's region, so another region's same-named `SecureString`
           // cannot read it (the hazard PR #2415 withdrew a bare store for). A
           // producer-region GUEST files none, for the reason `pinSecretVerdict`
-          // suppresses its write: its answer is another region's.
+          // suppresses its write: its answer is another region's. The VALUE is
+          // filed too: the reader admits a readback only when it equals it.
           if (proofBag && !this.producerRegionGuest) {
-            recordProvenPublicExpression(proofBag, fullMatch);
+            recordProvenPublicExpression(proofBag, fullMatch, param.value);
           }
         } else {
           // Secret, but from a `Type` too anomalous to memoize — so the VALUE is

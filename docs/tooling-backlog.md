@@ -333,7 +333,6 @@ issues they name are to be closed on the tracker.
 | [#2232](https://github.com/go-to-k/cdkd/issues/2232) | test(state)/fix(deployment): PR #2194 residuals — rebuild tie-break edge tests + set-change summary warn under resolutionFailed |
 | [#2234](https://github.com/go-to-k/cdkd/issues/2234) | test(integ): the gc response-placeholder sweep has no live arm, and listRawObjects' wire shape is unexercised |
 | [#2239](https://github.com/go-to-k/cdkd/issues/2239) | test(dynamodb): the --remove-protection compensation has no live arm - no fixture reaches a terminal delete failure |
-| [#2425](https://github.com/go-to-k/cdkd/issues/2425) | test(integ): the issue 2036 CLOSURE has no end-to-end arm — only the RESIDUAL direction is covered |
 | [#2647](https://github.com/go-to-k/cdkd/issues/2647) | test(local): no integ fixture carries an ALB Lambda target group, so start-alb --from-state partiality is unexercised |
 | [#2756](https://github.com/go-to-k/cdkd/issues/2756) | test(masking): four deferred nits from the PR 2742 round-3 review — SSM fake refusal ordering, a structural cause assertion, an over-broad verify.sh inventory, and an overstated maskSecretsInError comment |
 | [#3193](https://github.com/go-to-k/cdkd/issues/3193) | test(integ): cdkd diff has no real-AWS arm for a malformed outputs bag |

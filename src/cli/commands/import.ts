@@ -232,6 +232,14 @@ export class ObservedBaselineRefusals extends Set<string> {
    * a source it means nothing was judged at all.
    */
   hadDeployedParameterSource = false;
+  /**
+   * Per logical id, every expression this run's resolve walk recorded as a
+   * SECRET (issue #2036). The observed capture contradicts each in its public
+   * proof, so a reference the walk resolved in a PRODUCER's region (a
+   * cross-region `Fn::ImportValue` / `Fn::GetStackOutput`, which import's state
+   * records no read for) can never be proven public by a namesake here.
+   */
+  readonly secretExpressions = new Map<string, ReadonlySet<string>>();
 }
 
 async function importCommand(stackArg: string | undefined, options: ImportOptions): Promise<void> {
@@ -2656,6 +2664,12 @@ export async function resolveImportedProperties(
     if (recordedSecretValues.size > 0 && resource.attributes !== undefined) {
       resource.attributes = redactSecretsForState(resource.attributes, recordedSecretValues);
     }
+    if (recordedSecretValues.size > 0) {
+      unsafeObservedBaselineLogicalIds.secretExpressions.set(
+        logicalId,
+        new Set(recordedSecretValues.values())
+      );
+    }
 
     // THE REFUSAL (see this function's doc block for the arms and why the
     // predicate is deliberately CONSERVATIVE rather than precise).
@@ -3323,7 +3337,13 @@ export async function captureObservedForImportedResources(
 ): Promise<void> {
   const entries = Object.entries(stackState.resources ?? {});
   if (entries.length === 0) return;
-  const publicSsmProver = new PublicSsmProver(region, producerRegionsFromState(stackState), logger);
+  // Complete evidence: import state records no cross-stack reads, and what the
+  // walk DID read across regions reaches the prover as `secretExpressions`.
+  const publicSsmProver = new PublicSsmProver(
+    region,
+    { regions: producerRegionsFromState(stackState), complete: true },
+    logger
+  );
 
   await Promise.all(
     entries.map(async ([logicalId, resource]) => {
@@ -3594,7 +3614,10 @@ export async function captureObservedForImportedResources(
           // it is refused exactly as before. See `PublicSsmProver`.
           resource.observedProperties = redactSecretsForState(
             observed,
-            await publicSsmProver.proofBagFor(resource.properties ?? {}),
+            await publicSsmProver.proofBagFor(
+              resource.properties ?? {},
+              unsafeObservedBaselineLogicalIds.secretExpressions.get(logicalId)
+            ),
             resource.properties ?? {},
             STATE_SOURCED_BASELINE_RULES
           );

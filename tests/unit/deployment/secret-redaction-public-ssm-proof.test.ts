@@ -36,10 +36,15 @@ const SECRET_VALUE = 'the-real-decrypted-secret-value';
 const MIXED_SOURCE = `https://${PUBLIC}/health`;
 const MIXED_READBACK = `https://${PUBLIC_VALUE}/health`;
 
-/** An empty bag carrying a proof for each expression given. */
+const PUBLIC_B_VALUE = '5432';
+const VALUES: Record<string, string> = { [PUBLIC]: PUBLIC_VALUE, [PUBLIC_B]: PUBLIC_B_VALUE };
+
+/** An empty bag carrying a proof (with its public value) for each expression given. */
 const provenBag = (...expressions: string[]): RecordedSecretValues => {
   const bag: RecordedSecretValues = new Map();
-  for (const expression of expressions) recordProvenPublicExpression(bag, expression);
+  for (const expression of expressions) {
+    recordProvenPublicExpression(bag, expression, VALUES[expression] ?? 'some-public-value');
+  }
   return bag;
 };
 
@@ -107,9 +112,35 @@ describe('a PROVEN public ssm mixed leaf on an empty map (issue #2036)', () => {
 
   it('two tokens both proven keep the readback', () => {
     const source = `${PUBLIC}:${PUBLIC_B}`;
-    const readback = `${PUBLIC_VALUE}:5432`;
+    const readback = `${PUBLIC_VALUE}:${PUBLIC_B_VALUE}`;
     const out = baseline({ Conn: readback }, { Conn: source }, provenBag(PUBLIC, PUBLIC_B));
     expect(out['Conn']).toBe(readback);
+  });
+
+  it('a readback that is NOT the source with the proven value in place is refused', () => {
+    // The type is read today; the readback holds what the last deploy resolved.
+    // A parameter retyped since, or a public namesake in the wrong region,
+    // answers "public" about a value that was a secret, so only an EXACT match
+    // with the proven value admits the leaf.
+    const stale = `https://${SECRET_VALUE}/health`;
+    const out = baseline({ Url: stale }, { Url: MIXED_SOURCE }, provenBag(PUBLIC));
+    expect(out['Url']).toBe(MIXED_SOURCE);
+    expect(JSON.stringify(out)).not.toContain(SECRET_VALUE);
+    // ...and a change to the literal frame is refused the same way.
+    const reframed = baseline(
+      { Url: `https://${PUBLIC_VALUE}/other` },
+      { Url: MIXED_SOURCE },
+      provenBag(PUBLIC)
+    );
+    expect(reframed['Url']).toBe(MIXED_SOURCE);
+  });
+
+  it('a token repeated in one leaf must match its proven value at every occurrence', () => {
+    const source = `${PUBLIC}|${PUBLIC}`;
+    const ok = baseline({ V: `${PUBLIC_VALUE}|${PUBLIC_VALUE}` }, { V: source }, provenBag(PUBLIC));
+    expect(ok['V']).toBe(`${PUBLIC_VALUE}|${PUBLIC_VALUE}`);
+    const half = baseline({ V: `${PUBLIC_VALUE}|${SECRET_VALUE}` }, { V: source }, provenBag(PUBLIC));
+    expect(half['V']).toBe(source);
   });
 
   it('a whole `ssm-secure` token is never a plain-ssm proof subject', () => {
@@ -129,8 +160,12 @@ describe('the proof fails closed', () => {
     contradictProvenPublicExpression(after, PUBLIC);
     const before: RecordedSecretValues = new Map();
     contradictProvenPublicExpression(before, PUBLIC);
-    recordProvenPublicExpression(before, PUBLIC);
-    for (const bag of [after, before]) {
+    recordProvenPublicExpression(before, PUBLIC, PUBLIC_VALUE);
+    // Two proofs that disagree on the VALUE contradict each other too.
+    const split: RecordedSecretValues = new Map();
+    recordProvenPublicExpression(split, PUBLIC, PUBLIC_VALUE);
+    recordProvenPublicExpression(split, PUBLIC, 'another-value');
+    for (const bag of [after, before, split]) {
       expect(isProvenPublicExpression(bag, PUBLIC)).toBe(false);
       expect(baseline({ Url: MIXED_READBACK }, { Url: MIXED_SOURCE }, bag)['Url']).toBe(
         MIXED_SOURCE
@@ -153,18 +188,19 @@ describe('the proof fails closed', () => {
 });
 
 describe('the derived value scan still owns a proven leaf (readback-certification mark mode)', () => {
-  it('a needle certified ELSEWHERE in the record still reaches a proven-public leaf', () => {
+  it('a proven leaf is DECIDED: a certified needle coinciding with its literal text does not splice into it', () => {
     // `Pw` is a certified whole-token position, so the pass learns
-    // `SECRET_VALUE -> SM` and scans the record with it. The proven leaf
-    // embeds that plaintext (contrived, but it is the shape that decides
-    // whether the leaf is "decided" or left to the scan). Marked DECIDED, the
-    // merge would keep it verbatim and persist the secret.
-    const source = { Pw: SM, Url: `https://${PUBLIC}/x` };
-    const readback = { Pw: SECRET_VALUE, Url: `https://${PUBLIC_VALUE}/${SECRET_VALUE}` };
+    // `<plaintext> -> SM` and scans the record with it. The proven leaf's
+    // LITERAL frame happens to contain that same text. The leaf is exactly the
+    // source's text plus a public value, so nothing in it is a resolved secret;
+    // left undecided, the merge would splice SM into the template's own literal
+    // (a fabricated baseline `cdkd drift --revert` would push).
+    const coincidence = 'shared-literal-text';
+    const source = { Pw: SM, Url: `https://${PUBLIC}/${coincidence}` };
+    const readback = { Pw: coincidence, Url: `https://${PUBLIC_VALUE}/${coincidence}` };
     const out = baseline(readback, source, provenBag(PUBLIC));
     expect(out['Pw']).toBe(SM);
-    expect(JSON.stringify(out)).not.toContain(SECRET_VALUE);
-    expect(out['Url']).toBe(`https://${PUBLIC_VALUE}/${SM}`);
+    expect(out['Url']).toBe(`https://${PUBLIC_VALUE}/${coincidence}`);
   });
 
   it('a proven-public leaf teaches NO needle: a sibling holding the public value is left alone', () => {

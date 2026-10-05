@@ -83,9 +83,9 @@ import {
   STATE_SOURCED_BASELINE_RULES,
 } from '../../deployment/secret-redaction.js';
 import { PublicSsmProver } from '../../deployment/public-ssm-proof.js';
-import { producerRegionsFromState } from '../../deployment/secret-region-classification.js';
 import { stripControlChars } from '../../utils/regexp.js';
-import { buildReadCurrentStateContext } from './drift.js';
+import { buildReadCurrentStateContext, driftProducerRegionEvidence } from './drift.js';
+import type { ProducerRegionEvidence } from '../../deployment/producer-regions-scope.js';
 import { runDestroyForStack, type DestroyRunnerResult } from './destroy-runner.js';
 import { startRunRecorder, recordRunFailed, recordRunOutcome } from './deployment-events-run.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
@@ -3953,8 +3953,17 @@ async function refreshObservedForStack(
 
     // Issue #2036: one prover per stack, so each `ssm` reference is asked
     // about once however many records embed it. Its region and producer-region
-    // evidence are this stack's, the same inputs `cdkd drift` routes by.
-    const publicSsmProver = new PublicSsmProver(region, producerRegionsFromState(state), logger);
+    // evidence are the ones `cdkd drift` routes by: the stack's own reads plus,
+    // for a nested child, every ancestor's (go-to-k/cdkd#4213). Evidence that
+    // cannot be established is INCOMPLETE, so no region-less reference is
+    // proven; a throw here only costs proofs, never the refresh.
+    let producerEvidence: ProducerRegionEvidence;
+    try {
+      producerEvidence = await driftProducerRegionEvidence(state, stackName, region, stateBackend);
+    } catch {
+      producerEvidence = { regions: [], complete: false };
+    }
+    const publicSsmProver = new PublicSsmProver(region, producerEvidence, logger);
 
     // Refresh in parallel under withStackName so any provider-internal
     // resource-name resolution sees the right stack (mirrors the deploy
@@ -4049,8 +4058,8 @@ async function refreshObservedForStack(
           //
           // The map is EMPTY by construction (issue #1926): this command neither
           // synthesizes nor resolves, so no plaintext is ever recorded and a
-          // VALUE scan has no needles — POSITION is the whole mechanism: the record's own `properties` hold the
-          // unresolved expression, and walking the observed bag against them
+          // VALUE scan has no needles — POSITION is the whole mechanism: the
+          // record's own `properties` hold the unresolved expression, and walking the observed bag against them
           // rewrites the plaintext AWS echoes back onto that expression with no
           // secret fetch and no value matching.
           //

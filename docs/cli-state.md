@@ -808,8 +808,9 @@ afterwards writes the masks back, since it resolves nothing. See
 hold a plain `{{resolve:ssm:...}}` reference inside a longer string, such as
 `https://{{resolve:ssm:/app/host}}/health` (a `cdkd import` warn-path record).
 A `String` or `StringList` parameter is public config, so the value AWS reports
-is the right baseline. A `SecureString` is a secret, and the reference is
-written back over it. To tell the two apart, the command calls
+is the right baseline — when it is exactly the record's text with the
+parameter's current value in place. A `SecureString` is a secret, and the
+reference is written back over it, as it is over any other value. To tell the two apart, the command calls
 `ssm:GetParameter` with `WithDecryption: false` in the stack's region, once per
 reference. Nothing is decrypted, and a reference that is the whole value needs
 no call. The reference is written back, as before, when the parameter is a

@@ -138,7 +138,8 @@ so the table is indexed by what that leaf holds, not by which command ran:
 | `DB_PORT_LITERAL` (a TWO-character secret inside literal text, issue [#2516](https://github.com/go-to-k/cdkd/issues/2516)) | the expression — written only on a bag the engine marked as this pass's own, since the value scan makes no claim below its four-character needle floor | expression, in `properties`, in the readback AND in the `PortLiteral` output |
 | `PUBLIC_URL` (public `String` inside text) | the resolved value (issue [#1901](https://github.com/go-to-k/cdkd/issues/1901)) | resolved — the mixed-leaf arm is never consulted |
 | `PUBLIC_URL`, with the expression STAMPED into `properties` (Phase 1f3) | the expression | resolved — `GetParameter` (no decryption) proves the parameter public (issue [#2036](https://github.com/go-to-k/cdkd/issues/2036)) |
-| `PublicMixedParam.Value`, expression STAMPED, value moved out of band, `drift --accept` (Phase 1f4) | the expression | the moved value — the drift pass's own resolution proves it public on an EMPTY map (#2036) |
+| `PublicMixedParam.Value`, expression STAMPED, stale baseline, `drift --accept` (Phase 1f4 run A) | the expression | resolved — the drift pass's own resolution proves it public on an EMPTY map (#2036) |
+| the same, with the live value moved out of band first (Phase 1f4 run B) | the expression | expression — the proof vouches only for the parameter's current value |
 
 The two `PUBLIC_URL` rows are the same leaf, and the pair is the correction this
 fixture had to make: a public ssm `String` is persisted RESOLVED by construction, so on
@@ -159,8 +160,12 @@ leaf in the same run, is the negative control: it must keep its expression.
 Phase 1f4 runs `cdkd drift --accept` on `PublicMixedParam`, an SSM parameter
 whose only reference is the public one. The consumer Lambda cannot host this
 arm: its per-resource map is never empty, and a populated map never
-over-redacted. Without the proof, `--accept` writes the expression back and
-warns that the change "was NOT recorded".
+over-redacted. In run A, AWS holds the deployed value. Without the proof,
+`--accept` writes the expression back and warns that the change "was NOT
+recorded". Run B moves the live value first and must keep the expression. A
+proof admits a leaf only when AWS holds exactly the source with the
+parameter's CURRENT value in place, so a type read today never vouches for a
+value resolved earlier or in another region.
 
 The proof is filed per record and never for the whole process. PR #2415's bare
 store was withdrawn because it un-redacted a same-named `SecureString` in

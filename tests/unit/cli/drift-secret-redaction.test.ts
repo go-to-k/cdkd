@@ -982,7 +982,40 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
       expect(observed.Environment.Variables['URL']).toBe(RESOLVED);
     });
 
-    it('--accept records the public value AWS now holds, not the expression', async () => {
+    it('--accept records the public value when AWS holds exactly the proven value', async () => {
+      // The baseline is STALE at that leaf while `properties` still spells the
+      // expression, so drift sees a change and `--accept` writes AWS's value:
+      // the source with the proven public value in place. Kept, not the
+      // expression.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Consumer: {
+            ...publicOnlyResource(),
+            observedProperties: {
+              Environment: { Variables: { URL: 'https://stale/health', PLAIN: 'ok' } },
+            },
+          },
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({
+          Environment: { Variables: { URL: RESOLVED, PLAIN: 'ok' } },
+        }),
+      });
+
+      await runDrift(['TestStack', '--accept', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const observed = mockSaveState.mock.calls[0]![2].resources['Consumer']!
+        .observedProperties as { Environment: { Variables: Record<string, unknown> } };
+      expect(observed.Environment.Variables['URL']).toBe(RESOLVED);
+      expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('was NOT recorded');
+    });
+
+    it('--accept keeps the EXPRESSION when AWS holds a value the proof does not vouch for', async () => {
+      // The parameter is public TODAY, but AWS holds a different value at the
+      // leaf. Nothing says what that value is, so it is not recorded.
       const MOVED = 'https://moved-host/health';
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(makeState({ Consumer: publicOnlyResource() }));
@@ -995,10 +1028,12 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
       await runDrift(['TestStack', '--accept', '--yes']);
 
       expect(mockSaveState).toHaveBeenCalledTimes(1);
-      const observed = mockSaveState.mock.calls[0]![2].resources['Consumer']!
-        .observedProperties as { Environment: { Variables: Record<string, unknown> } };
-      expect(observed.Environment.Variables['URL']).toBe(MOVED);
-      expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('was NOT recorded');
+      const saved = mockSaveState.mock.calls[0]![2];
+      const observed = saved.resources['Consumer']!.observedProperties as {
+        Environment: { Variables: Record<string, unknown> };
+      };
+      expect(observed.Environment.Variables['URL']).toBe(MIXED);
+      expect(JSON.stringify(saved)).not.toContain('moved-host');
     });
   });
 

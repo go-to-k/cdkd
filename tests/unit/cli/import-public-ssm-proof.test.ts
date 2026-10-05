@@ -73,7 +73,9 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 import {
   captureObservedForImportedResources,
   ObservedBaselineRefusals,
+  resolveImportedProperties,
 } from '../../../src/cli/commands/import.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { AwsClients, setAwsClients, resetAwsClients } from '../../../src/utils/aws-clients.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
@@ -110,7 +112,7 @@ afterEach(() => {
 async function capture(
   properties: Record<string, unknown>,
   readback: Record<string, unknown>,
-  options: { region?: string; producerRegion?: string } = {}
+  options: { region?: string; producerRegion?: string; walkSecrets?: string[] } = {}
 ): Promise<unknown> {
   const region = options.region ?? 'us-east-1';
   const state: StackState = {
@@ -136,11 +138,13 @@ async function capture(
   const registry = {
     getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
   } as unknown as Parameters<typeof captureObservedForImportedResources>[1];
+  const refusals = new ObservedBaselineRefusals(new Set());
+  if (options.walkSecrets) refusals.secretExpressions.set('Res', new Set(options.walkSecrets));
   await captureObservedForImportedResources(
     state,
     registry,
     getLogger(),
-    new ObservedBaselineRefusals(new Set()),
+    refusals,
     new Set(['Res']),
     region
   );
@@ -167,6 +171,58 @@ describe('cdkd import observed capture: a PUBLIC ssm mixed leaf (issue #2036)', 
     expect(observed).toEqual({ Conn: `pw=${SECURE};host=h` });
     expect(JSON.stringify(observed)).not.toContain(SECURE_VALUE);
     expect(ssmSends.map((s) => s.input.WithDecryption)).toEqual([false]);
+  });
+
+  it('a readback that is not the source with the PROVEN value in place keeps the expression', async () => {
+    // The parameter answers `String` today, but AWS holds a different value
+    // there — e.g. one resolved from a SecureString before the parameter was
+    // retyped. The type alone vouches for nothing about that value.
+    const observed = await capture(
+      { Url: `https://${PUBLIC}/health` },
+      { Url: `https://${SECURE_VALUE}/health` }
+    );
+    expect(observed).toEqual({ Url: `https://${PUBLIC}/health` });
+  });
+
+  it('an expression the resolve walk recorded as a SECRET for this record is never proven', async () => {
+    // The walk can resolve a cross-region read through the PRODUCER's region,
+    // where the parameter is a SecureString, while import state records no
+    // read that would mark the token foreign. A same-named public parameter
+    // here must not vouch for it.
+    const observed = await capture(
+      { Url: `https://${PUBLIC}/health` },
+      { Url: `https://${PUBLIC_VALUE}/health` },
+      { walkSecrets: [PUBLIC] }
+    );
+    expect(observed).toEqual({ Url: `https://${PUBLIC}/health` });
+  });
+
+  it('the resolve walk hands every expression it resolved AS A SECRET to the capture', async () => {
+    const state: StackState = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      stackName: 'import-2036',
+      region: 'us-east-1',
+      resources: { Res: { physicalId: 'res-phys', resourceType: 'AWS::SQS::Queue', properties: {} } },
+      outputs: {},
+      lastModified: 0,
+    };
+    const template = {
+      Resources: {
+        Res: {
+          Type: 'AWS::SQS::Queue',
+          Properties: { Conn: `pw=${SECURE};`, Url: `https://${PUBLIC}/health` },
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+    state.resources['Res']!.properties = structuredClone(template.Resources['Res']!.Properties!);
+    const refusals = await resolveImportedProperties(
+      state,
+      template,
+      'us-east-1',
+      undefined as never,
+      getLogger()
+    );
+    expect([...(refusals.secretExpressions.get('Res') ?? [])]).toEqual([SECURE]);
   });
 
   it('asks in the STACK region it is handed', async () => {

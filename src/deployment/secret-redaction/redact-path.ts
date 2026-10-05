@@ -19,8 +19,8 @@ import { positionListByCrossStackSource, identityKeyFor } from './identity-keys.
 import {
   carriesSecretMask,
   isKnownSecretExpression,
-  isProvenPublicExpression,
   isRecordedSecretExpression,
+  provenPublicValue,
 } from './mask-only.js';
 
 /**
@@ -667,9 +667,12 @@ export function dynamicReferenceSpans(value: string): Array<{ start: number; end
  * plain `String` un-redacted a SecureString of the same name in another region.
  * A bag's proofs are written only by lookups made for that bag's own record —
  * `cdkd drift`'s resolver pass over the record (region-routed by
- * `classifyReplaySecretRegion`), or `provePublicSsmReferences` on `cdkd state
- * refresh-observed` / `cdkd import`, which asks `GetParameter` without
- * decryption in the record's own region. The deploy path's UNCHANGED-resource
+ * `classifyReplaySecretRegion`), or `PublicSsmProver.proofBagFor` on `cdkd
+ * state refresh-observed` / `cdkd import`, which asks `GetParameter` without
+ * decryption in the record's own region. A proof admits a leaf only when the
+ * readback equals the source with each token replaced by the PROVEN value, so a
+ * type read today cannot vouch for a value resolved at an earlier deploy or in
+ * another region. The deploy path's UNCHANGED-resource
  * persist hands this call a fresh map with no proofs, so it still refuses
  * there; a properties-borne public expression makes that resource read as
  * CHANGED anyway (issue #2425), which is why that site was left alone.
@@ -686,11 +689,13 @@ export function dynamicReferenceSpans(value: string): Array<{ start: number; end
  * its phases STAMP that shape the way `cdkd import`'s warn path writes it: Phase
  * 1f3 on `cdkd state refresh-observed`, where the public leaf keeps its
  * resolved value and the SecureString mixed leaf beside it is still refused,
- * and Phase 1f4 on `cdkd drift --accept`.
+ * and Phase 1f4 on `cdkd drift --accept`, which records a public leaf whose
+ * value matches its proof and refuses one AWS holds a different value for.
  */
 export function mixedLeafMayCarryPublicReference(
   source: string,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  readback: string
 ): boolean {
   // NO MAP: ABSENCE IS NOT EVIDENCE, so only a POSITIVE proof answers here.
   // `isRecordedSecretExpression` only ever says "yes" about a token some pass
@@ -699,7 +704,7 @@ export function mixedLeafMayCarryPublicReference(
   // every `{{resolve:ssm:` mixed leaf into a public one and persisted the
   // DECRYPTED SecureString — measured by the `secrets-dynamic-ref` integ, which
   // is the only place it showed: every unit assertion passed.
-  if (secrets.size === 0) return mixedLeafProvenPublic(source, secrets);
+  if (secrets.size === 0) return mixedLeafProvenPublic(source, secrets, readback);
   return dynamicReferenceTokens(source).some(
     (token) => token.startsWith('{{resolve:ssm:') && !isRecordedSecretExpression(token)
   );
@@ -709,19 +714,39 @@ export function mixedLeafMayCarryPublicReference(
  * The EMPTY-map answer (issue
  * [#2036](https://github.com/go-to-k/cdkd/issues/2036)): keep the readback
  * only when EVERY reference in the leaf is a plain `ssm` token this bag holds a
- * PROOF for ({@link isProvenPublicExpression}). EVERY, not the populated arm's
- * SOME: with no map the value scan has no needle for a secret sitting beside
- * the public token, so one unproven, `secretsmanager`, `ssm-secure` or
- * unknown-service token keeps the whole leaf refused.
+ * PROOF for ({@link provenPublicValue}), AND the readback is EXACTLY the source
+ * with each token replaced by its proven public value.
+ *
+ * EVERY, not the populated arm's SOME: with no map the value scan has no needle
+ * for a secret sitting beside the public token, so one unproven,
+ * `secretsmanager`, `ssm-secure` or unknown-service token keeps the whole leaf
+ * refused.
+ *
+ * EQUALITY, not the type alone: the type is read NOW and the readback holds what
+ * the last deploy resolved, so a parameter retyped since (or a public namesake
+ * in the wrong region) would otherwise vouch for a secret's plaintext. Equality
+ * means every character of the leaf is either text the record's own source
+ * spells or a value a public parameter holds today. A changed readback (a
+ * console edit, a rotated value) therefore keeps the expression: over-redaction,
+ * the direction this module may be wrong in.
  */
-function mixedLeafProvenPublic(source: string, secrets: RecordedSecretValues): boolean {
+function mixedLeafProvenPublic(
+  source: string,
+  secrets: RecordedSecretValues,
+  readback: string
+): boolean {
   const tokens = dynamicReferenceTokens(source);
-  return (
-    tokens.length > 0 &&
-    tokens.every(
-      (token) => token.startsWith('{{resolve:ssm:') && isProvenPublicExpression(secrets, token)
-    )
-  );
+  if (tokens.length === 0) return false;
+  const values = new Map<string, string>();
+  for (const token of tokens) {
+    if (!token.startsWith('{{resolve:ssm:')) return false;
+    const value = provenPublicValue(secrets, token);
+    if (value === undefined) return false;
+    values.set(token, value);
+  }
+  DYNAMIC_REFERENCE_TOKEN_SCAN.lastIndex = 0;
+  const expected = source.replace(DYNAMIC_REFERENCE_TOKEN_SCAN, (token) => values.get(token)!);
+  return expected === readback;
 }
 
 /**

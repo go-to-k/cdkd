@@ -4200,27 +4200,33 @@ fi
 # phase runs on PublicMixedParam, an `AWS::SSM::Parameter` whose ONLY reference
 # is a public ssm one inside its `Value`: its map stays empty, and only the
 # per-bag proof the resolver files while resolving that record's baseline can
-# keep the value.
+# keep the value. The proof carries the parameter's CURRENT value, and a leaf is
+# admitted only when AWS holds exactly the source with that value in place.
 #
-# THE SHAPE. Both `properties.Value` and `observedProperties.Value` are stamped
-# with the expression (the `cdkd import` warn-path record), then the parameter's
-# live value is moved out of band. `--accept` must record the moved value. On a
-# tree without the fix, the redaction substitutes the expression back over it
-# and `--accept` warns that the change "was NOT recorded".
+# TWO RUNS, one per direction. In both, `properties.Value` is stamped with the
+# expression (the `cdkd import` warn-path record) and `observedProperties.Value`
+# with a stale sentinel, so drift reports the leaf and `--accept` writes it.
+#  (A) AWS still holds the deployed value: `--accept` must record it. A tree
+#      without the fix substitutes the expression back and warns the change
+#      "was NOT recorded".
+#  (B) the live value is moved out of band first: the proof does not vouch for
+#      that value (a type read today says nothing about a value resolved
+#      earlier), so the expression must win and the warning must appear. This
+#      is the live negative control for the admission rule.
 #
 # `--revert` is not exercised live, deliberately: its redaction runs only over a
 # NARROWING delta — keys whose provider-reported effective value differs from
 # what was sent (`collectNarrowedTopLevelKeys`) — and no provider this fixture
 # deploys reports one for an equal mixed leaf. Its wiring is pinned by
 # `tests/unit/cli/drift-secret-redaction.test.ts`.
-echo "==> Phase 1f4: drift --accept records a PROVEN-public mixed leaf on an empty map (issue #2036)"
+echo "==> Phase 1f4: drift --accept on a PROVEN-public mixed leaf with an empty map (issue #2036)"
 
 F4_PARAM="${PARAM_NAME}-mixed"
 F4_RESOLVED="cfg-${EXPECTED_SSM}-${REGION}"
 F4_EXPR="cfg-{{resolve:ssm:${PARAM_NAME}}}-${REGION}"
+F4_STALE="cdkd-2036-stale-observed-value"
 F4_MOVED="cfg-moved-out-of-band-${REGION}"
 F4_BEFORE=$(mktemp)
-F4_STAMPED=$(mktemp)
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${F4_BEFORE}" --quiet
 F4_LID=$(jq -r --arg n "${F4_PARAM}" '.resources | to_entries[]
                   | select(.value.resourceType=="AWS::SSM::Parameter"
@@ -4231,7 +4237,7 @@ if [ -z "${F4_LID}" ]; then
   exit 1
 fi
 # PREMISE: deployed RESOLVED on both sides (issue #1901), so the stamp below is
-# what puts the expression there, and the record carries no other reference.
+# what puts the expression there.
 for f4_side in properties observedProperties; do
   F4_PRE=$(jq -r --arg lid "${F4_LID}" --arg side "${f4_side}" \
     '.resources[$lid][$side].Value // empty' "${F4_BEFORE}")
@@ -4240,72 +4246,107 @@ for f4_side in properties observedProperties; do
     exit 1
   fi
 done
-jq --arg lid "${F4_LID}" --arg expr "${F4_EXPR}" \
-  '.resources[$lid].properties.Value = $expr
-   | .resources[$lid].observedProperties.Value = $expr' \
-  "${F4_BEFORE}" > "${F4_STAMPED}"
-if [ "$(grep -oF "${F4_EXPR}" "${F4_STAMPED}" | wc -l | tr -d ' ')" != "2" ]; then
-  echo "FAIL: the PublicMixedParam stamp did not land on both sides — jq path expression is wrong" >&2
-  exit 1
-fi
-aws s3 cp "${F4_STAMPED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
-aws ssm put-parameter --name "${F4_PARAM}" --value "${F4_MOVED}" --overwrite \
-  --region "${REGION}" >/dev/null
 
-set +e
-F4_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" --accept --yes 2>&1)
-F4_RC=$?
-set -e
-F4_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" --json 2>/dev/null)
-F4_OBSERVED_VALUE=$(printf '%s' "${F4_STATE}" \
-  | jq -r --arg lid "${F4_LID}" '.state.resources[$lid].observedProperties.Value // empty')
+# Stamp the record from the bag read above; assert both stamps landed.
+f4_stamp() {
+  local stamped
+  stamped=$(mktemp) || return 1
+  jq --arg lid "${F4_LID}" --arg expr "${F4_EXPR}" --arg stale "${F4_STALE}" \
+    '.resources[$lid].properties.Value = $expr
+     | .resources[$lid].observedProperties.Value = $stale' \
+    "${F4_BEFORE}" > "${stamped}" || return 1
+  if [ "$(jq -r --arg lid "${F4_LID}" \
+          '.resources[$lid].properties.Value + "|" + .resources[$lid].observedProperties.Value' \
+          "${stamped}")" != "${F4_EXPR}|${F4_STALE}" ]; then
+    echo "FAIL: the PublicMixedParam stamp did not land on both sides — jq path expression is wrong" >&2
+    return 1
+  fi
+  aws s3 cp "${stamped}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet || return 1
+  rm -f "${stamped}"
+}
 
-# RESTORE FIRST, both halves, before any assertion: the live value back to the
-# deployed one, and the record's `properties` / `observedProperties` from the bag
-# read at the top, so Phase 1g's plain deploy sees an UNCHANGED resource.
-aws ssm put-parameter --name "${F4_PARAM}" --value "${F4_RESOLVED}" --overwrite \
-  --region "${REGION}" >/dev/null
-F4_AFTER=$(mktemp)
-F4_FINAL=$(mktemp)
-aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${F4_AFTER}" --quiet
-jq --arg lid "${F4_LID}" --slurpfile before "${F4_BEFORE}" \
-  '.resources[$lid].properties = $before[0].resources[$lid].properties
-   | .resources[$lid].observedProperties = $before[0].resources[$lid].observedProperties' \
-  "${F4_AFTER}" > "${F4_FINAL}"
-F4_RESTORED=$(jq -r --arg lid "${F4_LID}" '.resources[$lid].properties.Value // empty' "${F4_FINAL}")
-if [ "${F4_RESTORED}" != "${F4_RESOLVED}" ]; then
-  echo "FAIL: could not restore PublicMixedParam's record" >&2
-  exit 1
-fi
-aws s3 cp "${F4_FINAL}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
-rm -f "${F4_BEFORE}" "${F4_STAMPED}" "${F4_AFTER}" "${F4_FINAL}"
+# Run --accept, capture what it wrote, then RESTORE both halves (the live value
+# and the record) before the caller asserts anything, so Phase 1g's plain
+# deploy sees an UNCHANGED resource whatever the assertions say.
+f4_accept_and_restore() {
+  local after final restored
+  set +e
+  F4_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --accept --yes 2>&1)
+  F4_RC=$?
+  set -e
+  F4_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --json 2>/dev/null) || return 1
+  F4_OBSERVED_VALUE=$(printf '%s' "${F4_STATE}" \
+    | jq -r --arg lid "${F4_LID}" '.state.resources[$lid].observedProperties.Value // empty') || return 1
+  aws ssm put-parameter --name "${F4_PARAM}" --value "${F4_RESOLVED}" --overwrite \
+    --region "${REGION}" >/dev/null || return 1
+  after=$(mktemp) || return 1
+  final=$(mktemp) || return 1
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${after}" --quiet || return 1
+  jq --arg lid "${F4_LID}" --slurpfile before "${F4_BEFORE}" \
+    '.resources[$lid].properties = $before[0].resources[$lid].properties
+     | .resources[$lid].observedProperties = $before[0].resources[$lid].observedProperties' \
+    "${after}" > "${final}" || return 1
+  restored=$(jq -r --arg lid "${F4_LID}" '.resources[$lid].properties.Value // empty' "${final}")
+  if [ "${restored}" != "${F4_RESOLVED}" ]; then
+    echo "FAIL: could not restore PublicMixedParam's record" >&2
+    return 1
+  fi
+  aws s3 cp "${final}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet || return 1
+  rm -f "${after}" "${final}"
+}
 
 accept_fail=0
+
+# (A) AWS holds the deployed value: the proof vouches for it.
+f4_stamp
+f4_accept_and_restore
 if [ "${F4_RC}" -ne 0 ]; then
-  echo "FAIL: 'cdkd drift --accept' failed (rc=${F4_RC})" >&2
+  echo "FAIL: 'cdkd drift --accept' (run A) failed (rc=${F4_RC})" >&2
   diag_output "${F4_OUT}"
   accept_fail=1
 fi
-assert_no_plaintext "'cdkd drift --accept' in Phase 1f4" "${F4_OUT}"
-if [ "${F4_OBSERVED_VALUE}" = "${F4_MOVED}" ]; then
-  echo "    OK: --accept recorded the moved public value (proven public on an empty map, #2036)"
+assert_no_plaintext "'cdkd drift --accept' in Phase 1f4 run A" "${F4_OUT}"
+if [ "${F4_OBSERVED_VALUE}" = "${F4_RESOLVED}" ]; then
+  echo "    OK: run A: --accept recorded the proven public value on an empty map (#2036)"
 elif [ "${F4_OBSERVED_VALUE}" = "${F4_EXPR}" ]; then
-  echo "FAIL: --accept wrote the expression back over the accepted public value (#2036 over-redaction)" >&2
+  echo "FAIL: run A: --accept wrote the expression back over the public value (#2036 over-redaction)" >&2
   accept_fail=1
 else
-  echo "FAIL: observed Value of ${F4_LID} should be '${F4_MOVED}', got $(mask "${F4_OBSERVED_VALUE}")" >&2
+  echo "FAIL: run A: observed Value of ${F4_LID} should be '${F4_RESOLVED}', got $(mask "${F4_OBSERVED_VALUE}")" >&2
   accept_fail=1
 fi
-# The warning `--accept` prints when redaction overrode an accepted value. Its
-# absence is the second, independent signal; the sentinel guards its wording.
+# Two independent signals beside the value: no "NOT recorded" warning, and the
+# summary that counts an accepted resource (its wording is the sentinel).
 if grep -qF "was NOT recorded" <<< "${F4_OUT}"; then
-  echo "FAIL: --accept reported the public change as NOT recorded" >&2
+  echo "FAIL: run A: --accept reported the public change as NOT recorded" >&2
   accept_fail=1
 fi
 if ! grep -qF "accepted drift on" <<< "${F4_OUT}"; then
-  echo "FAIL: --accept output lacks its 'accepted drift on' summary — wording drifted, or nothing was accepted" >&2
+  echo "FAIL: run A: --accept output lacks its 'accepted drift on' summary — wording drifted, or nothing was accepted" >&2
+  diag_output "${F4_OUT}"
+  accept_fail=1
+fi
+
+# (B) the live value moved: the proof does not vouch for it.
+f4_stamp
+aws ssm put-parameter --name "${F4_PARAM}" --value "${F4_MOVED}" --overwrite \
+  --region "${REGION}" >/dev/null
+f4_accept_and_restore
+if [ "${F4_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift --accept' (run B) failed (rc=${F4_RC})" >&2
+  diag_output "${F4_OUT}"
+  accept_fail=1
+fi
+if [ "${F4_OBSERVED_VALUE}" = "${F4_EXPR}" ]; then
+  echo "    OK: run B: a value the proof does not vouch for kept the expression"
+else
+  echo "FAIL: run B: observed Value of ${F4_LID} should be the expression '${F4_EXPR}', got $(mask "${F4_OBSERVED_VALUE}")" >&2
+  accept_fail=1
+fi
+if ! grep -qF "was NOT recorded" <<< "${F4_OUT}"; then
+  echo "FAIL: run B: --accept did not warn that the unvouched value was NOT recorded — wording drifted?" >&2
   diag_output "${F4_OUT}"
   accept_fail=1
 fi
@@ -4313,6 +4354,7 @@ if grep -qF "${EXPECTED_SECURE}" <<< "${F4_STATE}"; then
   echo "FAIL: the decrypted SecureString reached state in Phase 1f4 (#1926)" >&2
   accept_fail=1
 fi
+rm -f "${F4_BEFORE}"
 if [ "${accept_fail}" -ne 0 ]; then
   echo "FAIL: issue #2036 drift --accept assertions failed" >&2
   exit 1
