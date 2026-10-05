@@ -192,12 +192,15 @@ function createdMarkOn(link: object): CreatedMark | undefined {
  * The physical id a {@link markCreatedBeforeFailure} mark for `logicalId` and
  * `resourceType` carries on `error`'s bounded cause chain, or `undefined`.
  *
- * Anchored on both sides: the mark must name `logicalId` AND `resourceType` (a
- * nested child may share its parent row's logical id, never its
- * `AWS::CloudFormation::Stack` type), and the walk stops
+ * Anchored on both sides: the mark must name `logicalId` AND `resourceType`
+ * (a nested child may share its parent row's logical id), and the walk stops
  * at the first link naming ANOTHER logical id (a nested stack's child error
  * wrapped under its parent row) — an auxiliary mark of `logicalId` excepted,
- * since it marks the same create's own SDK error. Never throws.
+ * since it marks the same create's own SDK error. A GRANDCHILD nested stack
+ * can share both the logical id and the `AWS::CloudFormation::Stack` type with
+ * the row above it, so a nested-stack create clears the marks its child
+ * deploy's failure carries ({@link clearCreatedBeforeFailure}) before the
+ * error reaches the parent row's reader. Never throws.
  */
 export function createdBeforeFailure(
   error: unknown,
@@ -231,6 +234,32 @@ export function createdBeforeFailure(
     // Unreadable chain: no proof.
   }
   return undefined;
+}
+
+/**
+ * Remove every {@link markCreatedBeforeFailure} mark from `error`'s bounded
+ * cause chain; returns `error`. For an error that crosses a nesting boundary:
+ * a nested child deploy journals its own rows' marks in the CHILD's journal
+ * before it rejects, and the same marks read again at the parent row could
+ * name a grandchild's resource under the parent's logical id. Never throws.
+ */
+export function clearCreatedBeforeFailure<E>(error: E): E {
+  try {
+    let current: unknown = error;
+    for (
+      let depth = 0;
+      depth < MAX_DEPTH * 2 && typeof current === 'object' && current !== null;
+      depth++
+    ) {
+      if (Object.getOwnPropertyDescriptor(current, CREATED_BEFORE_FAILURE)?.configurable) {
+        delete (current as Record<symbol, unknown>)[CREATED_BEFORE_FAILURE];
+      }
+      current = (current as { cause?: unknown }).cause;
+    }
+  } catch {
+    // Unreadable chain: left as it is.
+  }
+  return error;
 }
 
 /** Whether `error`'s bounded cause chain carries any created-before-failure mark. */

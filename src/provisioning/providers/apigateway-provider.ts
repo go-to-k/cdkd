@@ -69,7 +69,7 @@ import {
 } from '../masked-retry-logger.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { pasteableAwsCommand, type PasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
@@ -1449,6 +1449,9 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
     }
 
+    // go-to-k/cdkd#4583: set when the post-create cleanup could not delete the
+    // stage, which then exists with no state record.
+    let stageLeftBehind = false;
     try {
       // CFn declares CacheClusterSize as a string enum ('0.5' | '1.6' | ...)
       // and so does the SDK, but an unquoted YAML template legitimately
@@ -1530,6 +1533,7 @@ export class ApiGatewayProvider implements ResourceProvider {
           try {
             await this.apiGatewayClient.send(new DeleteStageCommand({ restApiId, stageName }));
           } catch (cleanupError) {
+            stageLeftBehind = true;
             log.warn(
               `Failed to clean up stage ${log.value(stageName)} after a post-create patch failure: ${describeAwsFailure(cleanupError).detail}`
             );
@@ -1550,7 +1554,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         error,
         (text) =>
@@ -1562,6 +1566,8 @@ export class ApiGatewayProvider implements ResourceProvider {
             cause
           )
       );
+      if (stageLeftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, stageName);
+      throw thrown;
     }
   }
 
@@ -2105,6 +2111,9 @@ export class ApiGatewayProvider implements ResourceProvider {
     // the masker's substring floor is caught too.
     const maskedIds = [restApiId, resourceId, httpMethod].map((id) => log.value(id));
     const methodPath = maskedIds.join('/');
+    // go-to-k/cdkd#4583: set when the wiring cleanup could not delete the
+    // method, which then exists with no state record.
+    let methodLeftBehind = false;
 
     try {
       await this.apiGatewayClient.send(
@@ -2253,6 +2262,7 @@ export class ApiGatewayProvider implements ResourceProvider {
             `Cleaned up partially-created API Gateway Method ${logicalId} (${methodPath}) after wiring failure`
           );
         } catch (cleanupError) {
+          methodLeftBehind = true;
           // All three ids are TEMPLATE values (resolved `Ref`s and the
           // method), so the command renders through `pasteableAwsCommand`
           // (issue #3136): quoted, or withheld when one cannot be printed
@@ -2274,7 +2284,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         error,
         (text) =>
@@ -2286,6 +2296,8 @@ export class ApiGatewayProvider implements ResourceProvider {
             cause
           )
       );
+      if (methodLeftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, physicalId);
+      throw thrown;
     }
   }
 

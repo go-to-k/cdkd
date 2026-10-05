@@ -18,6 +18,7 @@ import {
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
@@ -510,7 +511,7 @@ export class PipesPipeProvider implements ResourceProvider {
     try {
       settled = await this.waitForSettled(name, logicalId, resourceType, 'create', mask);
     } catch (error) {
-      throw await this.retireFailedCreate(name, logicalId, error, mask);
+      throw await this.retireFailedCreate(name, logicalId, resourceType, error, mask);
     }
     return { physicalId: name, attributes: this.attributesOf(settled) };
   }
@@ -946,12 +947,18 @@ export class PipesPipeProvider implements ResourceProvider {
   private async retireFailedCreate(
     name: string,
     logicalId: string,
+    resourceType: string,
     error: unknown,
     mask: MaskerFn
   ): Promise<Error> {
     // The settle wait throws only Errors; the fallback keeps the type honest.
     const original = error instanceof Error ? error : new Error(String(error));
-    // The pipe survives, live and unrecorded: say so and how to delete it,
+    // go-to-k/cdkd#4583: CreatePipe returned, so `name` (the id delete() takes)
+    // is this create's pipe; name it for the failed-CREATE journal whenever it
+    // may still be there.
+    const leftBehind = (): Error =>
+      markCreatedBeforeFailure(original, logicalId, resourceType, name);
+    // The pipe survives, live and journaled: say so and how to delete it,
     // named with the client's region (the name alone would address a
     // same-named pipe in the profile's default region).
     const orphaned = async (why: string): Promise<Error> => {
@@ -959,11 +966,12 @@ export class PipesPipeProvider implements ResourceProvider {
       const region = await orphanCommandRegionArg(this.getClient(), aws);
       const command = aws`aws pipes delete-pipe --name ${name}${region}`;
       original.message +=
-        ` (cdkd could not delete the pipe it had created: ${why}; it is not recorded in state. ` +
+        ` (cdkd could not delete the pipe it had created: ${why}; on a first-time create the failed deploy's rollback ` +
+        `journal records it for \`cdkd rollback --revert-failed\`. ` +
         (command.text !== undefined
-          ? `Delete it with: ${command.text})`
-          : `Delete it from the EventBridge Pipes console.)`);
-      return original;
+          ? `Otherwise delete it yourself with: ${command.text})`
+          : `Otherwise delete it yourself from the EventBridge Pipes console.)`);
+      return leftBehind();
     };
     try {
       await this.getClient().send(new DeletePipeCommand({ Name: name }));
@@ -1018,6 +1026,6 @@ export class PipesPipeProvider implements ResourceProvider {
         ? // No backticks around the command: pasted, they would run it.
           `if ${describe.text} still shows it, delete it with: ${remove.text})`
         : 'if the EventBridge Pipes console still shows it, delete it there.)');
-    return original;
+    return leftBehind();
   }
 }

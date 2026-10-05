@@ -45,6 +45,7 @@ import {
 import { getLogger } from '../../../src/utils/logger.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 
 const RESOURCE_TYPE = 'AWS::RDS::DBProxyTargetGroup';
 const TARGET_GROUP_ARN =
@@ -174,13 +175,19 @@ describe('RDSDBProxyTargetGroupProvider', () => {
         .mockRejectedValueOnce(new Error('AccessDenied: rds:AddTagsToResource')) // AddTags
         .mockResolvedValueOnce({}); // Deregister (cleanup)
 
-      await expect(
-        provider.create('TG', RESOURCE_TYPE, {
+      const error = await provider
+        .create('TG', RESOURCE_TYPE, {
           DBProxyName: 'AuroraProxy',
           DBClusterIdentifiers: ['my-cluster'],
           Tags: [{ Key: 'team', Value: 'db' }],
         })
-      ).rejects.toThrow(/CREATE \(add tags\) failed for TG: AccessDenied/);
+        .then(
+          () => new Error('create resolved'),
+          (e: unknown) => e as Error
+        );
+      expect(error.message).toMatch(/CREATE \(add tags\) failed for TG: AccessDenied/);
+      // go-to-k/cdkd#4583: the deregister retired the registration; nothing to journal.
+      expect(createdBeforeFailure(error, 'TG', RESOURCE_TYPE)).toBeUndefined();
       expect(names()[3]).toBe('DeregisterDBProxyTargetsCommand');
       expect(mockSend.mock.calls[3]![0].input).toEqual({
         DBProxyName: 'AuroraProxy',
@@ -212,6 +219,28 @@ describe('RDSDBProxyTargetGroupProvider', () => {
         'aws rds deregister-db-proxy-targets --db-proxy-name AuroraProxy ' +
           '--target-group-name default --db-instance-identifiers i-1 i-2'
       );
+      // go-to-k/cdkd#4583: the registration is still live, so the ARN (the id
+      // delete() takes) is journaled for --revert-failed.
+      expect(createdBeforeFailure(error, 'TG', RESOURCE_TYPE)).toBe(TARGET_GROUP_ARN);
+    });
+
+    it('a failed Describe whose cleanup also fails marks nothing: the ARN is unknown (go-to-k/cdkd#4583)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ DBProxyTargets: [] }) // Register
+        .mockRejectedValueOnce(new Error('Throttling')) // Describe
+        .mockRejectedValueOnce(new Error('Throttling')); // Deregister (cleanup)
+      const error = await provider
+        .create('TG', RESOURCE_TYPE, {
+          DBProxyName: 'AuroraProxy',
+          DBClusterIdentifiers: ['my-cluster'],
+        })
+        .then(
+          () => new Error('create resolved'),
+          (e: unknown) => e as Error
+        );
+      expect(names()[2]).toBe('DeregisterDBProxyTargetsCommand');
+      expect(error.message).toContain('aws rds deregister-db-proxy-targets');
+      expect(createdBeforeFailure(error, 'TG', RESOURCE_TYPE)).toBeUndefined();
     });
 
     it.each([

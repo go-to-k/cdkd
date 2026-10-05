@@ -147,7 +147,7 @@ describe('LogsLogGroupProvider partial-create cleanup (Issue #376)', () => {
     ).rejects.toThrow('PutRetentionPolicy boom (original)');
     const quote = String(warnSpy.mock.calls[0][0]);
     expect(quote).not.toContain('aws logs delete-log-group');
-    expect(quote).toContain('Manual deletion may be required before the next deploy, via the console');
+    expect(quote).toContain("`cdkd rollback --revert-failed`; otherwise delete it yourself before the next deploy, via the console");
 
     warnSpy.mockClear();
     mockSend.mockResolvedValueOnce({}); // CreateLogGroupCommand

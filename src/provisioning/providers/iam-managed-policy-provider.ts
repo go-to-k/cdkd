@@ -48,7 +48,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import {
@@ -197,6 +197,9 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     const policyDoc =
       typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
 
+    // go-to-k/cdkd#4583: the ARN CreatePolicy returned (the id `delete()` takes),
+    // cleared when the partial-create cleanup deleted the policy.
+    let leftBehindArn: string | undefined;
     try {
       const createParams: {
         PolicyName: string;
@@ -229,6 +232,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           policyName
         );
       }
+      leftBehindArn = policyArn;
       log.debug(`Created IAM managed policy: ${v(policyArn)}`);
 
       // CreatePolicy has succeeded — AWS has committed the policy. Wire up
@@ -248,6 +252,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           await this.detachAllPrincipals(policyArn);
           await this.deleteAllNonDefaultVersions(policyArn);
           await this.iamClient.send(new DeletePolicyCommand({ PolicyArn: policyArn }));
+          leftBehindArn = undefined;
           log.debug(
             `Cleaned up partially-created managed policy ${logicalId} (${v(policyArn)}) after attachment failure`
           );
@@ -276,12 +281,17 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     } catch (error) {
       // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
       // ProvisioningError replaces its precise message with this outer one.
-      if (error instanceof CdkdError) throw error;
+      const markLeftBehind = <E>(e: E): E =>
+        leftBehindArn !== undefined
+          ? markCreatedBeforeFailure(e, logicalId, resourceType, leftBehindArn)
+          : e;
+      if (error instanceof CdkdError) {
+        markLeftBehind(error);
+        throw error;
+      }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
+      throw this.wrapMaskedError(log.mask, error, (text) =>
+        markLeftBehind(
           new ProvisioningError(
             `Failed to create IAM managed policy ${logicalId}: ${text}`,
             resourceType,
@@ -289,6 +299,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
             policyName,
             cause
           )
+        )
       );
     }
   }

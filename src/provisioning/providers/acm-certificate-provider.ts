@@ -15,6 +15,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { isPlainImportValue, normalizeAwsTagsToCfn, VALUE_NOT_SHOWN } from '../import-helpers.js';
@@ -336,28 +337,45 @@ export class ACMCertificateProvider implements ResourceProvider {
       // that case appends rather than passing through silently.
       if (error instanceof CdkdError) {
         if (survivorNote === undefined) throw error;
-        throw new ProvisioningError(
+        const thrown = new ProvisioningError(
           `${error.message} ${survivorNote}`,
           resourceType,
           logicalId,
           requestedArn,
           error
         );
+        // go-to-k/cdkd#4583: the cleanup could not delete the certificate this
+        // call requested, so name its ARN (the id delete() takes) for the journal.
+        // A survivor note implies a request returned, so `requestedArn` is set.
+        if (requestedArn) markCreatedBeforeFailure(thrown, logicalId, resourceType, requestedArn);
+        throw thrown;
       }
       const cause = error instanceof Error ? error : undefined;
       const detail = error instanceof Error ? error.message : String(error);
       // The survivor note can join this line with a pasteable `aws acm
       // delete-certificate`, so the logical id is shown only when plain
       // (go-to-k/cdkd#4295).
+      const message = `Failed to create ACM certificate ${logicalIdShown(logicalId)}: ${detail}`;
+      if (requestedArn && survivorNote !== undefined) {
+        const thrown = new ProvisioningError(
+          `${message} ${survivorNote}`,
+          resourceType,
+          logicalId,
+          requestedArn,
+          cause
+        );
+        // go-to-k/cdkd#4583: only a FAILED cleanup leaves the certificate behind.
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, requestedArn);
+        throw thrown;
+      }
       throw new ProvisioningError(
-        `Failed to create ACM certificate ${logicalIdShown(logicalId)}: ${detail}` +
-          (survivorNote === undefined ? '' : ` ${survivorNote}`),
+        message,
         resourceType,
         logicalId,
         // The reporter's own ask (issue #2169): the ARN `RequestCertificate`
         // returned survives the failure instead of being dropped. It names a
         // DELETED certificate on the ordinary path, and a live one when the
-        // cleanup could not retire it -- which is what `survivorNote` says.
+        // cleanup could not retire it -- which the branch above appends.
         requestedArn,
         cause
       );

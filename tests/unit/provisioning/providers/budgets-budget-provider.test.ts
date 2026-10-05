@@ -6,7 +6,10 @@ const mockStsSend = vi.hoisted(() => vi.fn());
 // Mutable so a test can drive the BudgetsClient's resolved region, which is
 // where `budgetArn` reads the partition from (issue #1815). Reset to
 // `us-east-1` in `beforeEach`.
-const clientRegion = vi.hoisted(() => ({ value: 'us-east-1' as string | undefined }));
+const clientRegion = vi.hoisted(() => ({
+  value: 'us-east-1' as string | undefined,
+  fail: false,
+}));
 
 vi.mock('@aws-sdk/client-budgets', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-budgets')>();
@@ -14,7 +17,12 @@ vi.mock('@aws-sdk/client-budgets', async (importOriginal) => {
     ...actual,
     BudgetsClient: vi.fn().mockImplementation(() => ({
       send: mockSend,
-      config: { region: () => Promise.resolve(clientRegion.value) },
+      config: {
+        region: () =>
+          clientRegion.fail
+            ? Promise.reject(new Error('region boom'))
+            : Promise.resolve(clientRegion.value),
+      },
     })),
   };
 });
@@ -102,12 +110,21 @@ describe('BudgetsBudgetProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clientRegion.value = 'us-east-1';
+    clientRegion.fail = false;
     mockStsSend.mockResolvedValue({ Account: ACCOUNT });
     mockSend.mockResolvedValue({});
     provider = new BudgetsBudgetProvider();
   });
 
   describe('create', () => {
+    it('reads the ARN region before CreateBudget, so its failure leaves no budget (go-to-k/cdkd#4583)', async () => {
+      clientRegion.fail = true;
+      await expect(provider.create('MyBudget', TYPE, budgetProps('team-budget'))).rejects.toThrow(
+        'region boom'
+      );
+      expect(callsOf(CreateBudgetCommand)).toEqual([]);
+    });
+
     it('creates a budget with the explicit name and converts Amount to a string', async () => {
       const result = await provider.create('MyBudget', TYPE, budgetProps('team-budget'));
 

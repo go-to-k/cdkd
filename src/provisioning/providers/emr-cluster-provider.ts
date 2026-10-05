@@ -33,6 +33,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   pasteableAwsCommand,
@@ -554,6 +555,9 @@ export class EMRClusterProvider implements ResourceProvider {
       // about to throw without returning a physicalId — the deploy engine
       // cannot roll it back, and a live EMR cluster bills per instance-hour.
       // Best-effort terminate it here.
+      // go-to-k/cdkd#4583: the id of a cluster RunJobFlow returned that the
+      // terminate below could not stop, named for the failed-CREATE journal.
+      let survivorId: string | undefined;
       if (clusterId !== undefined) {
         try {
           // If the template requested Instances.TerminationProtected: true the
@@ -571,6 +575,7 @@ export class EMRClusterProvider implements ResourceProvider {
           await this.getClient().send(new TerminateJobFlowsCommand({ JobFlowIds: [clusterId] }));
           this.logger.warn(`Rolled back partially-created EMR Cluster ${clusterId}`);
         } catch (cleanupError) {
+          survivorId = clusterId;
           this.logger.warn(
             `Failed to roll back partially-created EMR Cluster ${clusterId}: ${
               describeAwsFailure(cleanupError).detail
@@ -578,15 +583,20 @@ export class EMRClusterProvider implements ResourceProvider {
           );
         }
       }
-      if (error instanceof ProvisioningError) throw error;
+      if (error instanceof ProvisioningError) {
+        if (survivorId !== undefined) {
+          markCreatedBeforeFailure(error, logicalId, resourceType, survivorId);
+        }
+        throw error;
+      }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create EMR Cluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
-      );
+      const message = `Failed to create EMR Cluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`;
+      if (survivorId !== undefined) {
+        const thrown = new ProvisioningError(message, resourceType, logicalId, undefined, cause);
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, survivorId);
+        throw thrown;
+      }
+      throw new ProvisioningError(message, resourceType, logicalId, undefined, cause);
     }
   }
 

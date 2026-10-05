@@ -11,9 +11,17 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
   return {
     ...actual,
     ElasticLoadBalancingV2Client: vi.fn().mockImplementation(() => ({
-      send: (command: { constructor: { name: string }; input?: { Names?: unknown } }) =>
-        // The by-name lookup before a create (go-to-k/cdkd#4403): the name is free.
-        command.input?.Names !== undefined
+      send: (command: {
+        constructor: { name: string };
+        input?: { Names?: unknown; LoadBalancerArn?: unknown };
+      }) =>
+        // The by-port lookup before a listener create (go-to-k/cdkd#4403): the
+        // port is free.
+        command.constructor.name === 'DescribeListenersCommand' &&
+        command.input?.LoadBalancerArn !== undefined
+          ? (routedLookups(command), Promise.resolve({ Listeners: [] }))
+          : // The by-name lookup before a create (go-to-k/cdkd#4403): the name is free.
+            command.input?.Names !== undefined
           ? (routedLookups(command), Promise.reject(
               Object.assign(new Error('One or more resources not found'), {
                 name:

@@ -19,6 +19,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
@@ -481,6 +482,8 @@ export class NeptuneProvider implements ResourceProvider {
       (properties['DBClusterIdentifier'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 63, lowercase: true });
 
+    // go-to-k/cdkd#4583: set once CreateDBCluster returned (no self-cleanup).
+    let clusterCreated = false;
     try {
       const response = await this.getClient().send(
         new CreateDBClusterCommand({
@@ -517,6 +520,7 @@ export class NeptuneProvider implements ResourceProvider {
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
+      clusterCreated = true;
 
       const cluster = response.DBCluster;
       if (!cluster) {
@@ -539,15 +543,22 @@ export class NeptuneProvider implements ResourceProvider {
         attributes: clusterAttributes(described),
       };
     } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Neptune DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        dbClusterIdentifier,
-        cause
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to create Neptune DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              dbClusterIdentifier,
+              error instanceof Error ? error : undefined
+            );
+      // go-to-k/cdkd#4583: the cluster exists and no state record will hold
+      // it; never before CreateDBCluster returned (another owner's name).
+      if (clusterCreated) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, dbClusterIdentifier);
+      }
+      throw thrown;
     }
   }
 
@@ -815,6 +826,8 @@ export class NeptuneProvider implements ResourceProvider {
       (properties['DBInstanceIdentifier'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 63, lowercase: true });
 
+    // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
+    let instanceCreated = false;
     try {
       const response = await this.getClient().send(
         new CreateDBInstanceCommand({
@@ -834,6 +847,7 @@ export class NeptuneProvider implements ResourceProvider {
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
+      instanceCreated = true;
 
       const instance = response.DBInstance;
       if (!instance) {
@@ -856,15 +870,22 @@ export class NeptuneProvider implements ResourceProvider {
         attributes: instanceAttributes(described),
       };
     } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Neptune DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        dbInstanceIdentifier,
-        cause
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to create Neptune DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              dbInstanceIdentifier,
+              error instanceof Error ? error : undefined
+            );
+      // go-to-k/cdkd#4583: the instance exists and no state record will hold
+      // it; never before CreateDBInstance returned (another owner's name).
+      if (instanceCreated) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, dbInstanceIdentifier);
+      }
+      throw thrown;
     }
   }
 

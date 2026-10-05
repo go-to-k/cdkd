@@ -53,6 +53,7 @@ import { nestedStackChildFailureMessage } from '../nested-stack-messages.js';
 // `ResourceUpdateNotSupportedError` — the class raised here is NOT a refusal
 // in every instance (see the per-arm note at the `errorCount` throw).
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { clearCreatedBeforeFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import {
   carriesSecretMask,
   hasMaskableValues,
@@ -272,7 +273,7 @@ export class NestedStackProvider implements ResourceProvider {
 
   async create(
     logicalId: string,
-    _resourceType: string,
+    resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
@@ -302,42 +303,65 @@ export class NestedStackProvider implements ResourceProvider {
       `Deploying nested stack ${displaySafe(childStackName)} (logicalId=${displaySafe(logicalId)}, ${resourceCount} resource(s))`
     );
 
-    const pendingChildDeletes = await this.runChildDeploy(
-      ctx,
-      logicalId,
-      childStackName,
-      childRegion,
-      childTemplate,
-      childParameters,
-      grandchildTemplates
-    );
-
-    const childOutputs = await this.readChildOutputsAsAttributes(ctx, childStackName, childRegion);
-    const pendingRecord =
-      context?.replayingState === true
-        ? undefined
-        : recordWithPendingChildDeletes(properties, pendingChildDeletes);
-
-    return {
-      physicalId: this.synthesizeArn(
-        ctx.accountId,
-        // The CHILD's region, not the parent's — identical today (see
-        // `childRegion` above) but the two are named apart because the
-        // resolver READS this segment back as the producer region when it
-        // re-resolves a redacted child output (issue #2055).
+    let pendingChildDeletes: Awaited<ReturnType<NestedStackProvider['runChildDeploy']>>;
+    try {
+      pendingChildDeletes = await this.runChildDeploy(
+        ctx,
+        logicalId,
+        childStackName,
         childRegion,
-        ctx.parentStackName,
-        logicalId
-      ),
-      attributes: childOutputs.attributes,
-      // Issue #2274: names the recovered outputs so the deploy engine
-      // re-registers them as mask-only needles for this record and for every
-      // parent resource that resolves one.
-      ...(childOutputs.noEchoAttributeNames.length > 0 && {
-        noEchoAttributeNames: childOutputs.noEchoAttributeNames,
-      }),
-      ...(pendingRecord && { effectiveProperties: pendingRecord }),
-    };
+        childTemplate,
+        childParameters,
+        grandchildTemplates
+      );
+    } catch (error) {
+      // go-to-k/cdkd#4583: the child's journal already holds its rows' marks;
+      // read again here, a grandchild stack sharing this row's logical id
+      // would be journaled as THIS row's resource.
+      clearCreatedBeforeFailure(error);
+      throw error;
+    }
+
+    // The CHILD's region, not the parent's — identical today (see
+    // `childRegion` above) but the two are named apart because the resolver
+    // READS this segment back as the producer region when it re-resolves a
+    // redacted child output (issue #2055).
+    const physicalId = this.synthesizeArn(
+      ctx.accountId,
+      childRegion,
+      ctx.parentStackName,
+      logicalId
+    );
+    try {
+      const childOutputs = await this.readChildOutputsAsAttributes(
+        ctx,
+        childStackName,
+        childRegion
+      );
+      const pendingRecord =
+        context?.replayingState === true
+          ? undefined
+          : recordWithPendingChildDeletes(properties, pendingChildDeletes);
+
+      return {
+        physicalId,
+        attributes: childOutputs.attributes,
+        // Issue #2274: names the recovered outputs so the deploy engine
+        // re-registers them as mask-only needles for this record and for every
+        // parent resource that resolves one.
+        ...(childOutputs.noEchoAttributeNames.length > 0 && {
+          noEchoAttributeNames: childOutputs.noEchoAttributeNames,
+        }),
+        ...(pendingRecord && { effectiveProperties: pendingRecord }),
+      };
+    } catch (error) {
+      // go-to-k/cdkd#4583: the child stack is deployed (its own state holds
+      // its resources) and this row would hold nothing, so name it for the
+      // failed-CREATE journal. `delete()` addresses the child by the parent
+      // stack name and logical id; the id is the one a success records.
+      markCreatedBeforeFailure(error, logicalId, resourceType, physicalId);
+      throw error;
+    }
   }
 
   async update(

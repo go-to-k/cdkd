@@ -535,6 +535,9 @@ export class BudgetsBudgetProvider implements ResourceProvider {
         lists.NotificationsWithSubscribers
       );
       const resourceTags = this.toSdkResourceTags(lists.ResourceTags);
+      // Read before CreateBudget, so nothing can fail once the budget exists
+      // (go-to-k/cdkd#4583).
+      const arn = await this.budgetArn(accountId, name);
 
       await this.getClient().send(
         new CreateBudgetCommand({
@@ -549,7 +552,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       return {
         physicalId: name,
         attributes: {
-          Arn: await this.budgetArn(accountId, name),
+          Arn: arn,
         },
       };
     } catch (error) {

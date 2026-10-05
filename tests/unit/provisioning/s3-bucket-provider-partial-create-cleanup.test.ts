@@ -42,6 +42,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
+import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
 
@@ -151,5 +152,50 @@ describe('S3BucketProvider partial-create cleanup (Issue #376)', () => {
     const warnMsg = String(warnSpy.mock.calls[0][0]);
     expect(warnMsg).toContain('aws s3api delete-bucket --bucket');
     expect(warnMsg).toContain('my-test-bucket-xxx');
+  });
+
+  // go-to-k/cdkd#4583: a bucket this create made and left behind is named for
+  // `cdkd rollback --revert-failed`; one it cleaned up, or adopted, is not.
+  describe('createdBeforeFailure mark (go-to-k/cdkd#4583)', () => {
+    const props = { BucketName: 'my-test-bucket-xxx', VersioningConfiguration: { Status: 'Enabled' } };
+    async function failure(): Promise<unknown> {
+      return provider.create('MyBucket', RESOURCE_TYPE, props).then(
+        () => expect.fail('create resolved'),
+        (e: unknown) => e
+      );
+    }
+
+    it('marks the bucket name when the wiring fails and the cleanup delete fails', async () => {
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockRejectedValueOnce(new Error('wiring boom'));
+      mockSend.mockRejectedValueOnce(new Error('DeleteBucket boom'));
+      expect(createdBeforeFailure(await failure(), 'MyBucket', RESOURCE_TYPE)).toBe('my-test-bucket-xxx');
+    });
+
+    it('does not mark when the cleanup delete succeeded', async () => {
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockRejectedValueOnce(new Error('wiring boom'));
+      mockSend.mockResolvedValueOnce({});
+      const error = await failure();
+      // The cleanup really ran, so the undefined is the cleanup's, not an early exit.
+      expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toContain('DeleteBucketCommand');
+      expect(createdBeforeFailure(error, 'MyBucket', RESOURCE_TYPE)).toBeUndefined();
+    });
+
+    it('does not mark an adopted pre-existing bucket (cleanup skipped)', async () => {
+      mockSend.mockRejectedValueOnce(new BucketAlreadyOwnedByYou('you already own it'));
+      mockSend.mockResolvedValueOnce({ LocationConstraint: 'eu-west-1' });
+      mockSend.mockRejectedValueOnce(new Error('wiring boom'));
+      const error = await failure();
+      expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toContain(
+        'PutBucketVersioningCommand'
+      );
+      expect(createdBeforeFailure(error, 'MyBucket', RESOURCE_TYPE)).toBeUndefined();
+    });
+
+    it('does not mark when CreateBucket itself fails', async () => {
+      mockSend.mockRejectedValueOnce(new Error('CreateBucket boom'));
+      expect(createdBeforeFailure(await failure(), 'MyBucket', RESOURCE_TYPE)).toBeUndefined();
+    });
   });
 });

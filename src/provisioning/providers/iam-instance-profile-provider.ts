@@ -22,7 +22,7 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import {
   onlySecretDerived,
   readPrincipalLists,
@@ -117,6 +117,9 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     }
     const roles = principals.lists.Roles;
 
+    // go-to-k/cdkd#4583: set once CreateInstanceProfile returns; cleared when the
+    // partial-create cleanup deleted the profile, so only a left-behind one is marked.
+    let leftBehind = false;
     try {
       // Create instance profile
       const response = await this.iamClient.send(
@@ -125,6 +128,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
           Path: path,
         })
       );
+      leftBehind = true;
 
       log.debug(`Created IAM instance profile: ${v(instanceProfileName)}`);
 
@@ -171,6 +175,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
           await this.iamClient.send(
             new DeleteInstanceProfileCommand({ InstanceProfileName: instanceProfileName })
           );
+          leftBehind = false;
           log.debug(
             `Cleaned up partially-created IAM instance profile ${logicalId} (${v(instanceProfileName)}) after wiring failure`
           );
@@ -205,7 +210,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         error,
         (text) =>
@@ -217,6 +222,10 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
             cause
           )
       );
+      if (leftBehind) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, instanceProfileName);
+      }
+      throw thrown;
     }
   }
 

@@ -48,6 +48,7 @@ import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -222,45 +223,52 @@ export class RDSDBProxyProvider implements ResourceProvider {
     let vpcId: string | undefined;
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     let status: string | undefined;
-    while (Date.now() < deadline) {
-      try {
-        const describe = await client.send(
-          new DescribeDBProxiesCommand({ DBProxyName: dbProxyName })
-        );
-        const proxy = describe.DBProxies?.[0];
-        status = proxy?.Status;
-        if (status === 'available') {
-          endpoint = proxy?.Endpoint;
-          dbProxyArn = proxy?.DBProxyArn;
-          vpcId = proxy?.VpcId;
-          break;
-        }
-        if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
-          throw new ProvisioningError(
-            `DBProxy ${dbProxyName} entered terminal failure state: ${status}`,
-            resourceType,
-            logicalId,
-            dbProxyName
+    try {
+      while (Date.now() < deadline) {
+        try {
+          const describe = await client.send(
+            new DescribeDBProxiesCommand({ DBProxyName: dbProxyName })
           );
+          const proxy = describe.DBProxies?.[0];
+          status = proxy?.Status;
+          if (status === 'available') {
+            endpoint = proxy?.Endpoint;
+            dbProxyArn = proxy?.DBProxyArn;
+            vpcId = proxy?.VpcId;
+            break;
+          }
+          if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
+            throw new ProvisioningError(
+              `DBProxy ${dbProxyName} entered terminal failure state: ${status}`,
+              resourceType,
+              logicalId,
+              dbProxyName
+            );
+          }
+        } catch (error) {
+          if (error instanceof DBProxyNotFoundFault) {
+            // Not yet visible — keep polling.
+          } else if (error instanceof ProvisioningError) {
+            throw error;
+          } else {
+            throw this.wrapError(error, 'CREATE (poll)', resourceType, logicalId, dbProxyName);
+          }
         }
-      } catch (error) {
-        if (error instanceof DBProxyNotFoundFault) {
-          // Not yet visible — keep polling.
-        } else if (error instanceof ProvisioningError) {
-          throw error;
-        } else {
-          throw this.wrapError(error, 'CREATE (poll)', resourceType, logicalId, dbProxyName);
-        }
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
       }
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    }
-    if (!endpoint || !dbProxyArn) {
-      throw new ProvisioningError(
-        `Timed out waiting for DBProxy ${dbProxyName} to become available (last status: ${status ?? 'unknown'})`,
-        resourceType,
-        logicalId,
-        dbProxyName
-      );
+      if (!endpoint || !dbProxyArn) {
+        throw new ProvisioningError(
+          `Timed out waiting for DBProxy ${dbProxyName} to become available (last status: ${status ?? 'unknown'})`,
+          resourceType,
+          logicalId,
+          dbProxyName
+        );
+      }
+    } catch (error) {
+      // go-to-k/cdkd#4583: CreateDBProxy returned, so the proxy exists under
+      // `dbProxyName` (the id delete() takes); name it for --revert-failed.
+      markCreatedBeforeFailure(error, logicalId, resourceType, dbProxyName);
+      throw error;
     }
 
     return {

@@ -40,7 +40,7 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import {
   isAmbiguousOutcomeError,
@@ -426,6 +426,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       undefined
     );
 
+    // go-to-k/cdkd#4583: the created repository's name while it is left live
+    // (set on create, cleared once the post-create self-clean deleted it).
+    let leftLiveName: string | undefined;
     try {
       const tags = toSdkTagMap(lists.Tags as CfnTag[]);
       const description = properties['RepositoryDescription'] as string | undefined;
@@ -445,6 +448,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         throw new Error('CreateRepository did not return repository metadata');
       }
       const createdName = metadata.repositoryName;
+      leftLiveName = createdName;
 
       // Post-create orchestration (`Code` seed + `Triggers`). If either
       // fails, the repository already exists on AWS but the deploy engine's
@@ -472,7 +476,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
           `Post-create step failed for CodeCommit Repository ${logicalId}; deleting the ` +
             `just-created repository ${createdName} to avoid an orphan`
         );
-        await this.bestEffortDelete(createdName);
+        if (await this.bestEffortDelete(createdName)) leftLiveName = undefined;
         // The repository itself was created: an "already exists" from here is
         // an auxiliary object's, not this repository's name collision (#3826).
         throw markAuxiliaryFailure(postCreateError, logicalId);
@@ -486,13 +490,19 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create CodeCommit Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         repositoryName,
         cause
       );
+      // go-to-k/cdkd#4583: the self-clean delete failed, so the repository is
+      // live with no state record; name it for the failed-CREATE journal.
+      if (leftLiveName !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftLiveName);
+      }
+      throw thrown;
     }
   }
 
@@ -1486,16 +1496,19 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * Best-effort delete used to roll back a just-created repository when a
    * post-create step (`Code` seed / `Triggers`) fails. Never throws — the
    * original post-create error is what the caller re-throws; a cleanup
-   * failure is logged so the orphan is surfaced.
+   * failure is logged so the orphan is surfaced. Returns whether the delete
+   * succeeded (go-to-k/cdkd#4583 marks a repository it left live).
    */
-  private async bestEffortDelete(repositoryName: string): Promise<void> {
+  private async bestEffortDelete(repositoryName: string): Promise<boolean> {
     try {
       await this.getClient().send(new DeleteRepositoryCommand({ repositoryName }));
+      return true;
     } catch (cleanupError) {
       this.logger.warn(
         `Failed to clean up CodeCommit Repository ${repositoryName} after a post-create failure: ` +
           `${describeAwsFailure(cleanupError).detail}`
       );
+      return false;
     }
   }
 

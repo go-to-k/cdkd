@@ -37,6 +37,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 /**
  * AWS Lambda MicroVM Image Provider
@@ -181,9 +182,11 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
     };
     if (tagList.length > 0) input.tags = Object.fromEntries(tagList.map((t) => [t.Key, t.Value]));
 
+    let createdArn: string | undefined;
     try {
       const response = await this.client.send(new CreateMicrovmImageCommand(input));
       const imageArn = response.imageArn;
+      createdArn = imageArn;
       if (!imageArn) {
         throw new ProvisioningError(
           `CreateMicrovmImage succeeded but no imageArn returned for ${logicalId}`,
@@ -225,7 +228,11 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
         }),
       };
     } catch (error) {
-      throw this.wrapError('create', logicalId, resourceType, undefined, error);
+      const thrown = this.wrapError('create', logicalId, resourceType, undefined, error);
+      // go-to-k/cdkd#4583: the image exists once CreateMicrovmImage returned its
+      // ARN (the id delete() takes); name it for --revert-failed.
+      if (createdArn) markCreatedBeforeFailure(thrown, logicalId, resourceType, createdArn);
+      throw thrown;
     }
   }
 

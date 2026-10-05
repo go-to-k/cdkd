@@ -32,7 +32,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { holdsSecretDerivedEntry, recordedPrincipalsRepair } from '../iam-policy-targets.js';
 import {
   DBPROXY_TAG_OPTIONS,
@@ -397,7 +397,10 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           targetGroupName,
           dbClusterIdentifiers,
           dbInstanceIdentifiers,
-          context?.maskSecrets
+          context?.maskSecrets,
+          // go-to-k/cdkd#4583: the ARN is known here (the id delete() takes),
+          // so a registration the deregister could not retire is journaled.
+          { logicalId, resourceType, physicalId: targetGroupArn }
         );
       }
     }
@@ -1179,7 +1182,9 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
   /**
    * Deregister what a failing `create()` registered, then hand back the
    * ORIGINAL error — with the manual command appended when the cleanup
-   * itself fails.
+   * itself fails. With `leftBehind` (the target group's ARN, once known),
+   * that failure also marks the error for the failed-CREATE journal
+   * (go-to-k/cdkd#4583); a successful deregister leaves nothing to mark.
    */
   private async retireRegistrationAfterFailedCreate(
     original: ProvisioningError,
@@ -1187,7 +1192,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     targetGroupName: string,
     dbClusterIdentifiers: string[] | undefined,
     dbInstanceIdentifiers: string[] | undefined,
-    maskSecrets: ((text: string) => string) | undefined
+    maskSecrets: ((text: string) => string) | undefined,
+    leftBehind?: { logicalId: string; resourceType: string; physicalId: string }
   ): Promise<ProvisioningError> {
     const clusters = dbClusterIdentifiers?.length ? dbClusterIdentifiers : undefined;
     const instances = dbInstanceIdentifiers?.length ? dbInstanceIdentifiers : undefined;
@@ -1220,6 +1226,14 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         ` The targets this create registered are still registered and could not be ` +
         `deregistered (${describeAwsFailure(cleanupError).detail}). Manual cleanup: ` +
         aws`aws rds deregister-db-proxy-targets --db-proxy-name ${dbProxyName} --target-group-name ${targetGroupName}${targets}`.render();
+      if (leftBehind) {
+        markCreatedBeforeFailure(
+          original,
+          leftBehind.logicalId,
+          leftBehind.resourceType,
+          leftBehind.physicalId
+        );
+      }
       return original;
     }
   }

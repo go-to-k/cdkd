@@ -212,7 +212,9 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
       const name = `/cdkd/a${CONTROL_BYTE}b`;
       await runFailedCleanup(name);
       expect(warnings()).toContain('Failed to clean up partially-created SSM parameter MyParam');
-      expect(warnings()).toContain('Manual deletion may be required');
+      expect(warnings()).toContain('`cdkd rollback --revert-failed`; otherwise delete it yourself');
+      // go-to-k/cdkd#4604: only a first-time CREATE is journaled with the id.
+      expect(warnings()).toContain("On a first-time create the failed deploy's rollback journal");
     });
 
     it('SUPPRESSES the command for a name the MASKER would change', async () => {
@@ -508,10 +510,13 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
       const second = warnings();
       // The `'` suppresses the command in both (go-to-k/cdkd#3950).
       const suppressed =
-        'Manual deletion may be required before the next deploy, via the console: the bucket name ' +
-        'cannot be reproduced safely on a command line';
+        ', via the console: the bucket name cannot be reproduced safely on a command line';
       expect(first).toContain(suppressed);
       expect(second).toContain(suppressed);
+      // Only the cleanup-failed arm's bucket is journaled (go-to-k/cdkd#4583).
+      expect(first).toContain('`cdkd rollback --revert-failed`; otherwise delete it yourself');
+      expect(second).toContain('Manual deletion may be required before the next deploy');
+      expect(second).not.toContain('--revert-failed');
       expect(first).not.toContain(BEFORE);
       expect(second).not.toContain(BEFORE);
     });

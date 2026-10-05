@@ -96,7 +96,7 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import {
   planTagDiff,
   readTagList,
@@ -147,15 +147,25 @@ import {
  * command for a secret-bearing bucket name — which a message-level mask could
  * not catch once `shellQuote` has escaped an inner quote.
  */
-function manualBucketDeletionClause(bucketName: string, maskSecrets: MaskerFn): string {
+function manualBucketDeletionClause(
+  bucketName: string,
+  maskSecrets: MaskerFn,
+  journaled: boolean
+): string {
   const command = renderDisableCommand({
     before: 'aws s3api delete-bucket --bucket',
     identifier: bucketName,
     maskSecrets,
   });
+  // `journaled`: create() marked the bucket (go-to-k/cdkd#4583), so the failed
+  // deploy's rollback journal names it; the manual command is the fallback.
+  const lead = journaled
+    ? "On a first-time create the failed deploy's rollback journal records the bucket for `cdkd rollback --revert-failed`; " +
+      'otherwise delete it yourself before the next deploy'
+    : 'Manual deletion may be required before the next deploy';
   return command
-    ? `Manual deletion may be required before the next deploy: ${command}`
-    : 'Manual deletion may be required before the next deploy, via the console: the bucket name ' +
+    ? `${lead}: ${command}`
+    : `${lead}, via the console: the bucket name ` +
         'cannot be reproduced safely on a command line, so any command shown here could act on a ' +
         'different bucket or run part of the name as shell.';
 }
@@ -6374,6 +6384,9 @@ export class S3BucketProvider implements ResourceProvider {
         lowercase: true,
         allowedPattern: /[^a-z0-9.-]/g,
       });
+    // go-to-k/cdkd#4583: true while a bucket THIS call created (`createdNewBucket`)
+    // exists with no state record; cleared once the cleanup below deletes it.
+    let bucketLeftBehind = false;
 
     try {
       // CreateBucket params
@@ -6593,6 +6606,7 @@ export class S3BucketProvider implements ResourceProvider {
       try {
         await this.s3Client.send(new CreateBucketCommand(createParams));
         createdNewBucket = preflight.kind === 'absent';
+        bucketLeftBehind = createdNewBucket;
         if (preflight.kind === 'region' && preflight.region !== 'us-east-1') {
           // A 200 over a bucket the pre-flight placed in ANOTHER region.
           // Refuse with the same message the 409 path raises, rather than warn
@@ -6706,6 +6720,7 @@ export class S3BucketProvider implements ResourceProvider {
         if (createdNewBucket) {
           try {
             await this.s3Client.send(new DeleteBucketCommand({ Bucket: bucketName }));
+            bucketLeftBehind = false;
             this.logger.debug(
               `Cleaned up partially-created S3 bucket ${displaySafe(logicalId)} (${this.shown(bucketName)}) after wiring failure`
             );
@@ -6732,7 +6747,7 @@ export class S3BucketProvider implements ResourceProvider {
               safeMsg`Failed to clean up partially-created S3 bucket ${displaySafe(logicalId)} (${this.shown(bucketName)}) ` +
                 safeMsg`(${cleanupError instanceof Error ? cleanupError.name : typeof cleanupError}). ` +
                 `Re-run with --verbose for AWS's own message. ` +
-                safeMsg`${manualBucketDeletionClause(bucketName, this.shownMask)}`
+                safeMsg`${manualBucketDeletionClause(bucketName, this.shownMask, true)}`
             );
           }
         } else if (preflight.kind === 'indeterminate') {
@@ -6761,7 +6776,7 @@ export class S3BucketProvider implements ResourceProvider {
               safeMsg`${preflight.errorName}), and in us-east-1 a successful CreateBucket does not ` +
               `prove it. Re-run with --verbose for AWS's own message. If cdkd created it, the ` +
               `bucket is an orphan. ` +
-              safeMsg`${manualBucketDeletionClause(bucketName, this.shownMask)}`
+              safeMsg`${manualBucketDeletionClause(bucketName, this.shownMask, false)}`
           );
         }
         // The bucket itself is in hand: an "already exists" from its wiring is
@@ -6797,7 +6812,9 @@ export class S3BucketProvider implements ResourceProvider {
         ...(effectiveProperties ? { effectiveProperties } : {}),
       };
     } catch (error) {
-      throw this.wrapOperationError('create', logicalId, resourceType, bucketName, error);
+      const thrown = this.wrapOperationError('create', logicalId, resourceType, bucketName, error);
+      if (bucketLeftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, bucketName);
+      throw thrown;
     }
   }
 

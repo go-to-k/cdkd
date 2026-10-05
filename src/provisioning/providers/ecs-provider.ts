@@ -88,6 +88,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markRedactedCause } from '../../deployment/retryable-errors.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -130,6 +131,12 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import {
+  hasErrorName,
+  nameHeldBefore,
+  skippedCleanupText,
+  type NameHeldBefore,
+} from './create-ownership.js';
 import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 import {
   AmbiguousCreateLatch,
@@ -1338,8 +1345,22 @@ export class ECSProvider implements ResourceProvider {
     const serviceName =
       (properties['ServiceName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 255 });
+    // go-to-k/cdkd#4583: the ARN of a service CreateService returned that the
+    // cleanup below could not delete, named for the failed-CREATE journal.
+    let survivorArn: string | undefined;
 
     try {
+      // Whether the cleanup below may delete what CreateService returns: with
+      // identical parameters it hands back an ACTIVE service already holding
+      // the name (go-to-k/cdkd#4403). Asked only when the wait can fail.
+      const heldBefore: NameHeldBefore =
+        process.env['CDKD_FULL_WAIT'] === 'true'
+          ? await nameHeldBefore(
+              () => this.serviceNameHeld(properties['Cluster'] as string | undefined, serviceName),
+              (error) => hasErrorName(error, ['ClusterNotFoundException'])
+            )
+          : 'free';
+
       const response = await client.send(
         new CreateServiceCommand({
           cluster: properties['Cluster'] as string | undefined,
@@ -1473,25 +1494,37 @@ export class ECSProvider implements ResourceProvider {
         const cleanupCluster = properties['Cluster'] as string | undefined;
         const clusterArg = cleanupCluster ? aws` --cluster ${cleanupCluster}` : aws``;
         const listStopped = aws`aws ecs list-tasks${clusterArg} --desired-status STOPPED`;
-        try {
-          await client.send(
-            new DeleteServiceCommand({
-              cluster: properties['Cluster'] as string | undefined,
-              service: service.serviceArn,
-              force: true,
-            })
-          );
-          // warn, not debug: the dominant --full-wait failure is a crashing
-          // container, and this delete removes the service the user would
-          // reach for first when asking "why". Say where the evidence
-          // still lives (issue #1291 item 2).
+        const deleteCommand = aws`aws ecs delete-service${clusterArg} --service ${service.serviceArn} --force`;
+        if (heldBefore !== 'free') {
           log.warn(
-            `Deleted partially-created ECS service ${logicalId} (${service.serviceArn}) after the steady-state wait failed, so the next deploy's CreateService does not collide on the name. Its stopped tasks remain inspectable for about an hour: ${listStopped.render()}`
+            skippedCleanupText(
+              heldBefore,
+              `ECS service ${logicalIdShown(logicalId)} ${isPlainImportValue(service.serviceArn) ? `(${service.serviceArn})` : VALUE_NOT_SHOWN}`,
+              deleteCommand.render()
+            )
           );
-        } catch (cleanupError) {
-          log.warn(
-            `Failed to clean up partially-created ECS service ${logicalIdShown(logicalId)} ${isPlainImportValue(service.serviceArn) ? `(${service.serviceArn})` : VALUE_NOT_SHOWN}: ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${aws`aws ecs delete-service${clusterArg} --service ${service.serviceArn} --force`.render()}`
-          );
+        } else {
+          try {
+            await client.send(
+              new DeleteServiceCommand({
+                cluster: properties['Cluster'] as string | undefined,
+                service: service.serviceArn,
+                force: true,
+              })
+            );
+            // warn, not debug: the dominant --full-wait failure is a crashing
+            // container, and this delete removes the service the user would
+            // reach for first when asking "why". Say where the evidence
+            // still lives (issue #1291 item 2).
+            log.warn(
+              `Deleted partially-created ECS service ${logicalId} (${service.serviceArn}) after the steady-state wait failed, so the next deploy's CreateService does not collide on the name. Its stopped tasks remain inspectable for about an hour: ${listStopped.render()}`
+            );
+          } catch (cleanupError) {
+            survivorArn = service.serviceArn;
+            log.warn(
+              `Failed to clean up partially-created ECS service ${logicalIdShown(logicalId)} ${isPlainImportValue(service.serviceArn) ? `(${service.serviceArn})` : VALUE_NOT_SHOWN}: ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${deleteCommand.render()}`
+            );
+          }
         }
         // The SDK waiter's bare "Waiter has timed out" explains nothing.
         // Carry the diagnosis path in the thrown message; the wrapping
@@ -1515,22 +1548,50 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log,
-        error,
-        (text) =>
-          new ProvisioningError(
-            // The wrapped text can be the `--full-wait` refusal, with its `aws`
-            // commands, so the logical id is shown only when plain
-            // (go-to-k/cdkd#4295).
-            `Failed to create ECS service ${logicalIdShown(logicalId)}: ${text}`,
-            resourceType,
-            logicalId,
-            serviceName,
-            cause
-          )
-      );
+      throw this.wrapMaskedError(log, error, (text) => {
+        const wrapped = new ProvisioningError(
+          // The wrapped text can be the `--full-wait` refusal, with its `aws`
+          // commands, so the logical id is shown only when plain
+          // (go-to-k/cdkd#4295).
+          `Failed to create ECS service ${logicalIdShown(logicalId)}: ${text}`,
+          resourceType,
+          logicalId,
+          serviceName,
+          cause
+        );
+        // The ARN is what delete() takes (the success physicalId).
+        if (survivorArn !== undefined) {
+          markCreatedBeforeFailure(wrapped, logicalId, resourceType, survivorArn);
+        }
+        return wrapped;
+      });
     }
+  }
+
+  /**
+   * Does a service that is not INACTIVE already hold `serviceName` in
+   * `cluster`? The by-name lookup before CreateService (go-to-k/cdkd#4403):
+   * CreateService hands back an ACTIVE service with identical parameters, and
+   * refuses the name while one is DRAINING, so both read as held. An INACTIVE
+   * service is gone (a create under its name makes a new one), as is a
+   * `MISSING` failure. Any other answer throws, which reads as `unknown`.
+   */
+  private async serviceNameHeld(
+    cluster: string | undefined,
+    serviceName: string
+  ): Promise<boolean> {
+    const response = await this.getClient().send(
+      new DescribeServicesCommand({ cluster, services: [serviceName] })
+    );
+    const services = response.services ?? [];
+    const failures = response.failures ?? [];
+    if (services.length === 0 && failures.length === 1 && failures[0]?.reason === 'MISSING') {
+      return false;
+    }
+    if (failures.length > 0 || services.length !== 1) {
+      throw new Error('DescribeServices gave no readable answer for the service name');
+    }
+    return services[0]!.status !== 'INACTIVE';
   }
 
   /**

@@ -45,7 +45,7 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 /**
  * AWS ECR Repository Provider
@@ -271,13 +271,18 @@ export class ECRProvider implements ResourceProvider {
     } catch (error) {
       if (repositoryCreated) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create ECR Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         repositoryName,
         cause
       );
+      // go-to-k/cdkd#4583: the repository exists with no state record; name it
+      // for the failed-CREATE journal once CreateRepository has returned.
+      if (repositoryCreated)
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, repositoryName);
+      throw thrown;
     }
   }
 

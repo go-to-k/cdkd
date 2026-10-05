@@ -359,7 +359,7 @@ implementation. Three details are worth copying:
     collision, and `--replace` or a replacement rollback then deletes the live
     resource.
 
-    A `create()` that fails AFTER its main create call returned should also
+    A `create()` that fails AFTER its main create call returned must also
     mark the error it throws with
     `markCreatedBeforeFailure(error, ownerLogicalId, resourceType, physicalId)` (same module,
     issue [#1710](https://github.com/go-to-k/cdkd/issues/1710)). The resource
@@ -369,7 +369,14 @@ implementation. Three details are worth copying:
     only behind a flag the create call's success sets (Kinesis's
     `streamCreated`): `ProvisioningError.physicalId` is NOT that proof, since
     providers put the intended name on refusals and on the create call's own
-    "already exists", which names another owner's resource.
+    "already exists", which names another owner's resource. Mark the outermost
+    error `create()` throws, with the id `delete()` takes (the success path's
+    `physicalId`). A catch that deletes its own resource marks only when that
+    cleanup FAILED; a resource the create adopted or found held (an idempotent
+    create returning an existing one, `heldBefore !== 'free'`) is never marked;
+    a provider whose delete would reach beyond what the create wrote (`AWS::IAM::Policy`
+    walks every listed principal) removes its own writes in the catch instead
+    (issue [#4583](https://github.com/go-to-k/cdkd/issues/4583)).
 
   - **`maskSecrets` — mask a resolved property value before you log it.**
     Both `CreateContext` and `UpdateContext` extend a shared

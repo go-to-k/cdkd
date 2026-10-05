@@ -20,6 +20,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   compositeIdFormatMessage,
@@ -721,6 +722,9 @@ export class S3TablesProvider implements ResourceProvider {
       }
     );
 
+    // go-to-k/cdkd#4583: CreateTable returned, so the table exists under the
+    // composite id delete() takes, whatever its response lacked.
+    let tableCreated = false;
     try {
       const response = await this.getClient().send(
         new CreateTableCommand({
@@ -731,6 +735,7 @@ export class S3TablesProvider implements ResourceProvider {
           ...(tags !== undefined && { tags }),
         })
       );
+      tableCreated = true;
 
       // Capture the REAL table ARN AWS returns — its actual format is
       // NOT inferrable from the compound parts (we tried; AWS rejected
@@ -761,13 +766,15 @@ export class S3TablesProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create S3 Tables Table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         undefined,
         cause
       );
+      if (tableCreated) markCreatedBeforeFailure(thrown, logicalId, resourceType, physicalId);
+      throw thrown;
     }
   }
 

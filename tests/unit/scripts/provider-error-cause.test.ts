@@ -713,8 +713,8 @@ describe('provider error-cause critic — probes against the REAL src/ tree', ()
     mutate(
       dir,
       `${PROVIDERS}/iam-role-provider.ts`,
-      '            roleName,\n            cause\n          )',
-      '            roleName\n          )'
+      '          roleName,\n          cause\n        )',
+      '          roleName\n        )'
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
@@ -727,8 +727,8 @@ describe('provider error-cause critic — probes against the REAL src/ tree', ()
     mutate(
       dir,
       `${PROVIDERS}/iam-role-provider.ts`,
-      '            roleName,\n            cause\n          )',
-      '            roleName,\n            undefined\n          )'
+      '          roleName,\n          cause\n        )',
+      '          roleName,\n          undefined\n        )'
     );
     expect(runCheck(dir).status).toBe(1);
   }, SPAWN_TIMEOUT_MS);
@@ -750,8 +750,8 @@ describe('provider error-cause critic — probes against the REAL src/ tree', ()
     mutate(
       dir,
       `${PROVIDERS}/sqs-queue-policy-provider.ts`,
-      '      const cause = error instanceof Error ? error : undefined;\n      throw new ProvisioningError(\n        `Failed to create SQS queue policy',
-      '      const cause = new Error(error instanceof Error ? error.message : String(error));\n      throw new ProvisioningError(\n        `Failed to create SQS queue policy'
+      '      const cause = error instanceof Error ? error : undefined;\n      const thrown = new ProvisioningError(\n        `Failed to create SQS queue policy',
+      '      const cause = new Error(error instanceof Error ? error.message : String(error));\n      const thrown = new ProvisioningError(\n        `Failed to create SQS queue policy'
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);

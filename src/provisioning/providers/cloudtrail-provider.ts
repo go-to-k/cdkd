@@ -43,7 +43,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 /**
  * The selector set a trail carries when its template declares NO
@@ -267,6 +267,8 @@ export class CloudTrailProvider implements ResourceProvider {
     // Set once CreateTrail returns: a later failure is an auxiliary call's and
     // must not classify as this trail's name collision (#3826).
     let trailCreated = false;
+    // go-to-k/cdkd#4583: the created trail's ARN (delete()'s physical id).
+    let createdTrailArn: string | undefined;
     try {
       const result = await this.getClient().send(
         new CreateTrailCommand({
@@ -289,6 +291,7 @@ export class CloudTrailProvider implements ResourceProvider {
 
       trailCreated = true;
       const trailArn = result.TrailARN!;
+      createdTrailArn = result.TrailARN;
 
       // Apply EventSelectors if specified (requires separate API call)
       if (eventSelectors && eventSelectors.length > 0) {
@@ -334,13 +337,18 @@ export class CloudTrailProvider implements ResourceProvider {
     } catch (error) {
       if (trailCreated) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create CloudTrail Trail ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         undefined,
         cause
       );
+      // go-to-k/cdkd#4583: the trail is live with no state record; name it for
+      // the failed-CREATE journal once CreateTrail has returned its ARN.
+      if (createdTrailArn)
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdTrailArn);
+      throw thrown;
     }
   }
 

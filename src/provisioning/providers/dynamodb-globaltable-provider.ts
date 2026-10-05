@@ -50,7 +50,7 @@ import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -1319,6 +1319,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // Delete ReplicaUpdates → DeleteTable. Each step is best-effort
       // so a single sub-failure does not block the rest of the cleanup.
       warn(`Wiring failed after CreateTable for ${tableName}; attempting best-effort cleanup`);
+      let tableLeftBehind = false;
       try {
         const describe = await this.dynamoDBClient.send(
           new DescribeTableCommand({ TableName: tableName })
@@ -1363,6 +1364,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         }
         await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
       } catch (cleanupErr) {
+        tableLeftBehind = true;
         const cleanupMsg = describeAwsFailure(cleanupErr).detail;
         warn(
           `Partial-create cleanup failed for ${tableName}: ${cleanupMsg}. ` +
@@ -1378,7 +1380,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // the live old table over it (issue #3826 / #3877).
       markAuxiliaryFailure(wiringError, logicalId);
       const cause = wiringError instanceof Error ? wiringError : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log,
         wiringError,
         (text) =>
@@ -1390,6 +1392,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             cause
           )
       );
+      // go-to-k/cdkd#4583: the cleanup DeleteTable failed, so the table this
+      // call created is left behind — let `rollback --revert-failed` delete it.
+      if (tableLeftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, tableName);
+      throw thrown;
     }
   }
 

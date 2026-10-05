@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-created-before-failure-revert",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A failed CREATE whose resource outlived the failure is journaled and deleted by cdkd rollback --revert-failed; one the provider cleaned up is not",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

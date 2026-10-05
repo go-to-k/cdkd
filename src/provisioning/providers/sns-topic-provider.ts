@@ -39,7 +39,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import {
   hasErrorName,
@@ -181,6 +181,9 @@ export class SNSTopicProvider implements ResourceProvider {
     const topicName =
       (properties['TopicName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 256 });
+    // go-to-k/cdkd#4583: the ARN of a topic this create made and failed to clean
+    // up; a topic that held the name before (`heldBefore`) is never set here.
+    let leftBehindArn: string | undefined;
 
     try {
       // Build attributes map for topic configuration
@@ -366,8 +369,9 @@ export class SNSTopicProvider implements ResourceProvider {
               `Cleaned up partially-created SNS topic ${logicalId} (${topicArn}) after wiring failure`
             );
           } catch (cleanupError) {
+            leftBehindArn = topicArn;
             warn(
-              `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
+              `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${describeAwsFailure(cleanupError).detail}. On a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
             );
           }
         }
@@ -390,13 +394,15 @@ export class SNSTopicProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create SNS topic ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         topicName,
         cause
       );
+      if (leftBehindArn) markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindArn);
+      throw thrown;
     }
   }
 

@@ -3216,6 +3216,7 @@
     {
       "resourceType": "AWS::ECR::Repository",
       "integs": [
+        "created-before-failure-revert",
         "cross-region-concurrent-stacks",
         "destroy-data-guard",
         "ecr",
@@ -3228,6 +3229,10 @@
         "stage-assets"
       ],
       "signals": {
+        "created-before-failure-revert": [
+          "l1",
+          "literal"
+        ],
         "cross-region-concurrent-stacks": [
           "l2",
           "literal"
@@ -6057,6 +6062,7 @@
         "codecommit",
         "composite-stack",
         "conditions-and-if",
+        "created-before-failure-revert",
         "cross-region-concurrent-stacks",
         "deep-getatt-chains",
         "deployment-events",
@@ -6119,6 +6125,10 @@
         ],
         "conditions-and-if": [
           "l1"
+        ],
+        "created-before-failure-revert": [
+          "l1",
+          "literal"
         ],
         "cross-region-concurrent-stacks": [
           "l2",
