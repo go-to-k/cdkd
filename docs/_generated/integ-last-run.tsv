@@ -311,7 +311,6 @@ sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sh
 sdk-to-cc-autoroute	2026-10-04T06:31:24Z	PASS	225	verify.sh	rc ok, orph clean (#2790 PR #4516 phases 7-10)
 secret-derived-immutable-names	2026-10-04T12:10:42Z	PASS	115	verify.sh	rc ok, orph clean (#3869 pre-rotation FilterName absent from update log)
 secrets-array-nested	2026-10-03T18:30:14Z	PASS	425	verify.sh	rc ok, orph clean
-secrets-dynamic-ref	2026-10-05T10:05:08Z	PASS	751	verify.sh	rc ok, orph clean; 1f3 closure + 1f4 drift --accept arms; src=origin/main probe red at 1f3 (#2036 PR #4575)
 secrets-dynamic-ref	2026-10-05T10:27:06Z	PASS	688	verify.sh	rc ok, orph clean; run alone -- a first attempt was blocked mid-run by a peer session running the same fixture (its secret marked for deletion), nothing leaked (#2624 PR #4572)
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
 secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
