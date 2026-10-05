@@ -249,6 +249,30 @@ cleanup() {
   if [ -n "${CC_ARM_ID_WORKDIR:-}" ]; then
     rm -rf "${CC_ARM_ID_WORKDIR}" >/dev/null 2>&1 || true
   fi
+  # Issue #2422: phase 1c's four per-run buckets and phase 2c's one, three
+  # with a deny policy (dropped first, as for phase 0c-ID). The `state destroy` above also reaches
+  # them while their records are still planted in this stack's state.
+  if [ -n "${DEP_ARM_ID_BUCKET:-}" ]; then
+    aws s3api delete-bucket-policy --bucket "${DEP_ARM_ID_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+    aws s3api delete-bucket --bucket "${DEP_ARM_ID_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${DEP_ARM_ID_CLEAN_BUCKET:-}" ]; then
+    aws s3api delete-bucket --bucket "${DEP_ARM_ID_CLEAN_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${DEP_ARM_OLD_BUCKET:-}" ]; then
+    aws s3api delete-bucket-policy --bucket "${DEP_ARM_OLD_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+    aws s3api delete-bucket --bucket "${DEP_ARM_OLD_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${DEP_ARM_NEW_BUCKET:-}" ]; then
+    aws s3api delete-bucket --bucket "${DEP_ARM_NEW_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${DEP_ARM_RB_BUCKET:-}" ]; then
+    aws s3api delete-bucket-policy --bucket "${DEP_ARM_RB_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+    aws s3api delete-bucket --bucket "${DEP_ARM_RB_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${DEP_ARM_ID_WORKDIR:-}" ]; then
+    rm -rf "${DEP_ARM_ID_WORKDIR}" >/dev/null 2>&1 || true
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -1372,6 +1396,236 @@ CREATION_P1="$(aws s3api list-buckets \
   --query "Buckets[?Name=='${BUCKET_NAME}'].CreationDate | [0]" --output text)"
 echo "    baseline bucket CreationDate=${CREATION_P1}"
 
+# --- Phase 1c: a suppressed guard on the DEPLOY path is persisted (issue #2422)
+# Phase 0c-ID pins the destroy verb. This arm drives the same Cloud Control
+# delete through `cdkd deploy`, at two of its delete sites in ONE deploy, by
+# planting three cc-api-routed bucket records into THIS stack's state:
+#
+#   - DepArmBucket: not in the template, so the deploy's template-DELETE
+#     branch deletes it. Its bucket policy denies `s3:GetBucketLocation`, so
+#     the identity guard cannot answer.
+#   - DepArmBucketClean: the same, with no deny policy -- the in-run control
+#     whose guard answers and must leave no row.
+#   - DepArmReplaceBucket: IN the template (`CDKD_DEP_ARM_REPLACE_BUCKET`) under
+#     a different BucketName, which is create-only, so the deploy REPLACES it:
+#     it creates the new bucket first and then deletes the planted, denied one
+#     inside the UPDATE. This is the row whose `operation` is the decision
+#     issue #2422 records: `DELETE` on the guard row, `UPDATE` on the row's
+#     own outcome.
+#
+# Everything else deploys the phase-1 template (`env -u CDKD_TEST_UPDATE`, as
+# in phase 1b), and a second deploy without the variable then removes the new
+# bucket, so the stack is back in its phase-1 shape for phase 2.
+#
+# The rollback half rides phase 2c (its rollback-of-a-CREATE arm). The
+# remaining deploy sites (the `--recreate-via-*` destroy-then-create, the
+# `--replace` delete-first fallback, the update-not-supported fallback) and the
+# other rollback arms record through the same code and are unit-covered.
+DEP_ARM_ID_BUCKET="cdkd-lifecycle-depid-${ACCOUNT_ID}-${CC_ARM_STAMP}"
+DEP_ARM_ID_CLEAN_BUCKET="cdkd-lifecycle-depidok-${ACCOUNT_ID}-${CC_ARM_STAMP}"
+DEP_ARM_OLD_BUCKET="cdkd-lifecycle-depold-${ACCOUNT_ID}-${CC_ARM_STAMP}"
+DEP_ARM_NEW_BUCKET="cdkd-lifecycle-depnew-${ACCOUNT_ID}-${CC_ARM_STAMP}"
+DEP_ARM_ID_WORKDIR="$(mktemp -d)"
+
+echo "==> Phase 1c: a DENIED s3:GetBucketLocation on a deploy-path DELETE (removal and replacement) must leave a durable record"
+plant_bucket "${DEP_ARM_ID_BUCKET}" "${REGION}"
+plant_bucket "${DEP_ARM_ID_CLEAN_BUCKET}" "${REGION}"
+plant_bucket "${DEP_ARM_OLD_BUCKET}" "${REGION}"
+
+deny_get_bucket_location() { # usage: deny_get_bucket_location <bucket>
+  local bucket="$1"
+  cat > "${DEP_ARM_ID_WORKDIR}/deny-${bucket}.json" <<POLICY
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyGetBucketLocationToEveryone",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:GetBucketLocation",
+      "Resource": "arn:aws:s3:::${bucket}"
+    }
+  ]
+}
+POLICY
+  aws s3api put-bucket-policy --bucket "${bucket}" --region "${REGION}" \
+    --policy "file://${DEP_ARM_ID_WORKDIR}/deny-${bucket}.json"
+  # Prove the premise first, as phase 0c-ID does: a policy that did not take
+  # effect leaves the guard answering, and the arm would then pass over the
+  # ordinary path.
+  local attempt out rc
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    set +e
+    out="$(aws s3api get-bucket-location --bucket "${bucket}" --region "${REGION}" 2>&1)"
+    rc=$?
+    set -e
+    if [ "${rc}" -ne 0 ] && printf '%s' "${out}" | grep -qF 'AccessDenied'; then
+      echo "    premise: s3:GetBucketLocation on ${bucket} is DENIED"
+      return 0
+    fi
+    echo "    (waiting for the deny policy on ${bucket} to take effect, attempt ${attempt}/10)"
+    sleep 3
+  done
+  echo "FAIL phase 1c premise: s3:GetBucketLocation on ${bucket} is still ANSWERING, so the guard was never suppressed (rc=${rc}, out=${out})" >&2
+  return 1
+}
+deny_get_bucket_location "${DEP_ARM_ID_BUCKET}"
+deny_get_bucket_location "${DEP_ARM_OLD_BUCKET}"
+
+# Plant the three records into the live phase-1 state.
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${DEP_ARM_ID_WORKDIR}/state.json" >/dev/null
+jq --arg denied "${DEP_ARM_ID_BUCKET}" --arg clean "${DEP_ARM_ID_CLEAN_BUCKET}" \
+  --arg old "${DEP_ARM_OLD_BUCKET}" '
+  .resources.DepArmBucket = {
+    physicalId: $denied, resourceType: "AWS::S3::Bucket",
+    properties: { BucketName: $denied }, attributes: {}, dependencies: [],
+    provisionedBy: "cc-api" }
+  | .resources.DepArmBucketClean = {
+    physicalId: $clean, resourceType: "AWS::S3::Bucket",
+    properties: { BucketName: $clean }, attributes: {}, dependencies: [],
+    provisionedBy: "cc-api" }
+  | .resources.DepArmReplaceBucket = {
+    physicalId: $old, resourceType: "AWS::S3::Bucket",
+    properties: { BucketName: $old }, attributes: {}, dependencies: [],
+    provisionedBy: "cc-api" }' \
+  "${DEP_ARM_ID_WORKDIR}/state.json" > "${DEP_ARM_ID_WORKDIR}/state-planted.json"
+aws s3 cp "${DEP_ARM_ID_WORKDIR}/state-planted.json" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+
+# The deploy writes a NEW `{runId}.jsonl` beside phase 1's and 1b's, so the
+# keys present now are recorded and the run is the one key added.
+DEP_ID_EVENTS_PREFIX="cdkd/${STACK}/${REGION}/deployments/"
+DEP_ID_KEYS_BEFORE="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+  --prefix "${DEP_ID_EVENTS_PREFIX}" --query 'Contents[].Key' --output text)"
+
+set +e
+# `--verbose`: the guard's CONFIRMED arm logs at `debug`, the only positive
+# evidence that the control bucket's probe ran (phase 0c-ID's reasoning).
+# `--force-stateful-recreation`: any S3 bucket replacement is refused without
+# it mid-deploy (cdkd cannot prove the old bucket empty there). It changes
+# nothing on the two removals.
+DEP_ID_OUT="$(env -u CDKD_TEST_UPDATE CDKD_DEP_ARM_REPLACE_BUCKET="${DEP_ARM_NEW_BUCKET}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose --force-stateful-recreation 2>&1)"
+DEP_ID_RC=$?
+set -e
+# Echoed with the caller's identity masked, as in phase 0c-ID: the debug line
+# carries AWS's AccessDenied wording, which names the assumed role.
+printf '%s\n' "${DEP_ID_OUT}" | sed -E 's#arn:aws:sts::[0-9]+:assumed-role/[^ ]*#arn:aws:sts::<account>:assumed-role/<masked>#g' | tail -40
+if [ "${DEP_ID_RC}" -ne 0 ]; then
+  echo "FAIL phase 1c: the deploy did NOT proceed (rc=${DEP_ID_RC}); a guard that cannot answer must warn and continue" >&2
+  exit 1
+fi
+
+assert_gone_eventually "phase 1c: ${DEP_ARM_ID_BUCKET} survived a deploy that removed it" \
+  aws s3api head-bucket --bucket "${DEP_ARM_ID_BUCKET}" --region "${REGION}"
+assert_gone_eventually "phase 1c: ${DEP_ARM_ID_CLEAN_BUCKET} (the in-run control) survived a deploy that removed it" \
+  aws s3api head-bucket --bucket "${DEP_ARM_ID_CLEAN_BUCKET}" --region "${REGION}"
+assert_gone_eventually "phase 1c: ${DEP_ARM_OLD_BUCKET} survived the replacement that retired it" \
+  aws s3api head-bucket --bucket "${DEP_ARM_OLD_BUCKET}" --region "${REGION}"
+DEP_ID_STATE_LEFT="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '[.resources | to_entries[] | select(.key | startswith("DepArm")) | "\(.key)=\(.value.physicalId)"] | join(",")')"
+if [ "${DEP_ID_STATE_LEFT}" != "DepArmReplaceBucket=${DEP_ARM_NEW_BUCKET}" ]; then
+  echo "FAIL phase 1c: state holds [${DEP_ID_STATE_LEFT}] after the deploy, expected exactly [DepArmReplaceBucket=${DEP_ARM_NEW_BUCKET}]" >&2
+  exit 1
+fi
+
+DEP_ID_FLAT="$(printf '%s' "${DEP_ID_OUT}" | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | tr -s ' ')"
+if ! printf '%s' "${DEP_ID_FLAT}" | grep -qF -- "Confirmed S3 bucket ${DEP_ARM_ID_CLEAN_BUCKET}"; then
+  echo "FAIL phase 1c control: no 'Confirmed S3 bucket ${DEP_ARM_ID_CLEAN_BUCKET}' line -- the control's identity probe never ran, so its lack of a guard row proves nothing" >&2
+  exit 1
+fi
+
+DEP_ID_KEYS_AFTER="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+  --prefix "${DEP_ID_EVENTS_PREFIX}" --query 'Contents[].Key' --output text)"
+DEP_ID_JSONL_KEY=""
+DEP_ID_JSONL_COUNT=0
+for dep_id_key in ${DEP_ID_KEYS_AFTER}; do
+  case "${dep_id_key}" in
+    *.jsonl)
+      case " ${DEP_ID_KEYS_BEFORE} " in
+        *" ${dep_id_key} "*) : ;;
+        *)
+          DEP_ID_JSONL_KEY="${dep_id_key}"
+          DEP_ID_JSONL_COUNT=$((DEP_ID_JSONL_COUNT + 1))
+          ;;
+      esac
+      ;;
+  esac
+done
+if [ "${DEP_ID_JSONL_COUNT}" -ne 1 ]; then
+  echo "FAIL phase 1c: expected exactly 1 new {runId}.jsonl under s3://${STATE_BUCKET}/${DEP_ID_EVENTS_PREFIX}, got ${DEP_ID_JSONL_COUNT} (before: ${DEP_ID_KEYS_BEFORE}; after: ${DEP_ID_KEYS_AFTER})" >&2
+  exit 1
+fi
+DEP_ID_EVENTS="$(aws s3 cp "s3://${STATE_BUCKET}/${DEP_ID_JSONL_KEY}" - )"
+dep_id_jq() { # usage: dep_id_jq <filter>  -> raw value over the slurped NDJSON
+  printf '%s\n' "${DEP_ID_EVENTS}" | jq -r -s "$1" || {
+    echo "FAIL phase 1c: jq could not parse s3://${STATE_BUCKET}/${DEP_ID_JSONL_KEY} as NDJSON" >&2
+    exit 1
+  }
+}
+
+DEP_ID_COMMAND="$(dep_id_jq '[.[] | select(.eventType == "RUN_STARTED")] | if length == 1 then .[0].command // "MISSING" else "RUN_STARTED x\(length)" end')" || exit 1
+if [ "${DEP_ID_COMMAND}" != "deploy" ]; then
+  echo "FAIL phase 1c: the new run is not a deploy run (RUN_STARTED.command=${DEP_ID_COMMAND})" >&2
+  exit 1
+fi
+
+# THE ASSERTION THIS ARM EXISTS FOR: exactly two guard rows -- the removed
+# bucket and the replaced one, never the control -- each with the destroy
+# runner's payload, aimed at the bucket the guarded delete ran on, and
+# `operation: DELETE` for BOTH, including the one whose delete ran inside an
+# UPDATE.
+DEP_ID_GUARD="$(dep_id_jq '[.[] | select(.eventType == "RESOURCE_GUARD_INDETERMINATE")] | sort_by(.logicalId) | map("\(.logicalId)|\(.operation)|\(.guard)|\(.physicalId)|\(.provisionedBy)|\(.resourceType)") | join(",")')" || exit 1
+DEP_ID_GUARD_WANT="DepArmBucket|DELETE|cc-delete-region-identity|${DEP_ARM_ID_BUCKET}|cc-api|AWS::S3::Bucket,DepArmReplaceBucket|DELETE|cc-delete-region-identity|${DEP_ARM_OLD_BUCKET}|cc-api|AWS::S3::Bucket"
+if [ "${DEP_ID_GUARD}" != "${DEP_ID_GUARD_WANT}" ]; then
+  echo "FAIL phase 1c: guard rows are [${DEP_ID_GUARD}], expected exactly [${DEP_ID_GUARD_WANT}]. A row for DepArmBucketClean means the event fires regardless of the verdict; a missing row means that deploy-path delete site still discards the guard." >&2
+  printf '%s\n' "${DEP_ID_EVENTS}" >&2
+  exit 1
+fi
+DEP_ID_REASONS="$(dep_id_jq '[.[] | select(.eventType == "RESOURCE_GUARD_INDETERMINATE") | .reason // "MISSING"] | join(" || ")')" || exit 1
+for dep_id_bucket in "${DEP_ARM_ID_BUCKET}" "${DEP_ARM_OLD_BUCKET}"; do
+  case "${DEP_ID_REASONS}" in
+    *"s3:GetBucketLocation on ${dep_id_bucket} could not be answered"*) : ;;
+    *)
+      echo "FAIL phase 1c: no guard reason names the denied probe on ${dep_id_bucket}: ${DEP_ID_REASONS}" >&2
+      exit 1
+      ;;
+  esac
+done
+case "${DEP_ID_REASONS}" in
+  *"AccessDenied"*) : ;;
+  *)
+    echo "FAIL phase 1c: the guard reasons do not carry the error class: ${DEP_ID_REASONS}" >&2
+    exit 1
+    ;;
+esac
+case "${DEP_ID_REASONS}" in
+  *"assumed-role"*|*"arn:aws:sts::"*|*"is not authorized to perform"*)
+    echo "FAIL phase 1c: a PERSISTED reason carries caller identity: ${DEP_ID_REASONS}" >&2
+    exit 1
+    ;;
+esac
+
+# Beside each row's own outcome, not instead of it: the two removals carry a
+# DELETE success row, the replacement an UPDATE one naming the NEW bucket.
+DEP_ID_SUCCESS_ROWS="$(dep_id_jq '[.[] | select(.eventType == "RESOURCE_SUCCEEDED" and .operation == "DELETE" and (.logicalId == "DepArmBucket" or .logicalId == "DepArmBucketClean"))] | length')" || exit 1
+DEP_ID_REPLACE_ROW="$(dep_id_jq '[.[] | select(.eventType == "RESOURCE_SUCCEEDED" and .logicalId == "DepArmReplaceBucket")] | map("\(.operation)|\(.physicalId)") | join(",")')" || exit 1
+DEP_ID_FINISHED="$(dep_id_jq '[.[] | select(.eventType == "RUN_FINISHED")] | if length == 1 then .[0].result // "MISSING" else "RUN_FINISHED x\(length)" end')" || exit 1
+if [ "${DEP_ID_SUCCESS_ROWS}" != "2" ] || [ "${DEP_ID_REPLACE_ROW}" != "UPDATE|${DEP_ARM_NEW_BUCKET}" ] \
+  || [ "${DEP_ID_FINISHED}" != "SUCCEEDED" ]; then
+  echo "FAIL phase 1c: RESOURCE_SUCCEEDED DELETE rows=${DEP_ID_SUCCESS_ROWS} (expected 2), DepArmReplaceBucket outcome=[${DEP_ID_REPLACE_ROW}] (expected [UPDATE|${DEP_ARM_NEW_BUCKET}]), RUN_FINISHED.result=${DEP_ID_FINISHED} (expected SUCCEEDED)" >&2
+  printf '%s\n' "${DEP_ID_EVENTS}" >&2
+  exit 1
+fi
+echo "    OK: exactly two RESOURCE_GUARD_INDETERMINATE rows (removal + in-UPDATE replacement delete, both operation DELETE), none for the control, persisted in ${DEP_ID_JSONL_KEY}"
+
+# Back to the phase-1 shape: the same template without the variable removes
+# the replacement bucket, whose probe is not denied.
+env -u CDKD_TEST_UPDATE -u CDKD_DEP_ARM_REPLACE_BUCKET node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_gone_eventually "phase 1c: ${DEP_ARM_NEW_BUCKET} survived the deploy that removed it from the template" \
+  aws s3api head-bucket --bucket "${DEP_ARM_NEW_BUCKET}" --region "${REGION}"
+rm -rf "${DEP_ARM_ID_WORKDIR}"
+
 # --- Phase 2: in-place UPDATE (expiration + transition + new Filter rule) ----
 echo "==> Phase 2: re-deploy (expiration 730 -> 365, GLACIER 90 -> 60, + big-objects rule)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -1455,8 +1709,13 @@ assert_no_drift "phase 2b"
 # and `cdkd rollback`: the revert arm must WARN and SKIP the whole
 # notification configuration, and AWS must still hold no EventBridge block.
 echo "==> Phase 2c: a REVERT replaying a MALFORMED EventBridgeEnabled must warn and skip, never enable"
+# Issue #2422: the failing deploy also CREATES `DepArmRollbackBucket` before
+# the queue fails, so the rollback below deletes it (see after the journal
+# doctoring).
+DEP_ARM_RB_BUCKET="cdkd-lifecycle-deprb-${ACCOUNT_ID}-${CC_ARM_STAMP}"
 set +e
-CDKD_TEST_UPDATE=true CDKD_TEST_EB_REVERT=true node "${LOCAL_DIST}" deploy "${STACK}" \
+CDKD_TEST_UPDATE=true CDKD_TEST_EB_REVERT=true CDKD_DEP_ARM_ROLLBACK_BUCKET="${DEP_ARM_RB_BUCKET}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback
 PHASE2C_RC=$?
 set -e
@@ -1481,6 +1740,43 @@ fi
 aws s3 cp "${DOCTORED_FILE}" "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null
 rm -f "${JOURNAL_FILE}" "${DOCTORED_FILE}"
 
+# Issue #2422, the ROLLBACK half of phase 1c: the rollback of the failed
+# deploy's CREATE of `DepArmRollbackBucket` must persist a guard its delete
+# could not enforce. A plain deploy creates an `AWS::S3::Bucket` through the
+# SDK provider, whose delete reports no guard, so the record and the journal
+# op are re-pointed at Cloud Control (the route the rollback delete takes,
+# `effectiveProvisionedBy`: the record first, the op as fallback) -- a
+# Cloud Control delete of an SDK-created bucket deletes the same bucket. Then
+# the bucket's policy denies the guard's probe, exactly as in phase 1c.
+if ! aws s3api head-bucket --bucket "${DEP_ARM_RB_BUCKET}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "FAIL [phase 2c] premise: the failing deploy did not create ${DEP_ARM_RB_BUCKET}, so the rollback has no CREATE to revert" >&2
+  exit 1
+fi
+DEP_ARM_ID_WORKDIR="$(mktemp -d)"
+aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" "${DEP_ARM_ID_WORKDIR}/journal.json" >/dev/null
+jq '(.segments[].operations[] | select(.logicalId == "DepArmRollbackBucket" and .changeType == "CREATE")
+  | .provisionedBy) = "cc-api"' "${DEP_ARM_ID_WORKDIR}/journal.json" > "${DEP_ARM_ID_WORKDIR}/journal-cc.json"
+DEP_RB_OPS="$(jq '[.segments[].operations[] | select(.logicalId == "DepArmRollbackBucket" and .changeType == "CREATE" and .physicalId == "'"${DEP_ARM_RB_BUCKET}"'")] | length' "${DEP_ARM_ID_WORKDIR}/journal-cc.json")"
+if [ "${DEP_RB_OPS}" != "1" ]; then
+  echo "FAIL [phase 2c] premise: expected exactly one journaled CREATE of DepArmRollbackBucket naming ${DEP_ARM_RB_BUCKET}, got ${DEP_RB_OPS}" >&2
+  jq -c '[.segments[].operations[] | {logicalId, changeType, physicalId}]' "${DEP_ARM_ID_WORKDIR}/journal.json" >&2
+  exit 1
+fi
+aws s3 cp "${DEP_ARM_ID_WORKDIR}/journal-cc.json" "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${DEP_ARM_ID_WORKDIR}/state.json" >/dev/null
+DEP_RB_RECORD="$(jq -r '.resources.DepArmRollbackBucket.physicalId // "MISSING"' "${DEP_ARM_ID_WORKDIR}/state.json")"
+if [ "${DEP_RB_RECORD}" != "${DEP_ARM_RB_BUCKET}" ]; then
+  echo "FAIL [phase 2c] premise: state records DepArmRollbackBucket as ${DEP_RB_RECORD}, expected ${DEP_ARM_RB_BUCKET}" >&2
+  exit 1
+fi
+jq '.resources.DepArmRollbackBucket.provisionedBy = "cc-api"' "${DEP_ARM_ID_WORKDIR}/state.json" \
+  > "${DEP_ARM_ID_WORKDIR}/state-cc.json"
+aws s3 cp "${DEP_ARM_ID_WORKDIR}/state-cc.json" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+deny_get_bucket_location "${DEP_ARM_RB_BUCKET}"
+DEP_RB_EVENTS_PREFIX="cdkd/${STACK}/${REGION}/deployments/"
+DEP_RB_KEYS_BEFORE="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+  --prefix "${DEP_RB_EVENTS_PREFIX}" --query 'Contents[].Key' --output text)"
+
 set +e
 PHASE2C_OUT="$(node "${LOCAL_DIST}" rollback "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)"
@@ -1502,6 +1798,67 @@ echo "    [phase 2c] the revert WARNED and skipped the malformed EventBridgeEnab
 assert_eventbridge_absent "phase 2c"
 assert_gone "rollback journal ${JOURNAL_KEY} still exists after the phase 2c rollback" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
+
+# Issue #2422: the rollback deleted the bucket it created, under a denied
+# probe, and its run record carries the guard row -- the SAME event type the
+# deploy and destroy record, `operation: DELETE`, beside the rollback's own
+# `ROLLBACK_RESOURCE_SUCCEEDED` for the reverted CREATE.
+assert_gone_eventually "[phase 2c] ${DEP_ARM_RB_BUCKET} survived the rollback of its CREATE" \
+  aws s3api head-bucket --bucket "${DEP_ARM_RB_BUCKET}" --region "${REGION}"
+DEP_RB_KEYS_AFTER="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+  --prefix "${DEP_RB_EVENTS_PREFIX}" --query 'Contents[].Key' --output text)"
+DEP_RB_JSONL_KEY=""
+DEP_RB_JSONL_COUNT=0
+for dep_rb_key in ${DEP_RB_KEYS_AFTER}; do
+  case "${dep_rb_key}" in
+    *.jsonl)
+      case " ${DEP_RB_KEYS_BEFORE} " in
+        *" ${dep_rb_key} "*) : ;;
+        *)
+          DEP_RB_JSONL_KEY="${dep_rb_key}"
+          DEP_RB_JSONL_COUNT=$((DEP_RB_JSONL_COUNT + 1))
+          ;;
+      esac
+      ;;
+  esac
+done
+if [ "${DEP_RB_JSONL_COUNT}" -ne 1 ]; then
+  echo "FAIL [phase 2c]: expected exactly 1 new {runId}.jsonl from 'cdkd rollback', got ${DEP_RB_JSONL_COUNT} (before: ${DEP_RB_KEYS_BEFORE}; after: ${DEP_RB_KEYS_AFTER})" >&2
+  exit 1
+fi
+DEP_RB_EVENTS="$(aws s3 cp "s3://${STATE_BUCKET}/${DEP_RB_JSONL_KEY}" - )"
+dep_rb_jq() { # usage: dep_rb_jq <filter>  -> raw value over the slurped NDJSON
+  printf '%s\n' "${DEP_RB_EVENTS}" | jq -r -s "$1" || {
+    echo "FAIL [phase 2c]: jq could not parse s3://${STATE_BUCKET}/${DEP_RB_JSONL_KEY} as NDJSON" >&2
+    exit 1
+  }
+}
+DEP_RB_COMMAND="$(dep_rb_jq '[.[] | select(.eventType == "RUN_STARTED")] | if length == 1 then .[0].command // "MISSING" else "RUN_STARTED x\(length)" end')" || exit 1
+DEP_RB_GUARD="$(dep_rb_jq '[.[] | select(.eventType == "RESOURCE_GUARD_INDETERMINATE")] | map("\(.logicalId)|\(.operation)|\(.guard)|\(.physicalId)|\(.provisionedBy)|\(.resourceType)") | join(",")')" || exit 1
+DEP_RB_GUARD_WANT="DepArmRollbackBucket|DELETE|cc-delete-region-identity|${DEP_ARM_RB_BUCKET}|cc-api|AWS::S3::Bucket"
+DEP_RB_REASON="$(dep_rb_jq '[.[] | select(.eventType == "RESOURCE_GUARD_INDETERMINATE")] | .[0].reason // "MISSING"')" || exit 1
+DEP_RB_REVERTED="$(dep_rb_jq '[.[] | select(.eventType == "ROLLBACK_RESOURCE_SUCCEEDED" and .logicalId == "DepArmRollbackBucket")] | map("\(.operation)|\(.provisionedBy)") | join(",")')" || exit 1
+if [ "${DEP_RB_COMMAND}" != "rollback" ] || [ "${DEP_RB_GUARD}" != "${DEP_RB_GUARD_WANT}" ] \
+  || [ "${DEP_RB_REVERTED}" != "CREATE|cc-api" ]; then
+  echo "FAIL [phase 2c]: rollback run record is wrong: RUN_STARTED.command=${DEP_RB_COMMAND} (expected rollback), guard rows=[${DEP_RB_GUARD}] (expected [${DEP_RB_GUARD_WANT}]), ROLLBACK_RESOURCE_SUCCEEDED=[${DEP_RB_REVERTED}] (expected [CREATE|cc-api])" >&2
+  printf '%s\n' "${DEP_RB_EVENTS}" >&2
+  exit 1
+fi
+case "${DEP_RB_REASON}" in
+  *"s3:GetBucketLocation on ${DEP_ARM_RB_BUCKET} could not be answered"*"AccessDenied"*) : ;;
+  *)
+    echo "FAIL [phase 2c]: the guard row's reason does not name the denied probe and its error class: ${DEP_RB_REASON}" >&2
+    exit 1
+    ;;
+esac
+case "${DEP_RB_REASON}" in
+  *"assumed-role"*|*"arn:aws:sts::"*|*"is not authorized to perform"*)
+    echo "FAIL [phase 2c]: the PERSISTED reason carries caller identity: ${DEP_RB_REASON}" >&2
+    exit 1
+    ;;
+esac
+rm -rf "${DEP_ARM_ID_WORKDIR}"
+echo "    [phase 2c] the rollback's delete of ${DEP_ARM_RB_BUCKET} persisted one RESOURCE_GUARD_INDETERMINATE (operation DELETE) in ${DEP_RB_JSONL_KEY}"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

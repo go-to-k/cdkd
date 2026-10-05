@@ -385,6 +385,7 @@
         "rollback-replacement-retain",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
+        "s3-lifecycle",
         "type-change-replacement",
         "update-replace"
       ]

@@ -139,7 +139,14 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
       readoptDelete,
       op.logicalId,
       current.physicalId,
-      'while reversing its replacement (re-adopting the retained old resource)'
+      'while reversing its replacement (re-adopting the retained old resource)',
+      {
+        ctx,
+        stackName,
+        resourceType: op.resourceType,
+        provisionedBy: current.provisionedBy ?? op.provisionedBy,
+        mask,
+      }
     );
   }
   stateResources[op.logicalId] = prev;

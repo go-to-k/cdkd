@@ -255,7 +255,14 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
     createRollbackDelete,
     op.logicalId,
     op.physicalId,
-    'while rolling back its CREATE'
+    'while rolling back its CREATE',
+    {
+      ctx,
+      stackName,
+      resourceType: op.resourceType,
+      provisionedBy: deleteProvisionedBy,
+      mask,
+    }
   );
   delete stateResources[op.logicalId];
   logger.info(`  Rollback: ${safe(op.logicalId)} deleted successfully`);

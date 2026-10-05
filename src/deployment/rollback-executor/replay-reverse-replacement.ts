@@ -30,6 +30,7 @@ import {
 import {
   safe,
   throwIfDeleteSkipped,
+  type RollbackDeleteGuardScope,
   rollbackRetainsNewResource,
   retainedSurvivorMessages,
   rollbackFinalSnapshotId,
@@ -333,6 +334,15 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       resourceType: op.resourceType,
       provisionedBy: current.provisionedBy ?? op.provisionedBy,
     }).provider;
+  // Issue #2422: what the two deletes of the NEW copy record a guard row with,
+  // routed as `resolveNewDeleteProvider` routes them.
+  const newDeleteGuardScope: RollbackDeleteGuardScope = {
+    ctx,
+    stackName,
+    resourceType: op.resourceType,
+    provisionedBy: current.provisionedBy ?? op.provisionedBy,
+    mask,
+  };
   // go-to-k/cdkd#4225: an `AWS::IAM::Policy` rename is journaled with a
   // new physical id (its name), so its rollback reverses it here: the
   // re-create puts the old name, and the delete of the new copy after it
@@ -636,7 +646,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         deleteNewFirst,
         op.logicalId,
         current.physicalId,
-        'while clearing the new resource so the old one could be re-created'
+        'while clearing the new resource so the old one could be re-created',
+        newDeleteGuardScope
       );
     }
     deletedNewFirst = true;
@@ -909,7 +920,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         deleteNewAfterRecreate,
         op.logicalId,
         current.physicalId,
-        'while deleting the new resource after re-creating the old one'
+        'while deleting the new resource after re-creating the old one',
+        newDeleteGuardScope
       );
     } catch (deleteError) {
       // Issue #2038: this arm runs AFTER `resolveReplayProps` resolved

@@ -22,6 +22,7 @@ import { green } from '../../utils/colors.js';
 import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
+import { reportDeleteGuards } from '../delete-guard-scope.js';
 import {
   type ReplacementNameChange,
   probeErrorMeansNameHeld,
@@ -242,6 +243,12 @@ export async function replaceDeleteFirstAndRecreate(
   // either collide or, for a type with no name conflict, leave two live
   // resources with state describing one. Checked outside the catch above so
   // the wrapping never sees it (a return value, not a throw).
+  // Issue #2422: before the skip check below, which throws.
+  reportDeleteGuards(deleteResult, {
+    physicalId: currentResource.physicalId,
+    resourceType: oldResourceType,
+    provisionedBy: currentResource.provisionedBy,
+  });
   const replaceSkipReason = deleteSkipReason(deleteResult);
   if (replaceSkipReason !== undefined) {
     throw new Error(
@@ -714,6 +721,12 @@ export async function deleteReplacedAfterCreate(
       safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}`
     );
   }
+  // Issue #2422.
+  reportDeleteGuards(deleteResult, {
+    physicalId: currentResource.physicalId,
+    resourceType: oldResourceType,
+    provisionedBy: currentResource.provisionedBy,
+  });
   const skipReason = deleteSkipReason(deleteResult);
   if (skipReason !== undefined) {
     this.logger.warn(

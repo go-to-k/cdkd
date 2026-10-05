@@ -13,6 +13,7 @@ import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
+import { reportDeleteGuards } from '../delete-guard-scope.js';
 import { isMarkedNonRetryable } from '../retryable-errors.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 
@@ -160,6 +161,14 @@ export async function provisionDelete(
       throw deleteError;
     }
   }
+
+  // Issue #2422: a guard the delete could not enforce, for
+  // `provisionResource` to persist.
+  reportDeleteGuards(deleteResult, {
+    physicalId: currentResource.physicalId,
+    resourceType,
+    provisionedBy: currentResource.provisionedBy,
+  });
 
   // Issue #1762: handled OUTSIDE the catch above on purpose — a skip is
   // a RETURN VALUE, so it can never be read by that block's

@@ -828,7 +828,14 @@ async function replayFailedOperationsUnbound(
             failedCreateDelete,
             op.logicalId,
             op.physicalId!,
-            'while deleting the partially-created resource (--revert-failed)'
+            'while deleting the partially-created resource (--revert-failed)',
+            {
+              ctx,
+              stackName,
+              resourceType: op.resourceType,
+              provisionedBy: deleteProvisionedBy,
+              mask,
+            }
           );
           delete stateResources[op.logicalId];
           await options.afterOp?.(op.logicalId);

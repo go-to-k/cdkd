@@ -117,6 +117,27 @@ failed against real S3).
    abort rule (`abort-mpu`). Assert both rules reached AWS, **none** carries a
    top-level `Prefix` (all normalized to V2 `Filter` form), and the `archive`
    rule's expiration is 730 days.
+   - **Phase 1c** (issue [#2422](https://github.com/go-to-k/cdkd/issues/2422)):
+     Arm ID's suppressed guard on the **deploy** path, at two delete sites in
+     one deploy. Three cc-api-routed bucket records are planted into this
+     stack's state: two absent from the template (one denying
+     `s3:GetBucketLocation`, one the clean control), deleted by the
+     template-DELETE branch; and `DepArmReplaceBucket`, present in the template
+     under a different, create-only `BucketName` (`CDKD_DEP_ARM_REPLACE_BUCKET`),
+     so the deploy replaces it and deletes the planted, denied bucket inside
+     the UPDATE (`--force-stateful-recreation`). Asserts the run's
+     `deployments/{runId}.jsonl` holds exactly two
+     `RESOURCE_GUARD_INDETERMINATE` rows, both `operation: DELETE`, naming the
+     two denied buckets and never the control, beside the removals' DELETE
+     success rows and the replacement's `UPDATE` success row. A second deploy
+     without the variable restores the phase-1 shape. Phase 2c carries the
+     rollback half: its failing deploy also creates `DepArmRollbackBucket`
+     (`CDKD_DEP_ARM_ROLLBACK_BUCKET`), whose state record and journaled CREATE
+     are re-pointed at Cloud Control and whose probe is denied before
+     `cdkd rollback`; the rollback run's record must hold one guard row
+     (`operation: DELETE`) beside the `ROLLBACK_RESOURCE_SUCCEEDED` for the
+     reverted CREATE. The other in-UPDATE sites and rollback arms are
+     unit-covered.
 2. **Re-deploy** with `CDKD_TEST_UPDATE=true` — shortens the GLACIER transition
    (90 → 60), lowers expiration (730 → 365), and adds a third **Filter-based**
    rule (`big-objects`, `ObjectSizeGreaterThan`). Assert the new values reached

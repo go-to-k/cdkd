@@ -45,6 +45,15 @@ export class S3LifecycleStack extends cdk.Stack {
       new s3.CfnBucket(this, 'XrArmBucket', { bucketName: xrArmBucket });
     }
 
+    // Issue #2422 phase 1c: present ONLY while `verify.sh` sets the variable.
+    // `verify.sh` plants a state record for this logical id naming a DIFFERENT
+    // bucket, so the deploy replaces it (BucketName is create-only) and the old
+    // bucket's delete runs inside an UPDATE. Per-run unique, as above.
+    const depArmReplaceBucket = process.env.CDKD_DEP_ARM_REPLACE_BUCKET;
+    if (depArmReplaceBucket) {
+      new s3.CfnBucket(this, 'DepArmReplaceBucket', { bucketName: depArmReplaceBucket });
+    }
+
     const rules: s3.LifecycleRule[] = [
       {
         id: 'archive',
@@ -233,6 +242,19 @@ export class S3LifecycleStack extends cdk.Stack {
         messageRetentionPeriod: 9999999,
       });
       failing.addDependency(ebMalformed);
+      // Issue #2422: a bucket the failing deploy CREATES before the queue
+      // fails (the dependency orders it first), so `cdkd rollback` deletes it
+      // through its rollback-of-a-CREATE arm. verify.sh routes that delete
+      // through Cloud Control and denies the guard's probe on the bucket.
+      // Per-run unique name, set only by phase 2c.
+      // allow-mode-gated-drop: created only by the failing deploy; the rollback deletes it and every later step correctly omits it.
+      const depArmRollbackBucketName = process.env.CDKD_DEP_ARM_ROLLBACK_BUCKET;
+      if (depArmRollbackBucketName) {
+        const depArmRollbackBucket = new s3.CfnBucket(this, 'DepArmRollbackBucket', {
+          bucketName: depArmRollbackBucketName,
+        });
+        failing.addDependency(depArmRollbackBucket);
+      }
     }
 
     // Issue #1748: the TOLERATED key spellings, which no L2 and no typed L1

@@ -333,29 +333,25 @@ export interface DestroyRunnerResult {
    * half is the `RESOURCE_GUARD_INDETERMINATE` events; this counter is the
    * summary half.
    *
-   * STATED LIMITS, measured rather than assumed. Three, and the first two are
-   * about this counter never being reached at all:
+   * STATED LIMITS, measured rather than assumed. Two, both about this
+   * counter never being reached at all (`cdkd deploy` and a rollback record
+   * the same event since go-to-k/cdkd#2422, with no counter):
    *
    * A guard is reported by RETURNING it, so a delete that THROWS after an
    * unanswerable probe emits no row and increments nothing — the loop that
    * reads it sits inside the `try`. Unreachable through
    * `CloudControlProvider` today (its `NotFound` arm returns rather than
    * throwing, and every other throw is a genuine failure), but it is why the
-   * event is documented as accompanying a SUCCEEDED or SKIPPED row and not a
-   * `RESOURCE_FAILED` one.
-   *
-   * `cdkd deploy` drops it entirely: the deploy engine's `provider.delete`
-   * sites consume `deleteSkipReason` and never read `indeterminateGuards`, so
-   * the same guard suppressed on a template-DELETE / replacement / recreate
-   * branch leaves no durable trace. Filed as go-to-k/cdkd#2422.
+   * event is documented, on destroy, as accompanying a SUCCEEDED or SKIPPED
+   * row and not a `RESOURCE_FAILED` one.
    *
    * And a guard suppressed inside a NESTED-STACK CHILD is invisible here. `NestedStackProvider.delete` drives
    * `runDestroyForStack` for the child with a context carrying no
    * `eventRecorder` (see its argument list), so the child records no events at
    * all, and it reports only counts upward — this counter has no channel to
    * roll up through. That is the same pre-existing shape `RESOURCE_SKIPPED`
-   * has on that path, not a regression introduced here; closing it is
-   * go-to-k/cdkd#2422's class of work.
+   * has on that path, not a regression introduced here. go-to-k/cdkd#2422
+   * wired the deploy engine and the rollback executor, not this path.
    */
   guardIndeterminateCount: number;
   /** Number of resources that failed to delete. State is preserved on >0 errors. */
