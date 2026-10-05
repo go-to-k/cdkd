@@ -309,7 +309,7 @@ schema-v9-to-v10-migration	2026-10-04T19:49:12Z	PASS	155	verify.sh	rc ok, orph c
 scrub-nested-child	2026-10-05T15:20:25Z	PASS	171	verify.sh	rc ok, orph clean (#2868 PR #4588)
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-10-04T06:31:24Z	PASS	225	verify.sh	rc ok, orph clean (#2790 PR #4516 phases 7-10)
-secret-derived-immutable-names	2026-10-05T15:03:08Z	PASS	110	verify.sh	PR #4585 (#3869 CC create/delete id withholding); rc 0, destroy clean, orph clean
+secret-derived-immutable-names	2026-10-05T17:41:03Z	PASS	185	verify.sh	PR #4591 (#4275 Scheduler identity + DBProxy); rc 0, destroy clean, 0 state versions; discrimination proof: pre-fix src RED at the Step 3 recorded-creation-date premise; CreationDate precision is ms
 secrets-array-nested	2026-10-03T18:30:14Z	PASS	425	verify.sh	rc ok, orph clean
 secrets-dynamic-ref	2026-10-05T10:27:06Z	PASS	688	verify.sh	rc ok, orph clean; run alone -- a first attempt was blocked mid-run by a peer session running the same fixture (its secret marked for deletion), nothing leaked (#2624 PR #4572)
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)

@@ -4,6 +4,7 @@ import {
   UpdateScheduleCommand,
   DeleteScheduleCommand,
   GetScheduleCommand,
+  ListSchedulesCommand,
   ResourceNotFoundException,
   type CreateScheduleCommandInput,
   type UpdateScheduleCommandInput,
@@ -26,10 +27,16 @@ import type {
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import { maskerOrIdentity } from '../masked-retry-logger.js';
-import { SECRET_MASK } from '../../deployment/secret-redaction.js';
+import { isSecretDerivedValue, maskerOrIdentity } from '../masked-retry-logger.js';
+import { SECRET_MASK, redactSecretsForState } from '../../deployment/secret-redaction.js';
+import {
+  isThrottlingError,
+  markNonRetryable,
+  markRedactedCause,
+} from '../../deployment/retryable-errors.js';
+import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
-import { displaySafe, isPasteableIdent } from '../../utils/display-safe.js';
+import { displaySafe, isPasteableIdent, safeMsg } from '../../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
 import {
@@ -77,7 +84,108 @@ import {
  * group means "a different schedule"), so an in-place move between groups
  * is impossible at the API level. The deploy engine's `--replace` fallback
  * recreates the schedule in the new group.
+ *
+ * A secret-derived GroupName is recorded as its `{{resolve:...}}` reference
+ * and reaches `update()` resolved, so the two never compare equal
+ * (go-to-k/cdkd#4275). The schedule's identity is then the creation date
+ * cdkd recorded for it ({@link RECORDED_CREATION_DATE_KEY}): the update goes
+ * ahead only when the schedule the resolved group holds under this name has
+ * that creation date, so a rotated secret naming another environment's
+ * group is never written to.
  */
+
+/**
+ * The attribute key under which cdkd records a schedule's AWS creation date
+ * (`GetSchedule`'s `CreationDate`, ISO 8601): the only non-secret identity a
+ * schedule has, since its ARN embeds the group, which may be secret-derived
+ * (and is then recorded redacted). Not a CloudFormation attribute: no
+ * template can `Fn::GetAtt` it, and no CloudFormation name contains `:`.
+ */
+export const RECORDED_CREATION_DATE_KEY = 'cdkd:CreationDate';
+
+/** The recorded creation date, or `undefined` when the record holds none. */
+function recordedCreationDate(
+  attributes: Readonly<Record<string, unknown>> | undefined
+): string | undefined {
+  const value = attributes?.[RECORDED_CREATION_DATE_KEY];
+  if (typeof value !== 'string' || value === '') return undefined;
+  // Only a date this provider wrote: state redaction rewrites any attribute
+  // substring equal to a secret, and a rewritten date would match no schedule,
+  // so the delete would read every schedule of its name as "already gone".
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value ? value : undefined;
+}
+
+/**
+ * The identity masker, for a RECORDED value: it masks nothing, so
+ * `isSecretDerivedValue` answers from its spelling alone, a `{{resolve:`
+ * reference or the whole mask. The mask arm matches state's `***` because
+ * `MASK_WALK_DEPTH_CAP_MARKER` (what that function compares with) IS
+ * `SECRET_MASK` (pinned by a unit test).
+ */
+const RECORDED_ONLY = maskerOrIdentity(undefined);
+
+/**
+ * A schedule's identity as cdkd compares it: its AWS creation date (in the form
+ * cdkd records, `toISOString()`) and its target's ARN and role ARN. The date
+ * alone can coincide for two same-named schedules created in one instant
+ * (parallel environment deploys), and a target ARN alone is shared by every
+ * schedule calling one universal target, queue or function.
+ */
+interface ScheduleIdentity {
+  creation: string | undefined;
+  targetArn: string | undefined;
+  roleArn: string | undefined;
+}
+
+/** A recorded identity field: `undefined` when absent or itself redacted. */
+function usableRecorded(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' && !isSecretDerivedValue(value, RECORDED_ONLY)
+    ? value
+    : undefined;
+}
+
+/**
+ * The recorded target half of a schedule's identity. A field that cannot
+ * serve (absent, not a string, or secret-derived and so recorded redacted,
+ * matching nothing) is `undefined` and is not compared.
+ */
+function recordedTarget(
+  properties: Record<string, unknown> | undefined
+): Pick<ScheduleIdentity, 'targetArn' | 'roleArn'> {
+  const target = properties?.['Target'];
+  const fields =
+    typeof target === 'object' && target !== null && !Array.isArray(target)
+      ? (target as Record<string, unknown>)
+      : {};
+  return { targetArn: usableRecorded(fields['Arn']), roleArn: usableRecorded(fields['RoleArn']) };
+}
+
+/** Does a live schedule carry the recorded creation date? */
+function sameRecordedDate(live: ScheduleIdentity, recorded: ScheduleIdentity): boolean {
+  return live.creation !== undefined && live.creation === recorded.creation;
+}
+
+/** Does a live schedule's identity match the recorded one, field by field? */
+function sameRecordedIdentity(live: ScheduleIdentity, recorded: ScheduleIdentity): boolean {
+  return (
+    sameRecordedDate(live, recorded) &&
+    (recorded.targetArn === undefined || live.targetArn === recorded.targetArn) &&
+    (recorded.roleArn === undefined || live.roleArn === recorded.roleArn)
+  );
+}
+
+/**
+ * The `ResourceDeleteResult.reason` for a secret-group schedule whose record
+ * has no stack region to scope the search with. Fixed wording: a reason is
+ * classified by SUBSTRING (`.claude/rules/provider-delete-path.md`).
+ */
+export const NO_REGION_FOR_SCHEDULE_SEARCH_SKIP_REASON =
+  'secret-derived group and no recorded region — no delete issued';
+
+/** The same, for a schedule carrying the recorded date but not the recorded target. */
+export const AMBIGUOUS_SCHEDULE_SKIP_REASON =
+  'schedule matches the recorded date but not its target — no delete issued';
 
 /**
  * A schedule group as the GroupName refusal prints it (go-to-k/cdkd#4239):
@@ -292,13 +400,17 @@ export class SchedulerScheduleProvider implements ResourceProvider {
         })
       );
 
+      const creationDate = await this.creationDateBestEffort(logicalId, name, groupName);
       return {
         physicalId: name,
         // CFn's only GetAtt for the type. CreateSchedule always returns it in
         // practice; if it ever does not, omit the key rather than storing ''
         // (an empty string would satisfy the resolver's flat-attribute lookup
         // and shadow constructAttribute's fallback).
-        attributes: response.ScheduleArn ? { Arn: response.ScheduleArn } : {},
+        attributes: {
+          ...(response.ScheduleArn && { Arn: response.ScheduleArn }),
+          ...(creationDate !== undefined && { [RECORDED_CREATION_DATE_KEY]: creationDate }),
+        },
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -312,6 +424,195 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     }
   }
 
+  /** A live schedule's {@link ScheduleIdentity}. Throws what `GetSchedule` throws. */
+  private async readIdentity(
+    name: string,
+    groupName: string | undefined
+  ): Promise<ScheduleIdentity> {
+    const response = await this.getClient().send(
+      new GetScheduleCommand({ Name: name, ...(groupName && { GroupName: groupName }) })
+    );
+    const date = response.CreationDate;
+    const text = (value: unknown): string | undefined =>
+      typeof value === 'string' && value !== '' ? value : undefined;
+    return {
+      creation:
+        date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString() : undefined,
+      targetArn: text(response.Target?.Arn),
+      roleArn: text(response.Target?.RoleArn),
+    };
+  }
+
+  /** The one wait this provider makes (a read-back retry, a re-list). */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /** Waits before each re-read of {@link creationDateBestEffort}; tests shorten them. */
+  readBackDelaysMs: readonly number[] = [500, 1_000];
+
+  /**
+   * The creation date read back after a write that already succeeded. A
+   * NotFound (read-after-write lag) or a throttle is retried briefly: a date
+   * left unrecorded strands a secret-group schedule, whose update and delete
+   * then have no identity to go on. Any failure that remains records nothing
+   * rather than failing the write. The AWS text is not logged: it can quote the
+   * group, which may be secret-derived.
+   */
+  private async creationDateBestEffort(
+    logicalId: string,
+    name: string,
+    groupName: string | undefined
+  ): Promise<string | undefined> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return (await this.readIdentity(name, groupName)).creation;
+      } catch (error) {
+        const transient = error instanceof ResourceNotFoundException || isThrottlingError(error);
+        const delay = this.readBackDelaysMs[attempt];
+        if (transient && delay !== undefined) {
+          await this.sleep(delay);
+          continue;
+        }
+        const failureClass =
+          error instanceof Error && error.name !== '' ? error.name : 'an unreadable failure';
+        this.logger.debug(
+          safeMsg`Could not read the creation date of Schedule ${logicalId} (${failureClass}); none is recorded`
+        );
+        return undefined;
+      }
+    }
+  }
+
+  /**
+   * The refusal for a confirmation lookup that failed for a reason other than
+   * NotFound: it names the failure's class only, and keeps the AWS text on the
+   * stamped cause, so the retry classifiers still read a throttle.
+   */
+  private wrapUnconfirmedGroupError(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    error: unknown,
+    mask: (text: string) => string
+  ): ProvisioningError {
+    const failureClass =
+      error instanceof Error && error.name !== '' ? error.name : 'an unreadable failure';
+    return markRedactedCause(
+      new ProvisioningError(
+        `Whether the group the GroupName of Schedule ${logicalId} resolves to still holds ` +
+          `this schedule could not be confirmed (${mask(failureClass)}) — re-run once the lookup can succeed`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      )
+    );
+  }
+
+  /**
+   * A non-retryable refusal that is NOT `ResourceUpdateNotSupportedError`, so
+   * `--replace` never acts on it. `secretDerived` picks the wording: a rotated
+   * secret is the likely cause only when the group comes from one.
+   */
+  private refuseUnconfirmed(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    finding: string,
+    secretDerived: boolean,
+    remedy: string
+  ): never {
+    throw markNonRetryable(
+      new ProvisioningError(
+        `${
+          secretDerived
+            ? `GroupName of Schedule ${logicalId} is secret-derived, and the group its secret now resolves to`
+            : `The group of Schedule ${logicalId}`
+        } ${finding}${secretDerived ? ' (the secret may have been rotated)' : ''}, so nothing is ` +
+          `written to it, with or without --replace: ${remedy}`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+
+  /**
+   * go-to-k/cdkd#4275: does the group `groupName` hold, under `physicalId`, the
+   * schedule cdkd recorded? Its identity is the recorded creation date AND,
+   * unless the recorded value is itself redacted, the recorded target ARN: a
+   * creation date alone can coincide for two same-named schedules created in
+   * one instant (parallel environment deploys).
+   *
+   * - `'confirmed'`: it does.
+   * - `'absent'` (NotFound) / `'undated'` (no recorded date, nothing read):
+   *   the caller decides.
+   * - Another creation date: a schedule this stack does not own holds the
+   *   name there; the recorded date with another target or role: likely this
+   *   one, edited outside cdkd. Each THROWS through {@link refuseUnconfirmed},
+   *   with its own remedy.
+   * - Any other lookup failure throws {@link wrapUnconfirmedGroupError}.
+   *
+   * No message prints a group: it may be secret-derived.
+   */
+  private async confirmRecordedSchedule(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    groupName: string | undefined,
+    recorded: ScheduleIdentity,
+    mask: (text: string) => string
+  ): Promise<'confirmed' | 'absent' | 'undated'> {
+    if (recorded.creation === undefined) return 'undated';
+    let live: ScheduleIdentity;
+    try {
+      live = await this.readIdentity(physicalId, groupName);
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) return 'absent';
+      throw this.wrapUnconfirmedGroupError(logicalId, physicalId, resourceType, error, mask);
+    }
+    if (sameRecordedDate(live, recorded) && !sameRecordedIdentity(live, recorded)) {
+      // Likely this schedule with its target edited outside cdkd, not a
+      // rotation: say so, without the secret remedy.
+      this.refuseUnconfirmed(
+        logicalId,
+        physicalId,
+        resourceType,
+        'holds a schedule of this name that carries the recorded creation date but not the recorded target or role (edited outside cdkd?)',
+        false,
+        'restore them, or drop the record with `cdkd orphan <construct path>` and deploy again'
+      );
+    }
+    if (!sameRecordedIdentity(live, recorded)) {
+      this.refuseUnconfirmed(
+        logicalId,
+        physicalId,
+        resourceType,
+        'holds a different schedule of this name (its creation date is not the one cdkd recorded)',
+        true,
+        "restore the secret's value to the schedule's group"
+      );
+    }
+    return 'confirmed';
+  }
+
+  /**
+   * Did the template RE-POINT a secret-derived GroupName (a different
+   * reference), rather than the secret rotate under the same one? Read from
+   * the deploy's own resolved-secrets bag (value -> reference): re-redacting
+   * the desired group the way the state record was written gives back the
+   * recorded reference exactly only when the reference is unchanged. No bag (a
+   * rollback, `drift --revert`) or a recorded mask cannot tell, and reads as
+   * NOT re-pointed, so the caller keeps the refusal `--replace` cannot act on.
+   */
+  private referenceRepointed(desiredGroup: string | undefined, recordedGroup: unknown): boolean {
+    const bag = getCurrentResourceSecrets();
+    if (bag === undefined || typeof desiredGroup !== 'string') return false;
+    if (typeof recordedGroup !== 'string' || !recordedGroup.includes('{{resolve:')) return false;
+    return redactSecretsForState(desiredGroup, bag) !== recordedGroup;
+  }
+
   async update(
     logicalId: string,
     physicalId: string,
@@ -323,20 +624,104 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     const groupName = this.groupNameOf(properties);
     const previousGroupName = this.groupNameOf(previousProperties);
     const mask = maskerOrIdentity(context?.maskSecrets);
+    const recorded = {
+      creation: recordedCreationDate(context?.recordedAttributes),
+      ...recordedTarget(previousProperties),
+    };
+    const replaying = context?.replayingState === true;
+    const desiredSecretDerived = isSecretDerivedValue(properties['GroupName'], mask);
 
-    if (groupName !== previousGroupName) {
+    // go-to-k/cdkd#4275: a probe of the resolved group alone cannot tell a
+    // rotated secret from an unchanged one (two environments whose groups both
+    // hold a schedule of this name); the recorded identity tells them apart.
+    // Two shapes reach here with a secret-derived group:
+    // - a deploy: the record keeps the group as its `{{resolve:...}}`
+    //   reference (or `***`) and this side is resolved, so the two never
+    //   compare equal. Confirmed only while the DESIRED side is still
+    //   secret-derived: a template that moved the group to a literal (or
+    //   dropped it) is a real move, which keeps the typed refusal below.
+    // - a rollback revert: both sides are resolved by the replay and compare
+    //   equal. Confirmed when the group is secret-derived (the replay's masker
+    //   matches a whole value whatever its length); a literal group cannot be
+    //   redirected by a secret, so it is not probed, and an out-of-band
+    //   recreate of it does not wedge every later revert.
+    let confirmedMove = false;
+    if (
+      groupName !== previousGroupName &&
+      isSecretDerivedValue(previousProperties['GroupName'], RECORDED_ONLY) &&
+      desiredSecretDerived
+    ) {
+      const verdict = await this.confirmRecordedSchedule(
+        logicalId,
+        physicalId,
+        resourceType,
+        groupName,
+        recorded,
+        mask
+      );
+      if (verdict === 'undated') {
+        // A record from before cdkd kept the date: nothing identifies the
+        // schedule, and `--replace` cannot help (its delete skips a redacted
+        // group, and a create under the same name collides).
+        this.refuseUnconfirmed(
+          logicalId,
+          physicalId,
+          resourceType,
+          'cannot be confirmed to hold this schedule: its state record predates the creation date cdkd now records',
+          true,
+          'delete the schedule by hand (`aws scheduler delete-schedule`), drop its record with `cdkd orphan <construct path>`, and deploy again, which records the date'
+        );
+      }
+      if (
+        verdict === 'absent' &&
+        !this.referenceRepointed(groupName, previousProperties['GroupName'])
+      ) {
+        // Same reference, a group without the schedule: the secret moved, not
+        // the template. `--replace` would create this schedule in whatever group
+        // the secret now names, possibly another environment's.
+        this.refuseUnconfirmed(
+          logicalId,
+          physicalId,
+          resourceType,
+          'holds no schedule of this name',
+          true,
+          "restore the secret's value to the schedule's group; if the schedule was deleted outside cdkd, drop its record with `cdkd orphan <construct path>` and deploy again"
+        );
+      }
+      // A re-pointed reference falls to the typed refusal: a template change.
+      confirmedMove = verdict === 'confirmed';
+    } else if (
+      groupName === previousGroupName &&
+      replaying &&
+      recorded.creation !== undefined &&
+      // A group composed with an embedded secret below the masker's
+      // substring floor is not recognised and reverts without a probe; state
+      // redaction shares that floor, so nothing recorded marks it either.
+      desiredSecretDerived
+    ) {
+      const verdict = await this.confirmRecordedSchedule(
+        logicalId,
+        physicalId,
+        resourceType,
+        groupName,
+        recorded,
+        mask
+      );
+      if (verdict !== 'confirmed') {
+        this.refuseUnconfirmed(
+          logicalId,
+          physicalId,
+          resourceType,
+          'holds no schedule of this name',
+          true,
+          "restore the secret's value to the schedule's group, then re-run the rollback"
+        );
+      }
+    }
+    if (groupName !== previousGroupName && !confirmedMove) {
       // GroupName is how the API ADDRESSES the schedule — there is no
       // in-place move between groups. The engine's --replace fallback
       // recreates the schedule in the new group.
-      //
-      // Deliberately refused for a secret-derived group too
-      // (go-to-k/cdkd#4275): the record keeps it as its `{{resolve:...}}`
-      // reference, so this refuses every in-place update of such a schedule,
-      // and nothing non-secret in the record identifies the group (the
-      // recorded Arn embeds it). A probe of the resolved group cannot tell a
-      // rotated secret from an unchanged one: two environments whose groups
-      // both hold a schedule of this name would have the other one's
-      // schedule overwritten.
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
@@ -378,11 +763,27 @@ export class SchedulerScheduleProvider implements ResourceProvider {
         ...this.toSdkFields(properties),
       };
       const response = await this.getClient().send(new UpdateScheduleCommand(input));
+      // Returned attributes REPLACE the record's, so the creation date is
+      // always returned (go-to-k/cdkd#4275):
+      // - a rollback revert carries the recorded one and reads nothing: its
+      //   group was resolved again by the replay;
+      // - a secret-derived group carries the recorded one it was confirmed by;
+      // - a literal group reads it again from the schedule just written, so a
+      //   record from before cdkd kept one is backfilled and an out-of-band
+      //   recreate is picked up; a failed read carries the recorded one.
+      const creationDate =
+        replaying || desiredSecretDerived
+          ? recorded.creation
+          : ((await this.creationDateBestEffort(logicalId, physicalId, groupName)) ??
+            recorded.creation);
 
       return {
         physicalId,
         wasReplaced: false,
-        attributes: response.ScheduleArn ? { Arn: response.ScheduleArn } : {},
+        attributes: {
+          ...(response.ScheduleArn && { Arn: response.ScheduleArn }),
+          ...(creationDate !== undefined && { [RECORDED_CREATION_DATE_KEY]: creationDate }),
+        },
       };
     } catch (error) {
       if (error instanceof ResourceUpdateNotSupportedError) throw error;
@@ -397,6 +798,139 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * go-to-k/cdkd#4275: delete a schedule whose recorded GroupName is redacted
+   * (a secret reference or its mask), which names no group. Every schedule
+   * named `physicalId` is listed across all groups, and the one whose
+   * `GetSchedule` {@link ScheduleIdentity} is the recorded one is deleted in its
+   * group. The comparison reads `GetSchedule`, the API the date was recorded
+   * from, never the listing's own copy.
+   *
+   * No schedule of the name carrying the recorded DATE, on a second complete
+   * listing a moment later too, means the schedule is gone, so the record goes,
+   * with a warning. One carrying the date whose target or role differs (edited
+   * outside cdkd) is not proof of either, so the delete is skipped and the
+   * record kept. Both listings read every page and are region-checked first,
+   * since a client in another region would list nothing; a record with no
+   * region to check against (one written before state recorded it) is skipped
+   * instead and keeps its record. More than one match is refused. No AWS text
+   * is quoted and no group is logged.
+   */
+  private async deleteByRecordedIdentity(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    recorded: ScheduleIdentity,
+    context: DeleteContext | undefined
+  ): Promise<void | ResourceDeleteResult> {
+    if (!context?.expectedRegion) {
+      this.logger.warn(
+        safeMsg`Schedule ${logicalId} is recorded with a secret-derived GroupName and no stack region, so cdkd cannot scope the search for it; skipping deletion and keeping its state record. Delete the schedule by hand, then drop the record with 'cdkd orphan'.`
+      );
+      return { outcome: 'skipped', reason: NO_REGION_FOR_SCHEDULE_SEARCH_SKIP_REASON };
+    }
+    assertRegionMatch(
+      await this.getClient().config.region(),
+      context.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId
+    );
+    const wrapDeleteError = (step: string, error: unknown): ProvisioningError => {
+      const failureClass =
+        error instanceof Error && error.name !== '' ? error.name : 'an unreadable failure';
+      return markRedactedCause(
+        new ProvisioningError(
+          `Failed to delete Schedule ${logicalId}: its recorded GroupName is secret-derived, ` +
+            `and ${step} failed (${failureClass})`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        )
+      );
+    };
+    const findMatches = async (): Promise<{ matches: string[]; datedOnly: number }> => {
+      const groups: string[] = [];
+      try {
+        let nextToken: string | undefined;
+        do {
+          const page = await this.getClient().send(
+            new ListSchedulesCommand({
+              NamePrefix: physicalId,
+              ...(nextToken !== undefined && { NextToken: nextToken }),
+            })
+          );
+          for (const schedule of page.Schedules ?? []) {
+            if (schedule.Name === physicalId && typeof schedule.GroupName === 'string') {
+              groups.push(schedule.GroupName);
+            }
+          }
+          nextToken = page.NextToken;
+        } while (nextToken !== undefined && nextToken !== '');
+      } catch (error) {
+        throw wrapDeleteError('listing the schedules of its name', error);
+      }
+      const matches: string[] = [];
+      let datedOnly = 0;
+      for (const group of groups) {
+        let live: ScheduleIdentity;
+        try {
+          live = await this.readIdentity(physicalId, group);
+        } catch (error) {
+          // Deleted between the listing and this read: not this schedule.
+          if (error instanceof ResourceNotFoundException) continue;
+          throw wrapDeleteError('reading a schedule of its name', error);
+        }
+        if (sameRecordedIdentity(live, recorded)) matches.push(group);
+        else if (sameRecordedDate(live, recorded)) datedOnly++;
+      }
+      return { matches, datedOnly };
+    };
+    let found = await findMatches();
+    // Once more, a moment later, before concluding "gone": a listing can lag a
+    // recent write.
+    if (found.matches.length === 0 && found.datedOnly === 0) {
+      await this.sleep(this.readBackDelaysMs[0] ?? 0);
+      found = await findMatches();
+    }
+    const { matches } = found;
+    if (matches.length === 0 && found.datedOnly > 0) {
+      this.logger.warn(
+        safeMsg`Schedule ${logicalId}: a schedule of its name carries the recorded creation date but not the recorded target or role (edited outside cdkd?), so cdkd cannot tell whether it is this one; skipping deletion and keeping its state record. Delete it by hand if it is, then drop the record with 'cdkd orphan'.`
+      );
+      return { outcome: 'skipped', reason: AMBIGUOUS_SCHEDULE_SKIP_REASON };
+    }
+    if (matches.length === 0) {
+      this.logger.warn(
+        safeMsg`Schedule ${logicalId}: no schedule of its name carries the creation date cdkd recorded, so it is treated as already deleted and its state record is removed`
+      );
+      return;
+    }
+    if (matches.length > 1) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Failed to delete Schedule ${logicalId}: its recorded GroupName is secret-derived, and ` +
+            `${matches.length} schedules of its name match the one cdkd recorded, so none is deleted`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    try {
+      await this.getClient().send(
+        new DeleteScheduleCommand({ Name: physicalId, GroupName: matches[0] })
+      );
+      this.logger.debug(
+        safeMsg`Deleted Schedule ${logicalId} (found by its recorded creation date)`
+      );
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) return;
+      throw wrapDeleteError('the delete', error);
+    }
+  }
+
   async delete(
     logicalId: string,
     physicalId: string,
@@ -405,12 +939,20 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
     // go-to-k/cdkd#3952: the recorded GroupName addresses the schedule.
-    const skip = redactedDeleteAddressSkip(
-      this.logger,
-      logicalId,
-      'Schedule',
-      redactedDeleteAddressFields({ GroupName: properties?.['GroupName'] })
-    );
+    const redactedFields = redactedDeleteAddressFields({ GroupName: properties?.['GroupName'] });
+    // go-to-k/cdkd#4275: a redacted group is found by the recorded creation
+    // date instead, when the record holds one.
+    const recordedCreation = recordedCreationDate(context?.recordedAttributes);
+    if (redactedFields.length > 0 && recordedCreation !== undefined) {
+      return this.deleteByRecordedIdentity(
+        logicalId,
+        physicalId,
+        resourceType,
+        { creation: recordedCreation, ...recordedTarget(properties) },
+        context
+      );
+    }
+    const skip = redactedDeleteAddressSkip(this.logger, logicalId, 'Schedule', redactedFields);
     if (skip) return skip;
     const groupName = this.groupNameOf(properties);
     if (properties === undefined) {
@@ -622,7 +1164,15 @@ export class SchedulerScheduleProvider implements ResourceProvider {
         // the intrinsic resolver treats any non-undefined flat attribute as
         // a hit, so an empty string would beat constructAttribute's fallback
         // and Fn::GetAtt would resolve to ''.
-        attributes: response.Arn ? { Arn: response.Arn } : {},
+        // The creation date too, as create() records it (go-to-k/cdkd#4275): a
+        // re-import replaces the recorded attributes.
+        attributes: {
+          ...(response.Arn && { Arn: response.Arn }),
+          ...(response.CreationDate instanceof Date &&
+            !Number.isNaN(response.CreationDate.getTime()) && {
+              [RECORDED_CREATION_DATE_KEY]: response.CreationDate.toISOString(),
+            }),
+        },
       };
     } catch (error) {
       if (error instanceof ResourceNotFoundException) return null;

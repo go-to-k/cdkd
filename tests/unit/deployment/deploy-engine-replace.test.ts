@@ -36,6 +36,7 @@ import {
 import {
   isMarkedNonRetryable,
   isUpdateUnsupportedError,
+  markNonRetryable,
 } from '../../../src/deployment/retryable-errors.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import { ccUpdateUnsupportedRejection, handleErrorWrapper } from '../_cc-unsupported-action.js';
@@ -317,6 +318,34 @@ describe('DeployEngine — --replace wire-through', () => {
     expect(err!.cause).toBeInstanceOf(ResourceUpdateNotSupportedError);
     // No delete/create attempted — only the failed update.
     expect(callOrder).toEqual(['update']);
+  });
+
+  it('a non-retryable ProvisioningError (a rotated secret-derived address) is never replaced, even under --replace + Retain (go-to-k/cdkd#4275)', async () => {
+    // A CHARACTERIZATION test: it is green on main too. It pins the engine
+    // contract the provider fix relies on, not the fix itself (the provider
+    // tests in secret-reference-immutable-sites.test.ts discriminate that).
+    // The DBProxyTargetGroup and Scheduler providers refuse a secret rotated
+    // under an unchanged reference with this shape, NOT the typed error: under
+    // `UpdateReplacePolicy: Retain` the replacement is create-only, and the
+    // create would write wherever the rotated secret now points.
+    updateRejection = (rt, logicalId) =>
+      markNonRetryable(
+        new ProvisioningError('the value its secret now resolves to addresses a different target group', rt, logicalId, 'old-pid')
+      );
+    for (const policy of ['Retain', undefined] as const) {
+      callOrder = [];
+      const err = await invokeProvision(
+        makeEngine({ replace: true }),
+        'AWS::RDS::DBProxyTargetGroup',
+        policy
+      ).then(
+        () => null,
+        (e) => e as Error
+      );
+      expect(err).not.toBeNull();
+      expect(callOrder).toEqual(['update']);
+    }
+    expect(provider.create).not.toHaveBeenCalled();
   });
 
   it('without --replace a typed rejection quoting "does not support UPDATE" still propagates (issue #3757)', async () => {

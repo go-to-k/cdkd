@@ -742,9 +742,16 @@ The causes:
   deleted and drop the record over a live resource. Where a second source holds
   the value (a Lambda permission's function or an ECS service's cluster in its
   `physicalId`, an IAM policy's name, an access key's owner looked up from IAM,
-  a Route 53 record's hosted zone in its `physicalId`) it is used instead; otherwise
-  no AWS call is issued. A re-deploy records the same redaction again, so remove
-  the resource by hand and drop the record with `cdkd state orphan '<stack>'`.
+  a Route 53 record's hosted zone in its `physicalId`, a Scheduler schedule's
+  recorded creation date, target and role, which find it in whichever group
+  holds it) it is used instead;
+  otherwise no AWS call is issued. A schedule records its creation date when it
+  is created, imported or updated by a cdkd with that change; one whose record
+  predates it, carries no stack region, or matches only a schedule whose
+  target or role was edited outside cdkd, is still skipped. A re-deploy records
+  the same redaction again, so remove the resource by hand and drop the record
+  with `cdkd orphan '<construct path>'` (that resource only) or
+  `cdkd state orphan '<stack>'` (every record of the stack).
 
 - **A custom resource whose Delete handler reported `FAILED`, or whose handler
   invoke did not complete**:

@@ -14,7 +14,7 @@ import {
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { markRedactedCause } from '../../deployment/retryable-errors.js';
+import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import type { CreateContext, ResourceNotFound, UpdateContext } from '../../types/resource.js';
@@ -534,8 +534,19 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     // AWS must confirm the desired names still address the recorded target
     // group (its ARN is the physical id) before anything is written. Any
     // failure to confirm keeps the refusal.
-    if (exemptedBySecretReference.length > 0) {
-      const fields = exemptedBySecretReference.join(' / ');
+    //
+    // A rollback revert re-resolves BOTH sides with today's secret, so they
+    // compare equal and nothing is exempted above, while the names may now
+    // address another proxy: a replay is confirmed the same way, whatever the
+    // names' provenance (the masker's substring floor misses a short name).
+    const replayCheck = exemptedBySecretReference.length === 0 && context?.replayingState === true;
+    if (exemptedBySecretReference.length > 0 || replayCheck) {
+      const fields = replayCheck
+        ? 'DBProxyName / TargetGroupName'
+        : exemptedBySecretReference.join(' / ');
+      const provenance = replayCheck
+        ? 'replayed by a rollback, which resolves any secret they come from again'
+        : 'secret-derived';
       // Each resolved name masked as a VALUE first, so one below the masker's
       // substring floor is caught where AWS quotes it, then the whole line.
       const base = context?.maskSecrets ?? ((t: string) => t);
@@ -562,7 +573,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         // A NOT-FOUND answer is an answer, not a failure: the resolved names
         // address nothing, which is the usual shape of a rotated proxy name
         // (AWS throws rather than returning an empty list). It falls through
-        // to the typed refusal below; re-running would never help it.
+        // to the non-retryable rotation refusal below; re-running would never
+        // help it.
         const notFound =
           error instanceof Error &&
           (error.name === 'DBProxyNotFoundFault' ||
@@ -589,8 +601,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
             ? lookupFailure.name
             : 'an unreadable failure';
         const refusal = new ProvisioningError(
-          `${fields} of AWS::RDS::DBProxyTargetGroup ${logicalId} is secret-derived, and whether ` +
-            `the value its secret resolves to still addresses the recorded target group could ` +
+          `${fields} of AWS::RDS::DBProxyTargetGroup ${logicalId} is ${provenance}, and whether ` +
+            `${replayCheck ? 'the names still address' : 'the value its secret resolves to still addresses'} the recorded target group could ` +
             `not be confirmed (${maskNames(failureClass)}) — re-run once the lookup can succeed`,
           resourceType,
           logicalId,
@@ -601,12 +613,25 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         throw refusal;
       }
       if (liveArn !== physicalId) {
-        throw new ResourceUpdateNotSupportedError(
-          resourceType,
-          logicalId,
-          `${fields} is immutable on AWS::RDS::DBProxyTargetGroup, and the value its secret now ` +
-            `resolves to ${liveArn === undefined ? 'addresses no target group' : 'addresses a different target group'} ` +
-            `(the secret may have been rotated) — destroy + redeploy to change it`
+        // A `ProvisioningError`, NOT `ResourceUpdateNotSupportedError`
+        // (go-to-k/cdkd#4275): the template still spells the same reference, so
+        // this is a rotation, not a rename, and the engine turns the typed error
+        // into a replacement under `--replace`. Under `UpdateReplacePolicy:
+        // Retain` that replacement is create-only, and `create()` registers the
+        // targets on whatever proxy the secret now names, which can be another
+        // environment's. Non-retryable: re-running reads the same secret.
+        throw markNonRetryable(
+          new ProvisioningError(
+            `${fields} of AWS::RDS::DBProxyTargetGroup ${logicalId} is ${provenance}, and ` +
+              `${replayCheck ? 'the names now address' : 'the value its secret now resolves to addresses'} ` +
+              `${liveArn === undefined ? 'no target group' : 'a different target group'} ` +
+              `(${replayCheck ? 'the proxy, or a secret its name comes from, may have changed' : 'the secret may have been rotated'}). ` +
+              `cdkd does not move registered targets to another proxy, with or without ` +
+              `--replace: ${replayCheck ? 'make the names address the proxy that holds this target group again' : "restore the secret's value to the proxy that holds this target group"}`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
         );
       }
     }

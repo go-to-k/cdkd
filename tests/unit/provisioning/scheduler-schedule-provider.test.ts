@@ -4,6 +4,7 @@ import {
   UpdateScheduleCommand,
   DeleteScheduleCommand,
   GetScheduleCommand,
+  ListSchedulesCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-scheduler';
 
@@ -49,8 +50,14 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { SchedulerScheduleProvider } from '../../../src/provisioning/providers/scheduler-schedule-provider.js';
+import {
+  AMBIGUOUS_SCHEDULE_SKIP_REASON,
+  NO_REGION_FOR_SCHEDULE_SEARCH_SKIP_REASON,
+  RECORDED_CREATION_DATE_KEY,
+  SchedulerScheduleProvider,
+} from '../../../src/provisioning/providers/scheduler-schedule-provider.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 /** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
 function bagOf(
@@ -75,6 +82,7 @@ import { setPasteableAwsProfile } from '../../../src/utils/pasteable-aws-profile
 const TYPE = 'AWS::Scheduler::Schedule';
 const GROUP = 'my-custom-group';
 const SCHED_ARN = `arn:aws:scheduler:us-east-1:123456789012:schedule/${GROUP}/my-sched`;
+const CREATED = '2026-10-05T12:34:56.789Z';
 
 const notFound = () =>
   new ResourceNotFoundException({ message: 'Schedule not found.', Message: 'Schedule not found.', $metadata: {} });
@@ -733,6 +741,408 @@ describe('SchedulerScheduleProvider', () => {
 
       await expect(provider.import({ ...baseInput, properties: props })).resolves.toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('records the creation date too, as create() does (go-to-k/cdkd#4275)', async () => {
+      mockSend.mockResolvedValueOnce({ Arn: SCHED_ARN, CreationDate: new Date(CREATED) });
+
+      const result = await provider.import({ ...baseInput, knownPhysicalId: 'my-sched' });
+
+      expect(result?.attributes).toEqual({ Arn: SCHED_ARN, [RECORDED_CREATION_DATE_KEY]: CREATED });
+    });
+  });
+
+  // go-to-k/cdkd#4275: the creation date (with the target ARN) is the
+  // schedule's non-secret identity, which update() and delete() confirm a
+  // secret-derived GroupName against.
+  describe('recorded creation date', () => {
+    const TARGET = BASE_PROPS.Target.Arn;
+    const ROLE = BASE_PROPS.Target.RoleArn;
+    const answer = (handlers: Record<string, (input: Record<string, unknown>) => unknown>) =>
+      mockSend.mockImplementation(async (command: unknown) => {
+        const { constructor, input } = command as {
+          constructor: { name: string };
+          input: Record<string, unknown>;
+        };
+        const handler = handlers[constructor.name];
+        if (!handler) throw new Error('unexpected command');
+        return handler(input);
+      });
+    const sentNames = () =>
+      mockSend.mock.calls.map((c) => (c[0] as { constructor: { name: string } }).constructor.name);
+    const throttle = () =>
+      Object.assign(new Error(`group ${GROUP} is busy`), { name: 'ThrottlingException' });
+
+    beforeEach(() => {
+      provider.readBackDelaysMs = [0, 0];
+    });
+
+    it('create reads it back from the group it created the schedule in and records it', async () => {
+      answer({
+        CreateScheduleCommand: () => ({ ScheduleArn: SCHED_ARN }),
+        GetScheduleCommand: () => ({ CreationDate: new Date(CREATED) }),
+      });
+
+      const result = await provider.create('Sched', TYPE, { ...BASE_PROPS });
+
+      expect(result.attributes).toEqual({ Arn: SCHED_ARN, [RECORDED_CREATION_DATE_KEY]: CREATED });
+      expect(sentInput(GetScheduleCommand)).toEqual({ Name: 'my-sched', GroupName: GROUP });
+    });
+
+    it('create retries a read-back that lags (NotFound) or is throttled, then records the date (CODE-M3)', async () => {
+      let reads = 0;
+      answer({
+        CreateScheduleCommand: () => ({ ScheduleArn: SCHED_ARN }),
+        GetScheduleCommand: () => {
+          reads++;
+          if (reads === 1) throw notFound();
+          if (reads === 2) throw throttle();
+          return { CreationDate: new Date(CREATED) };
+        },
+      });
+
+      const result = await provider.create('Sched', TYPE, { ...BASE_PROPS });
+
+      expect(reads).toBe(3);
+      expect(result.attributes).toEqual({ Arn: SCHED_ARN, [RECORDED_CREATION_DATE_KEY]: CREATED });
+    });
+
+    it('a read-back that keeps failing does not fail the create; nothing is recorded and the AWS text is not logged', async () => {
+      answer({
+        CreateScheduleCommand: () => ({ ScheduleArn: SCHED_ARN }),
+        GetScheduleCommand: () => {
+          throw throttle();
+        },
+      });
+      provider.readBackDelaysMs = [3, 5];
+      const sleep = vi.spyOn(provider as unknown as { sleep: (ms: number) => Promise<void> }, 'sleep');
+
+      const result = await provider.create('Sched', TYPE, { ...BASE_PROPS });
+
+      expect(result.attributes).toEqual({ Arn: SCHED_ARN });
+      // The first read plus one retry per configured delay, each waited first.
+      expect(sentNames().filter((n) => n === 'GetScheduleCommand')).toHaveLength(3);
+      expect(sleep.mock.calls).toEqual([[3], [5]]);
+      const debug = childLogger.debug.mock.calls.map((a) => String(a[0])).join('\n');
+      expect(debug).toContain('Could not read the creation date of Schedule Sched (ThrottlingException)');
+      expect(debug).not.toContain('is busy');
+    });
+
+    it('a read-back failure that is not transient is not retried', async () => {
+      answer({
+        CreateScheduleCommand: () => ({ ScheduleArn: SCHED_ARN }),
+        GetScheduleCommand: () => {
+          throw Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+        },
+      });
+
+      const result = await provider.create('Sched', TYPE, { ...BASE_PROPS });
+
+      expect(result.attributes).toEqual({ Arn: SCHED_ARN });
+      expect(sentNames().filter((n) => n === 'GetScheduleCommand')).toHaveLength(1);
+    });
+
+    it('update of a literal group reads the date again from the schedule it just wrote', async () => {
+      answer({
+        UpdateScheduleCommand: () => ({ ScheduleArn: SCHED_ARN }),
+        GetScheduleCommand: () => ({ CreationDate: new Date(CREATED) }),
+      });
+
+      const result = await provider.update('Sched', 'my-sched', TYPE, { ...BASE_PROPS }, { ...BASE_PROPS }, {
+        recordedAttributes: { Arn: SCHED_ARN },
+      });
+
+      expect(result.attributes).toEqual({ Arn: SCHED_ARN, [RECORDED_CREATION_DATE_KEY]: CREATED });
+      expect(sentNames()).toEqual(['UpdateScheduleCommand', 'GetScheduleCommand']);
+    });
+
+    it('update of a literal group carries the recorded date when the read-back fails', async () => {
+      answer({
+        UpdateScheduleCommand: () => ({ ScheduleArn: SCHED_ARN }),
+        GetScheduleCommand: () => {
+          throw Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+        },
+      });
+
+      const result = await provider.update('Sched', 'my-sched', TYPE, { ...BASE_PROPS }, { ...BASE_PROPS }, {
+        recordedAttributes: { Arn: SCHED_ARN, [RECORDED_CREATION_DATE_KEY]: CREATED },
+      });
+
+      expect(result.attributes).toEqual({ Arn: SCHED_ARN, [RECORDED_CREATION_DATE_KEY]: CREATED });
+    });
+
+    describe('delete with a redacted GroupName', () => {
+      const REF = '{{resolve:secretsmanager:s:SecretString:group}}';
+      const ctx = {
+        expectedRegion: 'us-east-1',
+        recordedAttributes: { [RECORDED_CREATION_DATE_KEY]: CREATED },
+      };
+      const listed = (...groups: string[]) => ({
+        Schedules: [
+          ...groups.map((g) => ({ Name: 'my-sched', GroupName: g })),
+          // A longer name sharing the prefix is never a candidate.
+          { Name: 'my-sched-2', GroupName: 'g-other' },
+        ],
+      });
+      /** Each group's schedule: [creation date, target ARN]. */
+      const identities =
+        (byGroup: Record<string, [string, string?, string?]>) => (input: Record<string, unknown>) => {
+          const entry = byGroup[input['GroupName'] as string];
+          if (entry === undefined) throw notFound();
+          return {
+            CreationDate: new Date(entry[0]),
+            Target: { Arn: entry[1] ?? TARGET, RoleArn: entry[2] ?? ROLE },
+          };
+        };
+      const deletes = () =>
+        mockSend.mock.calls
+          .filter((c) => c[0] instanceof DeleteScheduleCommand)
+          .map((c) => (c[0] as { input: unknown }).input);
+      const del = (props: Record<string, unknown> = { ...BASE_PROPS, GroupName: REF }, context: object = ctx) =>
+        provider.delete('Sched', 'my-sched', TYPE, props, context);
+      const caughtDelete = (p: Promise<unknown>) =>
+        p.then(
+          () => undefined,
+          (e: unknown) => e as Error
+        );
+
+      for (const recorded of [REF, '***']) {
+        it(`finds the schedule by its recorded identity across groups and deletes it there (${recorded})`, async () => {
+          answer({
+            ListSchedulesCommand: () => listed('g-foreign', 'g-ours'),
+            GetScheduleCommand: identities({
+              'g-foreign': ['2026-10-05T12:34:57.000Z'],
+              'g-ours': [CREATED],
+            }),
+            DeleteScheduleCommand: () => ({}),
+          });
+
+          const result = await del({ ...BASE_PROPS, GroupName: recorded });
+
+          expect(result).toBeUndefined();
+          const list = mockSend.mock.calls.find((c) => c[0] instanceof ListSchedulesCommand);
+          expect((list![0] as { input: unknown }).input).toEqual({ NamePrefix: 'my-sched' });
+          expect(deletes()).toEqual([{ Name: 'my-sched', GroupName: 'g-ours' }]);
+        });
+      }
+
+      for (const [label, foreign] of [
+        ['another target', [CREATED, 'arn:aws:sqs:us-east-1:123456789012:other']],
+        // A shared or universal target: only the role tells them apart (SEC-R1).
+        ['the same target but another role', [CREATED, TARGET, 'arn:aws:iam::123456789012:role/other']],
+      ] as const) {
+        it(`the same creation date with ${label} is not ours (SEC-M1, SEC-R1)`, async () => {
+          answer({
+            ListSchedulesCommand: () => listed('g-foreign', 'g-ours'),
+            GetScheduleCommand: identities({ 'g-foreign': [...foreign], 'g-ours': [CREATED] }),
+            DeleteScheduleCommand: () => ({}),
+          });
+
+          await del();
+
+          expect(deletes()).toEqual([{ Name: 'my-sched', GroupName: 'g-ours' }]);
+        });
+      }
+
+      it('only a schedule with the recorded date but another target or role: skipped, record KEPT (SEC-R2)', async () => {
+        // Possibly ours with its target edited outside cdkd: dropping the record
+        // would orphan it, deleting it could delete another environment's.
+        answer({
+          ListSchedulesCommand: () => listed('g-x'),
+          GetScheduleCommand: identities({ 'g-x': [CREATED, TARGET, 'arn:aws:iam::123456789012:role/edited'] }),
+        });
+
+        const result = await del();
+
+        expect(result).toEqual({ outcome: 'skipped', reason: AMBIGUOUS_SCHEDULE_SKIP_REASON });
+        expect(deletes()).toEqual([]);
+        const warn = childLogger.warn.mock.calls.map((a) => String(a[0])).join('\n');
+        expect(warn).toContain('carries the recorded creation date but not the recorded target or role');
+        expect(warn).not.toContain('g-x');
+      });
+
+      it('a recorded target and role that are themselves redacted leave the date to decide', async () => {
+        answer({
+          ListSchedulesCommand: () => listed('g-ours'),
+          GetScheduleCommand: identities({
+            'g-ours': [CREATED, 'arn:aws:sqs:us-east-1:123456789012:x', 'arn:aws:iam::123456789012:role/x'],
+          }),
+          DeleteScheduleCommand: () => ({}),
+        });
+
+        await del({
+          ...BASE_PROPS,
+          GroupName: REF,
+          Target: { ...BASE_PROPS.Target, Arn: '***', RoleArn: '{{resolve:secretsmanager:s:SecretString:role}}' },
+        });
+
+        expect(deletes()).toEqual([{ Name: 'my-sched', GroupName: 'g-ours' }]);
+      });
+
+      it('reads every page of the listing', async () => {
+        let page = 0;
+        answer({
+          ListSchedulesCommand: () =>
+            page++ === 0 ? { Schedules: [], NextToken: 't1' } : listed('g-ours'),
+          GetScheduleCommand: identities({ 'g-ours': [CREATED] }),
+          DeleteScheduleCommand: () => ({}),
+        });
+
+        await del();
+
+        const tokens = mockSend.mock.calls
+          .filter((c) => c[0] instanceof ListSchedulesCommand)
+          .map((c) => (c[0] as { input: { NextToken?: string } }).input.NextToken);
+        expect(tokens).toEqual([undefined, 't1']);
+        expect(deletes()).toEqual([{ Name: 'my-sched', GroupName: 'g-ours' }]);
+      });
+
+      it('no match: listed once more, then gone with a WARNING naming no group, nothing deleted (CODE-M2)', async () => {
+        answer({
+          ListSchedulesCommand: () => listed('g-foreign'),
+          GetScheduleCommand: identities({ 'g-foreign': ['2026-10-05T12:34:57.000Z'] }),
+        });
+
+        const result = await del();
+
+        expect(result).toBeUndefined();
+        expect(deletes()).toEqual([]);
+        expect(sentNames().filter((n) => n === 'ListSchedulesCommand')).toHaveLength(2);
+        const warn = childLogger.warn.mock.calls.map((a) => String(a[0])).join('\n');
+        expect(warn).toContain('Schedule Sched: no schedule of its name carries the creation date cdkd recorded');
+        expect(warn).not.toContain('g-foreign');
+      });
+
+      it('no match on the first listing, a match on the second: deleted (CODE-M2)', async () => {
+        let lists = 0;
+        answer({
+          ListSchedulesCommand: () => (lists++ === 0 ? { Schedules: [] } : listed('g-ours')),
+          GetScheduleCommand: identities({ 'g-ours': [CREATED] }),
+          DeleteScheduleCommand: () => ({}),
+        });
+        // The re-list waits the first read-back delay, so it can outlast a lag.
+        provider.readBackDelaysMs = [7, 0];
+        const sleep = vi.spyOn(provider as unknown as { sleep: (ms: number) => Promise<void> }, 'sleep');
+
+        await del();
+
+        expect(sleep.mock.calls).toEqual([[7]]);
+        expect(deletes()).toEqual([{ Name: 'my-sched', GroupName: 'g-ours' }]);
+      });
+
+      it('a record with no stack region: skipped, record kept, nothing listed (CODE-M2)', async () => {
+        const result = await del(undefined, { recordedAttributes: ctx.recordedAttributes });
+
+        expect(result).toEqual({ outcome: 'skipped', reason: NO_REGION_FOR_SCHEDULE_SEARCH_SKIP_REASON });
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('two schedules matching the recorded identity: refused, nothing deleted', async () => {
+        answer({
+          ListSchedulesCommand: () => listed('g-a', 'g-b'),
+          GetScheduleCommand: identities({ 'g-a': [CREATED], 'g-b': [CREATED] }),
+        });
+
+        await expect(del()).rejects.toThrow('2 schedules of its name match the one cdkd recorded');
+        expect(deletes()).toEqual([]);
+      });
+
+      it('a failed listing fails the delete naming its class only, nothing deleted', async () => {
+        answer({
+          ListSchedulesCommand: () => {
+            throw Object.assign(new Error('group g-secret is busy'), { name: 'ThrottlingException' });
+          },
+        });
+
+        const error = await caughtDelete(del());
+
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect(error!.message).toContain('listing the schedules of its name failed (ThrottlingException)');
+        expect(error!.message).not.toContain('g-secret');
+        expect(deletes()).toEqual([]);
+      });
+
+      it('a schedule gone between the listing and its read is skipped (TEST-2)', async () => {
+        answer({
+          ListSchedulesCommand: () => listed('g-gone', 'g-ours'),
+          GetScheduleCommand: identities({ 'g-ours': [CREATED] }),
+          DeleteScheduleCommand: () => ({}),
+        });
+
+        await del();
+
+        expect(deletes()).toEqual([{ Name: 'my-sched', GroupName: 'g-ours' }]);
+      });
+
+      it('a read that fails otherwise fails the delete naming its class only (TEST-2)', async () => {
+        answer({
+          ListSchedulesCommand: () => listed('g-secret'),
+          GetScheduleCommand: () => {
+            throw Object.assign(new Error('group g-secret denied'), { name: 'AccessDeniedException' });
+          },
+        });
+
+        const error = await caughtDelete(del());
+
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect(error!.message).toContain('reading a schedule of its name failed (AccessDeniedException)');
+        expect(error!.message).not.toContain('g-secret');
+        expect(deletes()).toEqual([]);
+      });
+
+      it('a delete answered NotFound is success (TEST-2)', async () => {
+        answer({
+          ListSchedulesCommand: () => listed('g-ours'),
+          GetScheduleCommand: identities({ 'g-ours': [CREATED] }),
+          DeleteScheduleCommand: () => {
+            throw notFound();
+          },
+        });
+
+        await expect(del()).resolves.toBeUndefined();
+      });
+
+      it('a delete failing otherwise fails naming its class only (TEST-2)', async () => {
+        answer({
+          ListSchedulesCommand: () => listed('g-secret'),
+          GetScheduleCommand: identities({ 'g-secret': [CREATED] }),
+          DeleteScheduleCommand: () => {
+            throw Object.assign(new Error('group g-secret conflict'), { name: 'ConflictException' });
+          },
+        });
+
+        const error = await caughtDelete(del());
+
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect(error!.message).toContain('the delete failed (ConflictException)');
+        expect(error!.message).not.toContain('g-secret');
+      });
+
+      it('a wrong-region client is refused before anything is listed', async () => {
+        answer({ ListSchedulesCommand: () => listed('g-ours') });
+
+        await expect(del(undefined, { ...ctx, expectedRegion: 'eu-west-1' })).rejects.toThrow();
+        expect(sentNames()).not.toContain('ListSchedulesCommand');
+      });
+
+      it('a date state redaction rewrote keeps the redacted-address skip, with no AWS call', async () => {
+        // Read as "no date": it would match no schedule, and the delete would
+        // then drop the record over the live schedule as "already gone".
+        const result = await del(undefined, {
+          expectedRegion: 'us-east-1',
+          recordedAttributes: { [RECORDED_CREATION_DATE_KEY]: '***-10-05T12:34:56.789Z' },
+        });
+
+        expect(result).toMatchObject({ outcome: 'skipped' });
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('a record without the date keeps the redacted-address skip, with no AWS call', async () => {
+        const result = await del(undefined, { expectedRegion: 'us-east-1' });
+
+        expect(result).toMatchObject({ outcome: 'skipped' });
+        expect(mockSend).not.toHaveBeenCalled();
+      });
     });
   });
 });

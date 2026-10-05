@@ -11,8 +11,11 @@
 # and the IAM ManagedPolicy provider REPLACED the policy instead (a create under
 # the same name and path, which IAM refuses). The Cloud Control provider, which
 # a Logs MetricFilter routes to, put an op on the create-only FilterName path
-# in every update's JSON Patch. A Scheduler Schedule's GroupName stays refused on
-# purpose (go-to-k/cdkd#4275), so it is not deployed here.
+# in every update's JSON Patch. The Scheduler provider refused every update of a
+# schedule whose GroupName is secret-derived, and its destroy skipped it: the
+# schedule's ARN embeds the group, so nothing in the record named it. cdkd now
+# records the schedule's creation date (`cdkd:CreationDate`), confirms against
+# it before the update, and finds the schedule by it to delete it.
 #
 # Steps (each echoed as `Step N`):
 #   1. Seed the secret naming the stage, the service, the policy's path and
@@ -27,7 +30,8 @@
 #   4. LOAD-BEARING: the update (CDKD_TEST_UPDATE=true: only the Stages'
 #      Description, the Service's EnableECSManagedTags, the Policy's document,
 #      the API's XrayEnabled, the DataSource's Description and the Queue's
-#      VisibilityTimeout and the Filter's FilterPattern change) EXITS 0.
+#      VisibilityTimeout, the Filter's FilterPattern and the Schedule's
+#      Description change) EXITS 0.
 #      This is what discriminates the fix; the refusals it replaced are named
 #      in the failure message. No secret-derived value appears in its
 #      --verbose log.
@@ -38,6 +42,8 @@
 #      which passes with or without the fix and shows the update path is sound.
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName:
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
+#      LOAD-BEARING for the Schedules: each delete runs through the recorded
+#      identity (the --verbose line naming it is asserted).
 #   7. Remove the secret; assert 0 orphans.
 #   8. Sweep every object version under the stack's state prefix.
 #
@@ -67,6 +73,10 @@
 # "SecretFilter's 'Created resource' line does not withhold its physical id"
 # (with create()'s sink kept, step 6 fails the same way for its
 # 'Deleting resource' line).
+# Revert src/provisioning/providers/scheduler-schedule-provider.ts ALONE and
+# step 4 fails naming "GroupName addresses the schedule" (go-to-k/cdkd#4275);
+# with only its delete arm reverted, step 6 fails: the destroy skips the
+# schedule ("redacted") and exits non-zero.
 #
 # BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
 
@@ -130,6 +140,9 @@ DS_NAME="sdin_ds_${SUFFIX//-/_}"
 QUEUE_NAME="sdin-q-${SUFFIX}"
 FILTER_NAME="sdin-mf-${SUFFIX}"
 FILTER_NAME_ROTATED="sdin-mfr-${SUFFIX}"
+GROUP_NAME="sdin-grp-${SUFFIX}"
+SCHEDULE_NAME="CdkdSdinSchedule"
+PLAIN_SCHEDULE_NAME="CdkdSdinSchedulePlainTarget"
 export SDIN_SECRET_NAME="cdkd-integ-sdin-secret-${SUFFIX}"
 SEEDED_SECRET=0
 # Set just before the first deploy: the stack name is fixed, so a run refused by
@@ -152,6 +165,24 @@ cleanup() {
     CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
       --state-bucket "${STATE_BUCKET:-}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
+    # A destroy that skipped the schedule (a pre-fix probe run) leaves it in its
+    # group; deleting the group deletes the schedules in it.
+    aws scheduler delete-schedule-group --region "${REGION}" --name "${GROUP_NAME}" >/dev/null 2>&1
+    # The schedule's role and target queue, by their recorded or known names, so
+    # an aborted run (a pre-fix probe whose destroy skipped) leaves no orphan.
+    for role in "${SCHEDULE_ROLE:-}" "${PLAIN_SCHEDULE_ROLE:-}"; do
+      [ -n "${role}" ] || continue
+      aws iam delete-role-policy --role-name "${role}" --policy-name send >/dev/null 2>&1
+      aws iam delete-role --role-name "${role}" >/dev/null 2>&1
+    done
+    if [ -n "${PLAIN_TARGET_QUEUE_URL:-}" ]; then
+      aws sqs delete-queue --region "${REGION}" --queue-url "${PLAIN_TARGET_QUEUE_URL}" >/dev/null 2>&1
+    fi
+    LEFT_QUEUE_URL="$(aws sqs get-queue-url --region "${REGION}" --queue-name "${QUEUE_NAME}" \
+      --query QueueUrl --output text 2>/dev/null)"
+    if [ -n "${LEFT_QUEUE_URL}" ] && [ "${LEFT_QUEUE_URL}" != "None" ]; then
+      aws sqs delete-queue --region "${REGION}" --queue-url "${LEFT_QUEUE_URL}" >/dev/null 2>&1
+    fi
   fi
   if [ "${SEEDED_SECRET}" = "1" ]; then
     aws secretsmanager delete-secret --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
@@ -200,8 +231,8 @@ fi
 echo "==> Step 1: seed the secret naming every secret-derived property"
 # From a file, not argv, so the value never shows in the host's process list.
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager create-secret --region "${REGION}" --name "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -223,6 +254,14 @@ state_holds() { # usage: state_holds <literal> -> 0 when the current state.json 
 state_property() { # usage: state_property <logical-id> <property> -> the recorded value
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
     | jq -r --arg id "$1" --arg p "$2" '.resources[$id].properties[$p] // empty'
+}
+state_attribute() { # usage: state_attribute <logical-id> <attribute> -> the recorded value
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -r --arg id "$1" --arg a "$2" '.resources[$id].attributes[$a] // empty'
+}
+schedule_field() { # usage: schedule_field <field> [schedule-name] (a strict capture: a failed read aborts)
+  aws scheduler get-schedule --region "${REGION}" --name "${2:-${SCHEDULE_NAME}}" \
+    --group-name "${GROUP_NAME}" --query "$1" --output text
 }
 state_physical_id() { # usage: state_physical_id <logical-id>
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
@@ -288,7 +327,7 @@ if ! grep -qF -- "physical ID: ***" <<< "${CREATE_FILTER_LINE}"; then
   exit 1
 fi
 if grep -qF -- "${FILTER_NAME}" "${DEPLOY_LOG}"; then
-  echo "FAIL: the deploy log names SecretFilter's FilterName in plaintext (go-to-k/cdkd#3869)" >&2
+  echo "FAIL: the deploy log names SecretFilter's FilterName in plaintext: \${FILTER_NAME} (go-to-k/cdkd#3869)" >&2
   exit 1
 fi
 echo "    OK: the deploy log withholds SecretFilter's physical id"
@@ -303,12 +342,16 @@ GQL_API_ID="$(state_physical_id SecretApi)"
 QUEUE_URL="$(state_physical_id SecretQueue)"
 FILTER_LOG_GROUP="$(state_physical_id FilterLogGroup)"
 FILTER_ID="$(state_physical_id SecretFilter)"
-for v in API_ID CLUSTER_ID SERVICE_ARN TASK_DEF_ARN POLICY_ARN GQL_API_ID QUEUE_URL FILTER_LOG_GROUP FILTER_ID; do
+# An IAM role's physical id is its name, which --role-name takes.
+SCHEDULE_ROLE="$(state_physical_id ScheduleRole)"
+PLAIN_SCHEDULE_ROLE="$(state_physical_id PlainScheduleRole)"
+PLAIN_TARGET_QUEUE_URL="$(state_physical_id PlainTargetQueue)"
+for v in API_ID CLUSTER_ID SERVICE_ARN TASK_DEF_ARN POLICY_ARN GQL_API_ID QUEUE_URL FILTER_LOG_GROUP FILTER_ID SCHEDULE_ROLE PLAIN_SCHEDULE_ROLE PLAIN_TARGET_QUEUE_URL; do
   if [ -z "${!v}" ]; then echo "FAIL: ${v} not found in ${STATE_KEY}" >&2; exit 1; fi
 done
 
 echo "==> Step 3 (PREMISE): state records the names as the redacted expression"
-for field in stage service path policydesc api datasource queue filter; do
+for field in stage service path policydesc api datasource queue filter group; do
   if ! state_holds "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:${field}::}}"; then
     echo "FAIL: state does not record the {{resolve:secretsmanager: expression for the ${field}; the name is not secret-derived, so the update below would not exercise the guard" >&2
     exit 1
@@ -346,14 +389,53 @@ FILTER_CREATED="$(filter_field creationTime)"
 SECRET_STAGE_CREATED="$(stage_field "${STAGE_NAME}" CreatedDate)"
 PLAIN_STAGE_CREATED="$(stage_field plain CreatedDate)"
 SERVICE_CREATED="$(service_field createdAt)"
-for v in SECRET_STAGE_CREATED PLAIN_STAGE_CREATED SERVICE_CREATED FILTER_CREATED; do
+expect_eq "SecretSchedule's recorded GroupName" \
+  "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:group::}}" "$(state_property SecretSchedule GroupName)"
+expect_eq "SecretSchedule's Description after deploy" "cdkd integ: initial" "$(schedule_field Description)"
+SCHEDULE_CREATED="$(schedule_field CreationDate)"
+SCHEDULE_RECORDED_CREATED="$(state_attribute SecretSchedule 'cdkd:CreationDate')"
+# Raw, so a precision mismatch between the CLI's rendering and cdkd's ISO form
+# is visible in the run log (go-to-k/cdkd#4275).
+echo "    SecretSchedule creation date: AWS '${SCHEDULE_CREATED}', recorded '${SCHEDULE_RECORDED_CREATED}'"
+# PREMISE for the full identity match: PlainTargetSchedule's recorded target
+# and role are plain ARNs. Both schedules target PlainTargetQueue, so only
+# their roles tell them apart; a redacted recorded target is unit-tested only.
+PLAIN_RECORDED_TARGET="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq -r '.resources.PlainTargetSchedule.properties.Target.Arn // empty')"
+PLAIN_RECORDED_ROLE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq -r '.resources.PlainTargetSchedule.properties.Target.RoleArn // empty')"
+case "${PLAIN_RECORDED_TARGET}${PLAIN_RECORDED_ROLE}" in
+  *'{{resolve:'*|*'***'*|'') echo "FAIL: premise: PlainTargetSchedule's recorded target or role is redacted or missing, so its identity match would skip them" >&2; exit 1 ;;
+esac
+expect_eq "PlainTargetSchedule's recorded target is its live target" "${PLAIN_RECORDED_TARGET}" \
+  "$(schedule_field Target.Arn "${PLAIN_SCHEDULE_NAME}")"
+expect_eq "PlainTargetSchedule's recorded role is its live role" "${PLAIN_RECORDED_ROLE}" \
+  "$(schedule_field Target.RoleArn "${PLAIN_SCHEDULE_NAME}")"
+# The same PREMISE for SecretSchedule: its target is PlainTargetQueue too, so a
+# redacted recording here would silently fall back to a date-only match.
+SECRET_RECORDED_TARGET="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq -r '.resources.SecretSchedule.properties.Target.Arn // empty')"
+SECRET_RECORDED_ROLE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq -r '.resources.SecretSchedule.properties.Target.RoleArn // empty')"
+for v in "${SECRET_RECORDED_TARGET}" "${SECRET_RECORDED_ROLE}"; do
+  case "${v}" in
+    *'{{resolve:'*|*'***'*|'') echo "FAIL: premise: SecretSchedule's recorded target or role is redacted or missing, so its identity match would skip them" >&2; exit 1 ;;
+  esac
+done
+expect_eq "SecretSchedule's recorded target is its live target" "${SECRET_RECORDED_TARGET}" \
+  "$(schedule_field Target.Arn)"
+expect_eq "SecretSchedule's recorded role is its live role" "${SECRET_RECORDED_ROLE}" \
+  "$(schedule_field Target.RoleArn)"
+PLAIN_SCHEDULE_CREATED="$(schedule_field CreationDate "${PLAIN_SCHEDULE_NAME}")"
+PLAIN_SCHEDULE_RECORDED_CREATED="$(state_attribute PlainTargetSchedule 'cdkd:CreationDate')"
+for v in SECRET_STAGE_CREATED PLAIN_STAGE_CREATED SERVICE_CREATED FILTER_CREATED SCHEDULE_CREATED SCHEDULE_RECORDED_CREATED PLAIN_SCHEDULE_CREATED PLAIN_SCHEDULE_RECORDED_CREATED; do
   if [ -z "${!v}" ] || [ "${!v}" = "None" ]; then echo "FAIL: ${v} unreadable" >&2; exit 1; fi
 done
 
 echo "==> Step 3b: rotate the secret's filter field only"
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager put-secret-value --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -369,7 +451,8 @@ set -e
 if [ "${UPDATE_RC}" -ne 0 ]; then
   for refusal in "StageName is immutable" "Cannot update ServiceName" \
     "GraphqlApi.Name is immutable" "DataSource.Name is immutable" \
-    "A policy called" "createOnlyProperties [/properties/FilterName] cannot be updated"; do
+    "A policy called" "createOnlyProperties [/properties/FilterName] cannot be updated" \
+    "GroupName addresses the schedule" "GroupName of Schedule"; do
     if grep -qF "${refusal}" "${DEPLOY_LOG}"; then
       echo "FAIL: the update failed with '${refusal}': the recorded secret reference was compared with the resolved value (go-to-k/cdkd#4275)" >&2
     fi
@@ -405,10 +488,13 @@ fi
 # providers' when it fires (a Stage's physical id IS its name).
 # FILTER_NAME is the PRE-rotation value, which this deploy's masker never
 # resolved; it is reported below rather than asserted.
-for needle in "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}"; do
+# By NAME, with indirect expansion, so a red names the variable that hit and the
+# log lines it is on (never its value, which is the secret-derived plaintext).
+for needle_var in STAGE_NAME SERVICE_NAME POLICY_PATH POLICY_DESC GQL_API_NAME DS_NAME QUEUE_NAME FILTER_NAME_ROTATED GROUP_NAME; do
   # A here-string, not a pipe: see state_holds.
-  if grep -qF -- "${needle}" <<< "${UPDATE_LOG_BODY}"; then
-    echo "FAIL: the update log carries a secret-derived value in plaintext" >&2
+  if grep -qF -- "${!needle_var}" <<< "${UPDATE_LOG_BODY}"; then
+    HIT_LINES="$(grep -nF -- "${!needle_var}" <<< "${UPDATE_LOG_BODY}" | cut -d: -f1 | paste -sd ' ' -)"
+    echo "FAIL: the update log carries a secret-derived value in plaintext: \${${needle_var}} on log line(s) ${HIT_LINES}" >&2
     exit 1
   fi
 done
@@ -447,6 +533,16 @@ expect_eq "no filter took the rotated name" "None" \
     --filter-name-prefix "${FILTER_NAME_ROTATED}" --query 'metricFilters[0].filterName' --output text)"
 expect_eq "SecretFilter's creation time (not replaced)" "${FILTER_CREATED}" "$(filter_field creationTime)"
 expect_eq "SecretFilter's physical id" "${FILTER_ID}" "$(state_physical_id SecretFilter)"
+expect_eq "SecretSchedule's Description after the update" "cdkd integ: updated" "$(schedule_field Description)"
+expect_eq "SecretSchedule's creation time (not replaced)" "${SCHEDULE_CREATED}" "$(schedule_field CreationDate)"
+expect_eq "SecretSchedule's recorded creation date after the update (carried)" \
+  "${SCHEDULE_RECORDED_CREATED}" "$(state_attribute SecretSchedule 'cdkd:CreationDate')"
+expect_eq "PlainTargetSchedule's Description after the update" "cdkd integ: updated" \
+  "$(schedule_field Description "${PLAIN_SCHEDULE_NAME}")"
+expect_eq "PlainTargetSchedule's creation time (not replaced)" "${PLAIN_SCHEDULE_CREATED}" \
+  "$(schedule_field CreationDate "${PLAIN_SCHEDULE_NAME}")"
+expect_eq "PlainTargetSchedule's recorded creation date after the update (carried)" \
+  "${PLAIN_SCHEDULE_RECORDED_CREATED}" "$(state_attribute PlainTargetSchedule 'cdkd:CreationDate')"
 expect_eq "SecretStage's recorded StageName after the update" \
   "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:stage::}}" "$(state_property SecretStage StageName)"
 
@@ -476,13 +572,27 @@ if ! grep -qF -- "physical ID: ***" <<< "${DESTROY_FILTER_LINE}"; then
   echo "FAIL: SecretFilter's 'Deleting resource' line does not withhold its physical id (go-to-k/cdkd#3869)" >&2
   exit 1
 fi
-for needle in "${FILTER_NAME}" "${FILTER_NAME_ROTATED}"; do
-  if grep -qF -- "${needle}" "${DEPLOY_LOG}"; then
-    echo "FAIL: the destroy log names a SecretFilter FilterName in plaintext (go-to-k/cdkd#3869)" >&2
+for needle_var in FILTER_NAME FILTER_NAME_ROTATED; do
+  if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
+    echo "FAIL: the destroy log names a SecretFilter FilterName in plaintext: \${${needle_var}} (go-to-k/cdkd#3869)" >&2
     exit 1
   fi
 done
 echo "    OK: the destroy log does not name SecretFilter's FilterName"
+# The schedule went through its own delete, found by the recorded creation
+# date: not only through the group's deletion, which takes its schedules too.
+if ! grep -qF "Deleted Schedule SecretSchedule (found by its recorded creation date)" "${DEPLOY_LOG}"; then
+  echo "FAIL: the destroy log has no 'Deleted Schedule SecretSchedule (found by its recorded creation date)' line (go-to-k/cdkd#4275)" >&2
+  log_tail
+  exit 1
+fi
+echo "    OK: SecretSchedule was deleted by its recorded creation date"
+if ! grep -qF "Deleted Schedule PlainTargetSchedule (found by its recorded creation date)" "${DEPLOY_LOG}"; then
+  echo "FAIL: the destroy log has no 'Deleted Schedule PlainTargetSchedule (found by its recorded creation date)' line: the full identity (date, target, role) did not match (go-to-k/cdkd#4275)" >&2
+  log_tail
+  exit 1
+fi
+echo "    OK: PlainTargetSchedule was deleted by its recorded identity"
 
 echo "==> Step 7: remove the secret; assert 0 orphans"
 aws secretsmanager delete-secret --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
@@ -497,6 +607,16 @@ assert_gone "managed policy ${POLICY_ARN} still exists after destroy" \
   aws iam get-policy --policy-arn "${POLICY_ARN}"
 assert_gone "GraphQL API ${GQL_API_ID} still exists after destroy" \
   aws appsync get-graphql-api --region "${REGION}" --api-id "${GQL_API_ID}"
+assert_gone "schedule ${SCHEDULE_NAME} still exists after destroy" \
+  aws scheduler get-schedule --region "${REGION}" --name "${SCHEDULE_NAME}" --group-name "${GROUP_NAME}"
+assert_gone "schedule group ${GROUP_NAME} still exists after destroy" \
+  aws scheduler get-schedule-group --region "${REGION}" --name "${GROUP_NAME}"
+assert_gone "schedule role ${SCHEDULE_ROLE} still exists after destroy" \
+  aws iam get-role --role-name "${SCHEDULE_ROLE}"
+assert_gone "schedule ${PLAIN_SCHEDULE_NAME} still exists after destroy" \
+  aws scheduler get-schedule --region "${REGION}" --name "${PLAIN_SCHEDULE_NAME}" --group-name "${GROUP_NAME}"
+assert_gone "schedule role ${PLAIN_SCHEDULE_ROLE} still exists after destroy" \
+  aws iam get-role --role-name "${PLAIN_SCHEDULE_ROLE}"
 # The log group's deletion takes its metric filters with it. A prefix listing
 # does not error for a missing group, so a STRICT capture of the exact-name
 # match is the probe (a throttle aborts under set -e).
@@ -508,19 +628,21 @@ if [ -n "${LEFTOVER_LOG_GROUP}" ] && [ "${LEFTOVER_LOG_GROUP}" != "None" ]; then
   exit 1
 fi
 # SQS may answer for a deleted queue for up to 60 seconds.
-QUEUE_GONE=0
-for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
-  if gone_probe aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
-    --attribute-names QueueArn; then
-    QUEUE_GONE=1
-    break
+for q in "${QUEUE_URL}" "${PLAIN_TARGET_QUEUE_URL}"; do
+  QUEUE_GONE=0
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+    if gone_probe aws sqs get-queue-attributes --region "${REGION}" --queue-url "${q}" \
+      --attribute-names QueueArn; then
+      QUEUE_GONE=1
+      break
+    fi
+    [ "${attempt}" = 14 ] || sleep 5
+  done
+  if [ "${QUEUE_GONE}" != "1" ]; then
+    echo "FAIL: queue ${q} still exists 65s after destroy" >&2
+    exit 1
   fi
-  [ "${attempt}" = 14 ] || sleep 5
 done
-if [ "${QUEUE_GONE}" != "1" ]; then
-  echo "FAIL: queue ${QUEUE_URL} still exists 65s after destroy" >&2
-  exit 1
-fi
 # `describe-services` / `describe-clusters` do not error for a deleted one:
 # they report it INACTIVE (or not at all), so a gone_probe cannot apply. A
 # STRICT capture of the status is the probe (a throttle aborts under set -e).
@@ -543,7 +665,7 @@ if [ "${TASK_DEF_STATUS}" = "ACTIVE" ]; then
   echo "FAIL: task definition ${TASK_DEF_ARN} is still ACTIVE after destroy" >&2
   exit 1
 fi
-echo "    OK: 0 orphans (state, API with both stages, ECS service, cluster and task definition, managed policy, GraphQL API with its data source, queue, log group with its metric filter)"
+echo "    OK: 0 orphans (state, API with both stages, ECS service, cluster and task definition, managed policy, GraphQL API with its data source, queue, log group with its metric filter, both schedules with their group, roles and the second target queue)"
 
 trap - EXIT INT TERM
 rm -f "${DEPLOY_LOG}" 2>/dev/null || true
@@ -554,4 +676,4 @@ echo "==> Step 8: sweep every object version under the stack's state prefix"
 s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
 echo ""
-echo "[verify] PASS - an in-place update of a Stage, an ECS Service, a managed policy, a GraphQL API, a data source and a Cloud Control-routed metric filter whose immutable values come from a secret succeeded, in place, and destroy was clean"
+echo "[verify] PASS - an in-place update of a Stage, an ECS Service, a managed policy, a GraphQL API, a data source, a Cloud Control-routed metric filter and a schedule whose immutable values come from a secret succeeded, in place, and destroy was clean"
