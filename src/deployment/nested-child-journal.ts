@@ -298,8 +298,9 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  * ROOT deploy having succeeded: the tree's baseline moved, exactly as a lone
  * stack's success drops its whole journal. Depth-first.
  *
- * The delete is unconditional — no load first — so a journal that no longer
- * parses (a newer `journalVersion`, a planted body) is removed too, and the
+ * The delete is unconditional but for `beforeDelete` — no load of its own —
+ * so a journal that no longer parses (a newer `journalVersion`, a planted
+ * body) is removed too, and the
  * noncurrent-version purge `deleteRollbackJournal` carries runs even when no
  * current object is left.
  *
@@ -316,6 +317,13 @@ export async function dropNestedChildJournals(args: {
   region: string;
   resources: Record<string, ResourceState> | undefined;
   logger: Pick<Logger, 'debug' | 'warn'>;
+  /**
+   * Run under the child's lock before its journal is deleted, with the
+   * child's record (undefined when it cannot be read); `false` keeps the
+   * journal (go-to-k/cdkd#4600: a proven orphan it still records was not
+   * deleted).
+   */
+  beforeDelete?: (child: string, state: StackState | undefined) => Promise<boolean>;
   /** Internal: how deep the walk already is. */
   depth?: number;
 }): Promise<void> {
@@ -326,6 +334,7 @@ export async function dropNestedChildJournals(args: {
   for (const [logicalId, record] of Object.entries(resources)) {
     if (!isPlainRecord(record) || record['resourceType'] !== NESTED_STACK_TYPE) continue;
     const child = nestedChildStackName(parentStackName, logicalId);
+    let childState: StackState | undefined;
     try {
       const data = await stateBackend.getState(child, region);
       // Recurse only into a record that IS this child's: one whose body names
@@ -336,6 +345,7 @@ export async function dropNestedChildJournals(args: {
         isPlainRecord(data.state.resources) &&
         (data.state.stackName === undefined || data.state.stackName === child)
       ) {
+        childState = data.state;
         await dropNestedChildJournals({
           ...args,
           parentStackName: child,
@@ -349,10 +359,14 @@ export async function dropNestedChildJournals(args: {
     // Outside the state read's `try`: a child whose state.json cannot be read
     // (so its descendants cannot be walked) still has its OWN journal deleted.
     try {
-      await withChildLock(args.lockManager, child, region, logger, () =>
-        stateBackend.deleteRollbackJournal(child, region)
-      );
-      logger.debug(safeMsg`Deleted the rollback journal of nested stack ${displaySafe(child)}`);
+      const deleted = await withChildLock(args.lockManager, child, region, logger, async () => {
+        if (args.beforeDelete && !(await args.beforeDelete(child, childState))) return false;
+        await stateBackend.deleteRollbackJournal(child, region);
+        return true;
+      });
+      if (deleted) {
+        logger.debug(safeMsg`Deleted the rollback journal of nested stack ${displaySafe(child)}`);
+      }
     } catch (error) {
       warnUncleared(logger, child, error);
     }

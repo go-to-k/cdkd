@@ -932,6 +932,62 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
     ]);
   });
 
+  // go-to-k/cdkd#4600: the root's success acts on each child's journaled
+  // proven orphans first, under the child's lock, and keeps a journal still
+  // holding one.
+  it('runs beforeDelete under the child lock with its record; false keeps that journal', async () => {
+    const t = tree();
+    const seen: Array<[string, unknown]> = [];
+    const beforeDelete = vi.fn(async (child: string, state: StackState | undefined) => {
+      t.order.push(`settle ${child}`);
+      seen.push([child, state?.resources]);
+      return child !== 'Root~Child';
+    });
+
+    await dropNestedChildJournals({
+      stateBackend: t.stateBackend as never,
+      lockManager: t.lockManager as never,
+      parentStackName: 'Root',
+      region: REGION,
+      resources: t.resources as never,
+      logger: t.logger,
+      beforeDelete,
+    });
+
+    expect(t.order).toEqual([
+      'lock Root~Child~Grand',
+      'settle Root~Child~Grand',
+      'delete Root~Child~Grand',
+      'unlock Root~Child~Grand',
+      'lock Root~Child',
+      'settle Root~Child',
+      'unlock Root~Child',
+    ]);
+    expect(seen).toEqual([
+      ['Root~Child~Grand', {}],
+      ['Root~Child', { Grand: { resourceType: 'AWS::CloudFormation::Stack' }, Leaf: { resourceType: 'AWS::SQS::Queue' } }],
+    ]);
+    expect(t.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('hands beforeDelete no record when the child state cannot be read', async () => {
+    const t = tree();
+    t.stateBackend.getState.mockRejectedValueOnce(new Error('unparseable state.json'));
+    const beforeDelete = vi.fn(async () => true);
+
+    await dropNestedChildJournals({
+      stateBackend: t.stateBackend as never,
+      lockManager: t.lockManager as never,
+      parentStackName: 'Root',
+      region: REGION,
+      resources: t.resources as never,
+      logger: t.logger,
+      beforeDelete,
+    });
+
+    expect(beforeDelete).toHaveBeenCalledWith('Root~Child', undefined);
+  });
+
   it('a failed delete warns and carries on', async () => {
     const t = tree();
     t.stateBackend.deleteRollbackJournal.mockRejectedValueOnce(new Error('AccessDenied'));

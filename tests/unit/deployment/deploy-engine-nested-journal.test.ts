@@ -111,6 +111,7 @@ function build(opts: {
   extraState?: Partial<StackState>;
   journal?: { segments: Partial<RollbackJournalSegment>[] } | null;
   childState?: StackState | null;
+  childJournal?: { segments: Partial<RollbackJournalSegment>[] };
   failCreateOf?: string;
   levels?: string[][];
   stackName?: string;
@@ -156,11 +157,15 @@ function build(opts: {
         Promise.resolve(
           name === stack
             ? (opts.journal ?? null)
-            : { segments: [{ runId: RUN, reason: 'nested-pending-parent', operations: [] }] }
+            : (opts.childJournal ?? {
+                segments: [{ runId: RUN, reason: 'nested-pending-parent', operations: [] }],
+              })
         )
       ),
     popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
     dropRollbackJournalSegments: vi.fn().mockResolvedValue(1),
+    reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
+    markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
   };
   const levels = opts.levels ?? [[...opts.changes.keys()]];
   const engine = new DeployEngine(
@@ -695,5 +700,76 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
     await engine.deploy(STACK, templateOf(['Q']));
 
     expect(logs.info.some((l) => l.includes('A previous deploy of'))).toBe(true);
+  });
+
+  // go-to-k/cdkd#4600: the root's success acts on a CHILD's journaled proven
+  // orphan before dropping that child's journal.
+  describe('a nested child journal holding a proven orphan (go-to-k/cdkd#4600)', () => {
+    const childOrphan = {
+      logicalId: 'Stream',
+      changeType: 'CREATE',
+      resourceType: 'AWS::Kinesis::Stream',
+      physicalId: 'child-orphan-stream',
+      provisionedBy: 'sdk',
+      physicalIdRecoveredFromError: true,
+      attemptedProperties: {},
+    };
+    const harness = () =>
+      build({
+        nested: false,
+        changes: new Map([['Q', createChange('Q')]]),
+        resources: { Child: record('Child', NESTED) },
+        childState: {
+          version: 8,
+          stackName: `${STACK}~Child`,
+          region: REGION,
+          resources: { Leaf: record('Leaf') },
+          outputs: {},
+          lastModified: 0,
+        },
+        childJournal: {
+          segments: [
+            {
+              timestamp: 1,
+              reason: 'no-rollback-failure',
+              initialDeploy: false,
+              operations: [],
+              failedOperations: [childOrphan as never],
+            },
+            { runId: RUN, timestamp: 2, reason: 'nested-pending-parent', operations: [] },
+          ],
+        },
+      });
+    const childOrphanDeletes = (provider: Harness['provider']) =>
+      provider.delete!.mock.calls.filter((c) => c[1] === 'child-orphan-stream');
+
+    it('deletes it, then both journals', async () => {
+      const { engine, backend, provider } = harness();
+
+      const result = await engine.deploy(STACK, templateOf(['Q']));
+
+      expect(childOrphanDeletes(provider)).toHaveLength(1);
+      expect(backend.deleteRollbackJournal.mock.calls.map((c) => c[0]).sort()).toEqual([
+        STACK,
+        `${STACK}~Child`,
+      ]);
+      expect(result.deleteSkipped).toBe(0);
+    });
+
+    it('a failed delete keeps the child journal, reduced to it, and counts it as unaddressed', async () => {
+      const { engine, backend, provider } = harness();
+      provider.delete!.mockImplementation((_id: string, physicalId: string) =>
+        physicalId === 'child-orphan-stream'
+          ? Promise.reject(new Error('AccessDenied'))
+          : Promise.resolve(undefined)
+      );
+
+      const result = await engine.deploy(STACK, templateOf(['Q']));
+
+      expect(backend.deleteRollbackJournal.mock.calls.map((c) => c[0])).toEqual([STACK]);
+      expect(backend.reduceRollbackJournalToFailedOperations).toHaveBeenCalledTimes(1);
+      expect(backend.reduceRollbackJournalToFailedOperations.mock.calls[0]![0]).toBe(`${STACK}~Child`);
+      expect(result.deleteSkipped).toBe(1);
+    });
   });
 });

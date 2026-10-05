@@ -1080,22 +1080,25 @@ export async function doDeployWithPrefetch(
       // REMOVING the failed resource from the template, which lands here
       // with hasChanges=false — without this delete the journal (and its
       // "previous deploy failed" note) would linger indefinitely.
-      if (!this.options.dryRun) {
-        await this.settleJournalAfterSuccess(
-          stackName,
-          [],
-          currentState,
-          currentState.resources,
-          currentEtag === undefined
-        );
-      }
+      //
+      // go-to-k/cdkd#4600: a journaled proven orphan it could not delete is
+      // a resource left in AWS, counted with the skipped deletes (exit 2).
+      const journaledOrphansLeft = this.options.dryRun
+        ? 0
+        : await this.settleJournalAfterSuccess(
+            stackName,
+            [],
+            currentState,
+            currentState.resources,
+            currentEtag === undefined
+          );
 
       return {
         stackName,
         created: 0,
         updated: 0,
         deleted: 0,
-        deleteSkipped: 0,
+        deleteSkipped: journaledOrphansLeft,
         updatePartial: 0,
         unchanged: Object.keys(currentState.resources).length,
         durationMs: Date.now() - startTime,
@@ -1250,7 +1253,9 @@ export async function doDeployWithPrefetch(
     // would let a concurrent deploy of the same stack observe a journal
     // we are about to delete (spurious "a previous deploy failed" note)
     // or race the exports-index read-modify-write.
-    await Promise.all([
+    // go-to-k/cdkd#4600: a journaled proven orphan the settle could not
+    // delete is a resource left in AWS, counted with the skipped deletes.
+    const [journaledOrphansLeft] = await Promise.all([
       this.settleJournalAfterSuccess(
         stackName,
         completedOperations,
@@ -1283,7 +1288,7 @@ export async function doDeployWithPrefetch(
       created: actualCounts.created,
       updated: actualCounts.updated,
       deleted: actualCounts.deleted,
-      deleteSkipped: actualCounts.deleteSkipped,
+      deleteSkipped: actualCounts.deleteSkipped + journaledOrphansLeft,
       updatePartial: actualCounts.updatePartial,
       nestedUpdatePartial: actualCounts.nestedUpdatePartial,
       unchanged: unchangedCount,

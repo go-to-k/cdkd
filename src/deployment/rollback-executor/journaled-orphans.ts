@@ -18,10 +18,12 @@ import type { ResourceState } from '../../types/state.js';
 import type { Logger } from '../../types/config.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
-import { displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import { NESTED_PENDING_PARENT_REASON, displacedPhysicalIdShown } from '../nested-child-journal.js';
 import {
+  type CompletedOperation,
   type FailedOperation,
   type RollbackExecutorContext,
   demoteSupersededOrphans,
@@ -62,7 +64,17 @@ export async function loadJournaledOrphans(
   stackName: string,
   region: string,
   rollbackOrphans: unknown,
-  logger: Pick<Logger, 'warn'>
+  logger: Pick<Logger, 'warn'>,
+  options: {
+    /**
+     * Completed ops NEWER than every segment (a successful deploy's own,
+     * go-to-k/cdkd#4600): supersede evidence like a newer segment's, their
+     * logical ids too.
+     */
+    newerOperations?: readonly CompletedOperation[];
+    /** What then happens to an unreadable journal; destroy's by default. */
+    unreadableOutcome?: string;
+  } = {}
 ): Promise<JournaledOrphans> {
   let segments: RollbackJournalSegment[];
   try {
@@ -75,13 +87,24 @@ export async function loadJournaledOrphans(
       // No stack name of its own: the destroy's lines name it. The parse
       // error's detail may carry it, sanitized by the journal parser.
       safeMsg`Could not read the stack's rollback journal (${displaySafe(detail)}); ` +
-        `no resource it records for a failed CREATE is deleted, and a destroy that proceeds removes the journal with the state.`
+        `no resource it records for a failed CREATE is deleted, and ${
+          options.unreadableOutcome ?? 'a destroy that proceeds removes the journal with the state'
+        }.`
     );
     return { ...NONE, unreadable: true };
   }
   // Over EVERY segment, as `cdkd rollback` runs it: a newer nested
   // pending-parent segment's completed CREATE is supersede evidence too.
-  demoteSupersededOrphans(segments, Array.isArray(rollbackOrphans) ? rollbackOrphans : []);
+  const newer = options.newerOperations ?? [];
+  demoteSupersededOrphans(
+    newer.length === 0
+      ? segments
+      : [
+          ...segments,
+          { operations: newer, supersededLogicalIds: newer.map((op) => op.logicalId) },
+        ],
+    Array.isArray(rollbackOrphans) ? rollbackOrphans : []
+  );
   const out: SegmentOrphans[] = [];
   let count = 0;
   for (let s = segments.length - 1; s >= 0; s--) {
@@ -164,6 +187,103 @@ export async function deleteJournaledOrphans(
     }
   }
   return total;
+}
+
+/**
+ * A SUCCESSFUL deploy is about to drop `stackName`'s rollback journal
+ * (go-to-k/cdkd#4600): first act on its proven orphans, as the automatic
+ * rollback, `cdkd rollback` and `cdkd destroy` do (go-to-k/cdkd#4584) —
+ * deleted per the journaled `DeletionPolicy`, through the supersede pass and
+ * the classifier's ownership checks against the deploy's own completed ops
+ * and its saved record.
+ *
+ * Returns how many it left undeleted. When that is non-zero the journal was
+ * reduced to just those ops (or, if the rewrite failed, left whole with the
+ * deploy's ids marked superseded) and the caller must NOT delete it: it is
+ * their only record, and the next successful deploy or a plain `cdkd
+ * rollback` retries them. `state` undefined (unreadable) deletes nothing: a
+ * record may own the resource. An unreadable journal is warned about and
+ * yields 0, so the caller deletes it as it always has. Never throws.
+ */
+export async function settleJournaledOrphansOnSuccess(args: {
+  stateBackend: Pick<
+    S3StateBackend,
+    | 'loadRollbackJournal'
+    | 'reduceRollbackJournalToFailedOperations'
+    | 'markRollbackJournalSuperseded'
+  >;
+  stackName: string;
+  region: string;
+  /** The stack's record after the deploy; undefined when it cannot be read. */
+  state: { resources: Record<string, ResourceState>; orphans?: unknown } | undefined;
+  /** This deploy's completed ops, newer than every segment. */
+  newerOperations: readonly CompletedOperation[];
+  ctx: RollbackExecutorContext;
+  logger: Logger;
+}): Promise<number> {
+  const { stateBackend, stackName, region, state, newerOperations, ctx, logger } = args;
+  const stack = displayIdent(stackName);
+  let orphans: JournaledOrphans;
+  try {
+    orphans = await loadJournaledOrphans(stateBackend, stackName, region, state?.orphans, logger, {
+      newerOperations,
+      unreadableOutcome: 'the successful deploy removes the journal',
+    });
+  } catch {
+    return 0; // `loadJournaledOrphans` catches its own read; nothing else throws.
+  }
+  if (orphans.count === 0) return 0;
+  const all = orphans.segments.flatMap(({ segment, ops }) => ops.map((op) => ({ segment, op })));
+  let pending = all;
+  if (state === undefined) {
+    logger.warn(
+      safeMsg`The rollback journal of stack ${stack} records ${all.length} resource(s) a failed deploy ` +
+        `created, but the stack's state cannot be read, so whether a record now owns them is unknown: none is deleted.`
+    );
+  } else {
+    logger.info(
+      safeMsg`The rollback journal of stack ${stack} records ${all.length} resource(s) a failed deploy ` +
+        `created that no state record holds; acting on them per their DeletionPolicy before the journal is removed:\n` +
+        journaledOrphanLines(orphans, logger).join('\n')
+    );
+    try {
+      const outcome = await deleteJournaledOrphans(orphans, { ...state.resources }, stackName, ctx);
+      pending = all.filter(({ segment, op }) => !isHandledOrphan(outcome.handled, segment, op));
+    } catch (err) {
+      logger.warn(
+        safeMsg`Acting on the journaled resources of stack ${stack} failed: ${displaySafe(err instanceof Error ? err.message : String(err))}`
+      );
+    }
+  }
+  if (pending.length === 0) return 0;
+  const supersededIds = newerOperations.map((op) => op.logicalId);
+  try {
+    await stateBackend.reduceRollbackJournalToFailedOperations(
+      stackName,
+      region,
+      (op, segment) => isHandledOrphan(pending, segment, op),
+      supersededIds
+    );
+  } catch (err) {
+    logger.warn(
+      safeMsg`Failed to reduce the rollback journal of stack ${stack} to its undeleted resources: ` +
+        safeMsg`${displaySafe(err instanceof Error ? err.message : String(err))}. The whole journal is kept.`
+    );
+    try {
+      await stateBackend.markRollbackJournalSuperseded(stackName, region, supersededIds);
+    } catch {
+      // The kept journal then still counts this deploy's ids' older attempts
+      // as evidence: the pre-#4402 shape, which a re-run settles.
+    }
+  }
+  logger.warn(
+    safeMsg`${pending.length} resource(s) a failed deploy of stack ${stack} created were not deleted ` +
+      `(see above). The rollback journal, their only record, is kept with just them; the next ` +
+      `successful deploy retries, as does:\n  ${
+        pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command
+      }`
+  );
+  return pending.length;
 }
 
 /**
