@@ -537,7 +537,7 @@ collapse it into the general `1` bucket.
 | Command | The partial-failure case |
 | --- | --- |
 | `cdkd destroy`, `cdkd state destroy` | Per-resource delete failures, and per-resource **skips**. |
-| `cdkd deploy` | Resources left **unaddressed** — a skipped DELETE, or a replacement's surviving predecessor. Suppressible with `--allow-unaddressed`. |
+| `cdkd deploy` | Resources left **unaddressed** — a skipped DELETE, a replacement's surviving predecessor, or a journaled resource a failed CREATE made whose delete failed. Suppressible with `--allow-unaddressed`. |
 | `cdkd state refresh-observed` | Per-resource read-back failures, and resources AWS reports as not found (deleted outside cdkd); the affected resources keep their previous baseline. |
 | `cdkd publish-assets` | Per-stack asset publish failures. |
 | `cdkd rollback` | Per-op failures, which keep the journal so the run can be repeated; ops skipped with a warning, each recorded as a `ROLLBACK_RESOURCE_SKIPPED` event; or reverted ops that left an untracked resource behind (a retained new copy, a failed delete of one) or were not fully reversed (a re-create that returned the live new resource), recorded as a `ROLLBACK_RESOURCE_SUCCEEDED` event with a `reason`. |
@@ -572,7 +572,7 @@ can still fail, and a real failure takes precedence with exit `1`.
 The warning is printed in both cases where a resource survived — the second and
 third lines above; only the exit code differs between them. See
 [`--allow-unaddressed` (deploy)](cli-deploy-safety.md#allow-unaddressed-deploy)
-for which two cases produce it and how they differ in recoverability.
+for which three cases produce it and how they differ in recoverability.
 
 A CI or bench script that treats any non-zero from `cdkd destroy` as a hard
 failure may want to branch on `2` separately, to schedule a retry rather than

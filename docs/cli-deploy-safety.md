@@ -1903,13 +1903,14 @@ parent deploy.
 
 A deploy that finishes without a single resource FAILING can still leave a
 resource cdkd was responsible for alive in AWS. That outcome exits `2`,
-matching what `cdkd destroy` does for the identical case. Two cases produce it,
-reported on three summary rows, and they differ in whether they heal
+matching what `cdkd destroy` does for the identical case. Three cases produce
+it, reported on three summary rows, and they differ in whether they heal
 themselves:
 
 | Summary row | Cause | Next `cdkd deploy` retries it? |
 | --- | --- | --- |
 | `Skipped (not deleted): N` | A resource removed from the template whose provider could not issue the delete — typically a malformed `physicalId` in state | **Yes.** The state record is deliberately KEPT, so the resource is still diffed as a DELETE next run |
+| `Skipped (not deleted): N` | A resource a failed CREATE made before it failed, recorded only in the rollback journal, whose delete failed (see [Failed CREATEs that made their resource](cli-rollback.md#failed-creates-that-made-their-resource)) | **Yes.** The journal is KEPT with just that entry, and the next successful deploy or `cdkd rollback` retries the delete |
 | `of which left an orphaned predecessor: N` | A replacement the provider performed INSIDE its own `update()` whose old resource it could not retire, or an update-failure replacement where `UpdateReplacePolicy: Retain` said not to delete it | **No.** State now points at the replacement, so the survivor is untracked — delete it by hand |
 | `Left an orphaned predecessor in a nested stack: N` | The same as the row above, for a resource inside a nested child or grandchild stack | **No**, as above |
 

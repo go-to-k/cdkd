@@ -76,8 +76,9 @@ failed resource's record so `cdkd rollback --revert-failed` still works
 in the default deploy flow. A resource a failed CREATE made before it
 failed, which only the journal records, is deleted per its `DeletionPolicy`
 by the automatic rollback, any `cdkd rollback`, `cdkd destroy` and a later
-successful deploy before they drop the journal (see [Failed CREATEs that made their resource](cli-rollback.md#failed-creates-that-made-their-resource)).
-An automatic rollback that skipped an operation
+successful deploy before they drop the journal (see [Failed CREATEs that made their resource](cli-rollback.md#failed-creates-that-made-their-resource));
+a successful deploy whose delete of one fails keeps the journal with just that
+entry and exits `2`. An automatic rollback that skipped an operation
 it could not revert keeps the whole journal. A nested stack's journal is the exception:
 its successful deploy keeps a record until the top-level stack's deploy
 succeeds, which deletes the journals of every nested stack under it.
