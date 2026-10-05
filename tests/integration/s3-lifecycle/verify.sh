@@ -1493,9 +1493,11 @@ aws s3 cp "${DEP_ARM_ID_WORKDIR}/state-planted.json" "s3://${STATE_BUCKET}/${STA
 
 # The deploy writes a NEW `{runId}.jsonl` beside phase 1's and 1b's, so the
 # keys present now are recorded and the run is the one key added.
+# `--output text` separates keys with TABs; the `case " ... "` match below
+# needs spaces, or every key reads as new.
 DEP_ID_EVENTS_PREFIX="cdkd/${STACK}/${REGION}/deployments/"
 DEP_ID_KEYS_BEFORE="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
-  --prefix "${DEP_ID_EVENTS_PREFIX}" --query 'Contents[].Key' --output text)"
+  --prefix "${DEP_ID_EVENTS_PREFIX}" --query 'Contents[].Key' --output text | tr '\t' ' ')"
 
 set +e
 # `--verbose`: the guard's CONFIRMED arm logs at `debug`, the only positive
@@ -1775,7 +1777,7 @@ aws s3 cp "${DEP_ARM_ID_WORKDIR}/state-cc.json" "s3://${STATE_BUCKET}/${STATE_KE
 deny_get_bucket_location "${DEP_ARM_RB_BUCKET}"
 DEP_RB_EVENTS_PREFIX="cdkd/${STACK}/${REGION}/deployments/"
 DEP_RB_KEYS_BEFORE="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
-  --prefix "${DEP_RB_EVENTS_PREFIX}" --query 'Contents[].Key' --output text)"
+  --prefix "${DEP_RB_EVENTS_PREFIX}" --query 'Contents[].Key' --output text | tr '\t' ' ')"
 
 set +e
 PHASE2C_OUT="$(node "${LOCAL_DIST}" rollback "${STACK}" \
