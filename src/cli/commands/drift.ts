@@ -4514,8 +4514,9 @@ async function runAccept(
         // the source expression over it — unless the per-bag proof (issue
         // #2036) shows AWS holds exactly the source with the parameter's
         // current public value, as on the `--revert` twin. Rather than claim it
-        // cannot happen, the write is CHECKED below and the user is told — a silent permanent no-op is the failure mode
-        // worth naming, and the check catches any future cause of it too.
+        // cannot happen, the write is CHECKED below and the user is told — a
+        // silent permanent no-op is the failure mode worth naming, and the
+        // check catches any future cause of it too.
         //
         // THE RULES CONSTANT FOLLOWS THE DESTINATION (issue
         // [#2939](https://github.com/go-to-k/cdkd/issues/2939)), which this
