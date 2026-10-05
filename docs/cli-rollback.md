@@ -172,7 +172,7 @@ failed CREATE:
 in the table above, and the same ownership checks skip it with a warning. A
 delete that fails keeps the entry: the automatic rollback keeps its full
 segment, `cdkd destroy` keeps the state and the journal for a re-run, and a
-successful deploy keeps the journal with just that entry, warns, and exits `2`
+successful deploy keeps the journal (reduced to that entry where it can), warns, and exits `2`
 (`--allow-unaddressed` exits `0`); the next successful deploy or a plain
 `cdkd rollback` retries it.
 
