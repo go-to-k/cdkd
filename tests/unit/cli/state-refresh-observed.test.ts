@@ -1235,6 +1235,21 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
       ]);
     });
 
+    it('evidence that THROWS (a malformed read record) is INCOMPLETE, and the refresh still runs', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      const loaded = makeState({
+        R: makeResource({ physicalId: 'r', resourceType: 'AWS::Lambda::Function' }),
+      });
+      loaded.state.imports = [null] as unknown as NonNullable<StackState['imports']>;
+      mockGetState.mockResolvedValueOnce(loaded);
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
+      const { error } = await runRefresh(['TestStack']);
+      expect(error).toBeUndefined();
+      expect(publicSsmProof.built).toEqual([
+        { region: 'us-east-1', evidence: { regions: [], complete: false } },
+      ]);
+    });
+
     it('a NESTED child whose parent record cannot be read gets INCOMPLETE evidence (go-to-k/cdkd#4213)', async () => {
       const child = makeState({
         R: makeResource({ physicalId: 'r', resourceType: 'AWS::Lambda::Function' }),

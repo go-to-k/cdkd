@@ -144,9 +144,10 @@ describe('a PROVEN public ssm mixed leaf on an empty map (issue #2036)', () => {
   });
 
   it('a whole `ssm-secure` token is never a plain-ssm proof subject', () => {
+    // Even with a (writer-impossible) proof whose value the readback MATCHES.
     const source = `x-{{resolve:ssm-secure:/app/public-host}}`;
     const out = baseline(
-      { V: `x-${SECRET_VALUE}` },
+      { V: 'x-some-public-value' },
       { V: source },
       provenBag('{{resolve:ssm-secure:/app/public-host}}')
     );

@@ -257,7 +257,7 @@ describe('the resolver files the per-bag proof (cdkd drift)', () => {
     const later: RecordedSecretValues = new Map();
     await resolver.resolveDynamicReferences(`a-${PUBLIC}`, ctx(later));
     expect(ssmSends).toHaveLength(1);
-    expect(isProvenPublicExpression(later, PUBLIC)).toBe(true);
+    expect(provenPublicValue(later, PUBLIC)).toBe('db.public.internal');
   });
 
   it('a SecureString is recorded as a secret and proves nothing', async () => {
