@@ -351,7 +351,7 @@ describe('DeployEngine records condition verdicts for cdkd diff (#4479)', () => 
       Resources: childTemplate().Resources!,
     };
     const map = inherited();
-    recordLogOnlyValue(map, '4821');
+    recordLogOnlyValue(map, 'pin-4821-zq');
     primeCreate();
     await new DeployEngine(
       mockStateBackend as never,
@@ -374,7 +374,7 @@ describe('DeployEngine records condition verdicts for cdkd diff (#4479)', () => 
       } as never,
       {
         dryRun: false,
-        parameters: { Stage: PLAINTEXT, Pin: '4821' },
+        parameters: { Stage: PLAINTEXT, Pin: 'pin-4821-zq' },
         inheritedSecrets: map,
         parentStackInfo: { parentStack: 'Parent', parentLogicalId: 'Child', parentRegion: 'us-east-1' },
       },
@@ -382,7 +382,7 @@ describe('DeployEngine records condition verdicts for cdkd diff (#4479)', () => 
     ).deploy(CHILD, withPin);
     const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
     expect(saved.conditionVerdicts).toBeUndefined();
-    expect(JSON.stringify(saved)).not.toContain('4821');
+    expect(JSON.stringify(saved)).not.toContain('pin-4821-zq');
   });
 
   it('a parameter a state resource of the same logical id shadows is never fingerprinted, and an old record is CLEARED', async () => {
