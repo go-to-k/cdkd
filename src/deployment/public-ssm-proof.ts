@@ -24,8 +24,9 @@ import { safeMsg } from '../utils/display-safe.js';
  * with an EMPTY secrets map. Only a LEGACY record carries a public expression
  * there (imported before the #2944 refusal marker, written by an older binary,
  * or hand-edited): a current `cdkd import` refuses the baseline of a record it
- * could not resolve, and a resolved public reference is persisted resolved. A mixed leaf there (a reference inside surrounding text) used to be
- * refused whatever its parameter was, so a public one was over-redacted: the
+ * could not resolve, and a resolved public reference is persisted resolved. A
+ * mixed leaf there (a reference inside surrounding text) used to be refused
+ * whatever its parameter was, so a public one was over-redacted: the
  * baseline held the expression where AWS holds the value. The only evidence
  * that can lift that is the parameter's TYPE, so this asks AWS for it.
  *

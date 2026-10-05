@@ -153,8 +153,8 @@ export function clearRecordedSecretExpressions(): void {
  * A bag is one resource's pass, and its writers are the lookups made FOR that
  * bag — the resolver resolving that record's own references in the region
  * that answers for them (`cdkd drift`), or `PublicSsmProver.proofBagFor`
- * asking in the record's own region (`cdkd state refresh-observed`). A view or copy of a bag does NOT inherit it: the reader then finds
- * no proof and over-redacts, which is the safe direction.
+ * asking in the record's own region (`cdkd state refresh-observed`). A view or
+ * copy of a bag does NOT inherit it: the reader then finds no proof and over-redacts, which is the safe direction.
  *
  * The VALUE is what makes a TYPE answer usable as evidence about a READBACK.
  * The type is read now, while the readback holds whatever the last deploy

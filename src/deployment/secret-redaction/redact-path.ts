@@ -690,8 +690,7 @@ export function dynamicReferenceSpans(value: string): Array<{ start: number; end
  * A public mixed leaf reaches this predicate only when the position source
  * CARRIES its expression, which a deploy never leaves behind (issue #1901), so
  * its phases STAMP that LEGACY shape (a pre-#2944 import warn-path record):
- * Phase
- * 1f3 on `cdkd state refresh-observed`, where the public leaf keeps its
+ * Phase 1f3 on `cdkd state refresh-observed`, where the public leaf keeps its
  * resolved value and the SecureString mixed leaf beside it is still refused,
  * and Phase 1f4 on `cdkd drift --accept`, which records a public leaf whose
  * value matches its proof and refuses one AWS holds a different value for.
