@@ -639,6 +639,16 @@ address, and issue no AWS call; the custom-resource handler cause below
 attempted the delete. The per-resource `skipped (...)` line names which applies.
 The causes:
 
+- **A state record with no physical id**: `skipped (state record has no
+  physical id)`. The row names its type, but its `physicalId` is missing, not a
+  string, empty, or only whitespace, so cdkd cannot address the resource and
+  issues no AWS call. Before, the provider was called with whatever the field
+  held, and the `NotFound` that came back read as already deleted, dropping the
+  record of a resource that may still be live. The record is kept; repair the
+  `physicalId` in `state.json` and re-run. A nested stack row
+  (`AWS::CloudFormation::Stack`) is exempt: its delete finds the child by
+  `<parent>~<logicalId>` and never reads the id.
+
 - **A composite `physicalId` that does not decode** (`AWS::Glue::Table`,
   `AWS::AppSync::{DataSource,Resolver,ApiKey}`, `AWS::EC2::NetworkAclEntry`).
   No AWS call is issued at all, and the per-resource warning names the expected
@@ -760,9 +770,26 @@ The causes:
   cdkd addressed the resource and sent (or attempted to send) the `Delete`, so
   the record is correct and there is nothing to repair in `state.json`. The
   same destroy usually deletes the handler's Lambda too, so the next destroy
-  does not retry it (it finds the handler gone and drops the record). Tear down
-  what the handler manages by hand, then drop the record with
-  `cdkd state orphan '<stack>' --stack-region <region>`.
+  does not retry it: it finds the handler gone and skips the resource again
+  (the next cause). Tear down what the handler manages by hand, then drop the
+  record with `cdkd state orphan '<stack>' --stack-region <region>`.
+
+- **A custom resource whose backing Lambda no longer exists**:
+  `skipped (backing Lambda function is gone — Delete handler not invoked)`.
+  `GetFunction` on the recorded `ServiceToken` answered "not found", so the
+  handler can never receive the `Delete`, and cdkd cannot know whether what it
+  manages is gone. The record is kept and the destroy exits `2`, matching
+  CloudFormation, where a custom resource whose delete cannot be confirmed
+  leaves the stack `DELETE_FAILED` until you retry with `RetainResources`.
+  This is the usual second run after the cause above, and also the shape where
+  a shared provider stack was destroyed before the stacks that use it. Either
+  redeploy a function at that exact ARN and re-run, or confirm by hand that
+  what the handler manages is gone (or tear it down) and drop the record with
+  `cdkd state orphan '<stack>' --stack-region <region>`. Earlier versions
+  treated this as already deleted, dropping the record and exiting `0`. A
+  `cdkd deploy` that deletes such a custom resource (removed from the
+  template, replaced, or rolled back) still does that, with a warning, as
+  CloudFormation ignores delete failures in an update's cleanup phase.
 
 - **A nested stack** (`AWS::CloudFormation::Stack`) whose own destroy skipped a
   resource or was interrupted. Here the child's *other* resources were deleted
@@ -1025,9 +1052,34 @@ The refusal offers no `cdkd state orphan` template, unlike the map refusal:
 every other row is readable, and dropping the whole record with its resources
 left standing is more than one row asks for. Inspect the record with
 `cdkd state show '<stack>' --stack-region '<region>' --json`, repair the row,
-and re-run. A row that names its type but no `physicalId` is not refused here —
-its delete fails on its own terms. Full per-command table in
+and re-run. A row that names its type but no usable `physicalId` is not refused
+here: it is skipped on its own (see
+[Skipped resources on destroy](#skipped-resources-on-destroy)). Full per-command
+table in
 [State Management](state-management.md#when-one-resources-record-cannot-be-read).
+
+## An unreadable `properties` map refuses the destroy
+
+Each readable row's `properties` map is handed to that resource's delete, and
+what the delete does is read off it: whether an RDS DB instance takes a final
+snapshot, whether an ECR repository is emptied first, how many resources the
+`--remove-protection` prompt counts. The delete order is built from it too,
+since the dependency graph reads each row's `Ref` / `Fn::GetAtt` edges out of
+the map. A map that is missing, a string, a list, a number, a boolean or `null`
+used to reach the delete as it stood. Reading it as empty is not the safe answer:
+every one of those keys then reads as absent, so the delete fails or takes the
+wrong branch after every resource ordered before it was already deleted.
+
+`cdkd destroy` and `cdkd state destroy` therefore refuse such a record before
+the prompt and before the lock (`STATE_RESOURCES_MALFORMED`, exit `1`), naming
+the rows whose map they could not read. A row whose own `DeletionPolicy`
+retains it is refused too, because its edges still order the others. A nested
+**child** record reached through its parent's destroy inherits the refusal.
+When a row is unreadable as a whole, the refusal above names it instead.
+
+Inspect the record with
+`cdkd state show '<stack>' --stack-region '<region>' --json`, repair the map,
+and re-run.
 
 ## A malformed `outputs` map refuses the destroy
 

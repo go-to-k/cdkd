@@ -205,6 +205,20 @@ export interface DeleteContext {
    * non-secret identities (ids AWS generates).
    */
   recordedAttributes?: Readonly<Record<string, unknown>> | undefined;
+
+  /**
+   * The delete is part of tearing the WHOLE stack down: set only by
+   * `destroy-runner.ts`, i.e. `cdkd destroy` / `cdkd state destroy`. Absent on
+   * every deploy-engine delete (template removal, replacement, rollback).
+   *
+   * Exists for CloudFormation parity where the two phases differ
+   * (go-to-k/cdkd#2115): a delete cdkd cannot confirm during a stack DELETE
+   * leaves it `DELETE_FAILED` (so the record is kept and the run exits 2),
+   * while an UPDATE ignores delete failures in its cleanup phase (so the
+   * deploy keeps its warn-and-drop). `CustomResourceProvider.delete` reads it
+   * on its backing-Lambda-gone arm.
+   */
+  stackDestroy?: boolean | undefined;
 }
 
 /**

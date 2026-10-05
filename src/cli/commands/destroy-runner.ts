@@ -188,6 +188,14 @@ export interface DestroyRunnerContext {
   resolveSecretDerivedPrincipals?: { inheritedProducerRegions?: readonly string[] };
 
   /**
+   * A whole-stack teardown: set by `cdkd destroy` / `cdkd state destroy`, and
+   * forwarded to a nested child only from its delete's own context, so a
+   * deploy's nested-stack removal never carries it (go-to-k/cdkd#2115). Passed
+   * through as `DeleteContext.stackDestroy`.
+   */
+  stackDestroy?: boolean;
+
+  /**
    * Per-resource warn threshold (ms). Mirrors `DeployEngineOptions` so
    * `cdkd destroy` exposes the same `--resource-warn-after` UX as
    * `cdkd deploy`. Defaults to {@link DEFAULT_RESOURCE_WARN_AFTER_MS}.
@@ -1635,6 +1643,8 @@ export async function runDestroyForStack(
                           }),
                           // Issue #4157: the identity evidence of the record deleted.
                           recordedAttributes: resource.attributes,
+                          // go-to-k/cdkd#2115: only a whole-stack teardown.
+                          ...(ctx.stackDestroy === true && { stackDestroy: true }),
                         }
                       )
                     )

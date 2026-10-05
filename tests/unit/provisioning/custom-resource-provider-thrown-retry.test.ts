@@ -87,6 +87,7 @@ vi.mock('@aws-sdk/client-lambda', async (importOriginal) => {
 import {
   CustomResourceProvider,
   CR_DELETE_INVOKE_FAILED_SKIP_REASON,
+  CR_BACKING_LAMBDA_GONE_SKIP_REASON,
   customResourceRetryDelays,
 } from '../../../src/provisioning/providers/custom-resource-provider.js';
 import { IAM_PROPAGATION_MAX_RETRIES } from '../../../src/deployment/retry.js';
@@ -955,10 +956,11 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
     }
   });
 
-  it('still reports delete() as DELETED when the backing Lambda is gone', async () => {
-    // The polarity of the case above: there the handler CAN never run again, so
-    // the record is dead weight rather than a live resource, and turning that
-    // into a skip would make every re-run of a destroy exit 2.
+  it('reports the backing-Lambda-gone pre-check under its OWN skip reason (issue #2115)', async () => {
+    // Not DELETED: a handler that can never run again proves nothing about
+    // what it manages, so the record is kept (issue #2115). Distinct from the
+    // throw arm's reason, so the row says the handler was never invoked rather
+    // than that an invoke failed.
     wire({});
     mockLambdaSend.mockImplementation((cmd: { constructor: { name: string } }) => {
       if (cmd.constructor.name === 'GetFunctionCommand') {
@@ -968,11 +970,16 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
     });
     const provider = makeProvider();
 
-    const result = await provider.delete('CrResource', 'phys-123', 'Custom::CrResource', {
-      ServiceToken: SERVICE_TOKEN,
-    });
+    const result = await provider.delete(
+      'CrResource',
+      'phys-123',
+      'Custom::CrResource',
+      { ServiceToken: SERVICE_TOKEN },
+      { stackDestroy: true }
+    );
 
-    expect(result).toBeUndefined();
+    expect(result).toEqual({ outcome: 'skipped', reason: CR_BACKING_LAMBDA_GONE_SKIP_REASON });
+    expect(CR_BACKING_LAMBDA_GONE_SKIP_REASON).not.toBe(CR_DELETE_INVOKE_FAILED_SKIP_REASON);
   });
 
   // --- CDKD_CR_AUTHZ_MAX_RETRIES is clamped --------------------------------

@@ -24,8 +24,11 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *    (`CrProbe`). On a re-run after a first interrupted destroy, the
  *    backing Lambda may already be gone — replaying the CR delete used to
  *    stall 10 minutes waiting on `GetFunction` against the deleted
- *    function (the #804 bug). The #804 fail-fast + incremental destroy
- *    persistence make the re-run resolve quickly.
+ *    function (the #804 bug). On a successful CR delete, incremental
+ *    destroy persistence drops its record before its Lambda's level
+ *    starts, so a re-run never meets that shape; if it did, the #804
+ *    pre-check now answers fast with a skip (record kept, exit 2 — issue
+ *    #2115), never a 10-minute stall.
  *  - A handful of `AWS::SSM::Parameter` resources — extra independent
  *    resources that pad the delete loop so a SIGINT reliably lands while
  *    deletion is in flight, and confirm partial-destroy state preservation
@@ -110,9 +113,10 @@ def handler(event, context):
       timeout: cdk.Duration.seconds(30),
     });
 
-    // Custom Resource backed by the VPC-attached Lambda. On a destroy
-    // re-run after the first run already deleted the backing Lambda, the
-    // CR delete must NOT stall waiting on the gone function (issue #804).
+    // Custom Resource backed by the VPC-attached Lambda. A destroy re-run
+    // must NOT stall waiting on a gone backing function (issue #804); after
+    // a successful CR delete it never meets one, and one that did would now
+    // skip and exit 2 by design (issue #2115).
     new cdk.CustomResource(this, 'CrProbe', {
       serviceToken: handlerFn.functionArn,
       properties: {

@@ -55,7 +55,10 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: vi.fn().mockResolvedValue('https://s3.example.com/presigned-url'),
 }));
 
-import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';
+import {
+  CustomResourceProvider,
+  CR_BACKING_LAMBDA_GONE_SKIP_REASON,
+} from '../../../src/provisioning/providers/custom-resource-provider.js';
 
 describe('CustomResourceProvider', () => {
   let provider: CustomResourceProvider;
@@ -420,13 +423,21 @@ describe('CustomResourceProvider', () => {
         name: 'ResourceNotFoundException',
       });
 
-    it('treats the custom resource as already deleted without entering the waiters', async () => {
+    it('reports a skip (issue #2115) without entering the waiters', async () => {
       // Single GetFunction pre-check rejects with ResourceNotFoundException.
       mockLambdaSend.mockRejectedValueOnce(resourceNotFound());
 
-      await provider.delete('MyCustom', 'cr-physical-id', 'Custom::MyResource', {
-        ServiceToken: lambdaToken,
-      });
+      const result = await provider.delete(
+        'MyCustom',
+        'cr-physical-id',
+        'Custom::MyResource',
+        { ServiceToken: lambdaToken },
+        { stackDestroy: true }
+      );
+
+      // Not DELETED on a stack destroy: the handler can never run, so the
+      // resource is unproven and the record must be kept.
+      expect(result).toEqual({ outcome: 'skipped', reason: CR_BACKING_LAMBDA_GONE_SKIP_REASON });
 
       // Exactly ONE Lambda SDK call: the GetFunction pre-check. No waiter
       // polls (waitUntilFunctionActiveV2 would issue more GetFunction
@@ -438,8 +449,8 @@ describe('CustomResourceProvider', () => {
       // No pre-signed URL machinery either — the invocation is never prepared.
       expect(mockS3Send).not.toHaveBeenCalled();
       expect(mockSnsSend).not.toHaveBeenCalled();
-      // The skip is surfaced as a warning (warn-and-continue is the
-      // provider's delete policy).
+      // ...and surfaced as a warning (warn-and-continue is the provider's
+      // delete policy).
       expect(childWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining('no longer exists')
       );

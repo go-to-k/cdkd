@@ -153,6 +153,26 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     });
   });
 
+  // go-to-k/cdkd#2115: the stack-destroy flag reaches the provider only when
+  // the CALLER (cdkd destroy / state destroy, or a nested delete forwarding its
+  // own) sets it — the provider tests pass it by hand, so this pins the wiring.
+  it.each([
+    ['set by the caller', { stackDestroy: true }, true],
+    ['explicitly false', { stackDestroy: false }, false],
+    ['absent (a deploy-reached nested removal)', {}, false],
+  ])('ctx.stackDestroy %s: the DeleteContext carries it only when true', async (_what, extra, carried) => {
+    await runDestroyForStack(
+      'TestStack',
+      makeState({ Q: res({ resourceType: 'AWS::SQS::Queue' }) }),
+      makeCtx(extra)
+    );
+    if (carried) {
+      expect(deleteContextArg()['stackDestroy']).toBe(true);
+    } else {
+      expect(deleteContextArg()).not.toHaveProperty('stackDestroy');
+    }
+  });
+
   it('go-to-k/cdkd#4156: a destroy of an AWS::IAM::Policy is handed no inline-policy claim predicate', async () => {
     await runDestroyForStack(
       'TestStack',
