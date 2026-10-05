@@ -6580,6 +6580,7 @@
         "deletion-policy-retain",
         "deployment-events",
         "destroy-interrupt",
+        "diff-fail-on-destructive",
         "docdb-neptune",
         "dynamic-ref-cross-region",
         "elasticache-replicationgroup-getatt",
@@ -6704,6 +6705,10 @@
           "l2"
         ],
         "destroy-interrupt": [
+          "l2",
+          "literal"
+        ],
+        "diff-fail-on-destructive": [
           "l2",
           "literal"
         ],

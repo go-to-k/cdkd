@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 /**
  * Per-resource wall-clock deadline + warn timer for provider operations.
  *
@@ -88,12 +90,17 @@ export async function withResourceDeadline<T>(
 ): Promise<T> {
   validateOptions(opts);
 
-  const startedAt = Date.now();
-
   return new Promise<T>((resolve, reject) => {
     let settled = false;
+    let timedOut = false;
+    let warned = false;
     let warnTimer: NodeJS.Timeout | undefined;
     let timeoutTimer: NodeJS.Timeout | undefined;
+    // The clock: time run before the current pause, plus the current run.
+    let elapsedBeforePause = 0;
+    let runningSince = Date.now();
+    let pauses = 0;
+    const elapsed = (): number => elapsedBeforePause + (pauses > 0 ? 0 : Date.now() - runningSince);
 
     const cleanup = (): void => {
       if (warnTimer !== undefined) clearTimeout(warnTimer);
@@ -102,24 +109,35 @@ export async function withResourceDeadline<T>(
       timeoutTimer = undefined;
     };
 
-    if (opts.onWarn) {
-      warnTimer = setTimeout(() => {
-        if (settled) return;
-        try {
-          opts.onWarn!(Date.now() - startedAt);
-        } catch {
-          // onWarn is best-effort UX — never let it sink the operation.
-        }
-      }, opts.warnAfterMs);
-    }
-
-    timeoutTimer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      const elapsed = Date.now() - startedAt;
-      reject(opts.onTimeout(elapsed));
-    }, opts.timeoutMs);
+    // Arms both timers for what is LEFT of each budget, so a pause (an
+    // operator answering a prompt inside the operation) does not count.
+    const arm = (): void => {
+      if (opts.onWarn && !warned) {
+        warnTimer = setTimeout(
+          () => {
+            if (settled) return;
+            warned = true;
+            try {
+              opts.onWarn!(elapsed());
+            } catch {
+              // onWarn is best-effort UX — never let it sink the operation.
+            }
+          },
+          Math.max(0, opts.warnAfterMs - elapsed())
+        );
+      }
+      timeoutTimer = setTimeout(
+        () => {
+          if (settled) return;
+          settled = true;
+          timedOut = true;
+          cleanup();
+          reject(opts.onTimeout(elapsed()));
+        },
+        Math.max(0, opts.timeoutMs - elapsed())
+      );
+    };
+    arm();
     // Both timers stay REF'd (issue #3939): the caller is awaiting this
     // promise, and the timeout is its one guaranteed way to settle. Unref'd,
     // an operation stuck with nothing else holding the event loop let the
@@ -127,11 +145,33 @@ export async function withResourceDeadline<T>(
     // with the stack lock still held. Both are cleared the moment the
     // operation settles, so they never outlive it.
 
+    const outer = deadlineScope.getStore();
+    const control: DeadlineControl = {
+      pause: () => {
+        pauses += 1;
+        if (pauses === 1) {
+          elapsedBeforePause += Date.now() - runningSince;
+          cleanup();
+        }
+        outer?.pause();
+      },
+      resume: () => {
+        if (pauses === 0) return;
+        pauses -= 1;
+        if (pauses === 0) {
+          runningSince = Date.now();
+          if (!settled) arm();
+        }
+        outer?.resume();
+      },
+      expired: () => timedOut || (outer?.expired() ?? false),
+    };
+
     // Run the operation eagerly. If the timeout has already fired by the
     // time the operation settles, swallow the result silently — we have
     // already rejected the outer promise with the timeout error.
     Promise.resolve()
-      .then(() => operation())
+      .then(() => deadlineScope.run(control, operation))
       .then(
         (value) => {
           if (settled) return;
@@ -147,4 +187,41 @@ export async function withResourceDeadline<T>(
         }
       );
   });
+}
+
+/** The deadline an operation runs under, as seen from inside it. */
+interface DeadlineControl {
+  pause(): void;
+  resume(): void;
+  /** Whether this deadline, or one enclosing it, has already timed out. */
+  expired(): boolean;
+}
+
+const deadlineScope = new AsyncLocalStorage<DeadlineControl>();
+
+/**
+ * Stop the clock of every deadline enclosing the caller while `fn` runs — an
+ * operator answering a prompt inside a provider operation (a nested stack's
+ * `--require-approval` question, asked inside the parent's row). Each enclosing
+ * deadline resumes with the budget it had left. Outside any deadline it just
+ * runs `fn`.
+ */
+export async function whileEnclosingDeadlinesPaused<T>(fn: () => Promise<T>): Promise<T> {
+  const control = deadlineScope.getStore();
+  if (control === undefined) return fn();
+  control.pause();
+  try {
+    return await fn();
+  } finally {
+    control.resume();
+  }
+}
+
+/**
+ * Whether a deadline enclosing the caller has already timed out. The operation
+ * keeps running after its deadline fires (see the module doc), so code about to
+ * start an irreversible step on its behalf asks this first.
+ */
+export function enclosingDeadlineExpired(): boolean {
+  return deadlineScope.getStore()?.expired() ?? false;
 }

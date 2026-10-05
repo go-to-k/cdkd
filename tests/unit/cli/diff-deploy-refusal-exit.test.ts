@@ -159,6 +159,7 @@ describe('cdkd diff exits 3 over a repaired container the deploy refuses (go-to-
   for (const [label, extra] of [
     ['without --fail', [] as string[]],
     ['with --fail', ['--fail']],
+    ['with --fail-on=destructive', ['--fail-on', 'destructive']],
   ] as const) {
     it(`exits 3 ${label}`, async () => {
       const { code } = await runDiff(['S', '--state-bucket', 'b', ...extra]);

@@ -71,6 +71,8 @@ const AUDITED_MEMBERS = [
   'cfnFallback',
   'skipFinalSnapshot',
   'finalSnapshotClients',
+  'requireApproval', // a run-wide level naming no stack: a child asks for its own changes
+  'approveDeployment', // the CLI's prompt; the request it receives names the child stack
 ];
 
 /** The interface body, sliced once and shared by the parse and the fail-closed scan. */

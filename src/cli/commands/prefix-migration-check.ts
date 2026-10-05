@@ -1,6 +1,7 @@
 import * as readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
 import { DeployCancelledError } from '../../utils/error-handler.js';
+import { serializePrompt } from './confirm-prompt.js';
 import {
   PATTERN_B_NAME_OPTIONS,
   PATTERN_B_NAME_PROPERTIES,
@@ -211,19 +212,22 @@ export async function promptMigrationConfirm(
     );
   }
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
+  // Serialized with the other per-stack prompts: stacks deploy concurrently.
+  return serializePrompt(async () => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    try {
+      const answer = await rl.question('\nContinue? (y/N): ');
+      const trimmed = answer.trim().toLowerCase();
+      if (trimmed === 'y' || trimmed === 'yes') return true;
+      logger.info('Deploy cancelled — no resources modified.');
+      return false;
+    } finally {
+      rl.close();
+    }
   });
-  try {
-    const answer = await rl.question('\nContinue? (y/N): ');
-    const trimmed = answer.trim().toLowerCase();
-    if (trimmed === 'y' || trimmed === 'yes') return true;
-    logger.info('Deploy cancelled — no resources modified.');
-    return false;
-  } finally {
-    rl.close();
-  }
 }
 
 /**

@@ -40,6 +40,12 @@ import {
 import { analyzePinCcApiReachability } from './pin-cc-api-reachability.js';
 import { refuseMalformedNestedTemplateTrees } from './nested-template-preflight.js';
 import { promptYesNo } from './confirm-prompt.js';
+import {
+  createApprovalPrompter,
+  requireApprovalOption,
+  resolveRequireApproval,
+} from './require-approval.js';
+import type { RequireApprovalLevel } from '../../deployment/deploy-engine/options.js';
 import { findDownstreamConsumers } from './recreate-downstream-consumers.js';
 import {
   Synthesizer,
@@ -156,6 +162,7 @@ async function deployCommand(
     autoAssetStorage?: boolean;
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
+    requireApproval?: RequireApprovalLevel;
   }
 ): Promise<void> {
   // Awaited first, so provider construction below stays synchronous once the
@@ -194,6 +201,15 @@ async function deployCommand(
   // CDKD_NO_WAIT / CDKD_FULL_WAIT / CDKD_WAIT_FLAGS_AVAILABLE envs the
   // providers read (issue #1291 items 1 + 6).
   applyWaitFlagEnv(options);
+
+  // Before synth, so an invalid cdk.json `requireApproval` fails fast. A dry
+  // run never asks (the engine returns before the approval), so it needs no
+  // prompter either.
+  const requireApproval = resolveRequireApproval(options.requireApproval, logger);
+  const approveDeployment =
+    requireApproval !== 'never' && !options.dryRun
+      ? createApprovalPrompter({ yes: options.yes ?? false })
+      : undefined;
 
   // Issue #2065 - fold `--region` ONCE, here, so no raw spelling reaches an SDK
   // client, an ARN segment or a state key. This command is where the class was
@@ -1097,6 +1113,7 @@ async function deployCommand(
           ...(options.resourceTimeout?.perTypeMs && {
             resourceTimeoutByType: options.resourceTimeout.perTypeMs,
           }),
+          ...(approveDeployment && { requireApproval, approveDeployment }),
         };
 
         const stackDeployEngine = new DeployEngine(
@@ -1479,6 +1496,7 @@ export function createDeployCommand(): Command {
     ...stackOptions,
     ...deployOptions,
     skipFinalSnapshotOption,
+    requireApprovalOption,
     ...contextOptions,
     ...annotationMessageOptions,
   ].forEach((opt) => cmd.addOption(opt));

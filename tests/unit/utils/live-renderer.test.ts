@@ -47,6 +47,47 @@ describe('LiveRenderer', () => {
     expect(r.isActive()).toBe(false);
   });
 
+  it('suspendWhile() keeps the live area off the terminal until the prompt settles', async () => {
+    const stream = new FakeStream();
+    const r = makeRenderer(stream);
+    r.start();
+    r.addTask('A', 'Creating A');
+    let release!: () => void;
+    const held = r.suspendWhile(
+      () =>
+        new Promise<string>((resolve) => {
+          release = () => resolve('answer');
+        })
+    );
+    stream.reset();
+    // A frame tick and another stack's task arriving must not draw over the prompt.
+    r.addTask('B', 'Creating B');
+    vi.advanceTimersByTime(1000);
+    r.printAbove(() => stream.write('above\n'));
+    expect(stream.output()).toBe('above\n');
+    release();
+    await expect(held).resolves.toBe('answer');
+    // Redrawn on resume, with the task added meanwhile.
+    expect(stream.output()).toContain('Creating B');
+    r.stop();
+  });
+
+  it('suspendWhile() redraws even when the prompt throws', async () => {
+    const stream = new FakeStream();
+    const r = makeRenderer(stream);
+    r.start();
+    r.addTask('A', 'Creating A');
+    await expect(
+      r.suspendWhile(async () => {
+        throw new Error('refused');
+      })
+    ).rejects.toThrow('refused');
+    stream.reset();
+    vi.advanceTimersByTime(1000);
+    expect(stream.output()).toContain('Creating A');
+    r.stop();
+  });
+
   it('start() activates and stop() deactivates', () => {
     const r = makeRenderer(new FakeStream());
     expect(r.start()).toBe(true);

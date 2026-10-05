@@ -519,6 +519,7 @@ describe('a healed value that equals a NoEcho parameter value previews masked (g
       unreadable: [],
       unreadableContainers: [],
       unreadableOrphans: [],
+      destructiveChanges: [],
       children: [],
     };
     const lines: string[] = [];

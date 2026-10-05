@@ -49,6 +49,7 @@ function scopedKey(id: string, stackName: string | undefined): string {
 export class LiveRenderer {
   private tasks = new Map<string, Task>();
   private active = false;
+  private suspended = false;
   private spinnerIndex = 0;
   private interval: NodeJS.Timeout | null = null;
   private linesDrawn = 0;
@@ -136,7 +137,7 @@ export class LiveRenderer {
    * runs directly so callers can use this unconditionally.
    */
   printAbove(write: () => void): void {
-    if (!this.active) {
+    if (!this.active || this.suspended) {
       write();
       return;
     }
@@ -154,8 +155,29 @@ export class LiveRenderer {
     this.linesDrawn = 0;
   }
 
+  /**
+   * Take the live area off the terminal while `fn` runs — an interactive
+   * prompt, which the spinner would otherwise redraw over — then redraw it.
+   * Tasks other stacks add meanwhile are kept and appear on the redraw.
+   */
+  async suspendWhile<T>(fn: () => Promise<T>): Promise<T> {
+    if (!this.active || this.suspended) return fn();
+    this.suspended = true;
+    this.clear();
+    this.showCursor();
+    try {
+      return await fn();
+    } finally {
+      this.suspended = false;
+      if (this.active) {
+        this.hideCursor();
+        this.draw();
+      }
+    }
+  }
+
   private draw(): void {
-    if (!this.active) return;
+    if (!this.active || this.suspended) return;
     this.clear();
     if (this.tasks.size === 0) return;
 

@@ -97,6 +97,11 @@ import {
   readRecordedConditionVerdicts,
 } from '../../deployment/condition-verdicts.js';
 import { parameterInputsFor } from '../../deployment/masked-property-fingerprints.js';
+import {
+  findDestructiveChanges,
+  type DestructiveChange,
+  type DestructiveImpact,
+} from '../../analyzer/destructive-changes.js';
 import { childTemplateLoader } from '../../deployment/nested-output-templates.js';
 import {
   findNestedStackTypeChanges,
@@ -318,6 +323,12 @@ export interface DiffTreeNode {
    * `null` for one with no string `logicalId` — see {@link unreadable}.
    */
   unreadableOrphans: Array<string | null>;
+  /**
+   * The rows of {@link changes} that replace, delete or orphan an existing
+   * resource (`findDestructiveChanges`), classified against the same state the
+   * diff read. Drives `--fail-on=destructive`.
+   */
+  destructiveChanges: DestructiveChange[];
   /** Direct nested-stack children, DFS order. Empty for leaves and for non-recursive runs. */
   children: DiffTreeNode[];
 }
@@ -3049,6 +3060,14 @@ export async function buildDiffTree(args: {
     unreadable,
     unreadableContainers,
     unreadableOrphans,
+    // The adopted records too, as for the routing annotation above: a removal
+    // reads the `DeletionPolicy` the deploy will.
+    destructiveChanges: findDestructiveChanges(
+      stackName,
+      changes.values(),
+      stateAfterAdoption.resources,
+      effectiveTemplate
+    ),
     children: [],
   };
   if (!recursive) return node;
@@ -3283,6 +3302,9 @@ async function buildDeletedSubtree(
     // is the right side to err on: the rows themselves are still reported, and
     // a bag with any secret expression in it still exonerates the record.
     outputChanges,
+    // Every row is a DELETE: destroying the child removes each of its
+    // resources under its own recorded `DeletionPolicy`.
+    destructiveChanges: findDestructiveChanges(stackName, changes.values(), state.resources),
     children: [],
   };
   for (const [logicalId, resource] of Object.entries(state.resources ?? {})) {
@@ -3519,6 +3541,11 @@ export function treeHasChanges(node: DiffTreeNode): boolean {
   return node.children.some(treeHasChanges);
 }
 
+/** Every destructive change in this node and its descendants, DFS order (`--fail-on=destructive`). */
+export function treeDestructiveChanges(node: DiffTreeNode): DestructiveChange[] {
+  return [...node.destructiveChanges, ...node.children.flatMap(treeDestructiveChanges)];
+}
+
 /** Serializable per-resource change record for `--json`. */
 export interface DiffChangeJson {
   logicalId: string;
@@ -3636,7 +3663,20 @@ export interface DiffNodeJson {
    * spell (go-to-k/cdkd#3339).
    */
   unreadableOrphans: Array<string | null>;
+  /**
+   * The resources this node's changes replace, delete or orphan — what
+   * `--fail-on=destructive` fails on. Always present, empty when none.
+   */
+  destructiveChanges: DestructiveChangeJson[];
   children: DiffNodeJson[];
+}
+
+/** Serializable destructive change for `--json`; the node's `stack` names its stack. */
+export interface DestructiveChangeJson {
+  logicalId: string;
+  resourceType: string;
+  constructPath?: string;
+  impact: DestructiveImpact;
 }
 
 /**
@@ -3692,6 +3732,14 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
     unreadable: node.unreadable,
     unreadableContainers: node.unreadableContainers,
     unreadableOrphans: node.unreadableOrphans,
+    destructiveChanges: node.destructiveChanges.map(
+      ({ logicalId, resourceType, constructPath, impact }) => ({
+        logicalId,
+        resourceType,
+        ...(constructPath !== undefined && { constructPath }),
+        impact,
+      })
+    ),
     children: node.children.map(diffTreeToJson),
   };
 }

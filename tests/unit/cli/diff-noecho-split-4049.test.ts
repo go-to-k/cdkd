@@ -110,6 +110,7 @@ function nodeOf(result: Awaited<ReturnType<typeof computeStackDiff>>): DiffTreeN
     unreadable: [],
     unreadableContainers: [],
     unreadableOrphans: [],
+    destructiveChanges: [],
     children: [],
   };
 }

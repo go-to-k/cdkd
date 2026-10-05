@@ -34,6 +34,7 @@ import {
   mergeNoChangeOutputs,
 } from '../no-change-outputs-merge.js';
 import { refuseNoValueOutputs } from '../output-value-preflight.js';
+import { requireDeploymentApproval } from '../deployment-approval.js';
 import {
   buildConditionVerdictRecord,
   conditionInputsFrom,
@@ -1120,6 +1121,17 @@ export async function doDeployWithPrefetch(
         attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
       };
     }
+
+    // `--require-approval`: asked on the diff this deploy executes, before any
+    // provider call. The lock is released by the `finally`.
+    await requireDeploymentApproval({
+      options: this.options,
+      stackName,
+      changes: changes.values(),
+      records: currentState.resources,
+      template: effectiveTemplate,
+      recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
+    });
 
     // Issue #1111 item 3 (review fix): the diff phase above resolves
     // intrinsics through the SAME counted resolver, so a warn-path

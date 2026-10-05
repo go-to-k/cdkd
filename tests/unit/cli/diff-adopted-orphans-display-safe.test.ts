@@ -28,6 +28,7 @@ function node(adoptedOrphans: string[]): DiffTreeNode {
     unreadable: [],
     unreadableContainers: [],
     unreadableOrphans: [],
+    destructiveChanges: [],
     blocking: [],
     children: [],
   };

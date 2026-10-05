@@ -197,6 +197,7 @@ describe('nodeHasChanges / treeHasChanges', () => {
     unreadable: [],
     unreadableContainers: [],
     unreadableOrphans: [],
+    destructiveChanges: [],
     blocking: [],
     children: [],
   });
@@ -253,6 +254,7 @@ describe('diffTreeToJson', () => {
       unreadable: [],
       unreadableContainers: [],
       unreadableOrphans: [],
+      destructiveChanges: [],
       blocking: [],
       children: [
         {
@@ -266,6 +268,7 @@ describe('diffTreeToJson', () => {
           unreadable: [],
           unreadableContainers: [],
           unreadableOrphans: [],
+          destructiveChanges: [],
           blocking: [],
           children: [],
         },
@@ -302,6 +305,7 @@ describe('diffTreeToJson', () => {
       unreadable: [],
       unreadableContainers: [],
       unreadableOrphans: [],
+      destructiveChanges: [],
       blocking: [],
       children: [],
     };
@@ -330,6 +334,7 @@ describe('renderDiffTree', () => {
     unreadable: [],
     unreadableContainers: [],
     unreadableOrphans: [],
+    destructiveChanges: [],
     blocking: [],
     children: [],
   });
@@ -2911,6 +2916,7 @@ describe('Outputs-only change (issue #1921)', () => {
       unreadable: [],
       unreadableContainers: [],
       unreadableOrphans: [],
+      destructiveChanges: [],
       blocking: [],
       children: [],
     };
@@ -4299,6 +4305,7 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
       adoptedOrphans: [],
       unreadable: [],
       unreadableContainers: [],
+      destructiveChanges: [],
       unreadableOrphans: [],
       blocking: ['KeptRole: S-KeptRole is already recorded by another cdkd stack.'],
       children: [
@@ -4313,6 +4320,7 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
           unreadable: [],
           unreadableContainers: [],
           unreadableOrphans: [],
+          destructiveChanges: [],
           blocking: ['ChildRole: S~C-ChildRole is already recorded by another cdkd stack.'],
           children: [],
         },
@@ -4346,6 +4354,7 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
       unreadable: [],
       unreadableContainers: [],
       unreadableOrphans: [],
+      destructiveChanges: [],
       blocking: ['KeptRole: conflict'],
       children: [],
     };
@@ -4377,6 +4386,7 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
       unreadable: [],
       unreadableContainers: [],
       unreadableOrphans: [],
+      destructiveChanges: [],
       blocking: [],
       children: [],
     };
@@ -4407,6 +4417,7 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
       unreadable: [],
       unreadableContainers: [],
       unreadableOrphans: [],
+      destructiveChanges: [],
       blocking: ['KeptRole: conflict'],
       children: [],
     };
@@ -5154,6 +5165,7 @@ describe('renderDiffTree - a masked property whose template expression changed (
       unreadable: [],
       unreadableContainers: [],
       unreadableOrphans: [],
+      destructiveChanges: [],
       blocking: [],
       children: [],
       changes: changeMap([
