@@ -127,7 +127,7 @@ afterEach(() => {
   resetAccountInfoCache();
 });
 
-describe('PublicSsmProver (refresh-observed / import)', () => {
+describe('PublicSsmProver (refresh-observed)', () => {
   const loadEvidence = vi.fn<() => Promise<{ regions: string[]; complete: boolean }>>();
   const prover = (region = HOME, producerRegions: string[] = [], complete = true): PublicSsmProver => {
     loadEvidence.mockReset();
