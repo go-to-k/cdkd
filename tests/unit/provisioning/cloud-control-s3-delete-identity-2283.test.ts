@@ -723,6 +723,30 @@ describe('CloudControlProvider.delete -- indeterminate guards are REPORTED (issu
     expect(ccCallNames()).toContain('DeleteResourceCommand');
   });
 
+  // go-to-k/cdkd#3869: the reason is persisted as an event and printed, so a
+  // bucket name the record keeps as a secret reference is withheld there too.
+  it('withholds a secret-derived bucket name from the persisted reason', async () => {
+    wireBucketLocationError('AccessDenied', 'denied');
+    const provider = new CloudControlProvider();
+
+    const result = await provider.delete(
+      'Bucket',
+      BUCKET,
+      S3,
+      { BucketName: '{{resolve:secretsmanager:bucket-name:SecretString:::}}' },
+      { expectedRegion: 'us-east-1' }
+    );
+
+    const guards = deleteIndeterminateGuards(result);
+    expect(guards).toEqual([
+      {
+        guard: CC_DELETE_REGION_IDENTITY_GUARD,
+        reason: `s3:GetBucketLocation on *** could not be answered: AccessDenied. Re-run with --verbose for AWS's own message.`,
+      },
+    ]);
+    expect(result).toMatchObject({ outcome: 'deleted' });
+  });
+
   it('joins the redacted cause to the next sentence with exactly one period', async () => {
     // Found by the LIVE run of `s3-lifecycle` phase 0c-ID, not by a unit test:
     // a REDACTED summary ends in the helper's own `VERBOSE_POINTER` sentence and

@@ -17,7 +17,8 @@
 # Steps (each echoed as `Step N`):
 #   1. Seed the secret naming the stage, the service, the policy's path and
 #      description, the GraphQL API, the data source and the queue.
-#   2. Deploy.
+#   2. Deploy. Cloud Control's create line withholds SecretFilter's id
+#      (go-to-k/cdkd#3869).
 #   3. PREMISE: state records each secret-derived property as the
 #      {{resolve:secretsmanager: expression, and each resource lives under the
 #      name (path, description) the secret holds.
@@ -35,7 +36,8 @@
 #      and the new value reached AWS. The literal-named PlainStage
 #      is the positive control: the same update on a name no secret feeds,
 #      which passes with or without the fix and shows the update path is sound.
-#   6. Destroy.
+#   6. Destroy. Its --verbose log does not name SecretFilter's FilterName:
+#      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
 #   7. Remove the secret; assert 0 orphans.
 #   8. Sweep every object version under the stack's state prefix.
 #
@@ -52,7 +54,8 @@
 # updates either way. Revert src/utils/logger.ts ALONE (go-to-k/cdkd#2177) and
 # step 4 fails "SecretQueue's 'Updating SQS queue' line carries no '***'
 # mask": that provider debug line prints the queue URL, name and all, raw.
-# Revert src/provisioning/cloud-control-provider.ts ALONE and step 4 fails
+# Revert the go-to-k/cdkd#4275 hunk of src/provisioning/cloud-control-provider.ts
+# (the `unchangedBehindSecretReference` loop in update()) ALONE and step 4 fails
 # "update deploy exited 1": Cloud Control refuses the patch op on the
 # create-only /FilterName, now carrying the ROTATED name, with
 # NotUpdatableException "Invalid patch update: createOnlyProperties
@@ -60,6 +63,10 @@
 # from the run's persisted deployment event).
 # With the fix the patch leaves FilterName out, so the filter keeps its
 # pre-rotation name, as CloudFormation leaves an unchanged reference alone.
+# Revert the IdScrubLog in cloud-control-provider.ts and step 2 fails
+# "SecretFilter's 'Created resource' line does not withhold its physical id"
+# (with create()'s sink kept, step 6 fails the same way for its
+# 'Deleting resource' line).
 #
 # BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
 
@@ -266,6 +273,25 @@ if [ "${DEPLOY_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: deploy exited 0"
+# go-to-k/cdkd#3869: Cloud Control's create line names the identifier it
+# returned, `<LogGroupName>|<FilterName>`; the desired FilterName is the
+# secret's, so the whole id is withheld (before, only the FilterName part was
+# masked, as the literal secret). PREMISE first: the line must be in the log.
+CREATE_FILTER_LINE="$(grep -F "Created resource SecretFilter, physical ID: " "${DEPLOY_LOG}" || true)"
+if [ -z "${CREATE_FILTER_LINE}" ]; then
+  echo "FAIL: premise: the deploy log has no 'Created resource SecretFilter' line (the --verbose debug stream is missing, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
+if ! grep -qF -- "physical ID: ***" <<< "${CREATE_FILTER_LINE}"; then
+  echo "FAIL: SecretFilter's 'Created resource' line does not withhold its physical id (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+if grep -qF -- "${FILTER_NAME}" "${DEPLOY_LOG}"; then
+  echo "FAIL: the deploy log names SecretFilter's FilterName in plaintext (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+echo "    OK: the deploy log withholds SecretFilter's physical id"
 
 API_ID="$(state_physical_id Api)"
 # A Cluster's physical id is its NAME, which --cluster / --clusters accept.
@@ -436,6 +462,27 @@ if [ "${DESTROY_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: destroy exited 0"
+# go-to-k/cdkd#3869: Cloud Control's delete line names the physical id, which
+# carries SecretFilter's PRE-rotation FilterName; the record keeps that name
+# as its {{resolve: reference, which withholds the id. PREMISE first: the line
+# must be in the log, masked, or the absence below proves nothing.
+DESTROY_FILTER_LINE="$(grep -F "Deleting resource SecretFilter (AWS::Logs::MetricFilter), physical ID: " "${DEPLOY_LOG}" || true)"
+if [ -z "${DESTROY_FILTER_LINE}" ]; then
+  echo "FAIL: premise: the destroy log has no 'Deleting resource SecretFilter' line (the --verbose debug stream is missing, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
+if ! grep -qF -- "physical ID: ***" <<< "${DESTROY_FILTER_LINE}"; then
+  echo "FAIL: SecretFilter's 'Deleting resource' line does not withhold its physical id (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+for needle in "${FILTER_NAME}" "${FILTER_NAME_ROTATED}"; do
+  if grep -qF -- "${needle}" "${DEPLOY_LOG}"; then
+    echo "FAIL: the destroy log names a SecretFilter FilterName in plaintext (go-to-k/cdkd#3869)" >&2
+    exit 1
+  fi
+done
+echo "    OK: the destroy log does not name SecretFilter's FilterName"
 
 echo "==> Step 7: remove the secret; assert 0 orphans"
 aws secretsmanager delete-secret --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \

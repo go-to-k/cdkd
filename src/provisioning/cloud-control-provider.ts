@@ -8,6 +8,7 @@ import {
   type GetResourceRequestStatusCommandOutput,
   type ProgressEvent,
 } from '@aws-sdk/client-cloudcontrol';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
 import {
@@ -79,7 +80,11 @@ import {
 } from './write-only-properties.js';
 import { getTopLevelReadOnlyProperties } from './read-only-properties.js';
 import { getPrimaryIdentifierFields, toCloudControlIdentifier } from './cc-import-identifier.js';
-import { SECRET_MASK } from '../deployment/secret-redaction.js';
+import {
+  errorCauseChain,
+  maskSecretsInError,
+  SECRET_MASK,
+} from '../deployment/secret-redaction.js';
 import { assertRegionMatch, type DeleteContext, type RegionCheckPhase } from './region-check.js';
 import {
   ccProtectionProperty,
@@ -89,7 +94,9 @@ import {
 import { isNonProvisionable } from './unsupported-types.js';
 import { slowCcOperationTimeoutMs } from './slow-cc-operation-timeouts.js';
 import { isWaitAbandonedError, markWaitAbandoned } from './wait-abandoned.js';
+import type { Logger } from '../types/config.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceDeleteResult,
@@ -828,7 +835,16 @@ function isCcConflict(error: unknown): boolean {
 
 export class CloudControlProvider implements ResourceProvider {
   private cloudControlClient: CloudControlClient;
-  private logger = getLogger().child('CloudControlProvider');
+  private readonly baseLogger: Logger = getLogger().child('CloudControlProvider');
+  /**
+   * Inside `create()` / `update()` / `delete()`, that call's
+   * {@link IdScrubLog} (go-to-k/cdkd#3869), so every line this provider
+   * prints on the call's behalf, helpers included, is scrubbed of a
+   * secret-derived identifier; elsewhere the plain logger.
+   */
+  private get logger(): IdLogSink {
+    return idLogScope.getStore() ?? this.baseLogger;
+  }
   private patchGenerator = new JsonPatchGenerator();
   /**
    * Types whose unresolvable-schema import warning has already been printed —
@@ -908,12 +924,32 @@ export class CloudControlProvider implements ResourceProvider {
   }
 
   /**
-   * Create a resource using Cloud Control API
+   * Create a resource using Cloud Control API.
+   *
+   * Runs under an {@link IdScrubLog} (go-to-k/cdkd#3869): the identifier is
+   * not known until Cloud Control names it, so it is added once a progress
+   * event or a thrown error carries it, and from then on every line, and the
+   * error leaving this method, is scrubbed of it when the desired bag holds a
+   * secret-derived value.
    */
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
+  ): Promise<ResourceCreateResult> {
+    const mask = maskerOrIdentity(context?.maskSecrets);
+    const idLog = new IdScrubLog(this.logger, mask, holdsSecretDerivedLeaf(properties, mask));
+    return inIdLogScope(idLog, () =>
+      this.createInIdLogScope(logicalId, resourceType, properties, idLog)
+    );
+  }
+
+  private async createInIdLogScope(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    idLog: IdScrubLog
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating resource ${logicalId} (${resourceType})`);
 
@@ -966,6 +1002,7 @@ export class CloudControlProvider implements ResourceProvider {
         );
       }
 
+      idLog.addId(progressEvent.Identifier);
       this.logger.debug(`Created resource ${logicalId}, physical ID: ${progressEvent.Identifier}`);
 
       // Parse resource properties to extract attributes
@@ -994,6 +1031,10 @@ export class CloudControlProvider implements ResourceProvider {
 
       return result;
     } catch (error) {
+      // Before the remnant cleanup, whose lines name it: a FAILED event, a
+      // cancellation or an abandoned wait can carry the identifier the
+      // handler materialized, and the status text can quote it.
+      idLog.addId(identifierCarriedBy(error));
       await this.cleanupFailedCreateRemnant(error, resourceType, logicalId);
       this.handleError(error, 'CREATE', resourceType, logicalId);
     }
@@ -1133,10 +1174,17 @@ export class CloudControlProvider implements ResourceProvider {
         // and `displaySafe`'s default mode flattens its newline to a space, so
         // appending cdkd prose puts text after a command on one line — the rule
         // `buildResumeCommand` establishes, one level out.
-        this.logger.warn(
+        const line =
           `Could not confirm whether the remnant ${error.physicalId} left by the failed CREATE of ${logicalId} was removed ` +
-            `(a retry may fail with AlreadyExists until it is removed manually): ${displaySafe(message)}`
-        );
+          `(a retry may fail with AlreadyExists until it is removed manually): ${displaySafe(message)}`;
+        // The resume command at its end is the remnant delete's only handle:
+        // kept whole, not cut by a short id needle (go-to-k/cdkd#3869).
+        const log = this.logger;
+        if (log instanceof IdScrubLog) {
+          log.warnKeepingResume(line, abandonedRequestTokens(cleanupError));
+        } else {
+          log.warn(line);
+        }
         return;
       }
       // A not-found on the remnant delete means the remnant is ALREADY gone —
@@ -1184,17 +1232,39 @@ export class CloudControlProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // Every debug line this update prints that can name the identifier goes
-    // through `idLog` (go-to-k/cdkd#3869): the opening line here, and the
-    // read-back / enrichment lines below, which interpolate the id and values
-    // built from it (an ARN).
-    const idLog = updateIdLogSink(
+    // Every line this update prints that can name the identifier, and the
+    // error leaving it, go through `idLog` (go-to-k/cdkd#3869): the opening
+    // line here, and the read-back / enrichment lines below, which
+    // interpolate the id and values built from it (an ARN).
+    const mask = maskerOrIdentity(context?.maskSecrets);
+    const idLog = new IdScrubLog(
       this.logger,
-      physicalId,
-      properties,
-      previousProperties,
-      context?.maskSecrets
+      mask,
+      holdsSecretDerivedLeaf(properties, mask) || holdsSecretDerivedLeaf(previousProperties, mask)
     );
+    idLog.addId(physicalId);
+    return inIdLogScope(idLog, () =>
+      this.updateInIdLogScope(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        context,
+        idLog
+      )
+    );
+  }
+
+  private async updateInIdLogScope(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined,
+    idLog: IdScrubLog
+  ): Promise<ResourceUpdateResult> {
     idLog.debug(`Updating resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`);
 
     // Issue #2301 item 1. Ahead of EVERY call this method makes -- including
@@ -1406,14 +1476,48 @@ export class CloudControlProvider implements ResourceProvider {
   }
 
   /**
-   * Delete a resource using Cloud Control API
+   * Delete a resource using Cloud Control API.
+   *
+   * Runs under an {@link IdScrubLog} (go-to-k/cdkd#3869). `DeleteContext`
+   * carries no masker, so the evidence is the recorded bag alone: a
+   * `{{resolve:` reference or `***` there, which is how state keeps a secret
+   * leaf. A bag of resolved plaintext (an in-process rollback's) shows none.
    */
   async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
+  ): Promise<void | ResourceDeleteResult> {
+    const mask = maskerOrIdentity(undefined);
+    const idLog = new IdScrubLog(this.logger, mask, holdsSecretDerivedLeaf(properties, mask));
+    idLog.addId(physicalId);
+    const result = await inIdLogScope(idLog, () =>
+      this.deleteInIdLogScope(logicalId, physicalId, resourceType, properties, context)
+    );
+    // A guard's `reason` can name the id (`s3:GetBucketLocation on <id> ...`),
+    // and the destroy runner persists it as an event and prints it.
+    // A skipped result's `reason` can name it too.
+    if (!idLog.withheld || !result) return result;
+    return {
+      ...result,
+      ...(result.outcome === 'skipped' && { reason: idLog.scrub(result.reason) }),
+      ...(Array.isArray(result.indeterminateGuards) && {
+        indeterminateGuards: result.indeterminateGuards.map((guard) => ({
+          ...guard,
+          reason: idLog.scrub(guard.reason),
+        })),
+      }),
+    };
+  }
+
+  private async deleteInIdLogScope(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown> | undefined,
+    context: DeleteContext | undefined
   ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(
       `Deleting resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`
@@ -1568,7 +1672,7 @@ export class CloudControlProvider implements ResourceProvider {
       // is always `undefined` here) and written anyway, because the alternative
       // is a silent drop the day a delegating type joins that set.
       return withIndeterminateGuard(
-        await asgProvider.delete(logicalId, physicalId, resourceType, _properties, context),
+        await asgProvider.delete(logicalId, physicalId, resourceType, properties, context),
         indeterminateGuard
       );
     }
@@ -1586,14 +1690,14 @@ export class CloudControlProvider implements ResourceProvider {
       (context?.deletionPolicy === 'Delete' || context?.skipFinalSnapshot === true) &&
       SDK_DELETE_FAMILIES.has(resourceType)
     ) {
-      if (deletesThroughSdkProvider(resourceType, _properties)) {
+      if (deletesThroughSdkProvider(resourceType, properties)) {
         const delegate = await this.sdkDeleteDelegateInCcRegion(
           resourceType,
           logicalId,
           physicalId
         );
         return withIndeterminateGuard(
-          await delegate.delete(logicalId, physicalId, resourceType, _properties, context),
+          await delegate.delete(logicalId, physicalId, resourceType, properties, context),
           indeterminateGuard
         );
       }
@@ -3145,7 +3249,7 @@ export class CloudControlProvider implements ResourceProvider {
         `Failed to parse resource model: ${described.redacted ? described.summary : error instanceof Error ? error.name : 'Error'}\n` +
           `Model shape: ${resourceModel.length} chars, ${describeJsonKeys(resourceModel)}`
       );
-      // Not at all when the update withholds its id (go-to-k/cdkd#3869): V8
+      // Not at all when the call withholds its id (go-to-k/cdkd#3869): V8
       // TRUNCATES its echo, so the first characters of a longer secret-derived
       // name can print, and no needle matches a prefix. The WARN above already
       // names which document failed.
@@ -4639,80 +4743,229 @@ export class CloudControlProvider implements ResourceProvider {
   }
 }
 
-/** The logger methods the update-path read-back and enrichment use. */
+/**
+ * The logger a call's lines go through: the plain one, or an
+ * {@link IdScrubLog}. One message argument only: an extra argument would
+ * reach the console unscrubbed, so a call through `CloudControlProvider.logger`
+ * (typed this way) passing one does not compile. A helper handed that logger
+ * under the wider `Logger` type is not held to it.
+ */
 interface IdLogSink {
   debug(message: string): void;
+  info(message: string): void;
   warn(message: string): void;
-  /** `true` when this update withholds its id; absent on a plain logger. */
+  error(message: string): void;
+  /** `true` when this call withholds its id; absent on a plain logger. */
   readonly withheld?: boolean;
 }
 
 /**
- * The sink every `update()` line that can name the identifier goes through
- * (go-to-k/cdkd#3869): the opening line, the sparse read-back merge, the
- * `GetResource` failure line, the enrichment lines, which interpolate the id
- * and values built from it (an ARN, an endpoint), and the account-lookup WARN
- * of `accountInfoForSynthesizedArn`, which prints at default verbosity.
+ * The sink every line of a `create()` / `update()` / `delete()` call goes
+ * through, and the scrub applied to the error leaving it (go-to-k/cdkd#3869).
+ * Installed as the call's `idLogScope` store, so `CloudControlProvider.logger`
+ * returns it to every helper the call reaches; a call nested in another (the
+ * failed-create remnant delete) wraps the outer sink, keeping its needles.
  *
  * A Cloud Control identifier can carry a name taken from a secret
  * (`AWS::Logs::MetricFilter` is `<LogGroupName>|<FilterName>`). After a
  * rotation under an unchanged reference that name is the PRE-rotation value,
- * which this deploy never resolved, so `maskSecrets` cannot recognise it. So
- * the id is withheld, since nothing here says which identifier part came from
- * a secret, whenever EITHER bag holds a secret-derived string leaf or key
- * (`isSecretDerivedValue`):
+ * which this deploy never resolved, and a name AWS or cdkd derived from a
+ * secret is no longer its plaintext, so `maskSecrets` cannot recognise either.
+ * So the id is withheld, since nothing here says which identifier part came
+ * from a secret, whenever a bag of the call holds a secret-derived string leaf
+ * or key (`isSecretDerivedValue`):
  *
- *  - a `{{resolve:` reference or `***`: a deploy's previous bag is the state
+ *  - a `{{resolve:` reference or `***`: a previous or delete bag is the state
  *    record, which keeps a secret leaf that way;
- *  - a value the masker recognises: a rollback revert hands over RESOLVED
- *    bags, and `drift --revert` an AWS readback as the previous side, so there
- *    the evidence is the CURRENT secret in the desired or resolved bag.
+ *  - a value the masker recognises: a create's desired bag, a rollback
+ *    revert's RESOLVED bags, and `drift --revert`'s AWS readback as the
+ *    previous side, where the evidence is the CURRENT secret.
  *
  * Every message goes through the caller's masker FIRST, so a current secret
  * is masked whole before an id part could split it. Withheld then means every
  * occurrence of the whole id and of each non-empty `|` part, in its raw and
  * its masked spelling, becomes `***`, at any length: a line naming one part
  * (an ARN built from a name, an AWS error quoting it) is caught too, and
- * over-masking a log line is the safe direction.
+ * over-masking is the safe direction. For the thrown error that holds because
+ * the scrub only REMOVES text: an already-deleted or retryable phrase can be
+ * cut (the failure surfaces), never made; `maskSecretsInError` keeps the
+ * classifiers' code fields and the retry markers.
+ *
+ * The bound: an identifier never named to this call (a FAILED create with no
+ * `Identifier`) is not known, so status text quoting it is not scrubbed.
  */
-function updateIdLogSink(
-  logger: IdLogSink,
-  physicalId: string,
-  properties: Record<string, unknown>,
-  previousProperties: Record<string, unknown>,
-  maskSecrets: MaskerFn | undefined
-): IdLogSink {
-  const mask = maskerOrIdentity(maskSecrets);
-  const raw = updateIdWithheld(properties, previousProperties, mask)
-    ? [physicalId, ...physicalId.split('|')].filter((needle) => needle !== '')
-    : [];
-  // Each needle's MASKED spelling too: the masker runs first, so where a
-  // current secret is a SUBSTRING of an id part it has already rewritten that
-  // part (`prod-old-filter` -> `***-old-filter`), and the raw needle no longer
-  // matches. Longest first, so a part inside a longer part (`ab` in `ab-c`)
-  // cannot leave the longer one's remainder.
-  const masked = raw.map((needle) => mask(needle));
-  const needles = [
-    ...new Set([...raw, ...masked.filter((m, i) => m !== '' && m !== raw[i] && m !== SECRET_MASK)]),
-  ].sort((a, b) => b.length - a.length);
-  const scrub = (message: string): string =>
-    needles.reduce((text, needle) => text.split(needle).join(SECRET_MASK), mask(message));
-  return {
-    debug: (message: string) => logger.debug(scrub(message)),
-    warn: (message: string) => logger.warn(scrub(message)),
-    withheld: needles.length > 0,
-  };
+class IdScrubLog implements IdLogSink {
+  private needles: string[] = [];
+  private readonly base: IdLogSink;
+  private readonly mask: MaskerFn;
+  /** Does a bag of this call hold a secret-derived leaf? */
+  private readonly evidence: boolean;
+
+  constructor(base: IdLogSink, mask: MaskerFn, evidence: boolean) {
+    this.base = base;
+    this.mask = mask;
+    this.evidence = evidence;
+  }
+
+  /**
+   * This call's own needles only. In the one nested call (the failed-create
+   * remnant `delete()`) it is `false`, so that delete scrubs no guard
+   * `reason`; `cleanupFailedCreateRemnant` prints no guard, and every line the
+   * nested call prints reaches the outer sink through `base`.
+   */
+  get withheld(): boolean {
+    return this.needles.length > 0;
+  }
+
+  /** Withhold `id` from here on, when the call's bags gave evidence. */
+  addId(id: string | undefined): void {
+    if (!this.evidence || id === undefined || id === '') return;
+    const parts = [id, ...id.split('|')].filter((needle) => needle !== '');
+    // Each part's DISPLAY spellings too: `abandonWait` renders the identifier
+    // through `displaySafe(..., { asciiOnly: true })`, which turns a non-ASCII
+    // or control run into a space, so the raw needle no longer matches it.
+    const raw = [
+      ...new Set(
+        parts.flatMap((part) => [part, displaySafe(part), displaySafe(part, { asciiOnly: true })])
+      ),
+    ].filter((needle) => needle !== '' && needle !== SECRET_MASK);
+    // Each needle's MASKED spelling too: the masker runs first, so where a
+    // current secret is a SUBSTRING of an id part it has already rewritten that
+    // part (`prod-old-filter` -> `***-old-filter`), and the raw needle no longer
+    // matches. Longest first, so a part inside a longer part (`ab` in `ab-c`)
+    // cannot leave the longer one's remainder.
+    const masked = raw.map((needle) => this.mask(needle));
+    this.needles = [
+      ...new Set([
+        ...this.needles,
+        ...raw,
+        ...masked.filter((m, i) => m !== '' && m !== raw[i] && m !== SECRET_MASK),
+      ]),
+    ].sort((a, b) => b.length - a.length);
+  }
+
+  readonly scrub = (text: string): string =>
+    this.needles.reduce((out, needle) => out.split(needle).join(SECRET_MASK), this.mask(text));
+
+  /**
+   * `text` scrubbed, except that an abandoned wait's request tokens and its
+   * resume command (`aws ... cloudcontrol get-resource-request-status
+   * --request-token ...`) are KEPT verbatim, masker only: they are Cloud
+   * Control- and cdkd-minted, never the identifier, and the command is the one
+   * handle on a resource the operation may have left untracked, which a short
+   * needle (`FunctionName|1`) would otherwise cut into a wrong command. With
+   * no token there is no abandoned wait, and nothing is kept.
+   */
+  scrubKeepingResume(text: string, requestTokens: readonly string[]): string {
+    const tokens = requestTokens.filter((token) => token !== '');
+    if (tokens.length === 0) return this.scrub(text);
+    const keep = new RegExp(`(${[RESUME_COMMAND.source, ...tokens.map(escapeRegExp)].join('|')})`);
+    return text
+      .split(keep)
+      .map((segment, i) => (i % 2 === 1 ? this.mask(segment) : this.scrub(segment)))
+      .join('');
+  }
+
+  /**
+   * `error` with every link's text scrubbed, or `error` itself when this call
+   * withholds nothing. The request tokens of the chain's abandoned waits are
+   * kept ({@link scrubKeepingResume}), and so are each link's `logicalId` and
+   * `resourceType`: cdkd-authored, already the caller's, and compared EXACTLY
+   * by the classifiers (`isUpdateUnsupportedError`, the name-collision
+   * anchor, `isRefusedBeforeApplying`), which a short needle inside the
+   * logical id would otherwise turn against their own resource.
+   */
+  scrubError(error: unknown): unknown {
+    if (this.needles.length === 0 || !(error instanceof Error)) return error;
+    const original = errorCauseChain(error);
+    const tokens = abandonedRequestTokens(error);
+    const scrubbed = maskSecretsInError(error, new Map(), (text) =>
+      this.scrubKeepingResume(text, tokens)
+    );
+    const clones = errorCauseChain(scrubbed);
+    original.forEach((link, i) => {
+      const clone = clones[i];
+      if (clone === undefined || clone === link) return;
+      for (const key of VERBATIM_ERROR_FIELDS) {
+        const descriptor = Object.getOwnPropertyDescriptor(link, key);
+        if (descriptor === undefined || typeof descriptor.value !== 'string') continue;
+        // A clone whose field cannot be redefined (a frozen original's copy)
+        // keeps the scrubbed value: never trade the provider's error for a
+        // TypeError.
+        try {
+          Object.defineProperty(clone, key, descriptor);
+        } catch {
+          // left scrubbed
+        }
+      }
+    });
+    return scrubbed;
+  }
+
+  /** A WARN whose text may carry an abandoned wait's resume command; see {@link scrubKeepingResume}. */
+  warnKeepingResume(message: string, requestTokens: readonly string[]): void {
+    this.base.warn(this.scrubKeepingResume(message, requestTokens));
+  }
+
+  debug(message: string): void {
+    this.base.debug(this.scrub(message));
+  }
+  info(message: string): void {
+    this.base.info(this.scrub(message));
+  }
+  warn(message: string): void {
+    this.base.warn(this.scrub(message));
+  }
+  error(message: string): void {
+    this.base.error(this.scrub(message));
+  }
 }
 
-/** Does either bag carry a secret, so `update()` withholds its id? See {@link updateIdLogSink}. */
-function updateIdWithheld(
-  properties: Record<string, unknown>,
-  previousProperties: Record<string, unknown>,
-  mask: MaskerFn
-): boolean {
-  return (
-    holdsSecretDerivedLeaf(properties, mask) || holdsSecretDerivedLeaf(previousProperties, mask)
-  );
+/** The own fields {@link IdScrubLog.scrubError} copies verbatim onto every scrubbed link. */
+const VERBATIM_ERROR_FIELDS = ['logicalId', 'resourceType'] as const;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The resume command `buildResumeCommand` renders, alone: an `--profile` may
+ * sit between `aws` and the service, bare or single-quoted as `shellQuote`
+ * renders it (a `commandHole` included), and neither the token nor the region
+ * holds a space. Exported for its unit test. Matched as the command only, never its line, since a
+ * log line can flatten the message (identifier clause included) onto one.
+ */
+export const RESUME_COMMAND =
+  /aws(?: --profile (?:'(?:[^'\n]|'\\'')*'|\S+))? cloudcontrol get-resource-request-status --request-token \S+(?: --region \S+)?/;
+
+/** The request tokens of every abandoned wait in `error`'s cause chain, as `maskSecretsInError` walks it. */
+function abandonedRequestTokens(error: unknown): string[] {
+  return error instanceof Error
+    ? errorCauseChain(error).flatMap((link) =>
+        link instanceof CloudControlWaitAbandonedError ? [link.requestToken] : []
+      )
+    : [];
+}
+
+/** The {@link IdScrubLog} of the `create()` / `update()` / `delete()` call in progress. */
+const idLogScope = new AsyncLocalStorage<IdScrubLog>();
+
+/** Run `fn` with `idLog` as the call's sink, scrubbing the error it throws. */
+async function inIdLogScope<T>(idLog: IdScrubLog, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await idLogScope.run(idLog, fn);
+  } catch (error) {
+    throw idLog.scrubError(error);
+  }
+}
+
+/**
+ * The identifier a failed Cloud Control operation's error names, if any: a
+ * FAILED or cancelled event's `Identifier`, or an abandoned wait's last seen
+ * one, which `CloudControlWaitAbandonedError` carries as its `physicalId`.
+ */
+function identifierCarriedBy(error: unknown): string | undefined {
+  return error instanceof ProvisioningError ? error.physicalId : undefined;
 }
 
 /**
