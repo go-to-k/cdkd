@@ -52,7 +52,7 @@ verify, clean up.
    region variable. A fixture that runs `cdkd gc` runs ALONE, after the set:
    gc refuses while ANY stack holds a lock, its batch-mates' included. Every
    resource-scan `--region`, `AWS_REGION` and synth/deploy/destroy `--region`
-   in steps 4-7 then uses that region. Synth first (for the stack name and
+   in steps 4-7 then uses the fixture's region. Synth first (for the stack name and
    resource types), then scan:
 
    ```bash
