@@ -7,8 +7,9 @@
  * `RunJobFlow` / `AddInstanceFleet` / `AddInstanceGroups`, the Lambda
  * providers for `PublishLayerVersion` / `CreateEventSourceMapping`, the
  * AppSync provider for `CreateApiKey`, the DLM provider for
- * `CreateLifecyclePolicy` and the ECS provider for `RegisterTaskDefinition`
- * (naming their service through
+ * `CreateLifecyclePolicy`, the ECS provider for `RegisterTaskDefinition` and
+ * the EC2 provider for `CreateVpc` / `CreateSubnet` / `CreateInternetGateway` /
+ * `AllocateAddress` (naming their service through
  * {@link OrphanLookup.service}). The latch, the 5xx-refusing
  * client and the window come from `ambiguous-create.ts`; this module is only
  * the lookup-and-report step a provider runs at the top of the next attempt.
@@ -81,6 +82,11 @@ export interface OrphanLookup {
    * (an EMR instance fleet), the command releases what it bills for instead.
    */
   readonly removeVerb?: string;
+  /**
+   * What the report says happens next, e.g. that the create that follows
+   * fails while the candidate exists; `Creating a new one now.` when absent.
+   */
+  readonly afterward?: string;
 }
 
 /** What a lookup's list step found. */
@@ -142,6 +148,7 @@ export async function reportPossibleOrphans(
   const until = new Date(window.ceilingMs).toISOString();
   const remove = lookup.remove;
   const service = lookup.service ?? 'API Gateway';
+  const afterward = lookup.afterward ?? 'Creating a new one now.';
   const when = remove !== undefined ? `between ${since} and ${until}` : `at ${since}`;
   let found: OrphanIds;
   try {
@@ -178,11 +185,11 @@ export async function reportPossibleOrphans(
     // withholds every candidate's command identically.
     const deletion = [...new Set(shown.map((id) => remove(id)))].join(' ; ');
     log.warn(
-      `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer, and ${service} may have created ${lookup.subject} then that no cdkd state records. ${found.ids.length} ${lookup.noun} were created ${when} that this deploy did not record: ${shown.join(', ')}${more}. cdkd does not adopt or delete them: nothing listed proves which deploy created one. Creating a new one now. First inspect each candidate: ${inspect}. Only after confirming one is this deploy's orphan and not another deploy's, ${lookup.removeVerb ?? 'delete it'}: ${deletion}.${incomplete}`
+      `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer, and ${service} may have created ${lookup.subject} then that no cdkd state records. ${found.ids.length} ${lookup.noun} were created ${when} that this deploy did not record: ${shown.join(', ')}${more}. cdkd does not adopt or delete them: nothing listed proves which deploy created one. ${afterward} First inspect each candidate: ${inspect}. Only after confirming one is this deploy's orphan and not another deploy's, ${lookup.removeVerb ?? 'delete it'}: ${deletion}.${incomplete}`
     );
     return;
   }
   log.warn(
-    `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer (${when}), and ${service} may have created ${lookup.subject} then that no cdkd state records. ${found.ids.length} ${lookup.noun} match that this deploy did not record: ${shown.join(', ')}${more}. ${service} reports no creation time for them, so any of them may instead be this stack's own recorded one, another stack's, or older than this deploy; cdkd does not adopt or delete them. Creating a new one now. Inspect each before deleting anything: ${inspect}.${incomplete}`
+    `An earlier ${lookup.action} attempt for ${logicalId} failed without a definite answer (${when}), and ${service} may have created ${lookup.subject} then that no cdkd state records. ${found.ids.length} ${lookup.noun} match that this deploy did not record: ${shown.join(', ')}${more}. ${service} reports no creation time for them, so any of them may instead be this stack's own recorded one, another stack's, or older than this deploy; cdkd does not adopt or delete them. ${afterward} Inspect each before deleting anything: ${inspect}.${incomplete}`
   );
 }

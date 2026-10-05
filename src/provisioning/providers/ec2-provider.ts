@@ -68,6 +68,11 @@ import {
   DescribeVolumesCommand,
   DescribeInstanceAttributeCommand,
   type Tenancy,
+  type AllocateAddressCommandInput,
+  type AllocateAddressCommandOutput,
+  type CreateInternetGatewayCommandOutput,
+  type CreateSubnetCommandOutput,
+  type CreateVpcCommandOutput,
   type _InstanceType,
   type VolumeType,
   type BlockDeviceMapping,
@@ -128,8 +133,25 @@ import {
 import { definedAttributes } from '../attribute-map.js';
 import { isSettledInstanceState } from '../ec2-instance-state.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
+} from './ambiguous-create.js';
+import {
+  collectOrphanIds,
+  orphanCommandRegionArg,
+  reportPossibleOrphans,
+  type OrphanIds,
+} from './orphan-report.js';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
-import type { MaskerFn } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -144,7 +166,11 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import type { ResourceState } from '../../types/state.js';
-import { pasteableAwsCommand, WITHHELD_AWS_COMMAND } from '../replacement-protection-advice.js';
+import {
+  pasteableAwsCommand,
+  WITHHELD_AWS_COMMAND,
+  type PasteableAwsCommand,
+} from '../replacement-protection-advice.js';
 import { displayIdent, safeMsg } from '../../utils/display-safe.js';
 import { markAuxiliaryFailure } from '../auxiliary-failure.js';
 import {
@@ -489,6 +515,58 @@ function isEc2NotFoundCode(error: unknown): boolean {
   const name = (error as { name?: unknown } | null)?.name;
   return typeof name === 'string' && name.endsWith('.NotFound');
 }
+
+/*
+ * Issue #2080 (Plan B): `CreateVpc`, `CreateSubnet`, `CreateInternetGateway`,
+ * `AllocateAddress` and `CreateSecurityGroup` carry no idempotency token (no
+ * `ClientToken` member on their `@aws-sdk/client-ec2` requests), so a 5xx
+ * whose request EC2 completed used to be replayed -- by the SDK inside one
+ * `send`, invisibly, or by the engine's retry. All five now go through
+ * `EC2Provider.getCreateClient`, which refuses the SDK's 5xx retry.
+ *
+ * A replayed VPC, internet gateway or Elastic IP is a SECOND resource, so an
+ * ambiguous failure arms a latch and the next attempt REPORTS candidates
+ * before creating again (`orphan-report.ts`; detection only). A replayed
+ * subnet or security group COLLIDES instead -- a subnet CIDR cannot repeat in
+ * its VPC (`InvalidSubnet.Conflict`), a group name cannot repeat in its VPC
+ * (`InvalidGroup.Duplicate`) -- and the surfaced 5xx lets `withRetry` mark
+ * that collision as possibly this create's own (#3978). The subnet's lookup
+ * still runs, because its conflict error names no subnet id.
+ */
+const createVpcLatch = new AmbiguousCreateLatch('ec2:CreateVpc');
+const createSubnetLatch = new AmbiguousCreateLatch('ec2:CreateSubnet');
+const createInternetGatewayLatch = new AmbiguousCreateLatch('ec2:CreateInternetGateway');
+const allocateAddressLatch = new AmbiguousCreateLatch('ec2:AllocateAddress');
+/**
+ * VPC, subnet, internet gateway and allocation ids this process created,
+ * never reported as orphan candidates. One set: each id carries its type's
+ * prefix (`vpc-`, `subnet-`, `igw-`, `eipalloc-`).
+ */
+const ec2IdsCreatedByThisProcess = new RecentIdSet();
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetEc2CreateRetryStateForTests(): void {
+  createVpcLatch.resetForTests();
+  createSubnetLatch.resetForTests();
+  createInternetGatewayLatch.resetForTests();
+  allocateAddressLatch.resetForTests();
+  ec2IdsCreatedByThisProcess.resetForTests();
+}
+
+/**
+ * Whether a resource could be an orphan of a lost create response: none of
+ * the five creates sends `TagSpecifications`, and its tags land by a
+ * follow-up `CreateTags` the lost attempt never reached, so an orphan has NO
+ * tags. A recorded resource whose template declares none (or whose tagging
+ * failed: `applyTags` only warns) is untagged too, which the undated report's
+ * wording already allows for.
+ */
+const isUntagged = (tags: ReadonlyArray<unknown> | undefined): boolean =>
+  tags === undefined || tags.length === 0;
+
+/** Page size of an orphan lookup's `Describe*` call (EC2's maximum). */
+const ORPHAN_LIST_PAGE_SIZE = 1000;
+
 export class EC2Provider implements ResourceProvider {
   private ec2Client: EC2Client;
   /** The standalone-ingress Authorize's client: one send per call (#4355). */
@@ -712,6 +790,249 @@ export class EC2Provider implements ResourceProvider {
     this.ec2AuthorizeClient = awsClients.ec2SingleSend ?? awsClients.ec2;
   }
 
+  private createClient: Promise<EC2Client> | undefined;
+
+  /**
+   * The client the five tokenless creates go through (issue #2080): SDK
+   * retries on, except a 5xx (`withoutServerErrorRetries`). Separate so every
+   * other call keeps the full SDK retry, and built in the shared client's
+   * REGION (read from it, as `config.region()` resolves it) so the create
+   * cannot land in another region than the calls around it. The PROMISE is
+   * cached, so two creates on a cold provider build one client; a rejected
+   * region read is not cached, so the next create retries it.
+   *
+   * A shared client that is not an `EC2Client` -- a unit-test double, like
+   * the `?? ec2` fallback in the constructor -- is used as is: `AwsClients`
+   * always supplies a real one.
+   */
+  private getCreateClient(): Promise<EC2Client> {
+    const shared = this.ec2Client;
+    if (!(shared instanceof EC2Client)) return Promise.resolve(shared);
+    this.createClient ??= shared.config.region().then(
+      (region) => withoutServerErrorRetries(new EC2Client({ ...ambientClientDefaults(), region })),
+      (error: unknown) => {
+        this.createClient = undefined;
+        throw error;
+      }
+    );
+    return this.createClient;
+  }
+
+  /**
+   * Issue #2080: after an attempt at one of the tokenless creates ended
+   * AMBIGUOUS (a 5xx: EC2 may have made the resource and lost the answer),
+   * name the resources that could be its orphan: untagged (see
+   * {@link isUntagged}), matching what the create sent, and not created by
+   * this process. EC2 reports no creation time for any of the four types, so
+   * the report is the undated one -- a read command per candidate, no delete
+   * command (`orphan-report.ts`). Never throws.
+   */
+  private async reportPossibleEc2Orphans(
+    logicalId: string,
+    window: AmbiguousCreateWindow,
+    log: MaskedLogSinks,
+    lookup: {
+      action: string;
+      listAction: string;
+      subject: string;
+      noun: string;
+      afterward?: string;
+      list: () => Promise<OrphanIds>;
+      /** The `aws ec2` read command for one id, ending in `regionArg`. */
+      inspect: (
+        aws: ReturnType<typeof pasteableAwsCommand>,
+        id: string,
+        regionArg: PasteableAwsCommand
+      ) => string;
+    }
+  ): Promise<void> {
+    const aws = pasteableAwsCommand(log.mask);
+    const regionArg = await orphanCommandRegionArg(this.ec2Client, aws);
+    await reportPossibleOrphans(logicalId, window, log, {
+      action: lookup.action,
+      service: 'EC2',
+      listAction: lookup.listAction,
+      subject: lookup.subject,
+      noun: lookup.noun,
+      ...(lookup.afterward !== undefined && { afterward: lookup.afterward }),
+      list: lookup.list,
+      inspect: (id) => lookup.inspect(aws, id, regionArg),
+    });
+  }
+
+  /**
+   * VPCs with the same primary CIDR (compared host-bit-cleared, as EC2 may
+   * store it), untagged, not a default VPC. A VPC CIDR can repeat across
+   * VPCs, so a replayed `CreateVpc` is a second VPC.
+   */
+  private async reportPossibleOrphanVpcs(
+    logicalId: string,
+    cidrBlock: string,
+    window: AmbiguousCreateWindow,
+    context: CreateContext | undefined
+  ): Promise<void> {
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    const wanted = canonicalizeIpv4Cidr(cidrBlock) ?? cidrBlock;
+    await this.reportPossibleEc2Orphans(logicalId, window, log, {
+      action: 'CreateVpc',
+      listAction: 'DescribeVpcs',
+      subject: `a VPC with CIDR ${log.value(cidrBlock)}`,
+      noun: 'untagged VPC(s)',
+      list: () =>
+        collectOrphanIds(
+          async (token) => {
+            const page = await this.ec2Client.send(
+              new DescribeVpcsCommand({ MaxResults: ORPHAN_LIST_PAGE_SIZE, NextToken: token })
+            );
+            return { items: page.Vpcs ?? [], next: page.NextToken };
+          },
+          (vpc) =>
+            vpc.VpcId !== undefined &&
+            vpc.IsDefault !== true &&
+            isUntagged(vpc.Tags) &&
+            vpc.CidrBlock !== undefined &&
+            (canonicalizeIpv4Cidr(vpc.CidrBlock) ?? vpc.CidrBlock) === wanted &&
+            !ec2IdsCreatedByThisProcess.has(vpc.VpcId)
+              ? vpc.VpcId
+              : undefined
+        ),
+      inspect: (aws, id, regionArg) =>
+        aws`aws ec2 describe-vpcs --vpc-ids ${id}${regionArg}`.render(),
+    });
+  }
+
+  /**
+   * Subnets of the same VPC with the same CIDR, untagged. A CIDR cannot repeat
+   * in one VPC, so at most one matches, and its existence is what makes the
+   * replayed `CreateSubnet` fail with `InvalidSubnet.Conflict`.
+   */
+  private async reportPossibleOrphanSubnets(
+    logicalId: string,
+    vpcId: string,
+    cidrBlock: string,
+    window: AmbiguousCreateWindow,
+    context: CreateContext | undefined
+  ): Promise<void> {
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    const wanted = canonicalizeIpv4Cidr(cidrBlock) ?? cidrBlock;
+    await this.reportPossibleEc2Orphans(logicalId, window, log, {
+      action: 'CreateSubnet',
+      listAction: 'DescribeSubnets',
+      subject: `a subnet with CIDR ${log.value(cidrBlock)} in VPC ${log.value(vpcId)}`,
+      noun: 'untagged subnet(s)',
+      afterward:
+        'Creating it again, which fails with InvalidSubnet.Conflict while that subnet exists.',
+      list: () =>
+        collectOrphanIds(
+          async (token) => {
+            const page = await this.ec2Client.send(
+              new DescribeSubnetsCommand({
+                Filters: [{ Name: 'vpc-id', Values: [vpcId] }],
+                MaxResults: ORPHAN_LIST_PAGE_SIZE,
+                NextToken: token,
+              })
+            );
+            return { items: page.Subnets ?? [], next: page.NextToken };
+          },
+          (subnet) =>
+            subnet.SubnetId !== undefined &&
+            isUntagged(subnet.Tags) &&
+            subnet.CidrBlock !== undefined &&
+            (canonicalizeIpv4Cidr(subnet.CidrBlock) ?? subnet.CidrBlock) === wanted &&
+            !ec2IdsCreatedByThisProcess.has(subnet.SubnetId)
+              ? subnet.SubnetId
+              : undefined
+        ),
+      inspect: (aws, id, regionArg) =>
+        aws`aws ec2 describe-subnets --subnet-ids ${id}${regionArg}`.render(),
+    });
+  }
+
+  /**
+   * Internet gateways attached to nothing, untagged. `CreateInternetGateway`
+   * takes no input to match on; the attachment is a separate resource
+   * (`AWS::EC2::VPCGatewayAttachment`), so an orphan stays detached.
+   */
+  private async reportPossibleOrphanInternetGateways(
+    logicalId: string,
+    window: AmbiguousCreateWindow,
+    context: CreateContext | undefined
+  ): Promise<void> {
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    await this.reportPossibleEc2Orphans(logicalId, window, log, {
+      action: 'CreateInternetGateway',
+      listAction: 'DescribeInternetGateways',
+      subject: 'an internet gateway',
+      noun: 'detached, untagged internet gateway(s)',
+      list: () =>
+        collectOrphanIds(
+          async (token) => {
+            const page = await this.ec2Client.send(
+              new DescribeInternetGatewaysCommand({
+                MaxResults: ORPHAN_LIST_PAGE_SIZE,
+                NextToken: token,
+              })
+            );
+            return { items: page.InternetGateways ?? [], next: page.NextToken };
+          },
+          (igw) =>
+            igw.InternetGatewayId !== undefined &&
+            (igw.Attachments ?? []).length === 0 &&
+            isUntagged(igw.Tags) &&
+            !ec2IdsCreatedByThisProcess.has(igw.InternetGatewayId)
+              ? igw.InternetGatewayId
+              : undefined
+        ),
+      inspect: (aws, id, regionArg) =>
+        aws`aws ec2 describe-internet-gateways --internet-gateway-ids ${id}${regionArg}`.render(),
+    });
+  }
+
+  /**
+   * Elastic IPs of the same domain (and the same network border group and
+   * pool, when the template names them), associated with nothing, untagged.
+   * The association is a follow-up call the lost attempt never reached.
+   * `DescribeAddresses` is not paginated.
+   */
+  private async reportPossibleOrphanAddresses(
+    logicalId: string,
+    input: AllocateAddressCommandInput,
+    window: AmbiguousCreateWindow,
+    context: CreateContext | undefined
+  ): Promise<void> {
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    await this.reportPossibleEc2Orphans(logicalId, window, log, {
+      action: 'AllocateAddress',
+      listAction: 'DescribeAddresses',
+      subject: `an Elastic IP address (domain ${log.value(input.Domain ?? 'vpc')})`,
+      noun: 'unassociated, untagged Elastic IP address(es)',
+      list: async () => {
+        const response = await this.ec2Client.send(new DescribeAddressesCommand({}));
+        const ids: string[] = [];
+        for (const address of response.Addresses ?? []) {
+          const id = address.AllocationId;
+          if (
+            id === undefined ||
+            (address.Domain ?? 'vpc') !== (input.Domain ?? 'vpc') ||
+            address.AssociationId !== undefined ||
+            !isUntagged(address.Tags) ||
+            (input.NetworkBorderGroup !== undefined &&
+              address.NetworkBorderGroup !== input.NetworkBorderGroup) ||
+            (input.PublicIpv4Pool !== undefined &&
+              address.PublicIpv4Pool !== input.PublicIpv4Pool) ||
+            ec2IdsCreatedByThisProcess.has(id)
+          ) {
+            continue;
+          }
+          ids.push(id);
+        }
+        return { ids, truncated: false };
+      },
+      inspect: (aws, id, regionArg) =>
+        aws`aws ec2 describe-addresses --allocation-ids ${id}${regionArg}`.render(),
+    });
+  }
+
   // ─── Dispatch ─────────────────────────────────────────────────────
 
   async create(
@@ -722,11 +1043,11 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::EC2::VPC':
-        return this.createVpc(logicalId, resourceType, properties);
+        return this.createVpc(logicalId, resourceType, properties, context);
       case 'AWS::EC2::Subnet':
-        return this.createSubnet(logicalId, resourceType, properties);
+        return this.createSubnet(logicalId, resourceType, properties, context);
       case 'AWS::EC2::InternetGateway':
-        return this.createInternetGateway(logicalId, resourceType, properties);
+        return this.createInternetGateway(logicalId, resourceType, properties, context);
       case 'AWS::EC2::EIP':
         return this.createEip(logicalId, resourceType, properties, context);
       case 'AWS::EC2::VPCGatewayAttachment':
@@ -980,7 +1301,8 @@ export class EC2Provider implements ResourceProvider {
   private async createVpc(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating VPC ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -996,14 +1318,29 @@ export class EC2Provider implements ResourceProvider {
     }
 
     try {
-      const response = await this.ec2Client.send(
-        new CreateVpcCommand({
-          CidrBlock: cidrBlock,
-          InstanceTenancy: (properties['InstanceTenancy'] as Tenancy) ?? undefined,
-        })
-      );
+      const createClient = await this.getCreateClient();
+      // Issue #2080: after an earlier ambiguous attempt, name the VPC it may
+      // have made before a second CreateVpc is sent. Detection only.
+      const orphanWindow = createVpcLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await this.reportPossibleOrphanVpcs(logicalId, cidrBlock, orphanWindow, context);
+      }
+      const attemptStartMs = Date.now();
+      let response: CreateVpcCommandOutput;
+      try {
+        response = await createClient.send(
+          new CreateVpcCommand({
+            CidrBlock: cidrBlock,
+            InstanceTenancy: (properties['InstanceTenancy'] as Tenancy) ?? undefined,
+          })
+        );
+      } catch (error) {
+        createVpcLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
 
       const vpcId = response.Vpc!.VpcId!;
+      ec2IdsCreatedByThisProcess.add(vpcId);
 
       // CreateVpcCommand has succeeded — AWS has now committed the VPC.
       // If any subsequent ModifyVpcAttribute / tag / read call throws, the
@@ -1318,7 +1655,8 @@ export class EC2Provider implements ResourceProvider {
   private async createSubnet(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Subnet ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -1336,15 +1674,31 @@ export class EC2Provider implements ResourceProvider {
     }
 
     try {
-      const response = await this.ec2Client.send(
-        new CreateSubnetCommand({
-          VpcId: vpcId,
-          CidrBlock: cidrBlock,
-          AvailabilityZone: (properties['AvailabilityZone'] as string) ?? undefined,
-        })
-      );
+      const createClient = await this.getCreateClient();
+      // Issue #2080: after an earlier ambiguous attempt, name the subnet it
+      // may have made. The create below then fails with
+      // `InvalidSubnet.Conflict` if it did, and that error names no subnet.
+      const orphanWindow = createSubnetLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await this.reportPossibleOrphanSubnets(logicalId, vpcId, cidrBlock, orphanWindow, context);
+      }
+      const attemptStartMs = Date.now();
+      let response: CreateSubnetCommandOutput;
+      try {
+        response = await createClient.send(
+          new CreateSubnetCommand({
+            VpcId: vpcId,
+            CidrBlock: cidrBlock,
+            AvailabilityZone: (properties['AvailabilityZone'] as string) ?? undefined,
+          })
+        );
+      } catch (error) {
+        createSubnetLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
 
       const subnetId = response.Subnet!.SubnetId!;
+      ec2IdsCreatedByThisProcess.add(subnetId);
       const availabilityZone = response.Subnet!.AvailabilityZone!;
 
       // CreateSubnetCommand has succeeded — AWS has now committed the
@@ -1668,15 +2022,31 @@ export class EC2Provider implements ResourceProvider {
   private async createInternetGateway(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating InternetGateway ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
     try {
-      const response = await this.ec2Client.send(new CreateInternetGatewayCommand({}));
+      const createClient = await this.getCreateClient();
+      // Issue #2080: after an earlier ambiguous attempt, name the gateway it
+      // may have made before a second CreateInternetGateway is sent.
+      const orphanWindow = createInternetGatewayLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await this.reportPossibleOrphanInternetGateways(logicalId, orphanWindow, context);
+      }
+      const attemptStartMs = Date.now();
+      let response: CreateInternetGatewayCommandOutput;
+      try {
+        response = await createClient.send(new CreateInternetGatewayCommand({}));
+      } catch (error) {
+        createInternetGatewayLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
       const igwId = response.InternetGateway!.InternetGatewayId!;
+      ec2IdsCreatedByThisProcess.add(igwId);
 
       // Apply tags
       await this.applyTags(igwId, desiredTags, logicalId);
@@ -1824,22 +2194,36 @@ export class EC2Provider implements ResourceProvider {
     // call's (the association), not this address's (#3826).
     let created = false;
     try {
-      const response = await this.ec2Client.send(
-        new AllocateAddressCommand({
-          Domain: requireConfigString(
-            properties['Domain'],
-            'vpc',
-            'AWS::EC2::EIP Domain',
-            replayWarn(this.logger, context)
-          ) as 'vpc' | 'standard',
-          NetworkBorderGroup: properties['NetworkBorderGroup'] as string | undefined,
-          PublicIpv4Pool: properties['PublicIpv4Pool'] as string | undefined,
-        })
-      );
+      const input: AllocateAddressCommandInput = {
+        Domain: requireConfigString(
+          properties['Domain'],
+          'vpc',
+          'AWS::EC2::EIP Domain',
+          replayWarn(this.logger, context)
+        ) as 'vpc' | 'standard',
+        NetworkBorderGroup: properties['NetworkBorderGroup'] as string | undefined,
+        PublicIpv4Pool: properties['PublicIpv4Pool'] as string | undefined,
+      };
+      const createClient = await this.getCreateClient();
+      // Issue #2080: after an earlier ambiguous attempt, name the address it
+      // may have allocated before a second AllocateAddress is sent.
+      const orphanWindow = allocateAddressLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await this.reportPossibleOrphanAddresses(logicalId, input, orphanWindow, context);
+      }
+      const attemptStartMs = Date.now();
+      let response: AllocateAddressCommandOutput;
+      try {
+        response = await createClient.send(new AllocateAddressCommand(input));
+      } catch (error) {
+        allocateAddressLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
 
       created = true;
       allocationId = response.AllocationId!;
       publicIp = response.PublicIp!;
+      ec2IdsCreatedByThisProcess.add(allocationId);
 
       await this.applyTags(allocationId, desiredTags, logicalId);
 
@@ -2994,7 +3378,11 @@ export class EC2Provider implements ResourceProvider {
     }
 
     try {
-      const response = await this.ec2Client.send(
+      // Issue #2080: no idempotency token, but a replay COLLIDES on the group
+      // name (`InvalidGroup.Duplicate`) rather than duplicating; the create
+      // client surfaces a 5xx so `withRetry` can mark that collision (#3978).
+      const createClient = await this.getCreateClient();
+      const response = await createClient.send(
         new CreateSecurityGroupCommand({
           GroupName: (properties['GroupName'] as string) ?? logicalId,
           Description: groupDescription,
@@ -3008,12 +3396,12 @@ export class EC2Provider implements ResourceProvider {
       // the SG. If applyTags / Authorize* / Revoke* throws, the SG exists
       // on AWS but cdkd state will NOT. The next redeploy plans CREATE
       // and AWS would reject with `InvalidGroup.Duplicate: The security
-      // group '<name>' already exists for VPC ...` (when VpcId+GroupName
-      // produces a collision) — or worse, when GroupName is auto-generated
-      // from logicalId, a fresh SG would be created leaving the first
-      // orphaned. Wrap wiring in an inner try/catch that issues a
-      // best-effort `DeleteSecurityGroupCommand` before re-throwing the
-      // original error. A freshly-created SG has no ENIs / dependents
+      // group '<name>' already exists for VPC ...`: the name (the template's
+      // GroupName, else the logical id) cannot repeat in a VPC, so every
+      // redeploy fails until the orphan is deleted by hand. Wrap wiring in
+      // an inner try/catch that issues a best-effort
+      // `DeleteSecurityGroupCommand` before re-throwing the original error.
+      // A freshly-created SG has no ENIs / dependents
       // attached, so a single DeleteSecurityGroup suffices (its inline
       // rules CASCADE-delete with the SG).
       try {
