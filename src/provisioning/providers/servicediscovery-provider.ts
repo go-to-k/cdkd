@@ -1159,7 +1159,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
                 `but before its ServiceAttributes were applied. Nothing in cdkd state refers to ` +
                 `it, so cdkd is deleting it now — left behind it would fail the next deploy on a ` +
                 `name collision AND block deletion of its namespace with ResourceInUse. If that ` +
-                `delete fails, on a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; or remove it yourself: ` +
+                `delete fails, on a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise remove it yourself: ` +
                 `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
             )
           );
