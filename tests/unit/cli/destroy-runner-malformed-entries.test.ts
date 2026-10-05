@@ -235,17 +235,19 @@ describe('runDestroyForStack refuses an unreadable resource ROW (go-to-k/cdkd#32
     expect(h.getProviderFor, 'a healthy record no longer reaches the delete path').toHaveBeenCalled();
   });
 
-  it('does not ask for a physicalId — a typed row with none fails per-resource, in its own terms', async () => {
-    // `isReadableResourceEntry` stops at `resourceType` by a recorded decision:
-    // a row that names its type CAN be routed, and what its missing id costs is
-    // reported by the delete itself. Widening the predicate here would refuse
-    // records the deploy accepts.
+  it('does not refuse a typed row with no physicalId — it is skipped per-resource, in its own terms', async () => {
+    // `isReadableResourceEntry` stops at `resourceType` by a recorded decision,
+    // so the row passes the load; what its missing id costs is reported by the
+    // delete loop as a skip (go-to-k/cdkd#3211,
+    // `destroy-runner-malformed-fields.test.ts`), not as a refusal of the run.
     const h = makeCtx();
-    await runDestroyForStack(
+    const result = await runDestroyForStack(
       STACK,
       stateWith({ Typed: { resourceType: 'AWS::SSM::Parameter', properties: {} } }),
       h.ctx
-    ).catch(() => undefined);
-    expect(h.getProviderFor).toHaveBeenCalled();
+    );
+    expect(result.skippedCount).toBe(1);
+    expect(h.getProviderFor).not.toHaveBeenCalled();
+    expect(h.deleteState).not.toHaveBeenCalled();
   });
 });

@@ -55,6 +55,7 @@ import {
   refuseMalformedOrphanRecordsForDestroy,
   refuseMalformedOrphansForDestroy,
   refuseMalformedResourceEntriesForDestroy,
+  refuseMalformedResourcePropertiesForDestroy,
   refuseMalformedResourcesForDestroy,
 } from '../../state/malformed-resources-bag.js';
 import type { ResourceDeleteResult } from '../../types/resource.js';
@@ -540,6 +541,12 @@ export async function runDestroyForStack(
   // guard gives: the map IS the list of what to delete, and a skipped row's
   // resource stays live in AWS with the record that named it removed.
   refuseMalformedResourceEntriesForDestroy(state, stackName, regionForState, refusalRecovery);
+  // Each readable row's `properties` MAP (go-to-k/cdkd#3211), BELOW the row
+  // guard, which names a typeless row with a torn map more precisely. The map
+  // is `provider.delete`'s fourth argument and decides what the delete does
+  // (final snapshot, emptying first), so a torn one is refused here rather
+  // than read as `{}` in the loop — see the refusal's JSDoc.
+  refuseMalformedResourcePropertiesForDestroy(state, stackName, regionForState, refusalRecovery);
   // The `orphans` CONTAINER (go-to-k/cdkd#3379). The orphan warning below reads
   // it on `?? []`, so an unreadable one counts 0 and this run would delete every
   // resource and then the record with its orphan evidence never reported.
@@ -1429,6 +1436,50 @@ export async function runDestroyForStack(
             logicalId,
             resourceType: resource.resourceType,
             ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+          });
+          return;
+        }
+
+        // go-to-k/cdkd#3211: a row with no usable physical id cannot be
+        // ADDRESSED, so it takes issue #1752's skip — record kept, state
+        // preserved, never a provider call. Per resource rather than refused at
+        // the load: `isReadableResourceEntry` stops at `resourceType` by a
+        // recorded decision, and the deploy accepts such a row. What the call
+        // would have done is the reason it may not be made: the provider
+        // addresses AWS by whatever the field holds, and the catch below reads
+        // the resulting `*NotFound` as ALREADY DELETED, dropping the record of a
+        // resource that is still live. BELOW the retention branch, which never
+        // addresses the resource. A nested-stack row is EXEMPT: its delete finds
+        // the child by `<parent>~<logicalId>` and never reads the id, so a skip
+        // would leave every child resource standing and point the remedy at the
+        // CHILD's record (`stateTargetFor`) while the torn field is the parent's.
+        // A provider whose delete is a no-op is NOT exempted, deliberately: the
+        // runner cannot see which providers ignore the id, and keeping a record
+        // a repair clears is the safe direction.
+        if (
+          resource.resourceType !== NESTED_STACK_TYPE &&
+          (typeof resource.physicalId !== 'string' || resource.physicalId.trim() === '')
+        ) {
+          const skipReason = 'state record has no physical id';
+          logger.warn(
+            `Resource ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) has no ` +
+              `non-empty string 'physicalId' in its state record, so cdkd cannot address it in ` +
+              `AWS and did not try to delete it. Repairing the record in state.json and re-running ` +
+              `helps; the record is kept.`
+          );
+          logger.info(
+            `  ${formatResourceLine('skipped', logicalId, resource.resourceType, `skipped (${skipReason})`)}`
+          );
+          result.skippedCount++;
+          skippedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
+          ctx.eventRecorder?.record({
+            eventType: 'RESOURCE_SKIPPED',
+            stackName,
+            operation: 'DELETE',
+            logicalId,
+            resourceType: resource.resourceType,
+            ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+            reason: skipReason,
           });
           return;
         }

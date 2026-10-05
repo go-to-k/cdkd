@@ -31,6 +31,7 @@ import {
   malformedResourceEntriesRefusalMessage,
   malformedDeployResourceEntriesRefusalMessage,
   malformedDestroyResourceEntriesRefusalMessage,
+  malformedDestroyResourcePropertiesRefusalMessage,
   malformedImportUnrepairedEntriesRefusalMessage,
   malformedScrubResourceEntriesRefusalMessage,
   malformedResourceEntriesWarning,
@@ -67,6 +68,7 @@ import {
   refuseMalformedResourceEntries,
   refuseMalformedResourceEntriesForDeploy,
   refuseMalformedResourceEntriesForDestroy,
+  refuseMalformedResourcePropertiesForDestroy,
   refuseMalformedResourceProperties,
   refuseMalformedResourcePropertiesForDrift,
   refuseMalformedResourcePropertiesForExport,
@@ -3674,7 +3676,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(23);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(24);
 
     const outputs = exported.filter((n) => /Outputs\(|Outputs[A-Z]/.test(n));
     const properties = exported.filter((n) => n.includes('ResourceProperties'));
@@ -3750,9 +3752,11 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // A THIRD since go-to-k/cdkd#3315: `cdkd drift --accept` / `--revert`,
     // whose text describes writing the record back rather than a diff.
     // A FOURTH, the export half of go-to-k/cdkd#3315: `cdkd export`, which
-    // reads the map and then deletes the record.
+    // reads the map and then deletes the record. A FIFTH since
+    // go-to-k/cdkd#3211: the destroy, which hands the map to `provider.delete`.
     expect([...properties].sort()).toEqual([
       'refuseMalformedResourceProperties(',
+      'refuseMalformedResourcePropertiesForDestroy(',
       'refuseMalformedResourcePropertiesForDrift(',
       'refuseMalformedResourcePropertiesForExport(',
       'refuseMalformedResourcePropertiesForOrphan(',
@@ -4520,6 +4524,8 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     // go-to-k/cdkd#3202: reached by `NestedStackProvider.delete` inside the
     // parent's `withRetry`, like its bag twin two rows up.
     ['destroy resource entries', () => refuseMalformedResourceEntriesForDestroy(state({ A: null }), 'S', 'us-east-1')],
+    // go-to-k/cdkd#3211: the same caller, one container down.
+    ['destroy resource properties', () => refuseMalformedResourcePropertiesForDestroy(state({ A: { physicalId: 'p', resourceType: 'T', properties: 'x' } }), 'S', 'us-east-1')],
     ['orphans container', () => refuseMalformedOrphans({ orphans: 'abc' as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
     ['destroy orphans container', () => refuseMalformedOrphansForDestroy({ orphans: 'abc' as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
     // The ROW pair (go-to-k/cdkd#3500). The fixture is a READABLE list holding
@@ -4594,7 +4600,7 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(23);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(24);
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
@@ -7989,6 +7995,10 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       (s, r) => malformedDestroyResourceEntriesRefusalMessage(s as string, r as string, ['A']),
     ],
     [
+      'malformedDestroyResourcePropertiesRefusalMessage',
+      (s, r) => malformedDestroyResourcePropertiesRefusalMessage(s as string, r as string, ['A']),
+    ],
+    [
       'malformedScrubResourceEntriesRefusalMessage',
       (s, r) => malformedScrubResourceEntriesRefusalMessage(s as string, r as string, ['A']),
     ],
@@ -8156,6 +8166,7 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       'refuseMalformedResourceEntriesForImportSave',
       'refuseMalformedResourceEntriesForOrphan',
       'refuseMalformedResourceProperties',
+      'refuseMalformedResourcePropertiesForDestroy',
       'refuseMalformedResourcePropertiesForDrift',
       'refuseMalformedResourcePropertiesForExport',
       'refuseMalformedResourcePropertiesForOrphan',
@@ -8252,6 +8263,7 @@ describe('the inspect command explains a withheld value before its label (go-to-
     entry(malformedDeployResourcesRefusalMessage, (f, s, r) => f(s, r)),
     entry(malformedDestroyOutputsRefusalMessage, (f, s, r) => f(s, r)),
     entry(malformedDestroyResourceEntriesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
+    entry(malformedDestroyResourcePropertiesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
     entry(malformedDriftResourcePropertiesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
     entry(malformedDriftResourcePropertiesWarning, (f, s, r) => f(s, r, ['A'])),
     entry(malformedExportNamesWarning, (f, s, r) => f(s, r)),

@@ -4366,6 +4366,76 @@ export function malformedDestroyResourceEntriesRefusalMessage(
 }
 
 /**
+ * For the destroy runner (`cdkd destroy`, `cdkd state destroy`, a nested
+ * child's destroy): refuse a record naming the resources whose `properties`
+ * map cannot be read (go-to-k/cdkd#3211).
+ *
+ * The runner hands each record's map to `provider.delete`, and what a delete
+ * DOES is read off it: `effectiveDeletionPolicy` decides an RDS DB instance's
+ * final snapshot from `DBClusterIdentifier`, the ECR provider empties a
+ * repository on `EmptyOnDelete` or the auto-delete tag, and
+ * `countProtectedResources` sizes the `--remove-protection` prompt from it.
+ * The delete ORDER is built from it too: the runner's dependency graph reads
+ * each row's `Ref` / `Fn::GetAtt` edges out of the map, so a torn one drops
+ * them silently — which is why a RETAINED row's map is refused as well.
+ * A torn map reaches the provider verbatim, and reading it as EMPTY is not the
+ * safe half: every one of those keys then reads as ABSENT, so the delete
+ * fails or takes the wrong branch — after every resource ordered before it was
+ * already deleted. REFUSE, the verdict every write-capable caller of
+ * {@link unreadableResourcePropertyBags} takes.
+ *
+ * CALL IT AT THE LOAD, after {@link refuseMalformedResourceEntriesForDestroy}:
+ * a typeless object with a torn map is named by both, and the entry text is
+ * the more precise one.
+ *
+ * `markNonRetryable` for the reason its entry twin carries it.
+ */
+export function refuseMalformedResourcePropertiesForDestroy(
+  state: StackState,
+  stackName: string,
+  region: string,
+  /** See {@link malformedDestroyResourcePropertiesRefusalMessage}. */
+  recovery?: LockRecoveryContext
+): void {
+  const unreadable = unreadableResourcePropertyBags(state);
+  if (unreadable.length === 0) return;
+  throw markNonRetryable(
+    new CdkdError(
+      malformedDestroyResourcePropertiesRefusalMessage(stackName, region, unreadable, recovery),
+      STATE_RESOURCES_MALFORMED
+    )
+  );
+}
+
+/**
+ * The text {@link refuseMalformedResourcePropertiesForDestroy} raises. Its own
+ * text: the deploy one describes a diff's REPLACEMENT verdict, which a destroy
+ * never computes. Ends on the read command, as its entry twin does.
+ */
+export function malformedDestroyResourcePropertiesRefusalMessage(
+  rawStackName: string,
+  rawRegion: string,
+  logicalIds: readonly string[],
+  /** The caller's account flags, carried by the inspect command (go-to-k/cdkd#3909). */
+  recovery?: LockRecoveryContext
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return (
+    `${namedPropertyBagsDiagnosis(stackName, region, logicalIds)} 'cdkd destroy' hands that map ` +
+    `to the resource's delete, which reads keys off it — whether an RDS DB instance takes a ` +
+    `final snapshot, whether an ECR repository is emptied first — so it refuses rather than ` +
+    `continuing: the provider would get the torn value as it stands, and reading the map as ` +
+    `EMPTY answers each of those keys as absent, a delete that fails or takes the wrong branch ` +
+    `after every resource ordered before it was deleted. Nothing was deleted or written FOR ` +
+    `THIS STACK. Repair the map first; 'cdkd state orphan' drops the whole record with every ` +
+    `resource left standing, which is more than this asks for. ` +
+    `${inspectClause(stackName, region, recovery)}Inspect the record with: ` +
+    inspectCommand(stackName, region, recovery)
+  );
+}
+
+/**
  * For a SELECTIVE `cdkd import`: refuse a record whose `resources` map holds a
  * row that is not a readable resource record AND that this merge does not
  * re-import (go-to-k/cdkd#3202, maintainer review M1).

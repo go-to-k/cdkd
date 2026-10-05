@@ -14,10 +14,11 @@ Issue [#3191](https://github.com/go-to-k/cdkd/issues/3191), in
 
 `unreadableResourcePropertyBags` is the ONE predicate.
 `refuseMalformedResourceProperties` (`deploy`),
-`refuseMalformedResourcePropertiesForOrphan` (`orphan`) and
-`refuseMalformedResourcePropertiesForDrift` (`drift --accept` / `--revert`) and
-`refuseMalformedResourcePropertiesForExport` (`export`, at the root load and
-over every nested node) are the write-capable callers, differing in MESSAGE and SCOPE but never the verdict; read-only is
+`refuseMalformedResourcePropertiesForOrphan`,
+`refuseMalformedResourcePropertiesForDrift` (`--accept` / `--revert`),
+`refuseMalformedResourcePropertiesForExport` (root and every nested node) and
+`refuseMalformedResourcePropertiesForDestroy` are the write-capable
+callers, differing in MESSAGE and SCOPE, never the verdict; read-only is
 `repairMalformedResourcePropertiesForReadOnly`. It works per ENTRY, so messages
 can NAME damaged records; it SKIPS a non-object entry and returns
 `[]` for an unreadable `resources` bag, so its verdict is independent of the
