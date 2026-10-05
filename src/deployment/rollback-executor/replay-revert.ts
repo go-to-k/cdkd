@@ -101,10 +101,11 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
     // type the rollback command's registry cannot route (an
     // `--allow-unsupported-types` type, say). Hoisted, a readopt that
     // deletes nothing could fail on a lookup it never needed.
-    const { provider: newDeleteProvider } = ctx.providerRegistry.getProviderFor({
-      resourceType: op.resourceType,
-      provisionedBy: current.provisionedBy ?? op.provisionedBy,
-    });
+    const { provider: newDeleteProvider, provisionedBy: newDeleteVia } =
+      ctx.providerRegistry.getProviderFor({
+        resourceType: op.resourceType,
+        provisionedBy: current.provisionedBy ?? op.provisionedBy,
+      });
     const finalSnapshotIdentifier = rollbackFinalSnapshotId(
       op.resourceType,
       current,
@@ -144,7 +145,8 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
         ctx,
         stackName,
         resourceType: op.resourceType,
-        provisionedBy: current.provisionedBy ?? op.provisionedBy,
+        // The layer the delete was routed to; a legacy record names none.
+        provisionedBy: newDeleteVia,
         mask,
       }
     );

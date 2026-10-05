@@ -1756,7 +1756,7 @@ DEP_ARM_ID_WORKDIR="$(mktemp -d)"
 aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" "${DEP_ARM_ID_WORKDIR}/journal.json" >/dev/null
 jq '(.segments[].operations[] | select(.logicalId == "DepArmRollbackBucket" and .changeType == "CREATE")
   | .provisionedBy) = "cc-api"' "${DEP_ARM_ID_WORKDIR}/journal.json" > "${DEP_ARM_ID_WORKDIR}/journal-cc.json"
-DEP_RB_OPS="$(jq '[.segments[].operations[] | select(.logicalId == "DepArmRollbackBucket" and .changeType == "CREATE" and .physicalId == "'"${DEP_ARM_RB_BUCKET}"'")] | length' "${DEP_ARM_ID_WORKDIR}/journal-cc.json")"
+DEP_RB_OPS="$(jq --arg b "${DEP_ARM_RB_BUCKET}" '[.segments[].operations[] | select(.logicalId == "DepArmRollbackBucket" and .changeType == "CREATE" and .physicalId == $b)] | length' "${DEP_ARM_ID_WORKDIR}/journal-cc.json")"
 if [ "${DEP_RB_OPS}" != "1" ]; then
   echo "FAIL [phase 2c] premise: expected exactly one journaled CREATE of DepArmRollbackBucket naming ${DEP_ARM_RB_BUCKET}, got ${DEP_RB_OPS}" >&2
   jq -c '[.segments[].operations[] | {logicalId, changeType, physicalId}]' "${DEP_ARM_ID_WORKDIR}/journal.json" >&2

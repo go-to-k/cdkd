@@ -67,7 +67,10 @@ const silentLogger = {
   child: () => silentLogger,
 } as unknown as RollbackExecutorContext['logger'];
 
-function makeCtx(provider: { delete?: unknown; create?: unknown }): {
+function makeCtx(
+  provider: { delete?: unknown; create?: unknown },
+  route: 'sdk' | 'cc-api' | undefined = 'cc-api'
+): {
   ctx: RollbackExecutorContext;
   events: Array<Omit<DeploymentEvent, 'timestamp'>>;
 } {
@@ -76,7 +79,7 @@ function makeCtx(provider: { delete?: unknown; create?: unknown }): {
     region: 'us-east-1',
     logger: silentLogger,
     providerRegistry: {
-      getProviderFor: () => ({ provider }),
+      getProviderFor: () => ({ provider, provisionedBy: route }),
     } as unknown as RollbackExecutorContext['providerRegistry'],
     recordEvent: (e) => events.push(e),
   };
@@ -240,6 +243,84 @@ describe('rollback executor — indeterminate guards on rollback deletes (#2422)
     expect(del).toHaveBeenCalledOnce();
     expect(result.failures).toBe(0);
     expect(guardRows(events)).toEqual([expectedRow('phys-B')]);
+  });
+
+  describe('a legacy record naming no layer: the row names the layer the delete was ROUTED to', () => {
+    function legacy(physicalId: string): ResourceState {
+      const record = res({ physicalId });
+      delete (record as { provisionedBy?: unknown }).provisionedBy;
+      return record;
+    }
+
+    it('reverse-replacement re-adopt', async () => {
+      const del = vi.fn().mockResolvedValue(guarded('new-b'));
+      const { ctx, events } = makeCtx({ delete: del });
+      const ops: CompletedOperation[] = [
+        {
+          logicalId: 'B',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::S3::Bucket',
+          physicalId: 'new-b',
+          previousState: legacy('old-b'),
+          oldResourceRetained: true,
+        },
+      ];
+      const state: Record<string, ResourceState> = { B: legacy('new-b') };
+
+      await replayRollback(ops, state, 'S', ctx);
+
+      expect(del).toHaveBeenCalledOnce();
+      expect(guardRows(events)).toEqual([expectedRow('new-b')]);
+    });
+
+    it('reverse-replacement delete-new-first', async () => {
+      const del = vi.fn().mockResolvedValue(guarded('new-b'));
+      const create = vi
+        .fn()
+        .mockRejectedValueOnce(awsSdkError("Resource of type 'AWS::S3::Bucket' already exists."))
+        .mockResolvedValue({ physicalId: 'old-b', attributes: {} });
+      const { ctx, events } = makeCtx({ delete: del, create });
+      const prev = { ...legacy('old-b'), properties: { BucketName: 'b', a: 1 } };
+      const ops: CompletedOperation[] = [
+        {
+          logicalId: 'B',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::S3::Bucket',
+          physicalId: 'new-b',
+          previousState: prev,
+        },
+      ];
+      const state: Record<string, ResourceState> = {
+        B: { ...legacy('new-b'), properties: { BucketName: 'b' } },
+      };
+
+      await replayRollback(ops, state, 'S', ctx);
+
+      expect(del).toHaveBeenCalledOnce();
+      expect(guardRows(events)).toEqual([expectedRow('new-b')]);
+    });
+
+    it('reverse-replacement delete-new AFTER the re-create', async () => {
+      const del = vi.fn().mockResolvedValue(guarded('new-b'));
+      const create = vi.fn().mockResolvedValue({ physicalId: 'old-b', attributes: {} });
+      const { ctx, events } = makeCtx({ delete: del, create });
+      const prev = { ...legacy('old-b'), properties: { a: 1 } };
+      const ops: CompletedOperation[] = [
+        {
+          logicalId: 'B',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::S3::Bucket',
+          physicalId: 'new-b',
+          previousState: prev,
+        },
+      ];
+      const state: Record<string, ResourceState> = { B: legacy('new-b') };
+
+      await replayRollback(ops, state, 'S', ctx);
+
+      expect(del).toHaveBeenCalledOnce();
+      expect(guardRows(events)).toEqual([expectedRow('new-b')]);
+    });
   });
 
   it('control: a delete reporting no guard records no guard row', async () => {

@@ -367,6 +367,67 @@ describe('DeployEngine — indeterminate guards on deploy-path deletes (#2422)',
     expectBeside('RESOURCE_FAILED', 'UPDATE');
   });
 
+  it('--replace delete-first fallback reached through a name-idempotent create', async () => {
+    // The create-first hands the OLD resource back (an SQS-style idempotent
+    // Create API), so `--replace` deletes the old one first and re-creates.
+    (provider.create as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ physicalId: OLD_PID, attributes: {} })
+      .mockResolvedValueOnce({ physicalId: 'new-pid', attributes: {} });
+    await invokeReplacingUpdate(makeEngine({ replace: true }), { requiresReplacement: true });
+    expect(provider.create).toHaveBeenCalledTimes(2);
+    expectOneGuardRow();
+    expectBeside('RESOURCE_SUCCEEDED', 'UPDATE');
+  });
+
+  it('concurrent siblings that BOTH report a guard: each row carries only its own', async () => {
+    // The two deletes are held until BOTH have started, so the two
+    // resources' provisioning genuinely overlaps (`p-limit` is mocked serial,
+    // which a sequential test cannot see past). A sink shared across rows
+    // hands one row's guard to the other.
+    let started = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    (provider.delete as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_logicalId: string, physicalId: string) => {
+        started++;
+        if (started === 2) release();
+        await gate;
+        return {
+          outcome: 'deleted',
+          indeterminateGuards: [{ guard: GUARD_ID, reason: `probe on ${physicalId}` }],
+        };
+      }
+    );
+    const engine = makeEngine();
+    const run = (logicalId: string, physicalId: string): Promise<unknown> =>
+      provisionOf(engine)(
+        logicalId,
+        { logicalId, changeType: 'DELETE', resourceType: TYPE, currentProperties: {} },
+        {
+          [logicalId]: {
+            physicalId,
+            resourceType: TYPE,
+            properties: {},
+            attributes: {},
+            dependencies: [],
+            provisionedBy: 'sdk',
+          },
+        },
+        'MyStack',
+        { Resources: {} }
+      );
+
+    await Promise.all([run('A', 'pid-a'), run('B', 'pid-b')]);
+
+    expect(started).toBe(2);
+    expect(guardRows().map((e) => `${e.logicalId}:${e.physicalId}`).sort()).toEqual([
+      'A:pid-a',
+      'B:pid-b',
+    ]);
+  });
+
   describe('controls', () => {
     it('a delete reporting no guard records no guard row (template DELETE)', async () => {
       (provider.delete as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);

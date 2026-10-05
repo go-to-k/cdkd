@@ -230,8 +230,11 @@ export async function provisionResource(
           // ran on the DELETE call, which is what the row describes. The
           // row's own outcome event keeps `operation: 'UPDATE'`. Payload as
           // in `destroy-runner.ts`; `reason` is masked by `recordEvent`, and
-          // the physical id with this resource's own secrets, since a
-          // resolved secret can name a resource.
+          // the physical id with this resource's own secrets. That bag holds
+          // only what THIS run resolved for the row: a template DELETE
+          // resolves nothing, so its id goes out as destroy and `cdkd state`
+          // show it, and an old id derived from a since-rotated secret is
+          // not in the new bag either.
           for (const guard of deleteGuards.splice(0)) {
             this.recordEvent({
               eventType: 'RESOURCE_GUARD_INDETERMINATE',
