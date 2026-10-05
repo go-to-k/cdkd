@@ -292,5 +292,10 @@ describe('the resolver files the per-bag proof (cdkd drift)', () => {
     expect(out).toBe('x-eu');
     expect(ssmSends.map((s) => s.region)).toEqual(['eu-west-1']);
     expect(isProvenPublicExpression(bag, arn)).toBe(false);
+    // ...and the guest's CACHE HIT on a later pass files none either.
+    const later: RecordedSecretValues = new Map();
+    expect(await resolver.resolveDynamicReferences(`y-${arn}`, ctx(later))).toBe('y-eu');
+    expect(ssmSends).toHaveLength(1);
+    expect(isProvenPublicExpression(later, arn)).toBe(false);
   });
 });
