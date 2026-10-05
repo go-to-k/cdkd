@@ -103,13 +103,14 @@ describe('requireDeploymentApproval', () => {
       await expect(row).resolves.toBeUndefined();
     });
 
-    it('refuses an approval given after the row already timed out', async () => {
+    it('refuses without asking once the row already timed out', async () => {
+      const asked = vi.fn(async () => true);
       let inner: Promise<void> | undefined;
       const row = withResourceDeadline(
         async () => {
           // The child's own diff outlived the row's deadline before it asked.
           await new Promise((r) => setTimeout(r, 5_000));
-          inner = run('destructive', [change('Q', 'DELETE')], async () => true);
+          inner = run('destructive', [change('Q', 'DELETE')], asked);
           return inner;
         },
         { warnAfterMs: 1_000, timeoutMs: 2_000, onTimeout: () => new Error('row timed out') }
@@ -118,6 +119,7 @@ describe('requireDeploymentApproval', () => {
       await vi.advanceTimersByTimeAsync(5_000);
       await rowSettled;
       await expect(inner).rejects.toMatchObject({ code: 'DEPLOY_APPROVAL_AFTER_TIMEOUT' });
+      expect(asked).not.toHaveBeenCalled();
     });
   });
 });

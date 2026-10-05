@@ -241,6 +241,21 @@ describe('DeployEngine --require-approval', () => {
     });
   });
 
+  it('destructive: asks for an in-place update of a --recreate-via-* target', async () => {
+    approve.mockResolvedValue(true);
+    const template = arrange(mocks(), { Kept: record() }, [inPlaceUpdate]);
+    await makeEngine({
+      requireApproval: 'destructive',
+      recreateTargets: { stackName: STACK_NAME, viaCcApi: new Set(['Kept']), viaSdkProvider: new Set() },
+    })
+      .deploy(STACK_NAME, template)
+      .catch(() => undefined);
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(approve.mock.calls[0]![0].destructiveChanges).toMatchObject([
+      { logicalId: 'Kept', impact: 'WILL_REPLACE' },
+    ]);
+  });
+
   it('never asks under --dry-run', async () => {
     const template = arrange(mocks(), { Kept: record(), Gone: record({ physicalId: 'gone' }) }, [
       deletion,

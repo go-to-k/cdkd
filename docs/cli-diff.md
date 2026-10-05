@@ -541,7 +541,7 @@ table:
 | `outputs` | empty | Every output this diff resolves previews as an `ADD`, and no stored key previews as a `REMOVE` |
 | A resource's `properties` | empty | Every property that resource declares previews as an addition, and a create-only one previews as a **replacement** |
 | `orphans` | empty | No rollback-orphan record previews as an adoption, `(orphans container)` is named in the preview, `--json` lists `orphans` in `unreadableContainers`, and `--fail` counts it; on the TOP-LEVEL stack it also exits `3` |
-| One `orphans` record whose `properties` or `attributes` map is not an object | KEPT | The record is still previewed, and the preview WARNS naming the row at every node the run REACHES with an adoption preview — a plain `cdkd diff` visits only the top-level stack, `--recursive` visits its template-present children, and a state-only child being DELETED runs no preview at all, saying that `cdkd deploy` refuses the record over it. On the TOP-LEVEL stack it also exits `3`; a nested child warns without the exit code, for the reason [exit `3`](#exit-3-the-deploy-would-refuse) gives |
+| One `orphans` record whose `properties` or `attributes` map is not an object | KEPT | The record is still previewed, and the preview WARNS naming the row at every node the run REACHES with an adoption preview — a plain `cdkd diff` visits only the top-level stack, `--recursive` (or `--fail-on=destructive`) visits its template-present children, and a state-only child being DELETED runs no preview at all, saying that `cdkd deploy` refuses the record over it. On the TOP-LEVEL stack it also exits `3`; a nested child warns without the exit code, for the reason [exit `3`](#exit-3-the-deploy-would-refuse) gives |
 | One `resources` entry, or one `orphans` record (not an object, no resource type, and for an orphan record no string `logicalId` or one another record also carries, or a `state` with no non-empty string `physicalId`) | DROPPED | The row is named in the preview, in `--json`'s `unreadable` (an entry) or `unreadableOrphans` (an orphan record), and in the `--fail` count; a row the template still declares previews as a `CREATE`, one it no longer declares gets no row at all. On the TOP-LEVEL stack it also exits `3` |
 
 "Unreadable" is decided per container against the shape that container holds.
@@ -762,7 +762,7 @@ The payload is a flat array of one record per target stack:
 - `NO_CHANGE` resources are omitted.
 - `children` and `outputChanges` are **always present** — empty on leaves and
   when the Outputs section is unchanged — so the key set is stable.
-- With `--recursive`, `children` is populated with the same record shape,
+- With `--recursive` (or `--fail-on=destructive`), `children` is populated with the same record shape,
   recursively.
 - `propertyChanges` and `attributeChanges` appear on a change entry only when
   non-empty.
@@ -1178,7 +1178,7 @@ conservative choice: a deploy skips an unchanged nested-stack row, and an
 the child either, so a reason on a nested node would report a refusal over a
 deploy that succeeds. **Every node this run REACHES still WARNS**, which is what
 makes that carve-out safe — under `--recursive`, that is each template-present
-child. Two paths reach no ORPHAN warning: a plain run visits no child at all, and a
+child. Two paths reach no ORPHAN warning: a plain run (without `--recursive` or `--fail-on=destructive`) visits no child at all, and a
 state-only child being DELETED runs no adoption preview, so neither orphan
 warning fires for it — that child still gets its container, `properties` and
 `outputs` warnings, and its own `cdkd destroy` refuses the row. For a resource

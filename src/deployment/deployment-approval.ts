@@ -26,9 +26,10 @@ const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
  *   engine to ask.
  *
  * A nested child asks from inside its parent row's provider call, so the row's
- * deadline (and every one enclosing it) is paused while the question is open,
- * and a deadline that already expired refuses rather than provisioning after
- * the parent has failed.
+ * deadline (and every one enclosing it) is paused while the question is open.
+ * One that already expired before the question (the child's own load and diff
+ * outlived it) refuses without asking: the parent has failed, so a "yes"
+ * could only provision a child nothing will track.
  */
 export async function requireDeploymentApproval(args: {
   options: Pick<DeployEngineOptions, 'requireApproval' | 'approveDeployment'>;
@@ -61,6 +62,8 @@ export async function requireDeploymentApproval(args: {
 
   const count = (type: ResourceChange['changeType']): number =>
     changes.filter((c) => c.changeType === type).length;
+  // Already timed out: a "yes" could not take effect, so do not ask.
+  if (enclosingDeadlineExpired()) throw approvalAfterTimeout(args.stackName);
   let approved: boolean;
   try {
     approved = await whileEnclosingDeadlinesPaused(() =>
@@ -85,12 +88,13 @@ export async function requireDeploymentApproval(args: {
       )
     );
   }
-  if (enclosingDeadlineExpired()) {
-    throw markNonRetryable(
-      new CdkdError(
-        safeMsg`Deployment of stack ${args.stackName} was approved after its parent's nested-stack row timed out (--resource-timeout); nothing was changed.`,
-        'DEPLOY_APPROVAL_AFTER_TIMEOUT'
-      )
-    );
-  }
+}
+
+function approvalAfterTimeout(stackName: string): Error {
+  return markNonRetryable(
+    new CdkdError(
+      safeMsg`Deployment of stack ${stackName} was not started: its parent's nested-stack row already timed out (--resource-timeout). Nothing was changed.`,
+      'DEPLOY_APPROVAL_AFTER_TIMEOUT'
+    )
+  );
 }

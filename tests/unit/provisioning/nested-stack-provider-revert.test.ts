@@ -279,6 +279,23 @@ describe("NestedStackProvider hands the child the parent's producer regions (#41
     expect(options['inheritedProducerRegions']).toBe(getter);
   });
 
+  it('hands the child engine the run\'s --require-approval level and prompter, by reference', async () => {
+    const provider = new NestedStackProvider();
+    const ctx = context(true);
+    const approveDeployment = async () => true;
+    ctx.options = { requireApproval: 'any-change', approveDeployment };
+
+    await withNestedStackContext(ctx, () =>
+      provider.update('Child', ARN, 'AWS::CloudFormation::Stack', {}, {}, {})
+    );
+
+    const options = vi.mocked(DeployEngine).mock.calls.at(-1)![5] as Record<string, unknown>;
+    // A child that lost either asks nothing, and under any-change the parent
+    // leaves nested-stack updates to the child.
+    expect(options['requireApproval']).toBe('any-change');
+    expect(options['approveDeployment']).toBe(approveDeployment);
+  });
+
   it('CONTROL: an inherited top-level option never reaches the child: the spread site overwrites it', async () => {
     const provider = new NestedStackProvider();
     const ctx = context(true);

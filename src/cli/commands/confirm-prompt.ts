@@ -34,8 +34,9 @@ let promptQueue: Promise<unknown> = Promise.resolve();
 /**
  * Run an interactive prompt only after every earlier one has settled. Stacks
  * deploy concurrently and each can ask on the one stdin, where two open
- * questions would both take the next typed line. Every per-stack prompt that
- * can run during a deploy goes through this queue.
+ * questions would both take the next typed line. The per-stack deploy prompts
+ * (`--require-approval`, `--recreate-via-*`, the prefix migration) go through
+ * this queue; the asset-storage prompt runs once, before the stacks start.
  */
 export function serializePrompt<T>(ask: () => Promise<T>): Promise<T> {
   const asked = promptQueue.then(ask);
