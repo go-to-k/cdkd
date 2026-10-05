@@ -3282,8 +3282,12 @@ function collectMultiple(value: string, previous: string[] | undefined): string[
  * The empty secrets map the observed-capture redaction below passes. Shared
  * and module-level because `redactSecretsForState` only ever READS its map,
  * and because an empty one is not an oversight here but the POSITION-only
- * configuration the call site's note argues for — the same constant
- * `cdkd state refresh-observed` passes for the same reason.
+ * configuration the call site's note argues for. (`cdkd state
+ * refresh-observed` passes a per-record empty map instead, carrying a public
+ * ssm proof by identity, issue #2036. This capture needs none: a record whose
+ * `properties` still spell a public reference here was refused a baseline by
+ * the resolve walk's lost-opener arm, preserved selective-import records
+ * included, since that walk re-resolves every record in the stack.)
  */
 const NO_RECORDED_SECRETS: RecordedSecretValues = new Map();
 

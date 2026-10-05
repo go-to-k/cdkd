@@ -1238,17 +1238,26 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
       });
     });
 
-    it('builds the prover in the STACK region (a stack refreshed in another region)', async () => {
-      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-west-2' }]);
-      const loaded = makeState({
+    it('builds the prover, AND its evidence read, in the STACK region (another region)', async () => {
+      // A nested child, so the evidence thunk has an ancestor to read and the
+      // REGION it reads in is observable on the state backend.
+      const child = makeState({
         R: makeResource({ physicalId: 'r', resourceType: 'AWS::Lambda::Function' }),
       });
-      loaded.state.region = 'us-west-2';
-      mockGetState.mockResolvedValueOnce(loaded);
+      child.state.stackName = 'TestStack~Child';
+      child.state.region = 'us-west-2';
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack~Child', region: 'us-west-2' }]);
+      mockGetState.mockImplementation(async (name: string) =>
+        name === 'TestStack~Child' ? child : null
+      );
       mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
-      const { error } = await runRefresh(['TestStack']);
+      const { error } = await runRefresh(['TestStack~Child']);
       expect(error).toBeUndefined();
       expect(publicSsmProof.built.map((b) => b.region)).toEqual(['us-west-2']);
+      mockGetState.mockClear();
+      await publicSsmProof.built[0]!.loadEvidence();
+      expect(mockGetState.mock.calls).toEqual([['TestStack', 'us-west-2']]);
+      mockGetState.mockReset();
     });
 
     it('evidence that THROWS (a malformed read record) is INCOMPLETE, and the refresh still runs', async () => {
