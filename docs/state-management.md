@@ -203,7 +203,8 @@ the id means the resource was reverted, destroyed or replaced. Neither is a fail
 CREATE that carries a physical id, nor a failed replacement UPDATE whose physical
 id differs from its previous record's: both were recorded in state too. Removing a segment
 (a clean rollback's settle, `cdkd rollback`, a nested child's settled or
-orphaned segments, or a successful deploy whose journal delete failed) leaves the
+orphaned segments, a successful deploy whose journal delete failed, or one that
+keeps only the resources a failed CREATE made that it could not delete) leaves the
 ids of its completed ops on the nearest older
 segment (`supersededLogicalIds`, additive, no `journalVersion` bump), so the
 attempt a reverted adoption consumed does not count again. `cdkd import` writes the
