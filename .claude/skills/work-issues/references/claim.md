@@ -59,10 +59,13 @@ that list**: beside the fix and its unit test, the integ fixture §8-c will
 extend (`grep -rl '<type's last segment>' tests/integration/*/lib`) and, when a
 provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
 every comment, doc or rule the fix makes FALSE — stating the old invariant or
-calling the issue open (`grep -rnw '<issue digits>\|<key symbol>' src docs
-.claude/rules`, minus `docs/_generated`, each through §2's open-PR `files`
-query); a NEW SDK provider adds `.claude/rules/providers.md`'s "Adding a New
-SDK Provider" files, the fenced tables (`name-keys.ts`,
+calling the issue open (`grep -rnw '<issue digits>\|<key symbol>\|<each
+changed flag or cdkd subcommand>' src docs .claude/rules plugins`, minus
+`docs/_generated`, each through §2's open-PR `files` query; READ each hit's
+prose, as a stale sentence may name no symbol; a `plugins/**` edit adds
+check-docs' two `version` files); a NEW SDK provider adds
+`.claude/rules/providers.md`'s "Adding a New SDK Provider" files, the fenced
+tables (`name-keys.ts`,
 `reverse-replacement-name-holder.test.ts`, `docs/cli-drift.md`) and, for a new
 SDK client, `package.json` + `pnpm-lock.yaml` — a narrower list stops the lane
 mid-run to ask (go-to-k/cdkd#1160).
