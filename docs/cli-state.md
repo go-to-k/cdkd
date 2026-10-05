@@ -810,7 +810,8 @@ can hold a plain `{{resolve:ssm:...}}` reference inside a longer string, such as
 [import refused such baselines](import.md#the-drift-baseline-an-import-records)
 (state schema v10), written by an older cdkd, or edited by hand. A current
 deploy stores a public reference resolved, and a current import records no
-baseline for a record that still spells one.
+baseline for a record that still spells one — including a record a selective
+import carries over from existing state, which it re-resolves and refuses.
 A `String` or `StringList` parameter is public config, so the value AWS reports
 is the right baseline — when it is exactly the record's text with the
 parameter's current value in place. A `SecureString` is a secret, and the
