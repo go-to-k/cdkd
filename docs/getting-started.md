@@ -200,7 +200,11 @@ stored as its `{{resolve:...}}` expression. It mutates no AWS resource, but it
 is not read-only: a real run writes the stack's `state.json`, takes and releases
 the stack lock, and — for an export the stack owns whose indexed value has
 diverged from the expression now in state — patches the region-wide cross-stack
-exports index. `--dry-run` writes none of them. It also needs the CDK app,
+exports index. On a versioned state bucket it also DELETES the earlier object
+versions of each key it rewrites (and, with `--purge-history`, of every record
+it examines, bar the records it refuses), which needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion`;
+without them it warns and keeps them. `--dry-run` writes and deletes none of
+them. It also needs the CDK app,
 because only the template still carries the unresolved expression.
 
 ```bash

@@ -126,6 +126,7 @@ function harness(state: StackState) {
   const stateBackend = {
     getState: vi.fn().mockResolvedValue({ state, etag: 'etag-1' }),
     saveState,
+    purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
   };
   const lockManager = {
     acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),

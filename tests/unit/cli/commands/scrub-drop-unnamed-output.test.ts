@@ -130,6 +130,7 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
   let stateBackend: {
     getState: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
+    purgeNoncurrentVersions: ReturnType<typeof vi.fn>;
     listStacks: ReturnType<typeof vi.fn>;
   };
   let lockManager: {
@@ -148,6 +149,7 @@ describe('cdkd scrub - drops an output key the template cannot name (go-to-k/cdk
         return Promise.resolve(state ? { state: structuredClone(state), etag: 'etag-1' } : null);
       }),
       saveState: vi.fn().mockResolvedValue('etag-2'),
+      purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
       listStacks: vi
         .fn()
         .mockImplementation(() =>
@@ -644,6 +646,7 @@ describe('cdkd scrub - review round 4 (go-to-k/cdkd#4120)', () => {
   let stateBackend: {
     getState: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
+    purgeNoncurrentVersions: ReturnType<typeof vi.fn>;
     listStacks: ReturnType<typeof vi.fn>;
   };
   const lockManager = {
@@ -662,6 +665,7 @@ describe('cdkd scrub - review round 4 (go-to-k/cdkd#4120)', () => {
         return Promise.resolve(state ? { state: structuredClone(state), etag: 'etag-1' } : null);
       }),
       saveState: vi.fn().mockResolvedValue('etag-2'),
+      purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
       listStacks: vi.fn().mockImplementation(() =>
         Promise.resolve(
           [...states.keys()].map((k) => ({ stackName: k.split('|')[0]!, region: k.split('|')[1]! }))

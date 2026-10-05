@@ -45,6 +45,7 @@ const synthStacks = vi.hoisted(() => [] as unknown[]);
 const commandStateBackend = vi.hoisted(() => ({
   getState: vi.fn(),
   saveState: vi.fn().mockResolvedValue('etag-2'),
+  purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
   // The nested-record listing (go-to-k/cdkd#2252): no `<stack>~` records here.
   listStacks: vi.fn().mockResolvedValue([]),
 }));
@@ -424,6 +425,7 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
   let stateBackend: {
     getState: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
+    purgeNoncurrentVersions: ReturnType<typeof vi.fn>;
     listStacks: ReturnType<typeof vi.fn>;
   };
   let lockManager: {
@@ -443,6 +445,7 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     stateBackend = {
       getState: vi.fn(),
       saveState: vi.fn().mockResolvedValue('etag-2'),
+      purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
       // Read when a record has an undeclared output key to DROP
       // (go-to-k/cdkd#4120): no other stack reads it.
       listStacks: vi.fn().mockResolvedValue([]),
@@ -1018,10 +1021,11 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
     // And it must not claim to have removed anything. The needle tracks the
     // summary's actual wording (issue #2624 replaced "The plaintext is no
-    // longer stored there" with a versioning-bounded sentence) — a needle no
-    // code path can emit makes this assertion pass for free.
+    // longer stored there", and later "The CURRENT state.json ...", with the
+    // purge-bounded sentence below) — a needle no code path can emit makes
+    // this assertion pass for free.
     expect(summary).toContain('No state record was rewritten');
-    expect(summary).not.toContain('The CURRENT state.json no longer holds the plaintext');
+    expect(summary).not.toContain('The rewritten state.json no longer holds the plaintext');
   });
 
   it('a state with NO outputs field is still scrubbed rather than throwing', async () => {

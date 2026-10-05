@@ -128,7 +128,11 @@ function makePreviousGenerationState(): StackState {
 }
 
 describe('cdkd scrub outputs: no positional array descent across generations (issue #2099)', () => {
-  let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
+  let stateBackend: {
+    getState: ReturnType<typeof vi.fn>;
+    saveState: ReturnType<typeof vi.fn>;
+    purgeNoncurrentVersions: ReturnType<typeof vi.fn>;
+  };
   let lockManager: {
     acquireLockWithRetry: ReturnType<typeof vi.fn>;
     releaseLock: ReturnType<typeof vi.fn>;
@@ -141,6 +145,7 @@ describe('cdkd scrub outputs: no positional array descent across generations (is
         .fn()
         .mockResolvedValue({ state: makePreviousGenerationState(), etag: 'etag-1' }),
       saveState: vi.fn().mockResolvedValue('etag-2'),
+      purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
     };
     lockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),

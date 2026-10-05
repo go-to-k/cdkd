@@ -7,15 +7,14 @@ paths:
 
 # Noncurrent-version purge and the replication gap
 
-Versioning is ON for the state bucket, so a plain `DeleteObject` writes a delete
-marker and prior versions stay readable by id;
-`s3-noncurrent-version-purge.ts` makes "deleted" mean unreadable. **`state.json`
-is deliberately NOT purged** — its noncurrent versions ARE the recovery
-capability.
+Versioning is ON for the state bucket, so `DeleteObject` leaves prior versions
+readable by id; `s3-noncurrent-version-purge.ts` makes "deleted" mean
+unreadable. **Only `cdkd scrub` purges `state.json`** (#2624): keys it may
+have written, or under `--purge-history` all it examined bar refused ones. Its
+noncurrent versions ARE the recovery capability.
 
-**S3 never replicates a delete naming a `VersionId`**, so with CRR or SRR the
-purge is SOURCE-ONLY and the replica keeps every body. cdkd cannot remove those
-copies, so `s3-replication-purge-gap.ts` reports it
+**S3 never replicates a delete naming a `VersionId`**: with CRR or SRR the
+purge is SOURCE-ONLY, which `s3-replication-purge-gap.ts` reports
 ([#2447](https://github.com/go-to-k/cdkd/issues/2447)); its JSDoc argues each:
 
 1. **Scoped to keys a BODY was really removed for, or could not be settled.**
@@ -26,7 +25,7 @@ copies, so `s3-replication-purge-gap.ts` reports it
    warning dedupes per (bucket, description, DESTINATIONS) and claims its slot
    after emitting.
 3. **Two arms are ANSWERS, not failures, both silent**:
-   `ReplicationConfigurationNotFoundError` (delivered as an ERROR) and
+   `ReplicationConfigurationNotFoundError` (an ERROR) and
    `AccessDenied` on `s3:GetReplicationConfiguration`. Pin by CACHING; asserting
    silence cannot tell an answer from an unhandled shape.
 4. **A credential-shaped 403 is TRANSIENT**, checked BEFORE the blanket 403
@@ -35,4 +34,4 @@ copies, so `s3-replication-purge-gap.ts` reports it
    become whole-bucket prefixes, a missing `Status` is enabled, `Disabled` is
    KEPT.
 6. **Nothing here may reject.** A rejected cached promise re-throws to every
-   later caller and the outer catch swallows it: a dead detector.
+   later caller, swallowed by the outer catch: a dead detector.

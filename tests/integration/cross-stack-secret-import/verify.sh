@@ -890,7 +890,9 @@ assert_no_plaintext_in_versions() { # <prefix> <description>
     fi
     # -qF so a match is never echoed: this is the site that exists to DETECT a
     # leak, and printing it here would disclose at the precise moment it failed.
-    if printf '%s' "${body}" | grep -qF "${EXPECTED_PLAINTEXT}"; then
+    # A here-string, not `printf | grep -q`: under `pipefail` grep's early exit
+    # can SIGPIPE the printf and turn a match into a non-match.
+    if grep -qF -- "${EXPECTED_PLAINTEXT}" <<< "${body}"; then
       fail "${desc}: s3://${STATE_BUCKET}/${key} version ${vid} STILL carries this run's plaintext"
     fi
     scanned=$((scanned + 1))
@@ -906,6 +908,33 @@ assert_no_plaintext_in_versions() { # <prefix> <description>
 # record came back to it, so a change in how cdkd spells the reference cannot
 # leave the seed a silent no-op while the assertions still read as meaningful.
 CONSUMER_EXPRESSION="${STATE_PARAM_VALUE}"
+
+echo ""
+# How many VERSIONS of exactly <key> carry <needle> (issue #2624: scrub purges
+# the earlier versions of what it rewrites, so this must be 0 straight after a
+# scrub, BEFORE the fixture's own purge). Fails the run on any unreadable
+# listing or body, so 0 is never "could not tell"; never echoes a match.
+count_key_versions_holding() { # <key> <needle>
+  local target="$1" needle="$2" rows key vid body n=0 scanned=0
+  if ! rows="$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" \
+      --prefix "${target}" --query 'Versions[].[Key,VersionId]' --output text 2>&1)"; then
+    fail "could not list object versions of s3://${STATE_BUCKET}/${target} (${rows})"
+  fi
+  while IFS=$'\t' read -r key vid || [ -n "${key}" ]; do
+    [ "${key}" = "${target}" ] || continue
+    [ -n "${vid}" ] && [ "${vid}" != "None" ] || continue
+    if ! body="$(aws s3api get-object --bucket "${STATE_BUCKET}" --key "${key}" \
+        --version-id "${vid}" /dev/stdout < /dev/null 2>&1)"; then
+      fail "could not read s3://${STATE_BUCKET}/${key} version ${vid} - undetermined, which certifies nothing"
+    fi
+    if grep -qF -- "${needle}" <<< "${body}"; then n=$((n + 1)); fi
+    scanned=$((scanned + 1))
+  done <<< "${rows}"
+  if [ "${scanned}" -eq 0 ]; then
+    fail "scanned ZERO object versions of s3://${STATE_BUCKET}/${target} - the key names nothing, so a zero count here would be about the wrong key"
+  fi
+  printf '%s\n' "${n}"
+}
 
 echo ""
 echo "==> Step 6 (assertion 5 - NEGATIVE CONTROL): scrubbing the PRODUCER neither refuses nor claims a scrub"
@@ -1080,6 +1109,25 @@ assert_no_plaintext "the consumer's persisted state file after scrub" "${SCRUBBE
 # `noncurrent` is load-bearing: the consumer is still DEPLOYED and its CURRENT
 # state.json is what the teardown below destroys from. Sweeping `all` here would
 # make step 11's destroy skip the stack entirely and orphan the SSM parameter.
+# Issue #2624: scrub ITSELF purged the seeded version of the key it rewrote.
+# Asserted BEFORE the fixture's own purge below, which would otherwise hide
+# whether scrub did it. Scoped to the state KEY: the rest of the prefix is not
+# scrub's to purge.
+# PREMISE: on an unversioned bucket both counts below are 0 with or without
+# the fix, so neither could tell a binary that purges from one that does not.
+STATE_BUCKET_VERSIONING=$(aws s3api get-bucket-versioning --bucket "${STATE_BUCKET}" \
+  --query 'Status' --output text) || fail "could not read the state bucket's versioning status"
+if [ "${STATE_BUCKET_VERSIONING}" != "Enabled" ]; then
+  fail "premise: the state bucket is not versioned (Status=${STATE_BUCKET_VERSIONING}) - scrub's purge is unobservable here"
+fi
+SEEDED_LEFT=$(count_key_versions_holding "${CONSUMER_STATE_KEY}" "${EXPECTED_PLAINTEXT}") \
+  || fail "could not count the versions of ${CONSUMER_STATE_KEY} - see the error above"
+case "${SEEDED_LEFT}" in ""|*[!0-9]*) fail "version count for ${CONSUMER_STATE_KEY} is not a number" ;; esac
+if [ "${SEEDED_LEFT}" -ne 0 ]; then
+  fail "${SEEDED_LEFT} version(s) of ${CONSUMER_STATE_KEY} still carry the seeded plaintext after 'cdkd scrub' - scrub did not purge the history of the record it rewrote (#2624)"
+fi
+pass "scrub purged every version of ${CONSUMER_STATE_KEY} that carried the seeded plaintext (#2624)"
+
 s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX}" noncurrent || true
 assert_no_plaintext_in_versions "${CONSUMER_STATE_PREFIX}" \
   "the consumer's surviving state-object versions after scrub"
@@ -2011,6 +2059,21 @@ if [ "${INDEX_AFTER_SCRUB_KEYS}" != "${INDEX_PRE_SEED_KEYS}" ]; then
 fi
 assert_no_plaintext "the exports index after the repair" "${INDEX_AFTER_SCRUB_RAW}"
 pass "11c-ii: the owned entry converged, the foreign entry is untouched, and membership is unchanged"
+
+# Issue #2624: the seeded legacy value survived only in the index's HISTORY
+# once the entry converged; scrub purges the index's noncurrent versions once
+# per region it wrote. Before any fixture purge of the index key.
+INDEX_SEED_LEFT=$(count_key_versions_holding "${INDEX_KEY}" "${INDEX_SEED_OWNED}") \
+  || fail "could not count the versions of ${INDEX_KEY} - see the error above"
+case "${INDEX_SEED_LEFT}" in ""|*[!0-9]*) fail "version count for ${INDEX_KEY} is not a number" ;; esac
+if [ "${INDEX_SEED_LEFT}" -ne 0 ]; then
+  fail "${INDEX_SEED_LEFT} version(s) of ${INDEX_KEY} still carry the seeded legacy value after the repair - scrub did not purge the exports index's history (#2624)"
+fi
+if ! printf '%s' "${INDEX_SCRUB_OUT}" | grep -qF "the index's earlier versions were purged, unless a warning above says otherwise"; then
+  diag "${INDEX_SCRUB_OUT}"
+  fail "'cdkd scrub ${PRODUCER}' did not claim the exports index purge after converging ${EXPORT_NAME}"
+fi
+pass "11c-ii(b): no version of the exports index still carries the seeded legacy value (#2624)"
 
 # --- 11c-iii: the repair is IDEMPOTENT -------------------------------------
 # What makes a partial apply recoverable: the rule reads `state.outputs`, which

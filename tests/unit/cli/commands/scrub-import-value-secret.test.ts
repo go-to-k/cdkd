@@ -213,6 +213,7 @@ function makeProducerState(outputs: Record<string, unknown>): StackState {
 let stateBackend: {
   getState: ReturnType<typeof vi.fn>;
   saveState: ReturnType<typeof vi.fn>;
+  purgeNoncurrentVersions: ReturnType<typeof vi.fn>;
   listStacks: ReturnType<typeof vi.fn>;
 };
 let lockManager: {
@@ -254,6 +255,7 @@ beforeEach(() => {
   stateBackend = {
     getState: vi.fn(),
     saveState: vi.fn().mockResolvedValue('etag-2'),
+    purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
     listStacks: vi.fn().mockResolvedValue([]),
   };
   lockManager = {

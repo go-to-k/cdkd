@@ -40,8 +40,10 @@ vi.mock('../../../../src/utils/logger.js', () => ({
 
 const synthStacks = vi.hoisted(() => [] as unknown[]);
 const commandStateBackend = vi.hoisted(() => ({
+  prefix: 'cdkd',
   getState: vi.fn(),
   saveState: vi.fn().mockResolvedValue('etag-2'),
+  purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
   // The nested-record listing (go-to-k/cdkd#2252): no `<stack>~` records here.
   listStacks: vi.fn().mockResolvedValue([]),
 }));
@@ -288,6 +290,7 @@ beforeEach(() => {
   indexFake.ctorRegions.length = 0;
   indexFake.ctorArgs.length = 0;
   commandStateBackend.saveState.mockResolvedValue('etag-2');
+  commandStateBackend.purgeNoncurrentVersions.mockReset().mockResolvedValue(undefined);
 });
 
 describe('planExportIndexRepair — the convergence rule, both directions', () => {
@@ -602,10 +605,9 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     // X (issue #2667 review).
     expect(out).not.toContain('Converged exports index entry');
     expect(out).not.toContain('converged to the producer');
-    // ...and the versioning sentence that rides on that claim, which is the
-    // part that actually misleads: it describes a noncurrent version created
-    // by a PUT that never happened.
-    expect(out).not.toContain('the pre-repair body survives');
+    // ...and the purge sentence that rides on that claim (go-to-k/cdkd#2624):
+    // it describes versions superseded by a PUT that never happened.
+    expect(out).not.toContain("the index's earlier versions were purged");
     // POSITIVE markers, so the assertions above cannot be satisfied by a run
     // that logged nothing at all: the entry is still REPORTED, as the thing
     // that was not written.
@@ -1636,5 +1638,183 @@ describe('cdkd scrub - dropping an undeclared output key, end to end (go-to-k/cd
     // Kept, and the record is otherwise clean, so nothing is written.
     expect(commandStateBackend.saveState).not.toHaveBeenCalled();
     expect(logLines()).not.toContain('No plaintext secrets found in MyStack');
+  });
+});
+
+/**
+ * go-to-k/cdkd#2624: each `patchEntry` PUT supersedes the index body that held
+ * the plaintext, so a real run purges the index key's noncurrent versions, once
+ * per region it wrote. The index is a derived view with no recovery value of
+ * its own. These cases read the KEY the command purges, so a run that purged
+ * nothing, or purged the wrong object, fails here.
+ */
+describe('cdkd scrub purges the exports index versions it superseded (go-to-k/cdkd#2624)', () => {
+  const INDEX_DESCRIPTION = expect.stringContaining('exports index');
+  const indexPurges = (): unknown[][] =>
+    commandStateBackend.purgeNoncurrentVersions.mock.calls.filter((c) =>
+      (c[0] as string[]).some((k) => k.includes('/_index/'))
+    );
+
+  it('purges the region index key ONCE after a real run converged an entry', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', false),
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['MyStack:Db', entry(SECRET_PLAINTEXT, 'MyStack', 'us-east-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions());
+
+    expect(indexPurges()).toEqual([
+      [['cdkd/_index/us-east-1/exports.json'], { objectDescription: INDEX_DESCRIPTION }],
+    ]);
+    // The claim rides on the LANDED-write count, and replaces the old one.
+    expect(logLines()).toContain(
+      "converged to the producer's state.outputs value, and on a VERSIONED bucket the index's earlier versions were purged, unless a warning above says otherwise."
+    );
+    expect(logLines()).not.toContain('the pre-repair body survives');
+  });
+
+  it('the index purge warns ABOVE the summary line', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', false),
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['MyStack:Db', entry(SECRET_PLAINTEXT, 'MyStack', 'us-east-1')]]) })
+    );
+    commandStateBackend.purgeNoncurrentVersions.mockImplementation((keys: string[]) => {
+      if (keys[0]!.includes('/_index/')) commandLogger.warn('INDEX PURGE WARNING');
+      return Promise.resolve();
+    });
+
+    await scrubCommand([], commandOptions());
+
+    const warnAt = commandLogger.warn.mock.invocationCallOrder[
+      commandLogger.warn.mock.calls.findIndex((c) => c[0] === 'INDEX PURGE WARNING')
+    ]!;
+    const doneAt = commandLogger.info.mock.invocationCallOrder[
+      commandLogger.info.mock.calls.findIndex((c) => String(c[0]).includes('Done: scrubbed'))
+    ]!;
+    expect(warnAt).toBeDefined();
+    expect(doneAt).toBeDefined();
+    expect(warnAt).toBeLessThan(doneAt);
+  });
+
+  it('purges after a FAILED index write too, since the attempt may have superseded a body', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', false),
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({
+        entries: new Map([['MyStack:Db', entry(SECRET_PLAINTEXT, 'MyStack', 'us-east-1')]]),
+        patchOk: false,
+      })
+    );
+
+    await expect(scrubCommand([], commandOptions())).rejects.toMatchObject({
+      code: 'SCRUB_EXPORT_INDEX_INCOMPLETE',
+    });
+    expect(indexPurges()).toHaveLength(1);
+    // Purged on the ATTEMPT, but no write landed, so nothing claims one.
+    expect(logLines()).toContain('could NOT be written');
+    expect(logLines()).not.toContain("the index's earlier versions were purged");
+  });
+
+  it('purges each written region once, and never a region it did not write', async () => {
+    synthStacks.push(
+      makeStackInfo('EastStack'),
+      makeStackInfo('EastTwo'),
+      makeStackInfo('WestStack', 'eu-west-1')
+    );
+    commandStateBackend.getState.mockImplementation((name: string, region: string) =>
+      Promise.resolve({ state: makeState(name, region, false), etag: 'etag-1' })
+    );
+    indexFake.regions.set(
+      'us-east-1',
+      slot({
+        entries: new Map([
+          ['EastStack:Db', entry(SECRET_PLAINTEXT, 'EastStack', 'us-east-1')],
+          ['EastTwo:Db', entry(SECRET_PLAINTEXT, 'EastTwo', 'us-east-1')],
+        ]),
+      })
+    );
+    // West's index is already converged: nothing is written there.
+    indexFake.regions.set(
+      'eu-west-1',
+      slot({ entries: new Map([['WestStack:Db', entry(SECRET_EXPR, 'WestStack', 'eu-west-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions());
+
+    expect(indexPurges()).toEqual([
+      [['cdkd/_index/us-east-1/exports.json'], { objectDescription: INDEX_DESCRIPTION }],
+    ]);
+  });
+
+  it('--dry-run purges nothing, index or state', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', false),
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['MyStack:Db', entry(SECRET_PLAINTEXT, 'MyStack', 'us-east-1')]]) })
+    );
+
+    await expect(
+      scrubCommand([], commandOptions({ dryRun: true, fail: true }))
+    ).rejects.toBeInstanceOf(ScrubNeededError);
+    expect(commandStateBackend.purgeNoncurrentVersions).not.toHaveBeenCalled();
+  });
+
+  it('--purge-history: the "No state record was rewritten." line carries the history note', async () => {
+    // State already clean, index still plaintext: a run that writes the index
+    // only, so the summary takes the no-record-rewritten branch.
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', true),
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['MyStack:Db', entry(SECRET_PLAINTEXT, 'MyStack', 'us-east-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions({ purgeHistory: true }));
+
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+    expect(logLines()).toContain(
+      'No state record was rewritten. --purge-history: on a VERSIONED state bucket, the earlier state.json versions of 1 examined record(s)'
+    );
+  });
+
+  it('an index already converged is not purged, and the summary does not claim it', async () => {
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', false),
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['MyStack:Db', entry(SECRET_EXPR, 'MyStack', 'us-east-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions());
+
+    // state.json WAS rewritten, so its own purge ran; the index's did not.
+    expect(commandStateBackend.saveState).toHaveBeenCalled();
+    expect(indexPurges()).toEqual([]);
+    expect(logLines()).toContain('were purged, unless a warning above says otherwise');
+    expect(logLines()).not.toContain("the index's earlier versions were purged");
   });
 });

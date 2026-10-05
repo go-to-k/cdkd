@@ -31,6 +31,7 @@ cdkd scrub MyStack --verbose              # explain a stack that reports clean
 | `--all` | off | Scrub every stack in the synthesized app, Stage stacks included. |
 | `--dry-run` | off | Report what would be scrubbed without writing state. |
 | `--fail` | off | Exit non-zero when plaintext is found. With `--dry-run`, any plaintext at all; on a real run, a leak scrub cannot rewrite. |
+| `--purge-history` | off | Also purge the earlier S3 versions of every `state.json` the run examined, not only the ones it rewrites. Drops those records' state-recovery history; a record scrub refuses is never purged; cannot be combined with `--dry-run`. See [What a real run removes](#what-a-real-run-removes-and-what-it-cannot). |
 | `--stack <name>` | — | A single stack name, as an alternative to the positional argument. |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a pre-synthesized cloud assembly directory. |
 | `--output <path>` | `cdk.out` | Synthesis output directory. |
@@ -78,9 +79,15 @@ Two modes, both useful long after any one-time cleanup:
 A normal `cdkd deploy` scrubs state this way as a side effect, so a green gate
 is the expected steady state rather than something you have to maintain. What
 that first deploy under a fixed binary does is SUPERSEDE the legacy plaintext
-`state.json`, not erase it — the earlier version stays readable — so a green
-gate means the CURRENT object is clean and nothing more. See
-[Scrubbing supersedes the plaintext, it does not erase it](#scrubbing-supersedes-the-plaintext-it-does-not-erase-it).
+`state.json`, not erase it: on a versioned state bucket the earlier versions
+may still hold the plaintext, readable with `GetObject` and a `VersionId`, and
+a deploy never purges them, because they are also the state-recovery history.
+So a green gate means the CURRENT object is clean and nothing more. To remove
+those earlier versions, run `cdkd scrub --purge-history` while the stack is
+still deployed: a plain `cdkd scrub`
+purges a key's history only when it rewrites that key, and a record a deploy
+already rewrote has nothing left to rewrite. See
+[What a real run removes, and what it cannot](#what-a-real-run-removes-and-what-it-cannot).
 
 ## How secrets stay out of state
 
@@ -109,8 +116,8 @@ command never writes one.
 
 That is a statement about what cdkd WRITES from here on. It says nothing about
 a `state.json` version an older binary already wrote: on a versioned state
-bucket the next write supersedes such a version rather than removing it — see
-[Scrubbing supersedes the plaintext, it does not erase it](#scrubbing-supersedes-the-plaintext-it-does-not-erase-it).
+bucket the next deploy supersedes such a version rather than removing it — see
+[What a real run removes, and what it cannot](#what-a-real-run-removes-and-what-it-cannot).
 
 This matches CloudFormation, which keeps the reference in the template and
 resolves it service-side. Two consequences follow: a rotated secret behind an
@@ -159,7 +166,9 @@ bucket: each targeted stack's `state.json`, under that stack's lock, and then
 the entries that stack publishes in the shared
 [exports index](#the-exports-index) — as a separate step, after the lock is
 released, because the lock guards one stack's `state.json` while `exports.json`
-is a region-wide object with its own optimistic lock.
+is a region-wide object with its own optimistic lock. On a versioned state
+bucket it then purges the earlier versions of each key it rewrote — see
+[What a real run removes, and what it cannot](#what-a-real-run-removes-and-what-it-cannot).
 
 ## Multi-stack runs (`--all`)
 
@@ -242,10 +251,10 @@ that is cyclic or points outside the assembly is refused for the whole stack
 before anything is written, with `SCRUB_NESTED_TEMPLATE_TREE_MALFORMED`; any nested
 record under that stack is refused as well.
 
-Rewriting a child's record has the same bound as any other: on a versioned
-state bucket the pre-scrub body survives as a noncurrent version of the
-child's key — see
-[Scrubbing supersedes the plaintext, it does not erase it](#scrubbing-supersedes-the-plaintext-it-does-not-erase-it).
+Rewriting a child's record, or the parent's row, is purged like any other: on
+a versioned state bucket the earlier versions of each key scrub rewrote are
+deleted — see
+[What a real run removes, and what it cannot](#what-a-real-run-removes-and-what-it-cannot).
 
 ## Rotate the secret — and scrub first
 
@@ -262,7 +271,7 @@ reported while your template still reads a secret-bearing name of its shape (see
 rotation invalidates the stale value; a redeploy then rewrites the record with
 the expression.
 
-### Scrubbing supersedes the plaintext, it does not erase it
+### What a real run removes, and what it cannot
 
 `scrub` rewrites `state.json` and the exports index, never a stack's
 `rollback-journal.json`, which holds copies of state records. A nested stack
@@ -273,27 +282,63 @@ succeeds, so a value a scrub repairs can survive there until then.
 turns **versioning** on for the state bucket (it skips that step for a bucket
 that already existed, unless you pass `--force`, so confirm with
 `aws s3api get-bucket-versioning --bucket <state-bucket>` if you supplied your
-own). Where versioning is on, the rewrite makes the
-pre-scrub body a NONCURRENT VERSION of the same key rather than removing it,
-and that version stays readable — plaintext and all — to anyone who can
-`GetObject` the key with a `VersionId`. A normal `cdkd deploy` persists state
-the same way, so the implicit scrub above has exactly the same property.
+own). Where versioning is on, the rewrite makes the pre-scrub body a
+NONCURRENT VERSION of the same key, readable — plaintext and all — to anyone
+who can `GetObject` the key with a `VersionId`.
 
-The same holds for the shared exports index at
-`{state-prefix}/_index/{region}/exports.json`. `cdkd scrub` rewrites an entry
-there with a `PutObject` too, so on a versioned bucket the pre-repair body
-becomes a noncurrent version of that key and stays readable with `GetObject`
-and a `VersionId`. The listing and delete commands below apply to it with its
-own key substituted — with the caveat that this key is SHARED by every
-cdkd-managed stack in the region, so its history is not one stack's to reason
-about.
+So after each `state.json` it rewrites, a real `cdkd scrub` **purges that
+key's noncurrent versions**, keeping only the current object. It does
+the same for the shared exports index at
+`{state-prefix}/_index/{region}/exports.json`, once per region whose entries it
+rewrote. That object is shared by every cdkd-managed stack in the region, so
+its purged history includes other stacks' earlier entries; nothing is lost by
+that, because the index is a derived view that cdkd rebuilds from the state
+records. The index is purged after any write scrub attempted on it, failed or
+not, because its history has no recovery value. A `state.json` is purged when
+its write succeeded or may have landed: a server error other than a throttle, a
+timeout, a dropped connection, or any failure the SDK reached after retrying
+(an earlier attempt may have committed). A definite refusal on the FIRST
+attempt, such as a precondition failure or a denied `PutObject`, wrote nothing,
+so that record keeps its history. On an unversioned bucket there is nothing to
+purge. A record still in the pre-region
+layout (`<state-prefix>/<stack>/state.json`) is migrated by the rewrite, as
+any other state write migrates it: written to the region-scoped key, the old
+key deleted, and the old key's earlier versions purged too. If that delete
+fails, the old key still holds the pre-scrub record as its current object, so
+the stack fails with `SCRUB_LEGACY_STATE_KEY_SURVIVES` rather than being
+reported scrubbed.
 
-`cdkd scrub` does **not** purge those versions, and its summary line says so
-rather than claiming the plaintext is gone. This is why the rotation advice
-above is the load-bearing remedy and not a belt-and-braces extra: rotation is
-what makes a copy cdkd cannot reach harmless.
+What the purge does NOT reach, so what `Done: scrubbed ...` does not claim:
 
-To see whether any survive, and to remove them yourself:
+- **A key `scrub` did not rewrite, unless you pass `--purge-history`.** A
+  record that is already clean — for example because a `cdkd deploy` under a
+  fixed binary rewrote it first — is not written, so by default its earlier
+  versions are kept as its recovery history. `--purge-history` purges them for
+  every record the run examined: each target stack and every nested stack under
+  it that has a readable record. A stack with NO current record — destroyed,
+  orphaned with `cdkd state orphan`, or no longer in the synthesized app — is
+  not examined, so its leftover versions are out of reach; use the commands
+  below for those. It does not widen the exports-index purge,
+  which stays limited to regions whose entries the run rewrote. A record scrub
+  refuses before writing it is never purged, flag or not.
+- **A purge that failed.** It needs `s3:ListBucketVersions` and
+  `s3:DeleteObjectVersion` on the state bucket. Without them `scrub` still
+  succeeds, and a warning above the summary names the key whose versions
+  survive. The summary says the versions were purged "unless a warning above
+  says otherwise" for this reason.
+- **A replicated bucket.** S3 never replicates a version-id delete, so the
+  destination keeps its own copies. `scrub` warns when replication covers the
+  key, but only when it can read the bucket's replication configuration
+  (`s3:GetReplicationConfiguration`); without that grant, or when that read
+  fails, it cannot tell and says nothing — see
+  [S3 replication defeats the purge](state-management.md#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you).
+- **`--dry-run`**, which writes and purges nothing, and refuses
+  `--purge-history`.
+
+Rotation is therefore still the load-bearing remedy, not a belt-and-braces
+extra: it is what makes a copy cdkd cannot reach harmless.
+
+To see whether any versions survive, and to remove them yourself:
 
 ```bash
 # List the noncurrent versions of one stack's state key. `cdkd` is the default
@@ -309,13 +354,12 @@ aws s3api delete-object --bucket <state-bucket> \
   --key "<state-prefix>/<stack>/<region>/state.json" --version-id <VersionId>
 ```
 
+The same commands apply to the exports index with its own key substituted.
 Think before running the second command: `state.json`'s noncurrent versions are
 also the **state-recovery capability** S3 versioning is enabled for, which is
-why cdkd leaves the state key's history alone everywhere (see
-[State Management](state-management.md#s3-storage-structure)). If the bucket is
-replicated, the destination keeps its own copies and no delete here reaches
-them — see
-[S3 replication defeats the purge](state-management.md#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you).
+why a deploy never purges them, `cdkd scrub` purges only what it rewrites, and
+purging the rest takes the explicit `--purge-history` (see
+[State Management](state-management.md#s3-storage-structure)).
 
 ## Example output
 
@@ -325,12 +369,11 @@ A stack that held plaintext:
 $ cdkd scrub MyStack
 Scrubbed 3 resource record(s) in MyStack
 
-Done: scrubbed 1 stack(s). The CURRENT state.json no longer holds the plaintext, but
-the state bucket is VERSIONED: the pre-scrub body survives as a noncurrent version,
-readable with GetObject and a VersionId, and scrub does not purge it. So a value that
-was ever persisted must be treated as compromised — ROTATE it in Secrets Manager
-(scrub matches the current value, so scrub BEFORE rotating); rotation is what makes
-the surviving versions harmless.
+Done: scrubbed 1 stack(s). The rewritten state.json no longer holds the plaintext, and
+on a VERSIONED state bucket its earlier versions were purged, unless a warning above
+says otherwise. A value that was ever persisted must still be treated as compromised —
+ROTATE it in Secrets Manager (scrub matches the current value, so scrub BEFORE
+rotating); rotation is what makes any copy cdkd cannot reach harmless.
 ```
 
 A CI gate that fails:
@@ -554,6 +597,8 @@ These error codes stop the run rather than reporting it clean. All exit `2`.
 | `SCRUB_NESTED_TEMPLATE_TREE_MALFORMED` | The nested template tree under a stack is cyclic, too deep or too large, or names an absolute or escaping `aws:asset:path` — a hand-modified or non-CDK assembly. | Re-synthesize the app with CDK. Nothing in that stack or under it was written; any nested record under it is refused too. |
 | `SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED` | scrub had an undeclared output key to [drop](#a-key-the-template-can-no-longer-name-is-dropped), and the state bucket's listing or another stack's record could not be read to confirm nothing reads it. Raised after the summary, with or without `--fail`. | Fix the read (usually an S3 permission, or a damaged record the warning names) and re-run. The stack was still scrubbed for everything else; no key was dropped. |
 | `SCRUB_STAGE_LOAD_FAILED` | A CDK Stage's own cloud assembly could not be read, so the app's stacks cannot all be examined. Raised before any stack is selected or any state is read, `--dry-run` included. | Re-synthesize the app so the Stage is written, or point `--app` at a complete cloud assembly. |
+| `SCRUB_LEGACY_STATE_KEY_SURVIVES` | A record still in the pre-region layout was rewritten to the region-scoped key, but its old key could not be deleted and still holds the pre-scrub record as its current object. | Delete the old key (`<state-prefix>/<stack>/state.json`) by hand, then purge its earlier versions with the commands under [What a real run removes](#what-a-real-run-removes-and-what-it-cannot). A re-run does not detect it again: the stack's record now lives at the region-scoped key, which every later read prefers. |
+| `SCRUB_LEGACY_STATE_KEY_UNVERIFIED` | A record still in the pre-region layout was rewritten to the region-scoped key, but reading its old key back to confirm the delete failed (a throttle, a 5xx, a denied read). | Check the old key (`<state-prefix>/<stack>/state.json`) yourself; if it exists, delete it and purge its earlier versions as for `SCRUB_LEGACY_STATE_KEY_SURVIVES`. A re-run does not check it again. |
 | `SCRUB_EXPORT_INDEX_INCOMPLETE` | `state.json` was rewritten and an entry of the [exports index](#the-exports-index) was not — a refused write, or a region whose index could not be read. | Clear the cause (usually an S3 permission on `{state-prefix}/_index/...`) and re-run. The re-run writes only the entries still differing. |
 
 Everything else the per-item best-effort handler swallows is unchanged: a
@@ -1025,9 +1070,10 @@ stack resolves its cross-stack reference once and the resource never changes
 again, so no later deploy would rewrite it.
 
 As everywhere else in this command, repairing a record does not un-expose a
-value that was already stored in plaintext — and the state bucket is
-versioned, so the pre-repair body remains readable in prior object versions
-until those are swept. Rotate the secret.
+value that was already stored in plaintext. A real run purges the rewritten
+record's earlier versions, within the limits listed in
+[What a real run removes, and what it cannot](#what-a-real-run-removes-and-what-it-cannot).
+Rotate the secret.
 
 ### What scrub deliberately does not do here
 
@@ -1134,17 +1180,19 @@ do not affect the exit code, with one exception noted under the second.
   holds is rewritten; no name is added and none is removed. `scrub` takes no
   `--parameters` and reads a state record whose template may not be the one
   that produced it, so any export SET it derived would be a guess.
-- **It needs no additional IAM permission.** The index key sits under the same
-  prefix as the state records, and `cdkd deploy` already writes that exact
-  object, so any principal that can deploy the stack can write it. A policy
-  hand-narrowed to `{state-prefix}/{stackName}/*` breaks here — and already
-  breaks cross-stack deploys for the same reason.
+- **Its write needs no additional IAM permission.** The index key sits under
+  the same prefix as the state records, and `cdkd deploy` already writes that
+  exact object, so any principal that can deploy the stack can write it. A
+  policy hand-narrowed to `{state-prefix}/{stackName}/*` breaks here — and
+  already breaks cross-stack deploys for the same reason. Purging the index's
+  earlier versions needs the same two version grants as the `state.json`
+  purge, and warns rather than fails without them.
 - **It does not widen `--all`.** A stack outside the synthesized app has no
   template in reach, so scrub could not learn which of its values are secrets
   even if the entry were targeted.
 
-An entry rewritten here is superseded, not erased — see
-[Scrubbing supersedes the plaintext, it does not erase it](#scrubbing-supersedes-the-plaintext-it-does-not-erase-it),
+A region whose index was rewritten here has its earlier versions purged — see
+[What a real run removes, and what it cannot](#what-a-real-run-removes-and-what-it-cannot),
 which covers `exports.json` as well as `state.json`.
 
 ## Limitations

@@ -1088,7 +1088,11 @@ export class S3StateBackend {
    * custom-resource response sweep, `cdkd bootstrap destroy`'s marker, and the
    * deployment-event store's prunes, issue
    * [#2624](https://github.com/go-to-k/cdkd/issues/2624)), as does
-   * {@link deleteRollbackJournal}, which deletes through its own path.
+   * {@link deleteRollbackJournal}, which deletes through its own path. So does
+   * `cdkd scrub` after a PUT rather than a delete: the `state.json` it rewrites
+   * (and, under `--purge-history`, every record it examines and does not
+   * refuse) and the exports index of each region it wrote. No other writer
+   * purges `state.json`.
    *
    * It reaches only the keys it is given. A key already behind a delete marker
    * is absent from an ordinary listing, so a caller that empties a whole

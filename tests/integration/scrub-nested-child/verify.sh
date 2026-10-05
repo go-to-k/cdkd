@@ -28,13 +28,17 @@
 #      pre-fix binary exited 0 here, which is this fixture's discriminator.
 #   4. `cdkd scrub <parent>` rewrites the child record; the CURRENT object
 #      holds the expression and no plaintext, and AWS was not touched.
-#   5. VERSIONS. scrub rewrites with a plain PutObject and does not purge
-#      (docs/cli-scrub.md, "Scrubbing supersedes the plaintext, it does not
-#      erase it"), so the seeded body must survive as a NONCURRENT version --
-#      asserted, because the summary line claims it. The script then applies
-#      the documented remedy (delete those version ids) and asserts that NO
-#      surviving version under either stack's prefix holds the plaintext.
+#   5. VERSIONS (issue #2624). scrub's PutObject supersedes the seeded body,
+#      and scrub then purges the rewritten keys' noncurrent versions
+#      (docs/cli-scrub.md, "What a real run removes, and what it cannot"). On
+#      a bucket asserted VERSIONED, NO version of either key, and none under
+#      either stack's prefix, may hold the plaintext -- with no manual delete.
+#      The pre-fix binary left the seeded body readable here.
 #   6. a second `--dry-run --fail` exits 0 and reports the child clean.
+#   6b. `--purge-history` (issue #2624): a plaintext version superseded by a
+#      clean write (what a deploy leaves) survives a plain `cdkd scrub`, which
+#      has nothing to rewrite, and is purged by `cdkd scrub --purge-history`;
+#      `--dry-run --purge-history` is refused and purges nothing.
 #   7. destroy, then the full version sweep.
 #
 # SECURITY: the secret value is random per run and never echoed; every cdkd
@@ -198,28 +202,6 @@ ${rows}
 EOF
   rm -f "${body}"
   printf '%s\n' "${n}"
-}
-
-# Delete every version of <key> whose body holds the plaintext -- the manual
-# step docs/cli-scrub.md prescribes after a scrub. Returns 1 on any failure.
-delete_plaintext_versions() { # usage: delete_plaintext_versions <key>
-  local target="$1" rows key vid body
-  rows="$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" --prefix "${target}" \
-    --region "${REGION}" --query '(Versions || `[]`)[].[Key,VersionId]' --output text)" || return 1
-  body="${WORK_DIR}/version-body"
-  while IFS=$'\t' read -r key vid || [ -n "${key}" ]; do
-    [ -n "${key}" ] || continue
-    [ "${key}" = "${target}" ] || continue
-    aws s3api get-object --bucket "${STATE_BUCKET}" --key "${key}" --version-id "${vid}" \
-      --region "${REGION}" "${body}" >/dev/null || return 1
-    if holds_plaintext "${body}"; then
-      aws s3api delete-object --bucket "${STATE_BUCKET}" --key "${key}" --version-id "${vid}" \
-        --region "${REGION}" >/dev/null || return 1
-    fi
-  done <<EOF
-${rows}
-EOF
-  rm -f "${body}"
 }
 
 cleanup() {
@@ -531,24 +513,39 @@ if [ "${LIVE}" != "${PW_VALUE}" ]; then
 fi
 echo "    OK: the current child record holds the expression and no plaintext"
 
-# --- Phase 5: surviving versions --------------------------------------------
-echo "==> Phase 5: the seeded body survives as a noncurrent version, then is removed"
+# --- Phase 5: scrub purged what it superseded (#2624) -------------------------
+echo "==> Phase 5: scrub purged the pre-scrub versions of the keys it rewrote"
+# PREMISE: on an unversioned bucket there is no version history, and every
+# zero below would be vacuous.
+if ! VERSIONING="$(aws s3api get-bucket-versioning --bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --query 'Status' --output text)"; then
+  echo "FAIL: could not read the state bucket's versioning status" >&2
+  exit 1
+fi
+if [ "${VERSIONING}" != "Enabled" ]; then
+  echo "FAIL: premise: the state bucket is not versioned (Status=${VERSIONING}) -- the purge is unobservable" >&2
+  exit 1
+fi
+if printf '%s\n' "${SCRUB_OUT}" | grep -qF "Could not purge noncurrent versions"; then
+  echo "FAIL: cdkd scrub warned that it could not purge -- the assertions below would fail for a grant, not the code" >&2
+  printf '%s\n' "${SCRUB_OUT}" | tail -20 >&2
+  exit 1
+fi
+if ! printf '%s\n' "${SCRUB_OUT}" | grep -qF "were purged, unless a warning above says otherwise"; then
+  echo "FAIL: cdkd scrub's summary does not claim the purge of the rewritten state.json's earlier versions" >&2
+  printf '%s\n' "${SCRUB_OUT}" | tail -20 >&2
+  exit 1
+fi
 # Both seeded keys: the child record, and the parent record (issue #3961).
+# No manual delete before this: the pre-fix binary left the seeded body as a
+# readable noncurrent version of each.
 for key in "${CHILD_KEY}" "${PARENT_KEY}"; do
   if ! SURVIVING="$(count_plaintext_versions "${key}")"; then
     echo "FAIL: could not read the versions of ${key}" >&2
     exit 1
   fi
-  # The claim scrub's summary line makes: a versioned bucket keeps the
-  # pre-scrub body. Zero here would mean either the bucket is not versioned
-  # (then the assertion below is vacuous) or the listing is broken.
-  if [ "${SURVIVING}" -lt 1 ]; then
-    echo "FAIL: premise: no version of ${key} holds the seeded plaintext -- is the state bucket versioned?" >&2
-    exit 1
-  fi
-  echo "    OK: ${SURVIVING} noncurrent version(s) of ${key} hold the seeded plaintext, as documented"
-  if ! delete_plaintext_versions "${key}"; then
-    echo "FAIL: could not delete the plaintext-bearing versions of ${key}" >&2
+  if [ "${SURVIVING}" -ne 0 ]; then
+    echo "FAIL: ${SURVIVING} version(s) of ${key} still hold the seeded plaintext after cdkd scrub -- the purge did not run" >&2
     exit 1
   fi
 done
@@ -562,7 +559,7 @@ for prefix in "${CHILD_PREFIX}" "${PARENT_PREFIX}"; do
     exit 1
   fi
 done
-echo "    OK: no surviving version under either stack's prefix holds the plaintext"
+echo "    OK: no version of either record, nor under either stack's prefix, holds the plaintext"
 
 # --- Phase 6: the gate is green now ------------------------------------------
 echo "==> Phase 6: cdkd scrub --dry-run --fail exits 0 over the repaired child and parent"
@@ -582,6 +579,82 @@ if ! printf '%s\n' "${CLEAN_OUT}" | grep -qF "No plaintext secrets found in ${CH
   exit 1
 fi
 echo "    OK: the child is visited and reported clean"
+
+# --- Phase 6b: --purge-history (#2624) ---------------------------------------
+echo "==> Phase 6b: a superseded plaintext survives a plain scrub and is purged by --purge-history"
+# What a deploy under a fixed binary leaves: the plaintext body, then a clean
+# write over it. The current record is clean, so scrub has nothing to rewrite.
+aws s3api put-object --bucket "${STATE_BUCKET}" --key "${CHILD_KEY}" --region "${REGION}" \
+  --body "${WORK_DIR}/child-seeded.json" >/dev/null
+aws s3api put-object --bucket "${STATE_BUCKET}" --key "${CHILD_KEY}" --region "${REGION}" \
+  --body "${WORK_DIR}/child-scrubbed.json" >/dev/null
+if ! HELD="$(count_plaintext_versions "${CHILD_KEY}")"; then
+  echo "FAIL: could not read the versions of ${CHILD_KEY}" >&2
+  exit 1
+fi
+if [ "${HELD}" -lt 1 ]; then
+  echo "FAIL: premise: no version of ${CHILD_KEY} holds the re-seeded plaintext" >&2
+  exit 1
+fi
+
+# --dry-run never purges: the combination is refused before any AWS call.
+run_cdkd purge-dry scrub "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --dry-run --purge-history
+if [ "${CDKD_RC}" -eq 0 ]; then
+  echo "FAIL: cdkd scrub --dry-run --purge-history exited 0; it must be refused" >&2
+  exit 1
+fi
+# Refused for THE CONFLICT, not for some other reason that also exits non-zero.
+if ! grep -qF -- "cannot be used with option '--dry-run'" "${WORK_DIR}/purge-dry.txt"; then
+  echo "FAIL: cdkd scrub --dry-run --purge-history failed, but not with the option-conflict refusal" >&2
+  tail -5 "${WORK_DIR}/purge-dry.txt" >&2
+  exit 1
+fi
+assert_no_plaintext_in "cdkd scrub --dry-run --purge-history output" "$(cat "${WORK_DIR}/purge-dry.txt")"
+
+# A plain scrub keeps the history: the record is clean, nothing is rewritten.
+run_cdkd plain-rerun scrub "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+PLAIN_OUT="$(cat "${WORK_DIR}/plain-rerun.txt")"
+assert_no_plaintext_in "cdkd scrub (plain re-run) output" "${PLAIN_OUT}"
+if [ "${CDKD_RC}" -ne 0 ]; then
+  echo "FAIL: the plain cdkd scrub re-run exited ${CDKD_RC}" >&2
+  printf '%s\n' "${PLAIN_OUT}" | tail -20 >&2
+  exit 1
+fi
+if ! KEPT="$(count_plaintext_versions "${CHILD_KEY}")"; then
+  echo "FAIL: could not read the versions of ${CHILD_KEY}" >&2
+  exit 1
+fi
+if [ "${KEPT}" -lt "${HELD}" ]; then
+  echo "FAIL: a plaintext version of ${CHILD_KEY} was purged by --dry-run or a plain scrub -- the recovery history must be kept without --purge-history" >&2
+  exit 1
+fi
+
+run_cdkd purge-history scrub "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --purge-history
+PURGE_OUT="$(cat "${WORK_DIR}/purge-history.txt")"
+assert_no_plaintext_in "cdkd scrub --purge-history output" "${PURGE_OUT}"
+if [ "${CDKD_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd scrub --purge-history exited ${CDKD_RC}" >&2
+  printf '%s\n' "${PURGE_OUT}" | tail -20 >&2
+  exit 1
+fi
+if ! printf '%s\n' "${PURGE_OUT}" | grep -qF -- "--purge-history: on a VERSIONED state bucket, the earlier state.json versions of"; then
+  echo "FAIL: cdkd scrub --purge-history printed no purge line" >&2
+  printf '%s\n' "${PURGE_OUT}" | tail -20 >&2
+  exit 1
+fi
+for prefix in "${CHILD_PREFIX}" "${PARENT_PREFIX}"; do
+  if ! LEFT="$(count_plaintext_versions "${prefix}")"; then
+    echo "FAIL: could not read the versions under ${prefix}" >&2
+    exit 1
+  fi
+  if [ "${LEFT}" -ne 0 ]; then
+    echo "FAIL: ${LEFT} version(s) under ${prefix} still hold the plaintext after --purge-history" >&2
+    exit 1
+  fi
+done
+echo "    OK: kept by a plain scrub and by --dry-run, purged by --purge-history"
 
 # --- Phase 7: destroy -------------------------------------------------------
 echo "==> Phase 7: destroy"

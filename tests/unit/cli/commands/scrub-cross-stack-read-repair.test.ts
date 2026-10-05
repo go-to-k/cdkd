@@ -143,6 +143,7 @@ const logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {
 let stateBackend: {
   getState: ReturnType<typeof vi.fn>;
   saveState: ReturnType<typeof vi.fn>;
+  purgeNoncurrentVersions: ReturnType<typeof vi.fn>;
   listStacks: ReturnType<typeof vi.fn>;
 };
 let lockManager: {
@@ -215,6 +216,7 @@ beforeEach(() => {
   stateBackend = {
     getState: vi.fn().mockImplementation(() => Promise.resolve({ state, etag: 'c-1' })),
     saveState: vi.fn().mockResolvedValue('etag-2'),
+    purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
     listStacks: vi.fn().mockResolvedValue([]),
   };
   lockManager = {
