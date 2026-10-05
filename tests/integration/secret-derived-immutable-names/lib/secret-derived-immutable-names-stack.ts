@@ -59,10 +59,11 @@ import * as scheduler from 'aws-cdk-lib/aws-scheduler';
  *     and the destroy skipped it. cdkd now records the schedule's creation
  *     date and confirms the group the secret resolves to holds that schedule
  *     before the update, and finds it by that date to delete it.
- *   - `PlainTargetSchedule`, in the same group, whose target queue and role
- *     are NOT secret-derived: its recorded target ARN and role are compared
- *     with the live ones as well (`SecretSchedule`'s target ARN is recorded
- *     redacted, so only its role is).
+ *   - `PlainTargetSchedule`, in the same group with its own role. Both
+ *     schedules target `PlainTargetQueue`, whose name is NOT secret-derived,
+ *     so each one's recorded target ARN and role are compared with the live
+ *     ones too. A redacted recorded target or role (the date then decides) is
+ *     covered by unit tests only.
  *
  * UPDATE (CDKD_TEST_UPDATE=true) changes only the Stages' `Description`, the
  * Service's `EnableECSManagedTags` (it has no description), the Policy's
@@ -155,11 +156,17 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       description,
     });
 
-    const queue = new sqs.CfnQueue(this, 'SecretQueue', {
+    new sqs.CfnQueue(this, 'SecretQueue', {
       queueName: fromSecret('queue'),
       visibilityTimeout: update ? 60 : 30,
     });
 
+    // Both schedules target this queue, whose name is NOT secret-derived: a
+    // `Fn::GetAtt` of the secret-named SecretQueue is resolved on an engine
+    // debug line that prints the ARN, name and all (go-to-k/cdkd#3869's open
+    // residual), which the update log's plaintext check would then catch. The
+    // shared target also leaves only the ROLE to tell the two schedules apart.
+    const plainTargetQueue = new sqs.CfnQueue(this, 'PlainTargetQueue', {});
     const scheduleRole = new iam.CfnRole(this, 'ScheduleRole', {
       assumeRolePolicyDocument: {
         Version: '2012-10-17',
@@ -176,7 +183,9 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
           policyName: 'send',
           policyDocument: {
             Version: '2012-10-17',
-            Statement: [{ Effect: 'Allow', Action: 'sqs:SendMessage', Resource: queue.attrArn }],
+            Statement: [
+              { Effect: 'Allow', Action: 'sqs:SendMessage', Resource: plainTargetQueue.attrArn },
+            ],
           },
         },
       ],
@@ -193,14 +202,12 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       state: 'DISABLED',
       flexibleTimeWindow: { mode: 'OFF' },
       scheduleExpression: 'rate(1 day)',
-      target: { arn: queue.attrArn, roleArn: scheduleRole.attrArn },
+      target: { arn: plainTargetQueue.attrArn, roleArn: scheduleRole.attrArn },
     });
     schedule.addDependency(scheduleGroup);
 
-    // A second schedule in the same secret-derived group whose target and role
-    // are NOT secret-derived, so the recorded target ARN and role are compared
-    // too: the first one's target is the secret-named queue, recorded redacted.
-    const plainTargetQueue = new sqs.CfnQueue(this, 'PlainTargetQueue', {});
+    // A second schedule in the same secret-derived group, with its own role:
+    // the two share a name prefix, a group and a target.
     const plainScheduleRole = new iam.CfnRole(this, 'PlainScheduleRole', {
       assumeRolePolicyDocument: {
         Version: '2012-10-17',

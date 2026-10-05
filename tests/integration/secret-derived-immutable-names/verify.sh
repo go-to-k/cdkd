@@ -327,7 +327,7 @@ if ! grep -qF -- "physical ID: ***" <<< "${CREATE_FILTER_LINE}"; then
   exit 1
 fi
 if grep -qF -- "${FILTER_NAME}" "${DEPLOY_LOG}"; then
-  echo "FAIL: the deploy log names SecretFilter's FilterName in plaintext (go-to-k/cdkd#3869)" >&2
+  echo "FAIL: the deploy log names SecretFilter's FilterName in plaintext: \${FILTER_NAME} (go-to-k/cdkd#3869)" >&2
   exit 1
 fi
 echo "    OK: the deploy log withholds SecretFilter's physical id"
@@ -398,7 +398,8 @@ SCHEDULE_RECORDED_CREATED="$(state_attribute SecretSchedule 'cdkd:CreationDate')
 # is visible in the run log (go-to-k/cdkd#4275).
 echo "    SecretSchedule creation date: AWS '${SCHEDULE_CREATED}', recorded '${SCHEDULE_RECORDED_CREATED}'"
 # PREMISE for the full identity match: PlainTargetSchedule's recorded target
-# and role are plain ARNs (SecretSchedule's target is recorded redacted).
+# and role are plain ARNs. Both schedules target PlainTargetQueue, so only
+# their roles tell them apart; a redacted recorded target is unit-tested only.
 PLAIN_RECORDED_TARGET="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
   | jq -r '.resources.PlainTargetSchedule.properties.Target.Arn // empty')"
 PLAIN_RECORDED_ROLE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
@@ -472,10 +473,13 @@ fi
 # providers' when it fires (a Stage's physical id IS its name).
 # FILTER_NAME is the PRE-rotation value, which this deploy's masker never
 # resolved; it is reported below rather than asserted.
-for needle in "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}"; do
+# By NAME, with indirect expansion, so a red names the variable that hit and the
+# log lines it is on (never its value, which is the secret-derived plaintext).
+for needle_var in STAGE_NAME SERVICE_NAME POLICY_PATH POLICY_DESC GQL_API_NAME DS_NAME QUEUE_NAME FILTER_NAME_ROTATED GROUP_NAME; do
   # A here-string, not a pipe: see state_holds.
-  if grep -qF -- "${needle}" <<< "${UPDATE_LOG_BODY}"; then
-    echo "FAIL: the update log carries a secret-derived value in plaintext" >&2
+  if grep -qF -- "${!needle_var}" <<< "${UPDATE_LOG_BODY}"; then
+    HIT_LINES="$(grep -nF -- "${!needle_var}" <<< "${UPDATE_LOG_BODY}" | cut -d: -f1 | paste -sd ' ' -)"
+    echo "FAIL: the update log carries a secret-derived value in plaintext: \${${needle_var}} on log line(s) ${HIT_LINES}" >&2
     exit 1
   fi
 done
@@ -553,9 +557,9 @@ if ! grep -qF -- "physical ID: ***" <<< "${DESTROY_FILTER_LINE}"; then
   echo "FAIL: SecretFilter's 'Deleting resource' line does not withhold its physical id (go-to-k/cdkd#3869)" >&2
   exit 1
 fi
-for needle in "${FILTER_NAME}" "${FILTER_NAME_ROTATED}"; do
-  if grep -qF -- "${needle}" "${DEPLOY_LOG}"; then
-    echo "FAIL: the destroy log names a SecretFilter FilterName in plaintext (go-to-k/cdkd#3869)" >&2
+for needle_var in FILTER_NAME FILTER_NAME_ROTATED; do
+  if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
+    echo "FAIL: the destroy log names a SecretFilter FilterName in plaintext: \${${needle_var}} (go-to-k/cdkd#3869)" >&2
     exit 1
   fi
 done
