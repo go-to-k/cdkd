@@ -4317,9 +4317,16 @@ else
   echo "FAIL: run A: observed Value of ${F4_LID} should be '${F4_RESOLVED}', got $(mask "${F4_OBSERVED_VALUE}")" >&2
   accept_fail=1
 fi
-# Two independent signals beside the value: no "NOT recorded" warning, and the
-# summary that counts an accepted resource (its wording is the sentinel).
-if grep -qF "was NOT recorded" <<< "${F4_OUT}"; then
+# WHOLE-DOCUMENT, on the run that ADMITS a value: the only run where a wrong
+# admission could put plaintext into state.
+if grep -qF "${EXPECTED_SECURE}" <<< "${F4_STATE}"; then
+  echo "FAIL: run A: the decrypted SecureString reached state (#1926)" >&2
+  accept_fail=1
+fi
+# Two independent signals beside the value: no "NOT recorded" warning for THIS
+# record (the line names its logical id; another resource's warning is not
+# evidence about this one), and the summary that counts an accepted resource.
+if grep -F "${F4_LID}" <<< "${F4_OUT}" | grep -qF "was NOT recorded"; then
   echo "FAIL: run A: --accept reported the public change as NOT recorded" >&2
   accept_fail=1
 fi
@@ -4345,13 +4352,14 @@ else
   echo "FAIL: run B: observed Value of ${F4_LID} should be the expression '${F4_EXPR}', got $(mask "${F4_OBSERVED_VALUE}")" >&2
   accept_fail=1
 fi
-if ! grep -qF "was NOT recorded" <<< "${F4_OUT}"; then
-  echo "FAIL: run B: --accept did not warn that the unvouched value was NOT recorded — wording drifted?" >&2
+assert_no_plaintext "'cdkd drift --accept' in Phase 1f4 run B" "${F4_OUT}"
+if ! grep -F "${F4_LID}" <<< "${F4_OUT}" | grep -qF "was NOT recorded"; then
+  echo "FAIL: run B: --accept did not warn that ${F4_LID}'s unvouched value was NOT recorded — wording drifted?" >&2
   diag_output "${F4_OUT}"
   accept_fail=1
 fi
 if grep -qF "${EXPECTED_SECURE}" <<< "${F4_STATE}"; then
-  echo "FAIL: the decrypted SecureString reached state in Phase 1f4 (#1926)" >&2
+  echo "FAIL: run B: the decrypted SecureString reached state (#1926)" >&2
   accept_fail=1
 fi
 rm -f "${F4_BEFORE}"

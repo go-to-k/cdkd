@@ -188,7 +188,7 @@ describe('the proof fails closed', () => {
   });
 });
 
-describe('the derived value scan still owns a proven leaf (readback-certification mark mode)', () => {
+describe('a proven leaf is a DECIDED position (readback-certification mark mode)', () => {
   it('a proven leaf is DECIDED: a certified needle coinciding with its literal text does not splice into it', () => {
     // `Pw` is a certified whole-token position, so the pass learns
     // `<plaintext> -> SM` and scans the record with it. The proven leaf's

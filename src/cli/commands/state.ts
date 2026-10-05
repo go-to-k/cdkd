@@ -4059,9 +4059,10 @@ async function refreshObservedForStack(
           // The map is EMPTY by construction (issue #1926): this command neither
           // synthesizes nor resolves, so no plaintext is ever recorded and a
           // VALUE scan has no needles — POSITION is the whole mechanism: the
-          // record's own `properties` hold the unresolved expression, and walking the observed bag against them
-          // rewrites the plaintext AWS echoes back onto that expression with no
-          // secret fetch and no value matching.
+          // record's own `properties` hold the unresolved expression, and
+          // walking the observed bag against them rewrites the plaintext AWS
+          // echoes back onto that expression with no secret fetch and no value
+          // matching.
           //
           // The MIXED-leaf and unpairable-array refusals live in
           // `secret-redaction.ts`, NOT here (issue #1926 review). This command
