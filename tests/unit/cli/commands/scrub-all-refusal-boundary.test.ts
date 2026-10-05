@@ -412,6 +412,10 @@ describe('cdkd scrub --all: one stack refusing does not abandon the others (issu
     const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
     expect(summary).not.toContain('in any target stack state');
     expect(summary).toContain('could NOT be scrubbed');
+    // The partial clean line names its scope too (go-to-k/cdkd#2868).
+    expect(summary).toContain(
+      'No plaintext secrets found in the 1 stack(s) this run could examine (scrub checks only values the template names through a {{resolve:...}} reference). 1 stack(s) could NOT be scrubbed'
+    );
   });
 
   it('--purge-history: the could-NOT-be-scrubbed line carries the history note (go-to-k/cdkd#2624)', async () => {
@@ -696,6 +700,12 @@ describe('cdkd scrub reports a read it DECLINED BY DESIGN (issue #2133 review)',
     expect(err).toBeUndefined();
     const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
     expect(summary).toContain('No plaintext secrets found in any target stack state');
+    // The clean verdict names its own scope (go-to-k/cdkd#2868): scrub cannot
+    // see a plaintext the template never references, so the line must not
+    // read as a clean bill for the whole record.
+    expect(summary).toContain(
+      'No plaintext secrets found in any target stack state (scrub checks only values the template names through a {{resolve:...}} reference). Nothing to scrub.'
+    );
   });
 });
 

@@ -18,7 +18,7 @@ the entries a scrubbed stack publishes in the shared
 ```bash
 cdkd scrub MyStack                        # rewrite plaintext secrets to {{resolve:...}}
 cdkd scrub MyStack --dry-run              # report what would change, write nothing
-cdkd scrub MyStack --dry-run --fail       # CI gate: exit 1 if any plaintext remains
+cdkd scrub MyStack --dry-run --fail       # CI gate: exit 1 if a {{resolve:...}}-referenced value is still plaintext
 cdkd scrub --all                          # every stack in the app, producers first
 cdkd scrub MyStack --verbose              # explain a stack that reports clean
 ```
@@ -30,7 +30,7 @@ cdkd scrub MyStack --verbose              # explain a stack that reports clean
 | `[stacks...]` | — | Stack name(s) to scrub. Physical name or CDK display path. The [nested stacks](#nested-stacks) under each are scrubbed too. |
 | `--all` | off | Scrub every stack in the synthesized app, Stage stacks included. |
 | `--dry-run` | off | Report what would be scrubbed without writing state. |
-| `--fail` | off | Exit non-zero when plaintext is found. With `--dry-run`, any plaintext at all; on a real run, a leak scrub cannot rewrite. |
+| `--fail` | off | Exit non-zero when plaintext of a value the template names through a `{{resolve:...}}` reference is found. With `--dry-run`, any such plaintext; on a real run, a leak scrub cannot rewrite. |
 | `--purge-history` | off | Also purge the earlier S3 versions of every `state.json` the run examined, not only the ones it rewrites. Drops those records' state-recovery history; a record scrub refuses is never purged; cannot be combined with `--dry-run`. See [What a real run removes](#what-a-real-run-removes-and-what-it-cannot). |
 | `--stack <name>` | — | A single stack name, as an alternative to the positional argument. |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a pre-synthesized cloud assembly directory. |
@@ -65,14 +65,14 @@ Two modes, both useful long after any one-time cleanup:
 - **Clean** — rewrite existing state in place, WITHOUT redeploying. This is
   what you run after upgrading cdkd on a stack you do not want to
   re-provision, or any time you suspect a state file predates a redaction fix.
-- **Audit** — `--dry-run --fail` exits `1` when any plaintext secret is still
-  in state, so it works as a standing CI gate rather than incident-only
-  tooling. Secrets landing in infrastructure state is a structural, recurring
+- **Audit** — `--dry-run --fail` exits `1` when a value the template names
+  through a `{{resolve:...}}` reference is still in state as plaintext, so it
+  works as a standing CI gate rather than incident-only tooling. Secrets landing in infrastructure state is a structural, recurring
   concern — the same class Terraform has — so it is worth asserting
   continuously.
 
 ```yaml
-# CI: fail the build if any cdkd state file holds a plaintext secret.
+# CI: fail the build if any cdkd state file holds a {{resolve:...}}-referenced value in plaintext.
 - run: cdkd scrub --all --dry-run --fail
 ```
 
@@ -123,6 +123,13 @@ This matches CloudFormation, which keeps the reference in the template and
 resolves it service-side. Two consequences follow: a rotated secret behind an
 unchanged reference is a no-op on the next deploy, again matching
 CloudFormation, and `cdkd diff` makes no live secret fetch.
+
+Neither the redaction nor `cdkd scrub` covers a secret the template never
+names through a `{{resolve:...}}` reference. The drift baseline records what
+AWS returns, so a password an operator set out of band over a placeholder
+literal is stored as AWS returned it, and scrub, which learns a secret's value
+only from a reference, cannot see it. That is by design; see
+[A value your template never references](#a-value-your-template-never-references).
 
 ## What scrub needs, and what it changes
 
@@ -380,7 +387,7 @@ A CI gate that fails:
 
 ```text
 $ cdkd scrub --all --dry-run --fail
-No plaintext secrets found in ApiStack
+No plaintext secrets found in ApiStack (scrub checks only values the template names through a {{resolve:...}} reference)
 Would scrub 2 resource record(s) in DbStack
 
 Plan: 1 stack(s) hold plaintext secrets and would be scrubbed (--dry-run, no state
@@ -391,10 +398,10 @@ A CI gate that passes:
 
 ```text
 $ cdkd scrub --all --dry-run --fail
-No plaintext secrets found in ApiStack
-No plaintext secrets found in DbStack
+No plaintext secrets found in ApiStack (scrub checks only values the template names through a {{resolve:...}} reference)
+No plaintext secrets found in DbStack (scrub checks only values the template names through a {{resolve:...}} reference)
 
-No plaintext secrets found in any target stack state. Nothing to scrub.
+No plaintext secrets found in any target stack state (scrub checks only values the template names through a {{resolve:...}} reference). Nothing to scrub.
 ```
 
 ## Exit codes
@@ -402,7 +409,7 @@ No plaintext secrets found in any target stack state. Nothing to scrub.
 | Code | Meaning |
 | --- | --- |
 | `0` | State was scrubbed, or there was nothing to scrub. |
-| `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all, or an output key it [would drop](#a-key-the-template-can-no-longer-name-is-dropped); on a real run, a leak scrub cannot rewrite, an undeclared key another stack still reads or one that may be a live export alias, or an exports index entry that has no key left in `state.outputs` and still holds a secret this run recorded. |
+| `1` | `--fail` found plaintext of a value the template names through a `{{resolve:...}}` reference: under `--dry-run`, any such plaintext, or an output key it [would drop](#a-key-the-template-can-no-longer-name-is-dropped); on a real run, a leak scrub cannot rewrite, an undeclared key another stack still reads or one that may be a live export alias, or an exports index entry that has no key left in `state.outputs` and still holds a secret this run recorded. |
 | `2` | scrub refused to examine something, could not classify a producer it imports from, a stack failed outright, the exports index was left incomplete, or the other stacks' state could not be read before a drop (`SCRUB_DROPPED_OUTPUT_READERS_UNVERIFIED`). |
 
 The full cross-command table is in the
@@ -925,6 +932,24 @@ Nothing is fetched and no extra permission is needed: the value comes out of
 the read-back cdkd already has. A value that is NOT one of those secrets is
 left exactly as AWS reported it, so the baseline still describes the live
 resource.
+
+### A value your template never references
+
+A secret that no `{{resolve:...}}` reference in the template names — one an
+operator set out of band, or one AWS returns in a field the template never
+sets — is not something scrub can find: it learns a secret's value only by
+resolving a reference, so the record reports clean and every no-finding line
+says `(scrub checks only values the template names through a {{resolve:...}} reference)`.
+The drift baseline records such a value as AWS returned it, by design. How to
+remove one is in
+[`cdkd import`'s note on it](import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it);
+the last step is `cdkd scrub <stack> --purge-history`.
+
+The same scope leaves two other kinds of value out of scrub's check. A
+credential a provider records in `attributes` so that `Fn::GetAtt` can read
+it — an `AWS::IAM::AccessKey`'s `SecretAccessKey`, a Cognito user pool
+client's `ClientSecret` — is stored as returned. A `NoEcho` parameter's value
+is used only to mask it in log output, not to find it in state.
 
 ## Stack outputs
 

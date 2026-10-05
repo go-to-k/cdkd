@@ -376,7 +376,9 @@ describe('cdkd scrub - nested-stack child records (go-to-k/cdkd#2252)', () => {
     const err = await run([PARENT], { dryRun: true, fail: true });
 
     expect(err).toBeUndefined();
-    expect(logLines.join('\n')).toContain(`No plaintext secrets found in ${CHILD}`);
+    expect(logLines.join('\n')).toContain(
+      `No plaintext secrets found in ${CHILD} (scrub checks only values the template names through a {{resolve:...}} reference)`
+    );
   });
 
   it('never prints the inherited plaintext', async () => {
@@ -974,9 +976,9 @@ describe('cdkd scrub - nested-stack child records (go-to-k/cdkd#2252)', () => {
       const log = logLines.join('\n');
       expect(log).toContain(`Would scrub 1 nested-stack output attribute(s) in ${PARENT}`);
       // The parent's own line does not claim the record clean ahead of that.
-      expect(log).not.toContain(`No plaintext secrets found in ${PARENT}\n`);
+      expect(log).not.toContain(`No plaintext secrets found in ${PARENT} (`);
       expect(log).toContain(
-        `No plaintext secrets found in ${PARENT}'s own records; its nested-stack output attributes are checked after each nested stack`
+        `No plaintext secrets found in ${PARENT}'s own records (scrub checks only values the template names through a {{resolve:...}} reference); its nested-stack output attributes are checked after each nested stack`
       );
     });
 

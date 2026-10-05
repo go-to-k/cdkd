@@ -487,7 +487,10 @@ The stored side is a redaction pass rather than a guarantee — it substitutes
 only where it can match the value against the template position it came from,
 and a stored record can still hold a plaintext a deploy could not certify. If
 you need to know whether a given stack's state holds one, `cdkd scrub --dry-run
---fail` is the check; `cdkd drift` does not answer that question.
+--fail` is the check; `cdkd drift` does not answer that question. That check
+covers only values the template names through a `{{resolve:...}}` reference: a value set out of band and
+never referenced is recorded in the baseline as AWS returned it
+([why](import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it)).
 
 This means `cdkd drift` needs **read access to the referenced secrets**:
 `secretsmanager:GetSecretValue` for a `secretsmanager` reference, and
