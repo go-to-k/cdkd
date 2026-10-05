@@ -7,7 +7,7 @@
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
 acm-certificate	2026-10-03T04:24:27Z	PASS	137	verify.sh	rc ok, orph clean (#4283 PR #4449)
 agentcore-tools	2026-10-03T04:25:23Z	PASS	79	verify.sh	rc ok, orph clean (#4283 PR #4449)
-alb	2026-10-03T04:22:08Z	FAIL	232	verify.sh	pre-existing listener routing.http.response.server.enabled removal assertion (#2085, tooling backlog); destroy clean
+alb	2026-10-05T14:42:45Z	FAIL	221	verify.sh	pre-existing listener routing.http.response.server.enabled removal assertion (#2085, tooling backlog), same as 2026-10-03 on main; deploy via PR #4587 create client ok; destroy clean
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
 api-cognito	2026-08-18T05:09:26Z	PASS	60	standard	#1920 no-MFA-props skip path; 0 errors, 2 RETAIN-by-policy APIGW account singletons
 apigateway	2026-10-02T07:20:09Z	PASS	66	verify.sh	PR #4391 (#2080 EMR create latch, orphan-report rename) @a7306c55f; rc ok, orph clean
@@ -86,7 +86,7 @@ docdb-neptune	2026-10-03T05:35:39Z	PASS	5713	verify.sh	rc ok, orph clean (#4283 
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-10-05T10:05:08Z	PASS	306	verify.sh	rc ok, orph clean (#2036 PR #4575)
 drift-revert-arrays	2026-10-04T10:29:43Z	PASS	185	verify.sh	rc ok, orph clean (#4476)
-drift-revert-vpc	2026-10-05T10:05:08Z	PASS	345	verify.sh	rc ok, orph clean (#2036 PR #4575)
+drift-revert-vpc	2026-10-05T14:42:45Z	PASS	345	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-05T10:27:06Z	PASS	210	verify.sh	rc ok, orph clean (#2624 PR #4572)
 dynamodb-autoscaling	2026-10-03T04:27:36Z	PASS	83	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -99,9 +99,9 @@ dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean 
 dynamodb-streams	2026-10-03T04:20:39Z	PASS	279	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-ttl-attr-change	2026-10-03T04:28:29Z	PASS	68	verify.sh	rc ok, orph clean (#4283 PR #4449)
-ec2-instance	2026-10-01T14:57:23Z	PASS	105	verify.sh	rc ok, orph clean (#4290)
+ec2-instance	2026-10-05T14:42:45Z	PASS	126	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
 ec2-instance-fanout	2026-09-30T18:16:33Z	PASS	175	verify.sh	rc ok, orph clean (#4242)
-ec2-route-targets	2026-09-25T13:35:54Z	PASS	631	verify.sh	rc ok, orph clean (#3728)
+ec2-route-targets	2026-10-05T14:42:45Z	PASS	606	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-09-29T11:14:03Z	PASS	60	verify.sh	PR #4075 (#3994 Tags diff through one reader) @4995ea8; rc ok, destroy 0 errors, no state/lock/CFn leftovers
@@ -126,7 +126,7 @@ eventbridge-pipes	2026-10-03T09:34:47Z	PASS	175	verify.sh	rc ok, orph clean (#44
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-03T19:15:22Z	PASS	100	verify.sh	rc ok, orph clean (#2080 PR #4515)
-export	2026-10-05T10:05:08Z	PASS	235	verify.sh	rc ok, orph clean (#2036 PR #4575)
+export	2026-10-05T14:42:45Z	PASS	235	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
 export-nested-stack	2026-10-04T19:49:12Z	PASS	181	verify.sh	rc ok, orph clean (#4547)
 fallback-recreate-children	2026-10-05T02:29:22Z	PASS	105	verify.sh	rc ok, orph clean (#4569 @480676155)
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
@@ -318,7 +318,7 @@ serverless-api	2026-10-02T07:20:09Z	PASS	61	verify.sh	PR #4391 (#2080 EMR create
 servicediscovery	2026-10-03T04:24:25Z	PASS	122	verify.sh	rc ok, orph clean (#4283 PR #4449)
 servicediscovery-namespaces	2026-10-02T01:44:21Z	PASS	130	verify.sh	PR #4378 removalDefaults; rc ok, orph clean
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)
-sg-circular-dependency	2026-10-04T09:29:51Z	PASS	460	verify.sh	rc ok, orph clean (#4447)
+sg-circular-dependency	2026-10-05T14:42:45Z	PASS	486	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
 sns-event-source	2026-09-27T12:27:25Z	PASS	70	verify.sh	rc ok, orph clean (#3861)
 sns-inline-subscription	2026-09-25T19:22:55Z	PASS	55	verify.sh	rc ok, orph clean (#3136 PR #3786, post-rebase)
 sns-pending-subscription	2026-09-17T17:36:20Z	PASS	163	verify.sh	issue 3329 gate pair: confirms Subscribe with ReturnSubscriptionArn=true returns a REAL ARN even for a pending-confirmation subscription (the premise the create-path shape gate rests on); delete-path pending skip fired, destroy 2 deleted 0 errors, 0 orphans
@@ -348,6 +348,6 @@ update-replace	2026-10-05T02:29:22Z	PASS	90	verify.sh	rc ok, orph clean (#4569 @
 vpc-lambda	2026-08-10T11:50:46Z	PASS	317	standard	0810 P0/P1 sweep b1; 16 del/0 err, hyperplane ENIs cleared, orph clean
 vpc-lambda-cr-race	2026-08-10T06:18:10Z	PASS	302	standard	0810 P2 sweep b12; 0 err 0 orph incl hyperplane ENI
 vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-provider loop ok, 0 err 0 orph
-vpc-nat-gateway	2026-10-04T09:29:51Z	PASS	301	verify.sh	rc ok, orph clean (#4447)
+vpc-nat-gateway	2026-10-05T14:42:45Z	PASS	331	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
 wafv2	2026-08-11T03:29:45Z	PASS	240	standard	1544 lane: Scope guard replay-downgrade wiring; destroy 0 err 0 orph
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
