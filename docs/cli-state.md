@@ -804,6 +804,20 @@ the resource's own secret references can certify. Re-running this command
 afterwards writes the masks back, since it resolves nothing. See
 [Redacted baselines](cli-drift.md#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
 
+**A public SSM parameter inside a longer value keeps its value.** A record can
+hold a plain `{{resolve:ssm:...}}` reference inside a longer string, such as
+`https://{{resolve:ssm:/app/host}}/health` (a `cdkd import` warn-path record).
+A `String` or `StringList` parameter is public config, so the value AWS reports
+is the right baseline. A `SecureString` is a secret, and the reference is
+written back over it. To tell the two apart, the command calls
+`ssm:GetParameter` with `WithDecryption: false` in the stack's region, once per
+reference. Nothing is decrypted, and a reference that is the whole value needs
+no call. The reference is written back, as before, when the parameter is a
+`SecureString`, when the call fails (a missing `ssm:GetParameter` permission
+included — the command still succeeds), or when the reference may belong to
+another region (an ARN naming one, or a stack that reads outputs from another
+region).
+
 Resources whose provider cannot read current state are counted as unsupported
 and keep their previous baseline. A resource AWS reports as not found — deleted
 outside cdkd — is named in a warning, counted as failed and also keeps its

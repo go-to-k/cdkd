@@ -270,8 +270,9 @@ export function regionLessSecretName(expression: string): string | undefined {
  *
  *    (b) An `ssm` reference is secret only when its parameter is a
  *    `SecureString`, and this arm cannot tell. So a `{{resolve:ssm:/app/env}}`
- *    naming a PUBLIC `String` that reached a persisted bag (issue #2036's
- *    acknowledged over-redaction) is refused too. Narrowing it by
+ *    naming a PUBLIC `String` that reached a persisted bag (an over-redaction
+ *    issue #2036 lifts only where a per-bag type proof exists, which a replay
+ *    has none of) is refused too. Narrowing it by
  *    `isRecordedSecretExpression` was considered and REJECTED, and not because
  *    the store is unreachable — it is imported by this very file. It is
  *    unusable: `recordedSecretExpressions` is populated BY resolution, and in

@@ -134,6 +134,37 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   }),
 }));
 
+// Issue #2036: the per-stack `PublicSsmProver` the command builds. Faked so
+// this file can pin the WIRING — which region and producer-region evidence it is
+// built with, which bag it is asked about, and that the bag it returns is the
+// one the redaction reads. The prover's own lookup (no-decryption
+// `GetParameter`, region, error handling) runs unmocked in
+// `tests/unit/deployment/public-ssm-proof.test.ts` and
+// `tests/unit/cli/import-public-ssm-proof.test.ts`.
+const publicSsmProof = vi.hoisted(() => ({
+  proven: new Set<string>(),
+  built: [] as Array<{ region: string; producerRegions: readonly string[] }>,
+  askedAbout: [] as unknown[],
+}));
+vi.mock('../../../src/deployment/public-ssm-proof.js', async () => {
+  const { recordProvenPublicExpression } = await import(
+    '../../../src/deployment/secret-redaction/mask-only.js'
+  );
+  return {
+    PublicSsmProver: class {
+      constructor(region: string, producerRegions: readonly string[]) {
+        publicSsmProof.built.push({ region, producerRegions });
+      }
+      async proofBagFor(source: unknown): Promise<Map<string, string>> {
+        publicSsmProof.askedAbout.push(source);
+        const bag = new Map<string, string>();
+        for (const token of publicSsmProof.proven) recordProvenPublicExpression(bag, token);
+        return bag;
+      }
+    },
+  };
+});
+
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
   loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
@@ -1145,6 +1176,56 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
         { Key: 'env', Value: 'prod' },
         { Key: 'aws:cloudformation:stack-name', Value: 'added-by-aws' },
       ],
+    });
+  });
+
+  describe('a PUBLIC ssm mixed leaf (issue #2036)', () => {
+    const PUBLIC = '{{resolve:ssm:/app/public-host}}';
+    const MIXED = `https://${PUBLIC}/health`;
+    const RESOLVED = 'https://db.public.internal/health';
+
+    beforeEach(() => {
+      publicSsmProof.proven.clear();
+      publicSsmProof.built.length = 0;
+      publicSsmProof.askedAbout.length = 0;
+    });
+
+    it('keeps the value AWS holds when the stack prover proves the parameter public', async () => {
+      publicSsmProof.proven.add(PUBLIC);
+      const properties = { Environment: { Variables: { URL: MIXED } } };
+      const observed = await refreshWith(properties, {
+        Environment: { Variables: { URL: RESOLVED } },
+      });
+      expect(observed).toEqual({ Environment: { Variables: { URL: RESOLVED } } });
+      // Built ONCE for the stack, in its own region, and asked about the
+      // record's OWN properties — the bag the readback is positioned against.
+      expect(publicSsmProof.built).toEqual([{ region: 'us-east-1', producerRegions: [] }]);
+      expect(publicSsmProof.askedAbout).toEqual([properties]);
+    });
+
+    it('CONTROL: with no proof the same leaf still takes the expression', async () => {
+      const observed = await refreshWith(
+        { Environment: { Variables: { URL: MIXED } } },
+        { Environment: { Variables: { URL: RESOLVED } } }
+      );
+      expect(observed).toEqual({ Environment: { Variables: { URL: MIXED } } });
+    });
+
+    it("builds the prover with the stack's producer-region evidence", async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      const loaded = makeState({
+        R: makeResource({ physicalId: 'r', resourceType: 'AWS::Lambda::Function' }),
+      });
+      loaded.state.imports = [
+        { exportName: 'X', sourceStack: 'P', sourceRegion: 'eu-west-1' },
+      ] as unknown as NonNullable<StackState['imports']>;
+      mockGetState.mockResolvedValueOnce(loaded);
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
+      const { error } = await runRefresh(['TestStack']);
+      expect(error).toBeUndefined();
+      expect(publicSsmProof.built).toEqual([
+        { region: 'us-east-1', producerRegions: ['eu-west-1'] },
+      ]);
     });
   });
 });

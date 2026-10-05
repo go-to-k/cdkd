@@ -938,6 +938,70 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(observed.Environment.Variables['SECRET_PASSWORD']).toBe(SECRET_EXPR);
   });
 
+  /**
+   * Issue #2036: a resource carrying NO secret reference, so its per-resource
+   * map stays EMPTY, with a PUBLIC ssm reference embedded in a longer leaf of
+   * its baseline (the `cdkd import` warn-path shape). The drift pass resolves
+   * that baseline into the same bag the two writes below redact with, and the
+   * resolver files a per-bag proof for the `String` parameter, so the leaf keeps
+   * the value AWS reported instead of silently taking the expression.
+   */
+  describe('a PUBLIC ssm mixed leaf on an empty map (issue #2036)', () => {
+    const MIXED = `https://${PUBLIC_SSM_EXPR}/health`;
+    const RESOLVED = 'https://cdkd-known-ssm-value/health';
+    const publicOnlyResource = (): ResourceState => ({
+      physicalId: 'fn',
+      resourceType: LAMBDA_TYPE,
+      properties: { Environment: { Variables: { URL: MIXED, PLAIN: 'ok' } } },
+      observedProperties: { Environment: { Variables: { URL: MIXED, PLAIN: 'ok' } } },
+    });
+
+    it('--revert records a narrowing with the public value AWS echoed, not the expression', async () => {
+      const update = vi.fn().mockResolvedValue({
+        physicalId: 'fn',
+        // PLAIN dropped (the narrowing), URL echoed RESOLVED.
+        effectiveProperties: { Environment: { Variables: { URL: RESOLVED } } },
+      });
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(makeState({ Consumer: publicOnlyResource() }));
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({
+          Environment: { Variables: { URL: RESOLVED, PLAIN: 'edited' } },
+        }),
+        update,
+      });
+
+      await runDrift(['TestStack', '--revert', '--yes']);
+
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const observed = mockSaveState.mock.calls[0]![2].resources['Consumer']!
+        .observedProperties as { Environment: { Variables: Record<string, unknown> } };
+      // The narrowing WAS recorded, so the delta reached the redaction.
+      expect(observed.Environment.Variables['PLAIN']).toBeUndefined();
+      expect(observed.Environment.Variables['URL']).toBe(RESOLVED);
+    });
+
+    it('--accept records the public value AWS now holds, not the expression', async () => {
+      const MOVED = 'https://moved-host/health';
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(makeState({ Consumer: publicOnlyResource() }));
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({
+          Environment: { Variables: { URL: MOVED, PLAIN: 'ok' } },
+        }),
+      });
+
+      await runDrift(['TestStack', '--accept', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const observed = mockSaveState.mock.calls[0]![2].resources['Consumer']!
+        .observedProperties as { Environment: { Variables: Record<string, unknown> } };
+      expect(observed.Environment.Variables['URL']).toBe(MOVED);
+      expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('was NOT recorded');
+    });
+  });
+
   it('--revert records the narrowing against the baseline it RESOLVED, not against properties', async () => {
     // The two bags disagree at the secret leaf: `properties` names one
     // reference and the observed baseline (which is what a revert resolves and

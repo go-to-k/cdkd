@@ -300,7 +300,8 @@ function unpairedSourceCarriesReference(
  *   whole `{{resolve:...}}` token                     ok            ok
  *   `Environment[]` keyed by `Name` (issue #1915)     ok            ok
  *   PUBLIC ssm MIXED leaf, POPULATED map               ok            ok
- *   PUBLIC ssm MIXED leaf, EMPTY map                   ok            over-redacts
+ *   PUBLIC ssm MIXED leaf, EMPTY map, proven (#2036)   ok            ok
+ *   PUBLIC ssm MIXED leaf, EMPTY map, no proof         ok            over-redacts
  * ```
  *
  * MASK rows are the FAIL-CLOSED change of issue
@@ -325,12 +326,14 @@ function unpairedSourceCarriesReference(
  * argument; issue [#2868](https://github.com/go-to-k/cdkd/issues/2868) owns the
  * shape where the plaintext has no counterpart in the source at all.
  *
- * The last row is the price of the row above it and is tracked as issue
- * [#2036](https://github.com/go-to-k/cdkd/issues/2036): with no map nothing was
+ * The last row is the price of the row above it: with no map nothing was
  * resolved, so nothing distinguishes a public parameter from a `SecureString`
- * and the leaf is refused. Phantom drift, not a disclosure — see
- * {@link mixedLeafMayCarryPublicReference} for why that is the right way to be
- * wrong here.
+ * and the leaf is refused — UNLESS the bag carries a per-bag PROOF that every
+ * token in it is public (issue
+ * [#2036](https://github.com/go-to-k/cdkd/issues/2036): `cdkd drift`'s own
+ * resolution, or a no-decryption `GetParameter` on `cdkd state
+ * refresh-observed` / `cdkd import`). Without one it over-redacts: phantom
+ * drift, not a disclosure — see {@link mixedLeafMayCarryPublicReference}.
  *
  * What this pass closes is the row POSITION can actually justify: a leaf whose
  * KEY the source carries, where the source is the same generation and the only
@@ -461,18 +464,19 @@ export function refuseUncertifiedReadbackPositions(
       return mark ? POSITION_DECIDED : source;
     }
     // A MIXED leaf embedding something that may be PUBLIC config: keep the
-    // resolved value AWS actually holds. See the predicate's own doc. KEEPING
-    // is a decision like any other, which is why it marks.
+    // resolved value AWS actually holds. See the predicate's own doc.
     //
-    // NO TEST FENCES THAT MARK, and the reason is structural rather than a gap:
-    // the merge only runs when the map is EMPTY ({@link deriveReadbackNeedles}
-    // returns `secrets` by identity otherwise), and with an empty map the
-    // predicate above is constant `false`. So this arm and the mark tree cannot
-    // both be live today. It is written correctly anyway because issue #2036's
-    // withdrawn verdict store is what makes the predicate non-constant there,
-    // and whoever revives it must not also have to rediscover this line.
+    // NOT MARKED DECIDED, so on an EMPTY map (issue #2036's proof arm, the
+    // only one where the mark tree runs) the derived VALUE scan still owns
+    // this leaf: a needle learned from a certified secret position elsewhere
+    // in the record is applied to it by {@link preferPositionDecisions}, and
+    // with no needle in it the scan returns it unchanged. On a POPULATED map
+    // the real value scan already ran over `bag` in `redactByPath`. Marking it
+    // decided would make a proven-public leaf the one string in an empty-map
+    // record no needle can reach, so a secret plaintext embedded in it would
+    // survive. Not LEARNED from either: it is not a secret's resolved form.
     if (mixedLeafMayCarryPublicReference(source, secrets)) {
-      return mark ? POSITION_DECIDED : bag;
+      return bag;
     }
     if (learn) learnMixedLeafNeedle(learn, bag, source);
     return mark ? POSITION_DECIDED : source;

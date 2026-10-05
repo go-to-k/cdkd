@@ -140,6 +140,72 @@ export function clearRecordedSecretExpressions(): void {
 }
 
 /**
+ * `{{resolve:ssm:...}}` expressions PROVEN to name a public (`String` /
+ * `StringList`) parameter, per bag INSTANCE (issue
+ * [#2036](https://github.com/go-to-k/cdkd/issues/2036)). `true` is a proof,
+ * `false` a contradiction that no later proof can lift.
+ *
+ * Keyed by the bag, never by the bare expression, and that is the whole
+ * design. PR #2415 withdrew a process-wide public store because the same
+ * parameter NAME in another region or account can be a `SecureString`: a
+ * verdict written in one scope and never contradicted un-redacted the other.
+ * A bag is one resource's pass, and its writers are the lookups made FOR that
+ * bag — the resolver resolving that record's own references in the region
+ * that answers for them (`cdkd drift`), or `provePublicSsmReferences` asking
+ * in the record's own region (`cdkd state refresh-observed`, `cdkd import`).
+ * So a proof is about the parameter the record names, and nothing outside the
+ * bag can read it. A view or copy of a bag does NOT inherit it: the reader
+ * then finds no proof and over-redacts, which is the safe direction.
+ *
+ * Read only by {@link isProvenPublicExpression}, from the EMPTY-map arm of
+ * `mixedLeafMayCarryPublicReference`.
+ */
+const provenPublicExpressions = new WeakMap<RecordedSecretValues, Map<string, boolean>>();
+
+/** Record that this pass's lookup proved `expression` names a public parameter. */
+export function recordProvenPublicExpression(bag: RecordedSecretValues, expression: string): void {
+  let proofs = provenPublicExpressions.get(bag);
+  if (!proofs) {
+    proofs = new Map();
+    provenPublicExpressions.set(bag, proofs);
+  }
+  if (proofs.get(expression) !== false) proofs.set(expression, true);
+}
+
+/**
+ * Record that this pass saw `expression` answer anything OTHER than a public
+ * type (a `SecureString`, or a type too anomalous to classify). Sticky: a
+ * parameter that answered both ways inside one pass proves nothing.
+ */
+export function contradictProvenPublicExpression(
+  bag: RecordedSecretValues,
+  expression: string
+): void {
+  let proofs = provenPublicExpressions.get(bag);
+  if (!proofs) {
+    proofs = new Map();
+    provenPublicExpressions.set(bag, proofs);
+  }
+  proofs.set(expression, false);
+}
+
+/**
+ * Is `expression` PROVEN public for this bag? Every doubt answers `false`:
+ * no proof, a contradiction, the bag itself holding a resolved secret under
+ * this expression, or any scope's process-wide SECRET verdict for it. The last
+ * one can only cost an over-redaction, which is the direction this module is
+ * allowed to be wrong in.
+ */
+export function isProvenPublicExpression(bag: RecordedSecretValues, expression: string): boolean {
+  if (provenPublicExpressions.get(bag)?.get(expression) !== true) return false;
+  if (recordedSecretExpressions.has(expression)) return false;
+  for (const recorded of bag.values()) {
+    if (recorded === expression) return false;
+  }
+  return true;
+}
+
+/**
  * The plaintexts a pass recorded with NO EXPRESSION behind them — the
  * MASK-ONLY needle class (issue
  * [#2274](https://github.com/go-to-k/cdkd/issues/2274)).

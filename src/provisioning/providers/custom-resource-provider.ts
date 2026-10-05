@@ -127,7 +127,8 @@ export const CR_MASKED_SERVICE_TOKEN_SKIP_REASON =
  * `{{resolve:ssm-secure:...}}` is recorded as that expression, and the delete
  * path used to send it to Lambda as a function name. A plain
  * `{{resolve:ssm:...}}` is normally stored RESOLVED, but one embedded in a
- * longer leaf can still be recorded as its expression (issue #2036), so the
+ * longer leaf can still be recorded as its expression wherever no type proof
+ * was available (issue #2036), so the
  * arm matches any token and its wording does not assume a secret.
  *
  * A skip rather than resolving the reference: CloudFormation does not support

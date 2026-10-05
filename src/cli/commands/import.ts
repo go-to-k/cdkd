@@ -34,13 +34,14 @@ import {
   IntrinsicFunctionResolver,
   isUnboundTemplateParameter,
 } from '../../deployment/intrinsic-function-resolver.js';
+import { PublicSsmProver } from '../../deployment/public-ssm-proof.js';
+import { producerRegionsFromState } from '../../deployment/secret-region-classification.js';
 import {
   carriesSecretMask,
   markSameGenerationBag,
   maskSecretsInText,
   redactSecretsForState,
   STATE_SOURCED_BASELINE_RULES,
-  type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
 import {
   resolveApp,
@@ -1026,7 +1027,8 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         // from the same `outcome === 'imported'` predicate `buildStackState`
         // uses to decide which records it overwrites, so the two cannot
         // disagree about which `properties` are this run's.
-        rebuiltLogicalIdsFrom(rows, stateTemplate)
+        rebuiltLogicalIdsFrom(rows, stateTemplate),
+        targetRegion
       );
 
       // Forward the etag for optimistic locking when state already exists,
@@ -3279,15 +3281,6 @@ function collectMultiple(value: string, previous: string[] | undefined): string[
 }
 
 /**
- * The empty secrets map the observed-capture redaction below passes. Shared
- * and module-level because `redactSecretsForState` only ever READS its map,
- * and because an empty one is not an oversight here but the POSITION-only
- * configuration the call site's note argues for — the same constant
- * `cdkd state refresh-observed` passes for the same reason.
- */
-const NO_RECORDED_SECRETS: RecordedSecretValues = new Map();
-
-/**
  * Populate `observedProperties` for every resource in a freshly-built
  * import StackState by calling the matching provider's
  * `readCurrentState`. Mirrors what `cdkd deploy` does after each
@@ -3322,10 +3315,15 @@ export async function captureObservedForImportedResources(
   providerRegistry: ProviderRegistry,
   logger: ReturnType<typeof getLogger>,
   unsafeObservedBaselineLogicalIds: ObservedBaselineRefusals,
-  rebuiltLogicalIds: ReadonlySet<string>
+  rebuiltLogicalIds: ReadonlySet<string>,
+  // The stack's own region (issue #2036): where `PublicSsmProver` asks for an
+  // `ssm` parameter's type. REQUIRED, with no `stackState.region` fallback,
+  // so a caller cannot quietly prove against the wrong region.
+  region: string
 ): Promise<void> {
   const entries = Object.entries(stackState.resources ?? {});
   if (entries.length === 0) return;
+  const publicSsmProver = new PublicSsmProver(region, producerRegionsFromState(stackState), logger);
 
   await Promise.all(
     entries.map(async ([logicalId, resource]) => {
@@ -3545,9 +3543,9 @@ export async function captureObservedForImportedResources(
           // walk in `resolveImportedProperties` (which runs BEFORE this one at
           // both call sites) has redacted since the original GHSA fix.
           //
-          // The map is EMPTY by construction (`NO_RECORDED_SECRETS`): the
-          // per-resource maps the resolve walk records into are scoped to that
-          // walk, so POSITION is the whole mechanism here — exactly the
+          // The map is EMPTY by construction: the per-resource maps the
+          // resolve walk records into are scoped to that walk, so POSITION is
+          // the whole mechanism here — exactly the
           // configuration `cdkd state refresh-observed` and the deploy's own
           // `drainObservedCaptures` persist under. `resource.properties` is
           // this record's own redacted bag, so where it holds the unresolved
@@ -3587,9 +3585,16 @@ export async function captureObservedForImportedResources(
           // UPDATES that resource, not any `cdkd deploy`:
           // `kickOffAutoRefreshObservedProperties` skips a record whose
           // `observedProperties` is already defined, and a mask is defined.
+          //
+          // EMPTY, but per record (issue #2036): the map carries, by
+          // identity, a PROOF for each plain `ssm` reference in a MIXED leaf of
+          // `properties` that a no-decryption `GetParameter` in this stack's
+          // region answered as public — the shape `cdkd import`'s warn path
+          // leaves behind. Such a leaf keeps the value AWS holds; with no proof
+          // it is refused exactly as before. See `PublicSsmProver`.
           resource.observedProperties = redactSecretsForState(
             observed,
-            NO_RECORDED_SECRETS,
+            await publicSsmProver.proofBagFor(resource.properties ?? {}),
             resource.properties ?? {},
             STATE_SOURCED_BASELINE_RULES
           );
@@ -3974,7 +3979,8 @@ async function importNestedStackChildrenRecursive(args: {
         // in practice every row is rebuilt — passing the set anyway keeps the
         // two call sites the same shape, so a future change to the child walk
         // cannot quietly acquire the preserved-record hazard.
-        rebuiltLogicalIdsFrom(rows, childTemplate)
+        rebuiltLogicalIdsFrom(rows, childTemplate),
+        childRegion
       );
 
       await recordImportOnRollbackJournal(

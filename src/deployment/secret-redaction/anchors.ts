@@ -577,9 +577,10 @@ export const SPELLED_SECRET_REFERENCE_PREFIXES = [
  * So evidence strength decides BLAST RADIUS, not admission: an inferred needle
  * still closes issue #2012's two rows, because both are WHOLE-VALUE positions
  * (an unpaired element and an observed key both hold the plaintext and nothing
- * else). Only the substring arm is withheld. Issue #2036's withdrawn verdict
- * store is what would promote these to certain; until it returns, scoped by
- * region and account, this is the honest bound.
+ * else). Only the substring arm is withheld. A SECRET verdict scoped to this
+ * record's own pass is what would promote these to certain; issue #2036's
+ * per-bag proof answers only the PUBLIC direction, so this is still the honest
+ * bound.
  */
 function expressionSecretIsInferred(expression: string): boolean {
   return !SPELLED_SECRET_REFERENCE_PREFIXES.some((prefix) => expression.startsWith(prefix));
@@ -612,12 +613,14 @@ function expressionSecretIsInferred(expression: string): boolean {
  *   `SecureString` by construction. Requiring a recorded verdict instead would
  *   make the needle unavailable on `cdkd state refresh-observed`, whose process
  *   resolves nothing and therefore records nothing — i.e. it would fail exactly
- *   where issue #2012 is reported. A PROVEN-public verdict would refine this,
- *   and issue #2036's store was to supply one; PR #2415 withdrew it as a
- *   cross-region disclosure, so a genuinely public parameter's resolved value
- *   CAN still seed a needle here. Bounded by the per-record scope and by
- *   {@link MIN_NEEDLE_LENGTH}, and visible as over-redaction rather than as a
- *   leak.
+ *   where issue #2012 is reported. A PROVEN-public verdict would refine this.
+ *   Issue #2036 now files one per BAG (PR #2415's bare store was withdrawn as
+ *   a cross-region disclosure), but this predicate sees an expression and no
+ *   bag, and the only position that consults the proof — a MIXED leaf — learns
+ *   nothing once proven. So a genuinely public parameter's resolved value CAN
+ *   still seed a needle from a WHOLE-token position here. Bounded by the
+ *   per-record scope and by {@link MIN_NEEDLE_LENGTH}, and visible as
+ *   over-redaction rather than as a leak.
  */
 function expressionMaySeedANeedle(expression: string): boolean {
   return (

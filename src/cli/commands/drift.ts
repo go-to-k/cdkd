@@ -7059,12 +7059,16 @@ async function runRevert(
                     // this site has no equivalent of the `--accept` arm's
                     // post-write re-check above, so a leaf that a PUBLIC
                     // reference reached through `cdkd import`'s warn path is
-                    // corrected silently rather than warned about. That case is
-                    // NOT narrow here: the decline for an unrecorded plain `ssm:`
-                    // token only holds with a POPULATED map, and `secrets` at this
-                    // site stays empty for a resource carrying no secret
-                    // reference -- which is the common shape. With an empty map
-                    // the source expression silently wins (issue #2036).
+                    // corrected silently rather than warned about -- UNLESS the
+                    // pass proved it public. `secrets` at this site stays empty
+                    // for a resource carrying no secret reference (the common
+                    // shape), so the populated-map decline does not apply; but it
+                    // is the SAME bag `resolveStateSecretExpressions` resolved the
+                    // baseline into, and the resolver files a per-bag proof for
+                    // each plain `ssm:` token whose parameter answered `String` /
+                    // `StringList` (issue #2036). A mixed leaf whose every token
+                    // is proven keeps the value AWS reported; any other still
+                    // takes the source expression.
                     //
                     // THE RULES CONSTANT FOLLOWS THE DESTINATION, as at the
                     // `--accept` site (issue #2939 — the sibling question that
