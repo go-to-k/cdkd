@@ -25,7 +25,11 @@ import {
 } from '../../utils/display-safe.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { createSecretMasker, SECRET_MASK, type RecordedSecretValues } from '../secret-redaction.js';
-import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
+import {
+  deleteIndeterminateGuards,
+  deleteSkipReason,
+  deleteSkippedMessage,
+} from '../delete-outcome.js';
 import {
   type CompletedOperation,
   type RollbackExecutorContext,
@@ -45,16 +49,67 @@ import {
  * neither needs a second code path; what is NOT correct is the pre-#1762
  * behavior, where every arm read a skip as a successful revert, dropped the
  * state record, and popped the segment.
+ *
+ * Issue [#2422](https://github.com/go-to-k/cdkd/issues/2422): it is also where
+ * every rollback delete arm persists the result's indeterminate guards, as a
+ * `RESOURCE_GUARD_INDETERMINATE` event with `operation: 'DELETE'` (the event
+ * describes the guard, and the run's verb is already on `RUN_STARTED`).
+ * Recorded BEFORE the skip check, so a guard on a delete that then skipped is
+ * not lost to the throw. `guardScope` is required so that a new arm cannot
+ * call this helper and drop the guard.
  */
 export function throwIfDeleteSkipped(
   result: void | ResourceDeleteResult,
   logicalId: string,
   physicalId: string,
-  duringClause: string
+  duringClause: string,
+  guardScope: RollbackDeleteGuardScope
 ): void {
+  recordRollbackDeleteGuards(result, logicalId, physicalId, guardScope);
   const reason = deleteSkipReason(result);
   if (reason === undefined) return;
   throw new Error(deleteSkippedMessage(logicalId, physicalId, reason, duringClause));
+}
+
+/** What a rollback delete arm hands {@link throwIfDeleteSkipped} to record a guard row. */
+export interface RollbackDeleteGuardScope {
+  ctx: Pick<RollbackExecutorContext, 'recordEvent'>;
+  stackName: string;
+  /** The type the delete ran as. */
+  resourceType: string;
+  /** The routing layer the delete was dispatched to. */
+  provisionedBy: 'sdk' | 'cc-api' | undefined;
+  /**
+   * The op's masker. `cdkd rollback` forwards events to the store unmasked,
+   * and a replay re-resolves secrets to plaintext, so the arm masks.
+   */
+  mask: MaskerFn;
+}
+
+/**
+ * Persist each indeterminate guard a rollback delete reported, with the
+ * destroy runner's payload. `reason` names the physical id, and both go
+ * through the op's masker: a resolved secret can name a resource.
+ */
+function recordRollbackDeleteGuards(
+  result: void | ResourceDeleteResult,
+  logicalId: string,
+  physicalId: string,
+  scope: RollbackDeleteGuardScope
+): void {
+  for (const guard of deleteIndeterminateGuards(result)) {
+    scope.ctx.recordEvent?.({
+      eventType: 'RESOURCE_GUARD_INDETERMINATE',
+      stackName: scope.stackName,
+      operation: 'DELETE',
+      logicalId,
+      resourceType: scope.resourceType,
+      ...(scope.provisionedBy && { provisionedBy: scope.provisionedBy }),
+      ...(physicalId && { physicalId: scope.mask(physicalId) }),
+      guard: guard.guard,
+      reason: scope.mask(guard.reason),
+    });
+  }
 }
 
 /** The `--skip-final-snapshot` flag name cited by every final-snapshot refusal (`names.ts`). */

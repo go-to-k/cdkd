@@ -783,7 +783,7 @@ async function replayFailedOperationsUnbound(
                 ? ' — DeletionPolicy: Snapshot NOT taken (--skip-final-snapshot)'
                 : '')
           );
-          const { provider } = ctx.providerRegistry.getProviderFor({
+          const { provider, provisionedBy: deleteRoutedVia } = ctx.providerRegistry.getProviderFor({
             resourceType: op.resourceType,
             provisionedBy: deleteProvisionedBy,
           });
@@ -828,7 +828,15 @@ async function replayFailedOperationsUnbound(
             failedCreateDelete,
             op.logicalId,
             op.physicalId!,
-            'while deleting the partially-created resource (--revert-failed)'
+            'while deleting the partially-created resource (--revert-failed)',
+            {
+              ctx,
+              stackName,
+              resourceType: op.resourceType,
+              // The layer the delete was routed to; a legacy record names none.
+              provisionedBy: deleteRoutedVia,
+              mask,
+            }
           );
           delete stateResources[op.logicalId];
           await options.afterOp?.(op.logicalId);

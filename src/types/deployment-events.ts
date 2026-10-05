@@ -106,13 +106,22 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  *   resource was deleted). Deliberately not `RESOURCE_SUCCEEDED` either,
  *   which carries no `reason`.
  *
- *   NOT `RESOURCE_FAILED`, and that is a reachability fact rather than a
- *   preference: a guard is reported by RETURNING it on
- *   `ResourceDeleteResult`, so a delete that THROWS carries nothing back and
- *   the destroy runner's emit — which sits inside the `try` — never runs. A
- *   failed delete therefore cannot have a companion guard row today. Do not
- *   restate the pairing as covering all three outcomes; an earlier revision
- *   of this block did, and it described an unreachable state.
+ *   A guard is reported by RETURNING it on `ResourceDeleteResult`, so a
+ *   delete that THROWS carries nothing back and records no guard row. On
+ *   `cdkd destroy` that means the row never accompanies a `RESOURCE_FAILED`.
+ *   On `cdkd deploy` and on a rollback it can (issue
+ *   [#2422](https://github.com/go-to-k/cdkd/issues/2422)): there the guarded
+ *   delete is often one step of a larger operation (a replacement's delete,
+ *   then its create), and when the delete returned and a LATER step failed,
+ *   the guard row still records the delete that ran.
+ *
+ *   `operation` is always `'DELETE'`, the call the guard ran on — also when
+ *   that delete is an internal step of an UPDATE (a replacement, a
+ *   `--recreate-via-*` recreate, the cleanup of a replaced resource, the
+ *   update-not-supported fallback), whose own outcome row keeps
+ *   `operation: 'UPDATE'`. A rollback records this same type, not a
+ *   `ROLLBACK_`-prefixed sibling: the row describes the guard, and the run's
+ *   verb is already on `RUN_STARTED`.
  * - `ROLLBACK_*` — deploy-failure rollback phase (started / per-resource
  *   outcome / finished).
  * - `ROLLBACK_RESOURCE_SKIPPED` — a rollback op the replay DECLINED and left

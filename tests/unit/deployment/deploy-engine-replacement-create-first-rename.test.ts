@@ -147,6 +147,8 @@ function makeEngine(
     recreateViaCcApi?: boolean;
     forceStatefulRecreation?: boolean;
     provisionedBy?: 'sdk' | 'cc-api';
+    /** Collects the deployment events the engine records (issue #2422). */
+    events?: Array<{ eventType: string; provisionedBy?: string; operation?: string }>;
   } = {}
 ): InstanceType<typeof DeployEngine> {
   return new DeployEngine(
@@ -178,6 +180,12 @@ function makeEngine(
     {
       ...(opts.replace !== undefined && { replace: opts.replace }),
       ...(opts.forceStatefulRecreation === true && { forceStatefulRecreation: true }),
+      ...(opts.events !== undefined && {
+        eventRecorder: {
+          runId: 'run-1',
+          record: (event: { eventType: string }) => opts.events!.push(event),
+        },
+      }),
       ...((opts.recreateViaSdkProvider === true || opts.recreateViaCcApi === true) && {
         recreateTargets: {
           stackName: 'MyStack',
@@ -1482,5 +1490,56 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
       expect.objectContaining({ knownPhysicalId: theirArn })
     );
     expect(h.callOrder).toEqual(['import']);
+  });
+});
+
+// Issue #2422: the guard row of a create-first replacement's delete names the
+// layer that delete was ROUTED to. The record says `sdk`; every route here is
+// Cloud Control, so a site that reads the record's layer instead is caught.
+describe('DeployEngine — the routed layer on a create-first replacement guard row (#2422)', () => {
+  let h: Harness;
+
+  beforeEach(() => {
+    h = makeHarness('AWS::Lambda::Function', { withImport: false });
+    (h.provider.delete as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      h.callOrder.push('delete');
+      return {
+        outcome: 'deleted',
+        indeterminateGuards: [{ guard: 'g', reason: 'probe could not be answered' }],
+      };
+    });
+  });
+
+  function guardRoutes(
+    events: Array<{ eventType: string; provisionedBy?: string; operation?: string }>
+  ): string[] {
+    return events
+      .filter((e) => e.eventType === 'RESOURCE_GUARD_INDETERMINATE')
+      .map((e) => `${e.operation}|${e.provisionedBy}`);
+  }
+
+  it('the UPDATE-not-supported fallback, creating first for a rename', async () => {
+    const events: Array<{ eventType: string; provisionedBy?: string; operation?: string }> = [];
+    const err = await provision(makeEngine(h, { provisionedBy: 'cc-api', events }), {
+      recorded: 'my-fn',
+      desired: 'free-name',
+      replacement: false,
+    });
+
+    expect(err).toBeNull();
+    expect(h.callOrder).toEqual(['update', 'create', 'delete']);
+    expect(guardRoutes(events)).toEqual(['DELETE|cc-api']);
+  });
+
+  it('the --recreate-via-cc-api recreate, creating first for a rename', async () => {
+    const events: Array<{ eventType: string; provisionedBy?: string; operation?: string }> = [];
+    const err = await provision(
+      makeEngine(h, { recreateViaCcApi: true, provisionedBy: 'cc-api', events }),
+      { recorded: 'my-fn', desired: 'free-name' }
+    );
+
+    expect(err).toBeNull();
+    expect(h.callOrder).toEqual(['create', 'delete']);
+    expect(guardRoutes(events)).toEqual(['DELETE|cc-api']);
   });
 });

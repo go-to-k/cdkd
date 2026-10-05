@@ -17,6 +17,7 @@ import { bold, gray, green, yellow } from '../../utils/colors.js';
 import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
+import { reportDeleteGuards } from '../delete-guard-scope.js';
 import {
   renderNameHeldElsewhere,
   replacementOldHoldsSentName,
@@ -296,10 +297,11 @@ export async function updateByReplacement(
   // — a loud API error, a silent leak, or (where the two types'
   // physical-id namespaces overlap) the deletion of an unrelated live
   // resource of the new type.
-  const oldDeleteProvider = this.providerRegistry.getProviderFor({
+  const oldDeleteRoute = this.providerRegistry.getProviderFor({
     resourceType: oldResourceType,
     provisionedBy: currentResource.provisionedBy,
-  }).provider;
+  });
+  const oldDeleteProvider = oldDeleteRoute.provider;
 
   // Whether an EQUAL physical id on the two halves names the SAME
   // resource — what the two name-idempotent guards below assume. True
@@ -363,6 +365,7 @@ export async function updateByReplacement(
       createProvider: replaceProvider,
       createProps: replaceProps,
       deleteProvider: oldDeleteProvider,
+      deleteProvisionedBy: oldDeleteRoute.provisionedBy,
       deleteProperties: currentResource.properties,
       secrets: updateSecrets,
       change: nameChange,
@@ -442,6 +445,12 @@ export async function updateByReplacement(
       // Issue #1762: same reasoning as the delete-first fallback —
       // this destroy is load-bearing, so a skip has to fail the
       // resource rather than let the create run beside a live old one.
+      // Issue #2422: before the skip check below, which throws.
+      reportDeleteGuards(recreateDeleteResult, {
+        physicalId: currentResource.physicalId,
+        resourceType: oldResourceType,
+        provisionedBy: oldDeleteRoute.provisionedBy,
+      });
       const recreateSkipReason = deleteSkipReason(recreateDeleteResult);
       if (recreateSkipReason !== undefined) {
         throw new Error(
@@ -756,7 +765,8 @@ export async function updateByReplacement(
         replaceProvider,
         replaceProps,
         updateSecrets,
-        updateReplacePolicy
+        updateReplacePolicy,
+        oldDeleteRoute.provisionedBy
       );
     }
 
@@ -835,7 +845,8 @@ export async function updateByReplacement(
         replaceProvider,
         replaceProps,
         updateSecrets,
-        updateReplacePolicy
+        updateReplacePolicy,
+        oldDeleteRoute.provisionedBy
       );
     }
 
@@ -897,7 +908,8 @@ export async function updateByReplacement(
           currentResource.properties,
           cleanupFinalSnapshotId,
           updateReplacePolicy,
-          updateSecrets
+          updateSecrets,
+          oldDeleteRoute.provisionedBy
         );
       }
     }

@@ -27,6 +27,7 @@ import {
   withPriorAttempts,
 } from '../prior-attempt-scope.js';
 import { withStackRecords } from '../stack-records-scope.js';
+import { type ReportedDeleteGuard, collectDeleteGuards } from '../delete-guard-scope.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -189,25 +190,67 @@ export async function provisionResource(
   // is an `AWS::CloudFormation::Stack`. Added to `counts` only once the row
   // has succeeded, beside the row's own outcome, never in place of it.
   let nestedChildUnaddressed: NestedChildUnaddressed | undefined;
+  // Issue #2422: the indeterminate guards this row's delete sites reported —
+  // the template DELETE, and the replacement / recreate / cleanup /
+  // update-not-supported fallback deletes inside an UPDATE.
+  const deleteGuards: ReportedDeleteGuard[] = [];
   try {
     await withResourceDeadline(
       async () => {
-        const { value: bodyResult, unaddressed } = await collectNestedChildUnaddressed(() =>
-          this.provisionResourceBody(
-            logicalId,
-            change,
-            stateResources,
-            stackName,
-            template,
-            parameterValues,
-            conditions,
-            counts,
-            progress
-          )
-        );
-        deleteSkipped = bodyResult?.deleteSkipped;
-        updatePartial = bodyResult?.updatePartial;
-        nestedChildUnaddressed = unaddressed;
+        try {
+          const { value: bodyResult, unaddressed } = await collectDeleteGuards(deleteGuards, () =>
+            collectNestedChildUnaddressed(() =>
+              this.provisionResourceBody(
+                logicalId,
+                change,
+                stateResources,
+                stackName,
+                template,
+                parameterValues,
+                conditions,
+                counts,
+                progress
+              )
+            )
+          );
+          deleteSkipped = bodyResult?.deleteSkipped;
+          updatePartial = bodyResult?.updatePartial;
+          nestedChildUnaddressed = unaddressed;
+        } finally {
+          // The ONE emission site for the deploy path's guard rows, in a
+          // `finally` so a guard survives a later throw in the same row (a
+          // `'skipped'` replacement delete fails the resource right after the
+          // guarded delete returned). Runs before the row's own outcome event
+          // on both paths, mirroring the destroy runner's order -- except
+          // after a timeout: the deadline rejects while the body keeps
+          // running, so a guard reported later lands after RESOURCE_FAILED,
+          // or is dropped if the run's recorder has already finalized.
+          //
+          // `operation: 'DELETE'` even when the row is an UPDATE: the guard
+          // ran on the DELETE call, which is what the row describes. The
+          // row's own outcome event keeps `operation: 'UPDATE'`. Payload as
+          // in `destroy-runner.ts`; `reason` is masked by `recordEvent`, and
+          // the physical id with this resource's own secrets. That bag holds
+          // only what THIS run resolved for the row: a template DELETE
+          // resolves nothing, so its id goes out as destroy and `cdkd state`
+          // show it, and an old id derived from a since-rotated secret is
+          // not in the new bag either.
+          for (const guard of deleteGuards.splice(0)) {
+            this.recordEvent({
+              eventType: 'RESOURCE_GUARD_INDETERMINATE',
+              stackName,
+              operation: 'DELETE',
+              logicalId,
+              resourceType: guard.resourceType,
+              ...(guard.provisionedBy && { provisionedBy: guard.provisionedBy }),
+              ...(guard.physicalId && {
+                physicalId: this.maskForResource(logicalId, guard.physicalId),
+              }),
+              guard: guard.guard,
+              reason: guard.reason,
+            });
+          }
+        }
       },
       {
         warnAfterMs,

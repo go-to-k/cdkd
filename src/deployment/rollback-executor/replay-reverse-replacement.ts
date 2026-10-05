@@ -30,6 +30,7 @@ import {
 import {
   safe,
   throwIfDeleteSkipped,
+  type RollbackDeleteGuardScope,
   rollbackRetainsNewResource,
   retainedSurvivorMessages,
   rollbackFinalSnapshotId,
@@ -328,11 +329,26 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // already re-created and state already points at it -- and the
   // `deleteNewFirst` site is unaffected, since its throw still
   // propagates.
-  const resolveNewDeleteProvider = (): ResourceProvider =>
+  const resolveNewDeleteRoute = (): {
+    provider: ResourceProvider;
+    provisionedBy: 'sdk' | 'cc-api' | undefined;
+  } =>
     ctx.providerRegistry.getProviderFor({
       resourceType: op.resourceType,
       provisionedBy: current.provisionedBy ?? op.provisionedBy,
-    }).provider;
+    });
+  // Issue #2422: what the two deletes of the NEW copy record a guard row with,
+  // naming the layer `resolveNewDeleteRoute` actually routed the delete to (a
+  // legacy record names none).
+  const newDeleteGuardScope = (
+    provisionedBy: 'sdk' | 'cc-api' | undefined
+  ): RollbackDeleteGuardScope => ({
+    ctx,
+    stackName,
+    resourceType: op.resourceType,
+    provisionedBy,
+    mask,
+  });
   // go-to-k/cdkd#4225: an `AWS::IAM::Policy` rename is journaled with a
   // new physical id (its name), so its rollback reverses it here: the
   // re-create puts the old name, and the delete of the new copy after it
@@ -616,7 +632,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         current,
         op.provisionedBy
       );
-      const deleteNewFirst = await resolveNewDeleteProvider().delete(
+      const deleteNewFirstRoute = resolveNewDeleteRoute();
+      const deleteNewFirst = await deleteNewFirstRoute.provider.delete(
         op.logicalId,
         current.physicalId,
         op.resourceType,
@@ -636,7 +653,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         deleteNewFirst,
         op.logicalId,
         current.physicalId,
-        'while clearing the new resource so the old one could be re-created'
+        'while clearing the new resource so the old one could be re-created',
+        newDeleteGuardScope(deleteNewFirstRoute.provisionedBy)
       );
     }
     deletedNewFirst = true;
@@ -887,7 +905,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         current,
         op.provisionedBy
       );
-      const deleteNewAfterRecreate = await resolveNewDeleteProvider().delete(
+      const deleteNewAfterRecreateRoute = resolveNewDeleteRoute();
+      const deleteNewAfterRecreate = await deleteNewAfterRecreateRoute.provider.delete(
         op.logicalId,
         current.physicalId,
         op.resourceType,
@@ -909,7 +928,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         deleteNewAfterRecreate,
         op.logicalId,
         current.physicalId,
-        'while deleting the new resource after re-creating the old one'
+        'while deleting the new resource after re-creating the old one',
+        newDeleteGuardScope(deleteNewAfterRecreateRoute.provisionedBy)
       );
     } catch (deleteError) {
       // Issue #2038: this arm runs AFTER `resolveReplayProps` resolved

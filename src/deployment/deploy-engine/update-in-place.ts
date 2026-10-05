@@ -31,6 +31,7 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { CdkdError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
+import { reportDeleteGuards } from '../delete-guard-scope.js';
 import {
   renderNameHeldElsewhere,
   replacementRequestsDifferentName,
@@ -695,6 +696,14 @@ export async function updateInPlace(
         // the old one alive and untracked. Deliberately OUTSIDE the
         // catch: the classifier above reads "already gone" out of an
         // error MESSAGE, and a skip must never be read that way.
+        // Issue #2422: before the skip check below, which throws.
+        reportDeleteGuards(fallbackDeleteResult, {
+          physicalId: currentResource.physicalId,
+          resourceType,
+          // The layer `updateProvider` was routed to, which can differ from
+          // the record's (a silent-drop auto-route, `--pin-cc-api`).
+          provisionedBy: updateDecision.provisionedBy,
+        });
         const fallbackSkipReason = deleteSkipReason(fallbackDeleteResult);
         if (fallbackSkipReason !== undefined) {
           throw new Error(
@@ -721,6 +730,7 @@ export async function updateInPlace(
                 createProvider: replProvider,
                 createProps: replProps,
                 deleteProvider: updateProvider,
+                deleteProvisionedBy: updateDecision.provisionedBy,
                 deleteProperties: currentProps,
                 secrets: updateSecrets,
                 change: fallbackNameChange,

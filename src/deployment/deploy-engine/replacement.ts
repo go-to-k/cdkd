@@ -22,6 +22,7 @@ import { green } from '../../utils/colors.js';
 import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
+import { reportDeleteGuards } from '../delete-guard-scope.js';
 import {
   type ReplacementNameChange,
   probeErrorMeansNameHeld,
@@ -175,7 +176,9 @@ export async function replaceDeleteFirstAndRecreate(
   // the rule above and then break it three lines on. The `CreateContext` is
   // built here from this argument, so the provider call is unchanged.
   secrets: RecordedSecretValues,
-  updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'
+  updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined,
+  /** The layer `oldDeleteProvider` was routed to, for a guard row (issue #2422). */
+  oldDeleteProvisionedBy: 'sdk' | 'cc-api' | undefined
 ): Promise<Awaited<ReturnType<ResourceProvider['create']>>> {
   const createContext: CreateContext = { maskSecrets: createSecretMasker(secrets) };
   // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the OLD
@@ -242,6 +245,12 @@ export async function replaceDeleteFirstAndRecreate(
   // either collide or, for a type with no name conflict, leave two live
   // resources with state describing one. Checked outside the catch above so
   // the wrapping never sees it (a return value, not a throw).
+  // Issue #2422: before the skip check below, which throws.
+  reportDeleteGuards(deleteResult, {
+    physicalId: currentResource.physicalId,
+    resourceType: oldResourceType,
+    provisionedBy: oldDeleteProvisionedBy,
+  });
   const replaceSkipReason = deleteSkipReason(deleteResult);
   if (replaceSkipReason !== undefined) {
     throw new Error(
@@ -554,6 +563,8 @@ export async function createFirstThenDeleteOld(
     createProvider: ResourceProvider;
     createProps: Record<string, unknown>;
     deleteProvider: ResourceProvider;
+    /** The layer `deleteProvider` was routed to, for a guard row (issue #2422). */
+    deleteProvisionedBy: 'sdk' | 'cc-api' | undefined;
     deleteProperties: Record<string, unknown>;
     secrets: RecordedSecretValues;
     change: ReplacementNameChange;
@@ -656,7 +667,8 @@ export async function createFirstThenDeleteOld(
     input.deleteProperties,
     finalSnapshotIdentifier,
     input.deletePolicy,
-    secrets
+    secrets,
+    input.deleteProvisionedBy
   );
   return createResult;
 }
@@ -679,7 +691,9 @@ export async function deleteReplacedAfterCreate(
   deleteProperties: Record<string, unknown>,
   finalSnapshotIdentifier: string | undefined,
   updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  /** The layer `deleteProvider` was routed to, for a guard row (issue #2422). */
+  deleteProvisionedBy: 'sdk' | 'cc-api' | undefined
 ): Promise<void> {
   // Initialized because the catch below can leave it unassigned.
   let deleteResult: void | ResourceDeleteResult = undefined;
@@ -714,6 +728,12 @@ export async function deleteReplacedAfterCreate(
       safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}`
     );
   }
+  // Issue #2422.
+  reportDeleteGuards(deleteResult, {
+    physicalId: currentResource.physicalId,
+    resourceType: oldResourceType,
+    provisionedBy: deleteProvisionedBy,
+  });
   const skipReason = deleteSkipReason(deleteResult);
   if (skipReason !== undefined) {
     this.logger.warn(

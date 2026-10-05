@@ -222,7 +222,7 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
         : '')
   );
   // Route via the SAME provider the CREATE landed on (#614).
-  const { provider } = ctx.providerRegistry.getProviderFor({
+  const { provider, provisionedBy: deleteRoutedVia } = ctx.providerRegistry.getProviderFor({
     resourceType: op.resourceType,
     provisionedBy: deleteProvisionedBy,
   });
@@ -255,7 +255,15 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
     createRollbackDelete,
     op.logicalId,
     op.physicalId,
-    'while rolling back its CREATE'
+    'while rolling back its CREATE',
+    {
+      ctx,
+      stackName,
+      resourceType: op.resourceType,
+      // The layer the delete was routed to; a legacy record names none.
+      provisionedBy: deleteRoutedVia,
+      mask,
+    }
   );
   delete stateResources[op.logicalId];
   logger.info(`  Rollback: ${safe(op.logicalId)} deleted successfully`);
