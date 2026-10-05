@@ -700,7 +700,9 @@ export async function updateInPlace(
         reportDeleteGuards(fallbackDeleteResult, {
           physicalId: currentResource.physicalId,
           resourceType,
-          provisionedBy: currentResource.provisionedBy,
+          // The layer `updateProvider` was routed to, which can differ from
+          // the record's (a silent-drop auto-route, `--pin-cc-api`).
+          provisionedBy: updateDecision.provisionedBy,
         });
         const fallbackSkipReason = deleteSkipReason(fallbackDeleteResult);
         if (fallbackSkipReason !== undefined) {
@@ -728,6 +730,7 @@ export async function updateInPlace(
                 createProvider: replProvider,
                 createProps: replProps,
                 deleteProvider: updateProvider,
+                deleteProvisionedBy: updateDecision.provisionedBy,
                 deleteProperties: currentProps,
                 secrets: updateSecrets,
                 change: fallbackNameChange,

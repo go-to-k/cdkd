@@ -221,7 +221,10 @@ export async function provisionResource(
           // `finally` so a guard survives a later throw in the same row (a
           // `'skipped'` replacement delete fails the resource right after the
           // guarded delete returned). Runs before the row's own outcome event
-          // on both paths, mirroring the destroy runner's order.
+          // on both paths, mirroring the destroy runner's order -- except
+          // after a timeout: the deadline rejects while the body keeps
+          // running, so a guard reported later lands after RESOURCE_FAILED,
+          // or is dropped if the run's recorder has already finalized.
           //
           // `operation: 'DELETE'` even when the row is an UPDATE: the guard
           // ran on the DELETE call, which is what the row describes. The

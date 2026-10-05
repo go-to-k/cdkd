@@ -85,10 +85,11 @@ export async function provisionDelete(
   // Schema v7+: route DELETE through the layer recorded on state
   // (`provisionedBy: 'cc-api'` → Cloud Control; absent / `'sdk'`
   // → SDK provider — legacy default).
-  const deleteProvider = this.providerRegistry.getProviderFor({
+  const deleteRoute = this.providerRegistry.getProviderFor({
     resourceType,
     provisionedBy: currentResource.provisionedBy,
-  }).provider;
+  });
+  const deleteProvider = deleteRoute.provider;
 
   this.logger.debug(`Deleting ${logicalId} (${resourceType})`);
   // Issue #1762: what the provider actually DID. `undefined` (the
@@ -167,7 +168,9 @@ export async function provisionDelete(
   reportDeleteGuards(deleteResult, {
     physicalId: currentResource.physicalId,
     resourceType,
-    provisionedBy: currentResource.provisionedBy,
+    // The layer the delete was ROUTED to, which a legacy record without
+    // `provisionedBy` does not name.
+    provisionedBy: deleteRoute.provisionedBy,
   });
 
   // Issue #1762: handled OUTSIDE the catch above on purpose — a skip is

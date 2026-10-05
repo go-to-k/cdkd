@@ -129,7 +129,10 @@ describe('DeployEngine — indeterminate guards on deploy-path deletes (#2422)',
   ): InstanceType<typeof DeployEngine> {
     const mockProviderRegistry = {
       getProvider: vi.fn().mockReturnValue(provider),
-      getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' as const }),
+      // Every delete is ROUTED to Cloud Control while the record says `sdk`
+      // (a silent-drop auto-route, `--pin-cc-api`): the guard row must carry
+      // the layer the delete actually ran on, not the record's.
+      getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'cc-api' as const }),
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
@@ -179,10 +182,8 @@ describe('DeployEngine — indeterminate guards on deploy-path deletes (#2422)',
         properties,
         attributes: {},
         dependencies: [],
-        // The RECORD's layer, which the guard row must carry: the label
-        // inference (`sdk` from the registry's routing of the template) is
-        // the wrong source for a delete routed by state.
-        provisionedBy: 'cc-api',
+        // Disagrees with the routed layer on purpose (see `getProviderFor`).
+        provisionedBy: 'sdk',
       },
     };
   }

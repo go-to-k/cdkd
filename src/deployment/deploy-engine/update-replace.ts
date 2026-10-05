@@ -297,10 +297,11 @@ export async function updateByReplacement(
   // — a loud API error, a silent leak, or (where the two types'
   // physical-id namespaces overlap) the deletion of an unrelated live
   // resource of the new type.
-  const oldDeleteProvider = this.providerRegistry.getProviderFor({
+  const oldDeleteRoute = this.providerRegistry.getProviderFor({
     resourceType: oldResourceType,
     provisionedBy: currentResource.provisionedBy,
-  }).provider;
+  });
+  const oldDeleteProvider = oldDeleteRoute.provider;
 
   // Whether an EQUAL physical id on the two halves names the SAME
   // resource — what the two name-idempotent guards below assume. True
@@ -364,6 +365,7 @@ export async function updateByReplacement(
       createProvider: replaceProvider,
       createProps: replaceProps,
       deleteProvider: oldDeleteProvider,
+      deleteProvisionedBy: oldDeleteRoute.provisionedBy,
       deleteProperties: currentResource.properties,
       secrets: updateSecrets,
       change: nameChange,
@@ -447,7 +449,7 @@ export async function updateByReplacement(
       reportDeleteGuards(recreateDeleteResult, {
         physicalId: currentResource.physicalId,
         resourceType: oldResourceType,
-        provisionedBy: currentResource.provisionedBy,
+        provisionedBy: oldDeleteRoute.provisionedBy,
       });
       const recreateSkipReason = deleteSkipReason(recreateDeleteResult);
       if (recreateSkipReason !== undefined) {
@@ -763,7 +765,8 @@ export async function updateByReplacement(
         replaceProvider,
         replaceProps,
         updateSecrets,
-        updateReplacePolicy
+        updateReplacePolicy,
+        oldDeleteRoute.provisionedBy
       );
     }
 
@@ -842,7 +845,8 @@ export async function updateByReplacement(
         replaceProvider,
         replaceProps,
         updateSecrets,
-        updateReplacePolicy
+        updateReplacePolicy,
+        oldDeleteRoute.provisionedBy
       );
     }
 
@@ -904,7 +908,8 @@ export async function updateByReplacement(
           currentResource.properties,
           cleanupFinalSnapshotId,
           updateReplacePolicy,
-          updateSecrets
+          updateSecrets,
+          oldDeleteRoute.provisionedBy
         );
       }
     }

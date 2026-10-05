@@ -176,7 +176,9 @@ export async function replaceDeleteFirstAndRecreate(
   // the rule above and then break it three lines on. The `CreateContext` is
   // built here from this argument, so the provider call is unchanged.
   secrets: RecordedSecretValues,
-  updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'
+  updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate',
+  /** The layer `oldDeleteProvider` was routed to, for a guard row (issue #2422). */
+  oldDeleteProvisionedBy?: 'sdk' | 'cc-api'
 ): Promise<Awaited<ReturnType<ResourceProvider['create']>>> {
   const createContext: CreateContext = { maskSecrets: createSecretMasker(secrets) };
   // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the OLD
@@ -247,7 +249,7 @@ export async function replaceDeleteFirstAndRecreate(
   reportDeleteGuards(deleteResult, {
     physicalId: currentResource.physicalId,
     resourceType: oldResourceType,
-    provisionedBy: currentResource.provisionedBy,
+    provisionedBy: oldDeleteProvisionedBy ?? currentResource.provisionedBy,
   });
   const replaceSkipReason = deleteSkipReason(deleteResult);
   if (replaceSkipReason !== undefined) {
@@ -561,6 +563,8 @@ export async function createFirstThenDeleteOld(
     createProvider: ResourceProvider;
     createProps: Record<string, unknown>;
     deleteProvider: ResourceProvider;
+    /** The layer `deleteProvider` was routed to, for a guard row (issue #2422). */
+    deleteProvisionedBy?: 'sdk' | 'cc-api';
     deleteProperties: Record<string, unknown>;
     secrets: RecordedSecretValues;
     change: ReplacementNameChange;
@@ -663,7 +667,8 @@ export async function createFirstThenDeleteOld(
     input.deleteProperties,
     finalSnapshotIdentifier,
     input.deletePolicy,
-    secrets
+    secrets,
+    input.deleteProvisionedBy
   );
   return createResult;
 }
@@ -686,7 +691,9 @@ export async function deleteReplacedAfterCreate(
   deleteProperties: Record<string, unknown>,
   finalSnapshotIdentifier: string | undefined,
   updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  /** The layer `deleteProvider` was routed to, for a guard row (issue #2422). */
+  deleteProvisionedBy?: 'sdk' | 'cc-api'
 ): Promise<void> {
   // Initialized because the catch below can leave it unassigned.
   let deleteResult: void | ResourceDeleteResult = undefined;
@@ -725,7 +732,7 @@ export async function deleteReplacedAfterCreate(
   reportDeleteGuards(deleteResult, {
     physicalId: currentResource.physicalId,
     resourceType: oldResourceType,
-    provisionedBy: currentResource.provisionedBy,
+    provisionedBy: deleteProvisionedBy ?? currentResource.provisionedBy,
   });
   const skipReason = deleteSkipReason(deleteResult);
   if (skipReason !== undefined) {
