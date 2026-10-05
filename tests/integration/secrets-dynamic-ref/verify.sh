@@ -4326,7 +4326,9 @@ fi
 # Two independent signals beside the value: no "NOT recorded" warning for THIS
 # record (the line names its logical id; another resource's warning is not
 # evidence about this one), and the summary that counts an accepted resource.
-if grep -F "${F4_LID}" <<< "${F4_OUT}" | grep -qF "was NOT recorded"; then
+# No pipe into `grep -q` (SIGPIPE under pipefail; see the note near diag_output).
+f4_lid_lines=$(grep -F "${F4_LID}" <<< "${F4_OUT}" || true)
+if [[ "${f4_lid_lines}" == *"was NOT recorded"* ]]; then
   echo "FAIL: run A: --accept reported the public change as NOT recorded" >&2
   accept_fail=1
 fi
@@ -4353,7 +4355,8 @@ else
   accept_fail=1
 fi
 assert_no_plaintext "'cdkd drift --accept' in Phase 1f4 run B" "${F4_OUT}"
-if ! grep -F "${F4_LID}" <<< "${F4_OUT}" | grep -qF "was NOT recorded"; then
+f4_lid_lines=$(grep -F "${F4_LID}" <<< "${F4_OUT}" || true)
+if [[ "${f4_lid_lines}" != *"was NOT recorded"* ]]; then
   echo "FAIL: run B: --accept did not warn that ${F4_LID}'s unvouched value was NOT recorded — wording drifted?" >&2
   diag_output "${F4_OUT}"
   accept_fail=1
