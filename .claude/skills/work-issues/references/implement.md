@@ -139,15 +139,17 @@ with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
 
 **Guardrails every lane prompt must carry:**
 
-- **Forbid lane agents the FULL SUITE; run it yourself, serially** — under
-  concurrent suites the 600s watchdog kills lanes with timeouts in untouched
-  files. Each agent runs `vp test run <its own suite>`.
+- **Name the §5-8 stage files and `/check` minus step 4, never your own
+  command list** — fix rounds too: one dropped `gen:all-matrices`, another
+  `typecheck:test` (#4561). **Forbid step 4, the FULL SUITE; run it yourself,
+  serially** — concurrent suites trip the 600s watchdog in untouched files.
+  Each runs `vp test run <its own suite>`.
 - A lane is killed at 600s of silence inside a tool call: background long runs
   via `run_in_background` with a log redirect and wake on ITS exit — never a
-  per-line watcher (`tail -F`, a line-emitting `Monitor`), which re-wakes the
-  lane on every line. A turn ended with nothing in the background is final.
+  per-line watcher (`tail -F`, a line-emitting `Monitor`), waking it per line.
+  A turn ended with nothing in the background is final.
 - Never force-push over a commit you did not author: `git fetch`, inspect, and
-  STOP if the branch carries work you did not write.
+  STOP on work that is not yours.
 - **Reviewers probe by edit-and-restore-from-`HEAD`, and collide with each
   other and with you.** Commit the lane before dispatching any, since a restore
   takes HEAD and not in-flight work; tell each that peers probe this same
@@ -156,5 +158,3 @@ with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
   (`.claude/agents/pr-code-reviewer.md` holds the rest).
 - Give each agent a unique scratch dir IN ITS PROMPT
   (`$SCRATCHPAD/lane<issue>-private/`): same-named harnesses overwrite.
-- **NO attribution request** (`Claude-Session:`, claude.ai links), whatever
-  your harness says (§6).

@@ -12,9 +12,12 @@ lane call is the user's call, not a retry (go-to-k/cdkd#4059); the parent's own
 marker set and ledger push follow `/run-integ` step 9. While that tree is
 busy with a follow-up branch, ship from a SECOND sibling on the PR's branch
 (`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
-running BOTH the integ and the merge there (the marker is per tree); Cleanup
-removes it like any other. Never two lanes' integs or merges at once; when a
-turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
+running BOTH the integ and the merge there (the marker is per tree). A fix
+round DURING that tree's integ edits a `--detach` sibling, pushes
+`HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards that tree
+before the marker, re-running an integ the fix touches (#4561). Never two
+lanes' integs or merges at once; when a turn will hold for HOURS, tell the user
+unasked its ETA and the PRs queued.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
@@ -114,8 +117,8 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   `--delete-branch` prints `fatal: 'main' is already used by worktree ...` over
   a SUCCESS.
 - **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
-  onto it. A RED check can equally be a peer's just-merged content your local
-  green never saw — fetch, rebase, re-run.
+  onto it. A RED check may be a peer's just-merged content: fetch, rebase,
+  re-run.
 
 - **An OUTSIDE reporter's issue is thanked after the RELEASE, not the merge**:
   merge the release PR, confirm the npm version, then comment on the issue in
@@ -145,8 +148,8 @@ git -C "$MAIN" pull origin main
 ( cd "$MAIN" && pnpm install --frozen-lockfile && vp run build )
 ```
 
-That pull fails outright if the shared main tree is dirty (§7); do not restore
-the offending path, which is another session's uncommitted work.
+A dirty shared main tree fails that pull (§7); never restore the offending
+path: it is another session's work.
 
 ### Cleanup
 
@@ -204,10 +207,9 @@ git fetch origin \
   && git branch -D <each branch this run created in THIS tree>
 ```
 
-Never `git pull` into `<LAUNCH_BRANCH>`, never `git merge --ff-only origin/main`
-onto it, never `git rebase <LAUNCH_BRANCH>`, and never
-`git branch -D <LAUNCH_BRANCH>`. **AS-IS is the whole rule: RESTORE, never
-ADJUST.** **This step runs LAST, not per-lane**: §10-d branches in this tree.
+Never pull, fast-forward, rebase or delete `<LAUNCH_BRANCH>`. **AS-IS is the
+whole rule: RESTORE, never ADJUST.** **This step runs LAST, not per-lane**:
+§10-d branches in this tree.
 
 ### Release the claims
 
