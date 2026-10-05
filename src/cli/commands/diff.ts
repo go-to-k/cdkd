@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   appOptions,
   commonOptions,
@@ -14,7 +14,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
-import { stringifyJsonPayload } from '../../utils/display-safe.js';
+import { safeMsg, stringifyJsonPayload } from '../../utils/display-safe.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -59,14 +59,58 @@ import {
   renderDiffTree,
   treeHasChanges,
   countBlocking,
+  treeDestructiveChanges,
   treeIsWorthRendering,
   type DiffTreeNode,
 } from './diff-recursive.js';
+import { formatDestructiveChange } from '../../analyzer/destructive-changes.js';
 
 /**
- * Signals that `cdkd diff --fail` detected at least one change. Carries no
- * message — the diff report was already printed before throwing, so the
- * handler only needs the exit code. Mirrors `cdkd drift`'s
+ * The `--fail-on` values: which kind of change makes `cdkd diff` exit 1. The
+ * AWS CDK CLI's `cdk diff --fail-on` (aws/aws-cdk-cli#2020, #2011) also takes
+ * `broadening`, which cdkd does not offer: it has no security diff to decide it.
+ */
+export const DIFF_FAIL_ON_VALUES = ['never', 'any-change', 'destructive'] as const;
+export type DiffFailOn = (typeof DIFF_FAIL_ON_VALUES)[number];
+
+/**
+ * Parse one `--fail-on` value. A REPEATED `--fail-on` is refused rather than
+ * letting the last one win, as upstream refuses it: a CI gate written as
+ * `--fail-on=destructive --fail-on=never` would otherwise be silently disabled.
+ */
+export function parseFailOn(value: string, previous: DiffFailOn | undefined): DiffFailOn {
+  if (previous !== undefined) {
+    throw new InvalidArgumentError(`--fail-on can only be given once, got: ${previous}, ${value}`);
+  }
+  if (!(DIFF_FAIL_ON_VALUES as readonly string[]).includes(value)) {
+    throw new InvalidArgumentError(`Allowed choices are ${DIFF_FAIL_ON_VALUES.join(', ')}.`);
+  }
+  return value as DiffFailOn;
+}
+
+/**
+ * Fold `--fail` / `--no-fail` / `--fail-on` into one value. `--fail` is an
+ * alias for `any-change` and `--no-fail` for `never`; combining either with
+ * `--fail-on` is refused, naming the equivalent `--fail-on` value, as upstream
+ * does. Neither given: `never`, the default `cdkd diff` has always had.
+ */
+export function resolveFailOn(options: { fail?: boolean; failOn?: DiffFailOn }): DiffFailOn {
+  if (options.failOn !== undefined && options.fail !== undefined) {
+    throw new CdkdError(
+      options.fail
+        ? '--fail cannot be used with --fail-on, use --fail-on=any-change instead of --fail'
+        : '--no-fail cannot be used with --fail-on, use --fail-on=never instead of --no-fail',
+      'INCOMPATIBLE_OPTIONS'
+    );
+  }
+  if (options.failOn !== undefined) return options.failOn;
+  return options.fail === true ? 'any-change' : 'never';
+}
+
+/**
+ * Signals that `cdkd diff --fail-on` detected a change of the kind it fails on.
+ * Carries no message — the diff report was already printed before throwing, so
+ * the handler only needs the exit code. Mirrors `cdkd drift`'s
  * `DriftDetectedError` (exit 1 = "non-zero outcome", not "command crashed").
  */
 class DiffDetectedError extends CdkdError {
@@ -137,6 +181,7 @@ async function diffCommand(
     all?: boolean;
     recursive?: boolean;
     fail?: boolean;
+    failOn?: DiffFailOn;
     json?: boolean;
     region?: string;
     profile?: string;
@@ -149,6 +194,8 @@ async function diffCommand(
 ): Promise<void> {
   // Awaited first, so provider construction below stays synchronous once the
   // stack client scope / globals are set (see `loadProviderClasses`).
+  // Before any work: an incompatible flag pair is a usage error.
+  const failOn = resolveFailOn(options);
   const providerClasses = await loadProviderClasses();
   const logger = getLogger();
 
@@ -474,18 +521,36 @@ async function diffCommand(
       }
     }
 
-    // 6. --fail (CDK parity with `cdk diff --fail`): exit 1 when any change is
-    // detected. With --recursive this covers the whole nested-stack tree, so
-    // CI can gate on tree-wide drift.
-    // BEFORE `--fail`, mirroring how `cdkd scrub` ranks a refusal above its
-    // own `--fail`: when both are true the user needs the one that says the
-    // deploy cannot start, not the one that says something changed.
+    // 6. --fail-on (CDK parity with `cdk diff --fail-on`): exit 1 on any change
+    // (`any-change`, alias `--fail`) or only on one that replaces, deletes or
+    // orphans a resource (`destructive`). With --recursive this covers the
+    // whole nested-stack tree, so CI can gate on tree-wide changes.
+    // The refusal check runs BEFORE it, mirroring how `cdkd scrub` ranks a
+    // refusal above its own `--fail`: when both are true the user needs the
+    // one that says the deploy cannot start, not the one that says something
+    // changed.
     const blockingCount = trees.reduce((n, tree) => n + countBlocking(tree), 0);
     if (blockingCount > 0) {
       throw new DeployRefusalPreviewError(blockingCount);
     }
-    if (options.fail && trees.some(treeHasChanges)) {
+    if (failOn === 'any-change' && trees.some(treeHasChanges)) {
       throw new DiffDetectedError();
+    }
+    if (failOn === 'destructive') {
+      const destructive = trees.flatMap(treeDestructiveChanges);
+      if (destructive.length > 0) {
+        // `error`, so it reaches stderr under `--json` too, where stdout is
+        // the payload (which carries the same list per node).
+        // Each line is rendered through the display helpers already.
+        const lines = destructive.map((change) => '  ' + formatDestructiveChange(change));
+        logger.error(
+          [
+            safeMsg`\n❌  Found ${destructive.length} destructive change(s) (--fail-on=destructive):`,
+            ...lines,
+          ].join('\n')
+        );
+        throw new DiffDetectedError();
+      }
     }
   } finally {
     for (const { clients } of stackRegionScopes.values()) clients.destroy();
@@ -509,10 +574,22 @@ export function createDiffCommand(): Command {
       'Recurse into each AWS::CloudFormation::Stack row and diff every nested-stack child against its own deployed state (DFS order). Default is non-recursive, matching cdk diff.',
       false
     )
+    // No default on `--fail`: `resolveFailOn` must tell "not given" from
+    // `--no-fail` to refuse either beside `--fail-on`.
     .option(
       '--fail',
-      'Exit with code 1 when any change is detected (matches cdk diff --fail). With --recursive, considers the whole nested-stack tree.',
-      false
+      'Exit with code 1 when any change is detected (matches cdk diff --fail). Alias for --fail-on=any-change.'
+    )
+    .option('--no-fail', 'Never exit with code 1 for a change. Alias for --fail-on=never.')
+    .addOption(
+      new Option(
+        '--fail-on <kind>',
+        'Exit with code 1 when the diff contains the given kind of change: "any-change" fails on any difference, "destructive" only on changes that replace, delete or orphan a resource, "never" does not fail (default). With --recursive, considers the whole nested-stack tree. Cannot be used with --fail / --no-fail.'
+      )
+        // `choices` for the help text; the `argParser` after it replaces the
+        // parser `choices` installs, so it also refuses a repeated flag.
+        .choices(DIFF_FAIL_ON_VALUES)
+        .argParser(parseFailOn)
     )
     .option(
       '--json',

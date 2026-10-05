@@ -817,6 +817,11 @@
       ]
     },
     {
+      "name": "diff-fail-on-destructive",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "diff-intrinsic-target-change",
       "annotated": true,
       "scenarios": []
@@ -3176,6 +3181,7 @@
     "cognito-userpool-user-ref",
     "cross-region-concurrent-stacks",
     "custom-resource-noecho-nested",
+    "diff-fail-on-destructive",
     "dynamodb-autoscaling",
     "dynamodb-globaltable-implied-stream",
     "dynamodb-gsi-update",

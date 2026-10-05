@@ -115,7 +115,8 @@ instead.
 - To comment the environment URL on the PR, read stack outputs with
   `cdkd state show '<stack>' --json`.
 - To gate a PR without deploying, `cdkd diff --fail` exits `1` when any
-  change is detected (and `cdkd drift --json` machine-checks live
+  change is detected, and `cdkd diff --fail-on=destructive` only when a
+  change would replace, delete or orphan a resource (and `cdkd drift --json` machine-checks live
   divergence). See [Exit codes](cli-reference.md#exit-codes) for
   per-command semantics.
 

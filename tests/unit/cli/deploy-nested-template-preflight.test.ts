@@ -152,6 +152,7 @@ vi.mock('@aws-sdk/client-sts', () => ({
 }));
 
 vi.mock('../../../src/cli/config-loader.js', () => ({
+  loadCdkJson: vi.fn(() => null),
   resolveApp: vi.fn(() => 'fake-app-cmd'),
   resolveCaptureObservedState: vi.fn(() => false),
   resolveAutoAssetStorage: vi.fn(() => false),

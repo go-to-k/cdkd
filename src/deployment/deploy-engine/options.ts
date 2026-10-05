@@ -2,6 +2,7 @@ import type { AssetRedirectMap } from '../../assets/asset-redirect.js';
 import type { PreDeleteSnapshotClients } from '../../provisioning/final-snapshot.js';
 import type { DeploymentEventRecorder } from '../../types/deployment-events.js';
 import type { StackState } from '../../types/state.js';
+import type { DestructiveChange } from '../../analyzer/destructive-changes.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import type { ProducerRegionEvidence } from '../producer-regions-scope.js';
 
@@ -421,6 +422,38 @@ export interface DeployEngineOptions {
    * is used.
    */
   finalSnapshotClients?: PreDeleteSnapshotClients;
+
+  /**
+   * `--require-approval` (AWS CDK CLI parity, aws/aws-cdk-cli#2021): which
+   * changes need {@link approveDeployment} to say yes before anything is
+   * provisioned. `any-change` asks whenever the stack has a resource change,
+   * `destructive` only when one replaces, deletes or orphans a resource.
+   * Absent or `never`: no approval. Asked after the diff and the `--dry-run`
+   * return, so a dry run never asks. A nested child engine inherits both
+   * members through the options spread and asks for its own changes when the
+   * parent reaches its row; declining fails that row like any other failure.
+   */
+  requireApproval?: RequireApprovalLevel;
+
+  /**
+   * Asks the operator whether to deploy. Resolves `false` to abort the stack's
+   * deploy before any provider call. Owned by the CLI, which renders the
+   * request, serializes prompts across concurrent stacks and handles `--yes`
+   * and a non-interactive stdin.
+   */
+  approveDeployment?: (request: DeploymentApprovalRequest) => Promise<boolean>;
+}
+
+/** The `--require-approval` levels cdkd implements (CDK's `broadening` needs a security diff cdkd has none of). */
+export type RequireApprovalLevel = 'never' | 'any-change' | 'destructive';
+
+/** What {@link DeployEngineOptions.approveDeployment} is asked to approve. */
+export interface DeploymentApprovalRequest {
+  stackName: string;
+  level: Exclude<RequireApprovalLevel, 'never'>;
+  counts: { create: number; update: number; delete: number };
+  /** The changes that replace, delete or orphan a resource; non-empty under `destructive`. */
+  destructiveChanges: DestructiveChange[];
 }
 
 /**

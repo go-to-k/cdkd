@@ -20,6 +20,7 @@ cdkd deploy MyStack --recreate-via-cc-api MyLambda --yes
 cdkd deploy MyStack --replace --yes
 cdkd deploy MyStack --strict-getatt          # fail on any guessed Fn::GetAtt value
 cdkd deploy MyStack --no-cfn-fallback        # cdkd-state-only cross-stack resolution
+cdkd deploy --require-approval=destructive   # ask before replacing or deleting anything
 ```
 
 ## Options
@@ -36,6 +37,7 @@ cdkd deploy MyStack --no-cfn-fallback        # cdkd-state-only cross-stack resol
 | `--strict-getatt` | deploy | Fail on any `Fn::GetAtt` that falls back to a physical ID, and on any unresolvable Output. |
 | `--allow-unaddressed` | deploy | Exit 0 instead of 2 when the deploy left a resource alive that it no longer tracks. |
 | `--no-cfn-fallback` | deploy, diff | Do not fall back to CloudFormation when a cross-stack reference is missing from cdkd state. |
+| `--require-approval <level>` | deploy | Ask before deploying a stack with any change (`any-change`) or a destructive one (`destructive`). Default `never`. |
 
 ## Which routing flag, when
 
@@ -2013,12 +2015,54 @@ CloudFormation export in the account. Nested-stack child deploys inherit the
 flag from the parent deploy, and `cdkd diff` honors it in its best-effort
 resolvers so preview and apply resolve identically.
 
+## `--require-approval` (deploy)
+
+`--require-approval` asks for a confirmation before a stack's changes are
+deployed, matching `cdk deploy --require-approval`. It is also read from
+`"requireApproval"` in `cdk.json`; the flag wins.
+
+| Level | Asks when the stack has |
+| --- | --- |
+| `never` (default) | nothing — cdkd deploys without asking. |
+| `any-change` | any resource change. |
+| `destructive` | a change that replaces, deletes or orphans an existing resource. |
+
+`destructive` uses the classification of
+[`cdkd diff --fail-on=destructive`](cli-diff.md#destructive) and lists the
+affected resources before the question, so additions and in-place updates
+deploy unattended while anything that could lose data stops for a human:
+
+```console
+$ cdkd deploy --require-approval=destructive
+...
+Destructive changes:
+  MyStack: AWS::DynamoDB::Table Table MyTable794EDED1 will be orphaned
+
+Stack MyStack: 0 to create, 1 to update, 1 to delete.
+Stack includes destructive updates and "--require-approval" is set to 'destructive'.
+Do you wish to deploy these changes? (y/n)
+```
+
+- **The question comes after the diff and before any change.** Answering no
+  fails the stack's deploy with nothing changed (exit `1`). `--dry-run` never
+  asks.
+- **Without a terminal the deploy fails instead of asking**, for example in
+  CI. `--yes` approves without asking.
+- **A nested stack asks for its own changes** when the parent's deploy reaches
+  it. Declining fails that nested-stack row, and the parent rolls back like
+  any other failure.
+- **Stacks deployed in parallel ask one at a time.**
+- **`broadening`, the AWS CDK CLI's default, is not available**: cdkd does not
+  compute a security diff. The flag refuses it; a `"requireApproval":
+  "broadening"` in `cdk.json` is ignored with a warning, so no approval is
+  asked.
+
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | `0` | The deploy finished and every resource cdkd was responsible for was addressed. |
-| `1` | A guard on this page refused the run, or the deploy failed. |
+| `1` | A guard on this page refused the run, a `--require-approval` question was declined or could not be asked, or the deploy failed. |
 | `2` | A partial outcome: a resource left unaddressed, a macro that failed to expand, or an update rejected as unsupported. |
 
 `--allow-unaddressed` turns the first of those `2` cases back into `0`; the

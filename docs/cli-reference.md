@@ -501,7 +501,7 @@ Two commands use `1` for a non-crash outcome, because there the operative
 meaning is "non-zero result", not "the command crashed":
 
 - **`cdkd drift` exits `1` when drift is detected**, including a resource deleted outside cdkd.
-- **`cdkd diff --fail` exits `1` when any change is detected.**
+- **`cdkd diff --fail-on` exits `1` when the diff contains the kind of change it names** — any change (`any-change`, or `--fail`), or one that replaces, deletes or orphans a resource (`destructive`).
 
 `cdkd diff` also exits **`3`** when it finds a condition that would make
 `cdkd deploy` refuse to start — a rollback-orphaned resource whose physical

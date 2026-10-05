@@ -17,6 +17,7 @@ cdkd diff 'MyStage/*'                      # every stack under a stage
 cdkd diff --all                            # every top-level stack in the app
 cdkd diff ParentStack --recursive          # descend into nested stacks
 cdkd diff --all --fail                     # CI gate: exit 1 on any change
+cdkd diff --all --fail-on=destructive      # CI gate: exit 1 only on a replace / delete / orphan
 cdkd diff MyStack --json                   # machine-readable payload
 ```
 
@@ -28,7 +29,8 @@ cdkd diff MyStack --json                   # machine-readable payload
 | `--stack <name>` | — | A single stack name, as an alternative to the positional argument. |
 | `--output <path>` | `cdk.out` | Synthesis output directory. |
 | `--recursive` | off | Descend into each `AWS::CloudFormation::Stack` row and diff every nested child against its own state. |
-| `--fail` | off | Exit `1` when any change is detected. |
+| `--fail-on <kind>` | `never` | Exit `1` when the diff contains that kind of change: `any-change`, `destructive`, or `never`. See [`--fail-on`](#fail-on). |
+| `--fail` / `--no-fail` | off | Aliases for `--fail-on=any-change` / `--fail-on=never`. Cannot be combined with `--fail-on`. |
 | `--json` | off | Emit the diff as JSON instead of human-readable text. |
 | `--use-cdk-bootstrap-assets` | off | Compare against the CDK bootstrap asset destinations verbatim, skipping cdkd's asset-storage redirection. |
 | `--no-cfn-fallback` | fallback on | Do not fall back to CloudFormation when a cross-stack reference is missing from cdkd state. See [`--no-cfn-fallback` (deploy / diff)](cli-deploy-safety.md#no-cfn-fallback-deploy-diff). |
@@ -663,21 +665,63 @@ The warning is suppressed when the record's `outputs` bag is itself unreadable,
 since that is reported on its own and the `exportNames` line would just blame
 the wrong field.
 
-## `--fail`
+## `--fail-on`
 
-`--fail` exits `1` when any change is detected, matching `cdk diff --fail`. An
-Outputs-only change counts, and so does a state record row the diff could not
-read (described under [when the state record is malformed](#when-the-state-record-is-malformed)) — the preview is not
-complete for such a stack. Without the flag, `cdkd diff` exits `0` when changes
-are present, which is `cdk diff`'s default too — but not when the preview found
-a condition that would make `cdkd deploy` refuse, which exits `3` either way.
+`--fail-on` picks which kind of change makes `cdkd diff` exit `1`, matching
+`cdk diff --fail-on`:
 
-With `--recursive`, `--fail` considers the whole nested-stack tree, so CI can
-gate on tree-wide drift with a single command:
+| Value | Exits `1` when |
+| --- | --- |
+| `any-change` | anything changed. `--fail` is an alias. |
+| `destructive` | a change replaces, deletes or orphans an existing resource. |
+| `never` (default) | never. `--no-fail` is an alias. |
+
+`--fail-on` cannot be combined with `--fail` or `--no-fail`, and can be given
+only once; either mistake is refused before synthesis. The AWS CDK CLI's
+`broadening` value is not available: cdkd does not compute a security diff.
+Whatever the value, a condition that would make `cdkd deploy` refuse exits `3`
+(see [Exit codes](#exit-codes)).
+
+With `--recursive`, every value considers the whole nested-stack tree, so CI
+can gate on it with a single command:
 
 ```bash
-cdkd diff ParentStack --recursive --fail
+cdkd diff ParentStack --recursive --fail-on=destructive
 ```
+
+### `any-change`
+
+An Outputs-only change counts, and so does a state record row the diff could
+not read (described under [when the state record is
+malformed](#when-the-state-record-is-malformed)) — the preview is not complete
+for such a stack.
+
+### `destructive`
+
+`destructive` fails only when a change would lose an existing resource, which
+is what a CI gate on a pull request usually wants to catch: a stateful
+resource whose logical ID changed in a refactor, or a property change that
+requires replacement. Additions and in-place updates pass. Each destructive
+change is listed after the diff:
+
+```console
+$ cdkd diff --fail-on=destructive MyStack
+...
+❌  Found 2 destructive change(s) (--fail-on=destructive):
+  MyStack: AWS::S3::Bucket Bucket MyBucketF68F3FF0 will be replaced
+  MyStack: AWS::DynamoDB::Table Table MyTable794EDED1 will be orphaned
+```
+
+| Impact | When |
+| --- | --- |
+| `will be replaced` | A create-only property changes, or the resource's `Type` changes. |
+| `may be replaced` | A create-only property is fed by a value only the deploy can resolve. |
+| `will be destroyed` | The resource leaves the template. |
+| `will be orphaned` | The resource leaves the template under `DeletionPolicy: Retain` or `RetainExceptOnCreate`. |
+
+`may be replaced` fails too: for a gate, a false positive is the safe side.
+`AWS::CDK::Metadata` is never reported. The `--json` payload carries the same
+list per stack as `destructiveChanges`.
 
 ## `--json`
 
@@ -705,6 +749,7 @@ The payload is a flat array of one record per target stack:
     "unreadable": [],
     "unreadableContainers": [],
     "unreadableOrphans": [],
+    "destructiveChanges": [],
     "children": []
   }
 ]
@@ -739,6 +784,11 @@ The payload is a flat array of one record per target stack:
   `unreadableContainers` for `"resources"`. Every string in `unreadable` and
   `unreadableOrphans` is a value the record itself holds, so none of them can
   stand for a container.
+- `destructiveChanges` is **always present**: one
+  `{logicalId, resourceType, constructPath?, impact}` per change that replaces,
+  deletes or orphans a resource, with `impact` one of `WILL_REPLACE`,
+  `MAY_REPLACE`, `WILL_DESTROY`, `WILL_ORPHAN` — what
+  [`--fail-on=destructive`](#destructive) fails on.
 - A change entry carries `ccApi: string[]` when the resource would auto-route
   via Cloud Control API on the next deploy — the machine form of the
   `[via CC API: <props>]` annotation. It is absent when the resource routes via
@@ -1055,8 +1105,8 @@ type names.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | The diff was computed. This is the exit code even when changes are present, unless `--fail` was passed. |
-| `1` | `--fail` was passed and something changed, or the command itself failed. |
+| `0` | The diff was computed. This is the exit code even when changes are present, unless `--fail-on` (or `--fail`) says otherwise. |
+| `1` | The diff contains the kind of change `--fail-on` fails on, or the command itself failed. |
 | `3` | The diff was computed AND `cdkd deploy` would refuse to start. |
 
 The failures behind the second meaning of `1` are a synth crash, an auth error,
