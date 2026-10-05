@@ -12,9 +12,11 @@ lane call is the user's call, not a retry (go-to-k/cdkd#4059); the parent's own
 marker set and ledger push follow `/run-integ` step 9. While that tree is
 busy with a follow-up branch, ship from a SECOND sibling on the PR's branch
 (`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
-running BOTH the integ and the merge there (the marker is per tree); Cleanup
-removes it like any other. Never two lanes' integs or merges at once; when a
-turn will hold for HOURS, tell the user unasked its ETA and the PRs queued.
+running BOTH the integ and the merge there (the marker is per tree). A fix
+round DURING that tree's integ edits a `--detach` sibling and pushes
+`HEAD:<branch>`: bash reads `verify.sh` as it runs (#4561, #4568). Never two
+lanes' integs or merges at once; when a turn will hold for HOURS, tell the user
+unasked its ETA and the PRs queued.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
@@ -204,9 +206,7 @@ git fetch origin \
   && git branch -D <each branch this run created in THIS tree>
 ```
 
-Never `git pull` into `<LAUNCH_BRANCH>`, never `git merge --ff-only origin/main`
-onto it, never `git rebase <LAUNCH_BRANCH>`, and never
-`git branch -D <LAUNCH_BRANCH>`. **AS-IS is the whole rule: RESTORE, never
+Never pull, fast-forward, rebase or delete `<LAUNCH_BRANCH>`. **AS-IS is the whole rule: RESTORE, never
 ADJUST.** **This step runs LAST, not per-lane**: §10-d branches in this tree.
 
 ### Release the claims
