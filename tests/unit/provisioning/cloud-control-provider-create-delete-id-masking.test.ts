@@ -498,6 +498,30 @@ describe('CloudControlProvider create()/delete()/errors withhold a secret-derive
       expect(isUpdateUnsupportedError(error, 'SecretFilter1')).toBe(true);
     });
 
+    it('returns a FROZEN provider error scrubbed, never a TypeError from the field restore', async () => {
+      const frozen = Object.freeze(
+        new ProvisioningError(`refused for Logs|1`, TYPE, 'Filter1', 'Logs|1')
+      );
+      mockCcSend.mockRejectedValue(frozen);
+      const provider = new CloudControlProvider();
+      const error = await caught(
+        provider.update(
+          'Filter1',
+          'Logs|1',
+          TYPE,
+          { ...recorded, FilterName: 'x', FilterPattern: 'A' },
+          { ...recorded, FilterPattern: 'B' },
+          {}
+        )
+      );
+
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(error).not.toBeInstanceOf(TypeError);
+      expect(error.message).toBe(`refused for ${SECRET_MASK}`);
+      // The restore could not redefine it: the clone keeps the scrubbed value.
+      expect((error as ProvisioningError).logicalId).toBe(`Filter${SECRET_MASK}`);
+    });
+
     it('keeps the logical id a name-collision anchor compares', async () => {
       primeCreate({
         OperationStatus: 'FAILED',
@@ -649,7 +673,7 @@ describe('CloudControlProvider create()/delete()/errors withhold a secret-derive
       ['a bare profile', `aws --profile dev ${tail}`],
       ['a command hole', `aws --profile '<profile>' ${tail}`],
       ['a single-quoted profile with a space', `aws --profile 'my profile' ${tail}`],
-      ['a quoted profile with an escaped quote', `aws --profile 'it'\\''s' ${tail}`],
+      ['a quoted profile with an escaped quote and a space', `aws --profile 'it'\\''s prof' ${tail}`],
     ])('matches the whole command with %s', (_label, command) => {
       expect(RESUME_COMMAND.exec(`Check what it did with: ${command} trailing`)?.[0]).toBe(command);
     });
