@@ -114,7 +114,7 @@ jobs:
       # (.claude/rules/package-and-release.md). The check imports node builtins only, so
       # `run-install: false` and no cache: there is nothing to install and no
       # lockfile to key a cache on.
-      - uses: voidzero-dev/setup-vp@24d870228786dc83ae73482406bdd1e7befaec14 # v1
+      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1
         with:
           node-version: "24"
           cache: false
