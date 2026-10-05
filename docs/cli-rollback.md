@@ -156,8 +156,8 @@ the full segment instead.
 ### Failed CREATEs that made their resource
 
 A CREATE whose provider proved the resource was made before the failure (the
-table row above) has no state record. The rollbacks and `cdkd destroy` act on
-its journal entry before they drop it, as CloudFormation's rollback deletes a
+table row above) has no state record. The rollbacks, `cdkd destroy` and a successful deploy act
+on its journal entry before they drop it, as CloudFormation's rollback deletes a
 failed CREATE:
 
 | Path | What happens to the resource |
@@ -166,12 +166,15 @@ failed CREATE:
 | `--no-rollback` failure | Nothing is deleted; the journal keeps the entry for a later `cdkd rollback`. |
 | `cdkd rollback`, with or without `--revert-failed` | Deleted, per its `DeletionPolicy`. Other failed operations still need the flag. |
 | `cdkd destroy` | Deleted first, per its `DeletionPolicy`, before the journal is removed with the state. A journal destroy cannot read is warned about and removed with the state, and nothing it records is deleted. |
-| A later successful `cdkd deploy` | Not covered: the deploy deletes the journal, and the resource stays in AWS untracked. Roll back or destroy first. |
+| A later successful `cdkd deploy` | Deleted, per its `DeletionPolicy`, before the deploy removes the journal; the deploy's own completed CREATE of its type counts as a newer entry. A top-level deploy does the same for each nested stack's journal. A journal the deploy cannot read is warned about and removed, and nothing it records is deleted. |
 
 `Retain` keeps the resource in AWS and `Snapshot` takes the final snapshot, as
 in the table above, and the same ownership checks skip it with a warning. A
 delete that fails keeps the entry: the automatic rollback keeps its full
-segment, and `cdkd destroy` keeps the state and the journal for a re-run.
+segment, `cdkd destroy` keeps the state and the journal for a re-run, and a
+successful deploy keeps the journal with just that entry, warns, and exits `2`
+(`--allow-unaddressed` exits `0`); the next successful deploy or a plain
+`cdkd rollback` retries it.
 
 ## Known limitations
 

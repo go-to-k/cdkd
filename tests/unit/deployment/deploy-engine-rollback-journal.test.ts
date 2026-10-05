@@ -1632,6 +1632,21 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(warned.some((w) => w.includes('were not deleted') && w.includes('cdkd rollback journal-test'))).toBe(true);
     });
 
+    it('a journal rewrite that fails keeps the whole journal and marks the deploy ids superseded', async () => {
+      const engine = buildEngine({ changes: new Map([['A', makeChange('A')]]), deps: { A: [] }, currentEtag: 'e0' });
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+      journal.reduceRollbackJournalToFailedOperations.mockRejectedValue(new Error('PutObject denied'));
+      providerOf(engine).delete.mockImplementation((_id: string, physicalId: string) =>
+        physicalId === 'orphan-stream' ? Promise.reject(new Error('AccessDenied')) : Promise.resolve(undefined)
+      );
+
+      const result = await engine.deploy(stackName, template);
+
+      expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
+      expect(journal.markRollbackJournalSuperseded).toHaveBeenCalledWith(stackName, 'us-east-1', ['A']);
+      expect(result.deleteSkipped).toBe(1);
+    });
+
     it('a DeletionPolicy: Retain orphan is kept in AWS and the journal is still removed', async () => {
       const engine = noChangeEngine();
       journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp({ deletionPolicy: 'Retain' })));

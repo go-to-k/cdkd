@@ -46,7 +46,10 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
   paths ([#4584](https://github.com/go-to-k/cdkd/issues/4584)): the same deploy
   with the automatic rollback deletes the stream; with `ORPHAN_RETAIN=true`
   (`DeletionPolicy: Retain`) it keeps it; and after `--no-rollback`, a plain
-  `cdkd rollback --force` deletes it. Each asserts the journal gone.
+  `cdkd rollback --force` deletes it. A later successful deploy
+  ([#4600](https://github.com/go-to-k/cdkd/issues/4600)): after `--no-rollback`,
+  a deploy without `INJECT_ORPHAN_CREATE` succeeds and deletes the stream, and
+  with `ORPHAN_RETAIN=true` keeps it. Each asserts the journal gone.
 - **Phase S (a skipped op on the automatic path, issue
   [#3338](https://github.com/go-to-k/cdkd/issues/3338))**: deploy with
   `WITH_SKIP_PAIR=true` (a `SkipBucket` holding one object, no

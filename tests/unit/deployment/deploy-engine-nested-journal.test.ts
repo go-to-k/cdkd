@@ -771,5 +771,31 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       expect(backend.reduceRollbackJournalToFailedOperations.mock.calls[0]![0]).toBe(`${STACK}~Child`);
       expect(result.deleteSkipped).toBe(1);
     });
+
+    it('an unreadable child state deletes nothing: a record may own it, so the journal is kept', async () => {
+      const h = harness();
+      h.backend.getState.mockImplementation((name: string) =>
+        name === STACK
+          ? Promise.resolve({
+              state: {
+                version: 8,
+                stackName: STACK,
+                region: REGION,
+                resources: { Child: record('Child', NESTED) },
+                outputs: {},
+                lastModified: 0,
+              },
+              etag: 'e0',
+            })
+          : Promise.reject(new Error('unparseable state.json'))
+      );
+
+      const result = await h.engine.deploy(STACK, templateOf(['Q']));
+
+      expect(childOrphanDeletes(h.provider)).toHaveLength(0);
+      expect(h.backend.deleteRollbackJournal.mock.calls.map((c) => c[0])).toEqual([STACK]);
+      expect(h.backend.reduceRollbackJournalToFailedOperations.mock.calls[0]![0]).toBe(`${STACK}~Child`);
+      expect(result.deleteSkipped).toBe(1);
+    });
   });
 });

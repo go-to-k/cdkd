@@ -118,8 +118,9 @@ export class RollbackCommandStack extends cdk.Stack {
         shardCount: 1,
         retentionPeriodHours: 9000,
       });
-      // go-to-k/cdkd#4584: the Retain arm — every rollback path keeps the
-      // stream in AWS instead of deleting it.
+      // go-to-k/cdkd#4584: the Retain arm — every rollback path, and a later
+      // successful deploy (go-to-k/cdkd#4600), keeps the stream in AWS
+      // instead of deleting it.
       if (process.env.ORPHAN_RETAIN === 'true') {
         orphanStream.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
       }

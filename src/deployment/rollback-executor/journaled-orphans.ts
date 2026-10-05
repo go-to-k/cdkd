@@ -68,8 +68,7 @@ export async function loadJournaledOrphans(
   options: {
     /**
      * Completed ops NEWER than every segment (a successful deploy's own,
-     * go-to-k/cdkd#4600): supersede evidence like a newer segment's, their
-     * logical ids too.
+     * go-to-k/cdkd#4600): supersede evidence like a newer segment's.
      */
     newerOperations?: readonly CompletedOperation[];
     /** What then happens to an unreadable journal; destroy's by default. */
@@ -97,12 +96,7 @@ export async function loadJournaledOrphans(
   // pending-parent segment's completed CREATE is supersede evidence too.
   const newer = options.newerOperations ?? [];
   demoteSupersededOrphans(
-    newer.length === 0
-      ? segments
-      : [
-          ...segments,
-          { operations: newer, supersededLogicalIds: newer.map((op) => op.logicalId) },
-        ],
+    newer.length === 0 ? segments : [...segments, { operations: newer }],
     Array.isArray(rollbackOrphans) ? rollbackOrphans : []
   );
   const out: SegmentOrphans[] = [];
