@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -40,6 +41,11 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *     object into and which has no `autoDeleteObjects`, so its delete FAILS.
  *     The automatic rollback then meets a COMPLETED DELETE it cannot undo — a
  *     skipped op — which must be recorded as an event and keep the journal.
+ *   - `OrphanStream` — a Kinesis stream added ONLY when
+ *     `INJECT_ORPHAN_CREATE=true` (go-to-k/cdkd#1710). `CreateStream`
+ *     succeeds, then the retention follow-up is rejected, so the CREATE fails
+ *     with the stream already in AWS and no state record. The journal must
+ *     carry its physical id so `cdkd rollback --revert-failed` deletes it.
  *   - `FailingQueue` — an SQS queue with an out-of-range
  *     `messageRetentionPeriod` (valid range [60, 1209600]) added ONLY when
  *     `INJECT_FAIL=true`. AWS rejects `CreateQueue`, so the deploy fails. It
@@ -97,6 +103,20 @@ export class RollbackCommandStack extends cdk.Stack {
         messageRetentionPeriod: 9999999,
       });
       for (const d of deps) failing.node.addDependency(d);
+    }
+
+    if (process.env.INJECT_ORPHAN_CREATE === 'true') {
+      // go-to-k/cdkd#1710: a create that SUCCEEDS at AWS and then fails.
+      // `CreateStream` accepts the stream; the follow-up
+      // `IncreaseStreamRetentionPeriod` rejects 9000 hours (AWS's maximum is
+      // 8760), which cdkd does not pre-flight. The L1 is used because the L2
+      // `Stream` refuses the value at synth. Marker is unchanged in this phase,
+      // so the segment is failed-only, the shape a lone failed create leaves.
+      new kinesis.CfnStream(this, 'OrphanStream', {
+        name: `${this.stackName}-orphan-stream`,
+        shardCount: 1,
+        retentionPeriodHours: 9000,
+      });
     }
 
     if (process.env.WITH_SKIP_PAIR === 'true') {

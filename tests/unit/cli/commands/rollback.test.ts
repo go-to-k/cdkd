@@ -3993,3 +3993,161 @@ describe('rollbackCommand — a stack name in prose is never inside cdkd quotes 
     });
   }, 120_000);
 });
+
+/**
+ * go-to-k/cdkd#1710: a proven failed-CREATE orphan has no state record, so the
+ * command names what it deletes, and a later journal entry that took the id
+ * over keeps it from being deleted at all.
+ */
+describe('cdkd rollback --revert-failed: a proven failed-CREATE orphan (go-to-k/cdkd#1710)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const orphanOp = {
+    logicalId: 'O',
+    changeType: 'CREATE',
+    resourceType: 'AWS::Kinesis::Stream',
+    physicalId: 'orphan-stream',
+    provisionedBy: 'sdk',
+    physicalIdRecoveredFromError: true,
+    attemptedProperties: {},
+  };
+
+  function install(segments: unknown[], orphans?: unknown[]): FakeBackend {
+    return installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          lastModified: 1,
+          ...(orphans && { orphans }),
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments,
+      }),
+    });
+  }
+
+  it('deletes it and names its physical id in the plan', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    install([
+      { timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations: [structuredClone(orphanOp)] },
+    ]);
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true });
+    expect(replayProvider.delete).toHaveBeenCalledOnce();
+    expect(replayProvider.delete.mock.calls[0]![1]).toBe('orphan-stream');
+    expect(
+      info.mock.calls
+        .map((c) => String(c[0]))
+        .some((l) => l.includes('[FAILED create, never recorded in state: orphan-stream]'))
+    ).toBe(true);
+  });
+
+  // A later deploy re-created the stream under the same logical id and its
+  // rollback retained it: nothing in state says so, only the newer segment.
+  it('does not delete it when a newer segment recorded an op of its logical id', async () => {
+    install([
+      { timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations: [structuredClone(orphanOp)] },
+      {
+        timestamp: 2,
+        reason: 'auto-rollback-clean',
+        initialDeploy: false,
+        operations: [{ logicalId: 'O', changeType: 'CREATE', resourceType: 'AWS::Kinesis::Stream', physicalId: 'orphan-stream' }],
+      },
+    ]);
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true }).catch(() => undefined);
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+  });
+
+  // The orphan was deleted by hand, the template switched to Retain, and the
+  // redeploy made and orphaned the same stream again. The newer entry's
+  // Retain keeps it; the older entry's Delete must not then remove it.
+  it('does not delete it under an older entry when a newer one of the same id retains it', async () => {
+    install([
+      { timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations: [{ ...structuredClone(orphanOp), deletionPolicy: 'Delete' }] },
+      { timestamp: 2, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations: [{ ...structuredClone(orphanOp), deletionPolicy: 'Retain' }] },
+    ]);
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true }).catch(() => undefined);
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+  });
+
+  // The common retry: the redeploy's CreateStream collided with the orphan's
+  // name (unmarked, no id). The orphan is still deleted.
+  it('still deletes it after a redeploy whose CREATE collided with it', async () => {
+    install([
+      { timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations: [structuredClone(orphanOp)] },
+      {
+        timestamp: 2,
+        reason: 'no-rollback-failure',
+        initialDeploy: false,
+        operations: [],
+        failedOperations: [{ logicalId: 'O', changeType: 'CREATE', resourceType: 'AWS::Kinesis::Stream', provisionedBy: 'sdk' }],
+      },
+    ]);
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true }).catch(() => undefined);
+    expect(replayProvider.delete).toHaveBeenCalledOnce();
+    expect(replayProvider.delete.mock.calls[0]![1]).toBe('orphan-stream');
+  });
+
+  // The default flow's Retain case: a later deploy re-created the stream, its
+  // clean automatic rollback RETAINED it and re-recorded a failed-only segment,
+  // and state keeps the stream only as a rollback-orphan record.
+  it('does not delete it when a rollback-orphan record holds its physical id', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    install(
+      [
+        { timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations: [structuredClone(orphanOp)] },
+      ],
+      [
+        {
+          logicalId: 'Renamed',
+          orphanedAt: 2,
+          state: { physicalId: 'orphan-stream', resourceType: 'AWS::Kinesis::Stream', properties: {}, attributes: {}, dependencies: [] },
+        },
+      ]
+    );
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true }).catch(() => undefined);
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+    // The plan line is where the operator sees the id before confirming.
+    expect(
+      info.mock.calls
+        .map((c) => String(c[0]))
+        .some((l) => l.includes('failed CREATE created orphan-stream before failing'))
+    ).toBe(true);
+  });
+
+  // The plan line is the operator's only view of what is deleted or left; a
+  // name derived from a secret reference must not print.
+  it.each([
+    ['the delete label', true],
+    ['the superseded label', false],
+  ] as const)('masks a secret-derived physical id in %s', async (_label, flag) => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    const secretOp = {
+      ...structuredClone(orphanOp),
+      resourceType: 'AWS::IAM::Role',
+      physicalId: 'alice-secret-role',
+      physicalIdRecoveredFromError: flag,
+      attemptedProperties: { RoleName: '{{resolve:secretsmanager:role-name:SecretString:name::}}' },
+    };
+    install([
+      { timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations: [secretOp] },
+    ]);
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true }).catch(() => undefined);
+    const lines = info.mock.calls.map((c) => String(c[0]));
+    const planLine = lines.find((l) => l.includes(flag ? 'never recorded in state' : 'before failing'));
+    expect(planLine, lines.join('\n')).toBeDefined();
+    expect(planLine).not.toContain('alice-secret-role');
+  });
+});

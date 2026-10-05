@@ -405,6 +405,40 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
   if (o['oldResourceRetained'] !== undefined && typeof o['oldResourceRetained'] !== 'boolean') {
     fail('oldResourceRetained', o['oldResourceRetained'], 'a boolean when present');
   }
+  // go-to-k/cdkd#1710: both COMPUTED by the deploy engine and both select a
+  // `--revert-failed` delete arm for a resource no state record holds, so a
+  // value outside their shape is planted. A misspelled policy would otherwise
+  // fall through to a plain delete.
+  if (
+    o['physicalIdRecoveredFromError'] !== undefined &&
+    typeof o['physicalIdRecoveredFromError'] !== 'boolean'
+  ) {
+    fail(
+      'physicalIdRecoveredFromError',
+      o['physicalIdRecoveredFromError'],
+      'a boolean when present'
+    );
+  }
+  // Only a failed CREATE can have made a resource no record holds; on any
+  // other op the flag would aim a CREATE's delete arm at it.
+  if (o['physicalIdRecoveredFromError'] !== undefined && o['changeType'] !== 'CREATE') {
+    refuseMalformed(
+      shownStack,
+      `${where}.physicalIdRecoveredFromError is only valid on a CREATE (got changeType ${kind(o['changeType'])}).`
+    );
+  }
+  if (
+    o['deletionPolicy'] !== undefined &&
+    !(['Delete', 'Retain', 'Snapshot', 'RetainExceptOnCreate'] as unknown[]).includes(
+      o['deletionPolicy']
+    )
+  ) {
+    fail(
+      'deletionPolicy',
+      o['deletionPolicy'],
+      'one of Delete, Retain, Snapshot, RetainExceptOnCreate when present'
+    );
+  }
   // Issue #2668: this value picks the PROVIDER a replacement's re-create is
   // dispatched at, so a non-string is refused here rather than coerced there.
   if (o['previousResourceType'] !== undefined && typeof o['previousResourceType'] !== 'string') {

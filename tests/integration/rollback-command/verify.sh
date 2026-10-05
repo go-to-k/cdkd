@@ -32,6 +32,14 @@
 #     F2. `cdkd rollback --force --revert-failed`: exit 0. Marker back to v1
 #         AND the failed RevertQueue is force-reverted (retention 3600),
 #         journal gone.
+#   PHASE O (a CREATE that succeeded at AWS, then failed, go-to-k/cdkd#1710):
+#     O1. Deploy with INJECT_ORPHAN_CREATE under --no-rollback: OrphanStream's
+#         CreateStream succeeds, then its retention follow-up is rejected (9000
+#         hours > AWS's 8760 maximum). The stream exists, state has no record,
+#         and the journal's failed op carries the stream name with
+#         physicalIdRecoveredFromError=true.
+#     O2. `cdkd rollback --force --revert-failed`: exit 0, the stream is gone,
+#         journal gone.
 #   PHASE S (a SKIPPED rollback op on the automatic path, go-to-k/cdkd#3338):
 #     S1. Deploy with WITH_SKIP_PAIR=true (clean): SkipBucket + SkipDoomed.
 #         Put one object into SkipBucket (no autoDeleteObjects).
@@ -53,7 +61,8 @@
 #        stack REMOVED ENTIRELY (initialDeploy path), journal GONE.
 #   PHASE 3 (destroy clean):
 #     6. Destroy stack 1: clean, state gone, 0 orphans.
-#   Cleanup (EXIT trap) aggressively removes any orphan SSM params / SQS queues
+#   Cleanup (EXIT trap) aggressively removes any orphan SSM params / SQS queues /
+#   the Kinesis stream
 #   + the events sidecars for BOTH stacks — this test INTENTIONALLY fails a
 #   deploy, so the trap must not leak resources.
 #
@@ -108,6 +117,7 @@ FAILING_QUEUE_NAME="${STACK}-failing-queue"
 INIT_MARKER_NAME="${INIT_STACK}-marker"
 INIT_FAILING_QUEUE_NAME="${INIT_STACK}-failing-queue"
 SKIP_DOOMED_NAME="${STACK}-skip-doomed"
+ORPHAN_STREAM_NAME="${STACK}-orphan-stream"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/rollback-command"
@@ -159,6 +169,39 @@ state_resource_count() { # usage: state_resource_count <state-key>
   echo "${body}" | jq '(.resources // {}) | length'
 }
 
+# --- Whether a stack's cdkd state.json records a logical id (echoes
+# true/false). The state object must exist: a failed read aborts under set -e. ---
+state_has_resource() { # usage: state_has_resource <state-key> <logical-id>
+  aws s3 cp "s3://${STATE_BUCKET}/$1" - | jq --arg id "$2" '(.resources // {}) | has($id)'
+}
+
+# --- Delete PHASE O's stream and wait until it is gone. A stream still
+# CREATING / UPDATING refuses DeleteStream with ResourceInUseException, so that
+# one is retried rather than swallowed. Returns non-zero if it is still there. ---
+delete_orphan_stream() {
+  local out i
+  for i in $(seq 1 36); do
+    if out="$(aws kinesis delete-stream --stream-name "${ORPHAN_STREAM_NAME}" --enforce-consumer-deletion \
+      --region "${REGION}" 2>&1)"; then
+      break
+    fi
+    grep -q 'ResourceNotFoundException' <<<"${out}" && return 0
+    grep -q 'ResourceInUseException' <<<"${out}" || { echo "[verify] delete-stream: ${out}" >&2; return 1; }
+    sleep 5
+  done
+  # Only ResourceNotFoundException is "gone"; any other probe failure is
+  # retried and, if it persists, reported rather than read as gone.
+  for i in $(seq 1 36); do
+    if ! out="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" \
+      --region "${REGION}" 2>&1)"; then
+      grep -q 'ResourceNotFoundException' <<<"${out}" && return 0
+    fi
+    sleep 5
+  done
+  echo "[verify] ${ORPHAN_STREAM_NAME} not confirmed gone: ${out}" >&2
+  return 1
+}
+
 aggressive_cleanup() {
   echo "[verify] aggressive cleanup: sweeping any fixture orphans"
   (
@@ -174,6 +217,8 @@ aggressive_cleanup() {
       aws sqs delete-queue --queue-url "${q_url}" --region "${REGION}" >/dev/null 2>&1 || true
     fi
   done
+  # PHASE O's stream is the resource the phase deliberately orphans.
+  delete_orphan_stream || echo "[verify] cleanup: ${ORPHAN_STREAM_NAME} may still exist -- delete it by hand"
   # PHASE S's bucket holds an object on purpose; empty it before the delete.
   aws s3 rm "s3://${SKIP_BUCKET_NAME}" --recursive >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -563,6 +608,80 @@ fi
 echo "[verify] step F2 ok: Marker back to v1, RevertQueue force-reverted to 3600, journal gone"
 
 # ---------------------------------------------------------------------------
+# PHASE O: a CREATE that succeeded at AWS and then failed (go-to-k/cdkd#1710)
+# ---------------------------------------------------------------------------
+echo "[verify] step O1: deploy ${STACK} with INJECT_ORPHAN_CREATE --no-rollback (expect FAILURE after CreateStream)"
+# A stream left by an earlier, interrupted run would make CreateStream collide
+# and the phase test nothing.
+if ! delete_orphan_stream; then
+  echo "[verify] FAIL: a leftover ${ORPHAN_STREAM_NAME} could not be removed before PHASE O"
+  exit 1
+fi
+set +e
+INJECT_ORPHAN_CREATE=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan.log 2>&1
+ORPHAN_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan.log || true
+if [ "${ORPHAN_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+# The precondition the phase exists for: the stream WAS created. Without it the
+# failure happened before CreateStream and nothing below tests #1710.
+if ! ORPHAN_STATUS="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescriptionSummary.StreamStatus' --output text)"; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} does not exist after the failed deploy -- the CREATE failed before CreateStream, so this phase tests nothing"
+  exit 1
+fi
+echo "[verify] ${ORPHAN_STREAM_NAME} status after the failed deploy: ${ORPHAN_STATUS}"
+if [ "$(state_has_resource "${STATE_KEY}" OrphanStream)" != "false" ]; then
+  echo "[verify] FAIL: state records OrphanStream (expected no record for a CREATE that threw)"
+  exit 1
+fi
+JOURNAL_BODY="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)"
+ORPHAN_OP="$(echo "${JOURNAL_BODY}" | jq -c '[.segments[-1].failedOperations[]? | select(.logicalId == "OrphanStream")] | first // empty')"
+if [ -z "${ORPHAN_OP}" ]; then
+  echo "[verify] FAIL: the journal records no failed op for OrphanStream"
+  exit 1
+fi
+ORPHAN_PID="$(echo "${ORPHAN_OP}" | jq -r '.physicalId // "<absent>"')"
+ORPHAN_FLAG="$(echo "${ORPHAN_OP}" | jq -r '.physicalIdRecoveredFromError // "<absent>"')"
+# Before #1710 the failed CREATE journaled no physical id at all.
+if [ "${ORPHAN_PID}" != "${ORPHAN_STREAM_NAME}" ] || [ "${ORPHAN_FLAG}" != "true" ]; then
+  echo "[verify] FAIL: failed OrphanStream op journaled physicalId=${ORPHAN_PID} physicalIdRecoveredFromError=${ORPHAN_FLAG} (expected ${ORPHAN_STREAM_NAME} / true)"
+  exit 1
+fi
+echo "[verify] step O1 ok: stream created then the CREATE failed; journal carries its id (recovered from the error)"
+
+echo "[verify] step O2: cdkd rollback ${STACK} --force --revert-failed (expect exit 0, the stream deleted)"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --revert-failed > /tmp/rollback-cmd-orphan-rb.log 2>&1
+O2_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-rb.log || true
+if [ "${O2_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: --revert-failed rollback of the orphaned create exited ${O2_RC} (output above)"
+  exit 1
+fi
+if ! grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-rb.log; then
+  echo "[verify] FAIL: rollback output does not mention deleting the partially-created OrphanStream"
+  exit 1
+fi
+# DeleteStream is asynchronous: the stream sits in DELETING before it is gone.
+for _ in $(seq 1 30); do
+  gone_probe aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" && break
+  sleep 5
+done
+assert_gone "OrphanStream ${ORPHAN_STREAM_NAME} still exists after the --revert-failed rollback" \
+  aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the orphan --revert-failed rollback"
+  exit 1
+fi
+echo "[verify] step O2 ok: the orphaned stream was deleted, journal gone"
+
+# ---------------------------------------------------------------------------
 # PHASE S: a SKIPPED rollback op on the automatic path (go-to-k/cdkd#3338)
 # ---------------------------------------------------------------------------
 echo "[verify] step S1: deploy ${STACK} with WITH_SKIP_PAIR=true (clean)"
@@ -743,6 +862,7 @@ assert_gone "Marker ${MARKER_NAME} still exists after destroy" aws ssm get-param
 assert_gone "ReplaceParam ${REPLACE_A_NAME} still exists after destroy" aws ssm get-parameter --name "${REPLACE_A_NAME}" --region "${REGION}"
 assert_gone "RevertQueue ${REVERT_QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${REVERT_QUEUE_NAME}" --region "${REGION}"
 assert_gone "SkipDoomed ${SKIP_DOOMED_NAME} still exists after destroy" aws ssm get-parameter --name "${SKIP_DOOMED_NAME}" --region "${REGION}"
+assert_gone "OrphanStream ${ORPHAN_STREAM_NAME} still exists after destroy" aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}"
 assert_gone "SkipBucket ${SKIP_BUCKET_NAME} still exists after destroy" aws s3api head-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}"
 echo "[verify] step 7a ok: destroy clean"
 

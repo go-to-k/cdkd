@@ -113,8 +113,30 @@ export interface FailedOperation {
   provisionedBy?: 'sdk' | 'cc-api' | undefined;
   /** Pre-op resource state (UPDATE / DELETE; undefined for CREATE). */
   previousState?: ResourceState | undefined;
-  /** Physical ID at op start, if one was known (undefined for CREATE). */
+  /**
+   * Physical ID at op start, if one was known. Undefined for an ordinary
+   * failed CREATE; set on one whose provider proved its create call had
+   * returned before the failure ({@link physicalIdRecoveredFromError}).
+   */
   physicalId?: string | undefined;
+  /**
+   * `true` when {@link physicalId} is the resource a failed CREATE made
+   * before it failed, proved by the provider's `markCreatedBeforeFailure`
+   * (go-to-k/cdkd#1710). No state record holds that resource, so it is what
+   * separates "delete the orphan" from #1198's "a previous `--revert-failed`
+   * already removed it": both are a physical id with no state record. Absent
+   * on a journal an older binary wrote, which keeps the skip. `false` is
+   * `demoteSupersededOrphans`'s verdict that later activity may own the
+   * resource: skipped with a warning, never deleted.
+   */
+  physicalIdRecoveredFromError?: boolean | undefined;
+  /**
+   * The template's `DeletionPolicy`, journaled with
+   * {@link physicalIdRecoveredFromError} (go-to-k/cdkd#1710): the orphan has
+   * no state record to read the policy off, and a plain delete would destroy
+   * what `Retain` / `Snapshot` promised to keep.
+   */
+  deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
   /**
    * The intrinsic-RESOLVED desired properties the failed op attempted to
    * apply, if resolution got that far. Load-bearing for the revert: a
@@ -252,6 +274,7 @@ export type FailedOpActionKind =
   | 'orphan-failed-create-retain' // ↑ under DeletionPolicy Retain → leave in AWS (#1362)
   | 'skip-failed-unknown' // failed CREATE with nothing recorded — cannot act
   | 'skip-failed-noop' // failed DELETE (resource still in place) / already handled
+  | 'skip-failed-superseded' // proven failed-CREATE orphan later activity may own (#1710) — warned, nothing deleted
   | 'skip-failed-mismatch' // failed CREATE whose recorded physical id state no longer names — warned, nothing deleted (go-to-k/cdkd#4552)
   | 'skip-failed-absent' // failed UPDATE with no previousState / not in state
   | 'skip-failed-type-change'; // failed UPDATE that was a Type change — no in-place revert exists (#2668)

@@ -117,14 +117,18 @@ deploy attempted), and `--revert-failed` opts into acting on it:
 | UPDATE | Force-reverted to its pre-deploy properties. The journal records the *attempted* properties, so patch-based providers generate a real undo diff. |
 | UPDATE that changed the resource's `Type` | Skipped with a warning; it was a replacement in flight, and there is no in-place revert of one. |
 | CREATE that recorded a physical id, which state still records | Deleted, honouring its `DeletionPolicy` — see [DeletionPolicy on a rolled-back CREATE](#deletionpolicy-on-a-rolled-back-create). |
+| CREATE that made its resource and then failed (the provider proved its create call returned, e.g. a Kinesis stream whose retention follow-up AWS rejected) | Deleted, honouring the template's `DeletionPolicy` as journaled — this entry is the only record of that resource. Under `Retain` it is left in AWS with no rollback-orphan record (it was never in state), so a later deploy cannot re-adopt it. Deleted only while nothing later can own it. It is skipped with a warning naming the physical id (exit `2`), since the resource may still exist untracked and need manual attention, when a NEWER journal segment holds an operation of its type naming its physical id or previous physical id, or a completed CREATE of its type; when a later segment's removal superseded its logical id; or when a rollback-orphan record holds its logical or physical id. Otherwise state decides: a state resource under its logical id with the same physical id, or one of its type holding that physical id under another logical id, tracks it and the skip is silent; a different physical id under its logical id warns (exit `2`). A redeploy whose create only collided with its name does not stop the delete. Run `--revert-failed` before redeploying a template that re-creates the same name: the newer entry then decides, and this one is only warned about. Providers that prove it today: Kinesis. |
 | CREATE that recorded a physical id, with no state record left | Nothing to do — already cleaned up (a re-run). |
 | CREATE that recorded a physical id other than the one state now records under its logical id | Skipped with a warning (exit `2`); nothing is deleted. The resource it recorded may still exist, untracked: the plan line names it (`recorded <its physical id>, which is not the resource state tracks under this id; not reverted, needs manual attention`). Reached when another resource took the id without an import mark, such as a `cdkd import` by an older cdkd, or when a newer segment's reverted replacement re-created the resource under a new physical id (the recorded one is then usually already gone); a marked import is reported as in [Interaction with `cdkd import`](#interaction-with-cdkd-import). |
 | CREATE that recorded no physical id | Skipped with a warning; there is nothing addressable to act on. A CREATE cdkd refused before anything was applied (another resource already holds its explicit name) is not journaled at all. |
 | DELETE | Nothing to do — the resource is still in place. |
 
 The action only engages when AWS actually provisioned the resource: it requires
-both a recorded physical id and a matching state record, so the policy is never
-applied to a resource that never existed.
+a recorded physical id and either a matching state record or the provider's
+proof that its create call returned, so the policy is never applied to a
+resource that never existed. The physical id a failed create's error names is
+not such proof on its own: it is also the name of a resource the create
+collided with.
 
 Each handled failed operation is stripped from its journal segment immediately.
 A later failure that keeps the segment for a re-run therefore re-attempts only
@@ -140,7 +144,10 @@ After a **clean automatic** rollback the journal is settled to a failed-only
 segment: the completed operations are already reverted, but the failed
 resource's record is kept, so `cdkd rollback --revert-failed` works in the
 default deploy flow too. A plain `cdkd rollback` on such a journal is a no-op
-replay that clears it; the next successful deploy also deletes it. An
+replay that clears it; the next successful deploy also deletes it. For a failed
+CREATE whose resource was made (the row above), run `--revert-failed`: a plain
+rollback or `cdkd destroy` currently drops the journal entry that is that
+resource's only record. An
 automatic rollback that failed or skipped an operation is not clean and keeps
 the full segment instead.
 
@@ -391,7 +398,7 @@ The full cross-command table is in the [CLI Reference](cli-reference.md#exit-cod
 ## Related
 
 - [Rollback](rollback.md) — how automatic and manual rollback fit together
-- [Destroy flags & guards](cli-destroy.md) — the other way out of a failed deploy
+- [Destroy flags & guards](cli-destroy.md) — the other way out of a failed deploy (run `--revert-failed` first if a failed CREATE made its resource: destroy drops that record)
 - [State Management](state-management.md) — state records, locks, and force-unlock
 - [`cdkd gc`](cli-gc.md) — the asset retention a replay depends on
 - [Troubleshooting](troubleshooting.md) — what to do when a rollback fails

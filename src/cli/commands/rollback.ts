@@ -49,6 +49,7 @@ import {
   replayFailedOperations,
   planRollback,
   planFailedOps,
+  demoteSupersededOrphans,
   producerRegionsFromState,
   resolveReplacementOldType,
   type RollbackExecutorContext,
@@ -347,11 +348,13 @@ function safeRoleArn(value: unknown): string {
  * CREATE delete, the in-place `revert`, BOTH reverse-replacement arms (whose
  * re-CREATE writes as well as deletes), and `--revert-failed`'s delete and
  * forced update — requires a CURRENT state row for the op's logical id
- * (`classifyRollbackOp` / `classifyFailedOp`); a completed DELETE is
- * `unrecoverable-delete` and calls nothing. So a record listing no resources can
- * replay nothing against AWS, and is let through for the reason the destroy
- * gives: it is the recovery path, not the hazard. A record listing any can
- * reach every arm, so every arm is refused.
+ * (`classifyRollbackOp` / `classifyFailedOp`), except `--revert-failed`'s delete
+ * of a proven failed-CREATE orphan (go-to-k/cdkd#1710), which has no row and is
+ * counted in `provenOrphans`; a completed DELETE is `unrecoverable-delete` and
+ * calls nothing. So a record listing no resources, under a journal with no
+ * proven orphan to delete, can replay nothing against AWS, and is let through
+ * for the reason the destroy gives: it is the recovery path, not the hazard.
+ * Anything else can reach an arm that calls AWS, so every arm is refused.
  *
  * Its own message rather than the destroy's builder, whose opening, consequence
  * and remedy all speak about a DESTROY. This one offers no command at all — the
@@ -364,7 +367,8 @@ function refuseDivergentRecordRegionForRollback(
   state: StackState,
   stackName: string,
   keyRegion: string,
-  divergentBodyRegion: unknown
+  divergentBodyRegion: unknown,
+  provenOrphans: number
 ): void {
   if (divergentBodyRegion === undefined) return;
   // FAIL CLOSED on a bag this cannot count, as the destroy sibling does.
@@ -373,11 +377,14 @@ function refuseDivergentRecordRegionForRollback(
   const resourceCount = isReadableBag(state.resources)
     ? Object.keys(state.resources).length
     : undefined;
-  if (resourceCount === 0) return;
+  if (resourceCount === 0 && provenOrphans === 0) return;
   const lists =
     resourceCount === undefined
       ? 'its resources map cannot be read'
-      : `it still lists ${resourceCount} resource${resourceCount === 1 ? '' : 's'}`;
+      : resourceCount > 0
+        ? `it still lists ${resourceCount} resource${resourceCount === 1 ? '' : 's'}`
+        : `its journal holds ${provenOrphans} failed create${provenOrphans === 1 ? '' : 's'} ` +
+          `whose resource --revert-failed would delete`;
   throw markNonRetryable(
     new CdkdError(
       // The stack and region are NAMED only when plain, described otherwise:
@@ -539,7 +546,12 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
     case 'revert-failed-update':
       return `  - revert   ${safe(op.logicalId)} (${safe(op.resourceType)}) [FAILED update — remote state unknown, force-applying previous properties]`;
     case 'delete-failed-create':
-      return `  - delete   ${safe(op.logicalId)} (${safe(op.resourceType)}) [FAILED create]`;
+      // go-to-k/cdkd#1710: a proven orphan has no state record, so the journal
+      // is the only source of what is deleted — name it (masked) at the prompt.
+      return op.physicalIdRecoveredFromError === true
+        ? `  - delete   ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) [FAILED create, never recorded in state: ` +
+            `${displacedPhysicalIdShown(op, getLogger()) ?? 'a physical id'}]`
+        : `  - delete   ${safe(op.logicalId)} (${safe(op.resourceType)}) [FAILED create]`;
     case 'delete-failed-create-with-final-snapshot':
       // As `delete-with-final-snapshot` in `actionLabel` (go-to-k/cdkd#4214).
       return (
@@ -552,6 +564,13 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed CREATE recorded no physical id`;
     case 'skip-failed-noop':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed ${safe(op.changeType)} left nothing to revert`;
+    case 'skip-failed-superseded':
+      // go-to-k/cdkd#1710: named (masked) like the mismatch below.
+      return (
+        `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
+        `— failed CREATE created ${displacedPhysicalIdShown(op, getLogger()) ?? 'a physical id'} before failing; ` +
+        `a later deploy or rollback may own it now; not deleted, needs manual attention`
+      );
     case 'skip-failed-mismatch':
       // go-to-k/cdkd#4552: named (masked) as `displacedOpLabel` names it —
       // once the segment pops, this line and the replay's warning are the
@@ -783,6 +802,14 @@ export async function rollbackCommand(
             `State appears corrupted — inspect the bucket manually.`
         );
       }
+      // go-to-k/cdkd#1710: before the plan and every replay, so a proven
+      // failed-CREATE orphan later activity may own is skipped with a warning,
+      // never deleted. A non-array `orphans` is refused below
+      // (`refuseMalformedOrphans`) before anything acts on this verdict.
+      demoteSupersededOrphans(
+        journal.segments,
+        Array.isArray(stateData.state.orphans) ? stateData.state.orphans : []
+      );
       // Issue #3754: a nested child whose OWN deploy failed in a segment's run
       // left its completed ops in its journal, and only `--revert-failed`
       // replays that failed row. Without it the parent's older segments would
@@ -854,7 +881,12 @@ export async function rollbackCommand(
         baseState,
         stackName,
         region,
-        stateData.divergentBodyRegion
+        stateData.divergentBodyRegion,
+        options.revertFailed
+          ? journal.segments
+              .flatMap((seg) => seg.failedOperations ?? [])
+              .filter((op) => op.physicalIdRecoveredFromError === true).length
+          : 0
       );
       const stateResources: Record<string, ResourceState> = { ...baseState.resources };
       // Resources THIS command's replays leave in AWS under

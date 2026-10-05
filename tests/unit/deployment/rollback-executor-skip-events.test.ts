@@ -358,6 +358,26 @@ describe('replayFailedOperations records a ROLLBACK_RESOURCE_SKIPPED event per d
     expect(warns.join('\n')).toContain('it recorded phys-recorded');
   });
 
+  it('skip-failed-superseded: a proven orphan later activity may own (go-to-k/cdkd#1710)', async () => {
+    const del = vi.fn();
+    const { ctx, events, warns } = makeCtx({ delete: del });
+    const op: FailedOperation = {
+      logicalId: 'F',
+      changeType: 'CREATE',
+      resourceType: 'AWS::SQS::Queue',
+      provisionedBy: 'sdk',
+      physicalId: 'phys-orphan',
+      physicalIdRecoveredFromError: false,
+    };
+    const result = await replayFailedOperations([op], {}, 'S', ctx);
+    expect(del).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ failures: 0, warnings: 1, skipped: 1 });
+    expect(result.remainingFailedOps).toEqual([]);
+    expectOneSkip(events, 'F', 'CREATE', 'may own a resource under that id now');
+    expect(JSON.stringify(skips(events))).not.toContain('phys-orphan');
+    expect(warns.join('\n')).toContain('it created phys-orphan before failing');
+  });
+
   it('control: a failed CREATE whose record is already gone stays a silent no-op', async () => {
     // The re-run case `skip-failed-mismatch` was split from: no record at all.
     const del = vi.fn();

@@ -46,6 +46,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { KinesisStreamProvider } from '../../../src/provisioning/providers/kinesis-provider.js';
+import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 
 const ACTIVE = {
   StreamDescription: { StreamName: 'mystream', StreamStatus: 'ACTIVE', StreamARN: 'arn:describe' },
@@ -529,6 +530,25 @@ describe('KinesisStreamProvider create-path PRE-FLIGHT (issue #609)', () => {
       { MaxRecordSizeInKiB: { Ref: 'P' } },
       /MaxRecordSizeInKiB must be a number/,
     ],
+    // go-to-k/cdkd#1710: both values are consumed only AFTER `CreateStream`.
+    [
+      'RetentionPeriodHours (non-numeric)',
+      { RetentionPeriodHours: { Ref: 'P' } },
+      /RetentionPeriodHours must be a number/,
+    ],
+    [
+      'StreamEncryption KMS with no KeyId',
+      { StreamEncryption: { EncryptionType: 'KMS' } },
+      /StreamEncryption selects KMS but KeyId is not a non-empty string/,
+    ],
+    ['RetentionPeriodHours NaN', { RetentionPeriodHours: Number.NaN }, /RetentionPeriodHours must be a number/],
+    ['RetentionPeriodHours Infinity', { RetentionPeriodHours: Infinity }, /RetentionPeriodHours must be a number/],
+    ['RetentionPeriodHours whitespace-only', { RetentionPeriodHours: '   ' }, /RetentionPeriodHours must be a number/],
+    [
+      'StreamEncryption KMS with a whitespace-only KeyId',
+      { StreamEncryption: { EncryptionType: 'KMS', KeyId: '  ' } },
+      /StreamEncryption selects KMS but KeyId is not a non-empty string/,
+    ],
   ])('issues NO AWS call at all when %s is unusable', async (_label, bad, expected) => {
     mockSend.mockResolvedValue(ACTIVE);
 
@@ -557,6 +577,178 @@ describe('KinesisStreamProvider create-path PRE-FLIGHT (issue #609)', () => {
     expect(commandsOfType(EnableEnhancedMonitoringCommand)[0]?.input.ShardLevelMetrics).toEqual([
       'IncomingBytes',
     ]);
+  });
+});
+
+// go-to-k/cdkd#1710: the created-before-failure mark names the stream for
+// the failed-CREATE journal, and only once CreateStream has returned.
+describe('KinesisStreamProvider create: the created-before-failure mark (go-to-k/cdkd#1710)', () => {
+  const provider = new KinesisStreamProvider();
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    warnSpy.mockReset();
+  });
+
+  const nameOf = (c: unknown): string => (c as { constructor: { name: string } }).constructor.name;
+
+  it('marks a failure after CreateStream returned (the retention follow-up rejected)', async () => {
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (nameOf(command) === 'IncreaseStreamRetentionPeriodCommand') {
+        throw new Error('Maximum allowed retention period is 8760 hours.');
+      }
+      return ACTIVE;
+    });
+    const error = await provider
+      .create('L', 'AWS::Kinesis::Stream', { Name: 'mystream', RetentionPeriodHours: 9000 })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(createdBeforeFailure(error, 'L', 'AWS::Kinesis::Stream')).toBe('mystream');
+  });
+
+  it("does not mark CreateStream's own failure (a stream someone else holds)", async () => {
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (nameOf(command) === 'CreateStreamCommand') throw new Error('Stream mystream already exists');
+      return ACTIVE;
+    });
+    const error = await provider
+      .create('L', 'AWS::Kinesis::Stream', { Name: 'mystream' })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect((error as { physicalId?: string }).physicalId).toBe('mystream');
+    expect(createdBeforeFailure(error, 'L', 'AWS::Kinesis::Stream')).toBeUndefined();
+  });
+
+  it('does not mark a pre-flight refusal', async () => {
+    const error = await provider
+      .create('L', 'AWS::Kinesis::Stream', { Name: 'mystream', RetentionPeriodHours: 'abc' })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(createdBeforeFailure(error, 'L', 'AWS::Kinesis::Stream')).toBeUndefined();
+  });
+
+  // A `Ref` to a `Number` parameter resolves to a string; the API field is a
+  // number, so the create sends the converted value.
+  it('sends a numeric-string RetentionPeriodHours as a number', async () => {
+    mockSend.mockResolvedValue(ACTIVE);
+    await provider.create('L', 'AWS::Kinesis::Stream', {
+      Name: 'mystream',
+      RetentionPeriodHours: '48',
+    });
+    const call = mockSend.mock.calls
+      .map((c) => c[0])
+      .find((c) => nameOf(c) === 'IncreaseStreamRetentionPeriodCommand') as {
+      input: { RetentionPeriodHours: unknown };
+    };
+    expect(call.input.RetentionPeriodHours).toBe(48);
+  });
+
+  it('skips an unusable retention on a state replay, and warns', async () => {
+    mockSend.mockResolvedValue(ACTIVE);
+    await provider.create(
+      'L',
+      'AWS::Kinesis::Stream',
+      { Name: 'mystream', RetentionPeriodHours: 'abc' },
+      { replayingState: true }
+    );
+    const sent = mockSend.mock.calls.map((c) => nameOf(c[0]));
+    expect(sent).toContain('CreateStreamCommand');
+    expect(sent).not.toContain('IncreaseStreamRetentionPeriodCommand');
+    expect(sent).not.toContain('DecreaseStreamRetentionPeriodCommand');
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Skipping it would leave the stream UNENCRYPTED while the record says KMS.
+  it('refuses an unusable KMS block even on a state replay, before any call', async () => {
+    mockSend.mockResolvedValue(ACTIVE);
+    await expect(
+      provider.create(
+        'L',
+        'AWS::Kinesis::Stream',
+        { Name: 'mystream', StreamEncryption: { EncryptionType: 'KMS' } },
+        { replayingState: true }
+      )
+    ).rejects.toThrow(/StreamEncryption selects KMS but KeyId is not a non-empty string/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('skips only the follow-up whose value is unusable on a replay', async () => {
+    mockSend.mockResolvedValue(ACTIVE);
+    await provider.create(
+      'L',
+      'AWS::Kinesis::Stream',
+      {
+        Name: 'mystream',
+        RetentionPeriodHours: 'abc',
+        StreamEncryption: { EncryptionType: 'KMS', KeyId: 'alias/k' },
+      },
+      { replayingState: true }
+    );
+    const sent = mockSend.mock.calls.map((c) => nameOf(c[0]));
+    expect(sent).not.toContain('IncreaseStreamRetentionPeriodCommand');
+    expect(sent).toContain('StartStreamEncryptionCommand');
+  });
+});
+
+// go-to-k/cdkd#1710: the UPDATE path reads RetentionPeriodHours as create() does.
+describe('KinesisStreamProvider update: RetentionPeriodHours (go-to-k/cdkd#1710)', () => {
+  const provider = new KinesisStreamProvider();
+  const nameOf = (c: unknown): string => (c as { constructor: { name: string } }).constructor.name;
+  const base = { Name: 'mystream', StreamModeDetails: { StreamMode: 'PROVISIONED' }, ShardCount: 1 };
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    warnSpy.mockReset();
+    mockSend.mockResolvedValue({ ...ACTIVE, ...SUMMARY });
+  });
+
+  it('refuses a non-numeric desired value before any call', async () => {
+    await expect(
+      provider.update('L', 'mystream', 'AWS::Kinesis::Stream', { ...base, RetentionPeriodHours: 'abc' }, base)
+    ).rejects.toThrow(/RetentionPeriodHours must be a number/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('sends a numeric-string desired value as a number', async () => {
+    await provider.update('L', 'mystream', 'AWS::Kinesis::Stream', { ...base, RetentionPeriodHours: '48' }, base);
+    const call = mockSend.mock.calls
+      .map((c) => c[0])
+      .find((c) => nameOf(c) === 'IncreaseStreamRetentionPeriodCommand') as { input: { RetentionPeriodHours: unknown } };
+    expect(call.input.RetentionPeriodHours).toBe(48);
+  });
+
+  it('reads an unusable PREVIOUS value as the default, never refusing it', async () => {
+    await provider.update(
+      'L',
+      'mystream',
+      'AWS::Kinesis::Stream',
+      { ...base, RetentionPeriodHours: 24 },
+      { ...base, RetentionPeriodHours: 'junk' }
+    );
+    const sent = mockSend.mock.calls.map((c) => nameOf(c[0]));
+    expect(sent).not.toContain('IncreaseStreamRetentionPeriodCommand');
+    expect(sent).not.toContain('DecreaseStreamRetentionPeriodCommand');
+  });
+
+  it('leaves the retention as it is on a replay with an unusable desired value, and warns', async () => {
+    await provider.update(
+      'L',
+      'mystream',
+      'AWS::Kinesis::Stream',
+      { ...base, RetentionPeriodHours: 'abc' },
+      { ...base, RetentionPeriodHours: 48 },
+      { replayingState: true }
+    );
+    const sent = mockSend.mock.calls.map((c) => nameOf(c[0]));
+    expect(sent).not.toContain('DecreaseStreamRetentionPeriodCommand');
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 });
 

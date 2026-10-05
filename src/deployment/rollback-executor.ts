@@ -138,6 +138,7 @@ export {
   isReplacementOp,
   classifyRollbackOp,
   classifyFailedOp,
+  demoteSupersededOrphans,
   planFailedOps,
   planRollback,
   sortRollbackCreates,
@@ -643,6 +644,23 @@ async function replayFailedOperationsUnbound(
           break;
         }
 
+        case 'skip-failed-superseded': {
+          // go-to-k/cdkd#1710: a CREATE that made its resource before failing,
+          // but later activity (a newer deploy, a retained re-create) may own
+          // a resource under that id now. Nothing is deleted; the recorded id
+          // is named, masked, since once the op leaves the journal this line is
+          // the only place it appears.
+          logger.warn(
+            safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it created ${mask(String(op.physicalId))} before failing, and a later deploy or rollback may own a resource under that id now; if it is not in use, delete it manually`
+          );
+          recordRollbackSkip(
+            skipScope,
+            op,
+            'The failed CREATE created its resource before failing, but a later deploy or rollback may own a resource under that id now, so the rollback left it as it is; manual attention may be required.'
+          );
+          break;
+        }
+
         case 'skip-failed-unknown': {
           logger.warn(
             `  Rollback: failed CREATE of ${safe(op.logicalId)} (${safe(op.resourceType)}) recorded no ` +
@@ -691,8 +709,8 @@ async function replayFailedOperationsUnbound(
 
         case 'orphan-failed-create-retain': {
           // `DeletionPolicy: Retain` on a FAILED in-flight CREATE (issue
-          // #1362): the resource WAS provisioned (physical id recorded, state
-          // agrees), so the policy applies to its rollback delete — keep it
+          // #1362): the resource WAS provisioned (physical id recorded, and
+          // state agrees or the provider proved it, #1710), so the policy applies to its rollback delete — keep it
           // in AWS and drop the record, exactly as the completed-CREATE
           // rollback does. `RetainExceptOnCreate` deliberately does NOT land
           // here; it keeps deleting.
@@ -706,12 +724,10 @@ async function replayFailedOperationsUnbound(
           // The `orphan-retain` twin's record, for the same reason (issue
           // #2934) — see that arm for why the whole `ResourceState` is kept.
           //
-          // `classifyFailedOp` reaches this verdict only with a physical id
-          // AND a matching state record (an id-less failed CREATE goes to
-          // `skip-failed-unknown`), so the guard here is defence rather than a
-          // reachable branch. It stays because the classification and this
-          // arm are edited independently, and a silently-undefined `state`
-          // would mint a record no consumer can act on.
+          // No record exists for a CREATE whose provider proved it made the
+          // resource before failing (go-to-k/cdkd#1710): nothing is orphaned
+          // FROM state, so no `orphaned` entry is minted — one with an
+          // undefined `state` is a record no consumer can act on.
           if (failedCreateRecord) {
             const orphaned = {
               logicalId: op.logicalId,
@@ -726,7 +742,8 @@ async function replayFailedOperationsUnbound(
           await noteRetainedResource(op.resourceType, op.logicalId);
           logger.info(
             `  Rollback: leaving partially-created ${safe(op.logicalId)} (${safe(op.resourceType)}) in AWS ` +
-              `(DeletionPolicy: Retain) — removed from state`
+              `(DeletionPolicy: Retain)` +
+              (failedCreateRecord ? ' — removed from state' : ' — it was never in state')
           );
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({
@@ -1100,6 +1117,7 @@ async function replayFailedOperationsUnbound(
       // was split from: the record is not the failed op's, so it stands.
       action === 'skip-failed-noop' ||
         action === 'skip-failed-mismatch' ||
+        action === 'skip-failed-superseded' ||
         ownRecord(stateResources, op.logicalId) !== recordBefore
     );
   }

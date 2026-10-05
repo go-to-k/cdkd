@@ -1291,6 +1291,37 @@ describe('a rollback puts back an inline policy its removal took from a record t
     expect(holding()).toEqual({ x: 'd0' });
   });
 
+  it('S1b: a demoted proven orphan of A settles like the mismatch (go-to-k/cdkd#1710)', async () => {
+    // `skip-failed-superseded`: nothing is deleted and A's record is not the
+    // failed op's, so it stands; B's delete then removes `x`: put back.
+    const state: Record<string, ResourceState> = {
+      A: policyRecord('x', 'd0'),
+      B: policyRecord('x', 'dB'),
+    };
+    put('x', 'dB');
+    const writers = new RollbackInlinePolicyWriters();
+    const failed = [
+      {
+        logicalId: 'A',
+        changeType: 'CREATE',
+        resourceType: POLICY,
+        physicalId: 'other-x',
+        provisionedBy: 'sdk',
+        physicalIdRecoveredFromError: false,
+      },
+    ] as FailedOperation[];
+
+    const failedResult = await replayFailedOperations(failed, state, 'S', ctx, {
+      inlinePolicyWriters: writers,
+    });
+    await replayRollback([createOp('B', state['B']!)], state, 'S', ctx, { inlinePolicyWriters: writers });
+
+    expect(failedResult.warnings).toBe(1);
+    expect(policyProvider.delete).toHaveBeenCalledTimes(1);
+    expect(policyProvider.create).toHaveBeenCalledTimes(1);
+    expect(holding()).toEqual({ x: 'd0' });
+  });
+
   it.each([
     ['settles', false, 1],
     ['fails', true, 0],

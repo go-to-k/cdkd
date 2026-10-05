@@ -353,6 +353,33 @@ export function classifyFailedOp(
     // completed-CREATE path, which is what lets both share
     // `prepareCreateRollbackFinalSnapshot`.
     if (!op.physicalId) return 'skip-failed-unknown';
+    // go-to-k/cdkd#1710: a CREATE whose provider proved it made the resource
+    // before failing. No state record EVER held it, so any record now holding
+    // its logical id or its physical id belongs to a LATER operation (a
+    // re-create under the same name, a `cdkd import` under another id) and
+    // owns that resource; deleting it from this journal entry would destroy
+    // what state tracks. Only with no such record is this entry the
+    // resource's sole record, deleted per its JOURNALED policy.
+    // `physicalIdRecoveredFromError: false` is the supersede pass's verdict
+    // (`demoteSupersededOrphans`): later activity may own the resource, so it
+    // is left alone and named for manual attention.
+    if (op.physicalIdRecoveredFromError === false) return 'skip-failed-superseded';
+    if (op.physicalIdRecoveredFromError === true) {
+      if (current) {
+        return current.physicalId === op.physicalId ? 'skip-failed-noop' : 'skip-failed-mismatch';
+      }
+      if (stateHoldsPhysicalId(stateResources, op.resourceType, op.physicalId)) {
+        return 'skip-failed-noop';
+      }
+      const orphanPolicy = effectiveDeletionPolicy(
+        op.resourceType,
+        op.deletionPolicy,
+        op.attemptedProperties
+      );
+      if (orphanPolicy === 'Retain') return 'orphan-failed-create-retain';
+      if (orphanPolicy === 'Snapshot') return 'delete-failed-create-with-final-snapshot';
+      return 'delete-failed-create';
+    }
     if (!current) return 'skip-failed-noop'; // already cleaned up (re-run)
     // go-to-k/cdkd#4552: state names another resource under this id, so the
     // one the failed CREATE recorded may still exist, untracked. Not deleted
@@ -386,6 +413,98 @@ export function classifyFailedOp(
   // another type's resource.
   if (isTypeChangeOp(op)) return 'skip-failed-type-change';
   return 'revert-failed-update';
+}
+
+/** Whether any state record of `resourceType` holds `physicalId`. */
+function stateHoldsPhysicalId(
+  stateResources: Record<string, ResourceState>,
+  resourceType: string,
+  physicalId: string
+): boolean {
+  return Object.values(stateResources).some(
+    (r) => r?.resourceType === resourceType && r.physicalId === physicalId
+  );
+}
+
+/**
+ * Demote every proven failed-CREATE orphan (go-to-k/cdkd#1710) that later
+ * activity may own, setting `physicalIdRecoveredFromError` to `false` so
+ * {@link classifyFailedOp} skips it with a warning (`skip-failed-superseded`)
+ * instead of deleting it.
+ *
+ * The orphan was never in state, so ownership of its resource can only have
+ * moved through a later journal entry or a rollback-orphan record. Demoted
+ * when, for the orphan's resource type:
+ *
+ * - a NEWER segment holds an op whose physical id or `previousState` physical
+ *   id is the orphan's (a re-create, an import, an update of that resource —
+ *   a newer PROVEN orphan of the same id too: that newer entry's replay, with
+ *   its own `DeletionPolicy`, governs the resource);
+ * - a NEWER segment holds a COMPLETED CREATE of that type, whose physical id
+ *   may be the orphan's name (conservative);
+ * - a `supersededLogicalIds` from the orphan's own segment on names its
+ *   logical id (a newer segment was removed after its revert; only logical ids
+ *   survive it, so the match is conservative too); or
+ * - a rollback-orphan record holds its logical id or its physical id (a later
+ *   rollback RETAINED a re-created resource and re-recorded its segment
+ *   without the op).
+ *
+ * NOT demoted by a newer segment that merely exists: the common retry after
+ * the failure collides with the orphan's name, journals a failed CREATE with
+ * no physical id, and owns nothing. The classifier separately skips an orphan
+ * whose ids a state row holds. Mutates the ops in place; returns the count.
+ */
+export function demoteSupersededOrphans(
+  segments: ReadonlyArray<{
+    operations?: ReadonlyArray<SupersedeCandidate> | undefined;
+    failedOperations?: FailedOperation[] | undefined;
+    supersededLogicalIds?: string[] | undefined;
+  }>,
+  orphans: ReadonlyArray<{ logicalId?: unknown; state?: Partial<ResourceState> | undefined }> = []
+): number {
+  let demoted = 0;
+  segments.forEach((segment, s) => {
+    for (const op of segment.failedOperations ?? []) {
+      if (op.changeType !== 'CREATE' || op.physicalIdRecoveredFromError !== true) continue;
+      const newer = segments.slice(s + 1);
+      const superseded =
+        newer.some(
+          (t) =>
+            (t.operations ?? []).some((o) => mayOwn(o, op, true)) ||
+            (t.failedOperations ?? []).some((o) => mayOwn(o, op, false))
+        ) ||
+        segments.slice(s).some((t) => t.supersededLogicalIds?.includes(op.logicalId) === true) ||
+        orphans.some(
+          (o) =>
+            o?.logicalId === op.logicalId ||
+            (o?.state?.resourceType === op.resourceType && o.state?.physicalId === op.physicalId)
+        );
+      if (superseded) {
+        op.physicalIdRecoveredFromError = false;
+        demoted++;
+      }
+    }
+  });
+  return demoted;
+}
+
+/** The fields of a journaled op {@link demoteSupersededOrphans} reads. */
+type SupersedeCandidate = {
+  logicalId?: string | undefined;
+  changeType?: string | undefined;
+  resourceType?: string | undefined;
+  physicalId?: string | undefined;
+  previousState?:
+    | { physicalId?: string | undefined; resourceType?: string | undefined }
+    | undefined;
+};
+
+/** Whether a newer journaled op may own the resource `orphan` names. */
+function mayOwn(o: SupersedeCandidate, orphan: FailedOperation, completed: boolean): boolean {
+  if (o?.resourceType !== orphan.resourceType) return false;
+  if (completed && o.changeType === 'CREATE') return true;
+  if (o.physicalId === orphan.physicalId) return true;
+  return o.previousState?.physicalId === orphan.physicalId;
 }
 
 /** Build the plan items for a segment's failed ops (issue #1198). */
