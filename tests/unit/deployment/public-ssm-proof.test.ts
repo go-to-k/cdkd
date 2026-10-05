@@ -80,7 +80,10 @@ import {
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { PublicSsmProver } from '../../../src/deployment/public-ssm-proof.js';
-import { isProvenPublicExpression } from '../../../src/deployment/secret-redaction/mask-only.js';
+import {
+  clearRecordedSecretExpressions,
+  isProvenPublicExpression,
+} from '../../../src/deployment/secret-redaction/mask-only.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 
 const HOME = 'us-east-1';
@@ -248,6 +251,35 @@ describe('the resolver files the per-bag proof (cdkd drift)', () => {
     const bag: RecordedSecretValues = new Map();
     await resolver.resolveDynamicReferences(`x-${ODD}`, ctx(bag));
     expect(isProvenPublicExpression(bag, ODD)).toBe(false);
+  });
+
+  it('a LATER SecureString answer in the same bag voids an earlier proof (comparison path)', async () => {
+    const bag: RecordedSecretValues = new Map();
+    await new IntrinsicFunctionResolver(HOME).resolveDynamicReferences(`a-${PUBLIC}`, ctx(bag));
+    expect(isProvenPublicExpression(bag, PUBLIC)).toBe(true);
+    // Retyped between two lookups, answered on the no-decryption path: nothing
+    // is recorded into the bag there, so only the contradiction can void it.
+    prime(HOME, PUBLIC_NAME, { Parameter: { Value: 'AQICAH-ciphertext', Type: 'SecureString' } });
+    await new IntrinsicFunctionResolver(HOME).resolveDynamicReferences(
+      `b-${PUBLIC}`,
+      ctx(bag, { skipDynamicReferences: true })
+    );
+    expect(bag.size).toBe(0);
+    // That lookup also pinned a process-wide SECRET verdict, which vetoes the
+    // proof on its own; drop it so the assertion reads the CONTRADICTION alone.
+    clearRecordedSecretExpressions();
+    expect(isProvenPublicExpression(bag, PUBLIC)).toBe(false);
+  });
+
+  it('a LATER unclassifiable answer in the same bag voids an earlier proof', async () => {
+    const bag: RecordedSecretValues = new Map();
+    await new IntrinsicFunctionResolver(HOME).resolveDynamicReferences(`a-${PUBLIC}`, ctx(bag));
+    prime(HOME, PUBLIC_NAME, { Parameter: { Value: 'v' } });
+    await new IntrinsicFunctionResolver(HOME).resolveDynamicReferences(
+      `b-${PUBLIC}`,
+      ctx(bag, { skipDynamicReferences: true })
+    );
+    expect(isProvenPublicExpression(bag, PUBLIC)).toBe(false);
   });
 
   it('a producer-region GUEST answer (an ARN naming another region) proves nothing', async () => {
