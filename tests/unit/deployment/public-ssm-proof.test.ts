@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  *   parameter answers `String` / `StringList` — on a fresh lookup AND on a
  *   cache hit — and files none for a `SecureString`, an unclassifiable type, or
  *   a producer-region guest's answer. This is what `cdkd drift` reads.
- * - `PublicSsmProver` (`cdkd state refresh-observed`, `cdkd import`) asks the
+ * - `PublicSsmProver` (`cdkd state refresh-observed`) asks the
  *   same resolver on its comparison path, so `WithDecryption` is `false` on
  *   EVERY request, in the record's OWN region, and any error is no proof.
  *
