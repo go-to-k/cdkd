@@ -279,8 +279,10 @@ Three mechanisms keep the `deployments/` prefix from growing without bound:
   already-destroyed stack, and for `cdkd state destroy`, which has no such
   flag, is `cdkd events prune '<stack>' --all`.
 
-All three also purge the earlier versions of the keys they delete, because
-the state bucket is versioned — see
+All three also purge earlier versions, because the state bucket is
+versioned: the writer's prune and a partial `cdkd events prune` those of the
+keys they delete, and `--all` / `--purge-events` every earlier version under
+the stack's `deployments/` prefix — see
 [Deleting a run stream also purges its earlier versions](#deleting-a-run-stream-also-purges-its-earlier-versions).
 
 ### Best-effort, never blocking
@@ -360,9 +362,9 @@ cdkd events prune MyStack --all --yes
 
 Retention selection:
 
-- `--all` — delete every recorded run **and** the `index.json`. This clears the
-  object listing; it is not a purge of the underlying versions (see below).
-  Mutually exclusive with `--keep` / `--older-than`.
+- `--all` — delete every recorded run **and** the `index.json`, and purge every
+  earlier version under the stack's `deployments/` prefix, including streams
+  deleted before (see below). Mutually exclusive with `--keep` / `--older-than`.
 - `--keep <N>` — retain the newest N runs, delete the rest.
 - `--older-than <duration>` — delete runs whose run-id timestamp is older
   than the duration (`<n>s` / `<n>m` / `<n>h`). A run id without a parseable
@@ -382,7 +384,7 @@ After deleting the matching `{runId}.jsonl` streams it rewrites `index.json`
 to drop the pruned runs, or removes the index entirely when no runs remain —
 so a full `--all` purge (or a destroy followed by `prune --all`) leaves the
 stack's `deployments/` prefix listing nothing and, on a versioned bucket, no
-readable earlier version of the keys it deleted either.
+readable earlier version under that prefix either.
 
 ### Deleting a run stream also purges its earlier versions
 
@@ -393,19 +395,38 @@ listing while every earlier version stays readable through `GetObject` with a
 `{runId}.jsonl` body is re-written **in full on every flush**, so one run
 leaves one noncurrent version per flush.
 
-So every delete on this path — the writer's self-bounding prune,
-`cdkd events prune`, and `cdkd destroy --purge-events` alike — also deletes the
-**noncurrent versions** of the keys it removes. The writer's prune is included
-because a stream it drops is no longer listed, so no later
-`cdkd events prune --all` could find it again. On an unversioned bucket there
-are no noncurrent versions and nothing extra is deleted.
+So every delete on this path also deletes **noncurrent versions**, scoped by
+what the delete empties:
+
+- **`cdkd events prune --all` and `cdkd destroy --purge-events`** empty the
+  stack's whole `deployments/` directory, so they purge every noncurrent
+  version under the exact `<state-prefix>/<stack>/<region>/deployments/`
+  prefix. That includes streams an earlier delete left behind a delete marker
+  (a cdkd release without this purge, or a purge that warned), which no
+  ordinary listing names. The trailing `/` keeps a stack whose name extends
+  this one's (`MyStack2`) out of the sweep, and each key's CURRENT version is
+  kept, so a run a concurrent deploy is writing loses only its earlier flushes,
+  which its current body supersedes.
+- **`cdkd events prune --keep` / `--older-than` and the writer's self-bounding
+  prune** purge only the keys they delete, so a retained run keeps its flush
+  history. The writer's prune is included because a stream it drops is no
+  longer listed, so only a later prefix-wide `--all` could find it again.
+
+On an unversioned bucket there are no noncurrent versions and nothing extra is
+deleted.
 
 The purge is fail-soft and needs `s3:ListBucketVersions` and
 `s3:DeleteObjectVersion` on the state bucket (see the
 [recommended bucket policy](state-management.md#recommended-bucket-policy-with-least-privilege)).
 Without them the prune or destroy still succeeds, and a warning naming the two
-grants prints before the `Pruned` / `Purged` line, which is why that line says
-"unless a warning above says otherwise". Because the writer's self-bounding
+grants prints before the summary line — `Pruned` / `Purged`, or, for an
+`--all` prune with nothing current left, `No runs matched` — which is why that
+line says "unless a warning above says otherwise" or that the versions "could
+not be purged". On the `No runs matched` line (an `--all` prune with nothing
+current left), a sweep that removed no earlier version with content (delete
+markers do not count) says it found no earlier versions, naming the region, so
+a mistyped `--stack-region` is visible, and a sweep that could not finish says
+"could not be purged; see the warning above". Because the writer's self-bounding
 prune purges too, a `cdkd deploy` or `cdkd destroy` of a stack past 20 runs can
 print the same warnings — including the replication one when the state bucket
 is replicated — and does so again on every such deploy or destroy, since each
@@ -413,14 +434,16 @@ one prunes a stream.
 
 What it does not reach:
 
-- **Streams deleted before a purge could run on them** — by a cdkd release
-  without this purge, or by a delete whose purge warned (for example, the
-  writer's prune under a role that lacked the two grants). The purge acts on
-  the keys a run deletes, found by an ordinary listing, so a stream already
-  behind a delete marker is not revisited, and a later purge that prints no
-  warning says nothing about it — including `cdkd events prune --all` and
-  `cdkd destroy --purge-events`, whose output is scoped to "the deleted
-  keys" for this reason. Use the recipe below.
+- **Streams deleted earlier, on a partial prune.** `--keep` / `--older-than`
+  and the writer's prune act on the keys they delete, found by an ordinary
+  listing, so a stream already behind a delete marker is not revisited.
+  `cdkd events prune '<stack>' --all` (or `cdkd destroy --purge-events`)
+  reaches it, along with the rest of that region's history. The sweep covers
+  ONE region, and region discovery reads current keys only, so a region where
+  none of the stack's history is current any more (including one the stack
+  has left) is not picked on its own: pass `--stack-region <that region>`.
+  Without it the prune either stops with "No deployment-event history found"
+  or, when another region still has current history, sweeps only that one.
 - **Earlier versions of a REWRITTEN `index.json`.** A partial prune
   (`--keep` / `--older-than`) rewrites the index rather than deleting it, so
   its earlier versions survive; they hold run summaries (run id, command,

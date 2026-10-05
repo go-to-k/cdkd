@@ -22,7 +22,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import {
@@ -130,22 +130,21 @@ export function orderConsumersBeforeProducers(
  * Issue [#885] — apply `cdkd destroy --purge-events` for one stack.
  *
  * Purges the stack's deployment-event history (the post-mortem `deployments/`
- * store cdkd keeps by default) ONLY after a clean, non-interrupted destroy, so
- * the deleted event keys' earlier versions go too. Deliberately
+ * store cdkd keeps by default) ONLY after a clean, non-interrupted destroy,
+ * earlier versions included. Deliberately
  * skipped on a failed / interrupted destroy — those events ARE the post-mortem
  * the user wants on the retry — and a no-op when `--purge-events` was not
  * passed.
  *
  * On the versioned state bucket a delete by key only writes DELETE MARKERS,
- * so `DeploymentEventsReader.pruneRuns` also purges the earlier versions of
- * every key it deletes (issue
- * [#2624](https://github.com/go-to-k/cdkd/issues/2624)). That purge is
+ * so `DeploymentEventsReader.pruneRuns({ all: true })` also purges every
+ * noncurrent version under the stack's `deployments/` prefix (issue
+ * [#2624](https://github.com/go-to-k/cdkd/issues/2624)). That reaches a
+ * stream already behind a delete marker (pruned before this purge existed, or
+ * by a purge that warned) as well as the keys this run deletes. The purge is
  * fail-soft and prints its own warning before the log line below when it
  * cannot finish or the bucket is replicated, which is why the line defers to
- * "a warning above". The line is scoped to "the deleted keys" because a
- * stream already behind a delete marker (pruned before this purge existed, or
- * by a purge that warned) is not listed and so not reached; purging those
- * needs a version-listing API on `S3StateBackend` (issue #2624).
+ * "a warning above".
  *
  * MUST be called AFTER the run's `eventRecorder.finalize()` (which writes this
  * run's own events + index): purging first would just be re-created by the
@@ -176,10 +175,19 @@ export async function purgeEventsAfterDestroy(
     // destroy that is rare: `eventRecorder.finalize()` runs first and writes
     // this run's record plus `index.json`, so the prefix is empty only when
     // those writes did not land.
+    //
+    // The prefix sweep counts what it deleted (issue #2624), and that count
+    // is the same evidence `cdkd events prune --all` reports on: a prefix with
+    // nothing current but earlier versions left by an earlier delete still
+    // gets a line, scoped to those versions, and an empty one gets none.
     if (purge.deletedRunIds.length > 0 || purge.indexDeleted) {
       logger.info(
         `  Purged deployment-event history for ${displaySafe(stackName)} (${displaySafe(region)}) ` +
-          `and the earlier versions of the deleted keys, unless a warning above says otherwise.`
+          `and every earlier version under its deployments/ prefix, unless a warning above says otherwise.`
+      );
+    } else if ((purge.earlierVersions?.deletedBodies ?? 0) > 0) {
+      logger.info(
+        safeMsg`  Purged earlier deployment-event versions left under the deployments/ prefix of ${displaySafe(stackName)} (${displaySafe(region)}), unless a warning above says otherwise.`
       );
     }
     return purge;
@@ -986,8 +994,9 @@ async function destroyCommand(
       }
 
       // Issue [#885] — --purge-events: after a CLEAN destroy, also delete this
-      // stack's deployment-event history, the deleted keys' earlier versions included
-      // (issue #2624; the helper's doc comment carries the fail-soft bound).
+      // stack's deployment-event history, every earlier version under its
+      // deployments/ prefix included (issue #2624; the helper's doc comment
+      // carries the fail-soft bound).
       // Runs AFTER the recorder finalizes (see the helper's contract).
       //
       // PER-STACK answers, because the question the helper asks — "are these
@@ -1142,8 +1151,8 @@ export function createDestroyCommand(): Command {
     .option(
       '--purge-events',
       "After a clean destroy, also delete the stack's deployment-event history " +
-        '(issue #808 store), purging the earlier versions of those keys on a versioned state ' +
-        'bucket too unless a warning says otherwise. By default ' +
+        "(issue #808 store), purging every earlier version under the stack's deployments/ " +
+        'prefix on a versioned state bucket too unless a warning says otherwise. By default ' +
         'events survive destroy as post-mortem context. ' +
         'Skipped when the destroy fails or is interrupted (those events aid the retry). ' +
         // TWO corrections here, and the second overturned the first.

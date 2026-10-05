@@ -600,8 +600,8 @@ By default `cdkd destroy` removes `state.json` / `lock.json` but **keeps** the
 stack's deployment-event history (the `deployments/` store) as post-mortem
 context — so an object listing of the state bucket is not empty after a
 teardown. `cdkd destroy '<stack>' --purge-events` opts into deleting that history
-too, so the listing comes back empty and, on a versioned bucket, the earlier
-versions of those keys are purged as well:
+too, so the listing comes back empty and, on a versioned bucket, every earlier
+version under the stack's `deployments/` prefix is purged as well:
 
 ```bash
 cdkd destroy MyStack --purge-events -y
@@ -623,11 +623,12 @@ cdkd destroy MyStack --purge-events -y
 - `cdkd state destroy` does NOT take this flag. For an already-destroyed stack,
   or on the CDK-app-free path, use the equivalent
   [`cdkd events prune '<stack>' --all`](cli-events.md).
-- **Earlier versions of the deleted keys are purged too.** The state bucket is versioned,
-  so the purge also deletes the noncurrent versions of the event keys it
-  removes. That needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion`;
-  without them the destroy still succeeds and a warning prints first. What it
-  does not reach is listed in
+- **Every earlier version under the stack's `deployments/` prefix is purged
+  too.** The state bucket is versioned, so the purge also deletes the
+  noncurrent versions under that exact prefix, including streams an earlier
+  delete left behind a delete marker. That needs `s3:ListBucketVersions` and
+  `s3:DeleteObjectVersion`; without them the destroy still succeeds and a
+  warning prints first. What it does not reach is listed in
   [Deleting a run stream also purges its earlier versions](deployment-events.md#deleting-a-run-stream-also-purges-its-earlier-versions).
 
 ## Skipped resources on destroy

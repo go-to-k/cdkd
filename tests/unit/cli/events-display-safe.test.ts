@@ -92,6 +92,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
     getRawObject: mockGetRawObject,
     deleteRawObjects: vi.fn(async () => {}),
     purgeNoncurrentVersions: vi.fn(async () => {}),
+    purgeNoncurrentVersionsUnderPrefix: vi.fn(async () => {}),
   })),
 }));
 
@@ -1341,8 +1342,8 @@ describe('a record value in events prose is never inside cdkd quotes (go-to-k/cd
   // mistyped site key cannot pass for the wrong reason.
   for (const [site, prose] of [
     ['EVENTS_NOT_FOUND', "Events are recorded by cdkd's deploy and destroy commands"],
-    ['prune pruned runs', 'Earlier versions of the deleted keys were purged as well'],
-    ['prune removed empty index', 'Earlier versions of the deleted keys were purged as well'],
+    ['prune pruned runs', "under the stack's deployments/ prefix was purged as well"],
+    ['prune removed empty index', "under the stack's deployments/ prefix was purged as well"],
   ] as const) {
     it(`${site}: a block that displays a payload carries no pasteable command`, async () => {
       for (const { value } of PASTE_PAYLOADS) {

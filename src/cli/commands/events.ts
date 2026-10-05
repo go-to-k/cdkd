@@ -26,6 +26,7 @@ import {
 import type { DeploymentEvent, DeploymentRunSummary } from '../../types/deployment-events.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
   displayIdent,
   displaySafe,
@@ -111,13 +112,51 @@ const safeCount = (value: unknown): string => (typeof value === 'number' ? Strin
  * replicated, it prints its own warning BEFORE this line, which is why the
  * note defers to "a warning above" rather than claiming success outright.
  *
- * Deliberately NOT appended to the "no runs matched" arm, which deleted no
- * object the prune's listing held. And `pruneRuns` reports `indexDeleted`
- * only for an index that EXISTED in its listing, so the arms this note IS
- * appended to never fire for a stack that had no history at all.
+ * This note is the PARTIAL prunes' (`--keep` / `--older-than`), which purge
+ * only the keys they delete so a retained run keeps its history. `--all`
+ * prints {@link ALL_EARLIER_VERSIONS_PURGED_NOTE} instead.
+ *
+ * Deliberately NOT appended to a partial prune's "no runs matched" arm, which
+ * deleted no object the prune's listing held. And `pruneRuns` reports
+ * `indexDeleted` only for an index that EXISTED in its listing, so the arms
+ * this note IS appended to never fire for a stack that had no history at all.
  */
 const EARLIER_VERSIONS_PURGED_NOTE =
   ' Earlier versions of the deleted keys were purged as well, unless a warning above says otherwise.';
+
+/**
+ * `--all`'s note: it empties the stack's whole `deployments/` directory, so
+ * `pruneRuns` purges every noncurrent version under that prefix, including
+ * streams an EARLIER delete left behind a delete marker, which no
+ * current-object listing names (issue
+ * [#2624](https://github.com/go-to-k/cdkd/issues/2624)).
+ *
+ * On `--all`'s "no runs matched" arm it is appended only when the sweep
+ * really deleted something: see {@link residueSweepNote}.
+ */
+const ALL_EARLIER_VERSIONS_PURGED_NOTE =
+  " Every earlier version under the stack's deployments/ prefix was purged as well, " +
+  'unless a warning above says otherwise.';
+
+/**
+ * `--all`'s "no runs matched" arm, where nothing current was listed, so the
+ * prefix sweep is the whole effect (issue
+ * [#2624](https://github.com/go-to-k/cdkd/issues/2624)). An EMPTY prefix is
+ * also what a mistyped `--stack-region` sweeps, so a purge is claimed only for
+ * a sweep that deleted something, and a sweep that found nothing says so with
+ * the region shown again, where a typo is visible. Carries no flag name: the
+ * line already displays the stack name (go-to-k/cdkd#3950's block rule).
+ */
+function residueSweepNote(
+  swept: { deletedBodies: number; complete: boolean } | undefined,
+  safeRegion: string
+): string {
+  if (swept !== undefined && swept.deletedBodies > 0) return ALL_EARLIER_VERSIONS_PURGED_NOTE;
+  if (swept !== undefined && !swept.complete) {
+    return ' Earlier versions under its deployments/ prefix could not be purged; see the warning above.';
+  }
+  return ` No earlier versions were found under its deployments/ prefix in ${safeRegion} either.`;
+}
 
 /**
  * Options accepted by `cdkd events`. `stateBucket` / `statePrefix` /
@@ -250,7 +289,7 @@ export async function eventsCommand(
 
 /**
  * Pick the region whose `deployments/` key family holds this stack's run
- * history. When `--stack-region` is supplied it is honored verbatim;
+ * history. When `--stack-region` is supplied it is used lower-cased;
  * otherwise the single discovered region is used, and an ambiguous (>1)
  * or missing (0) history surfaces an actionable error.
  */
@@ -259,7 +298,10 @@ async function resolveEventsRegion(
   stackName: string,
   explicitRegion?: string
 ): Promise<string> {
-  if (explicitRegion) return explicitRegion;
+  // Canonicalized like every other command's `--stack-region` (region-options.ts):
+  // the writer keys history under the canonical region, so `US-EAST-1` would
+  // otherwise name an empty prefix and an `--all` sweep would find nothing.
+  if (explicitRegion) return canonicalizeRegion(explicitRegion);
   const regions = await reader.listRegions(stackName);
   if (regions.length === 0) {
     throw new CdkdError(
@@ -268,9 +310,18 @@ async function resolveEventsRegion(
       // displays an untrusted value carries no pasteable command
       // (go-to-k/cdkd#3950's S1 rule; under zsh a `$( )` name runs when the
       // sentence is pasted, and would run beside the command).
+      // Region discovery reads CURRENT keys only, so a stack whose history was
+      // already deleted lists nothing here even when earlier versions survive
+      // behind delete markers (issue #2624). The prune's `--all` sweep reaches
+      // them only with the region given explicitly, so the message says so --
+      // on a LINE of its own, since it names flags and the first line displays
+      // the stack name (go-to-k/cdkd#4127's per-line block rule).
       `No deployment-event history found for stack ${displayStackName(stackName)}. ` +
         `Events are recorded by cdkd's deploy and destroy commands (issue #808); ` +
-        `a stack deployed by an older cdkd version has none.`,
+        `a stack deployed by an older cdkd version has none.\n` +
+        `If its history was deleted earlier, the prune subcommand with --all and ` +
+        `--stack-region still purges the earlier versions left on a versioned state bucket, ` +
+        `unless a warning says otherwise.`,
       'EVENTS_NOT_FOUND'
     );
   }
@@ -348,8 +399,9 @@ interface EventsPruneCommandOptions {
  * last {@link DEPLOYMENT_EVENTS_MAX_INDEX_RUNS} runs automatically.
  *
  * On a versioned state bucket the earlier versions of every deleted key are
- * purged too (issue [#2624](https://github.com/go-to-k/cdkd/issues/2624)).
- * See {@link EARLIER_VERSIONS_PURGED_NOTE}.
+ * purged too, and `--all` purges every earlier version under the stack's
+ * `deployments/` prefix (issue [#2624](https://github.com/go-to-k/cdkd/issues/2624)).
+ * See {@link EARLIER_VERSIONS_PURGED_NOTE} and {@link ALL_EARLIER_VERSIONS_PURGED_NOTE}.
  *
  * Retention selection:
  *   - `--all`              purge every run + the index.
@@ -458,13 +510,16 @@ export async function eventsPruneCommand(
       ...(olderThanMs !== undefined && { olderThanMs }),
     });
 
+    const purgedNote =
+      options.all === true ? ALL_EARLIER_VERSIONS_PURGED_NOTE : EARLIER_VERSIONS_PURGED_NOTE;
     if (result.deletedRunIds.length === 0) {
       logger.info(
         gray(
           result.indexDeleted
             ? `Removed the empty deployment-event index for ${safeStack} (${safeRegion}); no run streams to delete.` +
-                EARLIER_VERSIONS_PURGED_NOTE
-            : `No runs matched the prune criteria for ${safeStack} (${safeRegion}).`
+                purgedNote
+            : `No runs matched the prune criteria for ${safeStack} (${safeRegion}).` +
+                (options.all === true ? residueSweepNote(result.earlierVersions, safeRegion) : '')
         )
       );
       return;
@@ -475,7 +530,7 @@ export async function eventsPruneCommand(
         `${result.remainingRunIds.length} retained` +
         (result.indexDeleted ? gray(' (index removed)') : '') +
         '.' +
-        gray(EARLIER_VERSIONS_PURGED_NOTE)
+        gray(purgedNote)
     );
   } finally {
     awsClients.destroy();
@@ -813,7 +868,8 @@ export function createEventsPruneCommand(): Command {
   const cmd = new Command('prune')
     .description(
       'Delete old per-run deployment-event streams. On a versioned state bucket the earlier ' +
-        'versions of the deleted keys are purged too, unless a warning says otherwise.'
+        'versions of the deleted keys are purged too (with --all, every earlier version under ' +
+        "the stack's deployments/ prefix), unless a warning says otherwise."
     )
     .argument('<stack>', 'Stack name (physical CloudFormation name)')
     .addOption(
@@ -830,7 +886,12 @@ export function createEventsPruneCommand(): Command {
       })
     )
     .option('--older-than <duration>', 'Delete runs older than this duration (e.g. 24h, 90m)')
-    .option('--all', 'Delete every recorded run and the index', false)
+    .option(
+      '--all',
+      "Delete every recorded run and the index, and purge every earlier version under the stack's " +
+        'deployments/ prefix on a versioned state bucket',
+      false
+    )
     .action(
       withErrorHandling((stack: string, _options: unknown, command: Command) =>
         eventsPruneCommand(stack, command.optsWithGlobals() as EventsPruneCommandOptions)

@@ -37,6 +37,7 @@ import {
   displayIdent,
   displaySafe,
   displayStackName,
+  safeMsg,
   STACK_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
@@ -50,7 +51,9 @@ import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import {
   purgeNoncurrentKeyVersions,
+  purgeNoncurrentVersionsUnderPrefix,
   type NoncurrentVersionPurgeOptions,
+  type PrefixPurgeResult,
 } from './s3-noncurrent-version-purge.js';
 
 /**
@@ -1078,17 +1081,18 @@ export class S3StateBackend {
    * (issue [#2340](https://github.com/go-to-k/cdkd/issues/2340)).
    *
    * The versioned-bucket companion to {@link deleteRawObjects}, and
-   * deliberately NOT folded into it. `deleteRawObjects` has SIX call sites,
-   * ENUMERATED rather than given as a grep so that a comment quoting the
-   * command cannot end up matching itself and reporting seven:
-   * `deployment-events-store.ts` x4, `gc.ts`, `bootstrap-destroy.ts`. Four of
-   * the six are in `deployment-events-store.ts`, whose objects
-   * `tests/integration/s3-versions.sh` records as deliberately surviving as
-   * CURRENT objects; a blanket purge there would
-   * change that behaviour AND widen the IAM every caller needs
-   * (`s3:ListBucketVersions`, `s3:DeleteObjectVersion`). So the purge is
-   * opt-in, and today `cdkd gc`'s custom-resource response sweep is the one
-   * caller that opts in.
+   * deliberately NOT folded into it: a purge needs IAM a plain delete does not
+   * (`s3:ListBucketVersions`, `s3:DeleteObjectVersion`), and it removes the
+   * recovery points versioning exists for, so each delete site opts in
+   * explicitly. Every `deleteRawObjects` caller does opt in today (`cdkd gc`'s
+   * custom-resource response sweep, `cdkd bootstrap destroy`'s marker, and the
+   * deployment-event store's prunes, issue
+   * [#2624](https://github.com/go-to-k/cdkd/issues/2624)), as does
+   * {@link deleteRollbackJournal}, which deletes through its own path.
+   *
+   * It reaches only the keys it is given. A key already behind a delete marker
+   * is absent from an ordinary listing, so a caller that empties a whole
+   * prefix it owns uses {@link purgeNoncurrentVersionsUnderPrefix} instead.
    *
    * NEVER THROWS, and the try/catch below is what makes that true rather than
    * the helper alone. `ensureClientForBucket()` and `ownerParam()` sit OUTSIDE
@@ -1125,6 +1129,59 @@ export class S3StateBackend {
           `s3:ListBucketVersions and s3:DeleteObjectVersion on the state bucket, or purge the ` +
           `key(s) by hand. Underlying error: ${errorDetail(error)}`
       );
+    }
+  }
+
+  /**
+   * Delete the noncurrent versions of EVERY key under `keyPrefix` in the state
+   * bucket, keeping each key's current version (issue
+   * [#2624](https://github.com/go-to-k/cdkd/issues/2624)).
+   *
+   * For a caller that empties a prefix it alone owns, where
+   * {@link purgeNoncurrentVersions}' key list cannot name everything: a key
+   * deleted earlier (by an older release, or by a delete whose purge failed)
+   * sits behind a delete marker, is absent from {@link listRawKeys}, and keeps
+   * every earlier version readable. Today's one caller is
+   * `DeploymentEventsReader.pruneRuns({ all: true })` on a stack's
+   * `deployments/` directory. Never point it at a SHARED prefix (the
+   * custom-resource response prefix, `_index/`): the `IsLatest` filter keeps a
+   * concurrent writer's current object, but every other owner's history would
+   * go.
+   *
+   * `keyPrefix` must end in `/` (enforced by the helper, which then purges
+   * nothing and warns), so a stack whose name is a prefix of another's is
+   * never reached. NEVER THROWS, for the reason {@link purgeNoncurrentVersions}
+   * gives. Returns how many noncurrent BODY versions it deleted (delete
+   * markers are removed but not counted) and whether it
+   * finished without a failure, so a caller can tell an empty prefix (a
+   * mistyped region) from a purge.
+   */
+  async purgeNoncurrentVersionsUnderPrefix(
+    keyPrefix: string,
+    options: Pick<NoncurrentVersionPurgeOptions, 'objectDescription'> = {}
+  ): Promise<PrefixPurgeResult> {
+    try {
+      await this.ensureClientForBucket();
+      return await purgeNoncurrentVersionsUnderPrefix(
+        this.s3Client,
+        this.config.bucket,
+        keyPrefix,
+        {
+          ...options,
+          requestFields: await this.ownerParam(),
+          logger: this.logger,
+        }
+      );
+    } catch (error) {
+      const prefixShown = displayIdent(keyPrefix, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
+      // Built with `safeMsg` throughout. The prefix embeds a stack name, so it
+      // takes the identifier guard and no hand-written quote around it
+      // (go-to-k/cdkd#3950).
+      const describing = options.objectDescription ? ` (${options.objectDescription})` : '';
+      this.logger.warn(
+        safeMsg`Could not purge noncurrent versions under the prefix ${prefixShown} in bucket ${this.config.bucket}: the purge could not be started. Their previous versions survive and remain readable via GetObject with a VersionId${describing}. Grant s3:ListBucketVersions and s3:DeleteObjectVersion on the state bucket, or purge the prefix by hand. Underlying error: ${errorDetail(error)}`
+      );
+      return { deletedBodies: 0, complete: false };
     }
   }
 

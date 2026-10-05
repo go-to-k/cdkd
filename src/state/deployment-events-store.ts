@@ -33,6 +33,7 @@ import { randomUUID } from 'node:crypto';
 import { getLogger } from '../utils/logger.js';
 import { getCdkdVersion } from '../version.js';
 import type { S3StateBackend } from './s3-state-backend.js';
+import type { PrefixPurgeResult } from './s3-noncurrent-version-purge.js';
 import {
   DEPLOYMENT_EVENTS_INDEX_VERSION,
   type DeploymentEvent,
@@ -125,27 +126,46 @@ export const DEPLOYMENT_EVENTS_OBJECT_DESCRIPTION =
  * delete's outcome is what reaches the caller. On an UNVERSIONED bucket the
  * listing returns only current `'null'` versions, so it deletes nothing.
  *
- * With several keys, `listPrefix` makes it ONE version walk of the prefix
- * instead of one per key. A single key (the writer's usual one stale stream,
- * or a lone index) keeps the per-key walk, which lists only that key's
- * versions rather than every retained run's flush history. Either way the
- * purge acts only on `keys`, so retained and concurrent runs' streams are
- * never touched.
+ * `scope` picks WHAT is purged:
+ *
+ * - `'deleted-keys'` (the partial prunes and the writer's housekeeping) acts
+ *   only on `keys`, so a retained run's flush history is never touched. With
+ *   several keys, `listPrefix` makes it ONE version walk of the prefix instead
+ *   of one per key; a single key (the writer's usual one stale stream, or a
+ *   lone index) keeps the per-key walk, which lists only that key's versions.
+ * - `'whole-dir'` (`--all`, which `cdkd destroy --purge-events` also uses)
+ *   purges every noncurrent version under `dirPrefix`. A stream deleted
+ *   EARLIER (by a release before this purge, or by a purge that warned) is
+ *   behind a delete marker, so no current-object listing names it, and only a
+ *   prefix-wide walk reaches its versions. `dirPrefix` is the exact
+ *   `{prefix}/{stack}/{region}/deployments/` with its trailing `/`, so a stack
+ *   whose name extends this one's is never listed. The `IsLatest` filter still
+ *   keeps the CURRENT stream of a run a concurrent deploy writes meanwhile; it
+ *   loses only that run's earlier flushes, which its current body supersedes.
  */
 async function deleteAndPurgeEventObjects(
   backend: S3StateBackend,
   keys: string[],
-  dirPrefix: string
-): Promise<void> {
-  if (keys.length === 0) return;
+  dirPrefix: string,
+  scope: 'deleted-keys' | 'whole-dir' = 'deleted-keys'
+): Promise<PrefixPurgeResult | undefined> {
+  if (keys.length === 0) return undefined;
+  let swept: PrefixPurgeResult | undefined;
   try {
     await backend.deleteRawObjects(keys);
   } finally {
-    await backend.purgeNoncurrentVersions(keys, {
-      ...(keys.length > 1 && { listPrefix: dirPrefix }),
-      objectDescription: DEPLOYMENT_EVENTS_OBJECT_DESCRIPTION,
-    });
+    if (scope === 'whole-dir') {
+      swept = await backend.purgeNoncurrentVersionsUnderPrefix(dirPrefix, {
+        objectDescription: DEPLOYMENT_EVENTS_OBJECT_DESCRIPTION,
+      });
+    } else {
+      await backend.purgeNoncurrentVersions(keys, {
+        ...(keys.length > 1 && { listPrefix: dirPrefix }),
+        objectDescription: DEPLOYMENT_EVENTS_OBJECT_DESCRIPTION,
+      });
+    }
   }
+  return swept;
 }
 
 /**
@@ -179,6 +199,13 @@ export interface DeploymentEventsPruneResult {
    *  remain). Read from the prune's own listing, never from the delete call:
    *  `DeleteObjects` succeeds on an absent key, so it proves nothing (#2624). */
   indexDeleted: boolean;
+  /**
+   * `all` only: what the prefix-wide version sweep did (issue #2624). A
+   * caller reports a purge only for `deletedBodies > 0`; zero with
+   * `complete` means the prefix held no earlier versions, which is also what
+   * a mistyped region looks like.
+   */
+  earlierVersions?: PrefixPurgeResult;
 }
 
 /** Options for {@link DeploymentEventsReader.pruneRuns}. */
@@ -187,9 +214,9 @@ export interface DeploymentEventsPruneOptions {
   keep?: number;
   /** Delete runs older than this many milliseconds. */
   olderThanMs?: number;
-  /** Delete EVERY run + the index, and purge the earlier versions of the keys
-   *  deleted (issue #2624). A stream already behind a delete marker is not
-   *  listed, so its versions are not reached. */
+  /** Delete EVERY run + the index, and purge every earlier version under the
+   *  stack's `deployments/` prefix, including streams already behind a delete
+   *  marker (issue #2624). */
   all?: boolean;
   /** Clock injection for the age cutoff (tests); defaults to `new Date()`. */
   now?: Date;
@@ -639,8 +666,12 @@ export class DeploymentEventsReader {
    * window and rewrites (or removes) `index.json` to match.
    *
    * Retention semantics (see {@link DeploymentEventsPruneOptions}):
-   *   - `all`        — delete every run + the index, and purge their earlier
-   *                    versions on a versioned bucket (issue #2624).
+   *   - `all`        — delete every run + the index, and purge every earlier
+   *                    version under the stack's `deployments/` prefix on a
+   *                    versioned bucket, earlier-deleted streams included
+   *                    (issue #2624).
+   *   - The partial modes below purge only the keys they delete, never a
+   *     retained run's history.
    *   - `keep N`     — retain the newest N runs, delete the rest.
    *   - `olderThanMs`— delete runs whose run-id timestamp is older than the
    *                    cutoff; a run id with no parseable timestamp is kept.
@@ -683,8 +714,22 @@ export class DeploymentEventsReader {
       // one -- a concurrent prune deleting the index between our listing and
       // our delete -- reports the peer's removal as ours, a true claim about
       // the bucket with only the attribution off.
-      await deleteAndPurgeEventObjects(this.backend, [...toDelete, indexKey], dirPrefix);
-      return { deletedRunIds: runIdsDesc, remainingRunIds: [], indexDeleted: indexExisted };
+      // `whole-dir`: the directory is being emptied, so the purge also reaches
+      // streams an EARLIER delete left behind a marker, which `keys` (a
+      // current-object listing) cannot name. Runs on an empty listing too,
+      // since that is exactly the stack whose history was deleted before.
+      const earlierVersions = await deleteAndPurgeEventObjects(
+        this.backend,
+        [...toDelete, indexKey],
+        dirPrefix,
+        'whole-dir'
+      );
+      return {
+        deletedRunIds: runIdsDesc,
+        remainingRunIds: [],
+        indexDeleted: indexExisted,
+        ...(earlierVersions !== undefined && { earlierVersions }),
+      };
     }
 
     // Resolve the count window. When neither keep nor olderThan is given,

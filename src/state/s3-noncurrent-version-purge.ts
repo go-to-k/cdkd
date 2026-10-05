@@ -1,6 +1,6 @@
 import { ListObjectVersionsCommand, DeleteObjectsCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../utils/s3-listing-keys.js';
 import {
   warnIfPurgeIsReplicated,
@@ -27,7 +27,7 @@ import {
  * before: the next lane fixes one spelling and the other keeps the defect.
  *
  * It is a LEAF module rather than a method on `S3StateBackend` because the
- * provider is one of the two callers, and `src/provisioning/**` has no runtime
+ * provider is one of its callers, and `src/provisioning/**` has no runtime
  * edge to the state backend today (measured: the only `src/provisioning`
  * import of `s3-state-backend.js` is `nested-stack-context.ts`'s `import
  * type`). Adding one to share four lines would be a heavier change than the
@@ -35,15 +35,25 @@ import {
  *
  * ## What it deliberately does NOT do
  *
- * It never sweeps a prefix wholesale, and it never touches what is CURRENT.
- * `CUSTOM_RESOURCE_RESPONSE_PREFIX` is a SHARED, TOP-LEVEL prefix that every
- * stack deploying into the region writes into, so a prefix-scoped purge would
- * take a concurrent deploy's live response object. Membership of `keys` plus
- * the `IsLatest` filter are what make it safe to run mid-flight, and both are
- * enforced here rather than at the call sites.
+ * {@link purgeNoncurrentKeyVersions} never sweeps a prefix wholesale, and
+ * nothing here touches what is CURRENT. `CUSTOM_RESOURCE_RESPONSE_PREFIX` is a
+ * SHARED, TOP-LEVEL prefix that every stack deploying into the region writes
+ * into, so a prefix-scoped purge would take a concurrent deploy's live
+ * response object. Membership of `keys` plus the `IsLatest` filter are what
+ * make it safe to run mid-flight, and both are enforced here rather than at
+ * the call sites.
  *
- * It also NEVER THROWS. Both callers run it on a path that must not abort —
- * the provider's `finally` / timeout arms, and `gc` after a collection that
+ * The one wholesale sweep is {@link purgeNoncurrentVersionsUnderPrefix}, for a
+ * prefix ONE owner empties as a whole (a stack's own `deployments/` directory
+ * on `cdkd events prune --all`, issue
+ * [#2624](https://github.com/go-to-k/cdkd/issues/2624)). It reaches what a key
+ * list cannot name: a key already behind a delete marker is absent from an
+ * ordinary listing, so its versions are invisible to every caller of the
+ * key-set form. It keeps the `IsLatest` filter, and it refuses a prefix that
+ * does not end in `/`, so `cdkd/S/` can never take `cdkd/S2/`.
+ *
+ * It also NEVER THROWS. Its callers run it on paths that must not abort —
+ * for example the provider's `finally` / timeout arms, and `gc` after a collection that
  * has already succeeded, whose `GC_DELETE_FAILED` identity must not be
  * borrowed by a purge failure. Making that a property of the MECHANISM rather
  * than of each call site is deliberate: a caller cannot forget it.
@@ -230,6 +240,99 @@ function recordFailure(failed: Map<string, string[]>, key: string, reason: strin
 const describe = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+/**
+ * Which listed entries a walk may delete, and whom an incomplete walk blames.
+ * The two scopes are {@link purgeNoncurrentKeyVersions}' key set and
+ * {@link purgeNoncurrentVersionsUnderPrefix}'s whole prefix.
+ */
+interface PurgeScope {
+  /** Whether a DECODED listing key may have its noncurrent entries deleted. */
+  covers(key: string): boolean;
+  /**
+   * Reporting handles for what a walk of `prefix` that failed or stopped early
+   * left unsettled. Real keys in the key-set scope; one handle that STARTS
+   * WITH the prefix in the prefix scope, so the replication check's
+   * `startsWith(rule.prefix)` still matches a rule covering it.
+   */
+  unsettledUnder(prefix: string): string[];
+  /**
+   * Whether EVERY entry the listing returns is in scope. True for the prefix
+   * scope: an entry whose key cannot be decoded is then a version the walk
+   * was asked to remove and did not, so it is a FAILURE, not only a
+   * replication-check note. The key-set scope cannot tell it from a
+   * neighbouring key and leaves it out of the failure count.
+   */
+  readonly ownsEveryListedKey: boolean;
+}
+
+/** Marks the one reporting handle a prefix-wide walk uses for its whole prefix. */
+const PREFIX_HANDLE_SUFFIX = '* (every key under this prefix)';
+
+/**
+ * What a prefix-wide purge did, so a caller can tell "removed N earlier
+ * versions" from "found none" (a mistyped region sweeps an empty prefix and
+ * must not read as a purge).
+ */
+export interface PrefixPurgeResult {
+  /**
+   * Noncurrent BODY versions this call deleted. Delete markers are removed
+   * too but never counted: they hold nothing, and `--all` writes one for an
+   * absent index key on every run.
+   */
+  deletedBodies: number;
+  /** False when any failure was recorded, so a warning has already printed. */
+  complete: boolean;
+}
+
+/**
+ * Delete the noncurrent versions of EVERY key under `prefix` (issue
+ * [#2624](https://github.com/go-to-k/cdkd/issues/2624)).
+ *
+ * For a prefix one owner empties as a whole, where a key list cannot name
+ * everything: a key already behind a delete marker is missing from an
+ * ordinary listing, yet its earlier versions stay readable. Today's one
+ * caller is a stack's own `{prefix}/{stack}/{region}/deployments/` directory
+ * on `cdkd events prune --all` / `cdkd destroy --purge-events`.
+ *
+ * Same guarantees as {@link purgeNoncurrentKeyVersions}: never throws, never
+ * deletes an entry whose `IsLatest` is not `false` (so a concurrent writer's
+ * CURRENT object survives), and warns rather than failing.
+ *
+ * `prefix` MUST end in `/`. S3's `Prefix` is a string prefix, so
+ * `cdkd/S/us-east-1/deployments` would also list a sibling
+ * `cdkd/S/us-east-1/deployments-old/`, and a stack-level `cdkd/S` would list
+ * stack `S2`. Anything else is refused with a warning and nothing is listed.
+ * A listing failure is reported as ONE handle for the whole prefix, since a
+ * listing that never returned cannot say how many keys it held.
+ */
+export async function purgeNoncurrentVersionsUnderPrefix(
+  s3Client: Pick<S3Client, 'send'>,
+  bucket: string,
+  prefix: string,
+  options: Omit<NoncurrentVersionPurgeOptions, 'listPrefix'> = {}
+): Promise<PrefixPurgeResult> {
+  const logger = options.logger ?? getLogger().child('s3-version-purge');
+  if (!prefix.endsWith('/') || prefix.replace(/\/+/g, '') === '') {
+    // JSON-quoted so an empty prefix still shows as `""`; `safeMsg` keeps the
+    // value on one line.
+    logger.warn(
+      safeMsg`Refused to purge noncurrent versions under ${JSON.stringify(prefix)}: ` +
+        `a prefix-wide purge needs a non-empty prefix ending in '/'. Nothing was purged.`
+    );
+    return { deletedBodies: 0, complete: false };
+  }
+  const handle = `${prefix}${PREFIX_HANDLE_SUFFIX}`;
+  return purgeWalk(s3Client, bucket, [prefix], {
+    scope: {
+      covers: (key) => key.startsWith(prefix),
+      unsettledUnder: () => [handle],
+      ownsEveryListedKey: true,
+    },
+    listingFailureHandles: () => [handle],
+    options: { ...options, logger },
+  });
+}
+
 export async function purgeNoncurrentKeyVersions(
   s3Client: Pick<S3Client, 'send'>,
   bucket: string,
@@ -237,15 +340,43 @@ export async function purgeNoncurrentKeyVersions(
   options: NoncurrentVersionPurgeOptions = {}
 ): Promise<void> {
   if (keys.length === 0) return;
-  const logger = options.logger ?? getLogger().child('s3-version-purge');
-  const requestFields = options.requestFields ?? {};
-
   // The safety filter, and the only thing standing between this and a sweep of
   // a prefix shared with every concurrent deploy in the region.
   const wanted = new Set(keys);
   // One walk per key, or one walk for the lot when the caller named a covering
   // prefix. Same loop body either way.
   const prefixes = options.listPrefix !== undefined ? [options.listPrefix] : keys;
+  await purgeWalk(s3Client, bucket, prefixes, {
+    scope: {
+      covers: (key) => wanted.has(key),
+      // `startsWith` over-reach is deliberate and documented at the truncation
+      // arm in `purgeUnderPrefix`.
+      unsettledUnder: (prefix) => [...wanted].filter((key) => key.startsWith(prefix)),
+      ownsEveryListedKey: false,
+    },
+    // The LISTING failed, so nothing under this prefix could be purged. With
+    // a covering `listPrefix` that is every requested key; without one the
+    // prefix IS the key. Attributing it to the keys rather than to the
+    // prefix is what keeps the warning's unit consistent.
+    listingFailureHandles: (prefix) => (options.listPrefix !== undefined ? [...keys] : [prefix]),
+    options,
+  });
+}
+
+/** The walk, failure accounting and warnings both public entry points share. */
+async function purgeWalk(
+  s3Client: Pick<S3Client, 'send'>,
+  bucket: string,
+  prefixes: readonly string[],
+  params: {
+    scope: PurgeScope;
+    listingFailureHandles: (prefix: string) => string[];
+    options: NoncurrentVersionPurgeOptions;
+  }
+): Promise<PrefixPurgeResult> {
+  const { scope, listingFailureHandles, options } = params;
+  const logger = options.logger ?? getLogger().child('s3-version-purge');
+  const requestFields = options.requestFields ?? {};
 
   const failed = new Map<string, string[]>();
   // Hoisted OUT of `purgeUnderPrefix`, which runs once per prefix. Declared
@@ -266,33 +397,33 @@ export async function purgeNoncurrentKeyVersions(
   // failure whose provenance is genuinely unknown (the listing never returned)
   // is included because over-warning is the safe direction there.
   const unsettledBodies = new Set<string>();
+  // BODY versions a `DeleteObjects` call confirmed removed (not reported in
+  // `Errors`, not in a thrown batch). Delete markers are never counted, and
+  // neither is `NoSuchVersion`: this call did not remove that entry.
+  const removed = { n: 0 };
   for (const prefix of prefixes) {
     try {
       await purgeUnderPrefix(
         s3Client,
         bucket,
         prefix,
-        wanted,
+        scope,
         requestFields,
         failed,
         unknown,
         purged,
-        unsettledBodies
+        unsettledBodies,
+        removed
       );
     } catch (error) {
-      // The LISTING failed, so nothing under this prefix could be purged. With
-      // a covering `listPrefix` that is every requested key; without one the
-      // prefix IS the key. Attributing it to the keys rather than to the
-      // prefix is what keeps the warning's unit consistent.
-      const affected = options.listPrefix !== undefined ? keys : [prefix];
-      for (const key of affected) {
+      for (const key of listingFailureHandles(prefix)) {
         recordFailure(failed, key, describe(error));
         // Provenance genuinely UNKNOWN here -- the listing never returned, so
         // we cannot say whether the key had a body. Over-warning is the safe
         // direction, and the purge-failure warning always accompanies it.
-        // Unconditional: `affected` is either `keys` or a `prefix` drawn from
-        // `keys`, so a `wanted` guard here could never be false and read as
-        // though a non-wanted case existed.
+        // Unconditional: every handle is a requested key, or the swept prefix
+        // itself, so a scope guard here could never be false and would read
+        // as though an out-of-scope case existed.
         unsettledBodies.add(key);
       }
     }
@@ -312,6 +443,16 @@ export async function purgeNoncurrentKeyVersions(
       // `warn` on the force-unlock and takeover arms.
       .map(([key, reasons]) => displaySafe(`${key} (${reasons.join('; ')})`));
     const elided = failed.size - named.length;
+    // A prefix handle stands for every key under a prefix whose listing never
+    // completed, so it is counted as a prefix, never as one key.
+    const prefixCount = [...failed.keys()].filter((k) => k.endsWith(PREFIX_HANDLE_SUFFIX)).length;
+    const keyCount = failed.size - prefixCount;
+    const subject = [
+      keyCount > 0 ? `${keyCount} key(s)` : '',
+      prefixCount > 0 ? `every key under ${prefixCount} prefix(es)` : '',
+    ]
+      .filter((part) => part !== '')
+      .join(' and ');
     // WARN rather than debug, and never a throw. What survives is the body of
     // an object cdkd has just reported as deleted; WHICH object is the
     // caller's to say (`objectDescription`), because the reader's next move is
@@ -334,7 +475,7 @@ export async function purgeNoncurrentKeyVersions(
       // is sanitized is the mixed-rendering shape that lets an escape fire
       // from the unsanitized occurrence. `asciiOnly` because an S3 bucket name
       // has a known ASCII charset.
-      `Could not purge noncurrent versions of ${failed.size} key(s) in ` +
+      `Could not purge noncurrent versions of ${subject} in ` +
         `s3://${displaySafe(bucket, { asciiOnly: true })}. ` +
         `Their previous versions survive and remain readable via GetObject with a VersionId ` +
         `(${options.objectDescription ?? DEFAULT_PURGED_OBJECT_DESCRIPTION}). ` +
@@ -374,11 +515,12 @@ export async function purgeNoncurrentKeyVersions(
       objectDescription: options.objectDescription,
     }),
   });
+  return { deletedBodies: removed.n, complete: failed.size === 0 };
 }
 
 /**
  * Paginate `ListObjectVersions` under one prefix and delete every returned
- * entry that is in `wanted` and is not the current version.
+ * entry that `scope` covers and is not the current version.
  *
  * Throws only when the LISTING fails; per-key delete failures are recorded in
  * `failed` and do not stop the walk.
@@ -393,7 +535,7 @@ async function purgeUnderPrefix(
   s3Client: Pick<S3Client, 'send'>,
   bucket: string,
   prefix: string,
-  wanted: ReadonlySet<string>,
+  scope: PurgeScope,
   requestFields: { ExpectedBucketOwner?: string },
   failed: Map<string, string[]>,
   /** Shared across ALL prefixes — see the call site for why it is not local. */
@@ -401,7 +543,9 @@ async function purgeUnderPrefix(
   /** Keys that had at least one noncurrent BODY (never a bare delete marker). */
   purged: Set<string>,
   /** Keys with a body-bearing or unknown-provenance failure. */
-  unsettledBodies: Set<string>
+  unsettledBodies: Set<string>,
+  /** Count of entries a delete confirmed removed, shared across prefixes. */
+  removed: { n: number }
 ): Promise<void> {
   let keyMarker: string | undefined;
   let versionIdMarker: string | undefined;
@@ -413,10 +557,10 @@ async function purgeUnderPrefix(
         ...requestFields,
         // `Prefix` is a PREFIX and not an exact match — asking for `<key>`
         // also returns `<key>.bak` — so every returned entry is re-checked
-        // against `wanted` below before anything is deleted.
+        // against `scope` below before anything is deleted.
         Prefix: prefix,
         // Issue go-to-k/cdkd#3313: without this the XML round-trip turns a
-        // CARRIAGE RETURN in a key into a LINE FEED, `wanted.has` then misses
+        // CARRIAGE RETURN in a key into a LINE FEED, `scope.covers` then misses
         // the entry, and it is silently skipped — recorded in neither `purged`
         // nor `unsettledBodies`, so a version carrying a secret plaintext
         // survives a sweep that reports success.
@@ -427,6 +571,15 @@ async function purgeUnderPrefix(
     );
 
     const stale: { Key: string; VersionId: string }[] = [];
+    // `(Key, VersionId)` of the `stale` rows that carry a BODY. Only those
+    // feed `removed`: a delete marker holds nothing, and `--all` itself writes
+    // one for an absent index key on every run, so counting markers made a
+    // second run over an EMPTY prefix report a purge.
+    // Keyed Key -> VersionIds rather than by a joined string, so no
+    // composite-key encoding is involved.
+    const staleBodies = new Map<string, Set<string>>();
+    const isStaleBody = (key: string | undefined, versionId: string | undefined): boolean =>
+      key !== undefined && versionId !== undefined && staleBodies.get(key)?.has(versionId) === true;
     // Provenance is tracked, not just membership: a noncurrent DELETE MARKER is
     // removed like any other entry but has NO BODY, so it must not mark the key
     // as one whose body was purged. Getting that wrong reinstated the exact
@@ -441,7 +594,7 @@ async function purgeUnderPrefix(
     ];
     for (const { entry, hasBody } of entries) {
       // DECODE before every use: the listing above asks for URL encoding, so a
-      // raw `entry.Key` here would fail `wanted.has` for any key containing a
+      // raw `entry.Key` here would fail `scope.covers` for any key containing a
       // `%` and would delete the wrong object. Request and decode are one
       // decision (go-to-k/cdkd#3313).
       // PER ENTRY, not per page: `Prefix` is a prefix match, so this walk sees
@@ -455,7 +608,7 @@ async function purgeUnderPrefix(
       } catch {
         // FAIL-CLOSED, and the first cut of this arm did the opposite. It tested
         // `wanted.has(entry.Key)` with the RAW key before recording — but
-        // `wanted` holds keys cdkd CONSTRUCTED, i.e. already in decoded form, so
+        // the scope holds keys or a prefix cdkd CONSTRUCTED, i.e. already in decoded form, so
         // an encoded key can essentially never match one. The arm recorded
         // nothing, and the "a body went unsettled" signal it exists to raise was
         // lost for exactly the entries that could not be read.
@@ -474,16 +627,29 @@ async function purgeUnderPrefix(
         if (hasBody && entry.Key !== undefined) {
           unsettledBodies.add(`${entry.Key} [key not decodable; shown as S3 returned it]`);
         }
+        // In the prefix scope every listed entry is in scope, so an entry left
+        // here is an unpurged version and must reach the failure warning, or
+        // the caller's "purged unless a warning above says otherwise" is false.
+        // `!== true`, like the decodable path: an absent `IsLatest` is an
+        // entry left alone, which is a non-removal to report; a CURRENT one is
+        // not a version this purge would ever remove.
+        if (scope.ownsEveryListedKey && entry.Key !== undefined && entry.IsLatest !== true) {
+          recordFailure(
+            failed,
+            `${entry.Key} [key not decodable; shown as S3 returned it]`,
+            `version ${entry.VersionId ?? '<unknown>'}: listing key could not be decoded, so the entry was left alone`
+          );
+        }
         continue;
       }
-      if (decodedKey === undefined || !wanted.has(decodedKey)) continue;
+      if (decodedKey === undefined || !scope.covers(decodedKey)) continue;
       // `!== false`, not `=== true`: an entry with the field ABSENT must be
       // treated as possibly-current and left alone. Keying on `=== true` fails
       // OPEN — it would delete the CURRENT version of a key whose `IsLatest`
       // the response happened to omit.
       //
       // But skipping SILENTLY is the one direction this module exists to
-      // forbid: the entry is in `wanted`, so it may be a body we were asked to
+      // forbid: the entry is in scope, so it may be a body we were asked to
       // remove and did not. Unreachable against real S3, which always populates
       // the field — which is why it RECORDS rather than throws, and why the
       // reason says what was assumed. Recorded before the `VersionId` check
@@ -521,6 +687,11 @@ async function purgeUnderPrefix(
         continue;
       }
       stale.push({ Key: decodedKey, VersionId: entry.VersionId });
+      if (hasBody) {
+        const ids = staleBodies.get(decodedKey) ?? new Set<string>();
+        ids.add(entry.VersionId);
+        staleBodies.set(decodedKey, ids);
+      }
       // Provenance is decided HERE, at listing time, and nothing downstream may
       // revisit it: see the NOTE on the delete loop below.
       if (hasBody) purged.add(decodedKey);
@@ -546,6 +717,19 @@ async function purgeUnderPrefix(
         // The load-bearing read. `Quiet: true` returns ONLY failures, so an
         // empty `Errors` is the success signal and a populated one is a
         // partial failure the call itself reported as overall success.
+        let bodiesRemoved = batch.filter((o) => isStaleBody(o.Key, o.VersionId)).length;
+        for (const err of deleted.Errors ?? []) {
+          // A keyless error cannot be matched, so it is assumed to be a body:
+          // the under-claiming direction.
+          if (
+            err.Key === undefined ||
+            err.VersionId === undefined ||
+            isStaleBody(err.Key, err.VersionId)
+          ) {
+            bodiesRemoved -= 1;
+          }
+        }
+        removed.n += Math.max(0, bodiesRemoved);
         for (const err of deleted.Errors ?? []) {
           // `NoSuchVersion` is the OUTCOME WE WANTED, reported as an error.
           // The version named is already gone, so the key is in exactly the
@@ -606,10 +790,10 @@ async function purgeUnderPrefix(
       // stopping SILENTLY trades a hang for an unreported partial purge, in
       // the one file whose whole premise is that a quiet failure is the bug.
       //
-      // Blamed on the keys UNDER THIS PREFIX only. `wanted` is the full
-      // requested set, so warning about all of it would name keys whose own
-      // walks completed — over-warning, and a comment describing something the
-      // code did not do.
+      // Blamed on the keys UNDER THIS PREFIX only (the prefix scope names
+      // the prefix itself). `wanted` is the full requested set, so warning
+      // about all of it would name keys whose own walks completed —
+      // over-warning, and a comment describing something the code did not do.
       //
       // It still OVER-NAMES in two ways, both toward reporting too much, which
       // is the safe direction; they are listed because an unstated residual is
@@ -621,16 +805,14 @@ async function purgeUnderPrefix(
       // although its own walk completed. An earlier revision of this comment
       // claimed the filter "selects exactly it" in per-key mode; measured
       // against `[KEY_A, KEY_A + '.bak']`, it does not.
-      for (const key of wanted) {
-        if (key.startsWith(prefix)) {
-          recordFailure(failed, key, TRUNCATED_NO_MARKER);
-          // Same unknown provenance as the listing-throw arm above: the walk
-          // stopped early, so what remains under this key is unknown. It
-          // inherits the SAME `startsWith` over-reach the block comment above
-          // describes -- in per-key mode a sibling `<k>.bak` whose own walk
-          // completed is named here too -- and in the same safe direction.
-          unsettledBodies.add(key);
-        }
+      for (const key of scope.unsettledUnder(prefix)) {
+        recordFailure(failed, key, TRUNCATED_NO_MARKER);
+        // Same unknown provenance as the listing-throw arm above: the walk
+        // stopped early, so what remains under this key is unknown. It
+        // inherits the SAME `startsWith` over-reach the block comment above
+        // describes -- in per-key mode a sibling `<k>.bak` whose own walk
+        // completed is named here too -- and in the same safe direction.
+        unsettledBodies.add(key);
       }
     }
     // DECODED: the next request sends the RAW marker, and the listing above
