@@ -86,7 +86,6 @@ docdb-neptune	2026-10-03T05:35:39Z	PASS	5713	verify.sh	rc ok, orph clean (#4283 
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-10-05T14:52:34Z	PASS	311	verify.sh	rc ok, orph clean (#3211 PR #4590)
 drift-revert-arrays	2026-10-04T10:29:43Z	PASS	185	verify.sh	rc ok, orph clean (#4476)
-drift-revert-vpc	2026-10-05T14:42:45Z	PASS	345	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
 drift-revert-vpc	2026-10-05T14:58:55Z	PASS	376	verify.sh	rc ok, orph clean (#3211 PR #4590)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-05T10:27:06Z	PASS	210	verify.sh	rc ok, orph clean (#2624 PR #4572)
@@ -127,7 +126,6 @@ eventbridge-pipes	2026-10-03T09:34:47Z	PASS	175	verify.sh	rc ok, orph clean (#44
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-03T19:15:22Z	PASS	100	verify.sh	rc ok, orph clean (#2080 PR #4515)
-export	2026-10-05T14:42:45Z	PASS	235	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
 export	2026-10-05T15:02:52Z	PASS	235	verify.sh	rc ok, orph clean (#3211 PR #4590)
 export-nested-stack	2026-10-04T19:49:12Z	PASS	181	verify.sh	rc ok, orph clean (#4547)
 fallback-recreate-children	2026-10-05T02:29:22Z	PASS	105	verify.sh	rc ok, orph clean (#4569 @480676155)
