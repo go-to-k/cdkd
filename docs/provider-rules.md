@@ -364,7 +364,8 @@ implementation. Three details are worth copying:
     `markCreatedBeforeFailure(error, ownerLogicalId, resourceType, physicalId)` (same module,
     issue [#1710](https://github.com/go-to-k/cdkd/issues/1710)). The resource
     then exists with no state record; the mark is what lets the failed-CREATE
-    journal name it, so `cdkd rollback --revert-failed` can delete it. Set it
+    journal name it, so the automatic rollback, `cdkd rollback` and
+    `cdkd destroy` can delete it. Set it
     only behind a flag the create call's success sets (Kinesis's
     `streamCreated`): `ProvisioningError.physicalId` is NOT that proof, since
     providers put the intended name on refusals and on the create call's own

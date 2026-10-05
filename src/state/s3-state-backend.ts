@@ -1352,6 +1352,37 @@ export class S3StateBackend {
   }
 
   /**
+   * Remove every failed op for which `drop` answers `true`, from ANY segment
+   * (go-to-k/cdkd#4584: `cdkd destroy` strips the journaled orphans it
+   * settled, so a re-run after a later failure does not re-send their
+   * deletes). A segment left with no failed op loses the field; segments
+   * themselves are kept. Writes nothing when nothing matched. Returns the
+   * number of ops removed.
+   */
+  async dropRollbackJournalFailedOperations(
+    stackName: string,
+    region: string,
+    drop: (op: FailedOperation, segment: RollbackJournalSegment) => boolean
+  ): Promise<number> {
+    const journal = await this.loadRollbackJournal(stackName, region);
+    if (!journal) return 0;
+    let removed = 0;
+    for (const segment of journal.segments) {
+      if (!segment.failedOperations) continue;
+      const kept = segment.failedOperations.filter((op) => !drop(op, segment));
+      removed += segment.failedOperations.length - kept.length;
+      if (kept.length === 0) delete segment.failedOperations;
+      else segment.failedOperations = kept;
+    }
+    if (removed === 0) return 0;
+    await this.putRawObject(
+      this.getRollbackJournalKey(stackName, region),
+      JSON.stringify(journal, null, 2)
+    );
+    return removed;
+  }
+
+  /**
    * Pop the newest segment off the stack's rollback journal after it has
    * been fully replayed. When the last segment is removed, the journal
    * object is deleted entirely. Returns the number of segments remaining.

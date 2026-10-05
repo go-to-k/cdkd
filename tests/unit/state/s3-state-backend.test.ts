@@ -2131,6 +2131,69 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
     expect(body.segments[0].reason).toBe('interrupted');
   });
 
+  // go-to-k/cdkd#4584: `cdkd destroy` strips the journaled orphans it settled
+  // from whichever segment holds them.
+  describe('dropRollbackJournalFailedOperations (go-to-k/cdkd#4584)', () => {
+    const fop = (logicalId: string) => ({ logicalId, changeType: 'CREATE', resourceType: 'AWS::Kinesis::Stream' });
+    const journalWith = () => ({
+      journalVersion: 1,
+      stackName: 'S',
+      region: 'us-east-1',
+      segments: [
+        { ...segment('no-rollback-failure'), failedOperations: [fop('A'), fop('Keep1')] },
+        { ...segment('no-rollback-failure'), timestamp: 2, failedOperations: [fop('B')] },
+        segment('interrupted'),
+      ],
+    });
+    const puts = () =>
+      s3Client.send.mock.calls.map((c: unknown[]) => c[0]).filter((cmd: unknown) => cmd instanceof PutObjectCommand) as PutObjectCommand[];
+
+    it('drops only the selected ops, in every segment, and keeps an emptied segment', async () => {
+      s3Client.send.mockResolvedValueOnce({ Body: rawBody(journalWith()) }); // load
+      s3Client.send.mockResolvedValueOnce({}); // put
+      const removed = await backend.dropRollbackJournalFailedOperations('S', 'us-east-1', (op) =>
+        ['A', 'B'].includes(op.logicalId)
+      );
+      expect(removed).toBe(2);
+      expect(puts()).toHaveLength(1);
+      expect(puts()[0]!.input.Key).toBe(journalKey);
+      const body = JSON.parse(puts()[0]!.input.Body as string);
+      expect(body.segments).toHaveLength(3);
+      expect(body.segments[0].failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['Keep1']);
+      expect(body.segments[1]).not.toHaveProperty('failedOperations');
+      expect(body.segments[1].timestamp).toBe(2);
+      expect(body.segments[2].reason).toBe('interrupted');
+    });
+
+    it('hands the predicate each op with its own segment', async () => {
+      s3Client.send.mockResolvedValueOnce({ Body: rawBody(journalWith()) });
+      s3Client.send.mockResolvedValueOnce({});
+      const removed = await backend.dropRollbackJournalFailedOperations(
+        'S',
+        'us-east-1',
+        (_op, seg) => seg.timestamp === 2
+      );
+      expect(removed).toBe(1);
+      const body = JSON.parse(puts()[0]!.input.Body as string);
+      expect(body.segments[0].failedOperations).toHaveLength(2);
+      expect(body.segments[1]).not.toHaveProperty('failedOperations');
+    });
+
+    it('writes nothing when no op matches', async () => {
+      s3Client.send.mockResolvedValueOnce({ Body: rawBody(journalWith()) });
+      const removed = await backend.dropRollbackJournalFailedOperations('S', 'us-east-1', () => false);
+      expect(removed).toBe(0);
+      expect(puts()).toHaveLength(0);
+    });
+
+    it('returns 0 and writes nothing with no journal', async () => {
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'nope', $metadata: {} }));
+      const removed = await backend.dropRollbackJournalFailedOperations('S', 'us-east-1', () => true);
+      expect(removed).toBe(0);
+      expect(puts()).toHaveLength(0);
+    });
+  });
+
   // go-to-k/cdkd#4402: a pop / drop removes a segment after its ops were
   // reverted; its completed ops superseded older failed attempts, so their ids
   // are carried onto the nearest older remaining segment.

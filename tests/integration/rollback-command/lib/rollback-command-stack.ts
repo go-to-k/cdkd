@@ -45,7 +45,8 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *     `INJECT_ORPHAN_CREATE=true` (go-to-k/cdkd#1710). `CreateStream`
  *     succeeds, then the retention follow-up is rejected, so the CREATE fails
  *     with the stream already in AWS and no state record. The journal must
- *     carry its physical id so `cdkd rollback --revert-failed` deletes it.
+ *     carry its physical id so every rollback path and `cdkd destroy` delete it
+ *     (go-to-k/cdkd#4584); `ORPHAN_RETAIN=true` gives it `DeletionPolicy: Retain`.
  *   - `FailingQueue` — an SQS queue with an out-of-range
  *     `messageRetentionPeriod` (valid range [60, 1209600]) added ONLY when
  *     `INJECT_FAIL=true`. AWS rejects `CreateQueue`, so the deploy fails. It
@@ -112,11 +113,16 @@ export class RollbackCommandStack extends cdk.Stack {
       // 8760), which cdkd does not pre-flight. The L1 is used because the L2
       // `Stream` refuses the value at synth. Marker is unchanged in this phase,
       // so the segment is failed-only, the shape a lone failed create leaves.
-      new kinesis.CfnStream(this, 'OrphanStream', {
+      const orphanStream = new kinesis.CfnStream(this, 'OrphanStream', {
         name: `${this.stackName}-orphan-stream`,
         shardCount: 1,
         retentionPeriodHours: 9000,
       });
+      // go-to-k/cdkd#4584: the Retain arm — every rollback path keeps the
+      // stream in AWS instead of deleting it.
+      if (process.env.ORPHAN_RETAIN === 'true') {
+        orphanStream.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+      }
     }
 
     if (process.env.WITH_SKIP_PAIR === 'true') {

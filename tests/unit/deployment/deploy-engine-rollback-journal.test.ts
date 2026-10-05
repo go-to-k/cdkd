@@ -72,6 +72,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     noRollback?: boolean;
     currentEtag?: string;
     currentResources?: Record<string, ResourceState>;
+    eventRecorder?: { record: (e: unknown) => void; runId?: string };
   }) {
     const provider = {
       create: vi.fn().mockImplementation((logicalId: string) =>
@@ -139,7 +140,12 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       mockDagBuilder as never,
       mockDiffCalculator as never,
       mockProviderRegistry as never,
-      { concurrency: 4, noRollback: opts.noRollback ?? false, roleArn: 'arn:aws:iam::1:role/r' },
+      {
+        concurrency: 4,
+        noRollback: opts.noRollback ?? false,
+        roleArn: 'arn:aws:iam::1:role/r',
+        ...(opts.eventRecorder && { eventRecorder: opts.eventRecorder as never }),
+      },
       'us-east-1'
     );
   }
@@ -936,40 +942,235 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       }
     );
 
-    // The default flow: a clean automatic rollback re-records the failed op
-    // in a failed-only segment, which must keep what --revert-failed reads.
-    it('keeps the id, the flag and the policy through the clean automatic rollback', async () => {
+    // go-to-k/cdkd#4584: the default flow deletes the proven orphan the way
+    // CloudFormation's rollback deletes a failed CREATE — per its journaled
+    // DeletionPolicy, before the completed CREATEs it may depend on.
+    function autoRollbackEngine(
+      policy: 'Delete' | 'Retain' | undefined,
+      opts: { deleteFails?: boolean; previousOrphans?: StackState['orphans'] } = {}
+    ) {
       const changes = new Map([
         ['A', makeChange('A')],
         ['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange],
       ]);
       const engine = buildEngine({ changes, deps: { A: [], B: ['A'] }, noRollback: false, currentEtag: 'e0' });
-      const provider = (
+      const registry = (
         engine as unknown as {
-          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+          stateBackend: { getState: ReturnType<typeof vi.fn> };
+          providerRegistry: {
+            getProviderFor: () => {
+              provider: { create: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+            };
+          };
         }
-      ).providerRegistry.getProviderFor().provider;
+      );
+      if (opts.previousOrphans) {
+        registry.stateBackend.getState.mockResolvedValue({
+          state: {
+            version: 8,
+            stackName,
+            region: 'us-east-1',
+            resources: {},
+            outputs: {},
+            orphans: opts.previousOrphans,
+            lastModified: 1,
+          },
+          etag: 'e0',
+        });
+      }
+      const provider = registry.providerRegistry.getProviderFor().provider;
       provider.create.mockImplementation((logicalId: string) =>
         logicalId === 'B'
           ? Promise.reject(markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::S3::Bucket', 'b-1'))
           : Promise.resolve({ physicalId: `phys-${logicalId}`, attributes: {} })
       );
-      await expect(
-        engine.deploy(stackName, {
-          Resources: {
-            A: { Type: 'AWS::S3::Bucket', Properties: {} },
-            B: { Type: 'AWS::S3::Bucket', Properties: {}, DeletionPolicy: 'Snapshot' },
+      if (opts.deleteFails) {
+        provider.delete.mockImplementation((logicalId: string) =>
+          logicalId === 'B' ? Promise.reject(new Error('AccessDenied')) : Promise.resolve(undefined)
+        );
+      }
+      const tmpl: CloudFormationTemplate = {
+        Resources: {
+          A: { Type: 'AWS::S3::Bucket', Properties: {} },
+          B: {
+            Type: 'AWS::S3::Bucket',
+            Properties: {},
+            ...(policy !== undefined && { DeletionPolicy: policy }),
           },
-        })
-      ).rejects.toThrow();
-      const last = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
-      expect(last.reason).toBe('auto-rollback-clean');
-      expect(last.failedOperations[0]).toMatchObject({
+        },
+      };
+      return { engine, provider, tmpl };
+    }
+
+    it('deletes the orphan BEFORE the completed CREATE, and settles with no failed-only segment', async () => {
+      const { engine, provider, tmpl } = autoRollbackEngine(undefined);
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => [c[0], c[1]])).toEqual([
+        ['B', 'b-1'],
+        ['A', 'phys-A'],
+      ]);
+      // Only the auto-rollback-started segment: the handled orphan leaves
+      // nothing for `--revert-failed`, so no failed-only one is re-recorded.
+      expect(journal.appendRollbackJournalSegment.mock.calls.map((c) => c[2].reason)).toEqual([
+        'auto-rollback-started',
+      ]);
+      expect(journal.popRollbackJournalSegment).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the orphan in AWS under DeletionPolicy Retain, and drops its entry', async () => {
+      const { engine, provider, tmpl } = autoRollbackEngine('Retain');
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[0])).toEqual(['A']);
+      expect(journal.appendRollbackJournalSegment.mock.calls.map((c) => c[2].reason)).toEqual([
+        'auto-rollback-started',
+      ]);
+      expect(journal.popRollbackJournalSegment).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the full segment, the orphan entry intact, when its delete fails', async () => {
+      const { engine, provider, tmpl } = autoRollbackEngine(undefined, { deleteFails: true });
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[0])).toEqual(['B', 'A']);
+      expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+      const segs = journal.appendRollbackJournalSegment.mock.calls.map((c) => c[2]);
+      expect(segs.map((seg) => seg.reason)).toEqual(['auto-rollback-started']);
+      expect(segs[0].failedOperations[0]).toMatchObject({
         logicalId: 'B',
         physicalId: 'b-1',
         physicalIdRecoveredFromError: true,
-        deletionPolicy: 'Snapshot',
       });
+    });
+
+    // A rollback-orphan record holding its physical id may own the resource:
+    // warned and skipped, never deleted — and the journaled flag is the
+    // provider's proof, not the supersede pass's verdict.
+    it('skips a superseded orphan and journals it unchanged', async () => {
+      const { engine, provider, tmpl } = autoRollbackEngine(undefined, {
+        previousOrphans: [
+          {
+            logicalId: 'Other',
+            orphanedAt: 1,
+            state: { physicalId: 'b-1', resourceType: 'AWS::S3::Bucket', properties: {} },
+          } as never,
+        ],
+      });
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[0])).toEqual(['A']);
+      expect(journal.popRollbackJournalSegment).not.toHaveBeenCalled();
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      expect(seg.failedOperations[0].physicalIdRecoveredFromError).toBe(true);
+      expect(vi.mocked(getLogger().warn).mock.calls.flat().join('\n')).toContain(
+        'a later deploy or rollback may own a resource under that id now'
+      );
+    });
+
+    // A failed-only attempt: `replayRollback` emits no envelope over zero
+    // completed ops, so the orphan replay owns it — exactly one pair.
+    it('frames a failed-only attempt with one ROLLBACK_STARTED / ROLLBACK_FINISHED pair', async () => {
+      const events: Array<{ eventType: string }> = [];
+      const engine = buildEngine({
+        changes: new Map([['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange]]),
+        deps: { B: [] },
+        noRollback: false,
+        currentEtag: 'e0',
+        eventRecorder: { record: (e) => events.push(e as { eventType: string }), runId: 'r1' },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockRejectedValue(markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::S3::Bucket', 'b-1'));
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[1])).toEqual(['b-1']);
+      const types = events.map((e) => e.eventType).filter((t) => t === 'ROLLBACK_STARTED' || t === 'ROLLBACK_FINISHED');
+      expect(types).toEqual(['ROLLBACK_STARTED', 'ROLLBACK_FINISHED']);
+    });
+
+    // The post-rollback save's ETag-retry arm settles the journal too, and must
+    // settle with the same remaining failed ops.
+    it('settles through the save-retry arm with the handled orphan dropped', async () => {
+      const { engine, provider, tmpl } = autoRollbackEngine(undefined);
+      const backend = (
+        engine as unknown as {
+          stateBackend: { saveState: ReturnType<typeof vi.fn>; getState: ReturnType<typeof vi.fn> };
+        }
+      ).stateBackend;
+      let failedOnce = false;
+      backend.saveState.mockImplementation(async (_n: string, _r: string, st: StackState) => {
+        if (!failedOnce && Object.keys(st.resources).length === 0) {
+          failedOnce = true;
+          throw new Error('PreconditionFailed');
+        }
+        return 'etag-x';
+      });
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      expect(failedOnce).toBe(true);
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[0])).toEqual(['B', 'A']);
+      expect(journal.appendRollbackJournalSegment.mock.calls.map((c) => c[2].reason)).toEqual([
+        'auto-rollback-started',
+      ]);
+      expect(journal.popRollbackJournalSegment).toHaveBeenCalledOnce();
+    });
+
+    // Direct call: the index mapping keeps an ordinary failed op (still owed to
+    // `--revert-failed`) and drops only the handled orphan; the counts sum the
+    // orphan replay with the completed-op replay.
+    it('returns the ordinary failed ops as remaining and sums the two replays', async () => {
+      const engine = buildEngine({ changes: new Map(), deps: {}, noRollback: false, currentEtag: 'e0' });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { delete: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      const ordinary = { logicalId: 'U', changeType: 'UPDATE' as const, resourceType: 'AWS::S3::Bucket', physicalId: 'u-1' };
+      const proven = {
+        logicalId: 'P',
+        changeType: 'CREATE' as const,
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'p-1',
+        provisionedBy: 'sdk' as const,
+        physicalIdRecoveredFromError: true,
+      };
+      const superseded = { ...proven, logicalId: 'S', physicalId: 's-1' };
+      // Its delete fails: it stays owed, so it must stay in the remaining list.
+      const failing = { ...proven, logicalId: 'F', physicalId: 'f-1' };
+      provider.delete.mockImplementation((logicalId: string) =>
+        logicalId === 'F' ? Promise.reject(new Error('AccessDenied')) : Promise.resolve(undefined)
+      );
+      const prev: StackState = { version: 8, stackName, region: 'us-east-1', resources: {}, outputs: {}, lastModified: 1 };
+      const run = (engine as unknown as {
+        performRollback: (...a: unknown[]) => Promise<{
+          warnings: number;
+          skipped: number;
+          failures: number;
+          remainingFailedOps: unknown[];
+        }>;
+      }).performRollback.bind(engine);
+      const out = await run([], {}, stackName, prev, [ordinary, proven, superseded, failing], [
+        { logicalId: 'Other', orphanedAt: 1, state: { physicalId: 's-1', resourceType: 'AWS::S3::Bucket', properties: {} } },
+      ]);
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[1]).sort()).toEqual(['f-1', 'p-1']);
+      expect(out.remainingFailedOps).toEqual([ordinary, failing]);
+      expect(out.failures).toBe(1);
+      expect(out.skipped).toBe(1);
+      expect(out.warnings).toBe(1);
+    });
+
+    it('deletes nothing under --no-rollback', async () => {
+      const { engine } = failingCreateEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::S3::Bucket', 'b-1')
+      );
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { delete: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      expect(provider.delete).not.toHaveBeenCalled();
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      expect(seg.reason).toBe('no-rollback-failure');
+      expect(seg.failedOperations[0].physicalIdRecoveredFromError).toBe(true);
     });
 
     it('journals an unknown DeletionPolicy as Retain, never a plain delete', async () => {

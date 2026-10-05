@@ -89,8 +89,7 @@ Index of every area: [code-layout.md](code-layout.md).
   running BEFORE cdk-local builds an SDK client. `cli-region-fold.test.ts`
   fences the shape across `src/cli/commands/`.
 - **src/cli/program.ts** - `buildProgram()` builds the whole Commander tree.
-  Split from `index.ts` because importing that file runs `main()` as a side
-  effect, so tooling could not read the tree without executing the CLI.
+  Split from `index.ts`, whose import runs `main()`.
 - **src/cli/pipe-close-handler.ts** - `installPipeCloseHandler()` exits 0 on
   EPIPE when a downstream consumer closes the pipe early; non-EPIPE stream
   errors re-throw. Its own module so it stays unit-testable.
@@ -127,8 +126,9 @@ Index of every area: [code-layout.md](code-layout.md).
   emptying state deletes `state.json`. `--revert-failed` replays the journaled
   `failedOperations` BEFORE its completed ops (a failed CREATE is deleted only
   when a state record matches, or as a provider-proven orphan (#1710) no later
-  entry or record owns; then per its `DeletionPolicy`); it
-  is off by default because the failed resource's remote state is unknown. Exit
+  entry or record owns; then per its `DeletionPolicy`); it is off by default
+  (remote state unknown), but `isJournaledOrphan` ops replay without it: no
+  path may drop their only record unacted (#4584; auto-rollback, destroy). Exit
   codes: 0 clean, 2 partial (journal kept, re-run is idempotent), 1 hard error.
   Each segment replays inside `withNestedRevertRun(segment.runId)`, so a nested
   row reverts from its child's journal with no templates, and a popped segment
@@ -149,8 +149,7 @@ Index of every area: [code-layout.md](code-layout.md).
   the bootstrap-marker check, because the placeholders live in the STATE bucket,
   which exists whether or not the region opted in to asset storage. The prefix is
   ONE binding shared with the producer (`CUSTOM_RESOURCE_RESPONSE_PREFIX` in
-  `src/state/state-prefix.ts`) — a sweeper pointed at a drifted prefix finds
-  nothing and exits 0, indistinguishable from a clean bucket.
+  `src/state/state-prefix.ts`) — a drifted prefix sweeps nothing and exits 0.
 - **`isPasteableIdent`** (with `parseStateKey` / `displayIdent`) is the repo's
   answer for any value cdkd renders into a command it tells an operator to RUN,
   not just a state-key segment: `--state-bucket=attacker` is plain-identifier

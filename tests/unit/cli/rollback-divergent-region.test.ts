@@ -335,14 +335,18 @@ describe('cdkd rollback refuses a record whose body region diverged from its key
     install({ ...ARMS[ARMS.length - 1]!, bodyRegion: BODY_REGION });
     const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
     expect((thrown as CdkdError).message).toContain(
-      'its journal holds 1 failed create whose resource --revert-failed would delete'
+      'its journal holds 1 failed create whose resource the rollback would delete'
     );
   });
 
-  it('lets the same resource-less record through without --revert-failed', async () => {
+  it('refuses the same resource-less record without --revert-failed (go-to-k/cdkd#4584)', async () => {
+    // A plain rollback deletes a proven orphan too, so it reaches AWS as well.
     install({ ...ARMS[ARMS.length - 1]!, bodyRegion: BODY_REGION });
     const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
-    expect((thrown as { code?: string } | undefined)?.code).not.toBe(STATE_REGION_DIVERGED);
+    expect((thrown as { code?: string } | undefined)?.code).toBe(STATE_REGION_DIVERGED);
+    expect((thrown as CdkdError).message).toContain(
+      'its journal holds 1 failed create whose resource the rollback would delete'
+    );
     expect(awsCalls()).toBe(0);
   });
 

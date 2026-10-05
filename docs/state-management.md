@@ -233,9 +233,12 @@ schema (its own `journalVersion` field, no `StackState.version` bump) and
 design; the journal must not). Lifecycle: created on a failed / interrupted
 deploy and before an auto-rollback; each replayed segment is popped; the
 object is deleted on the next **successful deploy**, after a **clean
-`cdkd rollback`**, and by `cdkd destroy` / `cdkd state destroy`. A **clean
-automatic rollback** settles it to a failed-only segment instead of
-deleting it (`operations: []` plus the failed op records, `reason:
+`cdkd rollback`**, and by `cdkd destroy` / `cdkd state destroy`; the last
+three first delete (per its `DeletionPolicy`) any resource a failed CREATE
+made that only the journal records. A **clean
+automatic rollback** deletes such a resource too, then settles the journal to a failed-only
+segment instead of
+deleting it (`operations: []` plus the remaining failed op records, `reason:
 auto-rollback-clean`) so `cdkd rollback --revert-failed` works in the
 default deploy flow too. An automatic rollback is clean only with no failed
 AND no skipped op: one that left an op unreverted (a `ROLLBACK_RESOURCE_SKIPPED`

@@ -356,7 +356,7 @@ replacement is data-losing.
 | Replacement: the delete-first / recreate delete of the OLD resource | Snapshot, then delete. A snapshot failure fails the resource — that delete is load-bearing for the re-create. When the template also renames the resource, `--recreate-via-*` and the update-failure fallback create first instead: a snapshot cdkd must take BEFORE the delete is still refused before anything is created, but a snapshot the delete itself takes (RDS instances and clusters, DocumentDB and Neptune clusters, ElastiCache cache clusters) belongs to that delete, which is then the cleanup's — its failure warns, as in the row below. |
 | Replacement: the post-replacement CLEANUP delete of the OLD resource | A TRANSIENT snapshot failure warns and skips the delete, leaking the old resource rather than deleting it un-snapshotted. |
 | Rollback of a COMPLETED CREATE (automatic after a failed deploy, or `cdkd rollback`) | Snapshot, then delete; a refusal is a rollback failure, so the journal is kept. `Retain` orphans instead. |
-| `cdkd rollback --revert-failed`'s delete of a CREATE that FAILED mid-flight | Same policy matrix — see below. |
+| A delete of a CREATE that FAILED mid-flight (`cdkd rollback --revert-failed`; for one that made its resource also the automatic rollback, a plain `cdkd rollback` and `cdkd destroy`) | Same policy matrix — see below. |
 | Rollback's delete of the NEW resource (reversing a replacement, i.e. `UpdateReplacePolicy`) | Only the atomic SDK-routed types get a final snapshot; the other shapes keep the plain delete, which is load-bearing for same-name re-creation. |
 
 A **refusal** — a type or route cdkd cannot snapshot — always fails the
@@ -365,11 +365,16 @@ failing the update.
 
 #### Rolling back a CREATE that failed mid-flight
 
-`cdkd rollback --revert-failed` applies the same policy matrix: `Retain`
+Every delete of a failed CREATE applies the same policy matrix: `Retain`
 leaves the resource in AWS, `Snapshot` snapshots then deletes (refusing what it
 cannot snapshot), `RetainExceptOnCreate` / `Delete` delete plainly, and absent
-takes CloudFormation's default (see [Which policy cdkd reads](#which-policy-cdkd-reads)). It only engages when AWS actually provisioned the resource — the
-action requires a recorded physical id AND a matching state record — so the
+takes CloudFormation's default (see [Which policy cdkd reads](#which-policy-cdkd-reads)).
+`cdkd rollback --revert-failed` deletes one whose recorded physical id state
+still records. A CREATE whose provider proved it made the resource before
+failing has no state record and is deleted on the journaled policy by every
+rollback and by `cdkd destroy` (see
+[Resources only the rollback journal records](#resources-only-the-rollback-journal-records)).
+Either way it only engages when AWS actually provisioned the resource, so the
 policy is never applied to a resource that never existed.
 
 A refusal here is recoverable rather than final: the operation stays in the
@@ -887,6 +892,29 @@ again), while a skip needs its state record repaired first.
 The run-level exit message counts **entries**, not resources: a skipped
 nested-stack row is one entry however many of the child's own resources it
 covers. The per-stack summary lines above it give the exact breakdown.
+
+## Resources only the rollback journal records
+
+A deploy that fails after a CREATE made its resource (the provider proved its
+create call returned, e.g. a Kinesis stream whose retention follow-up AWS
+rejected) leaves that resource with no state record: the rollback journal is
+its only record, and destroying the stack removes the journal. Under
+`--no-rollback`, or when the journal outlives the rollback, `cdkd destroy` and
+`cdkd state destroy` therefore act on it first:
+
+| Step | Behaviour |
+| --- | --- |
+| Before the prompt | Listed with its physical id, also on a `--yes` / `--force` run and in a nested child's cascade. The prompt counts it. |
+| Under the lock | The journal is read again; any change to what it records, or a journal that can no longer be read, refuses the run before anything is deleted, so you re-run against what is there now. |
+| Before the stack's resources | Deleted per its journaled `DeletionPolicy` — `Retain` keeps it in AWS, `Snapshot` takes the final snapshot unless `--skip-final-snapshot`. One that state, a later deploy or a rollback-orphan record may own is warned about and left alone. |
+| A delete fails | Counted separately in the summary; the state and the journal are kept, and the hint is to re-run the destroy, never to drop this stack's record. |
+| Only such resources remain | The stack is not empty: it takes the confirmed path, not the empty-stack fast path. |
+
+A journal destroy cannot read is warned about and removed with the state, and
+nothing it records is deleted. A record whose body region differs from its
+key's is refused when its journal holds such a resource, as when it lists
+resources. See [Failed CREATEs that made their resource](cli-rollback.md#failed-creates-that-made-their-resource)
+for the rollback side.
 
 ## Interrupting a destroy (Ctrl-C / SIGTERM)
 

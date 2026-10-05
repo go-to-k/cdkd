@@ -50,8 +50,10 @@ import {
   planRollback,
   planFailedOps,
   demoteSupersededOrphans,
+  isJournaledOrphan,
   producerRegionsFromState,
   resolveReplacementOldType,
+  type FailedOperation,
   type RollbackExecutorContext,
   type RollbackPlanItem,
   type FailedOpPlanItem,
@@ -348,9 +350,10 @@ function safeRoleArn(value: unknown): string {
  * CREATE delete, the in-place `revert`, BOTH reverse-replacement arms (whose
  * re-CREATE writes as well as deletes), and `--revert-failed`'s delete and
  * forced update — requires a CURRENT state row for the op's logical id
- * (`classifyRollbackOp` / `classifyFailedOp`), except `--revert-failed`'s delete
- * of a proven failed-CREATE orphan (go-to-k/cdkd#1710), which has no row and is
- * counted in `provenOrphans`; a completed DELETE is `unrecoverable-delete` and
+ * (`classifyRollbackOp` / `classifyFailedOp`), except the delete of a proven
+ * failed-CREATE orphan (go-to-k/cdkd#1710), which has no row, is replayed with
+ * or without `--revert-failed` (go-to-k/cdkd#4584), and is counted in
+ * `provenOrphans`; a completed DELETE is `unrecoverable-delete` and
  * calls nothing. So a record listing no resources, under a journal with no
  * proven orphan to delete, can replay nothing against AWS, and is let through
  * for the reason the destroy gives: it is the recovery path, not the hazard.
@@ -384,7 +387,7 @@ function refuseDivergentRecordRegionForRollback(
       : resourceCount > 0
         ? `it still lists ${resourceCount} resource${resourceCount === 1 ? '' : 's'}`
         : `its journal holds ${provenOrphans} failed create${provenOrphans === 1 ? '' : 's'} ` +
-          `whose resource --revert-failed would delete`;
+          `whose resource the rollback would delete`;
   throw markNonRetryable(
     new CdkdError(
       // The stack and region are NAMED only when plain, described otherwise:
@@ -532,6 +535,16 @@ function displacedOpLabel(
     `— ${displacedOpClause(op, segment.importedResources ?? [], getLogger())}; ` +
     `not reverted, check that resource by hand`
   );
+}
+
+/**
+ * The failed ops a segment's replay acts on: all of them under
+ * `--revert-failed`, otherwise only the journaled proven failed-CREATE
+ * orphans (go-to-k/cdkd#4584) — a plain rollback that popped the segment
+ * without them would drop the only record of a live resource.
+ */
+function failedOpsToReplay(ops: FailedOperation[], revertFailed: boolean): FailedOperation[] {
+  return revertFailed ? ops : ops.filter(isJournaledOrphan);
 }
 
 /**
@@ -882,11 +895,10 @@ export async function rollbackCommand(
         stackName,
         region,
         stateData.divergentBodyRegion,
-        options.revertFailed
-          ? journal.segments
-              .flatMap((seg) => seg.failedOperations ?? [])
-              .filter((op) => op.physicalIdRecoveredFromError === true).length
-          : 0
+        // go-to-k/cdkd#4584: a plain rollback deletes them too.
+        journal.segments
+          .flatMap((seg) => seg.failedOperations ?? [])
+          .filter((op) => op.physicalIdRecoveredFromError === true).length
       );
       const stateResources: Record<string, ResourceState> = { ...baseState.resources };
       // Resources THIS command's replays leave in AWS under
@@ -992,9 +1004,13 @@ export async function rollbackCommand(
         }
         // #1198: the segment's FAILED in-flight op(s) come first (they are
         // the newest work of the failed deploy).
+        // go-to-k/cdkd#4584: without `--revert-failed` only the proven
+        // failed-CREATE orphans are acted on — the journal is their only
+        // record — and every other failed op is left as-is.
+        const failedToReplay = failedOpsToReplay(failedOps.replay, options.revertFailed === true);
         if (failedOps.replay.length > 0) {
-          if (options.revertFailed) {
-            const failedPlan = planFailedOps(failedOps.replay, planStateView);
+          if (failedToReplay.length > 0) {
+            const failedPlan = planFailedOps(failedToReplay, planStateView);
             for (const item of failedPlan) {
               logger.info(failedActionLabel(item, options.skipFinalSnapshot === true));
               // A failed nested row's revert replays its child's journal too.
@@ -1011,16 +1027,15 @@ export async function rollbackCommand(
               }
             }
             applyFailedPlanToPreview(failedPlan, planStateView, options.skipFinalSnapshot === true);
-          } else {
-            for (const fop of failedOps.replay) {
-              // Each journal value is named only when plain, described
-              // otherwise: the line names `--revert-failed` (go-to-k/cdkd#4214).
-              logger.info(
-                `  - (left as-is) ${logicalIdShown(fop.logicalId)} (${resourceTypeShown(fop.resourceType)}) ` +
-                  `— its ${plainOrDescribed(fop.changeType, 'change type')} ` +
-                  `FAILED mid-deploy; pass --revert-failed to attempt reverting it`
-              );
-            }
+          }
+          for (const fop of failedOps.replay.filter((op) => !failedToReplay.includes(op))) {
+            // Each journal value is named only when plain, described
+            // otherwise: the line names `--revert-failed` (go-to-k/cdkd#4214).
+            logger.info(
+              `  - (left as-is) ${logicalIdShown(fop.logicalId)} (${resourceTypeShown(fop.resourceType)}) ` +
+                `— its ${plainOrDescribed(fop.changeType, 'change type')} ` +
+                `FAILED mid-deploy; pass --revert-failed to attempt reverting it`
+            );
           }
         }
         const plan = planRollback(completedOps.replay, planStateView, orphanLogicalIds);
@@ -1250,9 +1265,16 @@ export async function rollbackCommand(
                   // go-to-k/cdkd#4523: an imported id's failed op is left alone
                   // too, and stays in the journal (below).
                   const failedOps = splitImportedOps(segment.failedOperations ?? [], segment);
-                  if (options.revertFailed && failedOps.replay.length > 0) {
+                  // go-to-k/cdkd#4584: a plain rollback replays the proven
+                  // orphans alone; the rest are kept by the strip below while
+                  // the segment stays, and leave with it once it pops.
+                  const failedToReplay = failedOpsToReplay(
+                    failedOps.replay,
+                    options.revertFailed === true
+                  );
+                  if (failedToReplay.length > 0) {
                     const failedResult = await replayFailedOperations(
-                      failedOps.replay,
+                      failedToReplay,
                       stateResources,
                       stackName,
                       ctx,
@@ -1295,6 +1317,7 @@ export async function rollbackCommand(
                     const remaining = [
                       ...failedOps.imported,
                       ...failedOps.displaced,
+                      ...failedOps.replay.filter((op) => !failedToReplay.includes(op)),
                       ...failedResult.remainingFailedOps,
                     ];
                     // NOT after a declined divergent rewrite (go-to-k/cdkd#3370):
