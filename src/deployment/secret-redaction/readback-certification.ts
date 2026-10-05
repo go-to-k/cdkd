@@ -332,7 +332,7 @@ function unpairedSourceCarriesReference(
  * token in it is public (issue
  * [#2036](https://github.com/go-to-k/cdkd/issues/2036): `cdkd drift`'s own
  * resolution, or a no-decryption `GetParameter` on `cdkd state
- * refresh-observed` / `cdkd import`). Without one it over-redacts: phantom
+ * refresh-observed`). Without one it over-redacts: phantom
  * drift, not a disclosure — see {@link mixedLeafMayCarryPublicReference}.
  *
  * What this pass closes is the row POSITION can actually justify: a leaf whose
@@ -474,6 +474,9 @@ export function refuseUncertifiedReadbackPositions(
     // to the derived scan instead, a certified needle that merely coincides
     // with that literal text would splice an expression into it — the
     // fabricated-baseline shape {@link preferPositionDecisions} documents.
+    // The trade is intended: skipping the certain-needle scan here can keep a
+    // plaintext that COINCIDES with a public value, and a value anyone can read
+    // as an SSM `String` is not a new disclosure.
     if (mixedLeafMayCarryPublicReference(source, secrets, bag)) {
       return mark ? POSITION_DECIDED : bag;
     }

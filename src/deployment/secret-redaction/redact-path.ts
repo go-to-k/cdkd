@@ -668,8 +668,11 @@ export function dynamicReferenceSpans(value: string): Array<{ start: number; end
  * A bag's proofs are written only by lookups made for that bag's own record —
  * `cdkd drift`'s resolver pass over the record (region-routed by
  * `classifyReplaySecretRegion`), or `PublicSsmProver.proofBagFor` on `cdkd
- * state refresh-observed` / `cdkd import`, which asks `GetParameter` without
- * decryption in the record's own region. A proof admits a leaf only when the
+ * state refresh-observed`, which asks `GetParameter` without decryption in the
+ * record's own region. Both serve LEGACY records only: a current `cdkd import`
+ * refuses (`observedBaselineRefused`, #2944) the baseline of the warn-path
+ * record that carries a public expression, and every one of these commands
+ * skips a refused record. A proof admits a leaf only when the
  * readback equals the source with each token replaced by the PROVEN value, so a
  * type read today cannot vouch for a value resolved at an earlier deploy or in
  * another region. The deploy path's UNCHANGED-resource
@@ -686,7 +689,8 @@ export function dynamicReferenceSpans(value: string): Array<{ start: number; end
  * the only place the empty-map defect surfaced — every unit assertion passed.
  * A public mixed leaf reaches this predicate only when the position source
  * CARRIES its expression, which a deploy never leaves behind (issue #1901), so
- * its phases STAMP that shape the way `cdkd import`'s warn path writes it: Phase
+ * its phases STAMP that LEGACY shape (a pre-#2944 import warn-path record):
+ * Phase
  * 1f3 on `cdkd state refresh-observed`, where the public leaf keeps its
  * resolved value and the SecureString mixed leaf beside it is still refused,
  * and Phase 1f4 on `cdkd drift --accept`, which records a public leaf whose

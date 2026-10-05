@@ -132,13 +132,12 @@
  * fences it and an import-path duplicate would only re-test the module: the
  * remaining rows of `refuseUncertifiedReadbackPositions`' own doc table — a
  * MIXED leaf inside a PAIRED element, an unpaired element with every source
- * reference paired (needle-only), and a `Date` kept by identity (#2869) — plus the
+ * reference paired (needle-only), a `Date` kept by identity (#2869), and a
+ * PUBLIC ssm MIXED leaf under an EMPTY map (over-redacts, #2036) — plus the
  * non-string arms of `refuseUncertifiedSubtree` this capture can now reach
  * (`Uint8Array` masked, `''` kept, the DAG / cycle memoisation). All are
  * covered in `tests/unit/deployment/`; none is a leak this capture is the only
- * route to. The PUBLIC ssm MIXED leaf (issue #2036) is the one row whose
- * answer this capture now WIRES (its per-record type proof), so it has its own
- * suite, `import-public-ssm-proof.test.ts`.
+ * route to.
  */
 
 import { describe, it, expect, vi } from 'vite-plus/test';
@@ -1336,8 +1335,7 @@ async function captureVia(
     getLogger(),
     // The capture takes the refusals VALUE, not a bare id set (issue #3462).
     new ObservedBaselineRefusals(refusedIds),
-    rebuiltIds,
-    'us-east-1'
+    rebuiltIds
   );
   return { observed: state.resources['Res']!.observedProperties, seen };
 }
@@ -1639,8 +1637,7 @@ async function captureInto(
     getLogger(),
     // The capture takes the refusals VALUE, not a bare id set (issue #3462).
     new ObservedBaselineRefusals(refusedIds),
-    rebuiltIds,
-    'us-east-1'
+    rebuiltIds
   );
   return { resources: state.resources, readFor };
 }
@@ -1957,8 +1954,7 @@ describe('the preserved-refusal debug note names no payload beside cdkd import (
             typeof captureObservedForImportedResources
           >[2],
           new ObservedBaselineRefusals(new Set<string>()),
-          new Set<string>(),
-          'us-east-1'
+          new Set<string>()
         );
         const note = debug.mock.calls
           .map((c) => String(c[0]))

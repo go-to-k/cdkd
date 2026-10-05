@@ -354,18 +354,6 @@ worth knowing before you read a report:
   `--accept` refuses if anything else there changed. The shapes that reach it
   are listed under
   [Redacted baselines](cli-drift.md#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
-- **A plain `{{resolve:ssm:...}}` reference inside a longer value keeps the
-  value AWS reports when its parameter is public** and that value is exactly
-  the template text with the parameter's current value in place. To tell a `String` /
-  `StringList` parameter from a `SecureString`, cdkd calls `ssm:GetParameter`
-  with `WithDecryption: false` in the stack's region, once per reference;
-  nothing is decrypted. A `SecureString`, a failed call (a missing
-  `ssm:GetParameter` permission included — the import still succeeds), a
-  reference this import resolved as a secret (a cross-region read) or another
-  region may own keeps the reference in the baseline
-  instead, as
-  [`cdkd state refresh-observed`](cli-state.md#cdkd-state-refresh-observed)
-  does.
 - **Some resources get no baseline at all.** Where the recorded properties no
   longer spell the template's dynamic reference — or the resolution had to
   discard part of the template it could not vouch for, such as the untaken

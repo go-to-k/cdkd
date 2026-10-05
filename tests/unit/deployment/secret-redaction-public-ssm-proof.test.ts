@@ -9,9 +9,12 @@ import {
 } from '../../../src/deployment/secret-redaction.js';
 import {
   contradictProvenPublicExpression,
-  isProvenPublicExpression,
   recordProvenPublicExpression,
+  provenPublicValue,
 } from '../../../src/deployment/secret-redaction/mask-only.js';
+
+const isProvenPublicExpression = (bag: RecordedSecretValues, expression: string): boolean =>
+  provenPublicValue(bag, expression) !== undefined;
 
 /**
  * Issue [#2036](https://github.com/go-to-k/cdkd/issues/2036): a PUBLIC ssm

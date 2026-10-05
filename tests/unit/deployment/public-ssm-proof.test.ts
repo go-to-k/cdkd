@@ -82,9 +82,11 @@ import {
 import { PublicSsmProver } from '../../../src/deployment/public-ssm-proof.js';
 import {
   clearRecordedSecretExpressions,
-  isProvenPublicExpression,
   provenPublicValue,
 } from '../../../src/deployment/secret-redaction/mask-only.js';
+
+const isProvenPublicExpression = (bag: RecordedSecretValues, expression: string): boolean =>
+  provenPublicValue(bag, expression) !== undefined;
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 
 const HOME = 'us-east-1';
@@ -126,8 +128,12 @@ afterEach(() => {
 });
 
 describe('PublicSsmProver (refresh-observed / import)', () => {
-  const prover = (region = HOME, producerRegions: string[] = [], complete = true): PublicSsmProver =>
-    new PublicSsmProver(region, { regions: producerRegions, complete }, { debug });
+  const loadEvidence = vi.fn<() => Promise<{ regions: string[]; complete: boolean }>>();
+  const prover = (region = HOME, producerRegions: string[] = [], complete = true): PublicSsmProver => {
+    loadEvidence.mockReset();
+    loadEvidence.mockImplementation(async () => ({ regions: producerRegions, complete }));
+    return new PublicSsmProver(region, loadEvidence, { debug });
+  };
 
   it('proves a String parameter in a MIXED leaf, asking WITHOUT decryption in the record region', async () => {
     const bag = await prover().proofBagFor({ Url: `https://${PUBLIC}/x` });
@@ -221,9 +227,21 @@ describe('PublicSsmProver (refresh-observed / import)', () => {
     expect(provenPublicValue(bag, arn)).toBe('by-arn');
   });
 
-  it('an expression this run resolved AS A SECRET for the record is contradicted, not proven', async () => {
-    const bag = await prover().proofBagFor({ U: `x-${PUBLIC}` }, [PUBLIC]);
-    expect(ssmSends).toHaveLength(1);
+  it('loads the producer-region evidence ONCE, and only for a region-less token', async () => {
+    const p = prover();
+    const arnName = `arn:aws:ssm:${HOME}:123456789012:parameter${PUBLIC_NAME}`;
+    prime(HOME, arnName, { Parameter: { Value: 'by-arn', Type: 'String' } });
+    await p.proofBagFor({ U: `x-{{resolve:ssm:${arnName}}}`, W: PUBLIC });
+    // An ARN names its own region and a whole token is never asked about.
+    expect(loadEvidence).not.toHaveBeenCalled();
+    await Promise.all([p.proofBagFor({ U: `a-${PUBLIC}` }), p.proofBagFor({ U: `b-${LIST}` })]);
+    expect(loadEvidence).toHaveBeenCalledTimes(1);
+  });
+
+  it('evidence that REJECTS is incomplete: no region-less proof, and no throw', async () => {
+    const p = new PublicSsmProver(HOME, () => Promise.reject(new Error('unreadable')), { debug });
+    const bag = await p.proofBagFor({ U: `x-${PUBLIC}` });
+    expect(ssmSends).toHaveLength(0);
     expect(isProvenPublicExpression(bag, PUBLIC)).toBe(false);
   });
 

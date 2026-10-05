@@ -4,7 +4,6 @@ import type { RecordedSecretValues } from './secret-redaction/pairs.js';
 import { dynamicReferenceTokens } from './secret-redaction/redact-path.js';
 import { isSingleDynamicReferenceToken } from './secret-redaction/rules.js';
 import {
-  contradictProvenPublicExpression,
   provenPublicValue,
   recordProvenPublicExpression,
   wholeStringLeavesOf,
@@ -17,13 +16,15 @@ import type { ProducerRegionEvidence } from './producer-regions-scope.js';
 import { safeMsg } from '../utils/display-safe.js';
 
 /**
- * Proves, for the two commands that resolve nothing, which plain
- * `{{resolve:ssm:...}}` references in a record's MIXED leaves name a PUBLIC
- * parameter (issue [#2036](https://github.com/go-to-k/cdkd/issues/2036)).
+ * Proves, for `cdkd state refresh-observed` (which resolves nothing), which
+ * plain `{{resolve:ssm:...}}` references in a record's MIXED leaves name a
+ * PUBLIC parameter (issue [#2036](https://github.com/go-to-k/cdkd/issues/2036)).
  *
- * `cdkd state refresh-observed` and `cdkd import`'s observed capture redact an
- * AWS readback against the record's own `properties` with an EMPTY secrets
- * map. A mixed leaf there (a reference inside surrounding text) used to be
+ * That command redacts an AWS readback against the record's own `properties`
+ * with an EMPTY secrets map. Only a LEGACY record carries a public expression
+ * there (imported before the #2944 refusal marker, written by an older binary,
+ * or hand-edited): a current `cdkd import` refuses the baseline of a record it
+ * could not resolve, and a resolved public reference is persisted resolved. A mixed leaf there (a reference inside surrounding text) used to be
  * refused whatever its parameter was, so a public one was over-redacted: the
  * baseline held the expression where AWS holds the value. The only evidence
  * that can lift that is the parameter's TYPE, so this asks AWS for it.
@@ -63,16 +64,23 @@ export class PublicSsmProver {
   private resolver: IntrinsicFunctionResolver | undefined;
   private readonly verdicts = new Map<string, Promise<string | undefined>>();
   private readonly region: string;
-  private readonly evidence: ProducerRegionEvidence;
+  private readonly loadEvidence: () => Promise<ProducerRegionEvidence>;
+  private evidence: Promise<ProducerRegionEvidence> | undefined;
   private readonly logger: { debug(message: string): void };
 
+  /**
+   * `loadEvidence` is called at most ONCE, and only when a REGION-LESS token
+   * is about to be looked up: deriving it can read every ancestor's state
+   * record (go-to-k/cdkd#4213), which a stack with no such token must not pay
+   * for under its lock. A rejection reads as INCOMPLETE evidence.
+   */
   constructor(
     region: string,
-    evidence: ProducerRegionEvidence,
+    loadEvidence: () => Promise<ProducerRegionEvidence>,
     logger: { debug(message: string): void }
   ) {
     this.region = region;
-    this.evidence = evidence;
+    this.loadEvidence = loadEvidence;
     this.logger = logger;
   }
 
@@ -80,22 +88,13 @@ export class PublicSsmProver {
    * A fresh, empty secrets map carrying a proof for every plain `ssm` token in
    * `source`'s mixed leaves that this prover proved public. Hand it to
    * `redactSecretsForState` in place of a shared empty constant.
-   *
-   * `secretExpressions` are expressions something else in this run already
-   * resolved AS A SECRET for this record (`cdkd import`'s own resolve walk,
-   * which may have read a cross-stack value in its producer's region); each is
-   * contradicted, so no namesake in this region can prove it public.
    */
-  async proofBagFor(
-    source: unknown,
-    secretExpressions: Iterable<string> = []
-  ): Promise<RecordedSecretValues> {
+  async proofBagFor(source: unknown): Promise<RecordedSecretValues> {
     const bag: RecordedSecretValues = new Map();
     for (const token of mixedLeafSsmTokens(source)) {
       const value = await this.publicValue(token);
       if (value !== undefined) recordProvenPublicExpression(bag, token, value);
     }
-    for (const expression of secretExpressions) contradictProvenPublicExpression(bag, expression);
     return bag;
   }
 
@@ -109,10 +108,19 @@ export class PublicSsmProver {
   }
 
   private async lookUp(token: string): Promise<string | undefined> {
-    if (classifyReplaySecretRegion(token, this.region, this.evidence.regions).kind !== 'local') {
+    // An ARN-form token names its own region, so the evidence is not
+    // consulted for it (`classifyReplaySecretRegion` reads producer regions
+    // only for a region-less name) and is not loaded.
+    let regions: readonly string[] = [];
+    if (regionLessSecretName(token) !== undefined) {
+      this.evidence ??= this.loadEvidence().catch(() => ({ regions: [], complete: false }));
+      const evidence = await this.evidence;
+      if (!evidence.complete) return undefined;
+      regions = evidence.regions;
+    }
+    if (classifyReplaySecretRegion(token, this.region, regions).kind !== 'local') {
       return undefined;
     }
-    if (!this.evidence.complete && regionLessSecretName(token) !== undefined) return undefined;
     this.resolver ??= new IntrinsicFunctionResolver(this.region);
     const probe: RecordedSecretValues = new Map();
     const context: ResolverContext = {

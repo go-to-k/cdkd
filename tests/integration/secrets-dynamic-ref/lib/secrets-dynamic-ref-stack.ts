@@ -265,7 +265,7 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         // With an empty secrets map the pass cannot tell a public parameter
         // from a `SecureString` by spelling, so it used to substitute the
         // expression here whenever the record's `properties` carried it (the
-        // `cdkd import` warn-path shape) and give the drift baseline a value AWS
+        // LEGACY import warn-path shape) and give the drift baseline a value AWS
         // does not hold. Phase 1f3 stamps that shape and asserts `cdkd state
         // refresh-observed` now keeps the resolved value, after a no-decryption
         // `GetParameter` proves the parameter public (issue #2036).

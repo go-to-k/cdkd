@@ -85,7 +85,6 @@ import {
 import { PublicSsmProver } from '../../deployment/public-ssm-proof.js';
 import { stripControlChars } from '../../utils/regexp.js';
 import { buildReadCurrentStateContext, driftProducerRegionEvidence } from './drift.js';
-import type { ProducerRegionEvidence } from '../../deployment/producer-regions-scope.js';
 import { runDestroyForStack, type DestroyRunnerResult } from './destroy-runner.js';
 import { startRunRecorder, recordRunFailed, recordRunOutcome } from './deployment-events-run.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
@@ -3954,16 +3953,16 @@ async function refreshObservedForStack(
     // Issue #2036: one prover per stack, so each `ssm` reference is asked
     // about once however many records embed it. Its region and producer-region
     // evidence are the ones `cdkd drift` routes by: the stack's own reads plus,
-    // for a nested child, every ancestor's (go-to-k/cdkd#4213). Evidence that
-    // cannot be established is INCOMPLETE, so no region-less reference is
-    // proven; a throw here only costs proofs, never the refresh.
-    let producerEvidence: ProducerRegionEvidence;
-    try {
-      producerEvidence = await driftProducerRegionEvidence(state, stackName, region, stateBackend);
-    } catch {
-      producerEvidence = { regions: [], complete: false };
-    }
-    const publicSsmProver = new PublicSsmProver(region, producerEvidence, logger);
+    // for a nested child, every ancestor's (go-to-k/cdkd#4213). The evidence is
+    // derived LAZILY — only when a region-less reference is about to be looked
+    // up — so a stack with none reads no ancestor record under its lock. If it
+    // cannot be established it is INCOMPLETE and no region-less reference is
+    // proven; it never fails the refresh.
+    const publicSsmProver = new PublicSsmProver(
+      region,
+      () => driftProducerRegionEvidence(state, stackName, region, stateBackend),
+      logger
+    );
 
     // Refresh in parallel under withStackName so any provider-internal
     // resource-name resolution sees the right stack (mirrors the deploy

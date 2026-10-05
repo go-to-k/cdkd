@@ -145,7 +145,7 @@ const publicSsmProof = vi.hoisted(() => ({
   proven: new Map<string, string>(),
   built: [] as Array<{
     region: string;
-    evidence: { regions: readonly string[]; complete: boolean };
+    loadEvidence: () => Promise<{ regions: readonly string[]; complete: boolean }>;
   }>,
   askedAbout: [] as unknown[],
 }));
@@ -155,8 +155,11 @@ vi.mock('../../../src/deployment/public-ssm-proof.js', async () => {
   );
   return {
     PublicSsmProver: class {
-      constructor(region: string, evidence: { regions: readonly string[]; complete: boolean }) {
-        publicSsmProof.built.push({ region, evidence });
+      constructor(
+        region: string,
+        loadEvidence: () => Promise<{ regions: readonly string[]; complete: boolean }>
+      ) {
+        publicSsmProof.built.push({ region, loadEvidence });
       }
       async proofBagFor(source: unknown): Promise<Map<string, string>> {
         publicSsmProof.askedAbout.push(source);
@@ -1204,9 +1207,8 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
       expect(observed).toEqual({ Environment: { Variables: { URL: RESOLVED } } });
       // Built ONCE for the stack, in its own region, and asked about the
       // record's OWN properties — the bag the readback is positioned against.
-      expect(publicSsmProof.built).toEqual([
-        { region: 'us-east-1', evidence: { regions: [], complete: true } },
-      ]);
+      expect(publicSsmProof.built.map((b) => b.region)).toEqual(['us-east-1']);
+      expect(await publicSsmProof.built[0]!.loadEvidence()).toEqual({ regions: [], complete: true });
       expect(publicSsmProof.askedAbout).toEqual([properties]);
     });
 
@@ -1230,9 +1232,23 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
       mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
       const { error } = await runRefresh(['TestStack']);
       expect(error).toBeUndefined();
-      expect(publicSsmProof.built).toEqual([
-        { region: 'us-east-1', evidence: { regions: ['eu-west-1'], complete: true } },
-      ]);
+      expect(await publicSsmProof.built[0]!.loadEvidence()).toEqual({
+        regions: ['eu-west-1'],
+        complete: true,
+      });
+    });
+
+    it('builds the prover in the STACK region (a stack refreshed in another region)', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-west-2' }]);
+      const loaded = makeState({
+        R: makeResource({ physicalId: 'r', resourceType: 'AWS::Lambda::Function' }),
+      });
+      loaded.state.region = 'us-west-2';
+      mockGetState.mockResolvedValueOnce(loaded);
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
+      const { error } = await runRefresh(['TestStack']);
+      expect(error).toBeUndefined();
+      expect(publicSsmProof.built.map((b) => b.region)).toEqual(['us-west-2']);
     });
 
     it('evidence that THROWS (a malformed read record) is INCOMPLETE, and the refresh still runs', async () => {
@@ -1245,9 +1261,9 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
       mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
       const { error } = await runRefresh(['TestStack']);
       expect(error).toBeUndefined();
-      expect(publicSsmProof.built).toEqual([
-        { region: 'us-east-1', evidence: { regions: [], complete: false } },
-      ]);
+      // The thunk rejects; the prover reads a rejection as INCOMPLETE
+      // (`tests/unit/deployment/public-ssm-proof.test.ts`).
+      await expect(publicSsmProof.built[0]!.loadEvidence()).rejects.toThrow();
     });
 
     it('a NESTED child whose parent record cannot be read gets INCOMPLETE evidence (go-to-k/cdkd#4213)', async () => {
@@ -1261,11 +1277,15 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
       );
       mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
       const { error } = await runRefresh(['TestStack~Child']);
-      mockGetState.mockReset();
       expect(error).toBeUndefined();
-      expect(publicSsmProof.built).toEqual([
-        { region: 'us-east-1', evidence: { regions: [], complete: false } },
-      ]);
+      // LAZY: the refresh itself read only the child's own record — no
+      // ancestor record is read unless a region-less token needs the evidence.
+      expect(mockGetState.mock.calls.map((c) => c[0])).toEqual(['TestStack~Child']);
+      expect(await publicSsmProof.built[0]!.loadEvidence()).toEqual({
+        regions: [],
+        complete: false,
+      });
+      mockGetState.mockReset();
     });
   });
 });

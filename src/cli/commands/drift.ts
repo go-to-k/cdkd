@@ -4507,11 +4507,13 @@ async function runAccept(
         //
         // It can still overwrite an accepted value at a PUBLIC reference,
         // though, and that is a real hole rather than a hypothetical one: a
-        // public `{{resolve:ssm:...}}` CAN sit in `properties` (the `cdkd
-        // import` warn path, documented in `secret-redaction.ts`), such a path
-        // is not secret-bearing so the change is accepted normally, and
-        // `trustAnyExpression` then copies the source expression straight over
-        // it. Rather than claim it cannot happen, the write is CHECKED below
+        // public `{{resolve:ssm:...}}` CAN sit in `properties` (a LEGACY
+        // record: an older `cdkd import` warn path, since #2944 a refused
+        // baseline this command skips), such a path is not secret-bearing so
+        // the change is accepted normally, and `trustAnyExpression` then copies
+        // the source expression over it — unless the per-bag proof (issue
+        // #2036) shows AWS holds exactly the source with the parameter's
+        // current public value, as on the `--revert` twin. Rather than claim it cannot happen, the write is CHECKED below
         // and the user is told — a silent permanent no-op is the failure mode
         // worth naming, and the check catches any future cause of it too.
         //

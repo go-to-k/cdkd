@@ -126,8 +126,7 @@ async function run(args: {
     registry,
     getLogger(),
     refusedIds,
-    new Set(['Res']),
-    'us-east-1'
+    new Set(['Res'])
   );
   return { refused: refusedIds.has('Res'), state };
 }
@@ -966,8 +965,7 @@ describe('a RE-IMPORT must not discharge an unverifiable-parameter refusal it ca
       registry,
       getLogger(),
       refusals,
-      new Set(['Res']),
-      'us-east-1'
+      new Set(['Res'])
     );
     expectReasonOnlyWithMarker(state);
     return { state, reads };
@@ -1076,7 +1074,7 @@ describe('a RE-IMPORT must not discharge an unverifiable-parameter refusal it ca
     const refusals = new ObservedBaselineRefusals();
     // Even a run that HAD a source does not discharge a row it did not rebuild.
     refusals.hadDeployedParameterSource = true;
-    await captureObservedForImportedResources(state, registry, getLogger(), refusals, new Set(), 'us-east-1');
+    await captureObservedForImportedResources(state, registry, getLogger(), refusals, new Set());
     expect(reads).toBe(0);
     expect(state.resources['Res']).toEqual(PRIOR_REFUSED);
   });
@@ -1275,8 +1273,7 @@ describe('a REFUSED record a selective import PRESERVES ends with NO baseline (i
       registry,
       getLogger(),
       new ObservedBaselineRefusals(),
-      new Set(),
-      'us-east-1'
+      new Set()
     );
     expect(reads()).toBe(0);
     const record = state.resources['Res']!;
@@ -1311,7 +1308,7 @@ describe('a REFUSED record a selective import PRESERVES ends with NO baseline (i
     expect(refusals.has('Res')).toBe(true);
     const { registry, reads } = countingRegistry();
     // Rebuilt set EMPTY: a selective merge left the record in place.
-    await captureObservedForImportedResources(state, registry, getLogger(), refusals, new Set(), 'us-east-1');
+    await captureObservedForImportedResources(state, registry, getLogger(), refusals, new Set());
     expect(reads()).toBe(0);
     const record = state.resources['Res']!;
     expect(Object.hasOwn(record, 'observedProperties')).toBe(false);
@@ -1342,7 +1339,7 @@ describe('a REFUSED record a selective import PRESERVES ends with NO baseline (i
     );
     expect(refusals.has('Res')).toBe(true);
     const { registry, reads } = countingRegistry();
-    await captureObservedForImportedResources(state, registry, getLogger(), refusals, new Set(), 'us-east-1');
+    await captureObservedForImportedResources(state, registry, getLogger(), refusals, new Set());
     expect(reads()).toBe(0);
     const record = state.resources['Res']!;
     expect(Object.hasOwn(record, 'observedProperties')).toBe(false);
@@ -1368,8 +1365,7 @@ describe('a REFUSED record a selective import PRESERVES ends with NO baseline (i
       registry,
       getLogger(),
       new ObservedBaselineRefusals(),
-      new Set(),
-      'us-east-1'
+      new Set()
     );
     expect(state.resources['Res']!.observedProperties).toEqual(baseline);
     expect(Object.hasOwn(state.resources['Res']!, 'observedBaselineRefused')).toBe(false);
@@ -1400,8 +1396,7 @@ describe('the imported-resource baseline capture on a resource AWS reports gone 
       registry,
       getLogger(),
       new ObservedBaselineRefusals(),
-      new Set(['Res']),
-      'us-east-1'
+      new Set(['Res'])
     );
     expect(Object.hasOwn(state.resources['Res']!, 'observedProperties')).toBe(false);
   });

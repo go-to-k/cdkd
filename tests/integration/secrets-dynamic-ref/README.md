@@ -148,8 +148,10 @@ reference at all and there is nothing to refuse. An earlier revision asserted
 the residual on Phase 1f and on Phase 1g's CONTROL 3, and neither could hold —
 the first failed on fixed code AND on `main`, the second passed identically on
 `main` (zero discrimination). Reaching the residual needs a source that CARRIES
-the expression, which in the wild only `cdkd import`'s warn path produces, so
-**Phase 1f3** stamps that shape deliberately and asserts the #2036 answer there.
+the expression, which in the wild only a LEGACY record holds (an import warn-path
+record written before #2944 made a current import refuse its baseline, an older
+binary's write, or a hand edit), so **Phase 1f3** stamps exactly that legacy
+shape and asserts the #2036 answer there.
 
 **Both #2036 phases discriminate.** On a tree without the per-record proof,
 Phase 1f3's `PUBLIC_URL` takes the expression, and `SSM_VALUE` takes it too:

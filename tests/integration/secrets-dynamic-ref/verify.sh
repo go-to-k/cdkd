@@ -222,7 +222,7 @@ EXPECTED_SECURE_EXPR="{{resolve:ssm:${SECURE_PARAM_NAME}}}"
 # what state holds wherever the POSITION SOURCE carries no reference — every
 # path reachable from a template-declared leaf, since a public ssm `String` is
 # persisted resolved (issue #1901) — and, since #2036, also where the source
-# DOES carry the reference (the `cdkd import` warn-path shape Phase 1f3 stamps)
+# DOES carry the reference (the legacy import warn-path shape Phase 1f3 stamps)
 # and the parameter is proven public. The EXPRESSION one is what a tree without
 # that proof writes there, and what Phase 1f3 stamps into `properties`.
 EXPECTED_PUBLIC_URL="https://${EXPECTED_SSM}.${REGION}.example.internal"
@@ -3840,7 +3840,7 @@ fi
 # straight through. The verdict store is not consulted either way.
 #
 # #2036's shape needs a source that CARRIES the expression, which in the wild
-# only `cdkd import`'s warn path produces. Phase 1f3 stamps exactly that shape
+# only a legacy `cdkd import` warn-path record holds. Phase 1f3 stamps exactly that shape
 # and asserts the proof-backed answer there, on a premise that holds.
 #
 # This arm is a PREMISE PIN, not a discriminator: `origin/main` answers the same,
@@ -4046,8 +4046,10 @@ fi
 # reference and the mixed-leaf arm is never consulted.
 #
 # HOW THE SHAPE IS PRODUCED. A public ssm EXPRESSION survives in `properties`
-# only where something wrote it there without resolving: `cdkd import`'s warn
-# path, which records the template leaf verbatim. It is unreachable from a
+# only in a LEGACY record: one an older `cdkd import` warn path wrote verbatim
+# (since #2944 a current import refuses that record's baseline, and this command
+# skips a refused record), one an older binary wrote, or a hand edit. The STAMP
+# below models exactly that legacy shape. It is unreachable from a
 # template-declared leaf on the deploy path, because a properties-borne
 # expression makes the resource read as CHANGED and the next UPDATE rewrites it
 # resolved (issue #2425). So the fixture stamps it, the same S3 write/restore
@@ -4204,7 +4206,8 @@ fi
 # admitted only when AWS holds exactly the source with that value in place.
 #
 # TWO RUNS, one per direction. In both, `properties.Value` is stamped with the
-# expression (the `cdkd import` warn-path record) and `observedProperties.Value`
+# expression (the legacy import warn-path record; a current import refuses it,
+# #2944, and so does `--accept`) and `observedProperties.Value`
 # with a stale sentinel, so drift reports the leaf and `--accept` writes it.
 #  (A) AWS still holds the deployed value: `--accept` must record it. A tree
 #      without the fix substitutes the expression back and warns the change
