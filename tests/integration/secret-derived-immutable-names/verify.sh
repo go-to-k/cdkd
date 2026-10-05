@@ -411,6 +411,21 @@ expect_eq "PlainTargetSchedule's recorded target is its live target" "${PLAIN_RE
   "$(schedule_field Target.Arn "${PLAIN_SCHEDULE_NAME}")"
 expect_eq "PlainTargetSchedule's recorded role is its live role" "${PLAIN_RECORDED_ROLE}" \
   "$(schedule_field Target.RoleArn "${PLAIN_SCHEDULE_NAME}")"
+# The same PREMISE for SecretSchedule: its target is PlainTargetQueue too, so a
+# redacted recording here would silently fall back to a date-only match.
+SECRET_RECORDED_TARGET="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq -r '.resources.SecretSchedule.properties.Target.Arn // empty')"
+SECRET_RECORDED_ROLE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq -r '.resources.SecretSchedule.properties.Target.RoleArn // empty')"
+for v in "${SECRET_RECORDED_TARGET}" "${SECRET_RECORDED_ROLE}"; do
+  case "${v}" in
+    *'{{resolve:'*|*'***'*|'') echo "FAIL: premise: SecretSchedule's recorded target or role is redacted or missing, so its identity match would skip them" >&2; exit 1 ;;
+  esac
+done
+expect_eq "SecretSchedule's recorded target is its live target" "${SECRET_RECORDED_TARGET}" \
+  "$(schedule_field Target.Arn)"
+expect_eq "SecretSchedule's recorded role is its live role" "${SECRET_RECORDED_ROLE}" \
+  "$(schedule_field Target.RoleArn)"
 PLAIN_SCHEDULE_CREATED="$(schedule_field CreationDate "${PLAIN_SCHEDULE_NAME}")"
 PLAIN_SCHEDULE_RECORDED_CREATED="$(state_attribute PlainTargetSchedule 'cdkd:CreationDate')"
 for v in SECRET_STAGE_CREATED PLAIN_STAGE_CREATED SERVICE_CREATED FILTER_CREATED SCHEDULE_CREATED SCHEDULE_RECORDED_CREATED PLAIN_SCHEDULE_CREATED PLAIN_SCHEDULE_RECORDED_CREATED; do
