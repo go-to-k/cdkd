@@ -30,7 +30,7 @@ synthesis, and no stack lock is taken.
 | --- | --- | --- |
 | `<stack>` | — | Stack name (physical CloudFormation name). Required. |
 | `--run <runId>` | — | Print one run's full event stream instead of the run listing. |
-| `--stack-region <region>` | — | Region whose history to read, when the stack has history in more than one. |
+| `--stack-region <region>` | — | Region whose history to read, when the stack has history in more than one, or to `prune --all` a region with no current history left. |
 | `--json` | off | Emit machine-readable JSON. |
 | `--format <format>` | — | `--format json` is equivalent to `--json`. |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding the event history. |
@@ -63,9 +63,17 @@ so an object listing of the bucket is never empty after a teardown alone.
 `cdkd events prune '<stack>'` is the explicit purge.
 
 The state bucket is versioned, so a prune also deletes the noncurrent
-versions of the keys it removes, not just the current objects. That needs
-`s3:ListBucketVersions` and `s3:DeleteObjectVersion`; without them the prune
-still succeeds and a warning prints before the `Pruned` line. Pruning is still
+versions of the keys it removes, not just the current objects; `--all` purges
+every noncurrent version under the stack's `deployments/` prefix, including
+streams an earlier delete left behind a delete marker. The sweep covers one
+region, and region discovery reads current keys only, so for a region where
+none of the stack's history is current any more, pass `--stack-region <region>`
+(a region with no earlier versions left reports that it found none).
+
+Purging earlier versions needs `s3:ListBucketVersions` and
+`s3:DeleteObjectVersion`; without them the prune still succeeds and a warning
+prints before its summary line (`Pruned ...`, or `No runs matched ...` when
+nothing current was left). Pruning is still
 not a remediation for a run that quoted a secret — see
 [Deleting a run stream also purges its earlier versions](deployment-events.md#deleting-a-run-stream-also-purges-its-earlier-versions)
 for what it does not reach.
@@ -85,7 +93,7 @@ cdkd events prune MyStack --all --yes       # skip the confirmation (CI)
 | `<stack>` | — | Stack name (physical CloudFormation name). Required. |
 | `--keep <N>` | — | Retain only the newest N runs. Must be a non-negative integer. |
 | `--older-than <duration>` | — | Delete runs older than this. Units are `s` / `m` / `h` (e.g. `90m`, `24h`). |
-| `--all` | off | Delete every recorded run and the index. Cannot be combined with `--keep` / `--older-than`. |
+| `--all` | off | Delete every recorded run and the index, and purge every earlier version under the stack's `deployments/` prefix. Cannot be combined with `--keep` / `--older-than`. |
 | `-y`, `--yes` | off | Answer the confirmation prompt automatically. |
 
 `--stack-region`, `--state-bucket`, `--state-prefix`, `--profile`, `--role-arn`
@@ -99,7 +107,7 @@ and `--verbose` are inherited from `cdkd events` and mean the same thing here.
 | `--keep N` | Runs beyond the newest N. |
 | `--older-than D` | Runs older than D. |
 | `--keep N` **and** `--older-than D` | Only runs that are BOTH beyond the newest N AND older than D. |
-| `--all` | Every run, plus the index. |
+| `--all` | Every run, plus the index, plus every earlier version under the stack's `deployments/` prefix. |
 
 The prompt (`Prune deployment-event history for <stack> (<region>): <scope>?`)
 names the scope it is about to apply before you answer. Answering anything but
@@ -116,7 +124,7 @@ The refusals behind exit `1`:
 
 | Refusal | When |
 | --- | --- |
-| No deployment-event history for the stack | The stack was deployed by a cdkd version that recorded none, or its history has already been pruned. |
+| No deployment-event history for the stack | The stack was deployed by a cdkd version that recorded none, or its history has already been pruned. Earlier versions left on a versioned bucket are still reachable with `prune --all --stack-region <region>`. |
 | History in multiple regions | Re-run with `--stack-region <region>`. |
 | No such run id | `--run <runId>` names a run this stack's history does not hold. |
 | `--all` with `--keep` / `--older-than` | `--all` purges everything, so a retention window is contradictory. |

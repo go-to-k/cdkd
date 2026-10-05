@@ -33,9 +33,56 @@ const PRUNED: DeploymentEventsPruneResult = {
   deletedRunIds: ['20260101T000000000Z-aa'],
   remainingRunIds: [],
   indexDeleted: true,
+  // Bodies were swept too, so turning the residue-only `else if` into an
+  // `if` would print a SECOND line and trip `toHaveBeenCalledTimes(1)`.
+  earlierVersions: { deletedBodies: 1, complete: true },
 };
 
 describe('purgeEventsAfterDestroy', () => {
+  // Issue #2624: the prefix sweep reports what it deleted, and destroy uses
+  // that count the way `cdkd events prune --all` does.
+  it('nothing current but earlier versions swept: prints a line scoped to those versions', async () => {
+    const { reader } = fakeReader({
+      deletedRunIds: [],
+      remainingRunIds: [],
+      indexDeleted: false,
+      earlierVersions: { deletedBodies: 2, complete: true },
+    });
+    const { logger, info } = fakeLogger();
+    await purgeEventsAfterDestroy(
+      reader,
+      'MyStack',
+      'us-east-1',
+      { purgeEvents: true, runResult: 'SUCCEEDED', interrupted: false },
+      logger
+    );
+    expect(info).toHaveBeenCalledTimes(1);
+    const line = String(info.mock.calls[0]![0]);
+    expect(line).toContain(
+      'Purged earlier deployment-event versions left under the deployments/ prefix of MyStack (us-east-1)'
+    );
+    expect(line).toContain('unless a warning above says otherwise');
+    expect(line).not.toContain('Purged deployment-event history');
+  });
+
+  it('nothing current and the sweep deleted nothing: prints nothing', async () => {
+    const { reader } = fakeReader({
+      deletedRunIds: [],
+      remainingRunIds: [],
+      indexDeleted: false,
+      earlierVersions: { deletedBodies: 0, complete: true },
+    });
+    const { logger, info } = fakeLogger();
+    await purgeEventsAfterDestroy(
+      reader,
+      'MyStack',
+      'us-east-1',
+      { purgeEvents: true, runResult: 'SUCCEEDED', interrupted: false },
+      logger
+    );
+    expect(info).not.toHaveBeenCalled();
+  });
+
   it('purges (all) after a clean, non-interrupted destroy with --purge-events', async () => {
     const { reader, pruneRuns } = fakeReader(PRUNED);
     const { logger, info } = fakeLogger();
@@ -49,15 +96,15 @@ describe('purgeEventsAfterDestroy', () => {
     expect(pruneRuns).toHaveBeenCalledWith('MyStack', 'us-east-1', { all: true });
     expect(res).toBe(PRUNED);
     expect(info).toHaveBeenCalledTimes(1);
-    // Issue #2624: `pruneRuns` purges the earlier versions of every key it
-    // deletes, so "Purged" now covers them -- bounded by the purge's own
-    // warning, which prints first when it could not finish.
+    // Issue #2624: `pruneRuns({ all: true })` purges every noncurrent version
+    // under the stack's deployments/ prefix, streams deleted EARLIER included,
+    // so "Purged" covers them -- bounded by the purge's own warning, which
+    // prints first when it could not finish.
     const line = String(info.mock.calls[0]![0]);
     expect(line).toContain('Purged deployment-event history for MyStack (us-east-1)');
-    // Scoped to the keys THIS purge deleted: a stream already behind a delete
-    // marker is not reached, so the line must not claim the whole history.
-    expect(line).toContain('and the earlier versions of the deleted keys');
-    expect(line).not.toContain('keys it deleted');
+    expect(line).toContain('and every earlier version under its deployments/ prefix');
+    // The narrower #4558 scoping is retired on this path.
+    expect(line).not.toContain('of the deleted keys');
     expect(line).not.toContain('earlier object versions included');
     expect(line).toContain('unless a warning above says otherwise');
     expect(line).not.toContain('survive');
@@ -159,6 +206,7 @@ describe('purgeEventsAfterDestroy', () => {
       putRawObject: vi.fn(async () => {}),
       deleteRawObjects,
       purgeNoncurrentVersions: vi.fn(async () => {}),
+      purgeNoncurrentVersionsUnderPrefix: vi.fn(async () => {}),
     } as unknown as S3StateBackend;
     const { logger, info } = fakeLogger();
     const res = await purgeEventsAfterDestroy(
@@ -170,6 +218,14 @@ describe('purgeEventsAfterDestroy', () => {
     );
     // Positive control: the purge DID run its delete — only the claim is gone.
     expect(deleteRawObjects).toHaveBeenCalledOnce();
+    // And the prefix-wide version sweep ran on the EXACT directory, trailing
+    // `/` included, even with nothing current listed (issue #2624): that is
+    // the stack whose history an earlier delete left behind markers.
+    expect(backend.purgeNoncurrentVersionsUnderPrefix).toHaveBeenCalledWith(
+      'cdkd/MyStack/us-east-1/deployments/',
+      expect.anything()
+    );
+    expect(backend.purgeNoncurrentVersions).not.toHaveBeenCalled();
     expect(res).toEqual({ deletedRunIds: [], remainingRunIds: [], indexDeleted: false });
     expect(info).not.toHaveBeenCalled();
   });
@@ -241,12 +297,12 @@ describe('cdkd destroy --purge-events help text', () => {
   const description = (): string =>
     createDestroyCommand().options.find((o) => o.long === '--purge-events')?.description ?? '';
 
-  it('says the earlier versions of those keys are purged too (issue #2624)', () => {
+  it("says every earlier version under the stack's deployments/ prefix is purged too (issue #2624)", () => {
     // Bound the arm first: a missing option yields '' above, which would
     // satisfy every `not.toContain` below for free.
     expect(description()).not.toBe('');
     expect(description()).toContain(
-      'purging the earlier versions of those keys on a versioned state bucket too unless a warning says otherwise'
+      "purging every earlier version under the stack's deployments/ prefix on a versioned state bucket too unless a warning says otherwise"
     );
     expect(description()).not.toContain('survive and stay readable');
   });

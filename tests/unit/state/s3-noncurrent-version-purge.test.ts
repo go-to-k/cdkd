@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { displaySafe } from '../../../src/utils/display-safe.js';
 import {
   purgeNoncurrentKeyVersions,
+  purgeNoncurrentVersionsUnderPrefix,
   type NoncurrentVersionPurgeOptions,
 } from '../../../src/state/s3-noncurrent-version-purge.js';
 import {
@@ -1492,5 +1493,383 @@ describe('purgeNoncurrentKeyVersions (issue #2340)', () => {
       expect(String(warn.mock.calls[0]![0])).toContain('Could not purge noncurrent versions');
       expect(String(warn.mock.calls[1]![0])).toContain('S3 replication is enabled');
     });
+  });
+});
+
+/**
+ * Issue [#2624](https://github.com/go-to-k/cdkd/issues/2624) — the
+ * PREFIX-wide form. Its scope is the prefix rather than a key set, so the
+ * properties that differ are pinned here: what it may delete, how it refuses
+ * a widened prefix, and what an incomplete walk is blamed on.
+ */
+describe('purgeNoncurrentVersionsUnderPrefix (issue #2624)', () => {
+  const DIR = 'cdkd/S/us-east-1/deployments/';
+  let warn: ReturnType<typeof vi.fn>;
+  let sent: { name: string; prefix?: string; objects?: { Key?: string; VersionId?: string }[] }[];
+
+  beforeEach(() => {
+    clearReplicationProbeCache();
+    warn = vi.fn();
+    sent = [];
+  });
+
+  const client = (pages: ListPage[] | Error, replication?: unknown) => {
+    let i = 0;
+    return {
+      send: (cmd: unknown) => {
+        const c = cmd as {
+          constructor: { name: string };
+          input: { Prefix?: string; Delete?: { Objects?: { Key?: string; VersionId?: string }[] } };
+        };
+        sent.push({
+          name: c.constructor.name,
+          ...(c.input.Prefix !== undefined && { prefix: c.input.Prefix }),
+          ...(c.input.Delete?.Objects !== undefined && { objects: c.input.Delete.Objects }),
+        });
+        if (c.constructor.name === 'ListObjectVersionsCommand') {
+          if (pages instanceof Error) return Promise.reject(pages);
+          return Promise.resolve(pages[i++] ?? {});
+        }
+        if (c.constructor.name === 'GetBucketReplicationCommand' && replication !== undefined) {
+          return Promise.resolve(replication);
+        }
+        return Promise.resolve({});
+      },
+    };
+  };
+  const logger = () => ({ warn: warn as unknown as (m: string) => void });
+  const deleted = () => sent.filter((c) => c.name === 'DeleteObjectsCommand').flatMap((c) => c.objects ?? []);
+
+  it('deletes every noncurrent entry under the prefix, markers included, and keeps current ones', async () => {
+    const result = await purgeNoncurrentVersionsUnderPrefix(
+      client([
+        {
+          Versions: [
+            { Key: `${DIR}a.jsonl`, VersionId: 'a1', IsLatest: false },
+            { Key: `${DIR}a.jsonl`, VersionId: 'a2', IsLatest: false },
+            { Key: `${DIR}live.jsonl`, VersionId: 'l1', IsLatest: true },
+            { Key: `${DIR}nolatest.jsonl`, VersionId: 'n1' },
+          ],
+          DeleteMarkers: [
+            { Key: `${DIR}a.jsonl`, VersionId: 'am', IsLatest: true },
+            { Key: `${DIR}old.jsonl`, VersionId: 'om', IsLatest: false },
+          ],
+          IsTruncated: false,
+        },
+      ]),
+      BUCKET,
+      DIR,
+      { logger: logger() }
+    );
+
+    expect(deleted()).toEqual([
+      { Key: `${DIR}a.jsonl`, VersionId: 'a1' },
+      { Key: `${DIR}a.jsonl`, VersionId: 'a2' },
+      { Key: `${DIR}old.jsonl`, VersionId: 'om' },
+    ]);
+    // An entry with IsLatest absent is left alone AND reported.
+    expect(warn).toHaveBeenCalledTimes(1);
+    // Two bodies; the noncurrent marker is deleted but never counted.
+    expect(result).toEqual({ deletedBodies: 2, complete: false });
+    expect(String(warn.mock.calls[0]![0])).toContain(`${DIR}nolatest.jsonl`);
+  });
+
+  it('never deletes a listed entry OUTSIDE the prefix (defence in depth)', async () => {
+    await purgeNoncurrentVersionsUnderPrefix(
+      client([
+        {
+          Versions: [
+            { Key: 'cdkd/S2/us-east-1/deployments/x.jsonl', VersionId: 'x1', IsLatest: false },
+            // Shares every character of DIR but its trailing `/`.
+            { Key: 'cdkd/S/us-east-1/deployments-old/x.jsonl', VersionId: 'o1', IsLatest: false },
+            { Key: `${DIR}a.jsonl`, VersionId: 'a1', IsLatest: false },
+          ],
+          IsTruncated: false,
+        },
+      ]),
+      BUCKET,
+      DIR,
+      { logger: logger() }
+    );
+    expect(deleted()).toEqual([{ Key: `${DIR}a.jsonl`, VersionId: 'a1' }]);
+  });
+
+  it.each([['cdkd/S/us-east-1/deployments'], ['cdkd/S'], [''], ['/']])(
+    'refuses %j: sends nothing and warns',
+    async (prefix) => {
+      await purgeNoncurrentVersionsUnderPrefix(client([]), BUCKET, prefix, { logger: logger() });
+      expect(sent).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('Nothing was purged');
+    }
+  );
+
+  it('a listing failure warns once, naming the whole prefix rather than a key count', async () => {
+    await purgeNoncurrentVersionsUnderPrefix(
+      client(Object.assign(new Error('Access Denied'), { name: 'AccessDenied' })),
+      BUCKET,
+      DIR,
+      { logger: logger(), objectDescription: 'event streams' }
+    );
+    const failures = warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.startsWith('Could not purge'));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain(`${DIR}* (every key under this prefix) (Access Denied)`);
+    // Counted as a prefix, never as one key.
+    expect(failures[0]).toContain('Could not purge noncurrent versions of every key under 1 prefix(es) in');
+    expect(failures[0]).not.toContain('1 key(s)');
+    expect(failures[0]).toContain('(event streams)');
+  });
+
+  it('a listing failure on a REPLICATED bucket still reaches the replication warning', async () => {
+    // The prefix handle starts with the prefix, so a rule covering the state
+    // prefix matches it although no real key was listed.
+    await purgeNoncurrentVersionsUnderPrefix(
+      client(Object.assign(new Error('Access Denied'), { name: 'AccessDenied' }), {
+        ReplicationConfiguration: {
+          Rules: [
+            {
+              Status: 'Enabled',
+              Filter: { Prefix: 'cdkd/' },
+              Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' },
+            },
+          ],
+        },
+      }),
+      BUCKET,
+      DIR,
+      { logger: logger() }
+    );
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes('cdkd-state-replica'))).toBe(true);
+  });
+
+  it('an undecodable noncurrent key under the prefix is a FAILURE, not a silent skip', async () => {
+    await purgeNoncurrentVersionsUnderPrefix(
+      client([
+        {
+          Versions: [
+            { Key: `${DIR}%E0%A4%A.jsonl`, VersionId: 'bad1', IsLatest: false },
+            // IsLatest absent: left alone, so a non-removal to report too.
+            { Key: `${DIR}%E0%A4%B.jsonl`, VersionId: 'bad2' },
+            // CURRENT: never a removal, so never a failure.
+            { Key: `${DIR}%E0%A4%C.jsonl`, VersionId: 'cur', IsLatest: true },
+          ],
+          IsTruncated: false,
+        },
+      ]),
+      BUCKET,
+      DIR,
+      { logger: logger() }
+    );
+    expect(deleted()).toEqual([]);
+    const failures = warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.startsWith('Could not purge'));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain('key not decodable');
+    expect(failures[0]).toContain('2 key(s)');
+    expect(failures[0]).toContain('%E0%A4%A.jsonl');
+    expect(failures[0]).toContain('%E0%A4%B.jsonl');
+    expect(failures[0]).not.toContain('%E0%A4%C.jsonl');
+  });
+
+  it("the KEY-SET form never fails on a neighbour's undecodable key under a shared listPrefix", async () => {
+    // `ownsEveryListedKey` is false there: the entry may be another owner's.
+    await purgeNoncurrentKeyVersions(
+      client([
+        {
+          Versions: [
+            { Key: 'custom-resource-responses/%E0%A4%A.json', VersionId: 'n1', IsLatest: false },
+            { Key: KEY_A, VersionId: 'a1', IsLatest: false },
+          ],
+          IsTruncated: false,
+        },
+      ]),
+      BUCKET,
+      [KEY_A],
+      { logger: logger(), listPrefix: 'custom-resource-responses/' }
+    );
+    expect(deleted()).toEqual([{ Key: KEY_A, VersionId: 'a1' }]);
+    expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.startsWith('Could not purge'))).toEqual([]);
+  });
+
+  it('a TRUNCATED walk on a replicated bucket still reaches the replication warning', async () => {
+    await purgeNoncurrentVersionsUnderPrefix(
+      client([{ Versions: [], IsTruncated: true }], {
+        ReplicationConfiguration: {
+          Rules: [
+            {
+              Status: 'Enabled',
+              Filter: { Prefix: 'cdkd/' },
+              Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' },
+            },
+          ],
+        },
+      }),
+      BUCKET,
+      DIR,
+      { logger: logger() }
+    );
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes('cdkd-state-replica'))).toBe(true);
+  });
+
+  it('a truncated page with no marker stops, and blames the prefix', async () => {
+    await purgeNoncurrentVersionsUnderPrefix(
+      client([{ Versions: [], IsTruncated: true }]),
+      BUCKET,
+      DIR,
+      { logger: logger() }
+    );
+    const failures = warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.startsWith('Could not purge'));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain(`${DIR}* (every key under this prefix)`);
+    expect(failures[0]).toContain('IsTruncated with no NextKeyMarker');
+  });
+
+  it('follows pagination markers across pages', async () => {
+    const result = await purgeNoncurrentVersionsUnderPrefix(
+      client([
+        {
+          Versions: [{ Key: `${DIR}a.jsonl`, VersionId: 'a1', IsLatest: false }],
+          IsTruncated: true,
+          NextKeyMarker: `${DIR}a.jsonl`,
+          NextVersionIdMarker: 'a1',
+        },
+        { Versions: [{ Key: `${DIR}b.jsonl`, VersionId: 'b1', IsLatest: false }], IsTruncated: false },
+      ]),
+      BUCKET,
+      DIR,
+      { logger: logger() }
+    );
+    expect(deleted()).toEqual([
+      { Key: `${DIR}a.jsonl`, VersionId: 'a1' },
+      { Key: `${DIR}b.jsonl`, VersionId: 'b1' },
+    ]);
+    // The count ACCUMULATES across pages (one DeleteObjects per page).
+    expect(result).toEqual({ deletedBodies: 2, complete: true });
+    expect(sent.filter((c) => c.name === 'ListObjectVersionsCommand').every((c) => c.prefix === DIR)).toBe(true);
+  });
+});
+
+describe('purgeNoncurrentVersionsUnderPrefix: the deleted count (issue #2624)', () => {
+  beforeEach(() => clearReplicationProbeCache());
+
+  it('counts only entries the delete confirmed, never one in Errors', async () => {
+    const DIR = 'cdkd/S/us-east-1/deployments/';
+    const warn = vi.fn();
+    const result = await purgeNoncurrentVersionsUnderPrefix(
+      {
+        send: (cmd: unknown) => {
+          const name = (cmd as { constructor: { name: string } }).constructor.name;
+          if (name === 'ListObjectVersionsCommand') {
+            return Promise.resolve({
+              Versions: [
+                { Key: `${DIR}a.jsonl`, VersionId: 'a1', IsLatest: false },
+                { Key: `${DIR}b.jsonl`, VersionId: 'b1', IsLatest: false },
+                { Key: `${DIR}c.jsonl`, VersionId: 'c1', IsLatest: false },
+              ],
+              IsTruncated: false,
+            });
+          }
+          if (name === 'DeleteObjectsCommand') {
+            return Promise.resolve({
+              Errors: [
+                { Key: `${DIR}b.jsonl`, VersionId: 'b1', Code: 'AccessDenied' },
+                // Already gone: not a failure, but not removed by this call.
+                { Key: `${DIR}c.jsonl`, VersionId: 'c1', Code: 'NoSuchVersion' },
+              ],
+            });
+          }
+          return Promise.resolve({});
+        },
+      },
+      BUCKET,
+      DIR,
+      { logger: { warn: warn as unknown as (m: string) => void } }
+    );
+    expect(result).toEqual({ deletedBodies: 1, complete: false });
+  });
+});
+
+describe('purgeNoncurrentVersionsUnderPrefix: which DeleteObjects errors reduce the body count (issue #2624)', () => {
+  beforeEach(() => clearReplicationProbeCache());
+
+  it('a MARKER error is not subtracted; a KEYLESS error is (assumed a body)', async () => {
+    const DIR = 'cdkd/S/us-east-1/deployments/';
+    const result = await purgeNoncurrentVersionsUnderPrefix(
+      {
+        send: (cmd: unknown) => {
+          const name = (cmd as { constructor: { name: string } }).constructor.name;
+          if (name === 'ListObjectVersionsCommand') {
+            return Promise.resolve({
+              Versions: [
+                { Key: `${DIR}a.jsonl`, VersionId: 'a1', IsLatest: false },
+                { Key: `${DIR}b.jsonl`, VersionId: 'b1', IsLatest: false },
+              ],
+              DeleteMarkers: [{ Key: `${DIR}m.jsonl`, VersionId: 'm1', IsLatest: false }],
+              IsTruncated: false,
+            });
+          }
+          if (name === 'DeleteObjectsCommand') {
+            return Promise.resolve({
+              Errors: [
+                { Key: `${DIR}m.jsonl`, VersionId: 'm1', Code: 'AccessDenied' },
+                { Code: 'InternalError' },
+              ],
+            });
+          }
+          return Promise.resolve({});
+        },
+      },
+      BUCKET,
+      DIR,
+      { logger: { warn: vi.fn() as unknown as (m: string) => void } }
+    );
+    // 2 bodies sent, minus the keyless error; the marker's error is ignored.
+    expect(result).toEqual({ deletedBodies: 1, complete: false });
+  });
+});
+
+describe('purgeNoncurrentVersionsUnderPrefix: error-subtraction edges (issue #2624)', () => {
+  beforeEach(() => clearReplicationProbeCache());
+  const DIR = 'cdkd/S/us-east-1/deployments/';
+  const run = (errors: unknown[]) =>
+    purgeNoncurrentVersionsUnderPrefix(
+      {
+        send: (cmd: unknown) => {
+          const name = (cmd as { constructor: { name: string } }).constructor.name;
+          if (name === 'ListObjectVersionsCommand') {
+            return Promise.resolve({
+              Versions: [
+                { Key: `${DIR}a.jsonl`, VersionId: 'a1', IsLatest: false },
+                { Key: `${DIR}b.jsonl`, VersionId: 'b1', IsLatest: false },
+              ],
+              IsTruncated: false,
+            });
+          }
+          if (name === 'DeleteObjectsCommand') return Promise.resolve({ Errors: errors });
+          return Promise.resolve({});
+        },
+      },
+      BUCKET,
+      DIR,
+      { logger: { warn: vi.fn() as unknown as (m: string) => void } }
+    );
+
+  it('an error with a Key but no VersionId cannot be matched, so it is assumed a body', async () => {
+    // `a.jsonl` IS a body key: matching on Key alone would also subtract, so
+    // name a key that has no body row to prove the VersionId arm decides.
+    const result = await run([{ Key: `${DIR}other.jsonl`, Code: 'AccessDenied' }]);
+    expect(result).toEqual({ deletedBodies: 1, complete: false });
+  });
+
+  it('more keyless errors than bodies clamp the count at 0, never negative', async () => {
+    const result = await run([{ Code: 'InternalError' }, { Code: 'InternalError' }, { Code: 'InternalError' }]);
+    expect(result).toEqual({ deletedBodies: 0, complete: false });
   });
 });
