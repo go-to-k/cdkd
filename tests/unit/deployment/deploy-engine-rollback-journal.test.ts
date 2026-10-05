@@ -3,6 +3,8 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { withSkipPrefix } from '../../../src/provisioning/resource-name.js';
 import { markRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
+import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -852,6 +854,169 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
       expect(seg.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
       expect(seg.failedOperations[0].attemptedProperties).toEqual({ p: 'new' });
+    });
+  });
+
+  // go-to-k/cdkd#1710: a CREATE whose provider proved its create call returned
+  // before the failure journals that resource, which no state record holds.
+  describe('a CREATE that made its resource and then failed (go-to-k/cdkd#1710)', () => {
+    function failingCreateEngine(failure: Error, tmpl: CloudFormationTemplate = template) {
+      const changes = new Map([['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange]]);
+      const engine = buildEngine({ changes, deps: { B: [] }, noRollback: true, currentEtag: 'e0' });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockRejectedValue(failure);
+      return { engine, tmpl };
+    }
+
+    async function journaledB(failure: Error, tmpl?: CloudFormationTemplate) {
+      const { engine, tmpl: t } = failingCreateEngine(failure, tmpl);
+      await expect(engine.deploy(stackName, t)).rejects.toThrow();
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      return seg.failedOperations.find((o: { logicalId: string }) => o.logicalId === 'B');
+    }
+
+    it('journals the marked id with its provenance, the sdk route and the DeletionPolicy', async () => {
+      const op = await journaledB(
+        markCreatedBeforeFailure(new ProvisioningError('retention rejected', 'AWS::S3::Bucket', 'B', 'b-1'), 'B', 'AWS::S3::Bucket', 'b-1'),
+        { Resources: { B: { Type: 'AWS::S3::Bucket', Properties: {}, DeletionPolicy: 'Retain' } } }
+      );
+      expect(op.physicalId).toBe('b-1');
+      expect(op.physicalIdRecoveredFromError).toBe(true);
+      expect(op.provisionedBy).toBe('sdk');
+      expect(op.deletionPolicy).toBe('Retain');
+      expect(op.attemptedProperties).toEqual({ p: 'new' });
+    });
+
+    // The hazard the mark exists for: a provider names the resource it was
+    // GOING to create on every failure, including a collision with another
+    // owner's. That id must never reach a `--revert-failed` delete.
+    it('ignores an UNMARKED ProvisioningError.physicalId', async () => {
+      const op = await journaledB(
+        new ProvisioningError('ResourceInUseException', 'AWS::S3::Bucket', 'B', 'someone-elses')
+      );
+      expect(op.physicalId).toBeUndefined();
+      expect(op).not.toHaveProperty('physicalIdRecoveredFromError');
+    });
+
+    it("ignores a mark naming another logical id (a nested child's error)", async () => {
+      const op = await journaledB(
+        markCreatedBeforeFailure(new ProvisioningError('child', 'AWS::S3::Bucket', 'B', undefined), 'Child', 'AWS::S3::Bucket', 'c-1')
+      );
+      expect(op.physicalId).toBeUndefined();
+    });
+
+    // A nested child can share its parent row's logical id; the row's own
+    // type is what tells the child's mark from the row's.
+    it("ignores a same-id mark of another resource type (a nested child's)", async () => {
+      const op = await journaledB(
+        markCreatedBeforeFailure(new Error('child'), 'B', 'AWS::Kinesis::Stream', 'c-1')
+      );
+      expect(op.physicalId).toBeUndefined();
+    });
+
+    it.each([['Delete'], ['Snapshot'], ['RetainExceptOnCreate'], [undefined]] as const)(
+      'journals a DeletionPolicy of %s as written',
+      async (policy) => {
+        const op = await journaledB(
+          markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::S3::Bucket', 'b-1'),
+          {
+            Resources: {
+              B: (policy === undefined
+                ? { Type: 'AWS::S3::Bucket', Properties: {} }
+                : { Type: 'AWS::S3::Bucket', Properties: {}, DeletionPolicy: policy as 'Delete' }),
+            },
+          }
+        );
+        expect(op.physicalIdRecoveredFromError).toBe(true);
+        expect(op.deletionPolicy).toBe(policy);
+      }
+    );
+
+    // The default flow: a clean automatic rollback re-records the failed op
+    // in a failed-only segment, which must keep what --revert-failed reads.
+    it('keeps the id, the flag and the policy through the clean automatic rollback', async () => {
+      const changes = new Map([
+        ['A', makeChange('A')],
+        ['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange],
+      ]);
+      const engine = buildEngine({ changes, deps: { A: [], B: ['A'] }, noRollback: false, currentEtag: 'e0' });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockImplementation((logicalId: string) =>
+        logicalId === 'B'
+          ? Promise.reject(markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::S3::Bucket', 'b-1'))
+          : Promise.resolve({ physicalId: `phys-${logicalId}`, attributes: {} })
+      );
+      await expect(
+        engine.deploy(stackName, {
+          Resources: {
+            A: { Type: 'AWS::S3::Bucket', Properties: {} },
+            B: { Type: 'AWS::S3::Bucket', Properties: {}, DeletionPolicy: 'Snapshot' },
+          },
+        })
+      ).rejects.toThrow();
+      const last = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
+      expect(last.reason).toBe('auto-rollback-clean');
+      expect(last.failedOperations[0]).toMatchObject({
+        logicalId: 'B',
+        physicalId: 'b-1',
+        physicalIdRecoveredFromError: true,
+        deletionPolicy: 'Snapshot',
+      });
+    });
+
+    it('journals an unknown DeletionPolicy as Retain, never a plain delete', async () => {
+      const op = await journaledB(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::S3::Bucket', 'b-1'),
+        { Resources: { B: { Type: 'AWS::S3::Bucket', Properties: {}, DeletionPolicy: 'retain' as never } } }
+      );
+      expect(op.deletionPolicy).toBe('Retain');
+    });
+
+    // A CREATE over a record state already holds names THAT resource; the
+    // mark never overrides it.
+    it('keeps a state-sourced physical id over a mark', async () => {
+      const prevB: ResourceState = {
+        physicalId: 'phys-B-old',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      };
+      const engine = buildEngine({
+        changes: new Map([['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange]]),
+        deps: { B: [] },
+        noRollback: true,
+        currentEtag: 'e0',
+        currentResources: { B: prevB },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockRejectedValue(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::S3::Bucket', 'b-new')
+      );
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      const op = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations[0];
+      expect(op.physicalId).toBe('phys-B-old');
+      expect(op).not.toHaveProperty('physicalIdRecoveredFromError');
+      expect(op).not.toHaveProperty('deletionPolicy');
+    });
+
+    it('ignores the mark on a refusal', async () => {
+      const failure = markRefusedBeforeApplying(markCreatedBeforeFailure(new Error('refused'), 'B', 'AWS::S3::Bucket', 'b-1'));
+      const { engine, tmpl } = failingCreateEngine(failure);
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      expect(journal.appendRollbackJournalSegment).not.toHaveBeenCalled();
     });
   });
 

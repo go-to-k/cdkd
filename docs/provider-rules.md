@@ -359,6 +359,17 @@ implementation. Three details are worth copying:
     collision, and `--replace` or a replacement rollback then deletes the live
     resource.
 
+    A `create()` that fails AFTER its main create call returned should also
+    mark the error it throws with
+    `markCreatedBeforeFailure(error, ownerLogicalId, resourceType, physicalId)` (same module,
+    issue [#1710](https://github.com/go-to-k/cdkd/issues/1710)). The resource
+    then exists with no state record; the mark is what lets the failed-CREATE
+    journal name it, so `cdkd rollback --revert-failed` can delete it. Set it
+    only behind a flag the create call's success sets (Kinesis's
+    `streamCreated`): `ProvisioningError.physicalId` is NOT that proof, since
+    providers put the intended name on refusals and on the create call's own
+    "already exists", which names another owner's resource.
+
   - **`maskSecrets` — mask a resolved property value before you log it.**
     Both `CreateContext` and `UpdateContext` extend a shared
     `SecretMaskingContext`, whose one optional field is
@@ -1857,8 +1868,9 @@ Two placement rules go with it:
   - A partial-create cleanup arm must STILL run its cleanup delete on an
     interrupt. "Ctrl-C must not delete what you just made" is the intuitive
     answer and it is wrong here, because `create()` is throwing: the physical id
-    never reaches state, the rollback journal records `physicalId: undefined`,
-    and the rollback executor classifies it `skip-failed-unknown`. Nothing holds
+    never reaches state, the rollback journal records `physicalId: undefined`
+    (unless the arm calls `markCreatedBeforeFailure`, above), and the rollback
+    executor classifies it `skip-failed-unknown`. Unmarked, nothing holds
     the id, so the choice is *delete vs orphan forever* — and the orphan fails
     every later deploy on a name collision that neither rollback nor destroy can
     reach. Both the ELBv2 Listener and Cloud Map Service arms clean up, and each

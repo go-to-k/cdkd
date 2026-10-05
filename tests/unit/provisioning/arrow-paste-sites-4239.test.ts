@@ -186,8 +186,22 @@ describe('a pasted provider ` -> ` line redirects nothing (#4239)', () => {
     expect(line).toBe('Switching stream mode for stream: from PROVISIONED to name');
   }, 60_000);
 
+  // go-to-k/cdkd#1710: a non-numeric RetentionPeriodHours is refused before
+  // any call, so only a number reaches this line.
   it('kinesis: the retention line', async () => {
     await settle(
+      new KinesisStreamProvider().update(
+        'S',
+        'stream',
+        'AWS::Kinesis::Stream',
+        { RetentionPeriodHours: '48' },
+        {}
+      )
+    );
+    const line = lineStarting('Updating retention period for stream: ');
+    expectInert(line);
+    expect(line).toBe('Updating retention period for stream: from 24 to 48');
+    await expect(
       new KinesisStreamProvider().update(
         'S',
         'stream',
@@ -195,10 +209,7 @@ describe('a pasted provider ` -> ` line redirects nothing (#4239)', () => {
         { RetentionPeriodHours: 'id' },
         {}
       )
-    );
-    const line = lineStarting('Updating retention period for stream: ');
-    expectInert(line);
-    expect(line).toBe('Updating retention period for stream: from 24 to id');
+    ).rejects.toThrow(/RetentionPeriodHours must be a number/);
   }, 60_000);
 
   it('kinesis: the shard-count line', async () => {

@@ -35,6 +35,7 @@ import { withSharedDrainBudget } from '../drain-budget.js';
 import type { SettledNestedRows } from '../nested-child-journal.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
 import { isRefusedBeforeApplying } from '../prior-attempt-scope.js';
+import { createdBeforeFailure } from '../../provisioning/auxiliary-failure.js';
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 
 declare module '../deploy-engine.js' {
@@ -311,17 +312,39 @@ export async function executeDeployment(
           // stack's to revert, and the record could only say "delete it
           // manually" about the resource that refused it — another owner's.
           const refused = isRefusedBeforeApplying(provisionError, logicalId);
-          const physicalId = newResources[logicalId]?.physicalId ?? previousState?.physicalId;
-          if (refused && change.changeType === 'CREATE' && physicalId === undefined) {
+          const statePhysicalId = newResources[logicalId]?.physicalId ?? previousState?.physicalId;
+          if (refused && change.changeType === 'CREATE' && statePhysicalId === undefined) {
             throw provisionError;
           }
+          // go-to-k/cdkd#1710: a CREATE whose provider PROVED its create call
+          // returned before the failure. The resource exists, no state record
+          // holds it, and this journal entry is the only record of it — so it
+          // carries the id, its provenance and the template's DeletionPolicy
+          // for `--revert-failed`. Only the provider's mark proves it:
+          // `ProvisioningError.physicalId` also names resources a create
+          // collided with or never made. Only SDK providers mark (the Cloud
+          // Control route deletes its own remnant), hence the route. A refused
+          // CREATE with no state id never reaches here (thrown above).
+          const createdId =
+            change.changeType === 'CREATE' && statePhysicalId === undefined
+              ? createdBeforeFailure(provisionError, logicalId, change.resourceType)
+              : undefined;
           failedOperations.push({
             logicalId,
             changeType: change.changeType as 'CREATE' | 'UPDATE',
             resourceType: change.resourceType,
-            provisionedBy: newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy,
+            provisionedBy:
+              createdId !== undefined
+                ? 'sdk'
+                : (newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy),
             ...(previousState && { previousState }),
-            physicalId,
+            physicalId: createdId ?? statePhysicalId,
+            ...(createdId !== undefined && {
+              physicalIdRecoveredFromError: true,
+              deletionPolicy: journaledOrphanPolicy(
+                this.extractTemplateAttributes(template, logicalId).deletionPolicy
+              ),
+            }),
             // go-to-k/cdkd#4355: a failed op whose attempted bag is
             // provably not this stack's resource (a refusal, or a write AWS
             // definitely rejected) journals no attempted bag. The bag is what a later deploy
@@ -1125,4 +1148,23 @@ export async function persistStateAfterOutputFailure(
       );
     }
   }
+}
+
+/**
+ * The `DeletionPolicy` a proven failed-CREATE orphan is journaled with
+ * (go-to-k/cdkd#1710). A value outside CloudFormation's four is journaled as
+ * `Retain`: the policy picks whether `--revert-failed` deletes a resource only
+ * this entry records, so an unreadable one keeps the resource rather than
+ * falling through to a plain delete (and the journal parser refuses it).
+ */
+function journaledOrphanPolicy(
+  policy: unknown
+): 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined {
+  if (policy === undefined) return undefined;
+  return policy === 'Delete' ||
+    policy === 'Retain' ||
+    policy === 'Snapshot' ||
+    policy === 'RetainExceptOnCreate'
+    ? policy
+    : 'Retain';
 }

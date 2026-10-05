@@ -131,6 +131,163 @@ export function isAuxiliaryFailure(error: unknown): boolean {
   return false;
 }
 
+const CREATED_BEFORE_FAILURE = Symbol.for('cdkd.createdBeforeFailure');
+
+/**
+ * Declare that `ownerLogicalId`'s create call had RETURNED — the resource
+ * `physicalId` exists in AWS because THIS attempt made it — before `error`
+ * was thrown (go-to-k/cdkd#1710). The deploy engine journals that id on the
+ * failed CREATE so `cdkd rollback --revert-failed` can delete a resource no
+ * state record holds.
+ *
+ * A POSITIVE proof, deliberately not inferred from
+ * `ProvisioningError.physicalId`: providers attach the NAME they were going to
+ * use to refusals and to their create call's own failure (an "already exists"
+ * on another owner's resource), and deleting that would destroy a resource
+ * this deploy never made. Mark only where the create call is known to have
+ * returned. Stamped on `error` itself, non-enumerable and read-only like the
+ * auxiliary mark; returns `error`. A primitive or non-extensible throw is left
+ * unmarked, which loses only the recovery.
+ */
+export function markCreatedBeforeFailure<E>(
+  error: E,
+  ownerLogicalId: string,
+  resourceType: string,
+  physicalId: string
+): E {
+  try {
+    if (typeof error !== 'object' || error === null || !Object.isExtensible(error)) return error;
+    if (physicalId === '') return error;
+    Object.defineProperty(error, CREATED_BEFORE_FAILURE, {
+      value: Object.freeze({ logicalId: ownerLogicalId, resourceType, physicalId }),
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
+  } catch {
+    // Unmarkable: left as it is.
+  }
+  return error;
+}
+
+/** The mark {@link markCreatedBeforeFailure} put on `link` itself, if any. */
+type CreatedMark = { logicalId: string; resourceType: string; physicalId: string };
+
+function createdMarkOn(link: object): CreatedMark | undefined {
+  const value = (link as Record<symbol, unknown>)[CREATED_BEFORE_FAILURE];
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { logicalId, resourceType, physicalId } = value as Record<string, unknown>;
+  if (
+    typeof logicalId !== 'string' ||
+    typeof resourceType !== 'string' ||
+    typeof physicalId !== 'string' ||
+    physicalId === ''
+  ) {
+    return undefined;
+  }
+  return { logicalId, resourceType, physicalId };
+}
+
+/**
+ * The physical id a {@link markCreatedBeforeFailure} mark for `logicalId` and
+ * `resourceType` carries on `error`'s bounded cause chain, or `undefined`.
+ *
+ * Anchored on both sides: the mark must name `logicalId` AND `resourceType` (a
+ * nested child may share its parent row's logical id, never its
+ * `AWS::CloudFormation::Stack` type), and the walk stops
+ * at the first link naming ANOTHER logical id (a nested stack's child error
+ * wrapped under its parent row) — an auxiliary mark of `logicalId` excepted,
+ * since it marks the same create's own SDK error. Never throws.
+ */
+export function createdBeforeFailure(
+  error: unknown,
+  logicalId: string,
+  resourceType: string
+): string | undefined {
+  try {
+    let current: unknown = error;
+    for (
+      let depth = 0;
+      depth < MAX_DEPTH * 2 && typeof current === 'object' && current !== null;
+      depth++
+    ) {
+      const mark = createdMarkOn(current);
+      if (mark) {
+        return mark.logicalId === logicalId && mark.resourceType === resourceType
+          ? mark.physicalId
+          : undefined;
+      }
+      const own = Object.getOwnPropertyDescriptor(current, 'logicalId');
+      if (
+        typeof own?.value === 'string' &&
+        own.value !== logicalId &&
+        !isAuxiliaryMarkOf(current, logicalId)
+      ) {
+        return undefined;
+      }
+      current = (current as { cause?: unknown }).cause;
+    }
+  } catch {
+    // Unreadable chain: no proof.
+  }
+  return undefined;
+}
+
+/** Whether `error`'s bounded cause chain carries any created-before-failure mark. */
+export function hasCreatedBeforeFailure(error: unknown): boolean {
+  try {
+    let current: unknown = error;
+    for (
+      let depth = 0;
+      depth < MAX_DEPTH * 2 && typeof current === 'object' && current !== null;
+      depth++
+    ) {
+      if (createdMarkOn(current)) return true;
+      current = (current as { cause?: unknown }).cause;
+    }
+  } catch {
+    // Unreadable chain: no mark.
+  }
+  return false;
+}
+
+/**
+ * Carry a {@link markCreatedBeforeFailure} mark from an EARLIER attempt's
+ * error onto the error a retry loop finally throws, unless that one carries a
+ * mark of its own. A replayed create collides with the resource the earlier
+ * attempt made, and its own error proves nothing — without the carry the one
+ * record of that resource is dropped with the earlier error. The mark is
+ * copied as is, so the reader's logical-id anchor still applies. Never throws.
+ */
+export function carryCreatedBeforeFailure<E>(from: unknown, to: E): E {
+  try {
+    if (typeof to !== 'object' || to === null) return to;
+    let current: unknown = from;
+    let mark: CreatedMark | undefined;
+    for (
+      let depth = 0;
+      depth < MAX_DEPTH * 2 && typeof current === 'object' && current !== null && !mark;
+      depth++
+    ) {
+      mark = createdMarkOn(current);
+      current = (current as { cause?: unknown }).cause;
+    }
+    if (!mark) return to;
+    let probe: unknown = to;
+    for (
+      let depth = 0;
+      depth < MAX_DEPTH * 2 && typeof probe === 'object' && probe !== null;
+      depth++
+    ) {
+      if (createdMarkOn(probe)) return to;
+      probe = (probe as { cause?: unknown }).cause;
+    }
+    return markCreatedBeforeFailure(to, mark.logicalId, mark.resourceType, mark.physicalId);
+  } catch {
+    return to;
+  }
+}
+
 /**
  * Mark `error` (or the first link under it that carries no logical id of its
  * own) as the failure of an auxiliary call made while creating

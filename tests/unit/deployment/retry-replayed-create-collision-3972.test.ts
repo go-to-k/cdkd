@@ -49,7 +49,9 @@ import {
 } from '../../../src/deployment/rollback-executor.js';
 import {
   auxiliaryLogicalId,
+  createdBeforeFailure,
   isAuxiliaryFailure,
+  markCreatedBeforeFailure,
   markAuxiliaryFailure,
 } from '../../../src/provisioning/auxiliary-failure.js';
 import { KinesisStreamProvider } from '../../../src/provisioning/providers/kinesis-provider.js';
@@ -124,6 +126,70 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+});
+
+// go-to-k/cdkd#1710: the stream the first attempt made is in no state record,
+// and the replay's collision error is what the engine journals -- so the first
+// attempt's created-mark must ride on it, while a collision with a stream this
+// call never made must carry none.
+describe('the created-before-failure mark across a replayed create (go-to-k/cdkd#1710)', () => {
+  it('rides on the replay collision that is finally thrown', async () => {
+    stubKinesis({ createStreamOutcomes: ['ok', 'collide'], tagThrottles: 1 });
+    const error = await createThroughRetry();
+    expect(createdBeforeFailure(error, LOGICAL_ID, TYPE)).toBe('stream');
+  });
+
+  it('rides through the nested delete-then-re-create loops', async () => {
+    stubKinesis({ createStreamOutcomes: ['ok', 'collide'], tagThrottles: 1 });
+    const provider = new KinesisStreamProvider();
+    const error = await withRetry(
+      () =>
+        withRetry(() => provider.create(LOGICAL_ID, TYPE, structuredClone(PROPERTIES)), LOGICAL_ID, {
+          sleep: noSleep,
+        }),
+      LOGICAL_ID,
+      {
+        maxRetries: 2,
+        initialDelayMs: 1,
+        maxDelayMs: 1,
+        sleep: noSleep,
+        isRetryable: isRecreateRetryableError,
+      }
+    ).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(createdBeforeFailure(error, LOGICAL_ID, TYPE)).toBe('stream');
+  });
+
+  // An attempt whose error cannot take the mark (frozen) must not drop it: a
+  // later attempt's error still gets it.
+  it('survives an unmarkable error between attempts', async () => {
+    const errors: unknown[] = [
+      markCreatedBeforeFailure(awsSdkError(THROTTLE, 'LimitExceededException'), LOGICAL_ID, TYPE, 'stream'),
+      Object.freeze(awsSdkError(THROTTLE, 'LimitExceededException')),
+      awsSdkError(THROTTLE, 'LimitExceededException'),
+    ];
+    let attempt = 0;
+    const error = await withRetry(
+      () => Promise.reject(errors[Math.min(attempt++, errors.length - 1)]),
+      LOGICAL_ID,
+      { sleep: noSleep, maxRetries: 2 }
+    ).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(attempt).toBe(3);
+    expect(createdBeforeFailure(error, LOGICAL_ID, TYPE)).toBe('stream');
+  });
+
+  it('is absent from a first-attempt collision with a stream this call never made', async () => {
+    stubKinesis({ createStreamOutcomes: ['collide'], tagThrottles: 0 });
+    const error = await createThroughRetry();
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect((error as ProvisioningError).physicalId).toBe('stream');
+    expect(createdBeforeFailure(error, LOGICAL_ID, TYPE)).toBeUndefined();
+  });
 });
 
 describe('a replayed create colliding with its own earlier attempt (#3972)', () => {

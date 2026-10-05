@@ -187,6 +187,26 @@ const ARMS: Arm[] = [
       ],
     },
   },
+  {
+    // go-to-k/cdkd#1710: the one AWS-calling arm with NO state row, so a
+    // record listing no resources still reaches it.
+    label: 'a proven failed-CREATE orphan under --revert-failed (delete, no state row)',
+    reaches: 'delete',
+    revertFailed: true,
+    resources: {},
+    segment: {
+      operations: [],
+      failedOperations: [
+        {
+          logicalId: 'A',
+          changeType: 'CREATE',
+          resourceType: TYPE,
+          physicalId: 'p',
+          physicalIdRecoveredFromError: true,
+        },
+      ],
+    },
+  },
 ];
 
 function install(opts: {
@@ -309,6 +329,21 @@ describe('cdkd rollback refuses a record whose body region diverged from its key
     expect(message).not.toContain(BODY_REGION);
     // A rollback, not a destroy — the destroy builder's wording must not leak in.
     expect(message).not.toMatch(/will not destroy/);
+  });
+
+  it('names the proven orphans when the record lists no resources', async () => {
+    install({ ...ARMS[ARMS.length - 1]!, bodyRegion: BODY_REGION });
+    const thrown = await rollbackCommand(STACK, opts(true)).catch((e: unknown) => e);
+    expect((thrown as CdkdError).message).toContain(
+      'its journal holds 1 failed create whose resource --revert-failed would delete'
+    );
+  });
+
+  it('lets the same resource-less record through without --revert-failed', async () => {
+    install({ ...ARMS[ARMS.length - 1]!, bodyRegion: BODY_REGION });
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+    expect((thrown as { code?: string } | undefined)?.code).not.toBe(STATE_REGION_DIVERGED);
+    expect(awsCalls()).toBe(0);
   });
 
   it('lets a resource-LESS divergent record through, where no arm can reach AWS', async () => {

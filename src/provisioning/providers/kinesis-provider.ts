@@ -24,7 +24,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { readConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -229,6 +229,62 @@ function readMaxRecordSize(value: unknown, mask: MaskerFn): MaxRecordSizeRead {
 }
 
 /**
+ * Shape read for the post-`CreateStream` follow-up calls the pre-flight covers
+ * (go-to-k/cdkd#1710). `Tags` is refused by `refuseMalformedDesiredTags`.
+ */
+type FollowUpRead =
+  | { kind: 'absent' }
+  | { kind: 'usable'; hours?: number }
+  | { kind: 'unusable'; reason: string };
+
+/**
+ * Refuse a `RetentionPeriodHours` the retention call cannot take
+ * (go-to-k/cdkd#1710).
+ *
+ * The retention change runs AFTER `CreateStream`, so a non-numeric value
+ * failed against a stream that already exists. A numeric STRING is usable and
+ * converted, as `readMaxRecordSize` does: CFn's scalar coercion makes it a
+ * legitimate template shape (a `Ref` to a `Number` parameter resolves to
+ * one), and the API field is a number. The RANGE is AWS's to judge.
+ */
+function readRetentionHours(value: unknown, mask: MaskerFn): FollowUpRead {
+  if (value == null) return { kind: 'absent' };
+  if (typeof value === 'number' && Number.isFinite(value)) return { kind: 'usable', hours: value };
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+    return { kind: 'usable', hours: Number(value) };
+  }
+  return {
+    kind: 'unusable',
+    reason:
+      `AWS::Kinesis::Stream RetentionPeriodHours must be a number, got ` +
+      `${JSON.stringify(maskDeep(value, mask))}`,
+  };
+}
+
+/**
+ * Refuse a KMS `StreamEncryption` block with no usable `KeyId`
+ * (go-to-k/cdkd#1710).
+ *
+ * `StartStreamEncryption` runs AFTER `CreateStream`, so a KMS block missing
+ * its key sent `KeyId: undefined` against a live stream. Only a block that
+ * selects KMS is read: that is the only branch that issues the call.
+ */
+function readEncryptionKeyId(
+  value: Record<string, unknown> | undefined,
+  mask: MaskerFn
+): FollowUpRead {
+  if (!isKmsEncryption(value)) return { kind: 'absent' };
+  const keyId = value?.['KeyId'];
+  if (typeof keyId === 'string' && keyId.trim() !== '') return { kind: 'usable' };
+  return {
+    kind: 'unusable',
+    reason:
+      `AWS::Kinesis::Stream StreamEncryption selects KMS but KeyId is not a non-empty string, ` +
+      `got ${JSON.stringify(maskDeep(keyId, mask)) ?? 'undefined'}`,
+  };
+}
+
+/**
  * The comparison-side read: the UPDATE path needs both sides reduced to the
  * same shape so a state record holding the number and a template holding the
  * numeric string do not read as a change and re-issue the call every deploy.
@@ -316,12 +372,11 @@ export class KinesisStreamProvider implements ResourceProvider {
       generateResourceName(logicalId, { maxLength: 128 });
 
     // PRE-FLIGHT, deliberately ABOVE the try (docs/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards).
-    // Refusing from inside it would throw AFTER `CreateStream` already ran, and
-    // a failed CREATE journals no physical id — so `rollback-executor` skips it
-    // and the stream is orphaned, untracked and unrollbackable. `streamName` is
-    // a deterministic hash, so the retry after the user fixes the template then
-    // collides with `ResourceInUseException` and wedges the stack until someone
-    // deletes the stream by hand. Neither check needs an AWS call.
+    // Refusing from inside it would throw AFTER `CreateStream` already ran,
+    // leaving a stream no state record holds: only `cdkd rollback
+    // --revert-failed` removes it (go-to-k/cdkd#1710's mark in the catch below),
+    // and until then the retry collides on the deterministic `streamName` with
+    // `ResourceInUseException`. None of these checks needs an AWS call.
     const desiredRead = readShardLevelMetrics(properties['DesiredShardLevelMetrics'], mask);
     if (desiredRead.kind === 'unusable') {
       if (context?.replayingState === true) {
@@ -346,6 +401,33 @@ export class KinesisStreamProvider implements ResourceProvider {
       } else {
         throw new ProvisioningError(maxRecordRead.reason, resourceType, logicalId, streamName);
       }
+    }
+    // go-to-k/cdkd#1710: two FOLLOW-UP calls run after `CreateStream` in the
+    // try below — the retention change and `StartStreamEncryption` — so a
+    // malformed value there failed against a stream that already exists.
+    // Refused here for that reason; the checks are pure.
+    //
+    // On a state replay an unusable RETENTION skips its call with a warning (a
+    // guessed retention would land on a live stream; AWS's default is a safe
+    // floor). An unusable KMS block is refused even then: skipping it would
+    // leave the stream UNENCRYPTED while the record says KMS, a silent and
+    // persistent downgrade.
+    const retentionRead = readRetentionHours(properties['RetentionPeriodHours'], mask);
+    if (retentionRead.kind === 'unusable') {
+      if (context?.replayingState !== true) {
+        throw new ProvisioningError(retentionRead.reason, resourceType, logicalId, streamName);
+      }
+      warn(
+        `${retentionRead.reason}. Replaying a state record, so the retention period is left at ` +
+          `AWS's default on ${streamName} rather than refusing the restore`
+      );
+    }
+    const encryptionRead = readEncryptionKeyId(
+      properties['StreamEncryption'] as Record<string, unknown> | undefined,
+      mask
+    );
+    if (encryptionRead.kind === 'unusable') {
+      throw new ProvisioningError(encryptionRead.reason, resourceType, logicalId, streamName);
     }
 
     // Set once CreateStream returns. No failure after it is this stream's name
@@ -407,7 +489,8 @@ export class KinesisStreamProvider implements ResourceProvider {
       }
 
       // Apply RetentionPeriodHours if specified (default is 24 hours)
-      const retentionPeriodHours = properties['RetentionPeriodHours'] as number | undefined;
+      const retentionPeriodHours =
+        retentionRead.kind === 'usable' ? retentionRead.hours : undefined;
       if (retentionPeriodHours !== undefined && retentionPeriodHours !== 24) {
         this.logger.debug(
           `Setting retention period to ${retentionPeriodHours} hours for ${streamName}`
@@ -493,17 +576,21 @@ export class KinesisStreamProvider implements ResourceProvider {
       };
     } catch (error) {
       if (streamCreated) markAuxiliaryFailure(error, logicalId);
-      if (error instanceof ProvisioningError) {
-        throw error;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Kinesis stream ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        streamName,
-        cause
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to create Kinesis stream ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              streamName,
+              error instanceof Error ? error : undefined
+            );
+      // go-to-k/cdkd#1710: the stream exists and no state record will hold it,
+      // so name it for the failed-CREATE journal. Only once CreateStream has
+      // returned: before that, `streamName` may be another owner's stream.
+      if (streamCreated) markCreatedBeforeFailure(thrown, logicalId, resourceType, streamName);
+      throw thrown;
     }
   }
 
@@ -533,6 +620,22 @@ export class KinesisStreamProvider implements ResourceProvider {
     this.logger.debug(`Updating Kinesis stream ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // go-to-k/cdkd#1710: the desired retention is read as create() reads it,
+    // before any call — a non-numeric value would otherwise reach the retention
+    // API mid-update. A state replay keeps the stream's retention instead of
+    // refusing the restore. The PREVIOUS side comes from state: an unusable
+    // one reads as unknown (AWS's default), never refused (issue #1471's rule).
+    const desiredRetention = readRetentionHours(properties['RetentionPeriodHours'], mask);
+    if (desiredRetention.kind === 'unusable' && context?.replayingState !== true) {
+      throw new ProvisioningError(desiredRetention.reason, resourceType, logicalId, physicalId);
+    }
+    if (desiredRetention.kind === 'unusable') {
+      warn(
+        `${desiredRetention.reason}. Replaying a state record, so the retention period of ` +
+          `${physicalId} is left as it is rather than refusing the restore`
+      );
+    }
+    const previousRetention = readRetentionHours(previousProperties['RetentionPeriodHours'], mask);
 
     try {
       const streamModeDetails = properties['StreamModeDetails'] as
@@ -611,11 +714,11 @@ export class KinesisStreamProvider implements ResourceProvider {
       }
 
       // Update RetentionPeriodHours if changed
-      const newRetention = properties['RetentionPeriodHours'] as number | undefined;
-      const oldRetention = previousProperties['RetentionPeriodHours'] as number | undefined;
-      const effectiveNewRetention = newRetention ?? 24;
-      const effectiveOldRetention = oldRetention ?? 24;
-      if (effectiveNewRetention !== effectiveOldRetention) {
+      const effectiveNewRetention =
+        desiredRetention.kind === 'usable' ? (desiredRetention.hours ?? 24) : 24;
+      const effectiveOldRetention =
+        previousRetention.kind === 'usable' ? (previousRetention.hours ?? 24) : 24;
+      if (desiredRetention.kind !== 'unusable' && effectiveNewRetention !== effectiveOldRetention) {
         this.logger.debug(
           `Updating retention period for ${physicalId}: from ${effectiveOldRetention} to ${effectiveNewRetention}`
         );

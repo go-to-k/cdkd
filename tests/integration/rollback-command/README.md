@@ -35,6 +35,14 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
   attempted properties (9999999) → `cdkd rollback --force --revert-failed`
   → Marker back to v1, the failed queue force-reverted to retention 3600,
   journal gone, exit 0.
+- **Phase O (a create that succeeded at AWS and then failed, issue
+  [#1710](https://github.com/go-to-k/cdkd/issues/1710))**: deploy with
+  `INJECT_ORPHAN_CREATE=true` under `--no-rollback` — `OrphanStream`'s
+  `CreateStream` succeeds, then AWS rejects its retention follow-up (9000
+  hours, above the 8760 maximum) → assert the stream exists, state has no
+  record of it, and the journal's failed op carries the stream name with
+  `physicalIdRecoveredFromError: true` → `cdkd rollback --force
+  --revert-failed` → the stream is gone, journal gone, exit 0.
 - **Phase S (a skipped op on the automatic path, issue
   [#3338](https://github.com/go-to-k/cdkd/issues/3338))**: deploy with
   `WITH_SKIP_PAIR=true` (a `SkipBucket` holding one object, no
@@ -59,5 +67,5 @@ the rollback journal records real work. `INJECT_UPDATE_FAIL=true` instead
 flips the always-present `RevertQueue`'s retention to the out-of-range value so
 the failure lands on an UPDATE (the `--revert-failed` target). See
 `lib/rollback-command-stack.ts` for the env-gated resource set
-(`MARKER_VALUE` / `WITH_EXTRA` / `REPLACE_SUFFIX` / `INJECT_FAIL` /
+(`MARKER_VALUE` / `WITH_EXTRA` / `REPLACE_SUFFIX` / `INJECT_FAIL` / `INJECT_ORPHAN_CREATE` /
 `INJECT_UPDATE_FAIL` / `WITH_SKIP_PAIR`).

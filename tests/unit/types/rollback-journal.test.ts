@@ -392,6 +392,26 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     );
   });
 
+  // go-to-k/cdkd#1710: both select a `--revert-failed` delete arm for a
+  // resource no state record holds; a misspelled policy would fall to Delete.
+  it('refuses a planted physicalIdRecoveredFromError or deletionPolicy on a failed op', () => {
+    const failed = { ...op, changeType: 'CREATE', physicalIdRecoveredFromError: true };
+    expect(
+      messageOf(journalWith([], [{ ...failed, physicalIdRecoveredFromError: 'true' }]))
+    ).toContain('physicalIdRecoveredFromError must be a boolean when present (got string).');
+    expect(messageOf(journalWith([], [{ ...failed, deletionPolicy: 'retain' }]))).toContain(
+      'deletionPolicy must be one of Delete, Retain, Snapshot, RetainExceptOnCreate when present (got string).'
+    );
+    expect(
+      messageOf(journalWith([], [{ ...failed, changeType: 'UPDATE' }]))
+    ).toContain('physicalIdRecoveredFromError is only valid on a CREATE (got changeType string).');
+    const parsed = parseRollbackJournal(
+      journalWith([], [{ ...failed, deletionPolicy: 'Retain' }, { ...failed, physicalIdRecoveredFromError: false }]),
+      'S'
+    );
+    expect(parsed.segments[0]!.failedOperations).toHaveLength(2);
+  });
+
   it('TOLERATES what the state boundary tolerates: an absent nested field, and any provisionedBy', () => {
     // `previousState` is forwarded verbatim from the state record, which
     // `parseStateBody` deliberately does not validate (`s3-state-backend.ts`,

@@ -520,6 +520,29 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
     }
   );
 
+  // go-to-k/cdkd#1710: a demoted proven orphan has no state record; its
+  // warning names the physical id, which the attempted bag derived from a secret.
+  it('--revert-failed of a demoted proven orphan: its warning names no role', async () => {
+    const del = vi.fn();
+    const { ctx, lines } = makeCtx({ delete: del });
+    const op = {
+      logicalId: 'R',
+      changeType: 'CREATE',
+      resourceType: ROLE,
+      physicalId: KEPT,
+      provisionedBy: 'sdk',
+      physicalIdRecoveredFromError: false,
+      attemptedProperties: { RoleName: SECRET_EXPR },
+    } as FailedOperation;
+
+    const result = await replayKept(() => replayFailedOperations([op], {}, STACK, ctx));
+
+    expect(del).not.toHaveBeenCalled();
+    expect(result.warnings).toBe(1);
+    expect(lines.some((l) => l.includes('Skipping failed CREATE of R') && l.includes('it created ***'))).toBe(true);
+    for (const line of lines) expect(leaks(line), line).toBe(false);
+  });
+
   it('--revert-failed of a partial CREATE, which resolves nothing: the skipped delete names no role', async () => {
     const del = vi.fn(async () => ({ outcome: 'skipped' as const, reason: 'the handler declined' }));
     const { ctx, lines, events } = makeCtx({ delete: del });

@@ -22,6 +22,8 @@ import {
 } from './retryable-errors.js';
 import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
 import {
+  carryCreatedBeforeFailure,
+  hasCreatedBeforeFailure,
   isAuxiliaryFailure,
   markAuxiliaryFailure,
   RETRY_AUXILIARY_OWNER,
@@ -411,6 +413,12 @@ export async function withRetry<T>(
   // earlier attempt most likely made the resource, seeing through THIS mark
   // (and only this one) to the collision under it.
   let replayMayCollide = false;
+  // go-to-k/cdkd#1710: the previous attempt's error. An attempt whose create
+  // call returned before it failed carries `markCreatedBeforeFailure`; a later
+  // attempt's error (typically the replay colliding with that resource) has
+  // the mark carried onto it, so the error finally thrown still names the
+  // resource the deploy engine must journal.
+  let previousError: unknown;
   const settle = (error: unknown): unknown =>
     replayMayCollide
       ? markReplayMayCollide(markAuxiliaryFailure(error, RETRY_AUXILIARY_OWNER))
@@ -421,6 +429,12 @@ export async function withRetry<T>(
       return await operation();
     } catch (error) {
       lastError = error;
+      // Kept as the mark's source when this error could not take it (a
+      // frozen or primitive throw), so a later attempt's error still can.
+      const carried = carryCreatedBeforeFailure(previousError, error);
+      if (hasCreatedBeforeFailure(carried) || !hasCreatedBeforeFailure(previousError)) {
+        previousError = carried;
+      }
       if (
         isAuxiliaryFailure(error) ||
         hasReplayMayCollide(error) ||

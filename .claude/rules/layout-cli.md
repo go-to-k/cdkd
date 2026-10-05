@@ -123,12 +123,11 @@ Index of every area: [code-layout.md](code-layout.md).
   ([#1183](https://github.com/go-to-k/cdkd/issues/1183)): synth-free revert after
   a failed `--no-rollback` or interrupted deploy. Replays
   `rollback-journal.json` newest-first through `rollback-executor.ts`, saving
-  state after each op and popping each cleanly-replayed segment; when the oldest
-  segment was the first-ever deploy and state ends empty, `state.json` is deleted
-  too. `--revert-failed` opts into replaying the segment's journaled
+  state per op and popping each clean segment; a first-ever deploy's segment
+  emptying state deletes `state.json`. `--revert-failed` replays the journaled
   `failedOperations` BEFORE its completed ops (a failed CREATE is deleted only
-  when a state record matches, and then under its `DeletionPolicy` — `Retain`
-  orphans, `Snapshot` snapshots then deletes unless `--skip-final-snapshot`); it
+  when a state record matches, or as a provider-proven orphan (#1710) no later
+  entry or record owns; then per its `DeletionPolicy`); it
   is off by default because the failed resource's remote state is unknown. Exit
   codes: 0 clean, 2 partial (journal kept, re-run is idempotent), 1 hard error.
   Each segment replays inside `withNestedRevertRun(segment.runId)`, so a nested

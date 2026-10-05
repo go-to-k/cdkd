@@ -4653,6 +4653,7 @@
         "kinesis-stream-mode-switch",
         "log-pipeline",
         "replacement-immutable-name",
+        "rollback-command",
         "sdk-ccapi-crossref",
         "stream-delete-redeploy"
       ],
@@ -4678,6 +4679,9 @@
         "replacement-immutable-name": [
           "l2",
           "literal"
+        ],
+        "rollback-command": [
+          "l1"
         ],
         "sdk-ccapi-crossref": [
           "literal"

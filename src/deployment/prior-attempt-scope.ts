@@ -130,14 +130,19 @@ export function priorAttemptsInJournal(
  * A failed op whose own resource state already records: a CREATE that carries
  * a physical id, or an UPDATE whose physical id is not its previous record's
  * (the replacement was recorded as a new resource). Destroy or a rollback can
- * remove that resource, so its bag is not an unrecorded attempt.
+ * remove that resource, so its bag is not an unrecorded attempt. Except a
+ * CREATE whose id its provider proved after the failure
+ * (`physicalIdRecoveredFromError`, go-to-k/cdkd#1710): no state record holds
+ * that resource, so its bag stays evidence.
  */
 function recordedAsNewResource(op: {
   changeType: string;
   physicalId?: string | undefined;
+  physicalIdRecoveredFromError?: boolean | undefined;
   previousState?: { physicalId?: string } | undefined;
 }): boolean {
   if (typeof op.physicalId !== 'string' || op.physicalId === '') return false;
+  if (op.physicalIdRecoveredFromError === true) return false;
   if (op.changeType === 'CREATE') return true;
   const previous = op.previousState?.physicalId;
   return typeof previous === 'string' && previous !== op.physicalId;
