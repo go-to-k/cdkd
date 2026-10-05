@@ -783,7 +783,7 @@ async function replayFailedOperationsUnbound(
                 ? ' — DeletionPolicy: Snapshot NOT taken (--skip-final-snapshot)'
                 : '')
           );
-          const { provider } = ctx.providerRegistry.getProviderFor({
+          const { provider, provisionedBy: deleteRoutedVia } = ctx.providerRegistry.getProviderFor({
             resourceType: op.resourceType,
             provisionedBy: deleteProvisionedBy,
           });
@@ -833,7 +833,8 @@ async function replayFailedOperationsUnbound(
               ctx,
               stackName,
               resourceType: op.resourceType,
-              provisionedBy: deleteProvisionedBy,
+              // The layer the delete was routed to; a legacy record names none.
+              provisionedBy: deleteRoutedVia,
               mask,
             }
           );

@@ -252,6 +252,45 @@ describe('rollback executor — indeterminate guards on rollback deletes (#2422)
       return record;
     }
 
+    it('rollback-of-a-CREATE', async () => {
+      const del = vi.fn().mockResolvedValue(guarded('phys-B'));
+      const { ctx, events } = makeCtx({ delete: del });
+      const ops: CompletedOperation[] = [
+        {
+          logicalId: 'B',
+          changeType: 'CREATE',
+          resourceType: 'AWS::S3::Bucket',
+          physicalId: 'phys-B',
+        },
+      ];
+      const state: Record<string, ResourceState> = { B: legacy('phys-B') };
+
+      await replayRollback(ops, state, 'S', ctx);
+
+      expect(del).toHaveBeenCalledOnce();
+      expect(guardRows(events)).toEqual([expectedRow('phys-B')]);
+    });
+
+    it('--revert-failed partially-created delete', async () => {
+      const del = vi.fn().mockResolvedValue(guarded('phys-B'));
+      const { ctx, events } = makeCtx({ delete: del });
+      const failed: FailedOperation[] = [
+        {
+          logicalId: 'B',
+          changeType: 'CREATE',
+          resourceType: 'AWS::S3::Bucket',
+          physicalId: 'phys-B',
+          attemptedProperties: {},
+        },
+      ];
+      const state: Record<string, ResourceState> = { B: legacy('phys-B') };
+
+      await replayFailedOperations(failed, state, 'S', ctx, {});
+
+      expect(del).toHaveBeenCalledOnce();
+      expect(guardRows(events)).toEqual([expectedRow('phys-B')]);
+    });
+
     it('reverse-replacement re-adopt', async () => {
       const del = vi.fn().mockResolvedValue(guarded('new-b'));
       const { ctx, events } = makeCtx({ delete: del });
