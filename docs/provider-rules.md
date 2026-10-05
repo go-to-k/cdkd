@@ -1209,8 +1209,10 @@ Where the API has no token and nothing can be deleted safely,
 `CreateDeployment`, `CreateApi` and `CreateIntegration`, EMR's
 `RunJobFlow`, `AddInstanceFleet` and `AddInstanceGroups`, Lambda's
 `PublishLayerVersion` and `CreateEventSourceMapping`, AppSync's
-`CreateApiKey`, DLM's `CreateLifecyclePolicy` and ECS's
-`RegisterTaskDefinition`, whose shared report is `orphan-report.ts`):
+`CreateApiKey`, DLM's `CreateLifecyclePolicy`, ECS's
+`RegisterTaskDefinition`, and EC2's `CreateVpc`, `CreateSubnet`,
+`CreateInternetGateway`, `AllocateAddress` and `CreateSecurityGroup`, whose
+shared report is `orphan-report.ts`):
 
 - **Keep the SDK from replaying a 5xx.** Send the create through a dedicated
   client wrapped by `withoutServerErrorRetries`: the SDK's own retry of a 5xx
@@ -1219,10 +1221,14 @@ Where the API has no token and nothing can be deleted safely,
   failures, clock skew and socket resets, which the engine does not retry.
   A create whose replay COLLIDES instead of duplicating (CodeCommit's
   `CreateRepository`, by name, and its seed `CreateCommit`, refused once the
-  branch exists) needs this client and no lookup: the surfaced 5xx lets
+  branch exists; EC2's `CreateSecurityGroup`, by group name in the VPC)
+  needs this client and no lookup: the surfaced 5xx lets
   `withRetry` mark the collision as possibly this create's own
   ([#3978](https://github.com/go-to-k/cdkd/issues/3978)), so it is never
-  credited to another holder.
+  credited to another holder. The exception is a collision whose error does
+  not name the holder: EC2's `CreateSubnet` collides on its CIDR, but
+  `InvalidSubnet.Conflict` names no subnet id, so it keeps the lookup to
+  tell the user which subnet to inspect.
 - **Look only after an AMBIGUOUS failure.** `AmbiguousCreateLatch.noteFailure`
   arms on `isAmbiguousOutcomeError` thrown by the create call itself, and the
   next attempt `take`s it before creating again. A definite refusal (a 4xx, a
@@ -1250,7 +1256,8 @@ Where the API has no token and nothing can be deleted safely,
   after it, conditional on confirming the candidate is this deploy's orphan: a
   candidate may belong to another deploy. Where there is no window at all
   (no creation date: `GraphqlApi`, an AppSync API key, an API Gateway
-  authorizer, an API Gateway v2 integration) print no delete command.
+  authorizer, an API Gateway v2 integration, an EC2 VPC, subnet, internet
+  gateway or Elastic IP) print no delete command.
 - **A lookup that fails, transiently or not, warns and lets the create
   proceed**: nothing adopts, so a failed lookup has no stake worth failing a
   create over. Say only what was LISTED: list APIs are eventually
