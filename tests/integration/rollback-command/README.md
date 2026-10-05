@@ -42,7 +42,11 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
   hours, above the 8760 maximum) → assert the stream exists, state has no
   record of it, and the journal's failed op carries the stream name with
   `physicalIdRecoveredFromError: true` → `cdkd rollback --force
-  --revert-failed` → the stream is gone, journal gone, exit 0.
+  --revert-failed` → the stream is gone, journal gone, exit 0. Then the default
+  paths ([#4584](https://github.com/go-to-k/cdkd/issues/4584)): the same deploy
+  with the automatic rollback deletes the stream; with `ORPHAN_RETAIN=true`
+  (`DeletionPolicy: Retain`) it keeps it; and after `--no-rollback`, a plain
+  `cdkd rollback --force` deletes it. Each asserts the journal gone.
 - **Phase S (a skipped op on the automatic path, issue
   [#3338](https://github.com/go-to-k/cdkd/issues/3338))**: deploy with
   `WITH_SKIP_PAIR=true` (a `SkipBucket` holding one object, no
@@ -56,7 +60,9 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
 - **Phase 2 (initialDeploy path)**: first-ever failing `--no-rollback` deploy
   of a second stack → `cdkd rollback --force` deletes the created parameter AND
   removes `state.json` entirely.
-- **Phase 3**: destroy stack 1 clean, 0 orphans.
+- **Phase 3**: a `--no-rollback` `INJECT_ORPHAN_CREATE` deploy leaves the
+  stream recorded only in the journal; destroy stack 1 clean, the stream
+  deleted ([#4584](https://github.com/go-to-k/cdkd/issues/4584)), 0 orphans.
 
 ## Failure injection
 

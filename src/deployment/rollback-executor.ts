@@ -139,6 +139,7 @@ export {
   classifyRollbackOp,
   classifyFailedOp,
   demoteSupersededOrphans,
+  isJournaledOrphan,
   planFailedOps,
   planRollback,
   sortRollbackCreates,
@@ -790,8 +791,9 @@ async function replayFailedOperationsUnbound(
             );
           }
           logger.info(
-            `  Rollback: deleting partially-created ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
-              `(--revert-failed)` +
+            // No flag named: a plain rollback, the automatic rollback and a
+            // destroy reach this arm too (go-to-k/cdkd#4584).
+            `  Rollback: deleting partially-created ${safe(op.logicalId)} (${safe(op.resourceType)})` +
               (takeFinalSnapshot ? ' — DeletionPolicy: Snapshot' : '') +
               // Keep the opt-out auditable: without this the line is
               // byte-identical to a plain delete, so nothing records that a
@@ -845,7 +847,7 @@ async function replayFailedOperationsUnbound(
             failedCreateDelete,
             op.logicalId,
             op.physicalId!,
-            'while deleting the partially-created resource (--revert-failed)',
+            'while deleting the partially-created resource',
             {
               ctx,
               stackName,

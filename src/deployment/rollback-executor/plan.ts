@@ -507,6 +507,19 @@ function mayOwn(o: SupersedeCandidate, orphan: FailedOperation, completed: boole
   return o.previousState?.physicalId === orphan.physicalId;
 }
 
+/**
+ * Whether a failed op is a journaled proven failed-CREATE orphan
+ * (go-to-k/cdkd#1710) — still deletable (`physicalIdRecoveredFromError:
+ * true`) or demoted by {@link demoteSupersededOrphans} (`false`). The journal
+ * is the only record of its resource, so every default path acts on it
+ * before dropping the entry (go-to-k/cdkd#4584): the automatic rollback, a
+ * plain `cdkd rollback` and `cdkd destroy` replay it through
+ * {@link classifyFailedOp} exactly as `--revert-failed` does.
+ */
+export function isJournaledOrphan(op: FailedOperation): boolean {
+  return op.changeType === 'CREATE' && typeof op.physicalIdRecoveredFromError === 'boolean';
+}
+
 /** Build the plan items for a segment's failed ops (issue #1198). */
 export function planFailedOps(
   failedOps: FailedOperation[],

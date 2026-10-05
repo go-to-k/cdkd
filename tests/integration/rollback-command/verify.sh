@@ -40,6 +40,14 @@
 #         physicalIdRecoveredFromError=true.
 #     O2. `cdkd rollback --force --revert-failed`: exit 0, the stream is gone,
 #         journal gone.
+#     The default paths (go-to-k/cdkd#4584) — none may drop the journal entry
+#     that is the stream's only record:
+#     O3. The same deploy WITHOUT --no-rollback: the automatic rollback deletes
+#         the stream, and the journal is gone.
+#     O4. The same with ORPHAN_RETAIN=true (DeletionPolicy: Retain): the
+#         automatic rollback keeps the stream in AWS; the fixture deletes it.
+#     O5. --no-rollback again, then a PLAIN `cdkd rollback --force`: exit 0,
+#         the stream is gone, journal gone.
 #   PHASE S (a SKIPPED rollback op on the automatic path, go-to-k/cdkd#3338):
 #     S1. Deploy with WITH_SKIP_PAIR=true (clean): SkipBucket + SkipDoomed.
 #         Put one object into SkipBucket (no autoDeleteObjects).
@@ -60,7 +68,9 @@
 #     5. `cdkd rollback --force`: exit 0. InitMarker GONE and state.json for that
 #        stack REMOVED ENTIRELY (initialDeploy path), journal GONE.
 #   PHASE 3 (destroy clean):
-#     6. Destroy stack 1: clean, state gone, 0 orphans.
+#     6b. Deploy stack 1 with INJECT_ORPHAN_CREATE under --no-rollback: the
+#         stream exists and only the journal records it (go-to-k/cdkd#4584).
+#     6. Destroy stack 1: clean, state gone, the stream deleted, 0 orphans.
 #   Cleanup (EXIT trap) aggressively removes any orphan SSM params / SQS queues /
 #   the Kinesis stream
 #   + the events sidecars for BOTH stacks — this test INTENTIONALLY fails a
@@ -200,6 +210,47 @@ delete_orphan_stream() {
   done
   echo "[verify] ${ORPHAN_STREAM_NAME} not confirmed gone: ${out}" >&2
   return 1
+}
+
+# DeleteStream is asynchronous: the stream sits in DELETING before it is gone.
+# Waits up to ~150s; the caller's assert_gone is the verdict.
+wait_orphan_stream_gone() {
+  local _i
+  for _i in $(seq 1 30); do
+    gone_probe aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" && return 0
+    sleep 5
+  done
+  return 0
+}
+
+# PREMISE for an arm that must delete the stream later: it exists now, state
+# has no record of it, and the newest journal segment carries its proven id.
+assert_orphan_stream_journaled() { # usage: assert_orphan_stream_journaled "<when>"
+  local when="$1" body op status
+  if ! status="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+    --query 'StreamDescriptionSummary.StreamStatus' --output text)"; then
+    echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} does not exist ${when} -- the CREATE failed before CreateStream"
+    exit 1
+  fi
+  if [ "$(state_has_resource "${STATE_KEY}" OrphanStream)" != "false" ]; then
+    echo "[verify] FAIL: state records OrphanStream ${when} (expected no record for a CREATE that threw)"
+    exit 1
+  fi
+  if ! body="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)"; then
+    echo "[verify] FAIL: no rollback journal ${when}"
+    exit 1
+  fi
+  if ! op="$(printf '%s' "${body}" | jq -c '[.segments[-1].failedOperations[]? | select(.logicalId == "OrphanStream")] | first // empty')"; then
+    echo "[verify] FAIL: could not parse the rollback journal ${when}"
+    exit 1
+  fi
+  if [ -z "${op}" ] \
+    || [ "$(printf '%s' "${op}" | jq -r '.physicalId // "<absent>"')" != "${ORPHAN_STREAM_NAME}" ] \
+    || [ "$(printf '%s' "${op}" | jq -r '.physicalIdRecoveredFromError // "<absent>"')" != "true" ]; then
+    echo "[verify] FAIL: the journal does not carry OrphanStream's proven id ${when} (op: ${op:-<none>})"
+    exit 1
+  fi
+  echo "[verify] ${ORPHAN_STREAM_NAME} (${status}) is journaled with its proven id ${when}"
 }
 
 aggressive_cleanup() {
@@ -681,6 +732,111 @@ if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNA
 fi
 echo "[verify] step O2 ok: the orphaned stream was deleted, journal gone"
 
+# go-to-k/cdkd#4584: the default paths. Each arm starts with no stream: O2 (or
+# the arm before it) asserted it gone.
+echo "[verify] step O3: deploy ${STACK} with INJECT_ORPHAN_CREATE, automatic rollback (expect FAILURE, the stream deleted)"
+set +e
+INJECT_ORPHAN_CREATE=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-orphan-auto.log 2>&1
+O3_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-auto.log || true
+if [ "${O3_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_ORPHAN_CREATE deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+# PREMISE: the CREATE reached CreateStream. The rollback's delete line names
+# the stream only when the journaled op carried its proven id.
+if ! grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-auto.log; then
+  echo "[verify] FAIL: the automatic rollback did not delete the partially-created OrphanStream (output above)"
+  echo "         (before go-to-k/cdkd#4584 it left the stream and only printed the --revert-failed command)"
+  exit 1
+fi
+wait_orphan_stream_gone
+assert_gone "OrphanStream ${ORPHAN_STREAM_NAME} still exists after the automatic rollback" \
+  aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the automatic rollback handled the orphan"
+  exit 1
+fi
+if [ "$(state_has_resource "${STATE_KEY}" OrphanStream)" != "false" ]; then
+  echo "[verify] FAIL: state records OrphanStream after the automatic rollback (expected no record)"
+  exit 1
+fi
+echo "[verify] step O3 ok: the automatic rollback deleted the stream, journal gone, no state row"
+
+echo "[verify] step O4: the same with ORPHAN_RETAIN=true (expect FAILURE, the stream KEPT)"
+set +e
+INJECT_ORPHAN_CREATE=true ORPHAN_RETAIN=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-orphan-retain.log 2>&1
+O4_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-retain.log || true
+if [ "${O4_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_ORPHAN_CREATE ORPHAN_RETAIN deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+if ! grep -q 'leaving partially-created OrphanStream' /tmp/rollback-cmd-orphan-retain.log; then
+  echo "[verify] FAIL: the automatic rollback did not report keeping the Retain OrphanStream (output above)"
+  exit 1
+fi
+if ! O4_STATUS="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
+  --query 'StreamDescriptionSummary.StreamStatus' --output text)"; then
+  echo "[verify] FAIL: ${ORPHAN_STREAM_NAME} is gone -- the automatic rollback deleted a DeletionPolicy: Retain resource"
+  exit 1
+fi
+echo "[verify] ${ORPHAN_STREAM_NAME} kept under Retain (status ${O4_STATUS})"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the automatic rollback handled the Retain orphan"
+  exit 1
+fi
+# Retain keeps the stream in AWS, never in state: it was never a state resource.
+if [ "$(state_has_resource "${STATE_KEY}" OrphanStream)" != "false" ]; then
+  echo "[verify] FAIL: state records OrphanStream after the Retain rollback (expected no record)"
+  exit 1
+fi
+if ! delete_orphan_stream; then
+  echo "[verify] FAIL: the retained ${ORPHAN_STREAM_NAME} could not be removed after step O4"
+  exit 1
+fi
+echo "[verify] step O4 ok: the Retain stream was kept (then removed by the fixture), journal gone"
+
+echo "[verify] step O5: deploy with INJECT_ORPHAN_CREATE --no-rollback, then a PLAIN cdkd rollback (the stream deleted)"
+set +e
+INJECT_ORPHAN_CREATE=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-plain.log 2>&1
+O5_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-plain.log || true
+if [ "${O5_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+# PREMISE: --no-rollback deleted nothing, and the journal holds the proven id.
+assert_orphan_stream_journaled "after the --no-rollback deploy of step O5"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-orphan-plain-rb.log 2>&1
+O5_RB_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-plain-rb.log || true
+if [ "${O5_RB_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: the plain rollback of the orphaned create exited ${O5_RB_RC} (output above)"
+  exit 1
+fi
+if ! grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-plain-rb.log; then
+  echo "[verify] FAIL: the plain rollback did not delete the partially-created OrphanStream (output above)"
+  echo "         (before go-to-k/cdkd#4584 it popped the entry and left the stream)"
+  exit 1
+fi
+wait_orphan_stream_gone
+assert_gone "OrphanStream ${ORPHAN_STREAM_NAME} still exists after the plain rollback" \
+  aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the plain rollback"
+  exit 1
+fi
+echo "[verify] step O5 ok: the plain rollback deleted the stream, journal gone"
+
 # ---------------------------------------------------------------------------
 # PHASE S: a SKIPPED rollback op on the automatic path (go-to-k/cdkd#3338)
 # ---------------------------------------------------------------------------
@@ -853,8 +1009,36 @@ echo "[verify] step 6 ok: initialDeploy rollback deleted InitMarker + state.json
 # ---------------------------------------------------------------------------
 # PHASE 3: destroy stack 1 clean
 # ---------------------------------------------------------------------------
-echo "[verify] step 7: cdkd destroy ${STACK} --force"
-${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
+echo "[verify] step 6b: deploy ${STACK} with INJECT_ORPHAN_CREATE --no-rollback (only the journal records the stream)"
+set +e
+INJECT_ORPHAN_CREATE=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-destroy.log 2>&1
+D_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-destroy.log || true
+if [ "${D_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+assert_orphan_stream_journaled "after the --no-rollback deploy of step 6b"
+echo "[verify] step 6b ok: the stream exists and only the journal records it"
+
+echo "[verify] step 7: cdkd destroy ${STACK} --force (go-to-k/cdkd#4584: deletes the journaled stream first)"
+set +e
+${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-destroy.log 2>&1
+DESTROY_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-destroy.log || true
+if [ "${DESTROY_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: destroy exited ${DESTROY_RC} (output above)"
+  exit 1
+fi
+if ! grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-destroy.log; then
+  echo "[verify] FAIL: destroy did not delete the journaled OrphanStream (output above)"
+  echo "         (before go-to-k/cdkd#4584 it swept the journal and left the stream)"
+  exit 1
+fi
+wait_orphan_stream_gone
 
 echo "[verify] step 7a: assert destroy is clean (state gone, 0 orphans)"
 assert_gone "state.json still present after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

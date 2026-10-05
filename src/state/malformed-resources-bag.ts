@@ -1051,7 +1051,12 @@ export function divergentRecordRegionRefusalMessage(
    * The caller's account flags, carried by every command this prints — see
    * {@link malformedDestroyResourcesRefusalMessage} (go-to-k/cdkd#3909).
    */
-  recovery?: LockRecoveryContext
+  recovery?: LockRecoveryContext,
+  /**
+   * The journaled proven failed-CREATE orphans the destroy would delete
+   * (go-to-k/cdkd#4584), named when the record lists no resource.
+   */
+  provenOrphans = 0
 ): string {
   // EXACTNESS, and it is the same gate {@link malformedDestroyResourcesRefusalMessage}
   // carries three functions up, for the reason its note gives: `safeIdentifier`
@@ -1091,7 +1096,10 @@ export function divergentRecordRegionRefusalMessage(
   const lists =
     resourceCount === undefined
       ? 'its resources map cannot be read'
-      : `it still lists ${resourceCount} resource${resourceCount === 1 ? '' : 's'}`;
+      : resourceCount === 0 && provenOrphans > 0
+        ? `its rollback journal holds ${provenOrphans} failed create${provenOrphans === 1 ? '' : 's'} ` +
+          `whose resource the destroy would delete`
+        : `it still lists ${resourceCount} resource${resourceCount === 1 ? '' : 's'}`;
   // The KIND only, never the value — the withholding rule `getState`'s warn
   // takes. `null` / `''` / `0` are reported as divergent too (the read side
   // treats only absent and equal as agreement), and for those the kind IS the
@@ -1165,7 +1173,13 @@ export function refuseDivergentRecordRegionForDestroy(
   keyRegion: string,
   divergentBodyRegion: unknown,
   /** See {@link divergentRecordRegionRefusalMessage}. */
-  recovery?: LockRecoveryContext
+  recovery?: LockRecoveryContext,
+  /**
+   * go-to-k/cdkd#4584: the journaled proven failed-CREATE orphans the destroy
+   * deletes before sweeping the journal. A resource-less record holding one
+   * still reaches AWS, so it is refused too.
+   */
+  provenOrphans = 0
 ): void {
   if (divergentBodyRegion === undefined) return;
   // FAIL CLOSED on a bag this cannot count. On the destroy path
@@ -1179,7 +1193,7 @@ export function refuseDivergentRecordRegionForDestroy(
   const resourceCount = isReadableBag(state.resources)
     ? Object.keys(state.resources).length
     : undefined;
-  if (resourceCount === 0) return;
+  if (resourceCount === 0 && provenOrphans === 0) return;
   // `markNonRetryable` for the reason the sibling refusals carry it: the
   // verdict comes from a PERSISTED record, so no retry can change it.
   throw markNonRetryable(
@@ -1189,7 +1203,8 @@ export function refuseDivergentRecordRegionForDestroy(
         keyRegion,
         divergentBodyRegion,
         resourceCount,
-        recovery
+        recovery,
+        provenOrphans
       ),
       STATE_REGION_DIVERGED
     )

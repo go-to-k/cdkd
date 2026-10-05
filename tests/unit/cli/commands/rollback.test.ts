@@ -4151,3 +4151,106 @@ describe('cdkd rollback --revert-failed: a proven failed-CREATE orphan (go-to-k/
     expect(planLine).not.toContain('alice-secret-role');
   });
 });
+
+/**
+ * go-to-k/cdkd#4584: a plain `cdkd rollback` pops the segment, which is the
+ * proven orphan's only record — so it deletes the orphan first, as
+ * `--revert-failed` does, and leaves every other failed op as-is.
+ */
+describe('cdkd rollback (no --revert-failed): a proven failed-CREATE orphan (go-to-k/cdkd#4584)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const orphanOp = {
+    logicalId: 'O',
+    changeType: 'CREATE',
+    resourceType: 'AWS::Kinesis::Stream',
+    physicalId: 'orphan-stream',
+    provisionedBy: 'sdk',
+    physicalIdRecoveredFromError: true,
+    attemptedProperties: {},
+  };
+  // An ordinary failed UPDATE: still opt-in.
+  const failedUpdate = {
+    logicalId: 'Q',
+    changeType: 'UPDATE',
+    resourceType: 'AWS::SQS::Queue',
+    physicalId: 'q-1',
+    provisionedBy: 'sdk',
+    previousState: { physicalId: 'q-1', resourceType: 'AWS::SQS::Queue', properties: { A: 1 } },
+    attemptedProperties: { A: 2 },
+  };
+
+  function install(failedOperations: unknown[], resources: Record<string, unknown> = {}): FakeBackend {
+    return installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: { version: 8, stackName: 'S', region: 'us-east-1', resources, outputs: {}, lastModified: 1 },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          { timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations },
+        ],
+      }),
+    });
+  }
+
+  it('deletes it, names it in the plan, and pops the segment', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    const backend = install([structuredClone(orphanOp)]);
+    await rollbackCommand('S', baseOpts);
+    expect(replayProvider.delete).toHaveBeenCalledOnce();
+    expect(replayProvider.delete.mock.calls[0]![1]).toBe('orphan-stream');
+    const lines = info.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('[FAILED create, never recorded in state: orphan-stream]'))).toBe(true);
+    expect(lines.some((l) => l.includes('(left as-is) O '))).toBe(false);
+    expect(backend.popRollbackJournalSegment).toHaveBeenCalledOnce();
+  });
+
+  it('keeps it in AWS under a journaled Retain, acted on rather than left', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    const backend = install([{ ...structuredClone(orphanOp), deletionPolicy: 'Retain' }]);
+    await rollbackCommand('S', baseOpts);
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+    expect(
+      info.mock.calls
+        .map((c) => String(c[0]))
+        .some((l) => /leaving partially-created O \(AWS::Kinesis::Stream\) in AWS \(DeletionPolicy: Retain\)/.test(l))
+    ).toBe(true);
+    expect(backend.popRollbackJournalSegment).toHaveBeenCalledOnce();
+  });
+
+  it('leaves the other failed ops as-is, and keeps them when the orphan delete fails', async () => {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    const backend = install([structuredClone(failedUpdate), structuredClone(orphanOp)], {
+      Q: { physicalId: 'q-1', resourceType: 'AWS::SQS::Queue', properties: { A: 2 } },
+    });
+    replayProvider.delete.mockRejectedValueOnce(new Error('AccessDenied'));
+    await rollbackCommand('S', baseOpts).catch(() => undefined);
+    expect(replayProvider.update).not.toHaveBeenCalled();
+    expect(info.mock.calls.map((c) => String(c[0])).some((l) => l.includes('(left as-is) Q '))).toBe(true);
+    // The failed delete keeps the orphan; the update was never replayed, so it
+    // stays too. Nothing is popped.
+    expect(backend.setRollbackJournalFailedOperations).not.toHaveBeenCalled();
+    expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
+  });
+
+  // Stripped before the completed ops replay, so a later failure that keeps
+  // the segment re-runs only the ops still owed.
+  it('strips only the handled orphan from the segment', async () => {
+    const backend = install([structuredClone(failedUpdate), structuredClone(orphanOp)], {
+      Q: { physicalId: 'q-1', resourceType: 'AWS::SQS::Queue', properties: { A: 2 } },
+    });
+    await rollbackCommand('S', baseOpts).catch(() => undefined);
+    expect(replayProvider.delete).toHaveBeenCalledOnce();
+    expect(backend.setRollbackJournalFailedOperations).toHaveBeenCalledOnce();
+    const kept = backend.setRollbackJournalFailedOperations.mock.calls[0]![2] as Array<{ logicalId: string }>;
+    expect(kept.map((op) => op.logicalId)).toEqual(['Q']);
+  });
+});

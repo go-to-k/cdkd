@@ -727,6 +727,10 @@ export async function executeDeployment(
     // The nested rows the automatic rollback actually reverted (issue
     // #3754): only their children's pending segments are settled with it.
     let rollbackSettledNested: SettledNestedRows = new Map();
+    // The failed ops the clean-rollback settle keeps for `--revert-failed`:
+    // all but the proven failed-CREATE orphans the rollback handled
+    // (go-to-k/cdkd#4584).
+    let rollbackRemainingFailedOps: FailedOperation[] = failedOperations;
 
     // On SIGINT, skip rollback — just save partial state, record a rollback
     // journal segment so the interrupted deploy is REVERTIBLE (not just
@@ -801,7 +805,9 @@ export async function executeDeployment(
         completedOperations,
         newResources,
         stackName,
-        currentState
+        currentState,
+        failedOperations,
+        currentState.orphans ?? []
       );
       // go-to-k/cdkd#3338: a SKIPPED op was never reverted, so the segment
       // recording it is kept, as for a failure: settling it would delete the
@@ -844,6 +850,7 @@ export async function executeDeployment(
       // and neither can see `rollbackResult`.
       rollbackOrphans = rollbackResult.orphaned;
       rollbackSettledNested = rollbackResult.settledNested;
+      rollbackRemainingFailedOps = rollbackResult.remainingFailedOps;
     }
 
     // Save state after rollback (reflects rolled-back resource state).
@@ -891,7 +898,11 @@ export async function executeDeployment(
         await this.settleNestedChildrenAfterCleanRollback(
           stackName,
           rollbackSettledNested,
-          await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy)
+          await this.settleJournalAfterCleanRollback(
+            stackName,
+            rollbackRemainingFailedOps,
+            initialDeploy
+          )
         );
       }
     } catch (saveError) {
@@ -936,7 +947,11 @@ export async function executeDeployment(
           await this.settleNestedChildrenAfterCleanRollback(
             stackName,
             rollbackSettledNested,
-            await this.settleJournalAfterCleanRollback(stackName, failedOperations, initialDeploy)
+            await this.settleJournalAfterCleanRollback(
+              stackName,
+              rollbackRemainingFailedOps,
+              initialDeploy
+            )
           );
         }
       } catch (retryError) {

@@ -24,9 +24,13 @@ import {
   type CompletedOperation,
   type FailedOperation,
   type RollbackExecutorContext,
+  demoteSupersededOrphans,
+  isJournaledOrphan,
   producerRegionsFromState,
+  replayFailedOperations,
   replayRollback,
 } from '../rollback-executor.js';
+import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import {
   STATE_SOURCED_READBACK_RULES,
   markSameGenerationBag,
@@ -214,7 +218,18 @@ export async function performRollback(
    * field because `currentState` is a local of `executeDeployment`, whose
    * automatic-rollback arm is this method's only caller.
    */
-  previousState: StackState
+  previousState: StackState,
+  /**
+   * The attempt's failed operations. Only its journaled proven
+   * failed-CREATE orphans are replayed (go-to-k/cdkd#4584): the rest stay
+   * opt-in through `cdkd rollback --revert-failed`.
+   */
+  failedOperations: readonly FailedOperation[] = [],
+  /**
+   * The pre-deploy rollback-orphan records, read by the caller below the
+   * deploy flow's orphans guard: one holding an orphan's id may own it.
+   */
+  priorOrphans: readonly StackOrphanRecord[] = []
 ): Promise<{
   failures: number;
   warnings: number;
@@ -232,20 +247,61 @@ export async function performRollback(
    * replay skipped never reached the provider, so it is not among them.
    */
   settledNested: SettledNestedRows;
+  /**
+   * The failed operations a later `cdkd rollback --revert-failed` still
+   * needs: every one but the proven orphans this rollback handled
+   * (go-to-k/cdkd#4584). The clean-rollback settle records these.
+   */
+  remainingFailedOps: FailedOperation[];
 }> {
+  // go-to-k/cdkd#4584: CloudFormation parity — a CREATE whose provider proved
+  // it made the resource before failing is deleted by the rollback, per its
+  // journaled DeletionPolicy, exactly as `--revert-failed` would. Replayed on
+  // COPIES: the supersede pass below rewrites the flag, and the originals are
+  // what the journal records. Only this attempt's segment can supersede its
+  // own orphans (no newer one exists), so the pass reads the pre-deploy
+  // rollback-orphan records alone (`priorOrphans`).
+  const orphanIndexes: number[] = [];
+  const orphanOps: FailedOperation[] = [];
+  failedOperations.forEach((op, i) => {
+    if (!isJournaledOrphan(op)) return;
+    orphanIndexes.push(i);
+    orphanOps.push({ ...op });
+  });
+  demoteSupersededOrphans(
+    [{ operations: completedOperations, failedOperations: orphanOps }],
+    priorOrphans
+  );
+  const ctx = this.rollbackExecutorContext(previousState, stackName);
+  // go-to-k/cdkd#4225: one record of completed writes across both replays.
+  const inlinePolicyWriters = new RollbackInlinePolicyWriters();
   // Issue #3754: a nested-stack row reverted here replays its child's
   // journal segments for THIS run, which `NestedStackProvider` reads from
   // the scope, and reports back into it.
   const runId = this.options.eventRecorder?.runId;
-  const { result, run } = await withNestedRevertRun(runId, async (scope) => ({
-    result: await replayRollback(
-      completedOperations,
-      stateResources,
-      stackName,
-      this.rollbackExecutorContext(previousState, stackName)
-    ),
-    run: scope,
-  }));
+  const { result, failed, run } = await withNestedRevertRun(runId, async (scope) => {
+    // The failed op is the newest work of the failed deploy, so it goes first
+    // — as in `cdkd rollback`: it may depend on what the completed CREATEs
+    // made, never the reverse.
+    const failedResult =
+      orphanOps.length > 0
+        ? await replayFailedOperations(orphanOps, stateResources, stackName, ctx, {
+            // `replayRollback` emits no envelope over zero ops (a failed-only
+            // attempt), so this replay owns it then.
+            emitEnvelope: completedOperations.length === 0,
+            inlinePolicyWriters,
+          })
+        : undefined;
+    return {
+      failed: failedResult,
+      result: await replayRollback(completedOperations, stateResources, stackName, ctx, {
+        inlinePolicyWriters,
+      }),
+      run: scope,
+    };
+  });
+  const pendingOrphans = new Set(failed?.remainingFailedOps ?? []);
+  const handled = new Set(orphanIndexes.filter((_, k) => !pendingOrphans.has(orphanOps[k]!)));
 
   // `orphaned` is relayed rather than persisted here: this method holds no
   // state save. Its caller merges it into the post-rollback record (issue
@@ -253,13 +309,14 @@ export async function performRollback(
   // live, billing AWS resource untrackable and re-opens the deploy loop the
   // record closes.
   return {
-    failures: result.failures,
+    failures: result.failures + (failed?.failures ?? 0),
     // A child replay's skips surface on its row as a `partial` outcome,
     // which the executor does not count; the scope does.
-    warnings: result.warnings + run.warnings,
-    skipped: result.skipped,
-    orphaned: result.orphaned,
+    warnings: result.warnings + run.warnings + (failed?.warnings ?? 0),
+    skipped: result.skipped + (failed?.skipped ?? 0),
+    orphaned: [...(failed?.orphaned ?? []), ...result.orphaned],
     settledNested: run.settled,
+    remainingFailedOps: failedOperations.filter((_, i) => !handled.has(i)),
   };
 }
 

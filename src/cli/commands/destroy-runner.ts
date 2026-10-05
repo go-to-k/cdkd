@@ -89,6 +89,14 @@ import type { ExportIndexStore } from '../../state/export-index-store.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
 import { destroyStackRecordsView, withStackRecords } from '../../deployment/stack-records-scope.js';
+import {
+  deleteJournaledOrphans,
+  isHandledOrphan,
+  journaledOrphanLines,
+  loadJournaledOrphans,
+  sameJournaledOrphans,
+} from '../../deployment/rollback-executor/journaled-orphans.js';
+import { producerRegionsFromState } from '../../deployment/rollback-executor.js';
 
 /**
  * Execution context passed by the caller (`cdkd destroy` or
@@ -577,12 +585,28 @@ export async function runDestroyForStack(
   // resource still live in the other region. Narrow by construction: divergent
   // AND resource-bearing, so the resource-less recovery destroy this issue's
   // own repro exercises still runs.
+  // go-to-k/cdkd#4584: resources a failed CREATE made that only the rollback
+  // journal records. `deleteState` sweeps the journal, so they are deleted
+  // (per their journaled DeletionPolicy) before it — and a stack holding one
+  // is not empty: the fast path below would sweep it with no confirmation.
+  // Read BELOW the orphans-container guards (it reads `state.orphans`) and
+  // ABOVE the divergent-region refusal, which counts them: they reach AWS.
+  const journaledOrphans = await loadJournaledOrphans(
+    ctx.stateBackend,
+    stackName,
+    regionForState,
+    state.orphans,
+    logger
+  );
   refuseDivergentRecordRegionForDestroy(
     state,
     stackName,
     regionForState,
     ctx.divergentBodyRegion,
-    refusalRecovery
+    refusalRecovery,
+    journaledOrphans.segments
+      .flatMap((g) => g.ops)
+      .filter((op) => op.physicalIdRecoveredFromError === true).length
   );
   const resourceCount = Object.keys(state.resources).length;
   // A stack that still has `DeletionPolicy: Retain` resources standing in AWS
@@ -616,7 +640,7 @@ export async function runDestroyForStack(
   // refused separately just above (go-to-k/cdkd#3161) so the message a user
   // sees names the container that is actually broken.
   refuseMalformedOutputsForDestroy(state, stackName, regionForState, refusalRecovery);
-  if (resourceCount === 0 && orphanCount === 0) {
+  if (resourceCount === 0 && orphanCount === 0 && journaledOrphans.count === 0) {
     // Issue #2171: this used to delete the state record with NO lock at all,
     // sitting well above the acquire further down. A record reads as empty for
     // exactly one interval that is not idle — the start of a concurrent
@@ -699,6 +723,26 @@ export async function runDestroyForStack(
       }
       const recheckResources = recheck ? Object.keys(recheck.state.resources).length : 0;
       const recheckOrphans = recheck ? (recheck.state.orphans ?? []).length : 0;
+      // go-to-k/cdkd#4584: the journal too, under the lock. A deploy that
+      // failed between the first read and this lock may have journaled a
+      // proven orphan, and `deleteState` below sweeps its only record.
+      const recheckJournaled = (
+        await loadJournaledOrphans(
+          ctx.stateBackend,
+          stackName,
+          regionForState,
+          recheck?.state.orphans,
+          // Warned once: silent only when the entry read already warned.
+          journaledOrphans.unreadable === true ? { warn: () => undefined } : logger
+        )
+      ).count;
+      if (recheckJournaled > 0) {
+        throw new Error(
+          `Stack ${displayStackName(stackName)} (${displaySafe(regionForState, { asciiOnly: true })}) was empty when this run started but ` +
+            `its rollback journal now records ${recheckJournaled} resource(s) a failed deploy created — ` +
+            `another cdkd process wrote to it. Re-run the destroy to act on the current state.`
+        );
+      }
       // Same widening as the entry check (issue #2934): a record that gained
       // ONLY orphan entries is still not empty, and deleting it would drop the
       // only trace of live, billing AWS resources.
@@ -869,6 +913,17 @@ export async function runDestroyForStack(
       );
     }
   }
+  // go-to-k/cdkd#4584: part of what the y/N answers, and told to a flagged run
+  // too, for the reason the notice above gives.
+  if (journaledOrphans.count > 0) {
+    logger.info(
+      `\n${journaledOrphans.count} resource(s) were created by a failed deploy and are recorded only ` +
+        `in the rollback journal. Each is deleted first as its DeletionPolicy directs (Retain ` +
+        `keeps it in AWS, Snapshot takes the final snapshot), unless state or a later deploy may ` +
+        `own it, which is warned about instead:`
+    );
+    for (const line of journaledOrphanLines(journaledOrphans, logger)) logger.info(line);
+  }
 
   if (!ctx.skipConfirmation) {
     // Issue #2259: refuse a NON-INTERACTIVE run before the interface exists.
@@ -923,10 +978,16 @@ export async function runDestroyForStack(
       input: process.stdin,
       output: process.stdout,
     });
+    // go-to-k/cdkd#4584: the journaled resources are deleted too, so the
+    // question counts them (a stack holding only those would say "0").
+    const journaledClause =
+      journaledOrphans.count > 0
+        ? ` and ${journaledOrphans.count} recorded only in its rollback journal`
+        : '';
     const prompt = ctx.removeProtection
-      ? `\nAbout to destroy ${resourceCount} resources from stack ${displayStackName(stackName)}, ` +
+      ? `\nAbout to destroy ${resourceCount} resources${journaledClause} from stack ${displayStackName(stackName)}, ` +
         `REMOVING DELETION PROTECTION on ${protectedCount} of them. Continue? (y/N): `
-      : `\nAre you sure you want to destroy stack ${displayStackName(stackName)} and delete all ${resourceCount} resources? (Y/n): `;
+      : `\nAre you sure you want to destroy stack ${displayStackName(stackName)} and delete all ${resourceCount} resources${journaledClause}? (Y/n): `;
     const answer = await rl.question(prompt);
     rl.close();
     const trimmed = answer.trim().toLowerCase();
@@ -1050,6 +1111,9 @@ export async function runDestroyForStack(
   // point must therefore NOT be able to report this stack as interrupted; see
   // the re-sync's own comment for the window that made it possible.
   let statePreserved = false;
+  // go-to-k/cdkd#4584: the share of `errorCount` that is journaled orphans,
+  // whose remedy differs (the summary never offers `cdkd state orphan`).
+  let journaledOrphanFailures = 0;
   const lock = await acquireStackLock({
     ...stackLockBase,
     // Route the notice through the live renderer so it doesn't collide with
@@ -1313,6 +1377,78 @@ export async function runDestroyForStack(
     // outside the `try` would strand the lock and leak the cross-region
     // region/clients — the main `finally` below releases and restores both.
     renderer.start();
+
+    // go-to-k/cdkd#4584: before the stack's own resources, which such a
+    // resource may depend on (it was created after them), and under the lock.
+    // A failure preserves the state, and with it the journal, for a re-run.
+    // Re-read under the lock first: what the prompt listed was read before
+    // it, and a deploy failing in between journals an orphan this run would
+    // otherwise sweep unacted — so a changed SET (not just its size) refuses,
+    // as the fast path's re-check does, rather than act on one nobody
+    // confirmed. What is deleted is the set read under the lock.
+    const journaledUnderLock = await loadJournaledOrphans(
+      ctx.stateBackend,
+      stackName,
+      regionForState,
+      state.orphans,
+      // Warned once: silent only when the entry read already warned.
+      journaledOrphans.unreadable === true ? { warn: () => undefined } : logger
+    );
+    if (journaledUnderLock.unreadable === true && journaledOrphans.unreadable !== true) {
+      throw new Error(
+        `The rollback journal of stack ${displayStackName(stackName)} (${displaySafe(regionForState, { asciiOnly: true })}) ` +
+          `was readable when this run started and cannot be read now (see the warning above). ` +
+          `Nothing was deleted; re-run the destroy once it can be read.`
+      );
+    }
+    if (!sameJournaledOrphans(journaledUnderLock, journaledOrphans)) {
+      throw new Error(
+        `The rollback journal of stack ${displayStackName(stackName)} (${displaySafe(regionForState, { asciiOnly: true })}) ` +
+          `recorded ${journaledOrphans.count} resource(s) a failed deploy created when this run started and ` +
+          `${journaledUnderLock.count} now, not the same ones — another cdkd process wrote to it. ` +
+          `Nothing was deleted; re-run the destroy to act on the current journal.`
+      );
+    }
+    if (journaledUnderLock.count > 0) {
+      const orphanOutcome = await deleteJournaledOrphans(
+        journaledUnderLock,
+        { ...state.resources },
+        stackName,
+        {
+          providerRegistry: destroyProviderRegistry,
+          region: regionForState,
+          logger,
+          ...(ctx.eventRecorder !== undefined && {
+            recordEvent: (event) => ctx.eventRecorder!.record(event),
+          }),
+          finalSnapshotClients: destroyAwsClients ?? ctx.baseAwsClients,
+          skipFinalSnapshot: ctx.skipFinalSnapshot === true,
+          importedProducerRegions: producerRegionsFromState(state),
+          // A nested child's own record lacks the regions its parent reads.
+          ...(state.parentStack !== undefined && { producerRegionsIncomplete: true }),
+        },
+        { isInterrupted: () => lock.interrupted }
+      );
+      result.errorCount += orphanOutcome.failures;
+      journaledOrphanFailures = orphanOutcome.failures;
+      // Mirror `cdkd rollback`'s per-op strip: a later failure keeps the
+      // journal for a re-run, which must not re-send a settled delete.
+      // Best-effort: a failed strip only makes that re-run repeat it, which
+      // reads not-found as done.
+      if (orphanOutcome.handled.length > 0) {
+        try {
+          await ctx.stateBackend.dropRollbackJournalFailedOperations(
+            stackName,
+            regionForState,
+            (op, segment) => isHandledOrphan(orphanOutcome.handled, segment, op)
+          );
+        } catch (stripError) {
+          logger.warn(
+            safeMsg`Failed to strip the deleted journal entries (a re-run repeats their deletes): ${describeAwsFailure(stripError).detail}`
+          );
+        }
+      }
+    }
 
     logger.info('Building dependency graph...');
 
@@ -2009,7 +2145,13 @@ export async function runDestroyForStack(
           `Destroy interrupted — ${Object.keys(remainingResources).length} resource(s) not deleted. State preserved.`
         );
       } else if (result.errorCount > 0) {
-        logger.warn(`${result.errorCount} resource(s) failed to delete. State preserved.`);
+        logger.warn(
+          `${result.errorCount} resource(s) failed to delete` +
+            (journaledOrphanFailures > 0
+              ? ` (${journaledOrphanFailures} of them recorded only in the rollback journal)`
+              : '') +
+            `. State preserved.`
+        );
       } else {
         logger.warn(
           `${result.skippedCount} resource(s) skipped — cdkd did not confirm they were deleted, ` +
@@ -2114,7 +2256,12 @@ export async function runDestroyForStack(
       // skip arm. The `stackName` fallback keeps the hint non-empty if a future
       // path ever increments `errorCount` without recording a target.
       const failedTargets = failedStateTargets.size > 0 ? [...failedStateTargets] : [stackName];
-      const orphanHint = hintFor('cdkd state orphan', failedTargets, 'Drop the record with');
+      // go-to-k/cdkd#4584: never while a journaled resource failed — dropping
+      // the record deletes the journal, that resource's only record.
+      const orphanHint =
+        journaledOrphanFailures > 0
+          ? ''
+          : hintFor('cdkd state orphan', failedTargets, 'Drop the record with');
       // Issue #1777: a run can carry BOTH kinds at once, and this arm owns that
       // case (the skip-only arm above is unreachable once errorCount > 0). The
       // counters already print `, N skipped`, so saying nothing about them here
@@ -2133,9 +2280,16 @@ export async function runDestroyForStack(
       // No length guard: `hintFor` maps over the targets, so an empty set
       // yields an empty string without reaching the builder. A conditional here
       // is a branch whose two sides produce identical output.
+      // go-to-k/cdkd#4584: dropping THIS stack's record deletes its journal,
+      // the only record of a journaled resource whose delete failed — so its
+      // own target is never offered while one did (a nested child's is).
+      const droppableSkipped =
+        journaledOrphanFailures > 0
+          ? skippedTargets.filter((t) => t !== stackName)
+          : skippedTargets;
       const skippedCommands =
         hintFor('cdkd state show', skippedTargets, 'Inspect it with') +
-        hintFor('cdkd state orphan', skippedTargets, 'Drop the record with');
+        hintFor('cdkd state orphan', droppableSkipped, 'Drop the record with');
       // ACROSS the two calls as well as within each: a stack with one FAILED
       // and one SKIPPED resource puts the same state target in both sets, and
       // `hintFor` cannot see the other call's output (m6 of the
@@ -2145,8 +2299,12 @@ export async function runDestroyForStack(
       logger.warn(
         `\n${yellow('⚠')} ${bold(`Stack ${plainOrDescribed(stackName, 'stack name')} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${red(result.errorCount)} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up. ` +
-          `If the same resource keeps failing, dropping the state record is the last resort: ` +
-          `it removes the record without deleting AWS resources.` +
+          (journaledOrphanFailures > 0
+            ? `${journaledOrphanFailures} of the failures are resources a failed deploy created that ` +
+              `only the rollback journal records: re-run the destroy to retry them. Do not drop ` +
+              `this stack's state record — that also deletes the journal, their only record.`
+            : `If the same resource keeps failing, dropping the state record is the last resort: ` +
+              `it removes the record without deleting AWS resources.`) +
           skippedClause +
           hintHolesClause([...failedTargets, ...skippedTargets]) +
           dedupedCommands(orphanHint + skippedCommands)

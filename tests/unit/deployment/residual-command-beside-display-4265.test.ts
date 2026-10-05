@@ -110,7 +110,7 @@ describe('the delete-skip sentence shows only plain values (go-to-k/cdkd#4265)',
   const clauses = [
     'during the --replace delete-first fallback',
     'during --recreate-via-cc-api',
-    'while deleting the partially-created resource (--revert-failed)',
+    'while deleting the partially-created resource',
   ];
   const suffix = ". Its cdkd state record was KEPT, so the next 'cdkd deploy' re-attempts the delete.";
 
@@ -250,7 +250,7 @@ describe('the delete-skip sentence shows only plain values (go-to-k/cdkd#4265)',
       await replayFailedOperations(failed, state, 'S', ctx);
       expect(del).toHaveBeenCalled();
       const line = lines.find((l) => l.includes('did not confirm'));
-      expect(line, payload).toContain('(--revert-failed), so it may still exist: a reason that cannot be shown');
+      expect(line, payload).toContain('partially-created resource, so it may still exist: a reason that cannot be shown');
       withPasteDir((dir) => expectDescribedAndInert(line!, payload, dir));
     }
   }, 120_000);
