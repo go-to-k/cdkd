@@ -46,9 +46,10 @@ verify, clean up.
    so the deploy attempts CREATE and collides. **Pick the region
    first**: `us-east-1`, unless the fixture's `verify.sh` header names a
    constraint; its last ledger note shows a region that passed. In a parallel
-   set, each fixture whose header has a `SAFETY NOTE` (#4063) gets its OWN
-   region, probed for what that header needs absent or present, passed via
-   `AWS_REGION` or the header's region variable. Every
+   set, each fixture whose header has a `SAFETY NOTE` (bootstrap-marker or
+   asset-storage ownership, #4063) gets its OWN region, probed for what that
+   header needs absent or present, passed via `AWS_REGION` or the header's
+   region variable. Every
    resource-scan `--region`, `AWS_REGION` and synth/deploy/destroy `--region`
    in steps 4-7 then uses that region. Synth first (for the stack name and
    resource types), then scan:
