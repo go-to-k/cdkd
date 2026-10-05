@@ -137,33 +137,44 @@ so the table is indexed by what that leaf holds, not by which command ran:
 | `DB_URL` (SecureString inside text) | the expression | expression |
 | `DB_PORT_LITERAL` (a TWO-character secret inside literal text, issue [#2516](https://github.com/go-to-k/cdkd/issues/2516)) | the expression — written only on a bag the engine marked as this pass's own, since the value scan makes no claim below its four-character needle floor | expression, in `properties`, in the readback AND in the `PortLiteral` output |
 | `PUBLIC_URL` (public `String` inside text) | the resolved value (issue [#1901](https://github.com/go-to-k/cdkd/issues/1901)) | resolved — the mixed-leaf arm is never consulted |
-| `PUBLIC_URL`, with the expression STAMPED into `properties` (Phase 1f3) | the expression | expression (the OPEN over-redaction, issue [#2036](https://github.com/go-to-k/cdkd/issues/2036)) |
+| `PUBLIC_URL`, with the expression STAMPED into `properties` (Phase 1f3) | the expression | resolved — `GetParameter` (no decryption) proves the parameter public (issue [#2036](https://github.com/go-to-k/cdkd/issues/2036)) |
+| `PublicMixedParam.Value`, expression STAMPED, stale baseline, `drift --accept` (Phase 1f4 run A) | the expression | resolved — the drift pass's own resolution proves it public on an EMPTY map (#2036) |
+| the same, with the live value moved out of band first (Phase 1f4 run B) | the expression | expression — the proof vouches only for the parameter's current value |
 
-The last two rows are the same leaf, and the pair is the correction this fixture
-had to make: a public ssm `String` is persisted RESOLVED by construction, so on
+The two `PUBLIC_URL` rows are the same leaf, and the pair is the correction this
+fixture had to make: a public ssm `String` is persisted RESOLVED by construction, so on
 every path reachable from a template-declared leaf the source carries no
 reference at all and there is nothing to refuse. An earlier revision asserted
 the residual on Phase 1f and on Phase 1g's CONTROL 3, and neither could hold —
 the first failed on fixed code AND on `main`, the second passed identically on
 `main` (zero discrimination). Reaching the residual needs a source that CARRIES
-the expression, which in the wild only `cdkd import`'s warn path produces, so
-**Phase 1f3** stamps that shape deliberately and asserts it there.
+the expression, which in the wild only a LEGACY record holds (an import warn-path
+record written before #2944 made a current import refuse its baseline, an older
+binary's write, or a hand edit), so **Phase 1f3** stamps exactly that legacy
+shape and asserts the #2036 answer there.
 
-**Which arm of Phase 1f3 actually discriminates**, stated because the arms it
-replaced did not: the residual assertion is a PIN — `main` refuses that leaf too,
-and so does this branch, since issue
-[#2036](https://github.com/go-to-k/cdkd/issues/2036) is still OPEN. What earns
-the phase its runtime is the BLAST-RADIUS assertion beside it: on `main`
-`SSM_VALUE` stays `cdkd-known-ssm-value`, and only a tree that derives needles
-rewrites it onto its own parameter's expression.
+**Both #2036 phases discriminate.** On a tree without the per-record proof,
+Phase 1f3's `PUBLIC_URL` takes the expression, and `SSM_VALUE` takes it too:
+the refused leaf taught the value scan a needle from the public value. Phase
+1f3 asserts the resolved value for both. Its sentinels on the observed side
+stop a refresh that wrote nothing from passing. `DB_URL`, a SecureString mixed
+leaf in the same run, is the negative control: it must keep its expression.
+Phase 1f4 runs `cdkd drift --accept` on `PublicMixedParam`, an SSM parameter
+whose only reference is the public one. The consumer Lambda cannot host this
+arm: its per-resource map is never empty, and a populated map never
+over-redacted. In run A, AWS holds the deployed value. Without the proof,
+`--accept` writes the expression back and warns that the change "was NOT
+recorded". Run B moves the live value first and must keep the expression. A
+proof admits a leaf only when AWS holds exactly the source with the
+parameter's CURRENT value in place, so a type read today never vouches for a
+value resolved earlier or in another region.
 
-`#2036` is NOT closed here. A store of PROVEN-public verdicts would admit the
-resolved value at that leaf, and PR #2415 drafted one and withdrew it: keyed on
-the bare expression and living for the whole process, it un-redacts a same-named
-`SecureString` in another region on a `cdkd deploy --all`. A revival has to key
-the verdict by SCOPE (region + account) at the read side; the end-to-end arm for
-it is tracked as issue
-[#2425](https://github.com/go-to-k/cdkd/issues/2425).
+The proof is filed per record and never for the whole process. PR #2415's bare
+store was withdrawn because it un-redacted a same-named `SecureString` in
+another region. A reference that may belong to another region is not looked up
+and keeps the expression. `--revert` is pinned by unit tests only: its
+redaction runs over a narrowing delta, and no provider here reports one for an
+unchanged mixed leaf.
 
 Phase 1f2 covers issue [#2012](https://github.com/go-to-k/cdkd/issues/2012)'s
 last residual row: it deletes `SSM_SECURE_COPY` from the record's persisted
@@ -171,10 +182,8 @@ last residual row: it deletes `SSM_SECURE_COPY` from the record's persisted
 the observed bag, and refreshes. The key now has no position source at all, so
 only a needle DERIVED from the certified sibling can redact it; the phase
 restores `properties` afterwards so the later phases start where Phase 1f left
-them. Phase 1f3 keeps its own record for the same reason in reverse: once
-`PUBLIC_URL`'s source carries a reference, the needle learned from it also
-rewrites `SSM_VALUE` (the same parameter, same resolved value), which would
-destroy Phase 1f2's "not dragged along" control.
+them. Phase 1f3 keeps its own record: it stamps the observed side of
+`SSM_VALUE`, which would destroy Phase 1f2's "not dragged along" control.
 
 **Security:** secret-derived values are never printed; assertions mask them
 (`xx***(len=N)`). Only PASS/FAIL plus a masked snippet appears in the log.

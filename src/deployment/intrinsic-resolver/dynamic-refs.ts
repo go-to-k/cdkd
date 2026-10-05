@@ -17,7 +17,11 @@ import {
   withoutProducerRegions,
 } from './support.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
-import { isScopedSecretVerdict } from '../secret-redaction/mask-only.js';
+import {
+  contradictProvenPublicExpression,
+  isScopedSecretVerdict,
+  recordProvenPublicExpression,
+} from '../secret-redaction/mask-only.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import {
   type DynamicReferenceSubstitution,
@@ -460,6 +464,12 @@ export async function resolveDynamicReferencesWithLogTwin(
           // fresh-resolution seam below.
           recordResolvedPair(recorded, fullMatch, cached.value);
         }
+        // The PUBLIC proof travels with the entry too (issue #2036), for the
+        // same reason the secret pair does: a later pass's bag must not lose
+        // it to the cache. See the fresh-lookup arm's twin note.
+        if (service === 'ssm' && !cached.secret && recorded && !this.producerRegionGuest) {
+          recordProvenPublicExpression(recorded, fullMatch, cached.value);
+        }
         // Replacer FUNCTION, not a string: `String.replace` interprets `$&`,
         // "$`", `$'` and `$1` inside a replacement STRING, so a resolved value
         // containing any of them would be corrupted on its way to AWS — and
@@ -518,7 +528,9 @@ export async function resolveDynamicReferencesWithLogTwin(
         // definitive `SecureString` is memoized: an unclassifiable type is
         // treated as secret for THIS resolution but deliberately not pinned,
         // so the next pass re-asks instead of inheriting a transient answer.
+        const proofBag = context?.recordedSecretValues;
         if (param.type === 'SecureString') {
+          if (proofBag) contradictProvenPublicExpression(proofBag, fullMatch);
           if (decrypt) pinSecureVerdict = true;
           // The comparison path resolves nothing, so it cannot refuse; it
           // still must not pin a token the deploy path would refuse.
@@ -530,9 +542,21 @@ export async function resolveDynamicReferencesWithLogTwin(
           }
         } else if (!param.secure) {
           this.pinSecretVerdict(fullMatch, false, verdictScope);
+          // ...and a PER-BAG proof (issue #2036), read by the empty-map arm of
+          // `mixedLeafMayCarryPublicReference`. Filed under THIS pass's bag, not
+          // under the bare expression: the bag is one record's pass in this
+          // resolver's region, so another region's same-named `SecureString`
+          // cannot read it (the hazard PR #2415 withdrew a bare store for). A
+          // producer-region GUEST files none, for the reason `pinSecretVerdict`
+          // suppresses its write: its answer is another region's. The VALUE is
+          // filed too: the reader admits a readback only when it equals it.
+          if (proofBag && !this.producerRegionGuest) {
+            recordProvenPublicExpression(proofBag, fullMatch, param.value);
+          }
         } else {
           // Secret, but from a `Type` too anomalous to memoize — so the VALUE is
           // not memoized either. See `cacheable`'s doc above.
+          if (proofBag) contradictProvenPublicExpression(proofBag, fullMatch);
           cacheable = false;
         }
         isSecret = param.secure;

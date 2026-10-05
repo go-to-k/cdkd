@@ -264,12 +264,11 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         //
         // With an empty secrets map the pass cannot tell a public parameter
         // from a `SecureString` by spelling, so it used to substitute the
-        // expression here and give the drift baseline a value AWS does not
-        // hold. Phase 1g asserts the resolved value survives on the DEPLOY
-        // path, where the resolver has classified the parameter through a real
-        // `GetParameter`; Phase 1f asserts the refusal still stands on `cdkd
-        // state refresh-observed`, which resolves nothing and therefore has no
-        // verdict to consult.
+        // expression here whenever the record's `properties` carried it (the
+        // LEGACY import warn-path shape) and give the drift baseline a value AWS
+        // does not hold. Phase 1f3 stamps that shape and asserts `cdkd state
+        // refresh-observed` now keeps the resolved value, after a no-decryption
+        // `GetParameter` proves the parameter public (issue #2036).
         PUBLIC_URL: `https://{{resolve:ssm:${paramName}}}.${cdk.Aws.REGION}.example.internal`,
         // Rollback-probe-only extra (forces a Lambda UPDATE this phase; the
         // rollback removes it). NOT gated as a mode-gated CREATE — the env var
@@ -298,6 +297,22 @@ export class SecretsDynamicRefStack extends cdk.Stack {
     // already-created secret + param, so the consumer depends on both.
     fn.node.addDependency(secret);
     fn.node.addDependency(param);
+
+    // --- A resource whose ONLY reference is a PUBLIC ssm one, inside text --
+    // Issue #2036's drift arm (verify.sh Phase 1f4). `cdkd drift` resolves a
+    // record's references into a PER-RESOURCE map, which the Lambda above can
+    // never leave empty (it carries secret references), and on a POPULATED map
+    // a public mixed leaf was never over-redacted. This parameter carries no
+    // secret reference, so its map stays empty and the per-bag public proof is
+    // the only thing that can keep its value. `cdk.Aws.REGION` forces the
+    // `Fn::Join` (a mixed leaf), exactly as PUBLIC_URL above. Not mode-gated:
+    // it exists from Phase 1 to destroy.
+    const publicMixed = new ssm.StringParameter(this, 'PublicMixedParam', {
+      parameterName: `${paramName}-mixed`,
+      simpleName: true,
+      stringValue: `cfg-{{resolve:ssm:${paramName}}}-${cdk.Aws.REGION}`,
+    });
+    publicMixed.node.addDependency(param);
 
     new cdk.CfnOutput(this, 'FunctionName', { value: fn.functionName });
     new cdk.CfnOutput(this, 'SecretName', { value: secretName });

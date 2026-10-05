@@ -20,6 +20,7 @@ import {
   carriesSecretMask,
   isKnownSecretExpression,
   isRecordedSecretExpression,
+  provenPublicValue,
 } from './mask-only.js';
 
 /**
@@ -647,64 +648,108 @@ export function dynamicReferenceSpans(value: string): Array<{ start: number; end
  * memo RETRACTED. Absence from the store is then real evidence of a public
  * parameter, and the resolved value is kept.
  *
- * WITHOUT one, absence means only that the question was never asked HERE. It
- * does not mean nothing was resolved: the deploy path resolves every template
- * property with `skipDynamicReferences`, which records or retracts the
- * `SecureString` verdict even for an UNCHANGED resource -- that bag simply is
- * not the one this call receives. The leaf is treated as
- * secret-bearing and refused. That is not merely the cautious branch, it is the
- * SAME premise the whole-token arm one level up already acts on: a PUBLIC
- * `String` / `StringList` reference is persisted RESOLVED (issue #1901), so a
+ * WITHOUT one, absence means only that the question was never asked HERE, so
+ * the leaf is treated as secret-bearing and refused unless the BAG carries a
+ * POSITIVE proof for every token in it (issue
+ * [#2036](https://github.com/go-to-k/cdkd/issues/2036), see
+ * {@link mixedLeafProvenPublic}). Refusal is the default because of the SAME
+ * premise the whole-token arm one level up acts on: a PUBLIC `String` /
+ * `StringList` reference is persisted RESOLVED (issue #1901), so a
  * `{{resolve:ssm:` token that SURVIVES in a persisted state bag is a
- * SecureString by construction. An earlier revision applied a stricter rule to
- * a MIXED leaf than to a whole token on the identical source, and that
- * inconsistency is what persisted a decrypted secret.
+ * SecureString by construction unless something proves otherwise. An earlier
+ * revision applied a stricter rule to a MIXED leaf than to a whole token on the
+ * identical source, and that inconsistency is what persisted a decrypted
+ * secret.
  *
- * NOT CLOSED here. Issue
- * [#2036](https://github.com/go-to-k/cdkd/issues/2036) tracks the price this
- * refusal pays: a genuinely PUBLIC ssm mixed leaf is OVER-redacted on the
- * empty-map paths, so the baseline no longer matches AWS. Giving the empty-map
- * path POSITIVE evidence (a store of PROVEN-public verdicts, which the
- * resolver's own `pinSecretVerdict` retraction already computes) was drafted in
- * PR #2415 and WITHDRAWN there: such a store is keyed on the bare expression
- * and lives for the whole process, so on a `cdkd deploy --all` spanning regions
- * a verdict recorded where the parameter is a plain `String` un-redacts a
- * SecureString of the same name in another region — measured, and the
- * un-redacting direction, which is worse than the over-redaction it fixes. Any
- * revival must key the verdict by SCOPE (region + account) at the READ side.
+ * The proof is per BAG, never per bare expression. PR #2415 drafted a
+ * process-wide store of PROVEN-public verdicts and WITHDREW it: on a `cdkd
+ * deploy --all` spanning regions a verdict recorded where the parameter is a
+ * plain `String` un-redacted a SecureString of the same name in another region.
+ * A bag's proofs are written only by lookups made for that bag's own record —
+ * `cdkd drift`'s resolver pass over the record (region-routed by
+ * `classifyReplaySecretRegion`), or `PublicSsmProver.proofBagFor` on `cdkd
+ * state refresh-observed`, which asks `GetParameter` without decryption in the
+ * record's own region. Both serve LEGACY records only: a current `cdkd import`
+ * refuses (`observedBaselineRefused`, #2944) the baseline of the warn-path
+ * record that carries a public expression, and every one of these commands
+ * skips a refused record. A proof admits a leaf only when the
+ * readback equals the source with each token replaced by the PROVEN value, so a
+ * type read today cannot vouch for a value resolved at an earlier deploy or in
+ * another region. The deploy path's UNCHANGED-resource
+ * persist hands this call a fresh map with no proofs, so it still refuses
+ * there; a properties-borne public expression makes that resource read as
+ * CHANGED anyway (issue #2425), which is why that site was left alone.
  *
- * The residual is therefore the whole population an empty map describes, which
- * is the state issue #2036 records. Refusing is still the right way to be wrong
- * here: under-redaction persists a decrypted secret, a disclosure and the thing
- * this lane exists to prevent, while over-redaction is visible, recoverable and
+ * Refusing is still the right way to be wrong wherever no proof exists:
+ * under-redaction persists a decrypted secret, a disclosure and the thing this
+ * lane exists to prevent, while over-redaction is visible, recoverable and
  * discloses nothing.
  *
  * `tests/integration/secrets-dynamic-ref` is the end-to-end proof, and it is
  * the only place the empty-map defect surfaced — every unit assertion passed.
- * Three of its phases pin a DIFFERENT map state for the same two leaves, which
- * is what makes the split observable rather than asserted: Phase 1 is the
- * populated-map deploy (the resource is being created), Phase 1g the EMPTY-map
- * deploy (the resource is UNCHANGED, so it has no per-resource map but the
- * resolver has still classified the parameter this run), and Phase 1f the
- * empty-map command, which classifies nothing and therefore still refuses. An
- * earlier revision of this sentence called Phase 1g the populated-map case,
- * which is the opposite of what that phase is built to reach.
+ * A public mixed leaf reaches this predicate only when the position source
+ * CARRIES its expression, which a deploy never leaves behind (issue #1901), so
+ * its phases STAMP that LEGACY shape (a pre-#2944 import warn-path record):
+ * Phase 1f3 on `cdkd state refresh-observed`, where the public leaf keeps its
+ * resolved value and the SecureString mixed leaf beside it is still refused,
+ * and Phase 1f4 on `cdkd drift --accept`, which records a public leaf whose
+ * value matches its proof and refuses one AWS holds a different value for.
  */
 export function mixedLeafMayCarryPublicReference(
   source: string,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  readback: string
 ): boolean {
-  // NO MAP, NO EVIDENCE — so this cannot answer, and it must not pretend to.
+  // NO MAP: ABSENCE IS NOT EVIDENCE, so only a POSITIVE proof answers here.
   // `isRecordedSecretExpression` only ever says "yes" about a token some pass
   // RESOLVED, and the empty-map paths resolve nothing by construction (issue
   // #1926's own design decision). Reading absence as "public" there turned
   // every `{{resolve:ssm:` mixed leaf into a public one and persisted the
   // DECRYPTED SecureString — measured by the `secrets-dynamic-ref` integ, which
   // is the only place it showed: every unit assertion passed.
-  if (secrets.size === 0) return false;
+  if (secrets.size === 0) return mixedLeafProvenPublic(source, secrets, readback);
   return dynamicReferenceTokens(source).some(
     (token) => token.startsWith('{{resolve:ssm:') && !isRecordedSecretExpression(token)
   );
+}
+
+/**
+ * The EMPTY-map answer (issue
+ * [#2036](https://github.com/go-to-k/cdkd/issues/2036)): keep the readback
+ * only when EVERY reference in the leaf is a plain `ssm` token this bag holds a
+ * PROOF for ({@link provenPublicValue}), AND the readback is EXACTLY the source
+ * with each token replaced by its proven public value.
+ *
+ * EVERY, not the populated arm's SOME: with no map the value scan has no needle
+ * for a secret sitting beside the public token, so one unproven,
+ * `secretsmanager`, `ssm-secure` or unknown-service token keeps the whole leaf
+ * refused.
+ *
+ * EQUALITY, not the type alone: the type is read NOW and the readback holds what
+ * the last deploy resolved, so a parameter retyped since (or a public namesake
+ * in the wrong region) would otherwise vouch for a secret's plaintext. Equality
+ * means every character of the leaf is either text the record's own source
+ * spells or a value a public parameter holds today. A changed readback (a
+ * console edit, a rotated value) therefore keeps the expression: over-redaction,
+ * the direction this module may be wrong in.
+ */
+function mixedLeafProvenPublic(
+  source: string,
+  secrets: RecordedSecretValues,
+  readback: string
+): boolean {
+  const tokens = dynamicReferenceTokens(source);
+  if (tokens.length === 0) return false;
+  const values = new Map<string, string>();
+  for (const token of tokens) {
+    if (!token.startsWith('{{resolve:ssm:')) return false;
+    const value = provenPublicValue(secrets, token);
+    if (value === undefined) return false;
+    values.set(token, value);
+  }
+  DYNAMIC_REFERENCE_TOKEN_SCAN.lastIndex = 0;
+  const expected = source.replace(DYNAMIC_REFERENCE_TOKEN_SCAN, (token) => values.get(token)!);
+  return expected === readback;
 }
 
 /**

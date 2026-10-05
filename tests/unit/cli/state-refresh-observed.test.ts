@@ -134,6 +134,45 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   }),
 }));
 
+// Issue #2036: the per-stack `PublicSsmProver` the command builds. Faked so
+// this file can pin the WIRING — which region and producer-region evidence it is
+// built with, which bag it is asked about, and that the bag it returns is the
+// one the redaction reads. The prover's own lookup (no-decryption
+// `GetParameter`, region, error handling) runs unmocked in
+// `tests/unit/deployment/public-ssm-proof.test.ts` and
+// `tests/unit/cli/import-public-ssm-proof.test.ts`.
+const publicSsmProof = vi.hoisted(() => ({
+  proven: new Map<string, string>(),
+  built: [] as Array<{
+    region: string;
+    loadEvidence: () => Promise<{ regions: readonly string[]; complete: boolean }>;
+  }>,
+  askedAbout: [] as unknown[],
+}));
+vi.mock('../../../src/deployment/public-ssm-proof.js', async () => {
+  const { recordProvenPublicExpression } = await import(
+    '../../../src/deployment/secret-redaction/mask-only.js'
+  );
+  return {
+    PublicSsmProver: class {
+      constructor(
+        region: string,
+        loadEvidence: () => Promise<{ regions: readonly string[]; complete: boolean }>
+      ) {
+        publicSsmProof.built.push({ region, loadEvidence });
+      }
+      async proofBagFor(source: unknown): Promise<Map<string, string>> {
+        publicSsmProof.askedAbout.push(source);
+        const bag = new Map<string, string>();
+        for (const [token, value] of publicSsmProof.proven) {
+          recordProvenPublicExpression(bag, token, value);
+        }
+        return bag;
+      }
+    },
+  };
+});
+
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
   loadProviderClasses: vi.fn(async () => ({})),
   registerAllProviders: vi.fn(),
@@ -1145,6 +1184,117 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
         { Key: 'env', Value: 'prod' },
         { Key: 'aws:cloudformation:stack-name', Value: 'added-by-aws' },
       ],
+    });
+  });
+
+  describe('a PUBLIC ssm mixed leaf (issue #2036)', () => {
+    const PUBLIC = '{{resolve:ssm:/app/public-host}}';
+    const MIXED = `https://${PUBLIC}/health`;
+    const RESOLVED = 'https://db.public.internal/health';
+
+    beforeEach(() => {
+      publicSsmProof.proven.clear();
+      publicSsmProof.built.length = 0;
+      publicSsmProof.askedAbout.length = 0;
+    });
+
+    it('keeps the value AWS holds when the stack prover proves the parameter public', async () => {
+      publicSsmProof.proven.set(PUBLIC, 'db.public.internal');
+      const properties = { Environment: { Variables: { URL: MIXED } } };
+      const observed = await refreshWith(properties, {
+        Environment: { Variables: { URL: RESOLVED } },
+      });
+      expect(observed).toEqual({ Environment: { Variables: { URL: RESOLVED } } });
+      // Built ONCE for the stack, in its own region, and asked about the
+      // record's OWN properties — the bag the readback is positioned against.
+      expect(publicSsmProof.built.map((b) => b.region)).toEqual(['us-east-1']);
+      expect(await publicSsmProof.built[0]!.loadEvidence()).toEqual({ regions: [], complete: true });
+      expect(publicSsmProof.askedAbout).toEqual([properties]);
+    });
+
+    it('CONTROL: with no proof the same leaf still takes the expression', async () => {
+      const observed = await refreshWith(
+        { Environment: { Variables: { URL: MIXED } } },
+        { Environment: { Variables: { URL: RESOLVED } } }
+      );
+      expect(observed).toEqual({ Environment: { Variables: { URL: MIXED } } });
+    });
+
+    it("builds the prover with the stack's producer-region evidence", async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      const loaded = makeState({
+        R: makeResource({ physicalId: 'r', resourceType: 'AWS::Lambda::Function' }),
+      });
+      loaded.state.imports = [
+        { exportName: 'X', sourceStack: 'P', sourceRegion: 'eu-west-1' },
+      ] as unknown as NonNullable<StackState['imports']>;
+      mockGetState.mockResolvedValueOnce(loaded);
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
+      const { error } = await runRefresh(['TestStack']);
+      expect(error).toBeUndefined();
+      expect(await publicSsmProof.built[0]!.loadEvidence()).toEqual({
+        regions: ['eu-west-1'],
+        complete: true,
+      });
+    });
+
+    it('builds the prover, AND its evidence read, in the STACK region (another region)', async () => {
+      // A nested child, so the evidence thunk has an ancestor to read and the
+      // REGION it reads in is observable on the state backend.
+      const child = makeState({
+        R: makeResource({ physicalId: 'r', resourceType: 'AWS::Lambda::Function' }),
+      });
+      child.state.stackName = 'TestStack~Child';
+      child.state.region = 'us-west-2';
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack~Child', region: 'us-west-2' }]);
+      mockGetState.mockImplementation(async (name: string) =>
+        name === 'TestStack~Child' ? child : null
+      );
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
+      const { error } = await runRefresh(['TestStack~Child']);
+      expect(error).toBeUndefined();
+      expect(publicSsmProof.built.map((b) => b.region)).toEqual(['us-west-2']);
+      mockGetState.mockClear();
+      await publicSsmProof.built[0]!.loadEvidence();
+      expect(mockGetState.mock.calls).toEqual([['TestStack', 'us-west-2']]);
+      mockGetState.mockReset();
+    });
+
+    it('evidence that THROWS (a malformed read record) is INCOMPLETE, and the refresh still runs', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      const loaded = makeState({
+        R: makeResource({ physicalId: 'r', resourceType: 'AWS::Lambda::Function' }),
+      });
+      loaded.state.imports = [null] as unknown as NonNullable<StackState['imports']>;
+      mockGetState.mockResolvedValueOnce(loaded);
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
+      const { error } = await runRefresh(['TestStack']);
+      expect(error).toBeUndefined();
+      // The thunk rejects; the prover reads a rejection as INCOMPLETE
+      // (`tests/unit/deployment/public-ssm-proof.test.ts`).
+      await expect(publicSsmProof.built[0]!.loadEvidence()).rejects.toThrow();
+    });
+
+    it('a NESTED child whose parent record cannot be read gets INCOMPLETE evidence (go-to-k/cdkd#4213)', async () => {
+      const child = makeState({
+        R: makeResource({ physicalId: 'r', resourceType: 'AWS::Lambda::Function' }),
+      });
+      child.state.stackName = 'TestStack~Child';
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack~Child', region: 'us-east-1' }]);
+      mockGetState.mockImplementation(async (name: string) =>
+        name === 'TestStack~Child' ? child : null
+      );
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({}) });
+      const { error } = await runRefresh(['TestStack~Child']);
+      expect(error).toBeUndefined();
+      // LAZY: the refresh itself read only the child's own record — no
+      // ancestor record is read unless a region-less token needs the evidence.
+      expect(mockGetState.mock.calls.map((c) => c[0])).toEqual(['TestStack~Child']);
+      expect(await publicSsmProof.built[0]!.loadEvidence()).toEqual({
+        regions: [],
+        complete: false,
+      });
+      mockGetState.mockReset();
     });
   });
 });

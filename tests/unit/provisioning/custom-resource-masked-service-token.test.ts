@@ -183,7 +183,8 @@ describe('CustomResourceProvider.delete: a secret-reference ServiceToken (issue 
     ['a whole secretsmanager reference', SECRET_REF],
     ['a whole ssm-secure reference', '{{resolve:ssm-secure:/provider/arn}}'],
     // Issue #2036: a PUBLIC ssm reference embedded in a longer leaf can still
-    // be recorded as its expression; it cannot address the handler either.
+    // be recorded as its expression where no type proof was available; it
+    // cannot address the handler either.
     [
       'an ARN assembled around a plain ssm reference',
       'arn:aws:lambda:us-east-1:111122223333:function:{{resolve:ssm:/provider/fn-name}}',

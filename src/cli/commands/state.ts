@@ -81,10 +81,10 @@ import { withStackName } from '../../provisioning/resource-name.js';
 import {
   redactSecretsForState,
   STATE_SOURCED_BASELINE_RULES,
-  type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
+import { PublicSsmProver } from '../../deployment/public-ssm-proof.js';
 import { stripControlChars } from '../../utils/regexp.js';
-import { buildReadCurrentStateContext } from './drift.js';
+import { buildReadCurrentStateContext, driftProducerRegionEvidence } from './drift.js';
 import { runDestroyForStack, type DestroyRunnerResult } from './destroy-runner.js';
 import { startRunRecorder, recordRunFailed, recordRunOutcome } from './deployment-events-run.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
@@ -3713,20 +3713,6 @@ async function stateRefreshObservedCommand(
 }
 
 /**
- * The secrets map every redaction on this command's paths gets, and it is
- * EMPTY by construction (issue #1926).
- *
- * `cdkd state refresh-observed` neither synthesizes a template nor resolves a
- * dynamic reference, so no plaintext is ever recorded here and a VALUE scan
- * would have no needles at all. That is the issue #1900 shape, and it is why
- * the PATH pass has to carry the redaction on its own — see the call site.
- *
- * Shared rather than constructed per resource because nothing writes to it:
- * `redactSecretsForState` only reads its argument.
- */
-const NO_RECORDED_SECRETS: RecordedSecretValues = new Map();
-
-/**
  * Warn before `cdkd state orphan` force-releases a lock that is still LIVE.
  *
  * `forceReleaseLock` is unconditional by design — a stuck lock must never make
@@ -3964,6 +3950,20 @@ async function refreshObservedForStack(
     let refusedBaseline = 0;
     let refusedSticky = 0;
 
+    // Issue #2036: one prover per stack, so each `ssm` reference is asked
+    // about once however many records embed it. Its region and producer-region
+    // evidence are the ones `cdkd drift` routes by: the stack's own reads plus,
+    // for a nested child, every ancestor's (go-to-k/cdkd#4213). The evidence is
+    // derived LAZILY — only when a region-less reference is about to be looked
+    // up — so a stack with none reads no ancestor record under its lock. If it
+    // cannot be established it is INCOMPLETE and no region-less reference is
+    // proven; it never fails the refresh.
+    const publicSsmProver = new PublicSsmProver(
+      region,
+      () => driftProducerRegionEvidence(state, stackName, region, stateBackend),
+      logger
+    );
+
     // Refresh in parallel under withStackName so any provider-internal
     // resource-name resolution sees the right stack (mirrors the deploy
     // engine's enclosing scope).
@@ -4055,11 +4055,13 @@ async function refreshObservedForStack(
           // #1910 sweep (framed as "every writer passes a POSITION source")
           // never surfaced it.
           //
-          // The map is empty (see {@link NO_RECORDED_SECRETS}), so POSITION is
-          // the whole mechanism: the record's own `properties` hold the
-          // unresolved expression, and walking the observed bag against them
-          // rewrites the plaintext AWS echoes back onto that expression with no
-          // secret fetch and no value matching.
+          // The map is EMPTY by construction (issue #1926): this command neither
+          // synthesizes nor resolves, so no plaintext is ever recorded and a
+          // VALUE scan has no needles — POSITION is the whole mechanism: the
+          // record's own `properties` hold the unresolved expression, and
+          // walking the observed bag against them rewrites the plaintext AWS
+          // echoes back onto that expression with no secret fetch and no value
+          // matching.
           //
           // The MIXED-leaf and unpairable-array refusals live in
           // `secret-redaction.ts`, NOT here (issue #1926 review). This command
@@ -4077,7 +4079,7 @@ async function refreshObservedForStack(
           // source does not carry) are closed instead by DERIVED NEEDLES, and
           // this write site is exactly where they apply — `deriveReadbackNeedles`
           // returns nothing unless the secrets map is EMPTY, which it is here
-          // by construction (see {@link NO_RECORDED_SECRETS}). Read that
+          // by construction (see above). Read that
           // function's own table for which shapes still fall through.
           //
           // A THIRD mechanism since issue
@@ -4127,9 +4129,17 @@ async function refreshObservedForStack(
           // its `properties` hold the plaintext too, so the position source
           // carries no expression to take. `cdkd scrub` is what repairs that,
           // and the command's own description says to run it first.
+          //
+          // EMPTY, but not a shared constant (issue #2036): the map carries,
+          // by identity, a PROOF for each plain `ssm` reference in a MIXED
+          // leaf of `properties` whose parameter a no-decryption
+          // `GetParameter` in this stack's region answered as public. Such a
+          // leaf keeps the value AWS holds instead of the expression; with no
+          // proof (a `SecureString`, a missing `ssm:GetParameter` grant, any
+          // error) it is refused exactly as before. See `PublicSsmProver`.
           resource.observedProperties = redactSecretsForState(
             observed,
-            NO_RECORDED_SECRETS,
+            await publicSsmProver.proofBagFor(resource.properties ?? {}),
             resource.properties ?? {},
             STATE_SOURCED_BASELINE_RULES
           );

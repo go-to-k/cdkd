@@ -366,9 +366,10 @@ describe('secret-redaction - derived needles (issue #2012)', () => {
     // used to say PUBLIC, which overstated it: on this path nothing was
     // resolved, so the spelling is all the code has and `PUBLIC_SSM` is
     // byte-indistinguishable from `SECURE_SSM` here. Telling the two apart needs
-    // a verdict store; PR #2415 drafted one and WITHDREW it (issue #2036 stays
-    // open) because a process-global one un-redacts a `SecureString` of the same
-    // name in another region.
+    // a type PROOF filed into this very bag (issue #2036); a process-global
+    // store was drafted and withdrawn in PR #2415 because it un-redacts a
+    // `SecureString` of the same name in another region. This bag carries no
+    // proof, so the no-verdict row is what it pins.
     //
     // A parameter cdkd HAS read is persisted RESOLVED (#1901), so a source that
     // carries the reference at all is the `cdkd import` warn-path shape — the
