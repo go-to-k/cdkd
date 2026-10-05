@@ -256,3 +256,143 @@ describe('S3StateBackend.purgeNoncurrentVersions (issue #2340)', () => {
     expect(String(warnSpy.mock.calls[0]![0])).toContain('no credentials');
   });
 });
+
+/**
+ * Issue [#2624](https://github.com/go-to-k/cdkd/issues/2624) —
+ * `S3StateBackend.purgeNoncurrentVersionsUnderPrefix`, the prefix-wide sweep
+ * `cdkd events prune --all` / `cdkd destroy --purge-events` use to reach
+ * streams already behind a delete marker. Same wiring obligations as the
+ * key-set method above: region-corrected client, `ExpectedBucketOwner` on
+ * every command, and never throwing.
+ */
+describe('S3StateBackend.purgeNoncurrentVersionsUnderPrefix (issue #2624)', () => {
+  const DIR = 'cdkd/S/us-east-1/deployments/';
+  let recorded: Recorded[];
+
+  const makeSend =
+    (label: 'original' | 'corrected') =>
+    (cmd: unknown): Promise<unknown> => {
+      const c = cmd as {
+        constructor: { name: string };
+        input: {
+          ExpectedBucketOwner?: string;
+          Prefix?: string;
+          Delete?: { Objects?: { Key?: string; VersionId?: string }[] };
+        };
+      };
+      recorded.push({
+        client: label,
+        name: c.constructor.name,
+        owner: c.input.ExpectedBucketOwner,
+        prefix: c.input.Prefix,
+        objects: c.input.Delete?.Objects,
+      });
+      if (c.constructor.name === 'ListObjectVersionsCommand') {
+        return Promise.resolve({
+          Versions: [
+            // A residue stream: its body is noncurrent behind a marker.
+            { Key: `${DIR}gone.jsonl`, VersionId: 'v-gone', IsLatest: false },
+            // A live stream's CURRENT body: must survive.
+            { Key: `${DIR}live.jsonl`, VersionId: 'v-live', IsLatest: true },
+            // Out of scope even if a listing ever returned it.
+            { Key: 'cdkd/S2/us-east-1/deployments/x.jsonl', VersionId: 'v-s2', IsLatest: false },
+          ],
+          DeleteMarkers: [{ Key: `${DIR}gone.jsonl`, VersionId: 'm-gone', IsLatest: true }],
+          IsTruncated: false,
+        });
+      }
+      return Promise.resolve({});
+    };
+
+  beforeEach(() => {
+    clearReplicationProbeCache();
+    recorded = [];
+    mockRebuild.mockReset();
+    mockExpectedOwner.mockReset();
+    warnSpy.mockReset();
+    mockExpectedOwner.mockResolvedValue({ ExpectedBucketOwner: OWNER });
+  });
+
+  const backend = (): S3StateBackend =>
+    new S3StateBackend(
+      { send: makeSend('original'), destroy: vi.fn() } as unknown as S3Client,
+      { bucket: BUCKET, prefix: 'cdkd' }
+    );
+
+  it('lists the exact prefix and deletes only noncurrent entries under it', async () => {
+    mockRebuild.mockResolvedValue(null);
+
+    const result = await backend().purgeNoncurrentVersionsUnderPrefix(DIR);
+
+    expect(result).toEqual({ deletedBodies: 1, complete: true });
+    const list = recorded.find((r) => r.name === 'ListObjectVersionsCommand');
+    expect(list?.prefix).toBe(DIR);
+    const deletes = recorded.filter((r) => r.name === 'DeleteObjectsCommand');
+    expect(deletes.flatMap((d) => d.objects ?? [])).toEqual([
+      { Key: `${DIR}gone.jsonl`, VersionId: 'v-gone' },
+    ]);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('routes through the REGION-CORRECTED client with ExpectedBucketOwner on every command', async () => {
+    mockRebuild.mockResolvedValue({
+      send: makeSend('corrected'),
+      destroy: vi.fn(),
+    } as unknown as S3Client);
+
+    await backend().purgeNoncurrentVersionsUnderPrefix(DIR);
+
+    expect(recorded.length).toBeGreaterThan(0);
+    expect(recorded.every((r) => r.client === 'corrected')).toBe(true);
+    expect(recorded.every((r) => r.owner === OWNER)).toBe(true);
+  });
+
+  it('refuses a prefix without a trailing slash: lists nothing and warns', async () => {
+    mockRebuild.mockResolvedValue(null);
+
+    await expect(
+      backend().purgeNoncurrentVersionsUnderPrefix('cdkd/S/us-east-1/deployments')
+    ).resolves.toEqual({ deletedBodies: 0, complete: false });
+
+    expect(recorded).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0]![0])).toContain("ending in '/'");
+  });
+
+  it("warns through the BACKEND's own logger", async () => {
+    // The module mock hands every `child()` the same sink, so a dropped
+    // `logger: this.logger` would be invisible; swap the backend's logger.
+    mockRebuild.mockResolvedValue(null);
+    const b = backend();
+    const own = { warn: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() };
+    (b as unknown as { logger: typeof own }).logger = own;
+
+    await b.purgeNoncurrentVersionsUnderPrefix('cdkd/S');
+
+    expect(own.warn).toHaveBeenCalledTimes(1);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses an empty or slash-only prefix (a whole-bucket sweep)', async () => {
+    mockRebuild.mockResolvedValue(null);
+    for (const prefix of ['', '/', '//']) {
+      await backend().purgeNoncurrentVersionsUnderPrefix(prefix);
+    }
+    expect(recorded).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('NEVER THROWS when the purge cannot start, and names the prefix and the description', async () => {
+    mockRebuild.mockRejectedValue(new Error('AccessDenied: s3:GetBucketLocation'));
+
+    await expect(
+      backend().purgeNoncurrentVersionsUnderPrefix(DIR, { objectDescription: 'event streams' })
+    ).resolves.toEqual({ deletedBodies: 0, complete: false });
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const message = String(warnSpy.mock.calls[0]![0]);
+    expect(message).toContain(`under the prefix ${DIR} in bucket ${BUCKET}:`);
+    expect(message).toContain('VersionId (event streams). Grant s3:ListBucketVersions');
+    expect(message).toContain('AccessDenied: s3:GetBucketLocation');
+  });
+});

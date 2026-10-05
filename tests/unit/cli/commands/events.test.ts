@@ -5,6 +5,11 @@ import { setStdinIsTty } from '../../../stdin-tty.js';
 // --- Module mocks (declared before importing the command under test) ---
 
 const objects = new Map<string, string>();
+/** What the prefix-wide version sweep reports, and which prefixes it was given (issue #2624). */
+const sweep: {
+  result: { deletedBodies: number; complete: boolean };
+  prefixes: string[];
+} = { result: { deletedBodies: 0, complete: true }, prefixes: [] };
 
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({ s3: {}, destroy: vi.fn() })),
@@ -30,6 +35,10 @@ vi.mock('../../../../src/state/s3-state-backend.js', () => ({
       for (const k of keys) objects.delete(k);
     }),
     purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
+    purgeNoncurrentVersionsUnderPrefix: vi.fn(async (prefix: string) => {
+      sweep.prefixes.push(prefix);
+      return sweep.result;
+    }),
   })),
 }));
 
@@ -252,6 +261,8 @@ describe('cdkd events prune command', () => {
     vi.clearAllMocks();
     objects.clear();
     logLines.length = 0;
+    sweep.result = { deletedBodies: 3, complete: true };
+    sweep.prefixes = [];
   });
 
   /** Seed `.jsonl` streams + an index.json for the given run ids. */
@@ -288,13 +299,17 @@ describe('cdkd events prune command', () => {
     seedJsonlRuns('us-east-1', [id(0), id(1), id(2)]);
     await eventsPruneCommand('MyStack', { all: true, yes: true });
     expect([...objects.keys()].filter((k) => k.includes('/deployments/'))).toEqual([]);
-    // Issue #2624: the store now purges the earlier versions of every key it
-    // deletes, so the line that reports the delete says so -- deferring to the
-    // purge's own warning, which prints first when it could not finish. Bound
-    // to THAT line, not the joined output. The old "survive" wording is gone.
+    // Issue #2624: `--all` purges every earlier version under the stack's
+    // deployments/ prefix, so the line that reports the delete says so --
+    // deferring to the purge's own warning, which prints first when it could
+    // not finish. Bound to THAT line, not the joined output. Neither the old
+    // "survive" wording nor the partial prunes' narrower note appears.
     const pruned = logLines.find((l) => l.includes('Pruned 3'));
     expect(pruned).toBeDefined();
-    expect(pruned).toContain('Earlier versions of the deleted keys were purged as well');
+    expect(pruned).toContain(
+      "Every earlier version under the stack's deployments/ prefix was purged as well"
+    );
+    expect(pruned).not.toContain('Earlier versions of the deleted keys');
     expect(pruned).toContain('unless a warning above says otherwise');
     expect(pruned).not.toContain('survive');
   });
@@ -304,7 +319,12 @@ describe('cdkd events prune command', () => {
     await eventsPruneCommand('MyStack', { keep: 2, yes: true });
     expect(objects.has(`cdkd/MyStack/us-east-1/deployments/${id(0)}.jsonl`)).toBe(false);
     expect(objects.has(`cdkd/MyStack/us-east-1/deployments/${id(3)}.jsonl`)).toBe(true);
-    expect(logLines.join('\n')).toContain('2 retained');
+    const pruned = logLines.find((l) => l.includes('2 retained'));
+    expect(pruned).toBeDefined();
+    // A partial prune purges only the keys it deleted, so it must not claim
+    // the whole prefix (issue #2624).
+    expect(pruned).toContain('Earlier versions of the deleted keys were purged as well');
+    expect(pruned).not.toContain('Every earlier version under');
   });
 
   it('rejects --all combined with --keep', async () => {
@@ -323,6 +343,7 @@ describe('cdkd events prune command', () => {
     // the versioning caveat must not appear. Without this, appending the note
     // unconditionally would still pass every positive case.
     expect(logLines.join('\n')).not.toContain('Earlier versions of the deleted keys');
+    expect(logLines.join('\n')).not.toContain('Every earlier version under');
   });
 
   it('refuses to prune without --yes on a non-interactive terminal (no hang)', async () => {
@@ -359,7 +380,20 @@ describe('cdkd events prune command', () => {
     // THIS arm as well -- and on the SAME line as the removal claim.
     const removed = logLines.find((l) => l.includes('Removed the empty deployment-event index'));
     expect(removed).toBeDefined();
-    expect(removed).toContain('Earlier versions of the deleted keys were purged as well');
+    expect(removed).toContain(
+      "Every earlier version under the stack's deployments/ prefix was purged as well"
+    );
+  });
+
+  it('a stack with no CURRENT history names the --stack-region route to the residue (issue #2624)', async () => {
+    // Region discovery reads current keys only, so a stack whose every stream
+    // is behind a delete marker lists nothing and the prune stops before its
+    // `--all` sweep. The refusal has to say how to reach those versions.
+    const err = await eventsPruneCommand('MyStack', { all: true, yes: true }).catch((e: unknown) => e);
+    expect((err as CdkdError).code).toBe('EVENTS_NOT_FOUND');
+    expect((err as Error).message).toContain(
+      'the prune subcommand with --all and --stack-region still purges the earlier versions'
+    );
   });
 
   it('--all on a stack with no event history claims no removal (issue #2624)', async () => {
@@ -374,6 +408,52 @@ describe('cdkd events prune command', () => {
     expect(out).toContain('No runs matched');
     expect(out).not.toContain('Removed the empty deployment-event index');
     expect(out).not.toContain('Earlier versions of the deleted keys');
+    // But `--all` still swept the prefix: a stack whose history was deleted
+    // BEFORE is exactly one with nothing current left, and its versions are
+    // what the sweep is for (issue #2624). The sweep deleted some (the
+    // beforeEach's 3), so the no-match line says so.
+    expect(sweep.prefixes).toEqual(['cdkd/MyStack/us-east-1/deployments/']);
+    const noMatch = logLines.find((l) => l.includes('No runs matched'));
+    expect(noMatch).toContain(
+      "Every earlier version under the stack's deployments/ prefix was purged as well"
+    );
+  });
+
+  it('--all whose sweep found NOTHING claims no purge and shows the region (a typo is visible)', async () => {
+    sweep.result = { deletedBodies: 0, complete: true };
+    await eventsPruneCommand('MyStack', { all: true, yes: true, stackRegion: 'us-east-l' });
+    const noMatch = logLines.find((l) => l.includes('No runs matched'));
+    expect(noMatch).toContain(
+      'No earlier versions were found under its deployments/ prefix in us-east-l either.'
+    );
+    expect(noMatch).not.toContain('was purged');
+  });
+
+  it('--all whose sweep PARTLY succeeded reports the purge, deferring to the warning', async () => {
+    sweep.result = { deletedBodies: 2, complete: false };
+    await eventsPruneCommand('MyStack', { all: true, yes: true, stackRegion: 'us-east-1' });
+    const noMatch = logLines.find((l) => l.includes('No runs matched'));
+    expect(noMatch).toContain(
+      "Every earlier version under the stack's deployments/ prefix was purged as well, unless a warning above says otherwise."
+    );
+    expect(noMatch).not.toContain('could not be purged');
+  });
+
+  it('--all whose sweep FAILED points at the warning instead of claiming a purge', async () => {
+    sweep.result = { deletedBodies: 0, complete: false };
+    await eventsPruneCommand('MyStack', { all: true, yes: true, stackRegion: 'us-east-1' });
+    const noMatch = logLines.find((l) => l.includes('No runs matched'));
+    expect(noMatch).toContain('could not be purged; see the warning above');
+    expect(noMatch).not.toContain('was purged');
+    expect(noMatch).not.toContain('No earlier versions were found');
+  });
+
+  it('canonicalizes --stack-region, so US-EAST-1 sweeps the us-east-1 prefix', async () => {
+    seedJsonlRuns('us-east-1', [id(0)]);
+    await eventsPruneCommand('MyStack', { all: true, yes: true, stackRegion: 'US-EAST-1' });
+    expect(sweep.prefixes).toEqual(['cdkd/MyStack/us-east-1/deployments/']);
+    expect([...objects.keys()].filter((k) => k.includes('/deployments/'))).toEqual([]);
+    expect(logLines.some((l) => l.includes('Pruned 1'))).toBe(true);
   });
 });
 
@@ -399,7 +479,11 @@ describe('cdkd events prune help text', () => {
     // Bound the arm: an empty description would satisfy the negatives for free.
     expect(text).not.toBe('');
     // Issue #2624: the delete now purges noncurrent versions as well.
-    expect(text).toContain('versions of the deleted keys are purged too, unless a warning says otherwise');
+    expect(text).toContain('versions of the deleted keys are purged too');
+    expect(text).toContain(
+      "with --all, every earlier version under the stack's deployments/ prefix"
+    );
+    expect(text).toContain('unless a warning says otherwise');
     expect(text).not.toContain('survive');
     // The exact phrase that shipped, and the one this issue retires.
     expect(text).not.toContain('reclaim S3 space');
@@ -408,6 +492,9 @@ describe('cdkd events prune help text', () => {
   it('--all no longer calls itself a full purge', () => {
     expect(allDescription()).not.toBe('');
     expect(allDescription()).toContain('Delete every recorded run and the index');
+    expect(allDescription()).toContain(
+      "purge every earlier version under the stack's deployments/ prefix"
+    );
     // "purge" reads as removal; on a versioned bucket it is not one.
     expect(allDescription()).not.toContain('full purge');
   });

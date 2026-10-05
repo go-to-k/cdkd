@@ -11,7 +11,10 @@ import {
 } from '../../../src/state/deployment-events-store.js';
 import { DEPLOYMENT_EVENTS_INDEX_VERSION } from '../../../src/types/deployment-events.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
-import { purgeNoncurrentKeyVersions } from '../../../src/state/s3-noncurrent-version-purge.js';
+import {
+  purgeNoncurrentKeyVersions,
+  purgeNoncurrentVersionsUnderPrefix,
+} from '../../../src/state/s3-noncurrent-version-purge.js';
 
 /**
  * In-memory fake of the raw-object surface the store + reader use on the
@@ -41,6 +44,7 @@ function makeFakeBackend(opts?: { failPut?: boolean }): {
       for (const k of keys) objects.delete(k);
     }),
     purgeNoncurrentVersions: vi.fn(async () => {}),
+    purgeNoncurrentVersionsUnderPrefix: vi.fn(async () => {}),
   } as unknown as S3StateBackend;
   return {
     backend,
@@ -894,6 +898,13 @@ describe('deployments/ deletes purge noncurrent versions (issue #2624)', () => {
             logger: { warn, debug: () => {} },
           })
       ),
+      purgeNoncurrentVersionsUnderPrefix: vi.fn(
+        async (keyPrefix: string, opts: { objectDescription?: string } = {}) =>
+          purgeNoncurrentVersionsUnderPrefix(client as never, bucket, keyPrefix, {
+            ...opts,
+            logger: { warn, debug: () => {} },
+          })
+      ),
     } as unknown as S3StateBackend;
     /** Every readable BODY version still stored for `key`. */
     const bodies = (key: string): string[] =>
@@ -933,10 +944,12 @@ describe('deployments/ deletes purge noncurrent versions (issue #2624)', () => {
     for (const k of [stream(id(0)), stream(id(1)), indexKey]) expect(m.bodies(k)).toEqual([]);
     expect(m.bodies('cdkd/S2/us-east-1/deployments/x.jsonl')).toHaveLength(2);
     expect(m.warn).not.toHaveBeenCalled();
-    expect(m.backend.purgeNoncurrentVersions).toHaveBeenCalledWith(
-      expect.arrayContaining([stream(id(0)), stream(id(1)), indexKey]),
-      expect.objectContaining({ listPrefix: dir })
+    // `--all` sweeps the exact directory, trailing `/` included.
+    expect(m.backend.purgeNoncurrentVersionsUnderPrefix).toHaveBeenCalledWith(
+      dir,
+      expect.objectContaining({ objectDescription: DEPLOYMENT_EVENTS_OBJECT_DESCRIPTION })
     );
+    expect(m.backend.purgeNoncurrentVersions).not.toHaveBeenCalled();
   });
 
   it('versioned: --keep purges only the pruned streams, never a retained run', async () => {
@@ -1100,9 +1113,192 @@ describe('deployments/ deletes purge noncurrent versions (issue #2624)', () => {
     await expect(
       new DeploymentEventsReader(backend).pruneRuns('S', 'us-east-1', { all: true })
     ).rejects.toThrow(/AccessDenied: delete/);
-    expect(backend.purgeNoncurrentVersions).toHaveBeenCalledWith(
-      [stream(id(1)), stream(id(0)), indexKey],
-      expect.objectContaining({ listPrefix: dir })
+    expect(backend.purgeNoncurrentVersionsUnderPrefix).toHaveBeenCalledWith(
+      dir,
+      expect.objectContaining({ objectDescription: DEPLOYMENT_EVENTS_OBJECT_DESCRIPTION })
     );
+  });
+
+  /**
+   * The #4558 residue: a stream deleted BEFORE a purge ran on it (an older
+   * release, or a purge that warned) sits behind a delete marker, so no
+   * current-object listing names it. `--all` empties the whole directory, so
+   * it sweeps every noncurrent version under the exact prefix.
+   */
+  async function seedResidue(backend: S3StateBackend, runId: string): Promise<void> {
+    await backend.putRawObject(stream(runId), 'leaked secret, flush 1\n');
+    await backend.putRawObject(stream(runId), 'leaked secret, flush 2\n');
+    // The pre-#4558 delete: a marker on top, no version purge.
+    await backend.deleteRawObjects([stream(runId)]);
+  }
+
+  it('versioned: --all purges a stream that was ALREADY behind a delete marker', async () => {
+    const m = makeVersionedBackend(true, 'bucket-residue');
+    await seedResidue(m.backend, id(9));
+    await seed(m.backend, [id(0)], 2);
+    // Precondition: the residue is invisible to the listing the prune reads,
+    // yet its bodies are still stored.
+    expect(await m.backend.listRawKeys(dir)).not.toContain(stream(id(9)));
+    expect(m.bodies(stream(id(9)))).toHaveLength(2);
+
+    const r = await new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { all: true });
+
+    expect(r.deletedRunIds).toEqual([id(0)]);
+    expect(m.bodies(stream(id(9)))).toEqual([]);
+    expect(m.bodies(stream(id(0)))).toEqual([]);
+    expect(m.bodies(indexKey)).toEqual([]);
+    expect(m.warn).not.toHaveBeenCalled();
+    // Counted: two residue bodies, two flushes of id(0), two index PUTs. Each
+    // key's CURRENT delete marker stays and is not counted.
+    expect(r.earlierVersions).toEqual({ deletedBodies: 6, complete: true });
+  });
+
+  it('versioned: --all on a prefix with NOTHING current still purges the residue', async () => {
+    // A stack whose history an earlier `--purge-events` deleted without the
+    // version purge: only markers are current, so the listing is empty.
+    const m = makeVersionedBackend(true, 'bucket-residue-only');
+    await seedResidue(m.backend, id(9));
+    expect(await m.backend.listRawKeys(dir)).toEqual([]);
+
+    const r = await new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { all: true });
+
+    expect(r).toEqual({
+      deletedRunIds: [],
+      remainingRunIds: [],
+      indexDeleted: false,
+      earlierVersions: { deletedBodies: 2, complete: true },
+    });
+    expect(m.bodies(stream(id(9)))).toEqual([]);
+  });
+
+  it('versioned: a SECOND --all over an empty prefix reports no bodies, though it deletes the first run\'s marker', async () => {
+    // `--all` always deletes the index key, so on a versioned bucket each run
+    // leaves a delete marker; the next run finds it noncurrent and removes
+    // it. Counting it would make a mistyped region read as a purge.
+    const m = makeVersionedBackend(true, 'bucket-empty-twice');
+    const reader = new DeploymentEventsReader(m.backend);
+
+    const first = await reader.pruneRuns('S', 'us-east-1', { all: true });
+    const second = await reader.pruneRuns('S', 'us-east-1', { all: true });
+
+    expect(first.earlierVersions).toEqual({ deletedBodies: 0, complete: true });
+    // Precondition: the second run really did delete the first run's marker.
+    expect(m.versionDeletes.some((d) => d.Key === indexKey)).toBe(true);
+    expect(second.earlierVersions).toEqual({ deletedBodies: 0, complete: true });
+  });
+
+  it('versioned: --all never touches a stack whose name EXTENDS this one (`S` vs `S2`, `S-old`)', async () => {
+    const m = makeVersionedBackend(true, 'bucket-residue-sibling');
+    // Residue AND live history on both siblings, so a widened sweep would
+    // have something of each kind to take.
+    for (const other of ['cdkd/S2/us-east-1/deployments/', 'cdkd/S-old/us-east-1/deployments/']) {
+      await m.backend.putRawObject(`${other}gone.jsonl`, 'sibling residue 1\n');
+      await m.backend.putRawObject(`${other}gone.jsonl`, 'sibling residue 2\n');
+      await m.backend.deleteRawObjects([`${other}gone.jsonl`]);
+      await m.backend.putRawObject(`${other}live.jsonl`, 'sibling live 1\n');
+      await m.backend.putRawObject(`${other}live.jsonl`, 'sibling live 2\n');
+    }
+    // A sibling REGION directory of the same stack is outside the prefix too.
+    await m.backend.putRawObject('cdkd/S/us-east-2/deployments/x.jsonl', 'other region 1\n');
+    await m.backend.putRawObject('cdkd/S/us-east-2/deployments/x.jsonl', 'other region 2\n');
+    // The stack's OWN state and lock sit one level up, beside `deployments/`:
+    // their noncurrent versions are the state-recovery capability and the
+    // lock's own purge's business, never this sweep's.
+    for (const k of ['cdkd/S/us-east-1/state.json', 'cdkd/S/us-east-1/lock.json']) {
+      await m.backend.putRawObject(k, `${k} v1`);
+      await m.backend.putRawObject(k, `${k} v2`);
+    }
+    await seedResidue(m.backend, id(9));
+    await seed(m.backend, [id(0)], 2);
+
+    await new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { all: true });
+
+    expect(m.bodies(stream(id(9)))).toEqual([]); // positive control
+    for (const other of ['cdkd/S2/us-east-1/deployments/', 'cdkd/S-old/us-east-1/deployments/']) {
+      expect(m.bodies(`${other}gone.jsonl`)).toHaveLength(2);
+      expect(m.bodies(`${other}live.jsonl`)).toHaveLength(2);
+    }
+    expect(m.bodies('cdkd/S/us-east-2/deployments/x.jsonl')).toHaveLength(2);
+    expect(m.bodies('cdkd/S/us-east-1/state.json')).toHaveLength(2);
+    expect(m.bodies('cdkd/S/us-east-1/lock.json')).toHaveLength(2);
+    expect(m.versionDeletes.every((d) => d.Key.startsWith(dir))).toBe(true);
+  });
+
+  it('versioned: --all keeps the CURRENT stream a concurrent deploy writes', async () => {
+    // A run that is not in the prune's listing yet (written after it) has a
+    // current body; only its earlier flushes are noncurrent, and the current
+    // one supersedes them.
+    const m = makeVersionedBackend(true, 'bucket-residue-concurrent');
+    await seed(m.backend, [id(0)], 1);
+    const reader = new DeploymentEventsReader(m.backend);
+    const listRawKeys = vi.mocked(m.backend.listRawKeys);
+    const realList = listRawKeys.getMockImplementation()!;
+    listRawKeys.mockImplementationOnce(async (p: string) => {
+      const listed = await realList(p);
+      await m.backend.putRawObject(stream(id(5)), '{"flush":1}\n');
+      await m.backend.putRawObject(stream(id(5)), '{"flush":2}\n');
+      return listed;
+    });
+
+    await reader.pruneRuns('S', 'us-east-1', { all: true });
+
+    expect(m.bodies(stream(id(5)))).toEqual(['{"flush":2}\n']);
+  });
+
+  it('versioned: --keep does NOT sweep the prefix -- residue and retained history stay', async () => {
+    const m = makeVersionedBackend(true, 'bucket-residue-keep');
+    await seedResidue(m.backend, id(9));
+    await seed(m.backend, [id(0), id(1), id(2)], 2);
+
+    await new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { keep: 1 });
+
+    // Unchanged from #4558: only the deleted keys are purged.
+    expect(m.backend.purgeNoncurrentVersionsUnderPrefix).not.toHaveBeenCalled();
+    expect(m.bodies(stream(id(9)))).toHaveLength(2);
+    expect(m.bodies(stream(id(2)))).toHaveLength(2);
+    expect(m.bodies(stream(id(0)))).toEqual([]);
+    expect(m.bodies(stream(id(1)))).toEqual([]);
+  });
+
+  it("the writer's self-bounding prune does NOT sweep the prefix", async () => {
+    const m = makeVersionedBackend(true, 'bucket-residue-writer');
+    await seedResidue(m.backend, id(99));
+    const N = DEPLOYMENT_EVENTS_MAX_INDEX_RUNS;
+    await seed(
+      m.backend,
+      Array.from({ length: N }, (_, i) => id(i)),
+      2
+    );
+    const store = new DeploymentEventsStore(m.backend, {
+      stackName: 'S',
+      region: 'us-east-1',
+      command: 'deploy',
+      runId: id(N),
+    });
+    store.record({ eventType: 'RESOURCE_STARTED', stackName: 'S', logicalId: 'A' });
+    await store.finalize('SUCCEEDED');
+
+    expect(m.backend.purgeNoncurrentVersionsUnderPrefix).not.toHaveBeenCalled();
+    expect(m.bodies(stream(id(99)))).toHaveLength(2);
+    expect(m.bodies(stream(id(1)))).toHaveLength(2);
+  });
+
+  it('--all: an AccessDenied on the version listing only warns, and the prune still succeeds', async () => {
+    const m = makeVersionedBackend(true, 'bucket-residue-denied', { failList: true });
+    await seedResidue(m.backend, id(9));
+    await seed(m.backend, [id(0)], 2);
+
+    const r = await new DeploymentEventsReader(m.backend).pruneRuns('S', 'us-east-1', { all: true });
+
+    expect(r.deletedRunIds).toEqual([id(0)]);
+    expect(r.indexDeleted).toBe(true);
+    expect(m.warn).toHaveBeenCalledTimes(1);
+    const message = String(m.warn.mock.calls[0]![0]);
+    expect(message).toContain('Access Denied');
+    expect(message).toContain(DEPLOYMENT_EVENTS_OBJECT_DESCRIPTION);
+    // Named as the whole prefix: the listing never returned, so no key count.
+    expect(message).toContain(`${dir}* (every key under this prefix)`);
+    expect(m.bodies(stream(id(9)))).toHaveLength(2);
+    expect(r.earlierVersions).toEqual({ deletedBodies: 0, complete: false });
   });
 });

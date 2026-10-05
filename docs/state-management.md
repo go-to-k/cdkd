@@ -2895,7 +2895,9 @@ capability versioning is enabled for.
 **The `deployments/**` event store needs the two version actions as well.**
 Every path that deletes from it — the writer's self-bounding prune,
 `cdkd events prune`, and `cdkd destroy --purge-events` — also purges the
-noncurrent versions of the keys it deletes. Each run's stream is re-written in
+noncurrent versions of the keys it deletes, and `cdkd events prune --all` /
+`cdkd destroy --purge-events` purge every noncurrent version under the stack's
+`deployments/` prefix. Each run's stream is re-written in
 full per flush, so one run leaves one version per flush, and the repo classes
 this content as sensitive: see
 [Deleting a run stream also purges its earlier versions](deployment-events.md#deleting-a-run-stream-also-purges-its-earlier-versions)
@@ -2917,7 +2919,9 @@ understand.** The purge runs on a cleanup path and must never abort the
 operation it follows, so it logs a warning and the deploy, diff, rollback,
 destroy, `cdkd import`, `cdkd export`, `cdkd gc` or `cdkd events prune` run still succeeds. What does not
 happen is the removal: the value stays retrievable by anyone who can read the
-state bucket with a `VersionId`. The warning counts KEYS, names them, names
+state bucket with a `VersionId`. The warning counts KEYS, names them (a
+prefix-wide sweep whose listing failed is counted as `every key under 1
+prefix(es)` and named `<prefix>* (every key under this prefix)`), names
 WHICH object it failed on, and spells the two actions exactly as above:
 
 ```
