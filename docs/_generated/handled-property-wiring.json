@@ -17837,6 +17837,7 @@
           ],
           "seededBy": [
             "create",
+            "delete",
             "toSdkFields",
             "update"
           ]

@@ -995,7 +995,11 @@ Issue [#3952](https://github.com/go-to-k/cdkd/issues/3952) added one shared
 arm, `redactedDeleteAddressSkip` (`src/provisioning/redacted-delete-address.ts`),
 for a delete whose recorded address property cdkd redacted (the `***` mask or a
 secret `{{resolve:...}}` expression): ApiGateway / ApiGatewayV2 children, ECS
-services, Glue catalog-scoped resources, Scheduler schedules, Route 53 record
+services, Glue catalog-scoped resources, Scheduler schedules (unless the record
+holds the schedule's creation date, which with the recorded target ARN and role
+locates it in any group; a record with no stack region, or a schedule matching
+only the date, is still skipped:
+[#4275](https://github.com/go-to-k/cdkd/issues/4275)), Route 53 record
 sets, security-group ingress rules, CloudWatch anomaly detectors, DB proxy
 target groups, and the
 fallback-less arms of the Lambda permission, IAM policy, UserToGroupAddition and

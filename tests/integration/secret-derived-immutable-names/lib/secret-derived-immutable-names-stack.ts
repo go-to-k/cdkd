@@ -6,6 +6,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as appsync from 'aws-cdk-lib/aws-appsync';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 
 /**
  * Immutable NAMES taken from a Secrets Manager secret, updated in place
@@ -51,14 +52,23 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  *     rotates the secret's `filter` field before the update, so that op
  *     would carry a name the filter does not have.
  *
- * A Scheduler Schedule's secret-derived `GroupName` stays refused on purpose
- * (go-to-k/cdkd#4275: nothing non-secret in the record identifies the group),
- * so it is not deployed here.
+ *   - `SecretSchedule` (AWS::Scheduler::Schedule, DISABLED), `GroupName`
+ *     from the secret, in `SecretScheduleGroup` (Cloud Control), whose `Name`
+ *     comes from the same field (go-to-k/cdkd#4275). The schedule's ARN embeds
+ *     the group, so nothing in the record named it: the update was refused,
+ *     and the destroy skipped it. cdkd now records the schedule's creation
+ *     date and confirms the group the secret resolves to holds that schedule
+ *     before the update, and finds it by that date to delete it.
+ *   - `PlainTargetSchedule`, in the same group, whose target queue and role
+ *     are NOT secret-derived: its recorded target ARN and role are compared
+ *     with the live ones as well (`SecretSchedule`'s target ARN is recorded
+ *     redacted, so only its role is).
  *
  * UPDATE (CDKD_TEST_UPDATE=true) changes only the Stages' `Description`, the
  * Service's `EnableECSManagedTags` (it has no description), the Policy's
  * `PolicyDocument`, the API's `XrayEnabled`, the DataSource's `Description`
- * the Queue's `VisibilityTimeout` and the Filter's `FilterPattern`: ordinary in-place changes, so the update is not a no-op.
+ * the Queue's `VisibilityTimeout`, the Filter's `FilterPattern` and the Schedule's
+ * `Description`: ordinary in-place changes, so the update is not a no-op.
  *
  * covers: AWS::ApiGatewayV2::Api
  * covers: AWS::ApiGatewayV2::Stage
@@ -71,6 +81,9 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * covers: AWS::SQS::Queue
  * covers: AWS::Logs::LogGroup
  * covers: AWS::Logs::MetricFilter
+ * covers: AWS::Scheduler::ScheduleGroup
+ * covers: AWS::Scheduler::Schedule
+ * covers: AWS::IAM::Role
  */
 export class SecretDerivedImmutableNamesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -142,10 +155,85 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       description,
     });
 
-    new sqs.CfnQueue(this, 'SecretQueue', {
+    const queue = new sqs.CfnQueue(this, 'SecretQueue', {
       queueName: fromSecret('queue'),
       visibilityTimeout: update ? 60 : 30,
     });
+
+    const scheduleRole = new iam.CfnRole(this, 'ScheduleRole', {
+      assumeRolePolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { Service: 'scheduler.amazonaws.com' },
+            Action: 'sts:AssumeRole',
+          },
+        ],
+      },
+      policies: [
+        {
+          policyName: 'send',
+          policyDocument: {
+            Version: '2012-10-17',
+            Statement: [{ Effect: 'Allow', Action: 'sqs:SendMessage', Resource: queue.attrArn }],
+          },
+        },
+      ],
+    });
+    const scheduleGroup = new scheduler.CfnScheduleGroup(this, 'SecretScheduleGroup', {
+      name: fromSecret('group'),
+    });
+    const schedule = new scheduler.CfnSchedule(this, 'SecretSchedule', {
+      name: 'CdkdSdinSchedule',
+      // The secret reference itself, not `scheduleGroup.ref`, so the recorded
+      // GroupName is the reference.
+      groupName: fromSecret('group'),
+      description,
+      state: 'DISABLED',
+      flexibleTimeWindow: { mode: 'OFF' },
+      scheduleExpression: 'rate(1 day)',
+      target: { arn: queue.attrArn, roleArn: scheduleRole.attrArn },
+    });
+    schedule.addDependency(scheduleGroup);
+
+    // A second schedule in the same secret-derived group whose target and role
+    // are NOT secret-derived, so the recorded target ARN and role are compared
+    // too: the first one's target is the secret-named queue, recorded redacted.
+    const plainTargetQueue = new sqs.CfnQueue(this, 'PlainTargetQueue', {});
+    const plainScheduleRole = new iam.CfnRole(this, 'PlainScheduleRole', {
+      assumeRolePolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { Service: 'scheduler.amazonaws.com' },
+            Action: 'sts:AssumeRole',
+          },
+        ],
+      },
+      policies: [
+        {
+          policyName: 'send',
+          policyDocument: {
+            Version: '2012-10-17',
+            Statement: [
+              { Effect: 'Allow', Action: 'sqs:SendMessage', Resource: plainTargetQueue.attrArn },
+            ],
+          },
+        },
+      ],
+    });
+    const plainTargetSchedule = new scheduler.CfnSchedule(this, 'PlainTargetSchedule', {
+      name: 'CdkdSdinSchedulePlainTarget',
+      groupName: fromSecret('group'),
+      description,
+      state: 'DISABLED',
+      flexibleTimeWindow: { mode: 'OFF' },
+      scheduleExpression: 'rate(1 day)',
+      target: { arn: plainTargetQueue.attrArn, roleArn: plainScheduleRole.attrArn },
+    });
+    plainTargetSchedule.addDependency(scheduleGroup);
 
     const logGroup = new logs.CfnLogGroup(this, 'FilterLogGroup', { retentionInDays: 1 });
     new logs.CfnMetricFilter(this, 'SecretFilter', {

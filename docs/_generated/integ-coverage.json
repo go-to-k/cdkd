@@ -4209,6 +4209,7 @@
         "s3-replication-and-filter",
         "scheduler-custom-group",
         "sdk-ccapi-crossref",
+        "secret-derived-immutable-names",
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "serverless-api",
@@ -4465,6 +4466,10 @@
         ],
         "sdk-ccapi-crossref": [
           "l1"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
+          "literal"
         ],
         "secrets-array-nested": [
           "l2",
@@ -6961,7 +6966,8 @@
       "integs": [
         "ecs-schedule-targets",
         "eventbridge",
-        "eventbridge-scheduler"
+        "eventbridge-scheduler",
+        "secret-derived-immutable-names"
       ],
       "signals": {
         "ecs-schedule-targets": [
@@ -6971,6 +6977,9 @@
           "literal"
         ],
         "eventbridge-scheduler": [
+          "literal"
+        ],
+        "secret-derived-immutable-names": [
           "literal"
         ]
       }
@@ -7251,6 +7260,7 @@
     "AWS::SES::EmailIdentity",
     "AWS::SMSVOICE::ProtectConfiguration",
     "AWS::SSM::Document",
+    "AWS::Scheduler::ScheduleGroup",
     "AWS::SecretsManager::RotationSchedule",
     "AWS::Serverless::Function",
     "AWS::Signer::SigningProfile",

@@ -79,6 +79,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import {
   hasRedactedCause,
+  isMarkedNonRetryable,
   isRetryableTransientError,
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
@@ -91,10 +92,16 @@ import { RDSDBProxyProvider } from '../../../src/provisioning/providers/rds-dbpr
 import { RDSDBProxyEndpointProvider } from '../../../src/provisioning/providers/rds-dbproxy-endpoint-provider.js';
 import { RDSDBProxyTargetGroupProvider } from '../../../src/provisioning/providers/rds-dbproxy-targetgroup-provider.js';
 import { S3VectorsProvider } from '../../../src/provisioning/providers/s3-vectors-provider.js';
-import { SchedulerScheduleProvider } from '../../../src/provisioning/providers/scheduler-schedule-provider.js';
+import {
+  RECORDED_CREATION_DATE_KEY,
+  SchedulerScheduleProvider,
+} from '../../../src/provisioning/providers/scheduler-schedule-provider.js';
+import { ResourceNotFoundException } from '@aws-sdk/client-scheduler';
 import { KinesisStreamConsumerProvider } from '../../../src/provisioning/providers/kinesis-streamconsumer-provider.js';
 import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
 import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
+import { withCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
+import { MASK_WALK_DEPTH_CAP_MARKER } from '../../../src/provisioning/masked-retry-logger.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 import type { ResourceProvider, UpdateContext } from '../../../src/types/resource.js';
 
@@ -543,33 +550,314 @@ describe('Kinesis StreamConsumer StreamARN from the consumer ARN (go-to-k/cdkd#4
   });
 });
 
-describe('Scheduler Schedule GroupName stays refused (go-to-k/cdkd#4275)', () => {
-  // Nothing non-secret in the record identifies the group, and a probe of the
-  // resolved group cannot tell a rotated secret from an unchanged one, so a
-  // secret-derived group keeps the refusal, and AWS is never asked.
-  it('a recorded reference against its resolved value is refused, with no AWS call', async () => {
-    fakeAws({ GetScheduleCommand: () => ({}) });
-    const rest = {
-      ScheduleExpression: 'rate(1 hour)',
-      FlexibleTimeWindow: { Mode: 'OFF' },
-      Target: { Arn: 'arn:aws:sqs:us-east-1:1:q', RoleArn: 'arn:aws:iam::1:role/r' },
-    };
-    const result = await outcome(
+describe('Scheduler Schedule GroupName: confirmed by the recorded identity (go-to-k/cdkd#4275)', () => {
+  // A probe of the resolved group alone cannot tell a rotated secret from an
+  // unchanged one; the creation date and target cdkd recorded can.
+  const TARGET = 'arn:aws:sqs:us-east-1:1:q';
+  const ROLE = 'arn:aws:iam::1:role/r';
+  const rest = {
+    ScheduleExpression: 'rate(1 hour)',
+    FlexibleTimeWindow: { Mode: 'OFF' },
+    Target: { Arn: TARGET, RoleArn: ROLE },
+  };
+  const CREATED = '2026-10-05T12:34:56.789Z';
+  const recorded = {
+    Arn: 'arn:aws:scheduler:us-east-1:1:schedule/x/my-schedule',
+    [RECORDED_CREATION_DATE_KEY]: CREATED,
+  };
+  /** The deploy's resolved-secrets bag, as the engine binds it around update(). */
+  const deployBag = new Map([[NAME, REF]]);
+  const update = (
+    previousGroup: unknown,
+    ctx: UpdateContext,
+    // `null` = no binder: a default parameter would swallow an explicit `undefined`.
+    bag: Map<string, string> | null = deployBag
+  ) => {
+    const call = () =>
       new SchedulerScheduleProvider().update(
         'Schedule',
         'my-schedule',
         'AWS::Scheduler::Schedule',
         { ...rest, GroupName: NAME, Description: 'new' },
-        { ...rest, GroupName: REF },
-        context
-      )
+        { ...rest, GroupName: previousGroup },
+        ctx
+      );
+    return bag === null ? call() : withCurrentResourceSecrets(bag, call);
+  };
+  const caught = (p: Promise<unknown>) =>
+    p.then(
+      () => undefined,
+      (e: unknown) => e
     );
-    expect(result).toContain('GroupName addresses the schedule');
-    // The resolved group is masked where the refusal is built, not only by
-    // the engine's thrown-message mask; the marker itself is shown.
-    expect(result).toContain('to ***)');
-    expect(result).not.toContain(NAME);
+  const sent = () => mockSend.mock.calls.map((c) => commandName(c[0]));
+  const getInputs = () =>
+    mockSend.mock.calls
+      .filter((c) => commandName(c[0]) === 'GetScheduleCommand')
+      .map((c) => (c[0] as { input: unknown }).input);
+  const answeredWith = (date: Date, target = TARGET, role = ROLE) => ({
+    GetScheduleCommand: () => ({ CreationDate: date, Target: { Arn: target, RoleArn: role } }),
+    UpdateScheduleCommand: () => ({
+      ScheduleArn: 'arn:aws:scheduler:us-east-1:1:schedule/g/my-schedule',
+    }),
+  });
+  const notFoundAnswer = {
+    GetScheduleCommand: () => {
+      throw new ResourceNotFoundException({
+        message: `Schedule ${NAME}/my-schedule not found`,
+        Message: `Schedule ${NAME}/my-schedule not found`,
+        $metadata: {},
+      });
+    },
+  };
+
+  it('the identity masker reads state\'s mask because the two constants are one (CODE-N1)', () => {
+    expect(MASK_WALK_DEPTH_CAP_MARKER).toBe(SECRET_MASK);
+  });
+
+  for (const previous of [REF, SECRET_MASK]) {
+    it(`a recorded ${previous === REF ? 'reference' : 'mask'} whose resolved group holds the recorded schedule: updated in place, the date carried`, async () => {
+      fakeAws(answeredWith(new Date(CREATED)));
+      const result = (await update(previous, { ...context, recordedAttributes: recorded })) as {
+        attributes?: Record<string, unknown>;
+      };
+      // The confirmation is addressed by the RESOLVED group, before the write.
+      expect(getInputs()).toEqual([{ Name: 'my-schedule', GroupName: NAME }]);
+      // A secret-derived group carries the confirmed date: no read-back.
+      expect(sent()).toEqual(['GetScheduleCommand', 'UpdateScheduleCommand']);
+      const write = mockSend.mock.calls[1]![0] as { input: Record<string, unknown> };
+      expect(write.input['GroupName']).toBe(NAME);
+      expect(result.attributes?.[RECORDED_CREATION_DATE_KEY]).toBe(CREATED);
+    });
+  }
+
+  it('another creation date in the resolved group: refused as a rotation, nothing written, not replaceable', async () => {
+    fakeAws(answeredWith(new Date('2026-10-05T12:34:57.789Z')));
+    const error = await caught(update(REF, { ...context, recordedAttributes: recorded }));
+    expect(error).toBeInstanceOf(ProvisioningError);
+    // NOT the typed error the engine replaces on under --replace.
+    expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect((error as Error).message).toContain('holds a different schedule of this name');
+    expect((error as Error).message).toContain('the secret may have been rotated');
+    expect((error as Error).message).not.toContain(NAME);
+    expect(sent()).toEqual(['GetScheduleCommand']);
+  });
+
+  for (const [label, answers] of [
+    // Two environments deployed in the same instant (SEC-M1), or this one's
+    // target edited outside cdkd: either way not proof it is ours.
+    ['another target', answeredWith(new Date(CREATED), 'arn:aws:sqs:us-east-1:1:other')],
+    // A shared or universal target: only the role tells them apart (SEC-R1).
+    ['the same target but another role', answeredWith(new Date(CREATED), TARGET, 'arn:aws:iam::1:role/other')],
+  ] as const) {
+    it(`the recorded creation date with ${label}: refused as an out-of-band edit, not a rotation, nothing written`, async () => {
+      fakeAws(answers);
+      const error = await caught(update(REF, { ...context, recordedAttributes: recorded }));
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      const message = (error as Error).message;
+      expect(message).toContain('carries the recorded creation date but not the recorded target or role');
+      expect(message).toContain('cdkd orphan <construct path>');
+      expect(message).not.toContain('rotated');
+      expect(message).not.toContain("restore the secret's value");
+      expect(message).not.toContain(NAME);
+      expect(sent()).toEqual(['GetScheduleCommand']);
+    });
+  }
+
+  it('a recorded target that is itself redacted is not compared (the date decides)', async () => {
+    fakeAws(answeredWith(new Date(CREATED), 'arn:aws:sqs:us-east-1:1:whatever'));
+    await new SchedulerScheduleProvider().update(
+      'Schedule',
+      'my-schedule',
+      'AWS::Scheduler::Schedule',
+      { ...rest, GroupName: NAME, Description: 'new' },
+      { ...rest, Target: { ...rest.Target, Arn: SECRET_MASK }, GroupName: REF },
+      { ...context, recordedAttributes: recorded }
+    ).catch(() => undefined);
+    // The confirmation passed: the write went out.
+    expect(sent()).toEqual(['GetScheduleCommand', 'UpdateScheduleCommand']);
+  });
+
+  it('the same reference, no schedule of the name in the resolved group: a rotation, refused without --replace (SEC-m2)', async () => {
+    fakeAws(notFoundAnswer);
+    for (const bag of [deployBag, null]) {
+      vi.clearAllMocks();
+      const error = await caught(update(REF, { ...context, recordedAttributes: recorded }, bag));
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect((error as Error).message).toContain('holds no schedule of this name');
+      // The out-of-band-deleted path is named too (CODE-R2-N2).
+      expect((error as Error).message).toContain('cdkd orphan <construct path>');
+      expect((error as Error).message).not.toContain(NAME);
+      expect(sent()).toEqual(['GetScheduleCommand']);
+    }
+  });
+
+  it('a RE-POINTED reference, no schedule of the name there: a template move, the typed refusal --replace acts on (SEC-m2)', async () => {
+    fakeAws(notFoundAnswer);
+    const other = '{{resolve:secretsmanager:other-secret:SecretString:group}}';
+    const error = await caught(
+      update(REF, { ...context, recordedAttributes: recorded }, new Map([[NAME, other]]))
+    );
+    expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((error as Error).message).toContain('GroupName addresses the schedule');
+    expect((error as Error).message).not.toContain(NAME);
+  });
+
+  it('a recorded mask and no schedule there cannot be told from a rotation: refused without --replace', async () => {
+    fakeAws(notFoundAnswer);
+    const error = await caught(update(SECRET_MASK, { ...context, recordedAttributes: recorded }));
+    expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+  });
+
+  it('a record with no (or a rewritten) creation date: refused with the recovery, never --replace, with no AWS call (SPEC-2)', async () => {
+    fakeAws(answeredWith(new Date(CREATED)));
+    for (const ctx of [
+      context,
+      { ...context, recordedAttributes: { Arn: recorded.Arn } },
+      // State redaction rewrote a secret-equal substring of the date.
+      { ...context, recordedAttributes: { [RECORDED_CREATION_DATE_KEY]: '***-10-05T12:34:56.789Z' } },
+      // A date, but not in the form this provider records (`toISOString()`).
+      { ...context, recordedAttributes: { [RECORDED_CREATION_DATE_KEY]: '2026-10-05T12:34:56Z' } },
+    ]) {
+      vi.clearAllMocks();
+      const error = await caught(update(REF, ctx));
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      const message = (error as Error).message;
+      expect(message).toContain('predates the creation date cdkd now records');
+      expect(message).toContain('aws scheduler delete-schedule');
+      expect(message).toContain('cdkd orphan');
+      expect(message).not.toContain(NAME);
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a failed lookup is refused naming its class, stays retryable, and writes nothing', async () => {
+    fakeAws({
+      GetScheduleCommand: () => {
+        throw Object.assign(new Error(`group ${NAME} is busy`), { name: 'ThrottlingException' });
+      },
+    });
+    const error = await caught(update(REF, { ...context, recordedAttributes: recorded }));
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((error as Error).message).toContain('could not be confirmed (ThrottlingException)');
+    expect((error as Error).message).not.toContain(NAME);
+    expect(hasRedactedCause(error as Error)).toBe(true);
+    expect(isRetryableTransientError(error, retryClassificationText(error))).toBe(true);
+    expect(sent()).toEqual(['GetScheduleCommand']);
+  });
+
+  it('a template that moved the group from the secret to a literal keeps the typed refusal, with no AWS call', async () => {
+    fakeAws(answeredWith(new Date(CREATED)));
+    for (const desired of ['a-literal-group', undefined]) {
+      vi.clearAllMocks();
+      const error = await caught(
+        new SchedulerScheduleProvider().update(
+          'Schedule',
+          'my-schedule',
+          'AWS::Scheduler::Schedule',
+          { ...rest, ...(desired !== undefined && { GroupName: desired }) },
+          { ...rest, GroupName: REF },
+          { ...context, recordedAttributes: recorded }
+        )
+      );
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((error as Error).message).toContain('GroupName addresses the schedule');
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a plain group change keeps the typed refusal --replace acts on, with no AWS call', async () => {
+    fakeAws(answeredWith(new Date(CREATED)));
+    const error = await caught(update('plain-old-group', { ...context, recordedAttributes: recorded }));
+    expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((error as Error).message).toContain('GroupName addresses the schedule');
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  describe('a rollback revert, which resolves BOTH sides again', () => {
+    const replay = (ctx: UpdateContext, group = NAME) =>
+      new SchedulerScheduleProvider().update(
+        'Schedule',
+        'my-schedule',
+        'AWS::Scheduler::Schedule',
+        { ...rest, GroupName: group, Description: 'old' },
+        { ...rest, GroupName: group, Description: 'new' },
+        { ...context, replayingState: true, ...ctx }
+      );
+
+    it('a group holding another schedule of the name: refused, nothing written', async () => {
+      fakeAws(answeredWith(new Date('2026-10-05T12:34:57.789Z')));
+      const error = await caught(replay({ recordedAttributes: recorded }));
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((error as Error).message).not.toContain(NAME);
+      expect(sent()).toEqual(['GetScheduleCommand']);
+    });
+
+    it('a group holding no schedule of the name: refused, nothing written', async () => {
+      fakeAws(notFoundAnswer);
+      const error = await caught(replay({ recordedAttributes: recorded }));
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect((error as Error).message).toContain('re-run the rollback');
+      expect(sent()).toEqual(['GetScheduleCommand']);
+    });
+
+    it('the recorded schedule: reverted in place, the recorded date carried with no read-back (SEC-n3)', async () => {
+      fakeAws(answeredWith(new Date(CREATED)));
+      const result = (await replay({ recordedAttributes: recorded })) as {
+        attributes?: Record<string, unknown>;
+      };
+      expect(sent()).toEqual(['GetScheduleCommand', 'UpdateScheduleCommand']);
+      expect(result.attributes?.[RECORDED_CREATION_DATE_KEY]).toBe(CREATED);
+    });
+
+    it('a record with NO date (written before cdkd kept one) reverts with no lookup and backfills nothing (TEST-1, SEC-n3)', async () => {
+      fakeAws(answeredWith(new Date(CREATED)));
+      for (const group of [NAME, 'a-literal-group']) {
+        vi.clearAllMocks();
+        const result = (await replay({ recordedAttributes: { Arn: recorded.Arn } }, group)) as {
+          attributes?: Record<string, unknown>;
+        };
+        expect(sent()).toEqual(['UpdateScheduleCommand']);
+        expect(result.attributes?.[RECORDED_CREATION_DATE_KEY]).toBeUndefined();
+      }
+    });
+
+    it('a literal group is not probed, so an out-of-band recreate does not wedge the revert (CODE-M1)', async () => {
+      // The date no longer matches: the schedule was recreated outside cdkd.
+      fakeAws(answeredWith(new Date('2026-10-05T12:34:57.789Z')));
+      await replay({ recordedAttributes: recorded }, 'a-literal-group');
+      expect(sent()).toEqual(['UpdateScheduleCommand']);
+    });
+
+    it('a deploy (no replay) with equal sides pays no confirmation lookup', async () => {
+      fakeAws(answeredWith(new Date(CREATED)));
+      await replay({ recordedAttributes: recorded, replayingState: false });
+      expect(sent()).toEqual(['UpdateScheduleCommand']);
+    });
+  });
+
+  it('a literal group reads the date again after the write, so an out-of-band recreate is picked up (CODE-M1)', async () => {
+    const RECREATED = '2026-10-06T00:00:00.000Z';
+    fakeAws(answeredWith(new Date(RECREATED)));
+    const result = (await new SchedulerScheduleProvider().update(
+      'Schedule',
+      'my-schedule',
+      'AWS::Scheduler::Schedule',
+      { ...rest, GroupName: 'a-literal-group', Description: 'new' },
+      { ...rest, GroupName: 'a-literal-group' },
+      { ...context, recordedAttributes: recorded }
+    )) as { attributes?: Record<string, unknown> };
+    expect(sent()).toEqual(['UpdateScheduleCommand', 'GetScheduleCommand']);
+    expect(result.attributes?.[RECORDED_CREATION_DATE_KEY]).toBe(RECREATED);
   });
 });
 
@@ -1087,7 +1375,7 @@ describe('DBProxyTargetGroup: AWS confirms the resolved names before any write (
     expect(debug).not.toContain(NAME);
   });
 
-  it('a NOT-FOUND fault (a rotated proxy name) is refused as a typed rotation, not as a failure to retry', async () => {
+  it('a NOT-FOUND fault (a rotated proxy name) is refused as a rotation, not as a failure to retry', async () => {
     for (const name of ['DBProxyNotFoundFault', 'DBProxyTargetGroupNotFoundFault']) {
       fakeAws({
         DescribeDBProxyTargetGroupsCommand: () => {
@@ -1108,7 +1396,9 @@ describe('DBProxyTargetGroup: AWS confirms the resolved names before any write (
           () => undefined,
           (e: unknown) => e
         );
-      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(isMarkedNonRetryable(error)).toBe(true);
       expect((error as Error).message).toContain('addresses no target group');
       expect(writes()).toEqual([]);
     }
@@ -1155,23 +1445,43 @@ describe('DBProxyTargetGroup: AWS confirms the resolved names before any write (
     expect(writes()).toEqual([]);
   });
 
-  it('the mismatch arms stay a typed refusal (a real change, which --replace may replace)', async () => {
-    fakeAws(targetGroupAt('arn:aws:rds:us-east-1:123456789012:target-group:prx-tg-someone-else'));
-    const error = await site
-      .provider()
-      .update(
-        'Resource',
-        site.physicalId,
-        site.type,
-        { ...site.desiredRest, [site.key]: NAME },
-        { ...site.previousRest, [site.key]: REF },
-        context
-      )
-      .then(
-        () => undefined,
-        (e: unknown) => e
-      );
-    expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+  it('the mismatch arms are NOT a typed refusal, so --replace never turns a rotation into a create on the other proxy', async () => {
+    // The engine replaces on `ResourceUpdateNotSupportedError` under
+    // --replace, and under `UpdateReplacePolicy: Retain` that replacement is
+    // create-only: the create would register the targets on the proxy the
+    // rotated secret names (go-to-k/cdkd#4275).
+    for (const answers of [
+      targetGroupAt('arn:aws:rds:us-east-1:123456789012:target-group:prx-tg-someone-else'),
+      { DescribeDBProxyTargetGroupsCommand: () => ({ TargetGroups: [] }) },
+    ]) {
+      vi.clearAllMocks();
+      fakeAws(answers);
+      const error = await site
+        .provider()
+        .update(
+          'Resource',
+          site.physicalId,
+          site.type,
+          { ...site.desiredRest, [site.key]: NAME },
+          { ...site.previousRest, [site.key]: REF },
+          context
+        )
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect((error as Error).message).toContain('with or without --replace');
+      expect((error as Error).message).not.toContain(NAME);
+      expect(writes()).toEqual([]);
+    }
+  });
+
+  it('a lookup confirming the recorded ARN still proceeds to the writes', async () => {
+    fakeAws(targetGroupAt(TG_ARN));
+    expect(await run(site, NAME, REF)).toContain(SENTINEL);
   });
 
   it('a short name inside the other is still value-masked (longest replaced first)', async () => {
@@ -1219,6 +1529,40 @@ describe('DBProxyTargetGroup: AWS confirms the resolved names before any write (
     const result = await run(site, 'proxy-a', 'proxy-a');
     expect(result).toContain(SENTINEL);
     expect(lookups()).toEqual([]);
+  });
+
+  // A rollback revert resolves BOTH sides with today's secret, so they compare
+  // equal and nothing is exempted, while the names may now address another
+  // proxy: the replay is confirmed too.
+  it('a rollback revert naming another target group: refused, nothing written', async () => {
+    fakeAws(targetGroupAt('arn:aws:rds:us-east-1:123456789012:target-group:prx-tg-someone-else'));
+    const result = await run(site, NAME, NAME, site.physicalId, { ...context, replayingState: true });
+    expect(result).toContain('replayed by a rollback');
+    expect(result).toContain('the names now address a different target group');
+    // Neutral: a literal name is not "rotated" (CODE-N2).
+    expect(result).not.toContain('rotated');
+    expect(result).not.toContain("restore the secret's value");
+    expect(result).not.toContain(NAME);
+    expect(lookups()).toEqual([{ DBProxyName: NAME, TargetGroupName: 'default' }]);
+    expect(writes()).toEqual([]);
+  });
+
+  it('a rollback revert whose lookup fails says so neutrally (SPEC-A)', async () => {
+    fakeAws({
+      DescribeDBProxyTargetGroupsCommand: () => {
+        throw Object.assign(new Error('busy'), { name: 'ThrottlingException' });
+      },
+    });
+    const result = await run(site, NAME, NAME, site.physicalId, { ...context, replayingState: true });
+    expect(result).toContain('the names still address the recorded target group could not be confirmed');
+    expect(result).not.toContain('its secret');
+    expect(writes()).toEqual([]);
+  });
+
+  it('a rollback revert confirmed by the recorded ARN proceeds to the writes', async () => {
+    fakeAws(targetGroupAt(TG_ARN));
+    const result = await run(site, NAME, NAME, site.physicalId, { ...context, replayingState: true });
+    expect(result).toContain(SENTINEL);
   });
 });
 
