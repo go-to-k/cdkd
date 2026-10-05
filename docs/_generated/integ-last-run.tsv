@@ -64,7 +64,7 @@ cross-region-concurrent-stacks	2026-10-05T08:20:47Z	PASS	185	verify.sh	rc ok, or
 cross-region-state-bucket	2026-10-03T07:02:29Z	PASS	32	verify.sh	rc ok, orph clean (#4283 PR #4449)
 cross-stack-cfn-fallback	2026-10-02T23:48:50Z	PASS	150	verify.sh	rc ok, orph clean (#4475)
 cross-stack-references	2026-10-03T09:48:51Z	PASS	40	std-flow	rc ok, orph clean (#4505)
-cross-stack-secret-import	2026-10-04T06:42:40Z	PASS	381	verify.sh	rc ok, orph clean (#4105)
+cross-stack-secret-import	2026-10-05T10:27:06Z	PASS	385	verify.sh	rc ok, orph clean; scrub purged the consumer state key and exports-index versions (#2624 PR #4572)
 custom-resource-getatt-data	2026-10-04T15:13:49Z	PASS	90	verify.sh	rc ok, orph clean (#4451)
 custom-resource-masked-service-token	2026-09-28T21:40:21Z	PASS	156	verify.sh	rc ok, orph clean; #3938 + #3976 refusal + #3960 seeded arms; pre-#3976 probe RED at R1
 custom-resource-noecho-nested	2026-10-04T15:13:49Z	PASS	886	verify.sh	rc ok, orph clean (#4451)
@@ -88,7 +88,7 @@ drift-revert	2026-10-05T10:05:08Z	PASS	306	verify.sh	rc ok, orph clean (#2036 PR
 drift-revert-arrays	2026-10-04T10:29:43Z	PASS	185	verify.sh	rc ok, orph clean (#4476)
 drift-revert-vpc	2026-10-05T10:05:08Z	PASS	345	verify.sh	rc ok, orph clean (#2036 PR #4575)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
-dynamic-ref-cross-region	2026-10-04T17:26:35Z	PASS	220	verify.sh	rc ok, orph clean; phase 3g kept-placeholder finding + 3h failed-lookup arm (#2166 PR #4556)
+dynamic-ref-cross-region	2026-10-05T10:27:06Z	PASS	210	verify.sh	rc ok, orph clean (#2624 PR #4572)
 dynamodb-autoscaling	2026-10-03T04:27:36Z	PASS	83	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-globaltable	2026-10-03T06:36:56Z	PASS	1543	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -278,7 +278,7 @@ replacement-rename-onto-holder	2026-10-05T02:29:22Z	PASS	626	verify.sh	rc ok, or
 retain-orphan-redeploy	2026-09-30T02:47:30Z	PASS	160	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
 rollback-command	2026-10-05T02:29:22Z	PASS	195	verify.sh	rc ok, orph clean (#4569 @070626749)
-rollback-cross-region-secret	2026-10-02T23:58:52Z	PASS	295	verify.sh	rc ok, orph clean (#4475)
+rollback-cross-region-secret	2026-10-05T10:27:06Z	PASS	195	verify.sh	rc ok, orph clean (#2624 PR #4572)
 rollback-deletion-policy-snapshot	2026-10-02T13:55:47Z	PASS	141	verify.sh	rc ok, orph clean (#4436)
 rollback-explicit-name-rewrite	2026-10-04T17:04:46Z	PASS	201	verify.sh	rc ok, orph clean (#4408)
 rollback-failure-injection	2026-10-05T02:29:22Z	PASS	411	verify.sh	rc ok, orph clean (#4569 @070626749)
@@ -306,12 +306,13 @@ schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
 schema-v8-to-v9-migration	2026-09-24T15:24:57Z	FAIL	138	verify.sh	stale fixture: v9 phase expects state.version 9, binary writes 10; AWS clean (#3658, tooling-backlog row)
 schema-v9-to-v10-migration	2026-10-04T19:49:12Z	PASS	155	verify.sh	rc ok, orph clean (#4547)
-scrub-nested-child	2026-10-04T17:26:35Z	PASS	145	verify.sh	rc ok, orph clean (#2166 PR #4556)
+scrub-nested-child	2026-10-05T10:27:06Z	PASS	190	verify.sh	rc ok, orph clean; us-east-2; scrub purged the child and parent state.json versions, --purge-history arm verified (#2624 PR #4572)
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-10-04T06:31:24Z	PASS	225	verify.sh	rc ok, orph clean (#2790 PR #4516 phases 7-10)
 secret-derived-immutable-names	2026-10-04T12:10:42Z	PASS	115	verify.sh	rc ok, orph clean (#3869 pre-rotation FilterName absent from update log)
 secrets-array-nested	2026-10-03T18:30:14Z	PASS	425	verify.sh	rc ok, orph clean
 secrets-dynamic-ref	2026-10-05T10:05:08Z	PASS	751	verify.sh	rc ok, orph clean; 1f3 closure + 1f4 drift --accept arms; src=origin/main probe red at 1f3 (#2036 PR #4575)
+secrets-dynamic-ref	2026-10-05T10:27:06Z	PASS	688	verify.sh	rc ok, orph clean; run alone -- a first attempt was blocked mid-run by a peer session running the same fixture (its secret marked for deletion), nothing leaked (#2624 PR #4572)
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
 secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
 serverless-api	2026-10-02T07:20:09Z	PASS	61	verify.sh	PR #4391 (#2080 EMR create latch, orphan-report rename) @a7306c55f; rc ok, orph clean
@@ -327,10 +328,10 @@ sns-subscription-filter	2026-10-03T04:28:51Z	PASS	52	verify.sh	rc ok, orph clean
 sns-subscription-update	2026-09-17T17:34:54Z	PASS	372	verify.sh	issue 3329: fixture armed with a Fn::GetAtt Arn Output + attributes.Arn assertions, phase 1 under --strict-getatt; both followed the phase-2 replacement (GUID changed). destroy 3 deleted 0 errors, 0 orphans (only deployments/ history remains, by design)
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-09-27T12:27:25Z	PASS	80	verify.sh	rc ok, orph clean (#3861)
-ssm-secure-dynamic-ref	2026-10-04T17:26:35Z	PASS	120	verify.sh	rc ok, orph clean (#2166 PR #4556)
+ssm-secure-dynamic-ref	2026-10-05T10:27:06Z	PASS	115	verify.sh	rc ok, orph clean (#2624 PR #4572)
 stack-copy-create-tokens	2026-10-03T13:51:11Z	PASS	1923	verify.sh	rc ok, orph clean; #4438 nonce + ledger: RETAIN redeploy creates new, orphan rotates, kill -9 resume
 stack-lock-renewal	2026-10-01T10:51:21Z	PASS	426	verify.sh	rc ok, orph clean (PR #4311 stack-lock guard)
-stage-assets	2026-10-03T13:11:36Z	PASS	196	verify.sh	rc ok, orph clean; #4474 Phase 2h stack selection
+stage-assets	2026-10-05T10:27:06Z	PASS	140	verify.sh	rc ok, orph clean (#2624 PR #4572)
 stale-attribute-heal	2026-10-03T05:56:27Z	PASS	85	verify.sh	rc ok, orph clean (#4497)
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
 state-info-command	2026-09-30T02:50:34Z	PASS	170	verify.sh	PR #4158 (#3909 account flags on the malformed-state refusal pointers) @38d708b/1d32ef2; rc ok, destroy 0 errors, no state/lock/CFn leftovers
