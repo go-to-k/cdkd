@@ -239,11 +239,11 @@ multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 sta
 multi-resource	2026-10-03T09:39:45Z	PASS	65	std-flow	rc ok, orph clean (#4505)
 multi-stack-deps	2026-10-03T09:41:05Z	PASS	80	std-flow	rc ok, orph clean (#4505)
 nested-required-preflight	2026-09-23T18:43:53Z	PASS	53	verify.sh	rc ok, orph clean (#1802)
-nested-stack	2026-10-04T21:38:06Z	PASS	75	verify.sh	rc ok, orph clean (#4561, merged head)
-nested-stack-3level	2026-10-04T21:38:06Z	PASS	360	verify.sh	rc ok, orph clean (#4561, merged head); Step 4d red at origin/main (no bound input fingerprint)
+nested-stack	2026-10-05T00:22:20Z	PASS	70	verify.sh	rc ok, orph clean (#4568 @c26fb0c29)
+nested-stack-3level	2026-10-05T00:22:20Z	PASS	477	verify.sh	rc ok, orph clean (#4568 @8f9f47be8); Step 4e red at origin/main (root never sent the new output value)
 nested-stack-deep	2026-10-04T03:21:48Z	PASS	105	verify.sh	rc ok, orph clean (#4521; first run failed on the pre-#4252 arrow grep, fixed here)
 nested-stack-replace-guard	2026-10-04T09:21:25Z	PASS	65	verify.sh	rc ok, orph clean (#3932)
-nested-stack-rollback	2026-10-04T19:49:12Z	PASS	100	verify.sh	rc ok, orph clean (#4547)
+nested-stack-rollback	2026-10-05T00:22:20Z	PASS	105	verify.sh	rc ok, orph clean (#4568 @c26fb0c29)
 nested-stack-secret	2026-10-04T15:13:49Z	PASS	231	verify.sh	rc ok, orph clean (#4451)
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
@@ -311,7 +311,7 @@ sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sh
 sdk-to-cc-autoroute	2026-10-04T06:31:24Z	PASS	225	verify.sh	rc ok, orph clean (#2790 PR #4516 phases 7-10)
 secret-derived-immutable-names	2026-10-04T12:10:42Z	PASS	115	verify.sh	rc ok, orph clean (#3869 pre-rotation FilterName absent from update log)
 secrets-array-nested	2026-10-03T18:30:14Z	PASS	425	verify.sh	rc ok, orph clean
-secrets-dynamic-ref	2026-10-04T21:38:06Z	PASS	657	verify.sh	rc ok, orph clean (#4561 @031ca61e0)
+secrets-dynamic-ref	2026-10-05T00:22:20Z	PASS	666	verify.sh	rc ok, orph clean (#4568 @8f9f47be8)
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
 secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
 serverless-api	2026-10-02T07:20:09Z	PASS	61	verify.sh	PR #4391 (#2080 EMR create latch, orphan-report rename) @a7306c55f; rc ok, orph clean

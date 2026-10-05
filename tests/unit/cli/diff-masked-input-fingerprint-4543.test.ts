@@ -41,6 +41,7 @@ import {
   maskedPropertyFingerprint,
   parameterInputsFor,
 } from '../../../src/deployment/masked-property-fingerprints.js';
+import { childTemplateLoader } from '../../../src/deployment/nested-output-templates.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -359,6 +360,105 @@ describe('cdkd diff never fetches a secret a masked property input yields (go-to
       expect(fetch).not.toHaveBeenCalled();
     } finally {
       fetch.mockRestore();
+    }
+  });
+});
+
+describe('cdkd diff reads a clean nested-stack output as the deploy does (go-to-k/cdkd#4565)', () => {
+  const READER = {
+    'Fn::Base64': {
+      'Fn::Join': [
+        '',
+        ['t=', { 'Fn::GetAtt': ['Child', 'Outputs.Name'] }, ';pw=', '{{resolve:secretsmanager:app-pw}}'],
+      ],
+    },
+  };
+  const CHILD: CloudFormationTemplate = {
+    Resources: { Target: { Type: 'AWS::SNS::Topic', Properties: { TopicName: 't' } } },
+    Outputs: { Name: { Value: { Ref: 'Target' } } },
+  };
+  const parentTemplate: CloudFormationTemplate = {
+    Resources: {
+      Child: {
+        Type: 'AWS::CloudFormation::Stack',
+        Metadata: { 'aws:asset:path': 'child.json' },
+        Properties: { TemplateURL: 'u' },
+      },
+      R: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'n', Type: 'String', Value: READER } },
+    },
+  };
+  /** The parent's state: Child reports `current`, R was stamped when it read `stamped`. */
+  async function parentState(childPath: string, current: string, stamped: string): Promise<StackState> {
+    const fingerprint = await maskedInputFingerprint(READER, {
+      template: parentTemplate,
+      parameterInput: parameterInputsFor({ template: parentTemplate, values: {} }).parameterInput,
+      childTemplate: childTemplateLoader({ Child: childPath }),
+      resolve: async () => ({ value: stamped }),
+    });
+    expect(fingerprint).toMatch(/^inputs-sha256:/);
+    return {
+      stackName: 'S',
+      region: 'us-east-1',
+      resources: {
+        Child: {
+          physicalId: 'arn:cdkd-local:us-east-1:123456789012:nested-stack/S/Child',
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: { TemplateURL: 'u' },
+          attributes: { 'Outputs.Name': current },
+        },
+        R: {
+          physicalId: 'n',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Name: 'n', Type: 'String', Value: '***' },
+          maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(READER) },
+          maskedPropertyInputFingerprints: { Value: fingerprint! },
+        },
+      },
+      outputs: {},
+      version: 10,
+      lastModified: 0,
+    };
+  }
+  async function rootChange(state: StackState, childPath: string) {
+    const root = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: parentTemplate,
+      nestedTemplates: { Child: childPath },
+      recursive: false,
+      stateBackend: {
+        getState: async (name: string) => (name === 'S' ? { state, etag: 'e' } : null),
+      } as unknown as S3StateBackend,
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    });
+    return root.changes.get('R')!.changeType;
+  }
+
+  it('NO_CHANGE for the output the deploy stamped, UPDATE once the recorded output moved', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-4565-diff-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(childPath, JSON.stringify(CHILD));
+      expect(await rootChange(await parentState(childPath, 'target-one', 'target-one'), childPath)).toBe(
+        'NO_CHANGE'
+      );
+      expect(await rootChange(await parentState(childPath, 'target-two', 'target-one'), childPath)).toBe(
+        'UPDATE'
+      );
+      // A child template that makes the output secret: the preview keeps it as
+      // written, the form the deploy would compute, and reports the one flip.
+      writeFileSync(
+        childPath,
+        JSON.stringify({ ...CHILD, Outputs: { Name: { Value: '{{resolve:secretsmanager:x}}' } } })
+      );
+      const stampedSecret = await parentState(childPath, 'target-two', 'target-two');
+      expect(await rootChange(stampedSecret, childPath)).toBe('NO_CHANGE');
+      stampedSecret.resources['Child']!.attributes = { 'Outputs.Name': 'target-three' };
+      expect(await rootChange(stampedSecret, childPath)).toBe('NO_CHANGE');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

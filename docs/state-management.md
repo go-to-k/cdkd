@@ -1028,13 +1028,17 @@ parameter as its `Ref`, and these are kept as written:
 - a condition that reads a `NoEcho` parameter, a reference, a cross-stack
   value or an attribute (as its whole `Fn::If`);
 - a `Ref` / `Fn::GetAtt` to a resource whose own definition reads a secret, a
-  `NoEcho` parameter, a cross-stack value or a name the template does not
-  declare, directly or through another resource;
-- an `Fn::GetAtt` on a custom resource or a nested stack, whose attributes
-  may be `NoEcho` (its physical id is hashed), and one whose attribute NAME is
-  built from any of these. So a new value of a nested-stack output a parent
-  reads (`Outputs.X`) behind an unchanged template is not sent through the
-  mask yet;
+  `NoEcho` parameter, a cross-stack value, a name the template does not
+  declare or an `Fn::FindInMap` over a mapping holding a reference anywhere
+  (or one it cannot name), directly or through another resource; a condition
+  reading such a mapping is kept whole the same way;
+- an `Fn::GetAtt` on a custom resource, whose attributes may be `NoEcho` (its
+  physical id is hashed), and one whose attribute NAME is built from any of
+  these;
+- a nested stack's output (`Fn::GetAtt [Child, Outputs.X]`, or
+  `${Child.Outputs.X}` in an `Fn::Sub`) unless it is classified clean, below.
+  A resource whose own definition reads a nested stack's output counts as
+  reading a secret, as before;
 - an input whose resolution read a secret (a `NoEcho` custom resource's
   `Data`, a redacted `***` read), and an attribute that the save redacts
   because the resource it belongs to read that secret in the same deploy;
@@ -1051,6 +1055,39 @@ parameter as its `Ref`, and these are kept as written:
   property that reads it directly or through a resource or condition. A
   parameter the parent does not pass binds the child's `Default`, which is
   template text, and is hashed.
+
+**Nested-stack outputs.** A masked property that reads a nested stack's
+output directly is hashed with the output's value when the output is CLEAN.
+The class is read from the templates in the cloud assembly, never from the
+child's state, so the deploy (before and after the child runs) and
+`cdkd diff` decide it alike. The parent follows the output's `Value` through
+the child's template by the rules above, without resolving anything there:
+- a parameter the parent passes takes the class the parent gives that value
+  (the same class the child is handed); one it does not pass reads its
+  `Default`; a `NoEcho` parameter is a secret whatever was passed;
+- a `{{resolve:...}}` reference, a cross-stack read, a name the child does
+  not declare, a resource whose definition reads any of these, an
+  `Fn::FindInMap` over a mapping that holds a reference anywhere, and an
+  attribute of a custom resource keep the output as written;
+- an `Fn::If` is clean only when its condition reads only clean inputs and
+  both branches are clean, since the child's verdict is not evaluated here;
+  an output with a `Condition` over a secret is kept as written;
+- an output read from a grandchild is classified the same way one level
+  down, with the values the child passes classified over the child's
+  template.
+
+An output that cannot be classified (no assembly, a missing, unreadable or
+cyclic template, an undeclared output) is kept as written, as before. One
+that reads a value the parent could not read this time is neither compared
+nor hashed. A clean output's value still takes the checks every input takes:
+a `***`, a reference, or a value whose read recorded a secret is kept as
+written. A child template edit that changes an output's class moves the hash
+once and sends the property once; an unchanged tree sends nothing.
+
+The same rule classifies a value a parent passes to one nested stack from
+another's output: a clean sibling output is now a clean passed value, so a
+masked property in the receiving child that reads it is sent when the
+output's value changes (it used to be kept as written).
 
 So these are NOT sent through the mask: a new value of a `NoEcho` parameter,
 a flip of a condition over one, and a new value of anything above. A hash
@@ -1097,8 +1134,9 @@ hash too, and edits to it are not seen through the mask.
   changed under the older cdkd), so such a change is sent only once the input
   moves again. An older cdkd reads the text field only, exactly as it always
   did, so after a downgrade it still sends a template edit.
-- **`cdkd diff`** compares the input fingerprint for the stack it was given.
-  For a nested child, and wherever it cannot bind an input (a parameter it
+- **`cdkd diff`** compares the input fingerprint for the stack it was given,
+  classifying its nested stacks' outputs from the same assembly the deploy
+  reads. For a nested child, and wherever it cannot bind an input (a parameter it
   cannot resolve), it compares the text field only: a template edit shows,
   an input change shows only when the deploy sends it.
 - **Nested stacks.** A nested child is deployed only when its parent row

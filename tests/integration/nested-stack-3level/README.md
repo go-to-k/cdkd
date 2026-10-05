@@ -36,6 +36,17 @@ new script was sent (value and version), that the child's input fingerprint
 moved while its text fingerprint did not, and that an unchanged redeploy sends
 nothing. The `w1` secret key is created out of band with the others.
 
+Since issue [#4565](https://github.com/go-to-k/cdkd/issues/4565) the root
+also owns `Root4565Script`, the mirror direction: `Fn::Base64` over a script
+joining a CLEAN child output (`Fn::GetAtt [Child, Outputs.<Key>]`, the `Ref`
+of the child's `Target4565`) and the same `w1` reference, which the root
+resolves itself. `verify.sh` (Step 4e) first changes a child value no output
+reads and asserts the engine re-evaluates the script and skips it, then
+renames `Target4565` (`CDKD_TEST_4565_TARGET`, a replacement) and asserts the
+new script was sent (value and version) with the root's input fingerprint
+moved and its text fingerprint unchanged, that `cdkd diff` is then clean, and
+that the next child change is compared and skipped again.
+
 This fixture is a strictly deeper + wider + bidirectional **superset** of the
 existing [`nested-stack-deep`](../nested-stack-deep) fixture. Where
 `nested-stack-deep` stops at 3 levels with one resource per level and only
@@ -52,9 +63,11 @@ the shallower fixtures cannot surface a gap.
 CdkdNestedStack3LevelExample (root, depth=0)
 ├─ RootTopic                       (AWS::SNS::Topic — source of the DOWNWARD reference)
 ├─ RootRef                         (AWS::SSM::Parameter — value = Fn::GetAtt[Child, Outputs.<child-param>])
+├─ Root4565Script                  (AWS::SSM::Parameter — Fn::Base64 over Fn::GetAtt[Child, Outputs.<target>] + a secret, #4565)
 └─ Child                           (AWS::CloudFormation::Stack, depth=1)
    ├─ Param                        (AWS::SSM::Parameter — value = Fn::GetAtt[Grandchild, Outputs.<gc-param>])
    ├─ W1Script                     (AWS::SSM::Parameter — Fn::Base64 over the root-passed Input4543 + a secret, #4543)
+   ├─ Target4565                   (AWS::SSM::Parameter — renamed by verify.sh; its Ref is the output the root reads, #4565)
    └─ Grandchild                   (AWS::CloudFormation::Stack, depth=2 — BRANCHING node)
       ├─ Topic                     (AWS::SNS::Topic — sibling of the nested-stack node)
       ├─ Param                     (AWS::SSM::Parameter — value = Fn::GetAtt[GreatGrandchild, Outputs.<ggc-param>] + sibling topic name)
@@ -65,8 +78,8 @@ CdkdNestedStack3LevelExample (root, depth=0)
       └─ FramedSsmPass / FramedSsmWrap / FramedOutPass / FramedOutWrap  (AWS::SSM::Parameter — one per framed hand-off)
 ```
 
-- **12 resources across 6 stacks**: 10 SSM Parameters + 2 SNS Topics (the
-  #3094 and #3156 arms add six of the parameters). SSM is the
+- **18 resources across 6 stacks**: 16 SSM Parameters + 2 SNS Topics (the
+  #3094, #3156, #3306, #4543 and #4565 arms add twelve of the parameters). SSM is the
   cheapest cdkd-supported resource (synchronous create/delete, no IAM
   dependency, no eventual-consistency window); the two SNS topics add a second
   type and a sibling-of-the-nested-node DAG edge at the grandchild level
