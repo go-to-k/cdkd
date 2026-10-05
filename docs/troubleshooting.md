@@ -66,6 +66,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - [A warning that an EMR cluster, instance fleet or instance group may be an orphan](#a-warning-that-an-emr-cluster-instance-fleet-or-instance-group-may-be-an-orphan)
   - [A warning that a Lambda layer version or event source mapping may be an orphan](#a-warning-that-a-lambda-layer-version-or-event-source-mapping-may-be-an-orphan)
   - [A warning that a DLM lifecycle policy or ECS task definition revision may be an orphan](#a-warning-that-a-dlm-lifecycle-policy-or-ecs-task-definition-revision-may-be-an-orphan)
+  - [A warning that an EC2 VPC, subnet, internet gateway or Elastic IP may be an orphan](#a-warning-that-an-ec2-vpc-subnet-internet-gateway-or-elastic-ip-may-be-an-orphan)
   - [`DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for](#distributionalreadyexists-on-a-cloudfront-deploy-and-a-distribution-you-did-not-ask-for)
   - [an ACM certificate deploy fails with "did not reach ISSUED status"](#an-acm-certificate-deploy-fails-with-did-not-reach-issued-status)
   - [Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`](#reverting-a-failed-no-rollback-interrupted-deploy-cdkd-rollback)
@@ -2710,6 +2711,39 @@ nor deletes a candidate, and then creates the resource again. The lookup needs
 `ecs:ListTaskDefinitions` + `ecs:DescribeTaskDefinition`; without them cdkd
 warns that it could not look, and the deploy proceeds. A reset connection or a
 timeout after the request was sent is not covered, as for the creates above.
+
+### A warning that an EC2 VPC, subnet, internet gateway or Elastic IP may be an orphan
+
+`CreateVpc`, `CreateSubnet`, `CreateInternetGateway`, `AllocateAddress` and
+`CreateSecurityGroup` carry no idempotency token either. cdkd turns off the AWS
+SDK's own retry of a 5xx for them. After one of the first four fails with HTTP
+500 / 502 / 503 / 504, cdkd's retry first lists what the failed attempt may
+have made and warns about each match that has no tags (cdkd tags these
+resources only after the create returns, so an orphan has none) and that this
+deploy did not record:
+
+- a VPC with the same CIDR that is not a default VPC;
+- a subnet with the same CIDR in the same VPC;
+- an internet gateway attached to no VPC;
+- an Elastic IP address of the same domain (and the same network border group
+  or pool, when the template sets one) associated with nothing.
+
+EC2 reports no creation time for these, so a match may also be this stack's
+own resource from an earlier deploy (one whose template sets no tags) or
+another stack's; the warning gives a `describe-vpcs` / `describe-subnets` /
+`describe-internet-gateways` / `describe-addresses` read command and no delete
+command. cdkd neither adopts nor deletes a candidate, and then creates the
+resource again. A subnet CIDR cannot repeat in a VPC, so for a subnet that
+create then fails with `InvalidSubnet.Conflict`: delete the subnet the warning
+named (`aws ec2 delete-subnet --subnet-id <id>`) once you have confirmed it is
+this deploy's, and re-run the deploy. A security group name cannot repeat in a
+VPC either, so a replayed `CreateSecurityGroup` fails with
+`InvalidGroup.Duplicate` instead of creating a second group; no lookup runs for
+it. An unassociated Elastic IP is billed until released. The lookup needs
+`ec2:DescribeVpcs`, `ec2:DescribeSubnets`, `ec2:DescribeInternetGateways` or
+`ec2:DescribeAddresses`; without it cdkd warns that it could not look, and the
+deploy proceeds. A reset connection or a timeout after the request was sent is
+not covered, as for the creates above.
 
 ### `DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for
 
