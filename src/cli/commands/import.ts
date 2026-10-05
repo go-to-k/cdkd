@@ -2294,8 +2294,10 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  *    position the source carries NO leaf for -- an observed KEY beside a paired
  *    one -- so there is nothing to refuse from and the value scan has no needle
  *    naming it. The row `refuseUncertifiedReadbackPositions`' own table marks
- *    deliberately open, with the cost argument for leaving it that way;
- *    [#2868](https://github.com/go-to-k/cdkd/issues/2868) owns it.
+ *    deliberately open, with the cost argument for leaving it that way. It is
+ *    by design and documented
+ *    ([#2868](https://github.com/go-to-k/cdkd/issues/2868), closed as
+ *    won't-fix): a value with no source leaf is recorded as AWS returned it.
  *    The OTHER pairing failures this bullet used to list -- a reshaped
  *    container, an identity key AWS normalised, an array whose anchors do not
  *    corroborate -- no longer persist the plaintext: since
@@ -2304,8 +2306,11 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  *    rows of `tests/unit/cli/import-observed-baseline-refusal-matrix.test.ts`
  *    rather than entries here;
  *  - the readback holds a secret with NO counterpart in the source at all, set
- *    out of band -- [#2868](https://github.com/go-to-k/cdkd/issues/2868), filed
- *    as a remit question rather than a defect in this mechanism.
+ *    out of band. By design, not a defect in this mechanism: the baseline
+ *    records what AWS holds, and a value the template never references has no
+ *    expression to redact onto. Decided and documented in `docs/import.md`
+ *    ([#2868](https://github.com/go-to-k/cdkd/issues/2868), closed as
+ *    won't-fix), so `state.json` is sensitive by construction.
  *
  * WHY NO EXHAUSTIVE LIST IS OFFERED, as mechanism rather than framing: this
  * redaction's only evidence is a POST-HOC comparison between the persisted bag

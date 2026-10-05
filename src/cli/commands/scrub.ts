@@ -150,7 +150,8 @@ import {
 
 /**
  * Signals `cdkd scrub` found plaintext it is reporting rather than removing.
- * Thrown under `--fail`: with `--dry-run` when any plaintext secret is in state,
+ * Thrown under `--fail`: with `--dry-run` when a value the template names through
+ * a `{{resolve:...}}` reference is in state as plaintext,
  * and on a REAL run when a leak was found that scrub cannot rewrite (a
  * secret-bearing output KEY, issue #1919). Carries no message — the plan was
  * already printed — and maps to a non-zero exit so CI can gate on it.
@@ -678,6 +679,19 @@ async function saveScrubbedState(
     }
   }
 }
+
+/**
+ * What every no-finding line is a claim ABOUT (go-to-k/cdkd#2868). Scrub learns
+ * a secret's value only by resolving a `{{resolve:...}}` reference the template
+ * spells, so a plaintext the template never references -- a value an operator
+ * set out of band, recorded by design in the `observedProperties` drift
+ * baseline -- is invisible to it, and an unscoped "No plaintext secrets found"
+ * reads as a clean bill for the whole record. Appended right after the subject
+ * of each such line, so the existing `No plaintext secrets found in <stack>`
+ * prefix the integ fixtures grep for is unchanged.
+ */
+export const SCRUB_CLEAN_SCOPE_NOTE =
+  ' (scrub checks only values the template names through a {{resolve:...}} reference)';
 
 /** `AWS::CloudFormation::Stack`, the row a nested child is deployed by. */
 const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
@@ -1843,9 +1857,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         // The SAME test `nestedChildWorkItem` uses to give a child its
         // `parentRow`, so the wording cannot drift from when the repair runs.
         scrubbed.nestedChildren.some((child) => Boolean(child.input))
-          ? `No plaintext secrets found in ${shownStack}'s own records; its nested-stack ` +
+          ? `No plaintext secrets found in ${shownStack}'s own records${SCRUB_CLEAN_SCOPE_NOTE}; its nested-stack ` +
               `output attributes are checked after each nested stack`
-          : `No plaintext secrets found in ${shownStack}`
+          : `No plaintext secrets found in ${shownStack}${SCRUB_CLEAN_SCOPE_NOTE}`
       );
     }
     // Either shape of `resources` damage lands in ONE list, for the reason the
@@ -2035,13 +2049,13 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     // prevent — so the sentence narrows to the stacks it actually reached.
     if (failures.length === 0) {
       logger.info(
-        safeMsg`\nNo plaintext secrets found in any target stack state. Nothing to scrub.${historyNote()}`
+        safeMsg`\nNo plaintext secrets found in any target stack state${SCRUB_CLEAN_SCOPE_NOTE}. Nothing to scrub.${historyNote()}`
       );
       return;
     }
     logger.info(
       `\nNo plaintext secrets found in the ${work.length - failures.length} stack(s) this ` +
-        `run could examine. ${failures.length} stack(s) could NOT be scrubbed — see the errors above.${historyNote()}`
+        `run could examine${SCRUB_CLEAN_SCOPE_NOTE}. ${failures.length} stack(s) could NOT be scrubbed — see the errors above.${historyNote()}`
     );
     throw scrubStacksFailedError(failures);
   }
@@ -8700,7 +8714,8 @@ export function createScrubCommand(): Command {
     )
     .option(
       '--fail',
-      'With --dry-run, exit non-zero if any plaintext secret is found (CI gate). ' +
+      'With --dry-run, exit non-zero if a value the template names through a {{resolve:...}} reference ' +
+        'is found in plaintext (CI gate). ' +
         'Also exits non-zero on a real run when a leak was found that scrub cannot rewrite.'
     );
 

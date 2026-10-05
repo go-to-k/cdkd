@@ -210,7 +210,7 @@ because only the template still carries the unresolved expression.
 ```bash
 cdkd scrub MyStack                  # clean existing state in place
 cdkd scrub MyStack --dry-run        # audit only, report what would change
-cdkd scrub MyStack --dry-run --fail # standing CI gate: exit 1 if plaintext remains
+cdkd scrub MyStack --dry-run --fail # standing CI gate: exit 1 if a {{resolve:...}}-referenced value is still plaintext
 ```
 
 See the **[CLI Reference](cli-reference.md)** for the full flag

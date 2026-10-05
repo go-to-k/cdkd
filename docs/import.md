@@ -506,6 +506,81 @@ non-sensitive**, and the same caveat the
 import could not line up against the readback at all can still leave a
 decrypted value in the record. Treat `state.json` as sensitive regardless.
 
+#### A value your template never references is recorded as AWS holds it
+
+The redaction above acts only where the template spells a `{{resolve:...}}`
+reference: it writes that reference back over the value AWS returns at the
+same position. A value with no reference in the template has nothing to be
+written back, so the baseline records it exactly as AWS returned it. That is
+by design. The baseline exists to record what AWS actually holds, changes made
+outside cdkd included, so that `cdkd drift` can report them. It is how a
+secret set out of band can reach `state.json`:
+
+- a property the template declares as a placeholder literal (`CHANGEME`) whose
+  real value an operator later set in the console or through an API call;
+- a field or list element AWS reports that has no counterpart in the
+  template, even inside a property that does carry a reference (where a
+  reference in that property is left unpaired, the position may be masked as
+  `***` instead);
+- for a resource imported through the
+  [Cloud Control API fallback](#cloud-control-api-fallback), every property in
+  the model `GetResource` returns, including the ones the template never sets.
+
+For a property the template sets, CloudFormation behaves the same way: its
+drift detection reports the property's actual value (`ActualProperties` in
+`DescribeStackResourceDrifts`), and leaves out only a value the service never
+returns, such as an IAM user's login-profile password. cdkd's baseline goes
+further — it also records the properties the template never sets, so that
+drift can report them — and it keeps the baseline in `state.json`. So
+**`state.json` is sensitive by construction**: limit who can read the state
+bucket (see
+[Security and Best Practices](state-management.md#security-and-best-practices)).
+`cdkd drift` also prints such a value when it differs from the baseline, and
+`cdkd state show` prints a record's `attributes`, so a drift report or a
+`state show` listing in a CI log is another copy.
+
+[`cdkd scrub`](cli-scrub.md) does not find such a value. It recognises a
+secret only through a reference the template spells, so
+`cdkd scrub --dry-run --fail` reports the record clean. A value ever stored
+this way is to be treated as exposed. To remove it:
+
+1. **Rotate it through a reference.** Store the new value in Secrets Manager,
+   write `{{resolve:secretsmanager:...}}` at that property in the template, and
+   deploy. The update sends the new value to AWS, and the resource's next
+   baseline records the reference. Then confirm with
+   `cdkd scrub <stack> --dry-run --fail`. Rotating in the console instead sets
+   another out-of-band value, which the next readback records in turn.
+2. Where the template has no property to put a reference on — a field AWS
+   added, or a key of a Cloud Control model — no cdkd command removes the value
+   in place. Rotate it at its source first. Then:
+   - **A nested field or list element** (inside a property): remove it from
+     the AWS resource itself, then re-read the baseline with
+     `cdkd state refresh-observed <stack>` or accept it with
+     `cdkd drift <stack> --accept`. Do not hand-edit it out of
+     `observedProperties`: drift
+     compares nested fields against what AWS returns, so every later
+     `cdkd drift` would report it, printing the value. For a Cloud Control
+     resource, also remove it from the record's `attributes` by hand: neither
+     command rewrites `attributes`, and drift does not compare them, so drift
+     does not report that edit. It lasts until the next deploy that updates
+     the resource writes the whole model back.
+   - **A top-level key**: remove it from the AWS resource, or remove that key
+     from the record's `observedProperties` in `state.json` by hand (not the
+     whole bag, which any `cdkd deploy` refills from AWS) and, for a Cloud
+     Control resource, from `attributes` too. A hand edit lasts only until cdkd
+     next reads the resource back (a deploy that updates it,
+     `cdkd state refresh-observed`, `cdkd drift --accept`) while AWS still
+     holds the value.
+
+   Check any stack output that publishes the value as well: it is stored in
+   the stack's `outputs` and, for an exported output, in the region's exports
+   index.
+3. Last, run `cdkd scrub <stack> --purge-history`, which purges the earlier S3
+   versions of every `state.json` it examines, including one it does not
+   rewrite. It does not purge the exports index's earlier versions unless
+   the same run rewrote that index; see
+   [what that purge does not reach](cli-scrub.md#what-a-real-run-removes-and-what-it-cannot).
+
 ## Importing a stack into a cdkd-assets region
 
 When the target region is opted into cdkd-owned asset storage (`cdkd
@@ -837,7 +912,9 @@ the clear — the CloudFormation registry schema has no general sensitivity
 marking to key on, and `writeOnlyProperties` marks values a read never returns,
 so it says nothing about what `GetResource` hands back. The narrowing applies to
 `attributes` only: the drift baseline in `observedProperties` is the whole model
-by design, since that is what drift compares against. And the narrowing is
+by design, since that is what drift compares against (see
+[A value your template never references](#a-value-your-template-never-references-is-recorded-as-aws-holds-it)).
+And the narrowing is
 **undone by the next deploy that creates or updates the resource** — the Cloud
 Control create/update path writes the whole model back into `attributes`, so a
 plaintext this import kept out returns then. Treat `state.json` as sensitive

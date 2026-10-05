@@ -509,6 +509,14 @@ and comparing them produced permanent phantom drift that
 `drift --revert` then destructively "fixed". An
 undeclared key captured with a real value is still compared.
 
+Because it records what AWS returned, `observedProperties` can hold a value
+the template never references — a password an operator set in the console
+over a placeholder literal, for example. Secret redaction rewrites a value
+only where the template spells a `{{resolve:...}}` reference, so such a value
+is stored as AWS returned it, by design; see
+[`cdkd import`'s note on it](import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it)
+and [Security and Best Practices](#security-and-best-practices).
+
 **v2 → v3 upgrade is automatic on the next `cdkd deploy`.** When the
 deploy engine loads state and finds resources without
 `observedProperties` (typical the first time you deploy after upgrading
@@ -2826,6 +2834,25 @@ them:
 [Orphan vs Destroy](orphan-vs-destroy.md) compares all four side by side.
 
 ## Security and Best Practices
+
+**Treat `state.json` as sensitive.** Secret redaction stores a
+`{{resolve:...}}` reference in place of the value it resolves to where it can
+line the two up ([how, and where it cannot](cli-scrub.md#how-secrets-stay-out-of-state)).
+Several kinds of value are stored as they are, and `cdkd scrub` does not
+detect any of them:
+
+- what the drift baseline (`observedProperties`) records from AWS — and
+  `attributes`, for a resource cdkd provisions through Cloud Control API —
+  including values the template never names through a reference
+  ([details](import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it));
+- a credential a provider records in `attributes` so that `Fn::GetAtt` can
+  read it, whether the provider is an SDK provider or Cloud Control — for
+  example an `AWS::IAM::AccessKey`'s `SecretAccessKey`;
+- the value of a `NoEcho` parameter, wherever a resource's properties use it
+  (cdkd masks it in log output only).
+
+Limit who can read the state bucket, and its earlier object versions,
+accordingly.
 
 ### S3 Bucket Configuration
 

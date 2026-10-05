@@ -59,3 +59,14 @@ Out of scope:
   in the account who can already change the deployed resources directly. The
   attack also needs the operator to paste a crafted line. The AWS CDK CLI
   prints the same values as-is.
+- **A value the template does not name through a `NoEcho` parameter or a
+  `{{resolve:...}}` reference, recorded in state as AWS returned it.** This
+  covers a secret an operator set out of band (for example over a placeholder
+  literal) and one AWS returns in a field the template does not set. cdkd's
+  drift baseline records what AWS holds, by design, so `state.json` is
+  sensitive by construction; see
+  [A value your template never references](docs/import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it).
+  This does not cover a credential a provider records in `attributes` so that
+  `Fn::GetAtt` can read it (an `AWS::IAM::AccessKey`'s `SecretAccessKey`, a
+  Cognito user pool client's `ClientSecret`), nor a `NoEcho` parameter's value,
+  nor a custom resource's `NoEcho` `Data`; reports of those remain welcome.
