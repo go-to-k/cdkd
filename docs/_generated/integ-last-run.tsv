@@ -80,7 +80,7 @@ deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Re
 deployment-events	2026-09-28T17:37:19Z	PASS	45	verify.sh	rc ok, orph clean (#3950 lane B)
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
 destroy-interrupt	2026-10-01T10:58:29Z	PASS	356	verify.sh	rc ok, orph clean (PR #4311 stack-lock guard)
-diff-fail-on-destructive	2026-10-05T16:20:55Z	PASS	80	verify.sh	rc ok, orph clean
+diff-fail-on-destructive	2026-10-05T17:32:16Z	PASS	80	verify.sh	rc ok, orph clean (#4429 PR #4593)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-10-04T16:44:59Z	PASS	105	verify.sh	rc ok, orph clean (#2080 PR #4557)
 docdb-neptune	2026-10-03T05:35:39Z	PASS	5713	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -174,7 +174,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kinesis-stream-mode-switch	2026-10-03T04:24:24Z	PASS	102	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-05T15:04:54Z	PASS	120	verify.sh	rc ok, orph clean (#3211 PR #4590)
+lambda	2026-10-05T17:32:16Z	PASS	105	verify.sh	rc ok, orph clean (#4429 PR #4593)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
