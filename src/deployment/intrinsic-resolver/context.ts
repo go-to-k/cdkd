@@ -704,6 +704,16 @@ export interface ResolverContext {
    */
   secretNameNeedles?: (logicalId: string) => ReadonlySet<string> | undefined;
   /**
+   * Where {@link secretNameNeedles}' reads are recorded, when neither the
+   * pass's bag nor {@link printingSecrets} may take them (go-to-k/cdkd#3869):
+   * a command resolving against state (`cdkd diff`, `import`, `scrub`,
+   * `export`) has bags that DECIDE (a child's inherited corpus, a scrub's
+   * positions, an import's redaction), and a `printingSecrets` some of them
+   * forward into a child. PRINT-ONLY: read by this resolver's render mask
+   * alone, never by a detector or anything that records.
+   */
+  secretNameSink?: RecordedSecretValues;
+  /**
    * Bag the resolver pushes `<logicalId>.<attributeName>` into whenever it
    * serves a PERSISTED attribute that is nothing but {@link SECRET_MASK}
    * (issue #2274).

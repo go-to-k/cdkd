@@ -816,6 +816,7 @@ export function maskNamedError(
     context?.inheritedSecrets,
     context?.recordedSecretValues,
     context?.printingSecrets,
+    context?.secretNameSink,
   ]);
   if (hasMaskableValues(union)) {
     masked = maskSecretsInError(masked, union, positional);

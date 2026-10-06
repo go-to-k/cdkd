@@ -676,8 +676,9 @@ export function recordSecretNamedRead(
   // engine gives one to every context whose own bag DECIDES something from
   // its log-only needles (a nested-stack row, the masked-input fingerprint
   // pass, the outputs pass; the list is at `secretNameNeedles` in
-  // `deploy-engine/resolver-context.ts`).
-  const bag = context.printingSecrets ?? context.recordedSecretValues;
+  // `deploy-engine/resolver-context.ts`). A command resolving against state
+  // names a sink of its own (`secretNameSink`), which wins over both.
+  const bag = context.secretNameSink ?? context.printingSecrets ?? context.recordedSecretValues;
   if (bag === undefined || context.secretNameNeedles === undefined) return;
   const needles = context.secretNameNeedles(logicalId);
   if (needles === undefined) return;

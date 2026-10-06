@@ -153,7 +153,11 @@ export function maskSecretsRaw(
   // printing mask is the answer; with a twin, its spans cannot be merged
   // with the log-only ones, so the whole text is masked — the rule the two
   // lines below already apply to the recorded needles.
-  if (this.hasLogOnlyNeedles(context) || hasMaskableValues(context?.printingSecrets)) {
+  if (
+    this.hasLogOnlyNeedles(context) ||
+    hasMaskableValues(context?.printingSecrets) ||
+    hasMaskableValues(context?.secretNameSink)
+  ) {
     const printed = this.maskRenderedNeedlesForLog(text, context);
     if (printed !== needled) return registered === undefined ? printed : SECRET_MASK;
   }
@@ -297,10 +301,13 @@ export function maskNeedlesOfBags(
   printing?: RecordedSecretValues
 ): string {
   // ONE pass over both bags (go-to-k/cdkd#4049), as {@link maskNeedlesForLog}.
+  // `secretNameSink` (go-to-k/cdkd#3869): a print-only bag, read by every
+  // printer of this family and nothing else.
   const union = unionOfSecretBags([
     context?.inheritedSecrets,
     context?.recordedSecretValues,
     printing,
+    context?.secretNameSink,
   ]);
   return hasMaskableValues(union) ? maskSecretsInText(text, union) : text;
 }

@@ -124,6 +124,7 @@ import { carriesSecretMask } from '../../deployment/secret-redaction.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { canonicalizeIpv4Cidr } from '../../utils/ipv4-cidr.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
+import { stateSecretNameNeedles } from '../../deployment/secret-name-needles.js';
 
 interface ExportOptions {
   app?: string;
@@ -8193,6 +8194,10 @@ export async function buildResolvedParametersPerStack(args: {
       // TS can't narrow `Record<string, unknown>` to CloudFormationTemplate.
       template: parentNode.template as unknown as ResolverContext['template'],
       resources: parentNode.state.resources,
+      // go-to-k/cdkd#3869: a parent row passing a resource NAMED from a secret
+      // masks it on the resolver's lines, through a print-only sink.
+      secretNameNeedles: stateSecretNameNeedles(parentNode.state.resources),
+      secretNameSink: new Map<string, string>(),
       parameters: parentParamValues,
       stackName: parentNode.cdkdName,
       ...(args.stateBackend && { stateBackend: args.stateBackend }),
