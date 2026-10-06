@@ -677,13 +677,17 @@ echo "    OK: the destroy log does not name SecretFilter's FilterName"
 # line (its URL), the queue policy reading it, and PlainScheduleRole detaching
 # SecretPolicy (its ARN carries the path) printed the names in plaintext.
 # PREMISE: the lines naming them are in the log.
-for marker in "Deleting SQS queue SecretQueue: " "Detached managed policy "; do
-  if ! grep -qF -- "${marker}" "${DEPLOY_LOG}"; then
-    echo "FAIL: premise: the destroy log has no '${marker}' line (the --verbose debug stream is missing, or the wording drifted)" >&2
-    log_tail
-    exit 1
-  fi
-done
+if ! grep -qF -- "Deleting SQS queue SecretQueue: " "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the destroy log has no 'Deleting SQS queue SecretQueue: ' line (the --verbose debug stream is missing, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
+# PlainScheduleRole attaches only SecretPolicy, so its detach line is the one.
+if ! awk 'index($0, "Detached managed policy ") && index($0, " from role ") && index($0, "PlainScheduleRole") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the destroy log has no 'Detached managed policy ... from role ...PlainScheduleRole' line (the --verbose debug stream is missing, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
 for needle_var in QUEUE_NAME POLICY_PATH; do
   if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
     HIT_LINES="$(grep -nF -- "${!needle_var}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"

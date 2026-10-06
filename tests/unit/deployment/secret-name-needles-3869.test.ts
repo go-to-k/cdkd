@@ -177,4 +177,21 @@ describe('ResolverContext.secretNameSink — a command’s print-only sink', () 
     )) as string;
     expect(maskSecretsInText(encoded, bag)).toBe(encoded);
   });
+
+  it('the sink stays free of an encoding the printing bag alone masks', async () => {
+    // The sink arm compares the masks WITH and WITHOUT the sink, both over the
+    // printing bag: an encoding of a `NoEcho` value belongs to that bag only.
+    const printing = new Map<string, string>();
+    recordLogOnlyValue(printing, 'printing-only-noecho-value');
+    const { sink, context } = sinkContext();
+    recordLogOnlyValue(sink, 'unrelated-sink-needle');
+    (context as { printingSecrets?: Map<string, string> }).printingSecrets = printing;
+    const encoded = (await new IntrinsicFunctionResolver().resolve(
+      { 'Fn::Base64': 'pw=printing-only-noecho-value' },
+      context
+    )) as string;
+    // Premise: the printing arm took it.
+    expect(maskSecretsInText(encoded, printing)).toBe('***');
+    expect(maskSecretsInText(encoded, sink)).toBe(encoded);
+  });
 });

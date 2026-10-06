@@ -41,6 +41,11 @@ import { join } from 'node:path';
 import { buildDiffTree, computeStackDiff } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { hasMaskableValues, maskSecretsInText } from '../../../src/deployment/secret-redaction.js';
+import {
+  maskedInputFingerprint,
+  maskedPropertyFingerprint,
+  parameterInputsFor,
+} from '../../../src/deployment/masked-property-fingerprints.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -241,6 +246,97 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
   it('negative control: an ordinary name prints as it is', async () => {
     const lines = await diffLines('plain-queue-name');
     expect(lines).toContain('sdin-diff-secret-queue');
+  });
+
+  describe("the masked-input pass's reads (previewMaskedInputs)", () => {
+    // A reader whose masked property embeds `Ref: Queue`. The Queue's
+    // TEMPLATE name is now a literal, so the pass's taint check lets the read
+    // through, while its STATE record still spells the name as a reference:
+    // the judge reads the record, so the read is secret-named.
+    const VALUE = {
+      'Fn::Base64': {
+        'Fn::Join': ['', [{ Ref: 'Queue' }, ';pw=', '{{resolve:secretsmanager:app-pw}}']],
+      },
+    };
+    const inputTemplate = (): CloudFormationTemplate => {
+      const tpl = template('plain-literal-queue');
+      tpl.Resources['R'] = {
+        Type: 'AWS::SSM::Parameter',
+        Properties: { Name: 'n', Type: 'String', Value: VALUE },
+      };
+      return tpl;
+    };
+    async function inputState(stateName: string): Promise<StackState> {
+      const tpl = inputTemplate();
+      const fingerprint = await maskedInputFingerprint(VALUE, {
+        template: tpl,
+        parameterInput: parameterInputsFor({ template: tpl, values: {} }).parameterInput,
+        // Stamped over the URL, as the deploy that wrote the record saw it.
+        resolve: async (node: unknown) => {
+          if (JSON.stringify(node) !== JSON.stringify({ Ref: 'Queue' })) {
+            throw new Error(`unexpected node ${JSON.stringify(node)}`);
+          }
+          return { value: URL, secrets: new Map() };
+        },
+      });
+      expect(fingerprint).toBeDefined();
+      const s = state(stateName);
+      s.resources['R'] = {
+        physicalId: 'n',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Name: 'n', Type: 'String', Value: '***' },
+        attributes: {},
+        dependencies: ['Queue'],
+        maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(VALUE) },
+        maskedPropertyInputFingerprints: { Value: fingerprint! },
+      };
+      return s;
+    }
+    async function run(stateName: string, preview: boolean) {
+      debugLines.length = 0;
+      const result = await computeStackDiff(
+        await inputState(stateName),
+        inputTemplate(),
+        'us-east-1',
+        'S',
+        backend,
+        new DiffCalculator(),
+        { previewMaskedInputs: preview }
+      );
+      const lines = debugLines.join('\n');
+      const refLines = lines.split('\n').filter((l) => l.includes('Ref to resource: Queue resolved to'));
+      return { result, lines, refLines };
+    }
+    const SECRET_NAME = '{{resolve:ssm:/sdin/queue-name}}';
+
+    it("masks the name on the pass's own resolver lines", async () => {
+      const off = await run(SECRET_NAME, false);
+      const on = await run(SECRET_NAME, true);
+      // Premise: the pass resolved the read and printed it.
+      expect(on.refLines.length).toBeGreaterThan(off.refLines.length);
+      expect(on.lines).not.toContain('sdin-diff-secret-queue');
+    });
+
+    it('negative control: an ordinary name prints as it is', async () => {
+      const off = await run('plain-older-queue', false);
+      const on = await run('plain-older-queue', true);
+      expect(on.refLines.length).toBeGreaterThan(off.refLines.length);
+      expect(on.lines).toContain('sdin-diff-secret-queue');
+    });
+
+    it("keeps the needles out of the pass's deciding bag: no masked-expression change", async () => {
+      const { result, refLines } = await run(SECRET_NAME, true);
+      expect(refLines.length).toBeGreaterThan(0);
+      const change = result.changes.get('R')!;
+      expect(change.propertyChanges?.length).toBe(1);
+      // A needle in the bag the pass returns would class the read as a secret
+      // input, so the stamped fingerprint would no longer match.
+      expect(change.propertyChanges?.some((p) => 'maskedExpressionChanged' in p)).toBe(false);
+      // The row stays what the Queue's replacement makes it.
+      expect(change.propertyChanges).toEqual([
+        expect.objectContaining({ path: 'Value', replacementPropagated: true }),
+      ]);
+    });
   });
 
   it("masks a parent row's Ref passed to a nested child, on the child-parameter resolution too", async () => {
