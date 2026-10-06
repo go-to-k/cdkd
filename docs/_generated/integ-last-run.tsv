@@ -353,3 +353,9 @@ vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-prov
 vpc-nat-gateway	2026-10-06T02:22:44Z	PASS	325	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 wafv2	2026-08-11T03:29:45Z	PASS	240	standard	1544 lane: Scope guard replay-downgrade wiring; destroy 0 err 0 orph
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
+diff-fail-on-destructive 85	2026-10-06T02:45:41Z	PASS		verify.sh	rc ok, orph clean (#4607 PR #4608)
+lambda 105	2026-10-06T02:45:41Z	PASS		verify.sh	rc ok, orph clean (#4607 PR #4608)
+nested-stack 75	2026-10-06T02:45:41Z	PASS		verify.sh	rc ok, orph clean (#4607 PR #4608)
+nested-stack-rollback 101	2026-10-06T02:45:41Z	PASS		verify.sh	rc ok, orph clean (#4607 PR #4608)
+import-auto-mode 85	2026-10-06T02:45:41Z	PASS		verify.sh	rc ok, orph clean (#4607 PR #4608)
+import-nested-stack 141	2026-10-06T02:45:41Z	PASS		verify.sh	rc ok, orph clean (#4607 PR #4608)
