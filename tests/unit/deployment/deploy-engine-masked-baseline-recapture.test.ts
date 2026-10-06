@@ -202,6 +202,27 @@ describe('DeployEngine - deploy-start re-capture of a fail-closed-masked baselin
     expect(text).not.toContain(BRAVO_PT);
   });
 
+  // go-to-k/cdkd#3211: the re-capture reads AWS by the record's id, so a
+  // record with no usable one is not read and keeps its masked baseline. The
+  // case above is the control: the same record with a usable id is read.
+  for (const [label, physicalId] of [
+    ['an empty', ''],
+    ['a whitespace-only', '   '],
+  ] as Array<[string, string]>) {
+    it(`does not re-capture a record with ${label} physicalId (go-to-k/cdkd#3211)`, async () => {
+      mockStateBackend.getState.mockResolvedValue({
+        state: stateWith({ TaskDef: record({ physicalId }) }),
+        etag: 'e',
+      });
+      await makeEngine().deploy(stackName, template);
+
+      expect(mockProvider.readCurrentState).not.toHaveBeenCalled();
+      expect(resolution.calls).toEqual([]);
+      const saved = savedTaskDef();
+      if (saved) expect(saved.observedProperties).toEqual(maskedBaseline());
+    });
+  }
+
   // The readback can carry the plaintext the re-capture just resolved, so it
   // runs inside that bag's sink scope (the #4362 class, reported by #4378's
   // security review).

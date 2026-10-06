@@ -1355,7 +1355,7 @@ act on. A string map adds one fabricated change per character on top.
 
 | Command | Answer |
 | --- | --- |
-| `cdkd deploy` | **Refuses** before any resource is created, updated or deleted (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the resource records it could not read |
+| `cdkd deploy` | **Refuses** at the state load, before any provider call — the observed-state refresh's reads included — (`STATE_RESOURCES_MALFORMED`, exit `1`), naming the resource records it could not read |
 | `cdkd deploy --dry-run` | **Refuses**, identically — the plan a dry run prints comes from the same comparison, so it would show the replacement as though the template asked for it |
 | `cdkd orphan` | **Refuses** (`STATE_RESOURCES_MALFORMED`, exit `1`) for a map on a record it would **keep**, under `--dry-run` and `--force` too — but never for one on a record you are orphaning, which it removes as usual |
 | `cdkd export` | **Refuses** the named stack at the load, before any lock, and every nested child record before any child stack is planned or locked — after the root's plan (under `--dry-run` too), and on a real run under the root lock, which it releases (`STATE_RESOURCES_MALFORMED`, exit `1`), under `--dry-run` too — the export reads the map to build import identifiers and the phase-2 pre-deletes, then deletes the record |

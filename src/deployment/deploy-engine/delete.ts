@@ -9,6 +9,8 @@ import {
   type ResourceState,
   shouldRetainResource,
 } from '../../types/state.js';
+import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
+import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
@@ -65,6 +67,47 @@ export async function provisionDelete(
     // token, so a later create of the logical id must not send it again.
     await noteRetainedResource(resourceType, logicalId);
     return;
+  }
+
+  // go-to-k/cdkd#3211: a record with no usable physical id cannot be
+  // ADDRESSED, so it takes the skip below (record kept, `cdkd deploy`
+  // re-attempts the delete) without a provider call, as `cdkd destroy` does.
+  // What the call would have done is why it may not be made: the catch below
+  // reads a `*NotFound` as ALREADY DELETED and drops the record of a resource
+  // still live. Below the retention branch, which never addresses the
+  // resource, and above the final-snapshot preparation, which names the
+  // snapshot after the id. A nested-stack row is EXEMPT: its delete finds the
+  // child by name and never reads the id. Not one recorded on Cloud Control,
+  // whose delete addresses AWS by the id (a hand-edited shape; keeping the
+  // record is the safe direction).
+  // The RECORD's type, as the UPDATE arm reads it: the record is what the
+  // delete addresses.
+  const deletedByName =
+    currentResource.resourceType === 'AWS::CloudFormation::Stack' &&
+    currentResource.provisionedBy !== 'cc-api';
+  if (!deletedByName && !hasAddressablePhysicalId(currentResource)) {
+    const reason = 'state record has no physical id';
+    if (progress) progress.current++;
+    const skipPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+    renderer.removeTask(logicalId);
+    const skipLine = formatResourceLine('skipped', logicalId, resourceType, `skipped (${reason})`);
+    this.logger.info(safeMsg`${skipPrefix}${skipLine}`);
+    const showCommand = pasteableCommand('cdkd state show', [
+      { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+      { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+    ]).command;
+    const dropCommand = pasteableCommand('cdkd state orphan', [
+      { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+      { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+      { flag: '--resource', value: logicalId, hole: 'logicalId', opts: { plainIdent: true } },
+    ]).command;
+    this.logger.warn(
+      safeMsg`Resource ${displaySafe(logicalId)} (${displaySafe(resourceType)}) has no non-empty string 'physicalId' in its state record, so cdkd cannot address it in AWS and did not try to delete it while removing it from the template. Its cdkd state record was KEPT, so the next 'cdkd deploy' re-attempts the delete. Repair the record's 'physicalId', or delete the resource by hand and drop the record.
+Inspect it with: ${showCommand}
+Drop the record with: ${dropCommand}`
+    );
+    if (counts) counts.deleteSkipped++;
+    return { deleteSkipped: reason };
   }
 
   // Honor `DeletionPolicy: Snapshot` (issues #1352 / #1353) — see

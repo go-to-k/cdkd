@@ -7,6 +7,11 @@ import {
   withoutAcceptedSilentDropProperties,
   withoutUnwrittenSilentDropProperties,
 } from '../../provisioning/property-coverage.js';
+import {
+  STATE_RESOURCES_MALFORMED,
+  hasAddressablePhysicalId,
+  unaddressableUpdateRefusalMessage,
+} from '../../state/malformed-resources-bag.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
@@ -428,6 +433,37 @@ export async function provisionUpdate(
   // the record holds the mask at that same position and nothing else
   // moved, which is exactly the case with nothing to send.
   this.refuseRedactedAttributeReads(logicalId, resourceType, context);
+
+  // go-to-k/cdkd#3211: a record with no usable physical id cannot be
+  // ADDRESSED, and every arm below hands it to a provider (the in-place
+  // update, the replacement's delete of the old resource, the NoEcho
+  // readback). Below the no-change skip, which sends nothing, and above the
+  // first of them. Refused rather than skipped, unlike the DELETE arm: a
+  // skip would end the deploy without the template's change. The RECORD's
+  // type decides the nested-stack exemption, as in `cdkd destroy`: that
+  // provider finds its child by name and never addresses AWS by the id. Not a
+  // record on Cloud Control, which does.
+  if (
+    !(
+      currentResource.resourceType === 'AWS::CloudFormation::Stack' &&
+      currentResource.provisionedBy !== 'cc-api'
+    ) &&
+    !hasAddressablePhysicalId(currentResource)
+  ) {
+    throw markRefusedBeforeApplying(
+      markNonRetryable(
+        new CdkdError(
+          unaddressableUpdateRefusalMessage(
+            stackName,
+            this.stackRegion,
+            logicalId,
+            oldResourceType
+          ),
+          STATE_RESOURCES_MALFORMED
+        )
+      )
+    );
+  }
 
   // #1198: snapshot the attempted (resolved) properties so a failed
   // UPDATE can be journaled with what it tried to apply (load-bearing
