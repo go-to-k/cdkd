@@ -1097,18 +1097,20 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
       // orphan's id (the replaced resource), so the completed ops are planned
       // against the state the replay really leaves.
       it.each([
-        ['Delete', undefined],
-        ['Retain', 'Retain'],
+        ['Delete', undefined, 'AWS::SQS::Queue'],
+        ['Retain', 'Retain', 'AWS::SQS::Queue'],
+        // The final-snapshot arm: a snapshot-capable type across a Type change.
+        ['Snapshot', 'Snapshot', 'AWS::RDS::DBInstance'],
       ] as const)(
         'previews a replacement orphan (%s) without dropping the replaced record',
-        async (_label, deletionPolicy) => {
+        async (_label, deletionPolicy, orphanType) => {
           installReplacementStack({
             oldResourceRetained: false,
             failedOperations: [
               {
                 logicalId: 'R',
                 changeType: 'CREATE',
-                resourceType: 'AWS::SQS::Queue',
+                resourceType: orphanType,
                 provisionedBy: 'sdk',
                 physicalId: 'phys-orphan',
                 physicalIdRecoveredFromError: true,

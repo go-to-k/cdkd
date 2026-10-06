@@ -312,6 +312,8 @@ describe('a rollback re-create that made its resource and failed (go-to-k/cdkd#4
     expect((await result).failures).toBe(1);
     expect(del.mock.calls.map((c) => c[1])).toEqual(['stream-a']);
     expect(state['S']?.physicalId).toBe('stream-b');
+    // The persisted bag, never the resolved one handed to the re-create.
+    expect(del.mock.calls[0]![3]).toEqual({ Name: 'stream-a' });
   });
 
   it('keeps it, named, under the old record’s Retain', async () => {
