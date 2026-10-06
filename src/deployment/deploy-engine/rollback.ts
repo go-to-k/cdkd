@@ -340,8 +340,9 @@ export async function performRollback(
  *
  * go-to-k/cdkd#4600: a journal's proven failed-CREATE orphans are its only
  * record of a live resource, so the root first acts on each journal's
- * (`settleJournaledOrphansOnSuccess`) and keeps one holding an orphan it
- * could not delete. Returns how many it left, which the caller counts as
+ * (`settleJournaledOrphansOnSuccess`: deleted, or skipped with a warning when
+ * this deploy's outcome may own it) and keeps one whose entry could not be
+ * acted on. Returns how many it left in AWS, which the caller counts as
  * unaddressed (the deploy exits 2).
  */
 export async function settleJournalAfterSuccess(
@@ -372,7 +373,7 @@ export async function settleJournalAfterSuccess(
       // `previousState.orphans` is the surviving set `adoptRollbackOrphans`
       // left: what the saved record holds. The deploy flow guarded it before
       // either of this method's call sites.
-      const left = await settleJournaledOrphansOnSuccess({
+      const own = await settleJournaledOrphansOnSuccess({
         stateBackend: this.stateBackend,
         stackName,
         region: this.stackRegion,
@@ -385,7 +386,7 @@ export async function settleJournalAfterSuccess(
         isInterrupted: () => this.interrupted,
         logger: this.logger,
       });
-      if (left > 0) return left;
+      if (own.keepJournal) return own.unaddressed;
       // go-to-k/cdkd#4402: this run's completed ops supersede every older
       // failed attempt of their ids; if the delete fails they are carried
       // onto the journal instead, so no older attempt counts as evidence
@@ -394,7 +395,7 @@ export async function settleJournalAfterSuccess(
         stackName,
         completedOperations.map((op) => op.logicalId)
       );
-      return 0;
+      return own.unaddressed;
     })(),
     dropNestedChildJournals({
       stateBackend: this.stateBackend,
@@ -408,7 +409,7 @@ export async function settleJournalAfterSuccess(
         // orphan record in it may own the resource, so nothing is deleted.
         const childState =
           childRecord !== undefined && hasReadableOrphans(childRecord) ? childRecord : undefined;
-        const left = await settleJournaledOrphansOnSuccess({
+        const settled = await settleJournaledOrphansOnSuccess({
           stateBackend: this.stateBackend,
           stackName: child,
           region: this.stackRegion,
@@ -428,8 +429,8 @@ export async function settleJournalAfterSuccess(
           },
           logger: this.logger,
         });
-        nestedLeft += left;
-        return left === 0;
+        nestedLeft += settled.unaddressed;
+        return !settled.keepJournal;
       },
     }),
   ]);

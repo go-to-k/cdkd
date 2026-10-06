@@ -19,7 +19,6 @@ import type { Logger } from '../../types/config.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
-import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import { NESTED_PENDING_PARENT_REASON, displacedPhysicalIdShown } from '../nested-child-journal.js';
 import {
@@ -44,6 +43,11 @@ export interface JournaledOrphans {
   count: number;
   /** The journal could not be read (already warned about). */
   unreadable?: boolean;
+  /**
+   * The logical ids a successful deploy completed an op under: its
+   * `newerOperations` and this run's `nested-pending-parent` segments.
+   */
+  deployLogicalIds?: Set<string>;
 }
 
 const NONE: JournaledOrphans = { segments: [], count: 0 };
@@ -117,6 +121,16 @@ export async function loadJournaledOrphans(
   const newer = options.newerOperations ?? [];
   if (newer.length > 0) evidence.push({ operations: physicalIdOnly(newer) });
   demoteSupersededOrphans(evidence, Array.isArray(rollbackOrphans) ? rollbackOrphans : []);
+  const deployLogicalIds = new Set(newer.map((op) => op.logicalId));
+  for (const segment of segments) {
+    if (
+      options.deployRunId !== undefined &&
+      segment.reason === NESTED_PENDING_PARENT_REASON &&
+      segment.runId === options.deployRunId
+    ) {
+      for (const op of segment.operations) deployLogicalIds.add(op.logicalId);
+    }
+  }
   const out: SegmentOrphans[] = [];
   let count = 0;
   for (let s = segments.length - 1; s >= 0; s--) {
@@ -129,7 +143,7 @@ export async function loadJournaledOrphans(
     out.push({ segment, ops });
     count += ops.length;
   }
-  return { segments: out, count };
+  return { segments: out, count, deployLogicalIds };
 }
 
 /** One listing line per orphan, its physical id masked as a replay line masks it. */
@@ -201,25 +215,40 @@ export async function deleteJournaledOrphans(
   return total;
 }
 
+/** What another stack's record says about a resource (`makeForeignHolderScan`). */
+export type ForeignHolding =
+  | { kind: 'held'; by: string }
+  | { kind: 'unreadable'; what: string }
+  | undefined;
+
+/** The outcome of {@link settleJournaledOrphansOnSuccess}. */
+export interface SuccessSettleOutcome {
+  /** Entries left in AWS unacted on: kept, or skipped with a warning. */
+  unaddressed: number;
+  /** The journal still holds an entry: the caller must not delete it. */
+  keepJournal: boolean;
+}
+
 /**
  * A SUCCESSFUL deploy is about to drop `stackName`'s rollback journal
  * (go-to-k/cdkd#4600): first act on its proven orphans, as the automatic
- * rollback, `cdkd rollback` and `cdkd destroy` do (go-to-k/cdkd#4584) —
- * deleted per the journaled `DeletionPolicy`, through the supersede pass and
- * the classifier's ownership checks.
+ * rollback, `cdkd rollback` and `cdkd destroy` do (go-to-k/cdkd#4584).
  *
- * Ownership is by PHYSICAL ID against the saved record: the deploy finished,
- * so a record now under the orphan's logical id with another physical id is
- * the deploy's own resource (a fix-forward), not the orphan's. A resource
- * another state record in the bucket holds (`foreignHolder`) is never
- * deleted: the entry is kept.
+ * The rule. An orphan is deleted, per its journaled `DeletionPolicy`, only
+ * when after this deploy no state record sits under its logical id, this
+ * deploy completed no op under it, no record of this stack holds its type and
+ * physical id (the classifier's check), and no resource record of another
+ * stack under the same state prefix does (`foreignHolder`). Anything else is
+ * DEMOTED (`physicalIdRecoveredFromError: false`) and goes through the
+ * replay's `skip-failed-superseded` arm: warned, physical id named (masked),
+ * and cleared with the journal, as `cdkd rollback` and `cdkd destroy` settle
+ * such a skip. It counts as unaddressed (the deploy exits 2).
  *
- * Returns how many entries it left. When that is non-zero the journal was
- * reduced to just those (or, if the rewrite failed, left whole with the
- * deploy's ids marked superseded) and the caller must NOT delete it: it is
- * their only record. `stateResources` undefined deletes nothing. An
- * unreadable journal is warned about and yields 0, so the caller deletes it as
- * it always has. Never throws.
+ * An entry is KEPT only when acting on it did not complete: a delete
+ * failure, an interrupt, or a record (this stack's, or one the scan read)
+ * that cannot be read. The journal is then reduced to those entries (or, if
+ * the rewrite fails, left whole with the deploy's ids marked superseded,
+ * #4402) and the next successful deploy retries. Never throws.
  */
 export async function settleJournaledOrphansOnSuccess(args: {
   stateBackend: Pick<
@@ -241,16 +270,12 @@ export async function settleJournaledOrphansOnSuccess(args: {
   newerOperations: readonly CompletedOperation[];
   /** This deploy's run id (see `loadJournaledOrphans`). */
   deployRunId?: string | undefined;
-  /**
-   * Another state record in the bucket holding a resource of this type and
-   * physical id, named for the warning; undefined when none does. Asked only
-   * when there is an orphan to delete.
-   */
-  foreignHolder: (resourceType: string, physicalId: string) => Promise<string | undefined>;
+  /** Asked only for an orphan the other checks would delete. */
+  foreignHolder: (resourceType: string, physicalId: string) => Promise<ForeignHolding>;
   ctx: RollbackExecutorContext;
   isInterrupted?: () => boolean;
   logger: Logger;
-}): Promise<number> {
+}): Promise<SuccessSettleOutcome> {
   const { stateBackend, stackName, region, stateResources, newerOperations, ctx, logger } = args;
   const stack = displayIdent(stackName);
   const newerIds = newerOperations.map((op) => op.logicalId);
@@ -276,11 +301,11 @@ export async function settleJournaledOrphansOnSuccess(args: {
       safeMsg`Could not act on the rollback journal of stack ${stack}: ${errorDetail(err)}. It is kept.`
     );
     await markSuperseded(stateBackend, stackName, region, newerIds);
-    return 1;
+    return { unaddressed: 1, keepJournal: true };
   }
-  if (orphans.count === 0) return 0;
+  if (orphans.count === 0) return { unaddressed: 0, keepJournal: false };
   const all = orphans.segments.flatMap(({ segment, ops }) => ops.map((op) => ({ segment, op })));
-  let pending = all;
+  let kept: typeof all = all;
   if (stateResources === undefined) {
     logger.warn(
       safeMsg`The rollback journal of stack ${stack} records ${all.length} resource(s) a failed deploy ` +
@@ -294,22 +319,29 @@ export async function settleJournaledOrphansOnSuccess(args: {
     // One call per line: each is masked and bounded by `journaledOrphanLines`.
     for (const line of journaledOrphanLines(orphans, logger)) logger.info(line);
     try {
-      const refused = await refuseForeignHeld(orphans, args.foreignHolder, stack, logger);
+      const unreadable = await applySuccessRule(
+        orphans,
+        stateResources,
+        orphans.deployLogicalIds ?? new Set(),
+        args.foreignHolder,
+        stack,
+        logger
+      );
       const acting: JournaledOrphans = {
         segments: orphans.segments
-          .map(({ segment, ops }) => ({ segment, ops: ops.filter((op) => !refused.has(op)) }))
+          .map(({ segment, ops }) => ({ segment, ops: ops.filter((op) => !unreadable.has(op)) }))
           .filter(({ ops }) => ops.length > 0),
-        count: orphans.count - refused.size,
+        count: orphans.count - unreadable.size,
       };
       const outcome = await deleteJournaledOrphans(
         acting,
-        ownershipView(stateResources, all),
+        { ...stateResources },
         stackName,
         ctx,
         args.isInterrupted ? { isInterrupted: args.isInterrupted } : {}
       );
-      pending = all.filter(
-        ({ segment, op }) => refused.has(op) || !isHandledOrphan(outcome.handled, segment, op)
+      kept = all.filter(
+        ({ segment, op }) => unreadable.has(op) || !isHandledOrphan(outcome.handled, segment, op)
       );
     } catch (err) {
       logger.warn(
@@ -317,19 +349,22 @@ export async function settleJournaledOrphansOnSuccess(args: {
       );
     }
   }
-  if (pending.length === 0) return 0;
-  // go-to-k/cdkd#4402 / #4600: the deploy's ids supersede older attempts, but
-  // never a kept entry's own id, which would demote it on the next read.
-  const pendingIds = new Set(pending.map(({ op }) => op.logicalId));
-  const supersededIds = newerIds.filter((id) => !pendingIds.has(id));
-  // An entry the supersede pass demoted keeps that verdict: the reduce drops
-  // the newer evidence that produced it.
-  const demoted = pending.filter(({ op }) => op.physicalIdRecoveredFromError === false);
+  // A demoted entry that was acted on was skipped with a warning: left in AWS.
+  const keptOps = new Set(kept.map(({ op }) => op));
+  const skipped = all.filter(
+    ({ op }) => !keptOps.has(op) && op.physicalIdRecoveredFromError === false
+  ).length;
+  if (kept.length === 0) return { unaddressed: skipped, keepJournal: false };
+  const keptIds = new Set(kept.map(({ op }) => op.logicalId));
+  const supersededIds = newerIds.filter((id) => !keptIds.has(id));
+  // A kept entry that was demoted keeps that verdict: the reduce drops the
+  // newer evidence that produced it.
+  const demoted = kept.filter(({ op }) => op.physicalIdRecoveredFromError === false);
   const reduce = (): Promise<number> =>
     stateBackend.reduceRollbackJournalToFailedOperations(
       stackName,
       region,
-      (op, segment) => isHandledOrphan(pending, segment, op),
+      (op, segment) => isHandledOrphan(kept, segment, op),
       supersededIds,
       (op, segment) => isHandledOrphan(demoted, segment, op)
     );
@@ -348,77 +383,67 @@ export async function settleJournaledOrphansOnSuccess(args: {
     }
   }
   if (!reduced) await markSuperseded(stateBackend, stackName, region, supersededIds);
-  if (reduced) {
-    logger.warn(
-      safeMsg`${pending.length} resource(s) a failed deploy of stack ${stack} created were not deleted ` +
-        '(see above). The rollback journal, their only record, is kept with just them; the next ' +
-        safeMsg`successful deploy retries, as does:\n  ${
-          pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command
-        }`
-    );
-  } else {
-    // No `cdkd rollback` here: the whole journal still holds the completed
-    // operations this deploy superseded, and a rollback would replay them over
-    // it.
-    logger.warn(
-      safeMsg`${pending.length} resource(s) a failed deploy of stack ${stack} created were not deleted ` +
-        '(see above). The rollback journal, their only record, is kept; the next successful deploy ' +
-        'retries. Do not run a plain cdkd rollback on it: the journal still holds operations this deploy superseded.'
-    );
-  }
-  return pending.length;
+  // No `cdkd rollback` pointer: a plain rollback has none of this deploy's
+  // ownership evidence.
+  logger.warn(
+    safeMsg`${kept.length} resource(s) a failed deploy of stack ${stack} created were not deleted ` +
+      (reduced
+        ? '(see above). The rollback journal, their only record, is kept with just them; the next '
+        : '(see above). The rollback journal, their only record, is kept; the next ') +
+      'successful deploy retries.'
+  );
+  return { unaddressed: kept.length + skipped, keepJournal: true };
 }
 
 /**
- * The classifier's view of the saved record on the success path: a record
- * under an orphan's logical id holding ANOTHER resource is the deploy's own
- * (a fix-forward), so it is moved off that key — `classifyFailedOp` then
- * judges the orphan by physical id alone, which every record still answers.
+ * The success-path rule (see {@link settleJournaledOrphansOnSuccess}): demote
+ * every proven orphan this deploy's outcome may own, and return those whose
+ * ownership could not be read (kept, not acted on).
  */
-function ownershipView(
-  stateResources: Record<string, ResourceState>,
-  entries: ReadonlyArray<{ op: FailedOperation }>
-): Record<string, ResourceState> {
-  const view: Record<string, ResourceState> = { ...stateResources };
-  for (const { op } of entries) {
-    const current = view[op.logicalId];
-    if (current === undefined) continue;
-    if (current.resourceType === op.resourceType && current.physicalId === op.physicalId) continue;
-    delete view[op.logicalId];
-    let key = op.logicalId + '#deployed';
-    while (key in view) key += '#';
-    view[key] = current;
-  }
-  return view;
-}
-
-/** The proven orphans another state record holds; each warned about. */
-async function refuseForeignHeld(
+async function applySuccessRule(
   orphans: JournaledOrphans,
-  foreignHolder: (resourceType: string, physicalId: string) => Promise<string | undefined>,
+  stateResources: Record<string, ResourceState>,
+  deployLogicalIds: ReadonlySet<string>,
+  foreignHolder: (resourceType: string, physicalId: string) => Promise<ForeignHolding>,
   stack: string,
   logger: Logger
 ): Promise<Set<FailedOperation>> {
-  const refused = new Set<FailedOperation>();
+  const unreadable = new Set<FailedOperation>();
   for (const { ops } of orphans.segments) {
     for (const op of ops) {
       if (op.physicalIdRecoveredFromError !== true || !op.physicalId) continue;
-      const holder = await foreignHolder(op.resourceType, op.physicalId);
-      if (holder === undefined) continue;
-      refused.add(op);
+      if (
+        Object.prototype.hasOwnProperty.call(stateResources, op.logicalId) ||
+        deployLogicalIds.has(op.logicalId)
+      ) {
+        op.physicalIdRecoveredFromError = false;
+        continue;
+      }
+      const holding = await foreignHolder(op.resourceType, op.physicalId);
+      if (holding === undefined) continue;
+      if (holding.kind === 'held') {
+        logger.warn(
+          safeMsg`${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}), which a failed deploy ` +
+            safeMsg`of stack ${stack} created, is not deleted: ${holding.by} holds a resource of that type under ` +
+            'the same physical id.'
+        );
+        op.physicalIdRecoveredFromError = false;
+        continue;
+      }
       logger.warn(
-        safeMsg`Not deleting ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}), which a failed ` +
-          safeMsg`deploy of stack ${stack} created: ${holder} holds a resource of that type under the same ` +
-          `physical id. The rollback journal keeps the entry; if the resource is not that record's, delete it manually.`
+        safeMsg`${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}), which a failed deploy ` +
+          safeMsg`of stack ${stack} created, is not deleted: ${holding.what}, so whether another stack holds it is unknown.`
       );
+      unreadable.add(op);
     }
   }
-  return refused;
+  return unreadable;
 }
 
 /**
- * go-to-k/cdkd#4600: the bucket-wide ownership check a successful deploy runs
- * before deleting a proven orphan. A user who removed the orphan by hand may
+ * go-to-k/cdkd#4600: the ownership check a successful deploy runs before
+ * deleting a proven orphan, over every resource record of another stack under
+ * the same state prefix. A user who removed the orphan by hand may
  * have let ANOTHER stack (a sibling, a nested child of the same tree, or the
  * same stack in another region for a global name) create a resource under the
  * same name, and that stack's record is the only evidence. One `listStacks`
@@ -426,7 +451,7 @@ async function refuseForeignHeld(
  * on the first question and shared by every stack the settle asks about.
  *
  * Reads each record's `resources`; a record that cannot be read or listed
- * makes every answer name it (fail closed: nothing is deleted).
+ * makes every answer `unreadable` (fail closed: the entry is kept).
  */
 export function makeForeignHolderScan(
   stateBackend: Pick<S3StateBackend, 'listStacks' | 'getState'>,
@@ -434,7 +459,7 @@ export function makeForeignHolderScan(
 ): (self: {
   stackName: string;
   region: string;
-}) => (resourceType: string, physicalId: string) => Promise<string | undefined> {
+}) => (resourceType: string, physicalId: string) => Promise<ForeignHolding> {
   type Scan = {
     holders: Map<string, Array<{ stackName: string; region: string }>>;
     unreadable?: string;
@@ -483,9 +508,13 @@ export function makeForeignHolderScan(
     const other = (holders.get(key(resourceType, physicalId)) ?? []).find(
       (h) => !(h.stackName === self.stackName && h.region === self.region)
     );
-    if (other)
-      return safeMsg`the state record of stack ${displayIdent(other.stackName)} (${displaySafe(other.region)})`;
-    return unreadable;
+    if (other) {
+      return {
+        kind: 'held',
+        by: safeMsg`the state record of stack ${displayIdent(other.stackName)} (${displaySafe(other.region)})`,
+      };
+    }
+    return unreadable === undefined ? undefined : { kind: 'unreadable', what: unreadable };
   };
 }
 

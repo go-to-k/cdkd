@@ -68,7 +68,7 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
     });
 
     expect(t.provider.delete).not.toHaveBeenCalled();
-    expect(left).toBe(1);
+    expect(left).toEqual({ unaddressed: 1, keepJournal: true });
     expect(t.stateBackend.reduceRollbackJournalToFailedOperations).toHaveBeenCalledTimes(1);
   });
 
@@ -96,7 +96,7 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
     });
 
     expect(t.provider.delete).not.toHaveBeenCalled();
-    expect(left).toBe(1);
+    expect(left).toEqual({ unaddressed: 1, keepJournal: true });
     expect(t.stateBackend.reduceRollbackJournalToFailedOperations).toHaveBeenCalledTimes(1);
   });
 
@@ -127,7 +127,7 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
       logger: t.logger as never,
     });
 
-    expect(left).toBe(1);
+    expect(left).toEqual({ unaddressed: 1, keepJournal: true });
     const [, , keep, , demote] = t.stateBackend.reduceRollbackJournalToFailedOperations.mock.calls[0]!;
     const seg = failedSeg([orphan()]);
     expect(keep(orphan(), seg)).toBe(true);
@@ -135,21 +135,22 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
   });
 
   it("a nested child's pending segment of THIS run counts as physical-id evidence only", async () => {
+    // This run CREATEd another stream of the type: its record is in state.
     const pending = {
       runId: 'run-1',
       timestamp: 2,
       reason: 'nested-pending-parent',
       initialDeploy: false,
-      operations: [{ logicalId: 'Orphan', changeType: 'CREATE', resourceType: 'AWS::Kinesis::Stream', physicalId: 'new' }],
+      operations: [{ logicalId: 'Other', changeType: 'CREATE', resourceType: 'AWS::Kinesis::Stream', physicalId: 'new' }],
     };
     const run = async (deployRunId: string | undefined) => {
       const t = setup(journalOf(failedSeg([orphan()]), pending));
-      await settleJournaledOrphansOnSuccess({
+      const out = await settleJournaledOrphansOnSuccess({
         stateBackend: t.stateBackend as never,
         stackName: 'S~Child',
         region: REGION,
         stateResources: {
-          Orphan: { physicalId: 'new', resourceType: 'AWS::Kinesis::Stream', properties: {} } as never,
+          Other: { physicalId: 'new', resourceType: 'AWS::Kinesis::Stream', properties: {} } as never,
         },
         rollbackOrphans: undefined,
         newerOperations: [],
@@ -158,11 +159,70 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
         ctx: t.ctx,
         logger: t.logger as never,
       });
-      return t.provider.delete.mock.calls.filter((c) => c[1] === 'orphan-stream').length;
+      return { deletes: t.provider.delete.mock.calls.filter((c) => c[1] === 'orphan-stream').length, out };
     };
-    expect(await run('run-1')).toBe(1);
+    expect(await run('run-1')).toEqual({ deletes: 1, out: { unaddressed: 0, keepJournal: false } });
     // Another run's pending segment is a real journal entry: the type rule holds.
-    expect(await run('run-2')).toBe(0);
+    expect(await run('run-2')).toEqual({ deletes: 0, out: { unaddressed: 1, keepJournal: false } });
+  });
+
+  it("this run's pending segment holding an op under the orphan's own logical id demotes it", async () => {
+    const t = setup(
+      journalOf(failedSeg([orphan()]), {
+        runId: 'run-1',
+        timestamp: 2,
+        reason: 'nested-pending-parent',
+        initialDeploy: false,
+        operations: [{ logicalId: 'Orphan', changeType: 'DELETE', resourceType: 'AWS::Kinesis::Stream', physicalId: 'gone' }],
+      })
+    );
+    const out = await settleJournaledOrphansOnSuccess({
+      stateBackend: t.stateBackend as never,
+      stackName: 'S~Child',
+      region: REGION,
+      stateResources: {},
+      rollbackOrphans: undefined,
+      newerOperations: [],
+      deployRunId: 'run-1',
+      foreignHolder: async () => undefined,
+      ctx: t.ctx,
+      logger: t.logger as never,
+    });
+    expect(t.provider.delete).not.toHaveBeenCalled();
+    expect(out).toEqual({ unaddressed: 1, keepJournal: false });
+  });
+
+  it('a foreign holder demotes and clears; an unreadable scan keeps; no holder deletes', async () => {
+    const run = async (holding: Awaited<ReturnType<Parameters<typeof settleJournaledOrphansOnSuccess>[0]['foreignHolder']>>) => {
+      const t = setup(journalOf(failedSeg([orphan()])));
+      const out = await settleJournaledOrphansOnSuccess({
+        stateBackend: t.stateBackend as never,
+        stackName: 'S',
+        region: REGION,
+        stateResources: {},
+        rollbackOrphans: undefined,
+        newerOperations: [],
+        foreignHolder: async () => holding,
+        ctx: t.ctx,
+        logger: t.logger as never,
+      });
+      return {
+        deletes: t.provider.delete.mock.calls.length,
+        out,
+        reduced: t.stateBackend.reduceRollbackJournalToFailedOperations.mock.calls.length,
+      };
+    };
+    expect(await run({ kind: 'held', by: 'stack X' })).toEqual({
+      deletes: 0,
+      out: { unaddressed: 1, keepJournal: false },
+      reduced: 0,
+    });
+    expect(await run({ kind: 'unreadable', what: 'stack Y' })).toEqual({
+      deletes: 0,
+      out: { unaddressed: 1, keepJournal: true },
+      reduced: 1,
+    });
+    expect(await run(undefined)).toEqual({ deletes: 1, out: { unaddressed: 0, keepJournal: false }, reduced: 0 });
   });
 });
 
@@ -186,8 +246,10 @@ describe('makeForeignHolderScan (go-to-k/cdkd#4600)', () => {
     const ask = scan({ stackName: 'Self', region: REGION });
 
     expect(await ask('AWS::IAM::Role', 'own')).toBeUndefined();
-    expect(await ask('AWS::IAM::Role', 'global-name')).toContain('Self');
-    expect(await ask('AWS::IAM::Role', 'global-name')).toContain('eu-west-1');
+    const held = await ask('AWS::IAM::Role', 'global-name');
+    expect(held?.kind).toBe('held');
+    expect(held && held.kind === 'held' ? held.by : '').toContain('Self');
+    expect(held && held.kind === 'held' ? held.by : '').toContain('eu-west-1');
     expect(await ask('AWS::SQS::Queue', 'global-name')).toBeUndefined();
     expect(stateBackend.listStacks).toHaveBeenCalledTimes(1);
   });
@@ -197,7 +259,7 @@ describe('makeForeignHolderScan (go-to-k/cdkd#4600)', () => {
       { listStacks: vi.fn().mockRejectedValue(new Error('denied')), getState: vi.fn() } as never,
       REGION
     )({ stackName: 'Self', region: REGION });
-    expect(await unlisted('AWS::Kinesis::Stream', 'x')).toBeDefined();
+    expect((await unlisted('AWS::Kinesis::Stream', 'x'))?.kind).toBe('unreadable');
 
     const malformed = makeForeignHolderScan(
       {
@@ -206,6 +268,8 @@ describe('makeForeignHolderScan (go-to-k/cdkd#4600)', () => {
       } as never,
       REGION
     )({ stackName: 'Self', region: REGION });
-    expect(await malformed('AWS::Kinesis::Stream', 'x')).toContain('Other');
+    const answer = await malformed('AWS::Kinesis::Stream', 'x');
+    expect(answer?.kind).toBe('unreadable');
+    expect(answer && answer.kind === 'unreadable' ? answer.what : '').toContain('Other');
   });
 });

@@ -897,7 +897,7 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       expect(childOrphanDeletes(h.provider)).toHaveLength(0);
     });
 
-    it("the parent's own record holding the child orphan id refuses the delete (bucket-wide check)", async () => {
+    it("the parent's own record holding the child orphan id: not deleted, cleared, counted", async () => {
       const h = harness();
       h.backend.listStacks.mockResolvedValue([
         { stackName: STACK, region: REGION },
@@ -926,7 +926,9 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       const result = await h.engine.deploy(STACK, templateOf(['Q']));
 
       expect(childOrphanDeletes(h.provider)).toHaveLength(0);
-      expect(h.backend.reduceRollbackJournalToFailedOperations.mock.calls.map((c) => c[0])).toEqual([`${STACK}~Child`]);
+      // Demoted and cleared with the child's journal.
+      expect(h.backend.reduceRollbackJournalToFailedOperations).not.toHaveBeenCalled();
+      expect(h.backend.deleteRollbackJournal.mock.calls.map((c) => c[0]).sort()).toEqual([STACK, `${STACK}~Child`]);
       expect(result.deleteSkipped).toBe(1);
     });
 
