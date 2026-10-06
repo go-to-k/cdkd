@@ -1050,10 +1050,13 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
   // failed delete too.
   it('a journal delete that reports false runs onDeleteFailed and logs no deletion', async () => {
     const t = tree();
-    t.stateBackend.deleteRollbackJournal.mockImplementation(async (name: string) => {
-      t.order.push(`delete ${name}`);
-      return name === 'Root~Child' ? false : true;
-    });
+    // The tree's double resolves `void`; the real backend's type is `boolean`.
+    (t.stateBackend.deleteRollbackJournal as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      async (name: string) => {
+        t.order.push(`delete ${name}`);
+        return name === 'Root~Child' ? false : true;
+      }
+    );
     const onDeleteFailed = vi.fn(async () => undefined);
 
     await dropNestedChildJournals({
