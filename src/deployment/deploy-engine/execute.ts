@@ -36,6 +36,7 @@ import type { SettledNestedRows } from '../nested-child-journal.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
 import { isRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import { createdBeforeFailure } from '../../provisioning/auxiliary-failure.js';
+import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 
 /** go-to-k/cdkd#4604: types whose replacement's new resource is never journaled (see execute). */
 const NO_REPLACEMENT_ORPHAN_TYPES: ReadonlySet<string> = new Set([
@@ -43,7 +44,6 @@ const NO_REPLACEMENT_ORPHAN_TYPES: ReadonlySet<string> = new Set([
   'AWS::SQS::QueuePolicy',
   'AWS::SNS::TopicPolicy',
 ]);
-import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -406,6 +406,11 @@ export async function executeDeployment(
               ),
               replacedPhysicalId: replaced.physicalId,
               replacedResourceType: replaced.resourceType,
+              // The replacement deleted the old resource before its create:
+              // the record names a resource that is gone.
+              ...(this.oldDeletedBeforeCreate.has(logicalId) && {
+                replacedResourceDeleted: true,
+              }),
               ...(!refused && {
                 attemptedProperties: this.attemptedResolvedProps.get(logicalId),
               }),

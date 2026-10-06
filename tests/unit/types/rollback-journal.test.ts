@@ -448,6 +448,17 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     expect(
       messageOf(journalWith([], [{ ...orphan, physicalIdRecoveredFromError: undefined }]))
     ).toContain('replacedPhysicalId is only valid on a CREATE carrying physicalIdRecoveredFromError.');
+    expect(
+      parseRollbackJournal(journalWith([], [{ ...orphan, replacedResourceDeleted: true }]), 'S')
+        .segments[0]!.failedOperations
+    ).toHaveLength(1);
+    expect(messageOf(journalWith([], [{ ...orphan, replacedResourceDeleted: false }]))).toContain(
+      'replacedResourceDeleted must be true when present (got boolean).'
+    );
+    const { replacedPhysicalId: _id, replacedResourceType: _type, ...plain } = orphan;
+    expect(messageOf(journalWith([], [{ ...plain, replacedResourceDeleted: true }]))).toContain(
+      'replacedResourceDeleted is only valid beside replacedPhysicalId.'
+    );
     expect(messageOf(journalWith([], [{ ...orphan, replacedPhysicalId: 'new' }]))).toContain(
       "replacedPhysicalId must differ from the op's own physicalId."
     );

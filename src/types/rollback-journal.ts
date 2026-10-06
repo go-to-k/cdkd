@@ -449,6 +449,12 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
   // they name, so anything outside that shape is planted.
   const replacedId: unknown = o['replacedPhysicalId'];
   const replacedType: unknown = o['replacedResourceType'];
+  if (o['replacedResourceDeleted'] !== undefined && replacedId === undefined) {
+    refuseMalformed(
+      shownStack,
+      `${where}.replacedResourceDeleted is only valid beside replacedPhysicalId.`
+    );
+  }
   if (replacedId !== undefined || replacedType !== undefined) {
     if (typeof replacedId !== 'string' || replacedId === '') {
       fail('replacedPhysicalId', replacedId, 'a non-empty string beside replacedResourceType');
@@ -461,6 +467,9 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
         shownStack,
         `${where}.replacedPhysicalId is only valid on a CREATE carrying physicalIdRecoveredFromError.`
       );
+    }
+    if (o['replacedResourceDeleted'] !== undefined && o['replacedResourceDeleted'] !== true) {
+      fail('replacedResourceDeleted', o['replacedResourceDeleted'], 'true when present');
     }
     if (replacedId === o['physicalId']) {
       refuseMalformed(

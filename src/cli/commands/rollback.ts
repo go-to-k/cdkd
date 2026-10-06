@@ -52,6 +52,7 @@ import {
   demoteSupersededOrphans,
   isJournaledOrphan,
   isReplacementOrphan,
+  replacementNeverSwapped,
   producerRegionsFromState,
   resolveReplacementOldType,
   type FailedOperation,
@@ -542,10 +543,19 @@ function displacedOpLabel(
  * The failed ops a segment's replay acts on: all of them under
  * `--revert-failed`, otherwise only the journaled proven failed-CREATE
  * orphans (go-to-k/cdkd#4584) — a plain rollback that popped the segment
- * without them would drop the only record of a live resource.
+ * without them would drop the only record of a live resource — and the failed
+ * UPDATE of a replacement whose orphan is among them (go-to-k/cdkd#4604): it
+ * settles with the orphan, and left alone in a kept segment a later
+ * `--revert-failed` would force-revert the resource the replacement never
+ * wrote to.
  */
 function failedOpsToReplay(ops: FailedOperation[], revertFailed: boolean): FailedOperation[] {
-  return revertFailed ? ops : ops.filter(isJournaledOrphan);
+  return revertFailed
+    ? ops
+    : ops.filter(
+        (op) =>
+          isJournaledOrphan(op) || (op.changeType === 'UPDATE' && replacementNeverSwapped(op, ops))
+      );
 }
 
 /**
@@ -581,6 +591,13 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed CREATE recorded no physical id`;
     case 'skip-failed-noop':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed ${safe(op.changeType)} left nothing to revert`;
+    case 'skip-failed-replaced-deleted':
+      // go-to-k/cdkd#4604: named (masked) like the skips around it.
+      return (
+        `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
+        `— failed replacement deleted the old resource ${displacedPhysicalIdShown(op, getLogger()) ?? 'a physical id'} ` +
+        `before its create failed; nothing to revert, state still records it`
+      );
     case 'skip-failed-superseded':
       // go-to-k/cdkd#1710: named (masked) like the mismatch below.
       return (

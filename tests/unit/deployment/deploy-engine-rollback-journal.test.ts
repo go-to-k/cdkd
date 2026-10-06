@@ -1354,6 +1354,39 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(ops.map((o) => o['changeType'])).toEqual(['UPDATE']);
     });
 
+    // Delete-first (the update-unsupported fallback): the replacement deleted
+    // the old resource before its create, which the orphan says.
+    it('marks the orphan when the replacement deleted the old resource first', async () => {
+      const { engine, provider } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new'),
+        { inPlace: true }
+      );
+      // Cloud Control's `UnsupportedActionException`: the auto-fallback that
+      // deletes the old resource and then creates (no name change).
+      (provider as unknown as { update: ReturnType<typeof vi.fn> }).update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[1])).toEqual(['b-old']);
+      const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+        Record<string, unknown>
+      >;
+      expect(ops.find((o) => o['changeType'] === 'CREATE')).toMatchObject({
+        physicalId: 'b-new',
+        replacedPhysicalId: 'b-old',
+        replacedResourceDeleted: true,
+      });
+    });
+
+    it('control: a create-first replacement does not mark it', async () => {
+      const ops = await failedOpsOf(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new')
+      );
+      expect(ops.find((o) => o['changeType'] === 'CREATE')).not.toHaveProperty(
+        'replacedResourceDeleted'
+      );
+    });
+
     // A policy attachment's id is its comma-joined targets, which a new id
     // can share with the replaced record's.
     it('journals nothing beside a QueuePolicy or TopicPolicy replacement', async () => {

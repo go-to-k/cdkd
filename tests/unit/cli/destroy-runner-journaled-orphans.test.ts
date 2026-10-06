@@ -430,6 +430,41 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(drop(fresh.failedOperations[0], { ...fresh, timestamp: 99 })).toBe(false);
   });
 
+  // go-to-k/cdkd#4604: a destroy that fails after settling a replacement
+  // orphan strips its failed UPDATE with it, so a later `--revert-failed`
+  // never force-reverts the resource the replacement never wrote to.
+  it("strips a replacement orphan's failed UPDATE with it, never updating the old resource", async () => {
+    const update = {
+      logicalId: 'R',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SSM::Parameter',
+      physicalId: 'phys-r',
+      previousState: res(),
+      attemptedProperties: { Name: 'new' },
+    };
+    const orphan = {
+      ...structuredClone(orphanOp),
+      logicalId: 'R',
+      resourceType: 'AWS::SSM::Parameter',
+      physicalId: 'phys-new',
+      replacedPhysicalId: 'phys-r',
+      replacedResourceType: 'AWS::SSM::Parameter',
+    };
+    const journal = journalOf([update, orphan]);
+    mockLoadJournal.mockResolvedValue(journal);
+    // The stack's own delete of R fails: the destroy keeps the state.
+    mockProviderDelete.mockImplementation((_l: string, physicalId: string) =>
+      physicalId === 'phys-r' ? Promise.reject(new Error('AccessDenied')) : Promise.resolve(undefined)
+    );
+    await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    expect(deleted()).toEqual(['phys-new', 'phys-r']);
+    expect(mockDropFailed).toHaveBeenCalledOnce();
+    const drop = mockDropFailed.mock.calls[0]![2] as (op: unknown, seg: unknown) => boolean;
+    const fresh = structuredClone(journal.segments[0]!);
+    expect(drop(fresh.failedOperations[0], fresh)).toBe(true);
+    expect(drop(fresh.failedOperations[1], fresh)).toBe(true);
+  });
+
   // A failed journaled delete: never the `cdkd state orphan` hint, which would
   // delete the journal, the resource's only record.
   it('reports a failed journaled delete apart, without the state-orphan hint', async () => {

@@ -650,6 +650,24 @@ async function replayFailedOperationsUnbound(
           break;
         }
 
+        case 'skip-failed-replaced-deleted': {
+          // go-to-k/cdkd#4604: a delete-first replacement removed the old
+          // resource before its create failed. Nothing is reverted (there is
+          // nothing to revert onto); the record still names the removed id.
+          // Cleared with its orphan like every warned skip: kept alone, a
+          // later `--revert-failed` would aim a force-revert at a resource
+          // that is gone.
+          logger.warn(
+            safeMsg`  Rollback: Skipping failed UPDATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — its replacement deleted the old resource ${mask(String(op.physicalId))} before the new one's create failed, so there is nothing to revert; state still records it, and a deploy of the template that replaces it creates it again`
+          );
+          recordRollbackSkip(
+            skipScope,
+            op,
+            'The failed UPDATE was a replacement that deleted the old resource before its create failed, so there is nothing to revert it onto; state still records the deleted resource.'
+          );
+          break;
+        }
+
         case 'skip-failed-superseded': {
           // go-to-k/cdkd#1710: a CREATE that made its resource before failing,
           // but later activity (a newer deploy, a retained re-create) may own
@@ -1128,6 +1146,7 @@ async function replayFailedOperationsUnbound(
       action === 'skip-failed-noop' ||
         action === 'skip-failed-mismatch' ||
         action === 'skip-failed-superseded' ||
+        action === 'skip-failed-replaced-deleted' ||
         ownRecord(stateResources, op.logicalId) !== recordBefore ||
         // go-to-k/cdkd#4604: a replacement orphan's arm acts on its resource
         // and leaves the record under its id, the replaced one, as it found

@@ -715,6 +715,7 @@ export async function updateInPlace(
             )
           );
         }
+        this.oldDeletedBeforeCreate.add(logicalId);
       }
       // Set only on the retain arm; drives the `partial` outcome below.
       let retainedSurvivorReason: string | undefined;

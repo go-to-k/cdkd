@@ -415,13 +415,16 @@ export function classifyFailedOp(
   // UPDATE
   if (!current || !op.previousState) return 'skip-failed-absent';
   // go-to-k/cdkd#4604: a replacement whose create made its new resource and
-  // failed. The new resource is the sibling orphan entry's, and the record
-  // the UPDATE names is still the old one, which the replacement never wrote
-  // to (create-first left it alone; delete-first removed it). Force-applying
-  // the previous properties over it would send AWS the revert of a change it
-  // never received.
-  if (current.physicalId === op.physicalId && replacementNeverSwapped(op, siblings)) {
-    return 'skip-failed-noop';
+  // failed. The new resource is the sibling orphan entry's; this op applied
+  // nothing to the record it names (create-first left the old resource alone,
+  // delete-first removed it), so it is never force-reverted: that would send
+  // AWS the revert of a change it never received, or, once a later operation
+  // moved the record, aim this op's previous properties at that one's resource.
+  if (replacementNeverSwapped(op, siblings)) {
+    // Delete-first, record unmoved: it names a resource the replacement removed.
+    return current.physicalId === op.physicalId && replacedResourceDeleted(op, siblings)
+      ? 'skip-failed-replaced-deleted'
+      : 'skip-failed-noop';
   }
   // Issue #2668: a failed Type change was a REPLACEMENT in flight, and the
   // force-revert below is an in-place `update()` routed on `op.resourceType` —
@@ -482,6 +485,21 @@ export function replacementNeverSwapped(
       isReplacementOrphan(s) &&
       s.logicalId === op.logicalId &&
       s.replacedPhysicalId === op.physicalId
+  );
+}
+
+/** Whether the replacement that left `op`'s orphan deleted the old resource first. */
+function replacedResourceDeleted(
+  op: FailedOperation,
+  siblings: readonly FailedOperation[]
+): boolean {
+  return siblings.some(
+    (s) =>
+      s !== op &&
+      isReplacementOrphan(s) &&
+      s.logicalId === op.logicalId &&
+      s.replacedPhysicalId === op.physicalId &&
+      s.replacedResourceDeleted === true
   );
 }
 

@@ -32,6 +32,7 @@ import {
   demoteSupersededOrphans,
   isJournaledOrphan,
   isReplacedRecord,
+  replacementNeverSwapped,
   replayFailedOperations,
 } from '../rollback-executor.js';
 
@@ -39,6 +40,14 @@ import {
 interface SegmentOrphans {
   segment: RollbackJournalSegment;
   ops: FailedOperation[];
+  /**
+   * go-to-k/cdkd#4604: the segment's failed replacement UPDATEs whose orphan
+   * is among `ops`. Replayed with them (each settles as a no-op or a warned
+   * skip) and cleared with them, so none outlives its orphan for a later
+   * `--revert-failed` to force-revert the resource it never wrote to. Not
+   * counted or listed: they name no resource to act on.
+   */
+  companions?: FailedOperation[];
 }
 
 /** The journal's proven orphans, newest segment first. */
@@ -141,11 +150,13 @@ export async function loadJournaledOrphans(
   for (let s = segments.length - 1; s >= 0; s--) {
     const segment = segments[s]!;
     if (segment.reason === NESTED_PENDING_PARENT_REASON) continue;
-    const ops = splitImportedOps(segment.failedOperations ?? [], segment).replay.filter(
-      isJournaledOrphan
-    );
+    const replay = splitImportedOps(segment.failedOperations ?? [], segment).replay;
+    const ops = replay.filter(isJournaledOrphan);
     if (ops.length === 0) continue;
-    out.push({ segment, ops });
+    const companions = replay.filter(
+      (op) => op.changeType === 'UPDATE' && replacementNeverSwapped(op, ops)
+    );
+    out.push({ segment, ops, ...(companions.length > 0 && { companions }) });
     count += ops.length;
   }
   return { segments: out, count, deployLogicalIds };
@@ -189,11 +200,14 @@ export async function deleteJournaledOrphans(
     handled: [] as Array<{ segment: RollbackJournalSegment; op: FailedOperation }>,
   };
   const inlinePolicyWriters = new RollbackInlinePolicyWriters();
-  for (const { segment, ops } of orphans.segments) {
+  for (const { segment, ops: orphanOps, companions } of orphans.segments) {
     if (options.isInterrupted?.()) {
       total.interrupted = true;
       break;
     }
+    // Companions first: the replay runs newest-first, so the orphans go
+    // before the UPDATE they were journaled beside, as `--revert-failed` runs.
+    const ops = [...(companions ?? []), ...orphanOps];
     const replay = (): ReturnType<typeof replayFailedOperations> =>
       withStackName(stackName, () =>
         replayFailedOperations(ops, stateResources, stackName, ctx, {
@@ -345,6 +359,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
       );
       const acting: JournaledOrphans = {
         segments: orphans.segments
+          // Companions are not replayed here (each would only settle as a
+          // no-op); they are cleared with their orphans below.
           .map(({ segment, ops }) => ({
             segment,
             ops: ops.filter((op) => !unreadable.has(op) && !tracked.has(op)),
@@ -374,7 +390,21 @@ export async function settleJournaledOrphansOnSuccess(args: {
   const skipped = all.filter(
     ({ op }) => !keptOps.has(op) && op.physicalIdRecoveredFromError === false
   ).length;
-  const cleared = all.filter(({ op }) => !keptOps.has(op));
+  // go-to-k/cdkd#4604: a cleared orphan's companion UPDATE goes with it.
+  const clearedOrphans = all.filter(({ op }) => !keptOps.has(op));
+  const cleared = [
+    ...clearedOrphans,
+    ...orphans.segments.flatMap(({ segment, companions }) =>
+      (companions ?? [])
+        .filter((c) =>
+          replacementNeverSwapped(
+            c,
+            clearedOrphans.filter((o) => o.segment === segment).map((o) => o.op)
+          )
+        )
+        .map((op) => ({ segment, op }))
+    ),
+  ];
   const stripCleared =
     cleared.length === 0
       ? undefined

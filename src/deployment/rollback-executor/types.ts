@@ -159,6 +159,13 @@ export interface FailedOperation {
   /** The type of the record {@link replacedPhysicalId} names. */
   replacedResourceType?: string | undefined;
   /**
+   * `true` when the replacement deleted the resource {@link replacedPhysicalId}
+   * names (or found it gone) before its create ran: the record names a
+   * resource that no longer exists, which the failed UPDATE's rollback warns
+   * about instead of settling as a no-op.
+   */
+  replacedResourceDeleted?: boolean | undefined;
+  /**
    * The intrinsic-RESOLVED desired properties the failed op attempted to
    * apply, if resolution got that far. Load-bearing for the revert: a
    * Cloud-Control-routed revert patches previous-vs-attempted, so without
@@ -295,6 +302,7 @@ export type FailedOpActionKind =
   | 'orphan-failed-create-retain' // ↑ under DeletionPolicy Retain → leave in AWS (#1362)
   | 'skip-failed-unknown' // failed CREATE with nothing recorded — cannot act
   | 'skip-failed-noop' // failed DELETE (resource still in place) / already handled
+  | 'skip-failed-replaced-deleted' // failed replacement UPDATE whose delete-first removed the old resource (#4604) — warned
   | 'skip-failed-superseded' // proven failed-CREATE orphan later activity may own (#1710) — warned, nothing deleted
   | 'skip-failed-mismatch' // failed CREATE whose recorded physical id state no longer names — warned, nothing deleted (go-to-k/cdkd#4552)
   | 'skip-failed-absent' // failed UPDATE with no previousState / not in state

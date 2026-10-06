@@ -606,14 +606,49 @@ describe('a failed replacement UPDATE beside its orphan (go-to-k/cdkd#4604)', ()
     ).toBe('skip-failed-noop');
   });
 
-  it('control: without the orphan, or once the record moved, it is reverted as before', () => {
+  it('control: without its orphan it is reverted as before', () => {
     expect(classifyFailedOp(update(), { S: res() }, [])).toBe('revert-failed-update');
     expect(classifyFailedOp(update(), { S: res() }, [orphan({ replacedPhysicalId: 'other' })])).toBe(
       'revert-failed-update'
     );
+  });
+
+  // A later operation moved the record: this op applied nothing, so its
+  // previous properties must not land on that operation's resource.
+  it('never force-reverts a record a later operation moved', () => {
     expect(classifyFailedOp(update(), { S: res({ physicalId: 'stream-c' }) }, [orphan()])).toBe(
-      'revert-failed-update'
+      'skip-failed-noop'
     );
+  });
+
+  // Delete-first: the record names a resource the replacement removed.
+  it('warns, never a silent no-op, when the replacement deleted the old resource first', () => {
+    const deletedFirst = orphan({ replacedResourceDeleted: true });
+    expect(classifyFailedOp(update(), { S: res() }, [deletedFirst])).toBe(
+      'skip-failed-replaced-deleted'
+    );
+    expect(classifyFailedOp(update(), { S: res({ physicalId: 'stream-c' }) }, [deletedFirst])).toBe(
+      'skip-failed-noop'
+    );
+  });
+
+  it('replays the delete-first pair: deletes the new stream, warns about the old, settles both', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const upd = vi.fn();
+    const { ctx } = ctxWith({ delete: del, update: upd });
+    const state: Record<string, ResourceState> = { S: res() };
+    const result = await replayFailedOperations(
+      [update(), orphan({ replacedResourceDeleted: true })],
+      state,
+      'Stack',
+      ctx,
+      {}
+    );
+    expect(del.mock.calls.map((c) => c[1])).toEqual(['stream-b']);
+    expect(upd).not.toHaveBeenCalled();
+    expect(warned()).toContain('its replacement deleted the old resource');
+    expect(result.skipped).toBe(1);
+    expect(result.remainingFailedOps).toEqual([]);
   });
 
   // The pair as the engine journals it, replayed in one run: the orphan is
@@ -630,5 +665,58 @@ describe('a failed replacement UPDATE beside its orphan (go-to-k/cdkd#4604)', ()
     expect(state['S']).toBe(record);
     expect(result.failures).toBe(0);
     expect(result.remainingFailedOps).toEqual([]);
+  });
+});
+
+describe("the success settle clears a replacement orphan's failed UPDATE with it (go-to-k/cdkd#4604)", () => {
+  it('its strip of the cleared entries removes both', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const upd = vi.fn();
+    const { ctx } = ctxWith({ delete: del, update: upd });
+    const update: FailedOperation = {
+      logicalId: 'S',
+      changeType: 'UPDATE',
+      resourceType: TYPE,
+      physicalId: 'stream-a',
+      previousState: res(),
+    };
+    const journal = {
+      journalVersion: 1,
+      stackName: 'Stack',
+      region: 'us-east-1',
+      segments: [
+        {
+          timestamp: 1,
+          reason: 'no-rollback-failure',
+          initialDeploy: false,
+          operations: [],
+          failedOperations: [update, orphan()],
+        },
+      ],
+    };
+    const drop = vi.fn().mockResolvedValue(2);
+    const outcome = await settleJournaledOrphansOnSuccess({
+      stateBackend: {
+        loadRollbackJournal: vi.fn(async () => structuredClone(journal)),
+        reduceRollbackJournalToFailedOperations: vi.fn(),
+        markRollbackJournalSuperseded: vi.fn(),
+        dropRollbackJournalFailedOperations: drop,
+      } as never,
+      stackName: 'Stack',
+      region: 'us-east-1',
+      stateResources: { S: res() },
+      rollbackOrphans: undefined,
+      newerOperations: [],
+      foreignHolder: async () => undefined,
+      ctx,
+      logger,
+    });
+    expect(del.mock.calls.map((c) => c[1])).toEqual(['stream-b']);
+    expect(upd).not.toHaveBeenCalled();
+    await outcome.stripCleared!();
+    const keep = drop.mock.calls[0]![2] as (op: FailedOperation, seg: unknown) => boolean;
+    const fresh = structuredClone(journal.segments[0]!);
+    expect(keep(fresh.failedOperations[0]!, fresh)).toBe(true);
+    expect(keep(fresh.failedOperations[1]!, fresh)).toBe(true);
   });
 });
