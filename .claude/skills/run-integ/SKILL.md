@@ -89,8 +89,7 @@ verify, clean up.
 
    **Dispatch**: a `verify.sh` in `tests/integration/<test-name>/` owns its own
    deploy + verify + destroy cycle; the standard flow below is for plain smoke
-   tests. Pre-flight (step 4) and post-run verification (steps 6 + 7) apply to
-   BOTH paths.
+   tests.
 
    **CHECK FOR `verify.sh` BEFORE PICKING THE FIXTURE — the standard-flow branch
    is unreachable from an agent session**: the harness's
@@ -101,8 +100,8 @@ verify, clean up.
 
    - `cd tests/integration/<test-name>/`; `npm install` if no `node_modules`.
    - **If `verify.sh` exists**:
-     `AWS_REGION=us-east-1 STATE_BUCKET=<bucket> bash verify.sh` — the script does
-     its own deploy + destroy; steps 6/7 STILL run after. Propagate its exit code
+     `AWS_REGION=us-east-1 STATE_BUCKET=<bucket> bash verify.sh` — steps 6/7 STILL
+     run after. Propagate its exit code
      so a non-zero exit drives the failure path; never swallow failures.
    - **Otherwise** (standard flow):
      - `node ../../../dist/cli.js synth --region us-east-1`
@@ -113,11 +112,13 @@ verify, clean up.
 
    **Never run it unwatched, and do not reach for `timeout`** — it is not in
    stock macOS (its absence is exit 127 in 0s, which reads as instant
-   completion). Shell watchdog, firing made visible:
+   completion). Shell watchdog, firing made visible. A SET runs this whole block
+   per fixture, in a background subshell `cd`'d into it with its own `T`, stdout
+   to a per-fixture file that gets `echo "$T $VPID $LOG"` right after the spawn;
+   stop one with `kill -9 -- -<its VPID>` (the gate refuses `pkill -f`):
 
    ```bash
-   LOG=$(mktemp)   # assign HERE: a separate block is a separate shell, and
-                   # `> ""` is a loud failure that costs you the whole run
+   LOG=$(mktemp)   # assign HERE: a separate block is a separate shell
    # Budget: 2x the last PASS's duration, floor 1500s. A FAIL row times the
    # failure, not a pass: walk the ledger's history back to a numeric PASS.
    L=../../../docs/_generated/integ-last-run.tsv; T="<test-name>"
@@ -140,11 +141,12 @@ verify, clean up.
    wait "$VPID"; RC=$?
    wait "$WPID"   # at most 5s more
    grep -c WATCHDOG_FIRED "$LOG" || echo "watchdog did not fire"
-   echo "verify.sh rc=$RC"   # the verdict steps 6-11 read; nothing else carries it out
+   echo "verify.sh rc=$RC"   # the verdict steps 6-11 read
    ```
 
-   The `grep` and the `rc` line are load-bearing (`kill -9` surfaces as rc=137,
-   otherwise just a crash). **Steps 6-11 are LATER calls that read this output**
+   The `grep` and `rc` lines are load-bearing: rc=137 is a `kill -9` (a FIRE
+   when the grep counts one, else a manual stop); other non-zero is a FAIL, so read the LOG.
+   **Steps 6-11 are LATER calls that read this output**
    — a marker or a `PASS` ledger row chained into this same call is written
    before any verdict exists.
 
