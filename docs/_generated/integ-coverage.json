@@ -3226,6 +3226,7 @@
         "migrate-from-cfn",
         "replace-squatter-refusal",
         "replacement-rename-onto-holder",
+        "secret-derived-immutable-names",
         "stage-assets"
       ],
       "signals": {
@@ -3263,6 +3264,10 @@
           "literal"
         ],
         "replacement-rename-onto-holder": [
+          "l1",
+          "literal"
+        ],
+        "secret-derived-immutable-names": [
           "l1",
           "literal"
         ],

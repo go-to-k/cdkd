@@ -32,7 +32,12 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 const { IntrinsicFunctionResolver } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
-const { secretNamePrintingBag, secretNamesReadBy, stateSecretNameNeedles } = await import(
+const {
+  journaledOrphanPrintingBag,
+  secretNamePrintingBag,
+  secretNamesReadBy,
+  stateSecretNameNeedles,
+} = await import(
   '../../../src/deployment/secret-name-needles.js'
 );
 const { hasMaskableValues, maskSecretsInText, recordLogOnlyValue } = await import(
@@ -193,5 +198,52 @@ describe('ResolverContext.secretNameSink — a command’s print-only sink', () 
     // Premise: the printing arm took it.
     expect(maskSecretsInText(encoded, printing)).toBe('***');
     expect(maskSecretsInText(encoded, sink)).toBe(encoded);
+  });
+});
+
+describe('journaledOrphanPrintingBag (go-to-k/cdkd#3869)', () => {
+  const user = (userName: string): Records[string] => ({
+    physicalId: USER_ID,
+    resourceType: 'AWS::IAM::User',
+    properties: { UserName: userName },
+    attributes: {},
+    dependencies: [],
+  });
+  const userOp = (userName: string) => ({
+    logicalId: 'User',
+    resourceType: 'AWS::IAM::User',
+    physicalId: USER_ID,
+    attemptedProperties: { UserName: userName },
+  });
+  const keyOp = {
+    logicalId: 'Key',
+    resourceType: 'AWS::IAM::AccessKey',
+    physicalId: 'AKIAEXAMPLEKEY',
+    attemptedProperties: { UserName: USER_ID },
+  };
+  const masks = (bag: Map<string, string>): boolean =>
+    maskSecretsInText(`user ${USER_ID}`, bag) === 'user ***';
+
+  it.each([
+    ['its own entry names it from a secret', REF, true],
+    ['negative control, an ordinary name', 'plain-user-name', false],
+  ])("judges an orphan from its own journal entry: %s", (_l, name, masked) => {
+    expect(masks(journaledOrphanPrintingBag([userOp(name)], {}))).toBe(masked);
+  });
+
+  it.each([
+    ['a secret-named user in state', REF, true],
+    ['negative control, an ordinary user', 'plain-user-name', false],
+  ])('carries a name an orphan read from a state record: %s', (_l, name, masked) => {
+    expect(masks(journaledOrphanPrintingBag([keyOp], { User: user(name) }))).toBe(masked);
+  });
+
+  it.each([
+    ['a secret-named record', REF, true],
+    ['negative control, an ordinary record', 'plain-user-name', false],
+  ])("masks the state record under the orphan's own logical id: %s", (_l, name, masked) => {
+    // A replacement orphan: the record is the resource being replaced.
+    const op = { ...userOp('plain-new-name'), physicalId: 'new-user-id' };
+    expect(masks(journaledOrphanPrintingBag([op], { User: user(name) }))).toBe(masked);
   });
 });

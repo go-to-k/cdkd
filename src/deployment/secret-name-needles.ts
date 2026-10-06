@@ -215,3 +215,44 @@ export function secretNamePrintingBag(
   }
   return bag;
 }
+
+/**
+ * The PRINTING bag a batch of journaled failed-CREATE orphans is deleted under
+ * (`deleteJournaledOrphans`, go-to-k/cdkd#3869): no state record holds such a
+ * resource, so each is judged from its OWN journal entry, its type, recovered
+ * physical id and the properties it attempted (a secret leaf journaled as its
+ * `{{resolve:` reference or the mask). Also the names each entry read from a
+ * state record, and the state record under the same logical id (the resource
+ * a replacement orphan's replacement was replacing). ONE bag per batch, so a
+ * name an entry read from a sibling entry is that sibling's own needle, and a
+ * sibling's name masked on another's line only over-masks.
+ */
+export function journaledOrphanPrintingBag(
+  ops: readonly {
+    logicalId: string;
+    resourceType: string;
+    physicalId?: string | undefined;
+    attemptedProperties?: Record<string, unknown> | undefined;
+  }[],
+  stateResources: Readonly<Record<string, ResourceState>>
+): RecordedSecretValues {
+  const bag: RecordedSecretValues = new Map();
+  for (const op of ops) {
+    const record = {
+      resourceType: op.resourceType,
+      physicalId: op.physicalId,
+      properties: op.attemptedProperties,
+    };
+    const replaced = Object.hasOwn(stateResources, op.logicalId)
+      ? stateResources[op.logicalId]
+      : undefined;
+    for (const needle of [
+      ...(secretNameNeedlesOf(op.logicalId, record, undefined) ?? []),
+      ...(secretNameNeedlesOf(op.logicalId, replaced, undefined) ?? []),
+      ...secretNamesReadBy(op.logicalId, record, stateResources),
+    ]) {
+      recordLogOnlyValue(bag, needle);
+    }
+  }
+  return bag;
+}

@@ -436,6 +436,7 @@
         "rollback-sqs-cooldown",
         "s3-analytics-inventory",
         "s3-lifecycle",
+        "secret-derived-immutable-names",
         "secrets-dynamic-ref",
         "type-change-replacement"
       ]

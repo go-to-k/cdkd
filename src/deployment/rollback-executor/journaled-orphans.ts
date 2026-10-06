@@ -24,6 +24,8 @@ import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-
 import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
+import { withPrintingSecrets } from '../resource-secrets-scope.js';
+import { journaledOrphanPrintingBag } from '../secret-name-needles.js';
 import { NESTED_PENDING_PARENT_REASON, displacedPhysicalIdShown } from '../nested-child-journal.js';
 import {
   type CompletedOperation,
@@ -208,16 +210,23 @@ export async function deleteJournaledOrphans(
     // Companions first: the replay runs newest-first, so the orphans go
     // before the UPDATE they were journaled beside, as `--revert-failed` runs.
     const ops = [...(companions ?? []), ...orphanOps];
+    // go-to-k/cdkd#3869: the segment's deletes run under a PRINTING bag of
+    // each entry's own name spellings, so a provider's delete lines and the
+    // final-snapshot lines mask a name derived from a secret. Nothing reads it
+    // to decide: `getCurrentResourceSecrets` never returns it.
+    const printing = journaledOrphanPrintingBag(ops, stateResources);
     const replay = (): ReturnType<typeof replayFailedOperations> =>
-      withStackName(stackName, () =>
-        replayFailedOperations(ops, stateResources, stackName, ctx, {
-          // A destroy run, not a rollback: its own run events frame these
-          // ops, so no ROLLBACK_STARTED / ROLLBACK_FINISHED envelope.
-          emitEnvelope: false,
-          inlinePolicyWriters,
-          forDestroy: true,
-          ...(options.isInterrupted && { isInterrupted: options.isInterrupted }),
-        })
+      withPrintingSecrets(printing, () =>
+        withStackName(stackName, () =>
+          replayFailedOperations(ops, stateResources, stackName, ctx, {
+            // A destroy run, not a rollback: its own run events frame these
+            // ops, so no ROLLBACK_STARTED / ROLLBACK_FINISHED envelope.
+            emitEnvelope: false,
+            inlinePolicyWriters,
+            forDestroy: true,
+            ...(options.isInterrupted && { isInterrupted: options.isInterrupted }),
+          })
+        )
       );
     const result =
       segment.skipPrefix === undefined
