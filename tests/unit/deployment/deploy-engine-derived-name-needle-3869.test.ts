@@ -75,6 +75,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
   beforeEach(() => {
     vi.clearAllMocks();
     logLines.length = 0;
+    events.length = 0;
     resolveSpy.mockImplementation((value: unknown) => Promise.resolve(value));
     provider = {
       create: vi.fn().mockResolvedValue({ physicalId: 'phys' }),
@@ -107,6 +108,8 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     };
   });
 
+  const events: Array<Record<string, unknown>> = [];
+
   function makeEngine(): DeployEngine {
     return new DeployEngine(
       stateBackend as never,
@@ -121,7 +124,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
       } as never,
       diffCalculator as never,
       registry as never,
-      { dryRun: false },
+      { dryRun: false, eventRecorder: { record: (e: Record<string, unknown>) => void events.push(e) } } as never,
       'us-east-1'
     );
   }
@@ -234,6 +237,11 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     expect(chain.join('\n')).not.toContain(ROLE_ID);
     expect(logLines.filter((line) => line.includes('AccessDenied')).length).toBeGreaterThan(0);
     expect(logLines.join('\n')).not.toContain(ROLE_ID);
+    // The durable event's error text too.
+    const failed = events.filter((e) => e['eventType'] === 'RESOURCE_FAILED');
+    expect(failed).toHaveLength(1);
+    expect(JSON.stringify(failed[0]!['error'])).toContain('AccessDenied on role');
+    expect(JSON.stringify(failed[0]!['error'])).not.toContain(ROLE_ID);
   });
 
   it('every context answers the needle question from the served record and the target’s bag', () => {

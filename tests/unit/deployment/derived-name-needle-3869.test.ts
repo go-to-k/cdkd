@@ -135,6 +135,21 @@ describe('secretNameNeedlesOf — is a record named from a secret, and what does
     );
   });
 
+  it('a resolved name too short to match inside the id is still its own needle', () => {
+    // Below the substring floor, so only the name itself, matched WHOLE (a
+    // provider masking the value it was handed), can withhold it.
+    const needles = secretNameNeedlesOf(
+      'Queue',
+      {
+        resourceType: 'AWS::SQS::Queue',
+        physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/abc',
+        properties: { QueueName: 'abc' },
+      },
+      new Map([['abc', REF]])
+    );
+    expect(maskSecretsInText('abc', logOnlyBag(needles))).toBe('***');
+  });
+
   it('a secret in a NON-name property does not make the id a needle', () => {
     expect(
       secretNameNeedlesOf(
@@ -266,6 +281,31 @@ describe('the resolver records what it read from a secret-named resource (go-to-
     expect(value).toBe(QUEUE_ARN);
     expect(logLines.join('\n')).toContain('Resolved Fn::GetAtt:');
     expect(logLines.join('\n')).not.toContain('sdin-secret-queue');
+  });
+
+  it('the served value itself is a needle, where the id needles do not cover it', async () => {
+    // A role whose PATH came from the secret: its id is the bare role name,
+    // and only the ARN a `Fn::GetAtt` serves carries the path.
+    const arn = 'arn:aws:iam::123456789012:role/sdin-secret-path/plain-role';
+    const resources = {
+      Role: {
+        physicalId: 'plain-role',
+        resourceType: 'AWS::IAM::Role',
+        properties: { Path: REF },
+        attributes: { Arn: arn },
+        dependencies: [],
+      },
+    };
+    const context = {
+      template: { Resources: { Role: { Type: 'AWS::IAM::Role', Properties: {} } } },
+      resources,
+      recordedSecretValues: new Map(),
+      secretNameNeedles: (logicalId: string) =>
+        secretNameNeedlesOf(logicalId, resources[logicalId as 'Role'], undefined),
+    } as never;
+    expect(await new IntrinsicFunctionResolver().resolve({ 'Fn::GetAtt': ['Role', 'Arn'] }, context)).toBe(arn);
+    expect(logLines.join('\n')).toContain('resolved to');
+    expect(logLines.join('\n')).not.toContain('sdin-secret-path');
   });
 
   it('negative control: a context without the callback prints the name', async () => {
