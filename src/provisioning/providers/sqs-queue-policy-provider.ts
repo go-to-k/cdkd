@@ -6,9 +6,9 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { assertRegionMatch, type DeleteContext, type RegionCheckPhase } from '../region-check.js';
 import { logicalIdShown } from '../composite-id.js';
-import { isPasteableIdent } from '../../utils/display-safe.js';
+import { isPasteableIdent, safeMsg } from '../../utils/display-safe.js';
 import {
   isPlainImportValue,
   refusalTypeShown,
@@ -24,6 +24,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  UpdateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -100,10 +101,12 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created SQS queue policy ${logicalId}`);
 
-      // Physical ID is the first queue URL
+      // Physical id: the first queue URL, stable across an update that keeps
+      // it (go-to-k/cdkd#4594: rollback reads a changed id as a replacement).
+      // The written set rides in an attribute delete() / update() read.
       return {
         physicalId: queues[0]!,
-        attributes: {},
+        attributes: { [WRITTEN_QUEUES_KEY]: queues.join(',') },
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -132,7 +135,8 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SQS queue policy ${logicalId}: ${physicalId}`);
 
@@ -157,6 +161,22 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4594: a queue the record wrote and the new list drops keeps
+    // the old statement unless it is cleared, as CloudFormation does. The
+    // record's written set (its attribute; for a record without one, its id)
+    // is cleared by name; any other queue `previousProperties` lists only
+    // while it carries that bag's document (see queuesCarryingDocument), read
+    // BEFORE the writes below.
+    const written = recordedQueues(physicalId, context?.recordedAttributes);
+    const listedOnly = await this.queuesCarryingDocument(
+      listedQueues(previousProperties).filter(
+        (url) => !written.includes(url) && !queues.includes(url)
+      ),
+      previousProperties['PolicyDocument'],
+      logicalId
+    );
+    const removed = [...written.filter((url) => !queues.includes(url)), ...listedOnly];
+
     try {
       // Serialize policy document
       const policyDoc =
@@ -175,14 +195,27 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         );
       }
 
+      // Then clear the dropped ones, after the new set holds the policy.
+      for (const queueUrl of removed) {
+        await this.clearQueuePolicy(
+          queueUrl,
+          resourceType,
+          logicalId,
+          context?.expectedRegion,
+          'pre-update'
+        );
+      }
+
       this.logger.debug(`Successfully updated SQS queue policy ${logicalId}`);
 
       return {
         physicalId: queues[0]!,
         wasReplaced: false,
-        attributes: {},
+        attributes: { [WRITTEN_QUEUES_KEY]: queues.join(',') },
       };
     } catch (error) {
+      // The region refusal is already a complete ProvisioningError.
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -201,46 +234,46 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting SQS queue policy ${logicalId}: ${physicalId}`);
 
-    // A state record holds one queue URL (create()'s return). A failed
-    // create's journaled id (go-to-k/cdkd#4583) is the comma-joined URLs it
-    // wrote; clear exactly those. The list comes from the id, never from
-    // properties, so no queue this create never wrote is touched.
-    const queueUrls = physicalId.split(',');
+    // The queues to clear by name: a failed create's journaled id
+    // (go-to-k/cdkd#4583) is the comma-joined URLs it wrote, exactly; a
+    // record's are its written-set attribute (go-to-k/cdkd#4594) plus its id.
+    // A record without the attribute (written before #4594, or imported) or a
+    // one-queue mark also has `Queues` entries it may or may not have written
+    // — a failed create's revert passes the ATTEMPTED list — so those are
+    // cleared only while they carry the bag's document. They go first: a
+    // retry after a partial run still finds them by content.
+    const named = physicalId.includes(',')
+      ? splitQueueUrls(physicalId)
+      : recordedQueues(physicalId, context?.recordedAttributes);
+    const listedOnly = physicalId.includes(',')
+      ? []
+      : await this.queuesCarryingDocument(
+          listedQueues(properties ?? {}).filter((url) => !named.includes(url)),
+          properties?.['PolicyDocument'],
+          logicalId
+        );
+    const queueUrls = [...listedOnly, ...named];
+    // An id naming no queue must not return normally: that reads as DELETED.
+    if (queueUrls.length === 0) {
+      throw new ProvisioningError(
+        `Failed to delete SQS queue policy ${logicalId}: its physical id names no queue URL`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
 
     for (const queueUrl of queueUrls) {
       try {
-        // Remove the policy by setting it to empty
-        await this.sqsClient.send(
-          new SetQueueAttributesCommand({
-            QueueUrl: queueUrl,
-            Attributes: {
-              Policy: '',
-            },
-          })
-        );
+        await this.clearQueuePolicy(queueUrl, resourceType, logicalId, context?.expectedRegion);
       } catch (error) {
-        // Check if queue doesn't exist
-        if (
-          error instanceof Error &&
-          (error.name === 'QueueDoesNotExist' || error.message.includes('does not exist'))
-        ) {
-          const clientRegion = await this.sqsClient.config.region();
-          assertRegionMatch(
-            clientRegion,
-            context?.expectedRegion,
-            resourceType,
-            logicalId,
-            queueUrl
-          );
-          this.logger.debug(`Queue ${queueUrl} does not exist, skipping policy deletion`);
-          continue;
-        }
-
+        // The region refusal is already a complete ProvisioningError.
+        if (error instanceof ProvisioningError) throw error;
         const cause = error instanceof Error ? error : undefined;
         throw new ProvisioningError(
           `Failed to delete SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -256,59 +289,173 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
   }
 
   /**
+   * Remove the policy from one queue by setting it to empty. A queue that is
+   * gone has no policy left to remove (after the recorded-region check).
+   */
+  private async clearQueuePolicy(
+    queueUrl: string,
+    resourceType: string,
+    logicalId: string,
+    expectedRegion: string | undefined,
+    phase: RegionCheckPhase = 'not-found'
+  ): Promise<void> {
+    try {
+      await this.sqsClient.send(
+        new SetQueueAttributesCommand({
+          QueueUrl: queueUrl,
+          Attributes: {
+            Policy: '',
+          },
+        })
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.name === 'QueueDoesNotExist' || error.message.includes('does not exist'))
+      ) {
+        const clientRegion = await this.sqsClient.config.region();
+        assertRegionMatch(clientRegion, expectedRegion, resourceType, logicalId, queueUrl, phase);
+        this.logger.debug(`Queue ${queueUrl} does not exist, skipping policy deletion`);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * The `candidates` (queues a bag lists that no record names as written)
+   * still carrying `document`, compared by content (canonical JSON). Such a
+   * list is a record written before go-to-k/cdkd#4594 — its create wrote
+   * every entry — or an ATTEMPTED list (a failed create's revert, or
+   * `--revert-failed` of a failed update), whose entries hold `document` only
+   * where the attempt wrote it. Only the bag's own document is a reference,
+   * never a queue's live policy, so a queue another writer holds is left
+   * alone. Residual: another writer's byte-identical document on a shared
+   * queue matches too (go-to-k/cdkd#4612). A queue that is gone, carries
+   * another or no policy, or cannot be read is left alone, an unchecked one
+   * with a warning naming it.
+   */
+  private async queuesCarryingDocument(
+    candidates: readonly string[],
+    document: unknown,
+    logicalId: string
+  ): Promise<string[]> {
+    if (candidates.length === 0) return [];
+    let reference: string | undefined;
+    if (typeof document === 'string' && document.length > 0) reference = canonicalPolicy(document);
+    else if (document !== null && typeof document === 'object') reference = canonicalJson(document);
+    if (reference === undefined) {
+      this.logger.warn(
+        safeMsg`The queues ${candidates.join(', ')} listed by ${logicalId} were not checked (no policy document recorded to compare with) and may still carry its policy.`
+      );
+      return [];
+    }
+
+    const carrying: string[] = [];
+    for (const queueUrl of candidates) {
+      const current = await this.readPolicyForWidening(queueUrl);
+      if (current.kind === 'policy' && canonicalPolicy(current.policy) === reference) {
+        carrying.push(queueUrl);
+      } else if (current.kind === 'unreadable') {
+        this.logger.warn(
+          safeMsg`Could not read the policy of queue ${queueUrl} (${current.reason}), so it is not cleared: it may still carry the policy of ${logicalId}.`
+        );
+      } else {
+        this.logger.debug(
+          safeMsg`Queue ${queueUrl} does not carry the policy of ${logicalId}; left as is`
+        );
+      }
+    }
+    return carrying;
+  }
+
+  /** A queue's `Policy` for {@link queuesCarryingDocument}: held, absent (gone or empty), or unreadable. */
+  private async readPolicyForWidening(
+    queueUrl: string
+  ): Promise<
+    { kind: 'policy'; policy: string } | { kind: 'none' } | { kind: 'unreadable'; reason: string }
+  > {
+    try {
+      const resp = await this.sqsClient.send(
+        new GetQueueAttributesCommand({ QueueUrl: queueUrl, AttributeNames: ['Policy'] })
+      );
+      const policy = resp.Attributes?.['Policy'];
+      return policy ? { kind: 'policy', policy } : { kind: 'none' };
+    } catch (err) {
+      const name = (err as { name?: string }).name;
+      if (name === 'QueueDoesNotExist' || name === 'AWS.SimpleQueueService.NonExistentQueue') {
+        return { kind: 'none' };
+      }
+      return { kind: 'unreadable', reason: name ?? 'error' };
+    }
+  }
+
+  /**
    * Read the AWS-current SQS queue policy in CFn-property shape.
    *
-   * The provider's `create()` records `physicalId` as the first queue URL
-   * in the `Queues` array. Drift here surfaces:
-   *   - `Queues` — single-element array containing `physicalId`. The full
-   *     state list of queues isn't recoverable from AWS (no reverse index)
-   *     and the comparator only descends into keys present in state, so a
-   *     state with multiple queues will still surface drift on
-   *     `PolicyDocument` for the first queue (the most common drift case).
-   *   - `PolicyDocument` — fetched via `GetQueueAttributes` for
-   *     `Policy`, JSON-parsed back to the object form cdkd state holds.
+   * The physical id is the first queue URL (a failed create's journaled id,
+   * go-to-k/cdkd#4583, the comma-joined URLs it wrote). Each URL it names is
+   * read with `GetQueueAttributes` (the readback receives no recorded
+   * attributes, so the other queues of a multi-queue policy are not read):
+   *   - `Queues` — the named queues that still carry a policy, in id order.
+   *   - `PolicyDocument` — the first such queue's `Policy`, JSON-parsed back
+   *     to the object form cdkd state holds. An out-of-band edit to another
+   *     queue's policy is not surfaced.
    *
-   * Returns `RESOURCE_NOT_FOUND` when the queue is gone (`QueueDoesNotExist`)
-   * or when no policy is currently attached (the `Policy` attribute is
-   * absent / empty).
+   * Returns `RESOURCE_NOT_FOUND` when no named queue carries a policy (each
+   * is gone — `QueueDoesNotExist` — or its `Policy` attribute is absent or
+   * empty, which is what deleting the QueuePolicy leaves).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    let policyAttr: string | undefined;
-    try {
-      const resp = await this.sqsClient.send(
-        new GetQueueAttributesCommand({
-          QueueUrl: physicalId,
-          AttributeNames: ['Policy'],
-        })
-      );
-      policyAttr = resp.Attributes?.['Policy'];
-    } catch (err) {
-      const e = err as { name?: string; message?: string };
-      // The error NAME only: SQS's cross-account denial also reads "does not
-      // exist or you do not have access to it" (go-to-k/cdkd#4283). The NAME
-      // carries the same ambiguity: SQS answers `QueueDoesNotExist` for a
-      // queue URL in an account the caller cannot see, so a cross-account
-      // policy read by the wrong principal also reads as deleted. cdkd
-      // records same-account queue URLs, where the name is unambiguous.
-      if (e.name === 'QueueDoesNotExist' || e.name === 'AWS.SimpleQueueService.NonExistentQueue') {
-        return RESOURCE_NOT_FOUND;
+    const queueUrls = splitQueueUrls(physicalId);
+    if (queueUrls.length === 0) return undefined;
+
+    const held: string[] = [];
+    let firstPolicy: string | undefined;
+    for (const queueUrl of queueUrls) {
+      let policyAttr: string | undefined;
+      try {
+        const resp = await this.sqsClient.send(
+          new GetQueueAttributesCommand({
+            QueueUrl: queueUrl,
+            AttributeNames: ['Policy'],
+          })
+        );
+        policyAttr = resp.Attributes?.['Policy'];
+      } catch (err) {
+        const e = err as { name?: string; message?: string };
+        // The error NAME only: SQS's cross-account denial also reads "does not
+        // exist or you do not have access to it" (go-to-k/cdkd#4283). The NAME
+        // carries the same ambiguity: SQS answers `QueueDoesNotExist` for a
+        // queue URL in an account the caller cannot see, so a cross-account
+        // policy read by the wrong principal also reads as deleted. cdkd
+        // records same-account queue URLs, where the name is unambiguous.
+        if (
+          e.name === 'QueueDoesNotExist' ||
+          e.name === 'AWS.SimpleQueueService.NonExistentQueue'
+        ) {
+          continue;
+        }
+        throw err;
       }
-      throw err;
+      // go-to-k/cdkd#4283: an empty Policy attribute is what deleting the QueuePolicy leaves.
+      if (!policyAttr) continue;
+      held.push(queueUrl);
+      firstPolicy ??= policyAttr;
     }
-    // go-to-k/cdkd#4283: an empty Policy attribute is what deleting the QueuePolicy leaves.
-    if (!policyAttr) return RESOURCE_NOT_FOUND;
+    if (firstPolicy === undefined) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {
-      Queues: [physicalId],
+      Queues: held,
     };
     try {
-      result['PolicyDocument'] = JSON.parse(policyAttr) as unknown;
+      result['PolicyDocument'] = JSON.parse(firstPolicy) as unknown;
     } catch {
-      result['PolicyDocument'] = policyAttr;
+      result['PolicyDocument'] = firstPolicy;
     }
     return result;
   }
@@ -413,4 +560,84 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
  */
 function isSqsQueueUrl(value: string): boolean {
   return value.startsWith('https://sqs.') && value.includes('/');
+}
+
+/**
+ * The attribute key under which cdkd records every queue URL a create or
+ * update wrote, comma-joined (go-to-k/cdkd#4594). Not a CloudFormation
+ * attribute: no template can `Fn::GetAtt` it, and no CloudFormation name
+ * contains `:`.
+ */
+export const WRITTEN_QUEUES_KEY = 'cdkd:WrittenQueues';
+
+/**
+ * The queues a record names as written: its id plus its written-set
+ * attribute's URLs. An attribute that is absent, or any of whose entries is
+ * not a queue URL (state redaction can rewrite a secret-derived segment),
+ * contributes nothing, so only the id is named.
+ */
+function recordedQueues(
+  physicalId: string,
+  attributes: Readonly<Record<string, unknown>> | undefined
+): string[] {
+  const named = splitQueueUrls(physicalId);
+  const value = attributes?.[WRITTEN_QUEUES_KEY];
+  if (typeof value !== 'string') return named;
+  const recorded = splitQueueUrls(value);
+  if (recorded.length === 0 || !recorded.every(isListedQueueUrl)) return named;
+  for (const url of recorded) if (!named.includes(url)) named.push(url);
+  return named;
+}
+
+/** A bag's string `Queues` entries that are single queue URLs, deduplicated. */
+function listedQueues(bag: Record<string, unknown>): string[] {
+  const listed = bag['Queues'];
+  if (!Array.isArray(listed)) return [];
+  const out: string[] = [];
+  for (const entry of listed) {
+    if (typeof entry === 'string' && isListedQueueUrl(entry) && !out.includes(entry)) {
+      out.push(entry);
+    }
+  }
+  return out;
+}
+
+function isListedQueueUrl(value: string): boolean {
+  return isSqsQueueUrl(value) && !value.includes(',') && !value.includes('*');
+}
+
+/** A JSON value with object keys sorted at every depth, serialized; array order kept. */
+function canonicalJson(value: unknown): string {
+  const sortKeys = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(sortKeys);
+    if (v !== null && typeof v === 'object') {
+      // Null prototype: a `__proto__` member stays an own key and is compared.
+      const out = Object.create(null) as Record<string, unknown>;
+      for (const key of Object.keys(v).sort()) {
+        out[key] = sortKeys((v as Record<string, unknown>)[key]);
+      }
+      return out;
+    }
+    return v;
+  };
+  const sorted = sortKeys(value);
+  return JSON.stringify(sorted);
+}
+
+/**
+ * A policy string's content key: its canonical JSON, or — when it does not
+ * parse — the raw text under a prefix no canonical form can produce, so
+ * unparseable text matches only itself.
+ */
+function canonicalPolicy(text: string): string {
+  try {
+    return canonicalJson(JSON.parse(text) as unknown);
+  } catch {
+    return `raw:${text}`;
+  }
+}
+
+/** The queue URLs a physical id names. */
+function splitQueueUrls(physicalId: string): string[] {
+  return physicalId.split(',').filter((url) => url.length > 0);
 }

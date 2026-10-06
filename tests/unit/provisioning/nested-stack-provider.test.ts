@@ -795,7 +795,9 @@ describe('NestedStackProvider', () => {
       );
 
       expect(result).toMatchObject({ outcome: 'skipped' });
-      expect((result as { reason: string }).reason).toContain('was interrupted');
+      // LAST, as the deploy engine's skip warning reads it by suffix
+      // (`deploy-engine/delete.ts`, go-to-k/cdkd#4602).
+      expect((result as { reason: string }).reason).toMatch(/ was interrupted$/);
       expect((result as { reason: string }).reason).toContain('Parent~Child');
       // An interrupt alone must NOT claim resources were skipped.
       expect((result as { reason: string }).reason).not.toContain('resource(s)');

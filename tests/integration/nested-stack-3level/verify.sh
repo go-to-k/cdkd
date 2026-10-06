@@ -825,6 +825,23 @@ assert_eq "the skipped DELETE kept its record in the great-grandchild's state" \
   "$(jq_of "$(fetch_state "${GREATGRANDCHILD}")" ".resources | has(\"${INJECTED_1989}\")")" 'true'
 echo "  OK: the depth-3 skip reached the root's summary row, verdict line and exit 2"
 
+# #4602: the deploy engine's own skip warning ends on the drop command, and on a
+# deploy that command must drop ONE record. The whole-stack form it printed
+# before drops every record of the still-deployed great-grandchild, so the
+# next deploy re-creates or collides with all of them. The command carries
+# this run's explicit `--state-bucket` after its own arguments (the pasteable
+# run flags). No nested-stack row is removed in this run, so every drop line
+# here must carry `--resource`.
+if ! grep -qxF "Drop the record with: cdkd state orphan '${GREATGRANDCHILD}' --stack-region ${AWS_REGION} --resource ${INJECTED_1989} --state-bucket ${STATE_BUCKET}" <<<"${SKIP_TXT}"; then
+  echo "FAIL: #4602: no 'Drop the record with:' line naming --resource ${INJECTED_1989} in the great-grandchild's record" >&2
+  exit 1
+fi
+if grep '^Drop the record with: cdkd state orphan ' <<<"${SKIP_TXT}" | grep -qvF -- ' --resource '; then
+  echo "FAIL: #4602: a deploy-time skip still printed the whole-stack 'cdkd state orphan' (no --resource)" >&2
+  exit 1
+fi
+echo "  OK: #4602: the engine's drop command names only the skipped record"
+
 # #4453: the SAME tree redeployed, nothing changed in any template. Each
 # level's nested-stack row records `cdkd:PendingChildDeletes` while a
 # descendant holds a skipped DELETE, so the next diff re-runs the chain down to

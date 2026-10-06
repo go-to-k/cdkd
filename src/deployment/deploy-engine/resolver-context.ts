@@ -169,10 +169,38 @@ export function buildResolverContext(
     // belongs only where a reader exists. The `base` field's own doc carries
     // the measurement that forced the split.
     noEchoAttributeResources: this.noEchoAttributeResources,
+    // go-to-k/cdkd#3869: on every context, the diff pass included, since each
+    // one prints a `resolved to` line for what it reads. It only ADDS log-only
+    // needles to the reading pass's bag, judged from `base.resources` (the
+    // record a read is served from) and the target's own bag. A context
+    // whose bag DECIDES something from its log-only needles records them into
+    // a print-only `printingSecrets` instead: `maskedInputSources` below,
+    // `resolveOutputs`, and a nested-stack row (`printNestedStackReadsOnly`).
+    secretNameNeedles: (logicalId: string) =>
+      this.noteSecretNamedRecord(
+        logicalId,
+        Object.hasOwn(base.resources, logicalId) ? base.resources[logicalId] : undefined
+      ),
     ...(base.redactedAttributeReads && {
       redactedAttributeReads: base.redactedAttributeReads,
     }),
   };
+}
+
+/**
+ * Route a NESTED-STACK row's reads of a secret-named resource
+ * (go-to-k/cdkd#3869) to a print-only bag (`ResolverContext.printingSecrets`)
+ * instead of the row's own: that bag is the child's `inheritedSecrets`, where
+ * a log-only needle seeds the child's export-name verdict and would withhold
+ * an export the same template publishes at the root (security review). The
+ * row's own `resolved to` lines stay masked; its provider lines do not. A
+ * no-op for every other type.
+ */
+export function printNestedStackReadsOnly(
+  context: import('../intrinsic-function-resolver.js').ResolverContext,
+  resourceType: string
+): void {
+  if (resourceType === 'AWS::CloudFormation::Stack') context.printingSecrets = new Map();
 }
 
 /** The logical id an `Fn::GetAtt` input node reads. */
@@ -239,6 +267,11 @@ export function maskedInputSources(
         bestEffort: true,
         skipDynamicReferences: true,
         staleAttributeHeal: { phase: 'probe' as const },
+        // go-to-k/cdkd#3869: a read of a secret-named resource is recorded
+        // into this print-only bag, so its `resolved to` line is masked while
+        // the pass's own bag, which decides whether an input is kept as
+        // written, stays as it was.
+        printingSecrets: new Map<string, string>(),
       };
       const value = await this.resolver.resolve(structuredClone(node), context);
       const secrets: RecordedSecretValues | undefined = context.recordedSecretValues;

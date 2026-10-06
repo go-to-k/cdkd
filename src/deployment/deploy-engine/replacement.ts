@@ -263,6 +263,7 @@ export async function replaceDeleteFirstAndRecreate(
     );
   }
   this.logger.info(`  ${green('✓')} Old resource deleted`);
+  this.oldDeletedBeforeCreate.add(logicalId);
   this.logger.info(`  Re-creating ${logicalId}...`);
   try {
     // Some providers return from delete() before the name is

@@ -372,3 +372,48 @@ describe('maskSecretsInError - the extraMask transform (issue #3234)', () => {
     expect(maskSecretsInError('prod-q7', new Map(), swap('prod-q7', '***'))).toBe('prod-q7');
   });
 });
+
+describe('maskSecretsInError keeps the created-before-failure mark exact (go-to-k/cdkd#3869 review)', () => {
+  const MARK = Symbol.for('cdkd.createdBeforeFailure');
+  const bag = new Map([['team-secret-bucket', '{{resolve:secretsmanager:s:SecretString:n::}}']]);
+
+  it("keeps markCreatedBeforeFailure's physical id, which --revert-failed deletes by", async () => {
+    const { markCreatedBeforeFailure, createdBeforeFailure } = await import(
+      '../../../src/provisioning/auxiliary-failure.js'
+    );
+    const error = markCreatedBeforeFailure(
+      new Error('failed after creating team-secret-bucket'),
+      'B',
+      'AWS::S3::Bucket',
+      'team-secret-bucket'
+    );
+    const masked = maskSecretsInError(error, bag);
+    expect(masked.message).toBe('failed after creating ***');
+    expect(createdBeforeFailure(masked, 'B', 'AWS::S3::Bucket')).toBe('team-secret-bucket');
+  });
+
+  // Each condition of the mark's shape on its own: `Symbol.for` is the global
+  // registry, so any module can spell a same-keyed field.
+  it.each([
+    ['enumerable', MARK, { enumerable: true, writable: false, frozen: true }],
+    ['writable', MARK, { enumerable: false, writable: true, frozen: true }],
+    ['a value that is not frozen', MARK, { enumerable: false, writable: false, frozen: false }],
+    // The full shape under ANOTHER symbol: only the mark's own key is kept.
+    [
+      'another symbol key',
+      Symbol.for('cdkd.other'),
+      { enumerable: false, writable: false, frozen: true },
+    ],
+  ] as const)('masks a field that is not the mark (%s)', (_label, key, shape) => {
+    const error = new Error('x');
+    const value = { physicalId: 'team-secret-bucket' };
+    Object.defineProperty(error, key, {
+      value: shape.frozen ? Object.freeze(value) : value,
+      enumerable: shape.enumerable,
+      writable: shape.writable,
+      configurable: true,
+    });
+    const masked = maskSecretsInError(error, bag) as unknown as Record<symbol, { physicalId: string }>;
+    expect(masked[key]!.physicalId).toBe('***');
+  });
+});

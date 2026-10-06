@@ -118,11 +118,12 @@ flag (see [Failed CREATEs that made their resource](#failed-creates-that-made-th
 | Failed operation | With `--revert-failed` |
 | --- | --- |
 | UPDATE | Force-reverted to its pre-deploy properties. The journal records the *attempted* properties, so patch-based providers generate a real undo diff. |
+| UPDATE that was a replacement whose new resource was made and then failed (journaled beside it, see below) | Never force-reverted: the update applied nothing to the old resource. When the replacement created first, the old resource is untouched and nothing is done. When it deleted the old resource first, the rollback warns (exit `2`) that the resource state still records is gone; a deploy whose template still replaces it creates it again (one whose template was reverted to the old properties sees no change and does not), and a `cdkd destroy` drops the record. The new resource's own entry is acted on, and this one is cleared with it on every path, so a later `--revert-failed` never sees it alone. |
 | UPDATE that changed the resource's `Type` | Skipped with a warning; it was a replacement in flight, and there is no in-place revert of one. |
 | CREATE that recorded a physical id, which state still records | Deleted, honouring its `DeletionPolicy` — see [DeletionPolicy on a rolled-back CREATE](#deletionpolicy-on-a-rolled-back-create). |
-| CREATE that made its resource and then failed (the provider proved its create call returned, e.g. a Kinesis stream whose retention follow-up AWS rejected) | Deleted, honouring the template's `DeletionPolicy` as journaled — this entry is the only record of that resource. Under `Retain` it is left in AWS with no rollback-orphan record (it was never in state), so a later deploy cannot re-adopt it. Deleted only while nothing later can own it. It is skipped with a warning naming the physical id (exit `2`), since the resource may still exist untracked and need manual attention, when a NEWER journal segment holds an operation of its type naming its physical id or previous physical id, or a completed CREATE of its type; when a later segment's removal superseded its logical id; or when a rollback-orphan record holds its logical or physical id. Otherwise state decides: a state resource under its logical id with the same physical id, or one of its type holding that physical id under another logical id, tracks it and the skip is silent; a different physical id under its logical id warns (exit `2`). A redeploy whose create only collided with its name does not stop the delete. Roll the stack back before redeploying: a redeploy that re-creates the same name, or under `--no-rollback` completes any CREATE of its type, makes the newer entry decide, and this one is then only warned about. SDK providers whose create makes a follow-up call after their create call returned prove it where the id is known and the create made the resource (an adopted or pre-existing resource is never marked), unless their own cleanup already deleted it (`AWS::IAM::Policy` instead removes its own writes and warns when that fails). |
+| CREATE that made its resource and then failed (the provider proved its create call returned, e.g. a Kinesis stream whose retention follow-up AWS rejected) | Deleted, honouring the template's `DeletionPolicy` as journaled — this entry is the only record of that resource. Under `Retain` it is left in AWS with no rollback-orphan record (it was never in state), so a later deploy cannot re-adopt it. Deleted only while nothing later can own it. It is skipped with a warning naming the physical id (exit `2`), since the resource may still exist untracked and need manual attention, when a NEWER journal segment holds an operation of its type naming its physical id or previous physical id, or a completed CREATE of its type; when a later segment's removal superseded its logical id; or when a rollback-orphan record holds its logical or physical id. Otherwise state decides: a state resource under its logical id with the same physical id, or one of its type holding that physical id under another logical id, tracks it and the skip is silent; a different physical id under its logical id warns (exit `2`), unless that record is the resource a replacement was replacing (see below). A redeploy whose create only collided with its name does not stop the delete. Roll the stack back before redeploying: a redeploy that re-creates the same name, or under `--no-rollback` completes any CREATE of its type, makes the newer entry decide, and this one is then only warned about. SDK providers whose create makes a follow-up call after their create call returned prove it where the id is known and the create made the resource (an adopted or pre-existing resource is never marked), unless their own cleanup already deleted it (`AWS::IAM::Policy` instead removes its own writes and warns when that fails). |
 | CREATE that recorded a physical id, with no state record left | Nothing to do — already cleaned up (a re-run). |
-| CREATE that recorded a physical id other than the one state now records under its logical id | Skipped with a warning (exit `2`); nothing is deleted. The resource it recorded may still exist, untracked: the plan line names it (`recorded <its physical id>, which is not the resource state tracks under this id; not reverted, needs manual attention`). Reached when another resource took the id without an import mark, such as a `cdkd import` by an older cdkd, or when a newer segment's reverted replacement re-created the resource under a new physical id (the recorded one is then usually already gone); a marked import is reported as in [Interaction with `cdkd import`](#interaction-with-cdkd-import). |
+| CREATE that recorded a physical id other than the one state now records under its logical id (not the record a replacement was replacing — see below) | Skipped with a warning (exit `2`); nothing is deleted. The resource it recorded may still exist, untracked: the plan line names it (`recorded <its physical id>, which is not the resource state tracks under this id; not reverted, needs manual attention`). Reached when another resource took the id without an import mark, such as a `cdkd import` by an older cdkd, or when a newer segment's reverted replacement re-created the resource under a new physical id (the recorded one is then usually already gone); a marked import is reported as in [Interaction with `cdkd import`](#interaction-with-cdkd-import). |
 | CREATE that recorded no physical id | Skipped with a warning; there is nothing addressable to act on. A CREATE cdkd refused before anything was applied (another resource already holds its explicit name) is not journaled at all. |
 | DELETE | Nothing to do — the resource is still in place. |
 
@@ -167,6 +168,14 @@ failed CREATE:
 | `cdkd rollback`, with or without `--revert-failed` | Deleted, per its `DeletionPolicy`. Other failed operations still need the flag. |
 | `cdkd destroy` | Deleted first, per its `DeletionPolicy`, before the journal is removed with the state. A journal destroy cannot read is warned about and removed with the state, and nothing it records is deleted. |
 | A later successful `cdkd deploy` | Deleted, per its `DeletionPolicy`, before the deploy removes the journal, but only when, after the deploy, no state record sits under its logical id, the deploy completed no operation under it, no record of the stack holds a resource of its type under its physical id, and no resource or rollback-orphan record of any other stack under the same state prefix does. A record of the stack holding that very resource tracks it, and the entry is dropped silently. Otherwise it is not deleted: the deploy warns, naming its physical id so you can delete it if it is not that record's resource, removes the entry with the journal, and exits `2`. A fix-forward that keeps the logical id under another name lands here, so the earlier attempt's resource is left for you to delete. A top-level deploy does the same for each nested stack's journal, judged by that stack's record. A journal the deploy cannot read is warned about and removed, and nothing it records is deleted. |
+
+A **replacement** whose new resource was made before the failure is journaled
+the same way, beside the replacement's failed UPDATE, and every path above acts
+on it. The state record under its logical id is then the resource the
+replacement was replacing; while that record still names the same resource, it
+does not count as an owner of the new one, and acting on the new one leaves it
+in place. A record naming anything else still skips the new resource with a
+warning.
 
 `Retain` keeps the resource in AWS and `Snapshot` takes the final snapshot, as
 in the table above, and the same ownership checks skip it with a warning. A
@@ -253,6 +262,14 @@ journaled pre-deploy state, and the new resource is deleted unless its own
 create-first; when a user-supplied physical name is still held by the new
 resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 
+What counts as a replacement is what the provider reported. An update applied
+in place is reverted in place even when it changed the physical id, as an SQS
+`QueuePolicy` update does when its first queue changes and an SNS `TopicPolicy`
+update does when its topics change. A journal written by an older cdkd does not
+record the provider's answer, so there a changed physical id still reads as a
+replacement. A `Type` change, and a Glue table whose recorded database differs
+under an equal id, stay replacements whatever the provider answered.
+
 cdkd deletes the new resource first only when it can show that the new
 resource holds the name the re-create collided on:
 
@@ -274,6 +291,11 @@ resource holds the name the re-create collided on:
   setting it chose, above) and matches it
   only against the new resource's physical id. A matching recorded name is not
   enough.
+
+When the re-create itself fails after its provider made the resource, the
+rollback deletes what it made before reporting the failure, unless the old
+resource's `DeletionPolicy` is `Retain` or `Snapshot`; a resource it keeps, or
+cannot delete, is named in a warning for you to delete.
 
 A collision with anything else (a resource an earlier failed attempt left
 behind, or one created outside the stack) fails the operation instead: nothing

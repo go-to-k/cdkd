@@ -26,6 +26,7 @@ import {
   type RollbackExecutorContext,
   demoteSupersededOrphans,
   isJournaledOrphan,
+  replacementNeverSwapped,
   producerRegionsFromState,
   replayFailedOperations,
   replayRollback,
@@ -268,8 +269,17 @@ export async function performRollback(
   // rollback-orphan records alone (`priorOrphans`).
   const orphanIndexes: number[] = [];
   const orphanOps: FailedOperation[] = [];
+  // go-to-k/cdkd#4604: with them, the failed UPDATE of a replacement whose
+  // orphan is among them. It settles as a no-op (the old resource was never
+  // written to), and it must not outlive its orphan's entry in the journal:
+  // without it, a later `--revert-failed` would force-revert the old resource.
   failedOperations.forEach((op, i) => {
-    if (!isJournaledOrphan(op)) return;
+    if (
+      !isJournaledOrphan(op) &&
+      !(op.changeType === 'UPDATE' && replacementNeverSwapped(op, failedOperations))
+    ) {
+      return;
+    }
     orphanIndexes.push(i);
     orphanOps.push({ ...op });
   });

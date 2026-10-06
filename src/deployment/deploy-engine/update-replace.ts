@@ -463,6 +463,7 @@ export async function updateByReplacement(
         );
       }
       this.logger.info(`  ${green('✓')} Old resource deleted`);
+      this.oldDeletedBeforeCreate.add(logicalId);
     }
 
     this.logger.info(`  Creating new ${logicalId}...`);
@@ -553,6 +554,7 @@ export async function updateByReplacement(
     // names the fresh resource, not a name-idempotent hand-back of the old.
     let deletedOldFirst = lostWithParent !== undefined;
     if (lostWithParent !== undefined) {
+      this.oldDeletedBeforeCreate.add(logicalId);
       this.logger.info(
         safeMsg`  ${logicalId} went with ${lostWithParent}, which was destroyed and re-created under the same id: re-creating it`
       );

@@ -453,6 +453,29 @@ describe('DeployEngine — indeterminate guards on deploy-path deletes (#2422)',
     });
   });
 
+  it("keeps the guard row's physical id FIELD exact for a resource named from a secret (go-to-k/cdkd#3869)", async () => {
+    // The derived-name registry masks the printed reason, never this field:
+    // after the delete no record holds the id, and a cleanup needs it.
+    const engine = makeEngine();
+    const secretNamed = { FieldName: '{{resolve:secretsmanager:s:SecretString:field::}}' };
+    await provisionOf(engine)(
+      'MyResource',
+      {
+        logicalId: 'MyResource',
+        changeType: 'DELETE',
+        resourceType: TYPE,
+        currentProperties: secretNamed,
+      },
+      stateWith(secretNamed),
+      'MyStack',
+      { Resources: {} }
+    );
+    const [row] = guardRows();
+    expect(row?.physicalId).toBe(OLD_PID);
+    // Non-vacuity: the registry did judge the record named from a secret.
+    expect(row?.reason).not.toContain(OLD_PID);
+  });
+
   it("masks the guard row's physical id and reason with the resource's own secrets", async () => {
     // A resolved secret can name a resource; the event store outlives destroy.
     const engine = makeEngine();

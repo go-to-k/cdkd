@@ -15,6 +15,7 @@ import { formatResourceLine } from '../../utils/resource-line.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
 import { reportDeleteGuards } from '../delete-guard-scope.js';
 import { isMarkedNonRetryable } from '../retryable-errors.js';
+import { nestedChildStackName } from '../nested-child-journal.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 
 declare module '../deploy-engine.js' {
@@ -191,6 +192,27 @@ export async function provisionDelete(
         `skipped (${deleteSkipped})`
       )}`
     );
+    // go-to-k/cdkd#4602: this stack is still DEPLOYED, so the drop names ONE
+    // record, never the whole-stack `cdkd state orphan <stack>`, which drops
+    // every live resource's record. A nested stack's row is the exception:
+    // `--resource` refuses it while the child's record exists, and the record
+    // to repair is the CHILD's (`<parent>~<logicalId>`, in this region), which
+    // this delete removes whole -- once it is gone, the next deploy's
+    // re-attempt finds no child state and drops this row itself.
+    const nested = resourceType === 'AWS::CloudFormation::Stack';
+    const recordStack = nested ? nestedChildStackName(stackName, logicalId) : stackName;
+    // `NestedStackProvider.delete` puts an interrupt LAST in its reason
+    // (`... was interrupted`), after the child name, so a name cannot forge
+    // it. An interrupted child destroy is resumed by re-running the deploy;
+    // advising to drop its record first would untrack resources mid-teardown.
+    const interrupted = nested && deleteSkipped.endsWith(' was interrupted');
+    // The hole names WHOSE record it is, so a withheld child name is not
+    // filled in with the parent's (the deployed stack this run named).
+    const stackArg = {
+      value: recordStack,
+      hole: nested ? 'child-stack' : 'stack',
+      opts: { plainIdent: true },
+    };
     this.logger.warn(
       deleteSkippedMessage(
         logicalId,
@@ -202,6 +224,21 @@ export async function provisionDelete(
         `delete. Repair the record first (for a nested stack it is the CHILD's own ` +
         `state, whose other resources may already be gone), or delete the resource by ` +
         `hand and drop the record.` +
+        (interrupted
+          ? ` The commands name the child stack record. Its destroy was interrupted: re-run ` +
+            `'cdkd deploy' to resume it, and drop the child record only if that cannot finish, ` +
+            `after deleting by hand what the child still holds (the inspect command with ` +
+            `--show-nested lists every level; a child with nested stacks of its own has records ` +
+            `under '<child>~<logicalId>' too, each needing the same drop).`
+          : nested
+            ? ` The commands name the child stack record. Dropping it drops every record the ` +
+              `child still has and nothing reaches those resources again, so first delete by hand ` +
+              `what the child still holds (the inspect command with --show-nested lists every ` +
+              `level; a child with nested stacks of its own has records under ` +
+              `'<child>~<logicalId>' too, each needing the same drop). The next 'cdkd deploy' ` +
+              `then removes this row.`
+            : ` Keep '--resource' on the drop: without it the command drops the record of every ` +
+              `resource in this still-deployed stack.`) +
         // `--stack-region` on BOTH, and `state orphan` is why: without
         // it that command drops the record for this NAME IN EVERY REGION
         // (`orphanCommandFor`'s header in `export.ts` states the same
@@ -210,14 +247,25 @@ export async function provisionDelete(
         // the go-to-k/cdkd#3499 review.
         `\nInspect it with: ${
           pasteableCommand('cdkd state show', [
-            { value: stackName, hole: 'stack' },
+            stackArg,
             { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
           ]).command
         }` +
         `\nDrop the record with: ${
           pasteableCommand('cdkd state orphan', [
-            { value: stackName, hole: 'stack' },
+            stackArg,
             { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+            // The same gate `stateOrphanRecordRemedy` puts the id through.
+            ...(nested
+              ? []
+              : [
+                  {
+                    flag: '--resource',
+                    value: logicalId,
+                    hole: 'logicalId',
+                    opts: { plainIdent: true },
+                  },
+                ]),
           ]).command
         }`
     );

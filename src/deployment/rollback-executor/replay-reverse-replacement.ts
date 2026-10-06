@@ -5,9 +5,14 @@ import { reverseReplacementNewHoldsName } from '../replacement-name-holder.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../../provisioning/stateful-types.js';
 import { applyDefaultNameForFallback } from '../../provisioning/resource-name.js';
-import { replacementDeletePolicy } from '../../provisioning/final-snapshot.js';
+import {
+  effectiveDeletionPolicy,
+  replacementDeletePolicy,
+} from '../../provisioning/final-snapshot.js';
+import { createdBeforeFailure } from '../../provisioning/auxiliary-failure.js';
+import { deleteSkipReason } from '../delete-outcome.js';
 import { CdkdError } from '../../utils/error-handler.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import {
   maskSecretsInError,
   recordNestedStackParameterExpressions,
@@ -383,6 +388,22 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // generated name, which the proof accepts through the new resource's
   // physical id) or with anything else (refused).
   let deletedNewFirst = false;
+  // go-to-k/cdkd#4604: what either re-create's catch needs to delete a
+  // resource that re-create made before failing.
+  const recreateCleanup: MarkedRecreateScope = {
+    op,
+    oldType,
+    provider: createProvider,
+    // The persisted bag, as the arm's other deletes pass: a delete reads only
+    // guard opt-ins, and the resolved one would carry plaintext secrets into a
+    // provider call no secret bag is bound around.
+    properties: prev.properties,
+    deletionPolicy: effectiveDeletionPolicy(oldType, prev.deletionPolicy, prev.properties),
+    stateResources,
+    region: ctx.region,
+    logger,
+    mask,
+  };
   // Typed as the full provider contract (issue #1682): the narrower
   // local shape this used to declare hid `effectiveProperties`, so the
   // record rebuild below could not honour it even in principle.
@@ -422,6 +443,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       }
     );
   } catch (createError) {
+    const deletedMade = await deleteMarkedRecreate(createError, recreateCleanup);
     const msg = createError instanceof Error ? createError.message : String(createError);
     // Reads the ERROR, not the rendered message (issue go-to-k/cdkd#3208):
     // ELBv2 states the collision in prose this predicate cannot see, and
@@ -429,7 +451,11 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     // Without it this arm went inert for those types, exactly like the
     // deploy engine's --replace twin.
     const nameCollision = isNameCollisionErrorFrom(createError, op.logicalId);
-    if (!nameCollision) throw createError;
+    // A collision this create's own earlier attempt caused (the mark carried
+    // across its retry) was just cleared by deleting that resource: the arms
+    // below would blame another holder, so fail the op here and let a re-run
+    // create it.
+    if (!nameCollision || deletedMade) throw createError;
     // Issue #3979, ahead of every other arm: each of them — the delete
     // below, and the Retain refusal's "held by the new one" — presumes
     // the NEW resource holds the name the re-create collided on. The
@@ -691,6 +717,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         }
       );
     } catch (recreateError) {
+      await deleteMarkedRecreate(recreateError, recreateCleanup);
       // The new resource is already gone — say so, because the resource
       // is now absent from both AWS and state.
       //
@@ -1013,4 +1040,75 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     }),
   });
   return;
+}
+
+/** What {@link deleteMarkedRecreate} needs from the reverse-replacement arm. */
+interface MarkedRecreateScope {
+  op: ReplayOpScope['op'];
+  /** The OLD resource's type: what the re-create made. */
+  oldType: string;
+  /** The provider the re-create ran through, which deletes what it made. */
+  provider: ResourceProvider;
+  properties: Record<string, unknown> | undefined;
+  /** The old record's effective `DeletionPolicy`. */
+  deletionPolicy: string | undefined;
+  stateResources: ReplayOpScope['stateResources'];
+  region: string;
+  logger: ReplayOpScope['logger'];
+  mask: ReplayOpScope['mask'];
+}
+
+/**
+ * go-to-k/cdkd#4604: a rollback's re-create of the OLD resource whose provider
+ * proved it made the resource before failing (`markCreatedBeforeFailure`).
+ * Nothing will record it: no state record names it and this rollback is
+ * consuming the journal. The proof says this very call made it, so it is
+ * deleted here, through the provider that made it — not recorded as a
+ * rollback orphan, which the next deploy would ADOPT as the old resource
+ * although its configuration is the half-applied one the create failed on.
+ * Kept, and named for the user, when the old record's `DeletionPolicy` is
+ * `Retain` or `Snapshot` (no snapshot is taken of a resource the rollback
+ * never finished making) or the delete does not complete. Never deletes a
+ * physical id a state record of that type holds. Never throws: the
+ * re-create's own failure is what the caller rethrows. Returns whether it
+ * deleted the resource.
+ */
+async function deleteMarkedRecreate(error: unknown, s: MarkedRecreateScope): Promise<boolean> {
+  const madeId = createdBeforeFailure(error, s.op.logicalId, s.oldType);
+  if (madeId === undefined) return false;
+  const shown = `${shownLogicalId(s.op.logicalId)} (${refusalResourceType(s.oldType)})`;
+  const id = s.mask(madeId);
+  if (
+    Object.values(s.stateResources).some(
+      (r) => r?.resourceType === s.oldType && r.physicalId === madeId
+    )
+  ) {
+    return false;
+  }
+  if (s.deletionPolicy === 'Retain' || s.deletionPolicy === 'Snapshot') {
+    s.logger.warn(
+      safeMsg`  Rollback: the failed re-create of ${shown} made ${id} before failing; ` +
+        safeMsg`it is left in AWS (DeletionPolicy: ${s.deletionPolicy}) and no record holds it — delete it yourself if it is not needed`
+    );
+    return false;
+  }
+  s.logger.info(
+    safeMsg`  Rollback: deleting ${id}, which the failed re-create of ${shown} made before failing`
+  );
+  let failure: string | undefined;
+  try {
+    const outcome = await s.provider.delete(s.op.logicalId, madeId, s.oldType, s.properties, {
+      expectedRegion: s.region,
+      deletionPolicy: 'Delete',
+    });
+    failure = deleteSkipReason(outcome);
+  } catch (deleteError) {
+    failure = deleteError instanceof Error ? deleteError.message : String(deleteError);
+  }
+  if (failure === undefined) return true;
+  s.logger.warn(
+    safeMsg`  Rollback: could not delete ${id}, which the failed re-create of ${shown} made before ` +
+      safeMsg`failing (${s.mask(failure)}); no record holds it — delete it yourself`
+  );
+  return false;
 }

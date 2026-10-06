@@ -53,6 +53,17 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
   fix-forward keeping `OrphanStream` under another name (`ORPHAN_FIX_FORWARD=true`)
   exits 2 and names the first stream without deleting it (the fixture deletes
   it). Each asserts the journal gone.
+- **Phase P (a replacement whose new resource was created and then failed,
+  issue [#4604](https://github.com/go-to-k/cdkd/issues/4604))**: deploy with
+  `WITH_REPLACE_STREAM=true` (`ReplaceStream`, `-replace-stream-a`), then flip
+  `REPLACE_STREAM_SUFFIX=b` with `REPLACE_STREAM_FAIL=true` under
+  `--no-rollback`: the replacement creates `-replace-stream-b` and its 9000-hour
+  retention follow-up fails → assert both streams exist, state still records
+  `-a`, and the journal carries `-b` as a proven orphan naming `-a` as the
+  replaced record → `cdkd rollback --force --revert-failed` deletes `-b` and
+  leaves `-a` ACTIVE and in state, settling the failed UPDATE as a no-op (the
+  old stream was never written to), so the journal is gone; the same deploy
+  with the automatic rollback does too. A plain deploy then removes `-a`.
 - **Phase S (a skipped op on the automatic path, issue
   [#3338](https://github.com/go-to-k/cdkd/issues/3338))**: deploy with
   `WITH_SKIP_PAIR=true` (a `SkipBucket` holding one object, no
@@ -80,4 +91,4 @@ flips the always-present `RevertQueue`'s retention to the out-of-range value so
 the failure lands on an UPDATE (the `--revert-failed` target). See
 `lib/rollback-command-stack.ts` for the env-gated resource set
 (`MARKER_VALUE` / `WITH_EXTRA` / `REPLACE_SUFFIX` / `INJECT_FAIL` / `INJECT_ORPHAN_CREATE` /
-`INJECT_UPDATE_FAIL` / `WITH_SKIP_PAIR`).
+`INJECT_UPDATE_FAIL` / `WITH_REPLACE_STREAM` / `WITH_SKIP_PAIR`).

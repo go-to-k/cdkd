@@ -256,6 +256,11 @@ export async function resolveOutputs(
     },
     stackName
   );
+  // go-to-k/cdkd#3869: a read of a secret-named resource is recorded into a
+  // print-only bag, so its `resolved to` line is masked while this pass's own
+  // bag, whose log-only needles decide which export names are refused, stays
+  // as it was. The resolved output itself is still published as it is.
+  context.printingSecrets = new Map();
 
   /**
    * Fail an output whose resolution served a value out of a MASKED state

@@ -25,7 +25,10 @@ import {
   carriesSecretMask,
   crossStackSourceKey,
   recordFreshNoEchoValuesIn,
+  MIN_NEEDLE_LENGTH,
+  recordLogOnlyValue,
   splitGetAttStringForm,
+  wholeStringLeavesOf,
 } from '../secret-redaction.js';
 import { type StaleAttributeHealOutcome } from '../stale-attribute-heal.js';
 import { NOT_CONSTRUCTED, constructAttributeForCoreTypes } from './getatt-construct-core.js';
@@ -198,6 +201,12 @@ export async function resolveGetAtt(
       new Error(`Resource ${this.displayMasked(logicalId, context)} not found for Fn::GetAtt`)
     );
   }
+
+  // go-to-k/cdkd#3869: the target's own needles BEFORE any branch below, so a
+  // refusal that renders its physical id (`guardedPhysicalIdFallback`, a stale
+  // placeholder) is masked too. The served value's leaves are recorded where
+  // each branch serves it.
+  recordSecretNamedRead(logicalId, undefined, context);
 
   // Check if attribute exists in resource.attributes
   // For VPC Ipv6CidrBlocks, always use constructAttribute (dynamic fetch with retry)
@@ -474,6 +483,10 @@ export async function resolveGetAtt(
     context,
     logicalId
   );
+  // Before the line, like `noteAttributeSecrecy` (go-to-k/cdkd#3869): a
+  // CONSTRUCTED value (an ARN built from the physical id) is served outside
+  // that note.
+  recordSecretNamedRead(logicalId, value, context);
   this.logger.debug(
     `Resolved Fn::GetAtt: ${this.logRender(logicalId, context)}.${this.logRender(attributeName, context)} resolved to ${this.logRender(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
   );
@@ -581,6 +594,7 @@ export function noteAttributeSecrecy(
   value: unknown,
   context: ResolverContext
 ): unknown {
+  recordSecretNamedRead(logicalId, value, context);
   const declared = context.noEchoAttributeResources?.get(logicalId);
   const attributeIsDeclared =
     declared === true || (declared !== undefined && declared.has(attributeName));
@@ -638,6 +652,47 @@ export function noteAttributeSecrecy(
     });
   }
   return value;
+}
+
+/**
+ * Record what a `Ref` / `Fn::GetAtt` read from a resource NAMED from a secret
+ * (go-to-k/cdkd#3869) as LOG-ONLY needles of the reading pass's bag: the
+ * resource's own physical-id needles ({@link ResolverContext.secretNameNeedles})
+ * and each string leaf of `value`. A name derived from a secret, or an ARN /
+ * URL embedding one, is no recorded plaintext, so without them the reader's
+ * provider masker, the engine's error and event masking and the resolver's
+ * `resolved to` line all print it.
+ *
+ * LOG-ONLY: the value is the reader's real input and is persisted and sent
+ * as it is. Call it BEFORE any line printing `value`. A context without the
+ * callback or a bag records nothing.
+ */
+export function recordSecretNamedRead(
+  logicalId: string,
+  value: unknown,
+  context: ResolverContext
+): void {
+  // A context carrying a print-only bag records there instead: the deploy
+  // engine gives one to every context whose own bag DECIDES something from
+  // its log-only needles (a nested-stack row, the masked-input fingerprint
+  // pass, the outputs pass; the list is at `secretNameNeedles` in
+  // `deploy-engine/resolver-context.ts`).
+  const bag = context.printingSecrets ?? context.recordedSecretValues;
+  if (bag === undefined || context.secretNameNeedles === undefined) return;
+  const needles = context.secretNameNeedles(logicalId);
+  if (needles === undefined) return;
+  for (const needle of needles) recordLogOnlyValue(bag, needle);
+  // A leaf only when it carries a needle (an ARN or URL around the name), so
+  // an unrelated attribute (`Endpoint.Port`'s `5432`) masks nothing. A leaf
+  // EQUAL to a needle is already recorded above.
+  for (const leaf of wholeStringLeavesOf(value)) {
+    for (const needle of needles) {
+      if (needle.length >= MIN_NEEDLE_LENGTH && leaf.includes(needle)) {
+        recordLogOnlyValue(bag, leaf);
+        break;
+      }
+    }
+  }
 }
 
 /**

@@ -412,8 +412,8 @@ export class SSMParameterProvider implements ResourceProvider {
             maskSecrets: mask,
           });
           const manualStep = deleteCommand
-            ? `On a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${deleteCommand}`
-            : "On a first-time create the failed deploy's rollback journal records it for `cdkd rollback --revert-failed`; otherwise delete it yourself before the next deploy, via the console: the " +
+            ? `Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${deleteCommand}`
+            : "Outside a rollback's re-create, the failed deploy's rollback journal records it for `cdkd rollback --revert-failed`; otherwise delete it yourself before the next deploy, via the console: the " +
               'parameter name cannot be reproduced safely on a command line: a command naming ' +
               'the sanitized form would delete a DIFFERENT parameter, and one naming a name ' +
               'that is not inert unquoted could run part of it as shell.';

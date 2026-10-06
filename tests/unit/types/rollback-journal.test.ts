@@ -412,6 +412,81 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     expect(parsed.segments[0]!.failedOperations).toHaveLength(2);
   });
 
+  // go-to-k/cdkd#4604: the pair lets the classifier delete an orphan beside
+  // the record it names, so a value outside the engine's shape is planted.
+  it('refuses a planted replacedPhysicalId / replacedResourceType pair', () => {
+    const orphan = {
+      ...op,
+      changeType: 'CREATE',
+      physicalId: 'new',
+      physicalIdRecoveredFromError: true,
+      replacedPhysicalId: 'old',
+      replacedResourceType: 'AWS::S3::Bucket',
+    };
+    expect(parseRollbackJournal(journalWith([], [orphan]), 'S').segments[0]!.failedOperations).toHaveLength(1);
+    expect(
+      parseRollbackJournal(journalWith([], [{ ...orphan, physicalIdRecoveredFromError: false }]), 'S')
+        .segments[0]!.failedOperations
+    ).toHaveLength(1);
+    expect(messageOf(journalWith([], [{ ...orphan, replacedPhysicalId: 7 }]))).toContain(
+      'replacedPhysicalId must be a non-empty string beside replacedResourceType (got number).'
+    );
+    expect(messageOf(journalWith([], [{ ...orphan, replacedPhysicalId: '' }]))).toContain(
+      'replacedPhysicalId must be a non-empty string beside replacedResourceType (got string).'
+    );
+    expect(messageOf(journalWith([], [{ ...orphan, replacedResourceType: '' }]))).toContain(
+      'replacedResourceType must be a non-empty string beside replacedPhysicalId (got string).'
+    );
+    expect(messageOf(journalWith([], [{ ...orphan, replacedResourceType: undefined }]))).toContain(
+      'replacedResourceType must be a non-empty string beside replacedPhysicalId (got undefined).'
+    );
+    expect(
+      messageOf(
+        journalWith([], [{ ...orphan, changeType: 'UPDATE', physicalIdRecoveredFromError: undefined }])
+      )
+    ).toContain('replacedPhysicalId is only valid on a CREATE carrying physicalIdRecoveredFromError.');
+    expect(
+      messageOf(journalWith([], [{ ...orphan, physicalIdRecoveredFromError: undefined }]))
+    ).toContain('replacedPhysicalId is only valid on a CREATE carrying physicalIdRecoveredFromError.');
+    expect(
+      parseRollbackJournal(journalWith([], [{ ...orphan, replacedResourceDeleted: true }]), 'S')
+        .segments[0]!.failedOperations
+    ).toHaveLength(1);
+    expect(messageOf(journalWith([], [{ ...orphan, replacedResourceDeleted: false }]))).toContain(
+      'replacedResourceDeleted must be true when present (got boolean).'
+    );
+    const { replacedPhysicalId: _id, replacedResourceType: _type, ...plain } = orphan;
+    expect(messageOf(journalWith([], [{ ...plain, replacedResourceDeleted: true }]))).toContain(
+      'replacedResourceDeleted is only valid beside replacedPhysicalId.'
+    );
+    expect(messageOf(journalWith([], [{ ...orphan, replacedPhysicalId: 'new' }]))).toContain(
+      "replacedPhysicalId must differ from the op's own physicalId."
+    );
+  });
+
+  // go-to-k/cdkd#4604: it turns the failed UPDATE's force-revert off.
+  it('refuses a planted replacementOrphaned', () => {
+    const update = { ...op, changeType: 'UPDATE', replacementOrphaned: 'delete-first' };
+    expect(parseRollbackJournal(journalWith([], [update]), 'S').segments[0]!.failedOperations).toHaveLength(1);
+    expect(messageOf(journalWith([], [{ ...update, replacementOrphaned: 'yes' }]))).toContain(
+      'replacementOrphaned must be create-first or delete-first when present (got string).'
+    );
+    expect(messageOf(journalWith([], [{ ...update, changeType: 'CREATE' }]))).toContain(
+      'replacementOrphaned is only valid on an UPDATE.'
+    );
+  });
+
+  // go-to-k/cdkd#4615: it picks the in-place revert arm.
+  it('refuses a non-boolean wasReplaced', () => {
+    expect(messageOf(journalWith([{ ...op, changeType: 'UPDATE', wasReplaced: 'false' }]))).toContain(
+      'wasReplaced must be a boolean when present (got string).'
+    );
+    expect(
+      parseRollbackJournal(journalWith([{ ...op, changeType: 'UPDATE', wasReplaced: false }]), 'S')
+        .segments[0]!.operations[0]
+    ).toMatchObject({ wasReplaced: false });
+  });
+
   it('TOLERATES what the state boundary tolerates: an absent nested field, and any provisionedBy', () => {
     // `previousState` is forwarded verbatim from the state record, which
     // `parseStateBody` deliberately does not validate (`s3-state-backend.ts`,

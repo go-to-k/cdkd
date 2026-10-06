@@ -11,6 +11,7 @@ import {
   stringifyParameterForLog,
   isStructured,
 } from './support.js';
+import { recordSecretNamedRead } from './getatt.js';
 
 declare module '../intrinsic-function-resolver.js' {
   interface IntrinsicFunctionResolver {
@@ -164,6 +165,9 @@ export async function resolveRef(
   const resource = this.lookupResourceRecord(logicalId, 'Ref', context);
   if (resource) {
     const refValue = this.resolveRefValue(logicalId, resource, context);
+    // Before the line (go-to-k/cdkd#3869): a resource named from a secret
+    // serves a name no masker knows.
+    recordSecretNamedRead(logicalId, refValue, context);
     // `refValue` through the builder (issue #3479, PR #3575 review): it is
     // the physical id from the STATE RECORD or a segment of it (see
     // `cfnRefValueFromPhysicalId`), which is not always AWS-assigned, so the
