@@ -141,8 +141,9 @@ NAMED from one: its record (or, for a resource a failed deploy created, its
 rollback-journal entry) spells the name as its `{{resolve:...}}` reference. Each
 delete's event `reason` and error message are masked with that name's spellings
 and with those of the secret-named resources its record holds, the same needles
-that mask the delete's log lines. A successful `cdkd deploy` that deletes such a
-journaled resource before removing its journal masks those events the same way.
+that mask the delete's log lines. Every other path that deletes such a journaled
+resource masks its events the same way: a successful `cdkd deploy` removing its
+journal, a failed deploy's automatic rollback, and `cdkd rollback`.
 
 The `name`, `awsErrorCode` and `requestId` fields are NOT masked — they are AWS
 enum-shaped identifiers that never carry a caller-supplied value.

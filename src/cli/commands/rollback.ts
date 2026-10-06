@@ -44,6 +44,11 @@ import { resolveSkipPrefix } from '../config-loader.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { setupStateBackend, resolveSingleRegion } from './state.js';
 import { startRunRecorder } from './deployment-events-run.js';
+import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
+import {
+  journaledOrphanPrintingBag,
+  maskEventTextWithBoundBags,
+} from '../../deployment/secret-name-needles.js';
 import {
   replayRollback,
   replayFailedOperations,
@@ -1118,7 +1123,9 @@ export async function rollbackCommand(
         providerRegistry,
         region,
         logger: logger.child('rollback'),
-        recordEvent: (e) => eventRecorder.record(e),
+        // go-to-k/cdkd#3869: masked by the printing bags bound where the event
+        // is recorded (a failed-op replay's), as its log lines are.
+        recordEvent: (e) => eventRecorder.record(maskEventTextWithBoundBags(e)),
         finalSnapshotClients,
         skipFinalSnapshot: options.skipFinalSnapshot === true,
         // Issue #2057: the producer regions this stack read across. A replayed
@@ -1230,6 +1237,14 @@ export async function rollbackCommand(
       // below, all over `stateResources`, so a revert keeps an inline policy
       // name an earlier replay (a failed op, an earlier segment) put back.
       const inlinePolicyWriters = new RollbackInlinePolicyWriters();
+      // go-to-k/cdkd#3869: ONE printing bag over every segment's failed ops,
+      // as `cdkd destroy`'s batch is, judged before any replay changes
+      // `stateResources`: an orphan in one segment can name a resource an
+      // entry of another segment holds. A failed op left as-is only over-masks.
+      const failedOpsPrinting = journaledOrphanPrintingBag(
+        journal.segments.flatMap((s) => s.failedOperations ?? []),
+        stateResources
+      );
       try {
         while (journal.segments.length > 0) {
           if (interrupted) break;
@@ -1294,12 +1309,13 @@ export async function rollbackCommand(
                     options.revertFailed === true
                   );
                   if (failedToReplay.length > 0) {
-                    const failedResult = await replayFailedOperations(
-                      failedToReplay,
-                      stateResources,
-                      stackName,
-                      ctx,
-                      {
+                    // go-to-k/cdkd#3869: the failed ops replay under a PRINTING
+                    // bag judged from their journal entries, as `cdkd
+                    // destroy`'s orphans do: a provider's delete lines and the
+                    // events mask a name derived from a secret, and one an
+                    // orphan READ from a record.
+                    const failedResult = await withPrintingSecrets(failedOpsPrinting, () =>
+                      replayFailedOperations(failedToReplay, stateResources, stackName, ctx, {
                         afterOp: saveState,
                         isInterrupted: () => interrupted,
                         // Failed-only segment: replayRollback below returns
@@ -1321,7 +1337,7 @@ export async function rollbackCommand(
                         // (issue #2934).
                         onOrphan: (record) => mintedOrphans.push(record),
                         inlinePolicyWriters,
-                      }
+                      })
                     );
                     failedOpFailures = failedResult.failures;
                     failedOpWarnings = failedResult.warnings;
