@@ -72,6 +72,7 @@ import {
   recordLogOnlyValue,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
+import { stateSecretNameNeedles } from '../../deployment/secret-name-needles.js';
 import type { MaskerFn } from '../../provisioning/masked-retry-logger.js';
 import { getLogger } from '../../utils/logger.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -1648,6 +1649,12 @@ export async function computeStackDiff(
   // corpus is a nested child's inherited bag, whose carry would move a piece
   // into the child's Outputs pass and refuse an alias its deploy publishes.
   const splitPieces: RecordedSecretValues = new Map();
+  // go-to-k/cdkd#3869: what a `Ref` / `Fn::GetAtt` read from a resource NAMED
+  // from a secret, recorded by the resolver as print-only needles. A bag of
+  // its OWN, like `splitPieces`: this node's masker reads it, and its corpus
+  // (a nested child's inherited bag) leaves it out, so no child's export
+  // preview moves.
+  const derivedNames: RecordedSecretValues = new Map();
   const splitDelimiters = literalSplitDelimitersOf(
     template,
     new Set(
@@ -1682,7 +1689,7 @@ export async function computeStackDiff(
   const outputsPassSecrets: RecordedSecretValues = new Map();
   const printing = createDiffPrintingMasker(
     [diffSecrets, inheritedForResolver, outputsPassSecrets],
-    [splitPieces]
+    [splitPieces, derivedNames]
   );
   const maskForLog: MaskerFn = printing.mask;
 
@@ -1692,6 +1699,8 @@ export async function computeStackDiff(
       intrinsicResolver.resolve(value, {
         recordedSecretValues: bag,
         ...(printingSecrets && { printingSecrets }),
+        secretNameNeedles: stateSecretNameNeedles(currentState.resources, diffSecrets),
+        secretNameSink: derivedNames,
         ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
         template: effectiveTemplate,
         resources: currentState.resources,
@@ -1947,6 +1956,9 @@ export async function computeStackDiff(
           const secrets: RecordedSecretValues = new Map();
           const value = await intrinsicResolver.resolve(structuredClone(node), {
             recordedSecretValues: secrets,
+            // go-to-k/cdkd#3869: its lines masked, its deciding bag untouched.
+            secretNameNeedles: stateSecretNameNeedles(resourcesForInputs, diffSecrets),
+            secretNameSink: derivedNames,
             template: effectiveTemplate,
             resources: resourcesForInputs,
             stateBackend,
@@ -2271,7 +2283,10 @@ export async function computeStackDiff(
   let shownOutputChanges = outputChanges;
   let shownBlocking = blocking;
   let shownDeployRefusals = deployRefusals;
-  if (hasMaskableValues(printingSecrets)) {
+  // The MASK corpus, not `printingSecrets`: it adds the mask-only bags, so a
+  // node whose only needles are a secret-derived name a row read
+  // (`derivedNames`, go-to-k/cdkd#3869) still masks what it prints.
+  if (hasMaskableValues(printing.maskCorpus())) {
     const mask: MaskerFn = printing.mask;
     // A refusal can quote a physical id or a record value that embeds one.
     // Masked, stripped, then masked again: the renderer strips control
@@ -2716,6 +2731,10 @@ async function resolveChildStackParameters(
       const resolvedValue = await resolver.resolve(value, {
         template: parentTemplate,
         resources: parentState.resources,
+        // go-to-k/cdkd#3869: a parent row passing a secret-named resource's
+        // id or ARN to its child masks it on this resolution's lines.
+        secretNameNeedles: stateSecretNameNeedles(parentState.resources),
+        secretNameSink: new Map(),
         stateBackend,
         stackName: parentStackName,
         // Best-effort like computeStackDiff's resolver: an unresolvable

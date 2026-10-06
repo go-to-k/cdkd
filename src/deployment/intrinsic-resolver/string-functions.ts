@@ -644,6 +644,17 @@ export async function resolveSplit(
       String(delimiter)
     );
   }
+  // go-to-k/cdkd#3869: a piece of a secret-derived name a command recorded
+  // into its derived-name sink, so this line and an `Fn::Select` of the piece
+  // mask it too.
+  if (context.secretNameSink !== undefined && hasLogOnlyValues(context.secretNameSink)) {
+    recordLogOnlySplitFragments(
+      [context.secretNameSink],
+      context.secretNameSink,
+      resolvedValue,
+      String(delimiter)
+    );
+  }
   // Issue #3100: a piece of a string an earlier write masked keeps its part
   // of that mask, on this line and on an outer Join over the pieces.
   // An EMPTY delimiter splits into single characters, which no needle can

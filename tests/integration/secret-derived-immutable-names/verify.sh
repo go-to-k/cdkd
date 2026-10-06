@@ -43,7 +43,10 @@
 #      and the new value reached AWS. The literal-named PlainStage
 #      is the positive control: the same update on a name no secret feeds,
 #      which passes with or without the fix and shows the update path is sound.
-#   6. Destroy. Its --verbose log does not name SecretFilter's FilterName:
+#   5b. `cdkd diff --verbose` of the updated stack: its log names neither the
+#      queue name nor the policy path its readers resolve (go-to-k/cdkd#3869).
+#   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
+#      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
 #      LOAD-BEARING for the Schedules: each delete runs through the recorded
 #      identity (the --verbose line naming it is asserted).
@@ -75,6 +78,12 @@
 # a secret-named resource in plaintext: ${QUEUE_NAME}": the `resolved to` line
 # of SecretQueueReaderPolicy's Ref / Fn::GetAtt prints the queue URL and ARN
 # raw (not yet measured on real AWS).
+# Revert the `secretNameNeedles` / `secretNameSink` lines of
+# src/cli/commands/diff-recursive.ts ALONE and step 5b fails naming
+# ${QUEUE_NAME}; revert the `withPrintingSecrets` wrap in
+# src/cli/commands/destroy-runner.ts ALONE and step 6 fails naming
+# ${QUEUE_NAME} on the 'Deleting SQS queue SecretQueue' line (neither yet
+# measured on real AWS).
 # With the fix the patch leaves FilterName out, so the filter keeps its
 # pre-rotation name, as CloudFormation leaves an unchanged reference alone.
 # Revert the IdScrubLog in cloud-control-provider.ts and step 2 fails
@@ -606,6 +615,31 @@ expect_eq "PlainTargetSchedule's recorded creation date after the update (carrie
 expect_eq "SecretStage's recorded StageName after the update" \
   "{{resolve:secretsmanager:${SDIN_SECRET_NAME}:SecretString:stage::}}" "$(state_property SecretStage StageName)"
 
+echo "==> Step 5b: cdkd diff --verbose withholds the names its readers read (go-to-k/cdkd#3869)"
+# The same template the update deployed, so the diff is NO_CHANGE, but the
+# diff still resolves every reader's Ref / Fn::GetAtt against state, where
+# SecretQueue's QueueName and SecretPolicy's Path are their {{resolve:
+# references. PREMISE: each read's --verbose line is in the diff's log.
+set +e
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose > "${DEPLOY_LOG}" 2>&1
+DIFF_RC=$?
+set -e
+if [ "${DIFF_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd diff exited ${DIFF_RC}" >&2
+  log_tail
+  exit 1
+fi
+expect_read_lines "${DEPLOY_LOG}" "diff"
+for needle_var in QUEUE_NAME POLICY_PATH; do
+  if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
+    HIT_LINES="$(grep -nF -- "${!needle_var}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+    echo "FAIL: the cdkd diff log names a value read from a secret-named resource in plaintext: \${${needle_var}} on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+    exit 1
+  fi
+done
+echo "    OK: the cdkd diff log withholds what its readers read from SecretQueue and SecretPolicy"
+
 echo "==> Step 6: destroy"
 set +e
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -639,6 +673,29 @@ for needle_var in FILTER_NAME FILTER_NAME_ROTATED; do
   fi
 done
 echo "    OK: the destroy log does not name SecretFilter's FilterName"
+# go-to-k/cdkd#3869: a destroy resolves nothing, so SecretQueue's own delete
+# line (its URL), the queue policy reading it, and PlainScheduleRole detaching
+# SecretPolicy (its ARN carries the path) printed the names in plaintext.
+# PREMISE: the lines naming them are in the log.
+if ! grep -qF -- "Deleting SQS queue SecretQueue: " "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the destroy log has no 'Deleting SQS queue SecretQueue: ' line (the --verbose debug stream is missing, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
+# PlainScheduleRole attaches only SecretPolicy, so its detach line is the one.
+if ! awk 'index($0, "Detached managed policy ") && index($0, " from role ") && index($0, "PlainScheduleRole") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the destroy log has no 'Detached managed policy ... from role ...PlainScheduleRole' line (the --verbose debug stream is missing, or the wording drifted)" >&2
+  log_tail
+  exit 1
+fi
+for needle_var in QUEUE_NAME POLICY_PATH; do
+  if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
+    HIT_LINES="$(grep -nF -- "${!needle_var}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+    echo "FAIL: the destroy log names a secret-derived name in plaintext: \${${needle_var}} on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+    exit 1
+  fi
+done
+echo "    OK: the destroy log withholds SecretQueue's name and SecretPolicy's path"
 # The schedule went through its own delete, found by the recorded creation
 # date: not only through the group's deletion, which takes its schedules too.
 if ! grep -qF "Deleted Schedule SecretSchedule (found by its recorded creation date)" "${DEPLOY_LOG}"; then

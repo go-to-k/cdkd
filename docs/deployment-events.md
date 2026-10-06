@@ -141,9 +141,10 @@ enum-shaped identifiers that never carry a caller-supplied value.
 
 #### What the masking does NOT cover
 
-The mask is a **literal-occurrence substitution**, so it is bounded in three
+The mask is a **literal-occurrence substitution**, so it is bounded in four
 ways. The first two are inherited from `maskSecretsInText`; the third is the
-limit of how `NoEcho` parameter values reach it. All three are worth stating
+limit of how `NoEcho` parameter values reach it; the fourth is a choice about
+one field. All four are worth stating
 HERE rather than only at the log sites, because a durable sink keeps whatever
 gets through:
 
@@ -163,6 +164,11 @@ gets through:
   (`Fn::Split` over it, or a nested child's list parameter split out of it) is
   recorded too, but a 1-3 character value or piece inside a longer message is
   not substituted, per the first bullet.
+- **An event's `physicalId` field is stored as AWS returned it**, even for a
+  resource whose name came from a secret. Wherever the masking above covers
+  an event's `reason` and error message, it leaves this field alone: it is
+  the identity a cleanup needs, and `state.json` beside the stream records
+  the same id.
 
 Treat `deployments/*.jsonl` as sensitive on that basis, and rotate any secret
 whose plaintext a run is known to have quoted — masking a later write does not

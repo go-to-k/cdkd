@@ -147,6 +147,7 @@ import {
   repairMalformedResourceEntriesForReadOnly,
   repairMalformedResourcesForReadOnly,
 } from '../../state/malformed-resources-bag.js';
+import { stateSecretNameNeedles } from '../../deployment/secret-name-needles.js';
 
 /**
  * Signals `cdkd scrub` found plaintext it is reporting rather than removing.
@@ -7007,9 +7008,17 @@ export async function scrubStack(
     // its own needles. Caching the RESOLVE instead would give the second
     // consumer of one import no needle at all.
     const resolverStateBackend = memoizeCrossStackStateReads(stateBackend);
+    // go-to-k/cdkd#3869: one print-only sink for the stack's reads of a
+    // resource NAMED from a secret, so the resolver's lines mask the name
+    // while each resource's own bag, which positions what is persisted, is
+    // untouched.
+    const secretNameSink: RecordedSecretValues = new Map();
+    const secretNameNeedles = stateSecretNameNeedles(state.resources);
     const resolverContext = (recordedSecretValues?: RecordedSecretValues): ResolverContext => ({
       template: stack.template,
       resources: state.resources,
+      secretNameNeedles,
+      secretNameSink,
       ...(Object.keys(parameters).length > 0 && { parameters }),
       ...(Object.keys(conditions).length > 0 && { conditions }),
       stackName: stack.stackName,

@@ -153,7 +153,11 @@ export function maskSecretsRaw(
   // printing mask is the answer; with a twin, its spans cannot be merged
   // with the log-only ones, so the whole text is masked — the rule the two
   // lines below already apply to the recorded needles.
-  if (this.hasLogOnlyNeedles(context) || hasMaskableValues(context?.printingSecrets)) {
+  if (
+    this.hasLogOnlyNeedles(context) ||
+    hasMaskableValues(context?.printingSecrets) ||
+    hasMaskableValues(context?.secretNameSink)
+  ) {
     const printed = this.maskRenderedNeedlesForLog(text, context);
     if (printed !== needled) return registered === undefined ? printed : SECRET_MASK;
   }
@@ -279,28 +283,34 @@ export function maskPrintedNeedlesForLog(
 }
 
 /**
- * {@link maskPrintedNeedlesForLog} plus {@link ResolverContext.printingSecrets}:
- * the RENDER mask only (go-to-k/cdkd#4043), never a detector.
+ * {@link maskPrintedNeedlesForLog} plus {@link ResolverContext.printingSecrets}
+ * and {@link ResolverContext.secretNameSink}: the RENDER mask only
+ * (go-to-k/cdkd#4043, go-to-k/cdkd#3869), never a detector. A print carry
+ * deciding whether a derived value (an `Fn::Base64` encoding, an `Fn::Split`
+ * piece) belongs to one of those bags compares the masks with and without
+ * THAT bag, through {@link maskNeedlesOfBags}: never this mask against
+ * {@link maskPrintedNeedlesForLog}, which would charge one bag's needle to
+ * another.
  */
 export function maskRenderedNeedlesForLog(
   this: IntrinsicFunctionResolver,
   text: string,
   context?: ResolverContext
 ): string {
-  return this.maskNeedlesOfBags(text, context, context?.printingSecrets);
+  return this.maskNeedlesOfBags(text, context, context?.printingSecrets, context?.secretNameSink);
 }
 
 export function maskNeedlesOfBags(
   this: IntrinsicFunctionResolver,
   text: string,
   context?: ResolverContext,
-  printing?: RecordedSecretValues
+  ...printing: ReadonlyArray<RecordedSecretValues | undefined>
 ): string {
-  // ONE pass over both bags (go-to-k/cdkd#4049), as {@link maskNeedlesForLog}.
+  // ONE pass over every bag (go-to-k/cdkd#4049), as {@link maskNeedlesForLog}.
   const union = unionOfSecretBags([
     context?.inheritedSecrets,
     context?.recordedSecretValues,
-    printing,
+    ...printing,
   ]);
   return hasMaskableValues(union) ? maskSecretsInText(text, union) : text;
 }

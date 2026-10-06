@@ -118,6 +118,7 @@ import {
   refuseMalformedState,
   refuseMalformedResourceEntriesForImportSave,
 } from '../../state/malformed-resources-bag.js';
+import { stateSecretNameNeedles } from '../../deployment/secret-name-needles.js';
 
 interface ImportOptions {
   app?: string;
@@ -2499,6 +2500,11 @@ export async function resolveImportedProperties(
   const baseContext = {
     template,
     resources: stackState.resources,
+    // go-to-k/cdkd#3869: a read of a resource NAMED from a secret is masked on
+    // the resolver's lines through a print-only sink, never this import's
+    // per-resource bag, which decides what is persisted.
+    secretNameNeedles: stateSecretNameNeedles(stackState.resources),
+    secretNameSink: new Map<string, string>(),
     ...(Object.keys(parameters).length > 0 && { parameters }),
     ...(Object.keys(conditions).length > 0 && { conditions }),
     stateBackend,
