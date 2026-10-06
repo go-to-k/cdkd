@@ -740,7 +740,15 @@ export function maskForResource(this: DeployEngine, logicalId: string, text: str
 export function secretNameNeedlesOf(
   logicalId: string,
   record: { resourceType?: unknown; physicalId?: unknown; properties?: unknown } | undefined,
-  secrets: RecordedSecretValues | undefined
+  secrets: RecordedSecretValues | undefined,
+  /**
+   * `embedded`: the bag the EMBEDDED arm reads, when it must be narrower than
+   * the one a name is judged with: a stack-wide `NoEcho` value embedded by
+   * chance in an id (`prod`) is no evidence the id came from it. The KEY's
+   * presence decides (an explicit `undefined` reads no bag); absent means
+   * `secrets`.
+   */
+  options?: { readonly embedded: RecordedSecretValues | undefined }
 ): Set<string> | undefined {
   // No id yet (a CREATE judged right after it resolved): the NAME spellings
   // only, which the provider is about to print as it creates.
@@ -788,8 +796,10 @@ export function secretNameNeedlesOf(
       ? (properties as Record<string, unknown>)['Path']
       : undefined;
   if (physicalId !== undefined && isSecretDerivedValue(path, mask)) add(physicalId);
-  if (bag !== undefined && physicalId !== undefined) {
-    for (const needle of printingCorpusOf(bag).keys()) {
+  const embedded = options === undefined ? secrets : options.embedded;
+  const embeddedBag = embedded !== undefined && hasMaskableValues(embedded) ? embedded : undefined;
+  if (embeddedBag !== undefined && physicalId !== undefined) {
+    for (const needle of printingCorpusOf(embeddedBag).keys()) {
       if (
         needle !== '' &&
         (needle === physicalId ||
@@ -822,8 +832,10 @@ export function secretNameBagFor(this: DeployEngine, logicalId: string): Recorde
 /**
  * Register `record` of `logicalId` in this deploy's derived-name registry
  * when it is named from a secret (go-to-k/cdkd#3869), and return its needles.
- * Judged with the resource's own bag, so call it after the resource resolved
- * to see a name this deploy resolved. The registry only GROWS within a
+ * A name is judged with `namingSecretsFor` (the resource's own bag plus the
+ * stack's `NoEcho` values), an embedded plaintext with the resource's own bag
+ * alone, so call it after the resource resolved to see a name this deploy
+ * resolved. The registry only GROWS within a
  * deploy: a replaced resource keeps its old id's needles, which the lines
  * naming the old resource still print.
  */
@@ -832,7 +844,9 @@ export function noteSecretNamedRecord(
   logicalId: string,
   record: { resourceType?: unknown; physicalId?: unknown; properties?: unknown } | undefined
 ): ReadonlySet<string> | undefined {
-  const needles = secretNameNeedlesOf(logicalId, record, this.namingSecretsFor(logicalId));
+  const needles = secretNameNeedlesOf(logicalId, record, this.namingSecretsFor(logicalId), {
+    embedded: this.perResourceSecrets.get(logicalId),
+  });
   if (needles === undefined) return undefined;
   const registry = this.secretNameBagFor(logicalId);
   for (const needle of needles) recordLogOnlyValue(registry, needle);
@@ -874,7 +888,9 @@ export function noteSecretNamedReads(
   if (leaves.length === 0) return;
   for (const [otherId, other] of Object.entries(resources)) {
     if (otherId === logicalId) continue;
-    const needles = secretNameNeedlesOf(otherId, other, this.namingSecretsFor(otherId));
+    const needles = secretNameNeedlesOf(otherId, other, this.namingSecretsFor(otherId), {
+      embedded: this.perResourceSecrets.get(otherId),
+    });
     if (needles === undefined) continue;
     const read = [...needles].filter((needle) =>
       leaves.some(

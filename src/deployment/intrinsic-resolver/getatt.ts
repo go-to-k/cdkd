@@ -675,10 +675,11 @@ export function recordSecretNamedRead(
   if (needles === undefined) return;
   for (const needle of needles) recordLogOnlyValue(bag, needle);
   // A leaf only when it carries a needle (an ARN or URL around the name), so
-  // an unrelated attribute (`Endpoint.Port`'s `5432`) masks nothing.
+  // an unrelated attribute (`Endpoint.Port`'s `5432`) masks nothing. A leaf
+  // EQUAL to a needle is already recorded above.
   for (const leaf of wholeStringLeavesOf(value)) {
     for (const needle of needles) {
-      if (leaf === needle || (needle.length >= MIN_NEEDLE_LENGTH && leaf.includes(needle))) {
+      if (needle.length >= MIN_NEEDLE_LENGTH && leaf.includes(needle)) {
         recordLogOnlyValue(bag, leaf);
         break;
       }

@@ -219,6 +219,20 @@ describe('secretNameNeedlesOf — is a record named from a secret, and what does
     ).toBeUndefined();
   });
 
+  it('a stack-wide NoEcho value embedded by chance in an id is no evidence (embedded bag narrower)', () => {
+    const noEcho: Bag = new Map();
+    recordLogOnlyValue(noEcho, 'prod');
+    // No name key reads the value: only the EMBEDDED arm could take it.
+    const record = {
+      resourceType: 'AWS::AppSync::Resolver',
+      physicalId: 'api1|prod|field',
+      properties: { FieldName: 'field' },
+    };
+    expect(secretNameNeedlesOf('Queue', record, noEcho, { embedded: undefined })).toBeUndefined();
+    // Control: the same value in the embedded bag is carried.
+    expect([...(secretNameNeedlesOf('Queue', record, noEcho, { embedded: noEcho }) ?? [])]).toEqual(['prod']);
+  });
+
   it('short names: an id EQUAL to a recorded plaintext, and no short lower-cased spelling', () => {
     expect([
       ...(secretNameNeedlesOf(

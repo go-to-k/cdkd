@@ -430,7 +430,10 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     expect([...(context.secretNameNeedles?.('Bucket') ?? [])]).toContain('noecho-bucket-name');
   });
 
-  it('a template DELETE carries what its record read from a secret-named resource', async () => {
+  it.each([
+    ['the name itself', ROLE_ID],
+    ['an ARN around the name', `arn:aws:iam::123456789012:role/${ROLE_ID}`],
+  ])('a template DELETE carries what its record read from a secret-named resource: %s', async (_label, read) => {
     // An instance profile the template dropped resolves nothing, yet its
     // record holds the role name it once read, which its provider prints.
     stateBackend.getState!.mockResolvedValue({
@@ -447,7 +450,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
           Profile: {
             physicalId: 'profile-1',
             resourceType: 'AWS::IAM::InstanceProfile',
-            properties: { Roles: [ROLE_ID] },
+            properties: { Roles: [read] },
           },
         },
         outputs: {},
@@ -463,14 +466,14 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
             logicalId: 'Profile',
             changeType: 'DELETE',
             resourceType: 'AWS::IAM::InstanceProfile',
-            currentProperties: { Roles: [ROLE_ID] },
+            currentProperties: { Roles: [read] },
           },
         ],
       ])
     );
     let providerLine: string | undefined;
     provider.delete!.mockImplementation(() => {
-      providerLine = currentLogLineMasker()?.(`Removed role ${ROLE_ID} from instance profile`);
+      providerLine = currentLogLineMasker()?.(`Removed role ${read} from instance profile`);
       return Promise.resolve(undefined);
     });
 
@@ -479,7 +482,8 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     });
 
     expect(provider.delete).toHaveBeenCalledTimes(1);
-    expect(providerLine).toBe('Removed role *** from instance profile');
+    expect(providerLine).toBeDefined();
+    expect(providerLine).not.toContain(ROLE_ID);
   });
 
   it('the masked-input fingerprint pass and the outputs pass carry no needle callback', async () => {

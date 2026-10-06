@@ -190,7 +190,8 @@ export async function provisionResource(
   // go-to-k/cdkd#3869: the record as it stands BEFORE the body, so the lines
   // naming the old resource (a replacement's `Deleting old ... (<id>)`) mask
   // its id when its name came from a secret. Judged from the persisted
-  // record here; the new one is judged after the body, with this deploy's bag.
+  // record here; the new name is judged right after it resolves, in
+  // `create.ts` / `update.ts`, and a replacement's new id before `was replaced`.
   this.noteSecretNamedRecord(logicalId, stateResources[logicalId]);
   // A DELETE resolves nothing, so what its record read from a secret-named
   // resource is carried here; CREATE / UPDATE record it as they resolve, and
