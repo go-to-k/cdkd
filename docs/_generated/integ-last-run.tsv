@@ -295,7 +295,6 @@ s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 
 s3-cloudfront	2026-10-03T13:51:11Z	PASS	240	verify.sh	rc ok, orph clean; #4438 OAI regression
 s3-directory-bucket	2026-10-06T02:22:44Z	PASS	80	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 s3-event-notification	2026-10-03T04:26:03Z	PASS	87	verify.sh	rc ok, orph clean (#4283 PR #4449)
-s3-lifecycle	2026-10-06T11:44:18Z	PASS	385	verify.sh	PR #4622 (NAMED_CREATE_COLLISION adopt command, rebased on #4614); rc 0, destroy clean, orph clean
 s3-lifecycle	2026-10-06T12:30:56Z	PASS	401	verify.sh	PR #4618 (#4610 TopicPolicy drop/destroy reset); rc 0, destroy clean, orph clean
 s3-object-lock	2026-10-03T04:28:33Z	PASS	65	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-replication-and-filter	2026-10-03T04:26:27Z	PASS	108	verify.sh	rc ok, orph clean (#4283 PR #4449)
