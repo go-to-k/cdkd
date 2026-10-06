@@ -202,6 +202,12 @@ export async function resolveGetAtt(
     );
   }
 
+  // go-to-k/cdkd#3869: the target's own needles BEFORE any branch below, so a
+  // refusal that renders its physical id (`guardedPhysicalIdFallback`, a stale
+  // placeholder) is masked too. The served value's leaves are recorded where
+  // each branch serves it.
+  recordSecretNamedRead(logicalId, undefined, context);
+
   // Check if attribute exists in resource.attributes
   // For VPC Ipv6CidrBlocks, always use constructAttribute (dynamic fetch with retry)
   // because the stored value may be stale (empty array from before VPCCidrBlock association)

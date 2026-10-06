@@ -372,6 +372,33 @@ describe('the resolver records what it read from a secret-named resource (go-to-
     expect(maskSecretsInText('port 5432', context.recordedSecretValues!)).toBe('port 5432');
   });
 
+  it('a served leaf containing a needle under the substring floor is not recorded', async () => {
+    // A 3-character name: the needle itself is recorded (whole-text masking),
+    // but a leaf merely CONTAINING it is not, or every ARN holding those three
+    // characters would be withheld.
+    const resources = {
+      Q: {
+        physicalId: 'abc',
+        resourceType: 'AWS::Example::Thing',
+        properties: { ThingName: REF },
+        attributes: { Arn: 'arn:aws:example:us-east-1:123456789012:thing/abc' },
+        dependencies: [],
+      },
+    };
+    const bag: Bag = new Map();
+    await new IntrinsicFunctionResolver().resolve({ 'Fn::GetAtt': ['Q', 'Arn'] }, {
+      template: { Resources: { Q: { Type: 'AWS::Example::Thing', Properties: {} } } },
+      resources,
+      recordedSecretValues: bag,
+      secretNameNeedles: (logicalId: string) =>
+        secretNameNeedlesOf(logicalId, resources[logicalId as 'Q'], undefined),
+    } as never);
+    expect(maskSecretsInText('abc', bag)).toBe('***');
+    expect(maskSecretsInText('arn:aws:example:us-east-1:123456789012:thing/abc', bag)).toBe(
+      'arn:aws:example:us-east-1:123456789012:thing/abc'
+    );
+  });
+
   it("a context carrying a print-only bag records there, never into the pass's own", async () => {
     // The deploy engine's nested-stack row: its own bag seeds the child.
     const context = contextFor(true);
@@ -382,6 +409,49 @@ describe('the resolver records what it read from a secret-named resource (go-to-
     expect(maskSecretsInText(QUEUE_ARN, printing)).not.toContain('sdin-secret-queue');
     expect(logLines.join('\n')).toContain('resolved to');
     expect(logLines.join('\n')).not.toContain('sdin-secret-queue');
+  });
+
+  it.each([
+    ['with the callback', true],
+    ['negative control, without it', false],
+  ])('a GetAtt REFUSAL that renders the target id masks it %s', async (_label, withNeedles) => {
+    // `guardedPhysicalIdFallback` refuses an `...Arn` attribute it would
+    // answer with a non-ARN physical id, quoting that id, before any served
+    // value exists to record.
+    const resources = {
+      Thing: {
+        physicalId: 'sdin-secret-thing',
+        resourceType: 'AWS::Example::Thing',
+        properties: { ThingName: REF },
+        dependencies: [],
+      },
+    };
+    const context = {
+      template: { Resources: { Thing: { Type: 'AWS::Example::Thing', Properties: {} } } },
+      resources,
+      recordedSecretValues: new Map(),
+      ...(withNeedles && {
+        secretNameNeedles: (logicalId: string) =>
+          secretNameNeedlesOf(logicalId, resources[logicalId as 'Thing'], undefined),
+      }),
+    } as never;
+    const error = await new IntrinsicFunctionResolver()
+      .resolve({ 'Fn::GetAtt': ['Thing', 'ThingArn'] }, context)
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    expect(error?.message).toContain('Cannot resolve Fn::GetAtt');
+    if (withNeedles) expect(error?.message).not.toContain('sdin-secret-thing');
+    else expect(error?.message).toContain('sdin-secret-thing');
+  });
+
+  it('the reader bag holds the target id itself, not only what it served', async () => {
+    const context = contextFor(true);
+    await new IntrinsicFunctionResolver().resolve({ 'Fn::GetAtt': ['Queue', 'Arn'] }, context);
+    expect(maskSecretsInText('queue sdin-secret-queue', context.recordedSecretValues!)).not.toContain(
+      'sdin-secret-queue'
+    );
   });
 
   it('negative control: a context without the callback prints the name', async () => {
@@ -406,6 +476,25 @@ describe('withPrintingSecrets — a printing bag, not the resource bag (go-to-k/
     withPrintingSecrets(printing, () => {
       expect(getCurrentResourceSecrets()).toBeUndefined();
     });
+  });
+
+  it('two interleaved scopes each mask only their own bag', async () => {
+    const first = logOnlyBag(['first-derived-name']);
+    const second = logOnlyBag(['second-derived-name']);
+    const line = 'first-derived-name second-derived-name';
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const a = withPrintingSecrets(first, async () => {
+      await gate;
+      return currentLogLineMasker()?.(line);
+    });
+    const b = withPrintingSecrets(second, async () => {
+      const seen = currentLogLineMasker()?.(line);
+      release();
+      return seen;
+    });
+    expect(await b).toBe('first-derived-name ***');
+    expect(await a).toBe('*** second-derived-name');
   });
 
   it('reads the bag by reference, so a needle registered mid-scope masks too', () => {

@@ -349,6 +349,27 @@ if [ "${DEPLOY_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: deploy exited 0"
+# Read right after the deploy, BEFORE the log assertions below: cleanup()'s
+# fallback sweep (SecretPolicy, the schedule roles, the target queue) needs
+# these ids on exactly the failure path those assertions catch.
+API_ID="$(state_physical_id Api)"
+# A Cluster's physical id is its NAME, which --cluster / --clusters accept.
+CLUSTER_ID="$(state_physical_id Cluster)"
+SERVICE_ARN="$(state_physical_id SecretService)"
+TASK_DEF_ARN="$(state_physical_id TaskDef)"
+POLICY_ARN="$(state_physical_id SecretPolicy)"
+GQL_API_ID="$(state_physical_id SecretApi)"
+QUEUE_URL="$(state_physical_id SecretQueue)"
+FILTER_LOG_GROUP="$(state_physical_id FilterLogGroup)"
+FILTER_ID="$(state_physical_id SecretFilter)"
+# An IAM role's physical id is its name, which --role-name takes.
+SCHEDULE_ROLE="$(state_physical_id ScheduleRole)"
+PLAIN_SCHEDULE_ROLE="$(state_physical_id PlainScheduleRole)"
+PLAIN_TARGET_QUEUE_URL="$(state_physical_id PlainTargetQueue)"
+for v in API_ID CLUSTER_ID SERVICE_ARN TASK_DEF_ARN POLICY_ARN GQL_API_ID QUEUE_URL FILTER_LOG_GROUP FILTER_ID SCHEDULE_ROLE PLAIN_SCHEDULE_ROLE PLAIN_TARGET_QUEUE_URL; do
+  if [ -z "${!v}" ]; then echo "FAIL: ${v} not found in ${STATE_KEY}" >&2; exit 1; fi
+done
+
 # go-to-k/cdkd#3869: Cloud Control's create line names the identifier it
 # returned, `<LogGroupName>|<FilterName>`; the desired FilterName is the
 # secret's, so the whole id is withheld (before, only the FilterName part was
@@ -382,24 +403,6 @@ for needle_var in QUEUE_NAME POLICY_PATH; do
   fi
 done
 echo "    OK: the deploy log withholds what its readers read from SecretQueue and SecretPolicy"
-
-API_ID="$(state_physical_id Api)"
-# A Cluster's physical id is its NAME, which --cluster / --clusters accept.
-CLUSTER_ID="$(state_physical_id Cluster)"
-SERVICE_ARN="$(state_physical_id SecretService)"
-TASK_DEF_ARN="$(state_physical_id TaskDef)"
-POLICY_ARN="$(state_physical_id SecretPolicy)"
-GQL_API_ID="$(state_physical_id SecretApi)"
-QUEUE_URL="$(state_physical_id SecretQueue)"
-FILTER_LOG_GROUP="$(state_physical_id FilterLogGroup)"
-FILTER_ID="$(state_physical_id SecretFilter)"
-# An IAM role's physical id is its name, which --role-name takes.
-SCHEDULE_ROLE="$(state_physical_id ScheduleRole)"
-PLAIN_SCHEDULE_ROLE="$(state_physical_id PlainScheduleRole)"
-PLAIN_TARGET_QUEUE_URL="$(state_physical_id PlainTargetQueue)"
-for v in API_ID CLUSTER_ID SERVICE_ARN TASK_DEF_ARN POLICY_ARN GQL_API_ID QUEUE_URL FILTER_LOG_GROUP FILTER_ID SCHEDULE_ROLE PLAIN_SCHEDULE_ROLE PLAIN_TARGET_QUEUE_URL; do
-  if [ -z "${!v}" ]; then echo "FAIL: ${v} not found in ${STATE_KEY}" >&2; exit 1; fi
-done
 
 echo "==> Step 3 (PREMISE): state records the names as the redacted expression"
 for field in stage service path policydesc api datasource queue filter group; do

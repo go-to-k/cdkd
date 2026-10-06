@@ -441,6 +441,18 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     expect(deleting.printingSecretsFor('Reader')).toBeUndefined();
   });
 
+  it('the derived-name registry is reset per deploy', async () => {
+    const engine = makeEngine();
+    const stale = new Map<string, string>();
+    recordLogOnlyValue(stale, 'last-deploys-name');
+    engine.secretNameNeedles.set('Gone', stale);
+    const template = primeRoleUpdate('plain-role-name');
+
+    await engine.deploy(stackName, template);
+
+    expect(engine.secretNameNeedles.has('Gone')).toBe(false);
+  });
+
   it('a name taken from a NoEcho parameter is judged secret-derived too', () => {
     const engine = makeEngine();
     const noEcho = new Map<string, string>();
@@ -514,7 +526,10 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     expect(providerLine).not.toContain(ROLE_ID);
   });
 
-  it('the masked-input fingerprint pass and the outputs pass carry no needle callback', async () => {
+  it('the masked-input fingerprint pass and the outputs pass record reads into a print-only bag', async () => {
+    // Both passes print `resolved to` lines, and both bags DECIDE from their
+    // log-only needles (keep-as-written, export-name refusal), so the reads
+    // go to a print-only `printingSecrets` (go-to-k/cdkd#3869 review).
     const engine = makeEngine();
     const template: CloudFormationTemplate = {
       Resources: {},
@@ -529,18 +544,24 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
       contexts.push(ctx);
       return Promise.resolve(value);
     });
+    const expectPrintOnly = (): void => {
+      expect(contexts.length).toBeGreaterThanOrEqual(1);
+      for (const ctx of contexts) {
+        expect(ctx).toHaveProperty('secretNameNeedles');
+        expect(ctx['printingSecrets'] instanceof Map).toBe(true);
+        expect(ctx['printingSecrets']).not.toBe(ctx['recordedSecretValues']);
+      }
+    };
 
     // Each pass on its own, so neither can satisfy the other's floor.
     await engine.maskedInputSources(template, {}, undefined, stackName)!.resolve('v');
-    expect(contexts.length).toBeGreaterThanOrEqual(1);
-    for (const ctx of contexts) expect(ctx).not.toHaveProperty('secretNameNeedles');
+    expectPrintOnly();
     contexts = [];
     await engine.resolveOutputs(template, {}, stackName, template);
-    expect(contexts.length).toBeGreaterThanOrEqual(1);
-    for (const ctx of contexts) expect(ctx).not.toHaveProperty('secretNameNeedles');
-    // The control: an ordinary context does carry it.
+    expectPrintOnly();
+    // The control: an ordinary provisioning-shaped context records into its own bag.
     expect(
       engine.buildResolverContext({ template, resources: {} }, stackName)
-    ).toHaveProperty('secretNameNeedles');
+    ).not.toHaveProperty('printingSecrets');
   });
 });

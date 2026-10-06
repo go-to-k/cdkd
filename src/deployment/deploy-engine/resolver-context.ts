@@ -172,9 +172,10 @@ export function buildResolverContext(
     // go-to-k/cdkd#3869: on every context, the diff pass included, since each
     // one prints a `resolved to` line for what it reads. It only ADDS log-only
     // needles to the reading pass's bag, judged from `base.resources` (the
-    // record a read is served from) and the target's own bag. The two
-    // contexts whose bag DECIDES something from its log-only needles drop it:
-    // `maskedInputSources` below and `resolveOutputs`.
+    // record a read is served from) and the target's own bag. A context
+    // whose bag DECIDES something from its log-only needles records them into
+    // a print-only `printingSecrets` instead: `maskedInputSources` below,
+    // `resolveOutputs`, and a nested-stack row (`printNestedStackReadsOnly`).
     secretNameNeedles: (logicalId: string) =>
       this.noteSecretNamedRecord(
         logicalId,
@@ -250,13 +251,7 @@ export function maskedInputSources(
       // unknown input. The fingerprint pass must neither bump that counter nor
       // repeat the warning, and a guessed value is no input to hash.
       // `cdkd diff` builds its context the same way.
-      // No derived-name needles either (go-to-k/cdkd#3869): this bag decides
-      // whether an input is kept as written, from its log-only needles too.
-      const {
-        attributeHealer: _healer,
-        secretNameNeedles: _needles,
-        ...base
-      } = this.buildResolverContext(
+      const { attributeHealer: _healer, ...base } = this.buildResolverContext(
         {
           template,
           resources,
@@ -272,6 +267,11 @@ export function maskedInputSources(
         bestEffort: true,
         skipDynamicReferences: true,
         staleAttributeHeal: { phase: 'probe' as const },
+        // go-to-k/cdkd#3869: a read of a secret-named resource is recorded
+        // into this print-only bag, so its `resolved to` line is masked while
+        // the pass's own bag, which decides whether an input is kept as
+        // written, stays as it was.
+        printingSecrets: new Map<string, string>(),
       };
       const value = await this.resolver.resolve(structuredClone(node), context);
       const secrets: RecordedSecretValues | undefined = context.recordedSecretValues;
