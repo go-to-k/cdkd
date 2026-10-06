@@ -194,12 +194,18 @@ export async function deleteJournaledOrphans(
   interrupted: boolean;
   /** The ops this run settled (deleted, kept, or skipped with a warning). */
   handled: Array<{ segment: RollbackJournalSegment; op: FailedOperation }>;
+  /**
+   * Handled ops whose delete left part of what they wrote, warned
+   * (go-to-k/cdkd#4612). Counted in `warnings` too.
+   */
+  leftInPlace: number;
 }> {
   const total = {
     failures: 0,
     warnings: 0,
     interrupted: false,
     handled: [] as Array<{ segment: RollbackJournalSegment; op: FailedOperation }>,
+    leftInPlace: 0,
   };
   const inlinePolicyWriters = new RollbackInlinePolicyWriters();
   // go-to-k/cdkd#3869: each event is masked by the batch's printing bag too,
@@ -246,6 +252,7 @@ export async function deleteJournaledOrphans(
         : await withSkipPrefix(segment.skipPrefix, replay);
     total.failures += result.failures;
     total.warnings += result.warnings;
+    total.leftInPlace += result.leftInPlace;
     const pending = new Set(result.remainingFailedOps);
     for (const op of ops) if (!pending.has(op)) total.handled.push({ segment, op });
     if (result.interrupted) {
@@ -292,7 +299,9 @@ export interface SuccessSettleOutcome {
  * DEMOTED (`physicalIdRecoveredFromError: false`) and goes through the
  * replay's `skip-failed-superseded` arm: warned, physical id named (masked),
  * and cleared with the journal, as `cdkd rollback` and `cdkd destroy` settle
- * such a skip. It counts as unaddressed (the deploy exits 2).
+ * such a skip. It counts as unaddressed (the deploy exits 2), as does an
+ * entry whose delete left part of what it wrote (`leftInPlace`,
+ * go-to-k/cdkd#4612).
  *
  * An entry is KEPT only when acting on it did not complete: a delete
  * failure, an interrupt, or a record (this stack's, or one the scan read)
@@ -357,6 +366,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
   if (orphans.count === 0) return { unaddressed: 0, keepJournal: false };
   const all = orphans.segments.flatMap(({ segment, ops }) => ops.map((op) => ({ segment, op })));
   let kept: typeof all = all;
+  // go-to-k/cdkd#4612: deleted, but a part left in AWS with a warning.
+  let leftInPlace = 0;
   if (stateResources === undefined) {
     logger.warn(
       safeMsg`The rollback journal of stack ${stack} records ${all.length} resource(s) a failed deploy ` +
@@ -390,13 +401,20 @@ export async function settleJournaledOrphansOnSuccess(args: {
           .filter(({ ops }) => ops.length > 0),
         count: orphans.count - unreadable.size - tracked.size,
       };
+      // go-to-k/cdkd#4612: what this deploy just wrote, which a delete
+      // comparing live content must not read back yet.
+      const writtenThisRun = [...(orphans.deployLogicalIds ?? [])]
+        .filter((id) => Object.prototype.hasOwnProperty.call(stateResources, id))
+        .map((id) => stateResources[id])
+        .filter((r): r is ResourceState => r !== undefined && r !== null && typeof r === 'object');
       const outcome = await deleteJournaledOrphans(
         acting,
         { ...stateResources },
         stackName,
-        ctx,
+        { ...ctx, writtenThisRun },
         args.isInterrupted ? { isInterrupted: args.isInterrupted } : {}
       );
+      leftInPlace = outcome.leftInPlace;
       kept = all.filter(
         ({ segment, op }) =>
           unreadable.has(op) || (!tracked.has(op) && !isHandledOrphan(outcome.handled, segment, op))
@@ -446,7 +464,11 @@ export async function settleJournaledOrphansOnSuccess(args: {
           }
         };
   if (kept.length === 0) {
-    return { unaddressed: skipped, keepJournal: false, ...(stripCleared && { stripCleared }) };
+    return {
+      unaddressed: skipped + leftInPlace,
+      keepJournal: false,
+      ...(stripCleared && { stripCleared }),
+    };
   }
   const keptIds = new Set(kept.map(({ op }) => op.logicalId));
   const supersededIds = newerIds.filter((id) => !keptIds.has(id));
@@ -489,7 +511,7 @@ export async function settleJournaledOrphansOnSuccess(args: {
         : '(see above). The rollback journal, their only record, is kept; the next ') +
       'successful deploy retries.'
   );
-  return { unaddressed: kept.length + skipped, keepJournal: true };
+  return { unaddressed: kept.length + skipped + leftInPlace, keepJournal: true };
 }
 
 /**

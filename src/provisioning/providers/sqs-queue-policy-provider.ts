@@ -21,6 +21,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
@@ -28,6 +29,26 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { attemptedPolicyDocument, policyContentKey } from '../policy-document-content.js';
+
+/**
+ * The skip reasons of a failed create's delete (go-to-k/cdkd#4612): a failure
+ * not known to be permanent, so the entry is kept and a re-run checks again.
+ */
+export const QUEUE_POLICY_UNREADABLE_SKIP_REASON =
+  'the policy of a queue it wrote could not be read, so whether that queue still carries it is unknown';
+export const QUEUE_POLICY_UNRESOLVED_DOCUMENT_SKIP_REASON =
+  'the policy document it attempted could not be resolved right now to compare its queues with';
+
+/**
+ * What a failed create's delete reports (`leftInPlace`, go-to-k/cdkd#4612)
+ * when it settles the entry without clearing every queue: one carries another
+ * policy, or the attempted document is known never to be comparable.
+ */
+export const QUEUE_POLICY_MISMATCH_LEFT_REASON =
+  'a queue it wrote carries a policy that does not match the document it attempted, so that queue was not cleared';
+export const QUEUE_POLICY_NOT_COMPARED_LEFT_REASON =
+  'the document it attempted is missing, masked, or references a secret that does not exist or cannot be used, so none of its queues was cleared';
 
 /**
  * AWS SQS Queue Policy Provider
@@ -236,11 +257,22 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting SQS queue policy ${logicalId}: ${physicalId}`);
+    if (context?.failedCreateOrphan === true) {
+      return this.deleteFailedCreateOrphan(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        context
+      );
+    }
 
     // The queues to clear by name: a failed create's journaled id
-    // (go-to-k/cdkd#4583) is the comma-joined URLs it wrote, exactly; a
+    // (go-to-k/cdkd#4583) is the comma-joined URLs it wrote, exactly (the
+    // rollback's delete of such an entry takes the content check above,
+    // go-to-k/cdkd#4612); a
     // record's are its written-set attribute (go-to-k/cdkd#4594) plus its id.
     // A record without the attribute (written before #4594, or imported) or a
     // one-queue mark also has `Queues` entries it may or may not have written
@@ -286,6 +318,145 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     }
 
     this.logger.debug(`Successfully deleted SQS queue policy ${logicalId}`);
+  }
+
+  /**
+   * go-to-k/cdkd#4612: the delete of a proven failed create's journal entry,
+   * whose physical id is exactly the queues it wrote (go-to-k/cdkd#4583).
+   * SetQueueAttributes REPLACES a queue's policy, so each queue is cleared only
+   * while its live policy equals, by content, the attempted document: whoever
+   * wrote before this create was already replaced. A queue carrying anything
+   * else is left, named in a warning, and the result reports `leftInPlace`.
+   * The comparison is per queue, so how any holder's id is spelled never
+   * matters. The attempted bag is the journal's, secret references redacted,
+   * so it is re-resolved first (`attemptedPolicyDocument`). The entry is kept
+   * (`skipped`) unless a failure is KNOWN to be permanent: a missing or masked
+   * document, or a secret that does not exist or whose reference cdkd refuses
+   * settles the entry with every queue named and nothing cleared
+   * (`leftInPlace`). An unreadable queue policy, and any other resolution
+   * failure (credentials, access, throttling), keeps it. Both documents are
+   * compared in IAM-equivalent form (`policyContentKey`).
+   *
+   * Residual: a stale read of a DIFFERENT policy the queue held before the
+   * create (the automatic rollback reads it about a second after the write)
+   * reports a mismatch, leaving the failed document on that queue with a
+   * warning and exit 2.
+   */
+  private async deleteFailedCreateOrphan(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown> | undefined,
+    context: DeleteContext
+  ): Promise<void | ResourceDeleteResult> {
+    const named = splitQueueUrls(physicalId);
+    if (named.length === 0) {
+      throw new ProvisioningError(
+        `Failed to delete SQS queue policy ${logicalId}: its physical id names no queue URL`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const resolve = context.resolveAttemptedProperties;
+    const attempted = await attemptedPolicyDocument(
+      properties?.['PolicyDocument'],
+      resolve && (async () => (await resolve())?.['PolicyDocument'])
+    );
+    if (attempted.kind === 'retry') {
+      this.logger.warn(
+        safeMsg`The policy document ${logicalId} attempted could not be resolved (${attempted.errorName}), so no queue it wrote is cleared; the entry is kept for a re-run once that is fixed.`
+      );
+      return { outcome: 'skipped', reason: QUEUE_POLICY_UNRESOLVED_DOCUMENT_SKIP_REASON };
+    }
+    if (attempted.kind === 'unusable') {
+      // Known never to compare: settle the entry, naming every queue for a
+      // check by hand, rather than keep it forever.
+      this.logger.warn(
+        safeMsg`${logicalId} is not cleared from any queue it wrote (${attempted.why}); check each by hand and remove its policy where it still grants what ${logicalId} declared: ${named.join(', ')}.`
+      );
+      return { outcome: 'deleted', leftInPlace: QUEUE_POLICY_NOT_COMPARED_LEFT_REASON };
+    }
+    // IAM-equivalent spellings folded: SQS stores a bare account-id principal
+    // as its root ARN, for one.
+    const reference = policyContentKey(attempted.document);
+    // A queue a QueuePolicy of this very deploy wrote: a read may still return
+    // the failed create's document (SQS propagates in up to 60 seconds), so it
+    // is never read back here.
+    const fresh = new Set(
+      (context.writtenThisRun ?? []).flatMap((r) =>
+        r.resourceType === resourceType && typeof r.physicalId === 'string'
+          ? [
+              ...recordedQueues(
+                r.physicalId,
+                r.attributes !== null && typeof r.attributes === 'object'
+                  ? (r.attributes as Record<string, unknown>)
+                  : undefined
+              ),
+              ...listedQueues(
+                r.properties !== null && typeof r.properties === 'object'
+                  ? (r.properties as Record<string, unknown>)
+                  : {}
+              ),
+            ]
+          : []
+      )
+    );
+    let unreadable = false;
+    let mismatched = false;
+    for (const queueUrl of named) {
+      if (fresh.has(queueUrl)) {
+        mismatched = true;
+        this.logger.warn(
+          safeMsg`Queue ${queueUrl} was written by a QueuePolicy of this deploy, so it is not cleared: its policy may not read back current yet; if it still grants what ${logicalId} declared, remove it manually.`
+        );
+        continue;
+      }
+      const current = await this.readPolicyForWidening(queueUrl);
+      if (current.kind === 'gone') {
+        // A queue that is gone has no policy left, once the client is proven
+        // to be in the recorded region (clearQueuePolicy's contract).
+        const clientRegion = await this.sqsClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context.expectedRegion,
+          resourceType,
+          logicalId,
+          queueUrl,
+          'not-found'
+        );
+        this.logger.debug(safeMsg`Queue ${queueUrl} does not exist; nothing to clear`);
+      } else if (current.kind === 'unreadable') {
+        unreadable = true;
+        this.logger.warn(
+          safeMsg`Could not read the policy of queue ${queueUrl} (${current.reason}), so it is not cleared: it may still carry the policy of ${logicalId}.`
+        );
+      } else if (current.kind === 'none' || policyContentKey(current.policy) === reference) {
+        // No policy read back is cleared too: right after the create wrote
+        // it (the automatic rollback) a stale read can still show the empty
+        // policy from before, and clearing an empty queue changes nothing.
+        try {
+          await this.clearQueuePolicy(queueUrl, resourceType, logicalId, context.expectedRegion);
+        } catch (error) {
+          if (error instanceof ProvisioningError) throw error;
+          throw new ProvisioningError(
+            `Failed to delete SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          );
+        }
+      } else {
+        mismatched = true;
+        this.logger.warn(
+          safeMsg`Queue ${queueUrl} carries a policy that does not match the document ${logicalId} attempted (a later write, or AWS stored it in another form), so it is not cleared; if it still grants what ${logicalId} declared, remove it manually.`
+        );
+      }
+    }
+    if (unreadable) return { outcome: 'skipped', reason: QUEUE_POLICY_UNREADABLE_SKIP_REASON };
+    if (mismatched) return { outcome: 'deleted', leftInPlace: QUEUE_POLICY_MISMATCH_LEFT_REASON };
+    return undefined;
   }
 
   /**
@@ -340,18 +511,16 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     document: unknown,
     logicalId: string
   ): Promise<string[]> {
-    if (candidates.length === 0) return [];
-    let reference: string | undefined;
-    if (typeof document === 'string' && document.length > 0) reference = canonicalPolicy(document);
-    else if (document !== null && typeof document === 'object') reference = canonicalJson(document);
+    const carrying: string[] = [];
+    if (candidates.length === 0) return carrying;
+    const reference = policyReference(document);
     if (reference === undefined) {
       this.logger.warn(
         safeMsg`The queues ${candidates.join(', ')} listed by ${logicalId} were not checked (no policy document recorded to compare with) and may still carry its policy.`
       );
-      return [];
+      return carrying;
     }
 
-    const carrying: string[] = [];
     for (const queueUrl of candidates) {
       const current = await this.readPolicyForWidening(queueUrl);
       if (current.kind === 'policy' && canonicalPolicy(current.policy) === reference) {
@@ -369,11 +538,14 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     return carrying;
   }
 
-  /** A queue's `Policy` for {@link queuesCarryingDocument}: held, absent (gone or empty), or unreadable. */
+  /** A queue's `Policy` for {@link queuesCarryingDocument}: held, empty, gone, or unreadable. */
   private async readPolicyForWidening(
     queueUrl: string
   ): Promise<
-    { kind: 'policy'; policy: string } | { kind: 'none' } | { kind: 'unreadable'; reason: string }
+    | { kind: 'policy'; policy: string }
+    | { kind: 'none' }
+    | { kind: 'gone' }
+    | { kind: 'unreadable'; reason: string }
   > {
     try {
       const resp = await this.sqsClient.send(
@@ -384,7 +556,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     } catch (err) {
       const name = (err as { name?: string }).name;
       if (name === 'QueueDoesNotExist' || name === 'AWS.SimpleQueueService.NonExistentQueue') {
-        return { kind: 'none' };
+        return { kind: 'gone' };
       }
       return { kind: 'unreadable', reason: name ?? 'error' };
     }
@@ -635,6 +807,13 @@ function canonicalPolicy(text: string): string {
   } catch {
     return `raw:${text}`;
   }
+}
+
+/** A policy document's content key, or `undefined` when there is none to compare. */
+function policyReference(document: unknown): string | undefined {
+  if (typeof document === 'string' && document.length > 0) return canonicalPolicy(document);
+  if (document !== null && typeof document === 'object') return canonicalJson(document);
+  return undefined;
 }
 
 /** The queue URLs a physical id names. */

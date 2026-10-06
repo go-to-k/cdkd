@@ -285,6 +285,13 @@ export interface RollbackExecutorContext {
    * copied: the op's own re-resolution is what positions the redaction.
    */
   logOnlyNeedlesFor?: ((logicalId: string) => RecordedSecretValues | undefined) | undefined;
+  /**
+   * go-to-k/cdkd#4612: the final state records of the resources THIS run
+   * wrote, supplied only by a successful deploy's settle. Handed to a proven
+   * orphan's delete (`DeleteContext.writtenThisRun`), which must not read a
+   * just-written target back: the read may still return the old content.
+   */
+  writtenThisRun?: readonly ResourceState[] | undefined;
 }
 
 /** The action the planner / replayer decided for a single op. */
@@ -373,6 +380,12 @@ export interface RollbackPlanItem extends PlannedRoute {
  */
 export interface FailedOpReplayResult extends RollbackReplayResult {
   remainingFailedOps: FailedOperation[];
+  /**
+   * go-to-k/cdkd#4612: how many proven failed-CREATE orphans' deletes left
+   * part of what they wrote (`leftInPlace`), each also counted in `warnings`.
+   * Handled, not pending: a re-run would find the same part and leave it.
+   */
+  leftInPlace: number;
 }
 
 /** Outcome of replaying a list of ops (one journal segment). */

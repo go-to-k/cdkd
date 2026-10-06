@@ -2,6 +2,7 @@ import { plainOrDescribed, quotedOrDescribed } from '../../utils/pasteable-comma
 import type { ResourceState } from '../../types/state.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { CdkdError } from '../../utils/error-handler.js';
+import { markNonRetryable } from '../retryable-errors.js';
 import { IntrinsicFunctionResolver, type ResolverContext } from '../intrinsic-function-resolver.js';
 import {
   scrubResourceRecord,
@@ -98,7 +99,9 @@ export class ReplayResolvers {
  * A plain throw, like the final-snapshot refusals in `names.ts` and for the same
  * reason: the per-op catch in {@link replaySingle} /
  * {@link replayFailedOperations} counts it as a failure, which keeps the
- * journal segment and lets the user re-run once the reference is disambiguated.
+ * journal segment and lets the user re-run once the reference is disambiguated
+ * (a failed-CREATE orphan's content-checked delete settles instead, since it
+ * re-resolves the journaled bag as it is, go-to-k/cdkd#4612).
  * Refusing is strictly better than the alternative it replaces — resolving a
  * producer-region reference against the consumer's region does not fail, it
  * succeeds with the WRONG credential and writes it to a resource that is live.
@@ -117,7 +120,7 @@ function regionAmbiguousReplaySecretError(
 ): CdkdError {
   const where =
     propertyPath === '' ? '' : ` property ${quotedPlainOr(propertyPath, 'property path')}`;
-  return new CdkdError(
+  const error = new CdkdError(
     // Every value is described when not plain, never printed raw: the message
     // ends by naming `cdkd rollback` (go-to-k/cdkd#4214).
     `Rollback of ${shownLogicalId(logicalId)}${where} cannot re-resolve the secret reference ` +
@@ -132,6 +135,11 @@ function regionAmbiguousReplaySecretError(
       `then re-run ${rerunRollbackPhrase(execCtx, "'cdkd rollback'")}.`,
     'ROLLBACK_SECRET_REGION_AMBIGUOUS'
   );
+  // Marked non-retryable: the journaled bag and the producer regions on record
+  // decide it, and neither changes on a re-run, so a failed-CREATE orphan's
+  // content-checked delete settles instead of keeping its entry
+  // (go-to-k/cdkd#4612). The nested-child twin below is fixable, so unmarked.
+  return markNonRetryable(error);
 }
 
 /**

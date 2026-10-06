@@ -221,6 +221,45 @@ export interface DeleteContext {
    * records of the stack's live resources (go-to-k/cdkd#4596).
    */
   stackDestroy?: boolean | undefined;
+
+  /**
+   * The delete removes what a CREATE proved it made before failing
+   * (go-to-k/cdkd#1710): no state record ever held it, and `properties` is the
+   * ATTEMPTED bag. Set only by the rollback executor's failed-CREATE delete
+   * arm, which every path reaching such a journal entry runs (the automatic
+   * rollback, `cdkd rollback`, `cdkd destroy`, a successful deploy's settle).
+   *
+   * A provider whose resource is a write onto a target others can also write
+   * (`AWS::SQS::QueuePolicy`, go-to-k/cdkd#4612) removes it only where the
+   * target still carries what the attempt wrote: a later writer, in any record
+   * or outside cdkd, has replaced it.
+   */
+  failedCreateOrphan?: boolean | undefined;
+
+  /**
+   * With {@link failedCreateOrphan}: re-resolve the attempted bag's
+   * `{{resolve:...}}` references, which the journal stores redacted, for a
+   * provider that compares it with what AWS holds. Lazy, so a provider that
+   * does not compare fetches no secret. Throws when a reference cannot be
+   * resolved.
+   */
+  resolveAttemptedProperties?: (() => Promise<Record<string, unknown> | undefined>) | undefined;
+
+  /**
+   * With {@link failedCreateOrphan}, on a successful deploy's settle only:
+   * the final records of the resources this deploy wrote. A target one of
+   * them names was written seconds ago, and a read of it may still return
+   * what was there before (SQS takes up to 60 seconds), so a provider that
+   * compares live content leaves such a target instead (go-to-k/cdkd#4612).
+   */
+  writtenThisRun?:
+    | ReadonlyArray<{
+        resourceType?: unknown;
+        physicalId?: unknown;
+        attributes?: unknown;
+        properties?: unknown;
+      }>
+    | undefined;
 }
 
 /**
