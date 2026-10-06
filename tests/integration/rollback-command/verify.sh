@@ -56,8 +56,10 @@
 #         successful deploy keeps the stream in AWS and still drops the
 #         journal; the fixture deletes it.
 #     O8. The fix-forward: --no-rollback, then a deploy keeping OrphanStream
-#         under another name (ORPHAN_FIX_FORWARD=true) succeeds, deletes the
-#         first stream and keeps its own; a plain deploy then removes it.
+#         under another name (ORPHAN_FIX_FORWARD=true): it exits 2, names the
+#         first stream in a warning without deleting it, and drops the
+#         journal; the fixture deletes that stream, and a plain deploy then
+#         removes the fix-forward one.
 #   PHASE S (a SKIPPED rollback op on the automatic path, go-to-k/cdkd#3338):
 #     S1. Deploy with WITH_SKIP_PAIR=true (clean): SkipBucket + SkipDoomed.
 #         Put one object into SkipBucket (no autoDeleteObjects).
@@ -946,9 +948,10 @@ if [ "$(state_has_resource "${STATE_KEY}" OrphanStream)" != "false" ]; then
 fi
 echo "[verify] step O7 ok: the Retain stream was kept (then removed by the fixture), journal gone"
 
-# go-to-k/cdkd#4600 review: the fix-forward. The redeploy keeps the logical id
-# under another name, so its own CREATE of the type must not stop the orphan's
-# delete: the new stream is judged by physical id against the saved state.
+# go-to-k/cdkd#4600: the fix-forward. The redeploy keeps the logical id under
+# another name, so the deploy's own op under that id may own what the first
+# attempt made: the stream is NOT deleted, the deploy names it in a warning,
+# exits 2 and drops the entry with the journal (deleting it there is #4606).
 echo "[verify] step O8: --no-rollback with INJECT_ORPHAN_CREATE, then the fix-forward (same logical id, another name)"
 if ! delete_orphan_stream "${FIX_FORWARD_STREAM_NAME}"; then
   echo "[verify] FAIL: a leftover ${FIX_FORWARD_STREAM_NAME} could not be removed before step O8"
@@ -971,24 +974,40 @@ INJECT_ORPHAN_CREATE=true ORPHAN_FIX_FORWARD=true \
 O8_DEPLOY_RC=$?
 set -e
 sed 's/^/  /' /tmp/rollback-cmd-orphan-ff-2.log || true
-if [ "${O8_DEPLOY_RC}" -ne 0 ]; then
-  echo "[verify] FAIL: the fix-forward deploy exited ${O8_DEPLOY_RC} (expected 0 -- output above)"
+if [ "${O8_DEPLOY_RC}" -ne 2 ]; then
+  echo "[verify] FAIL: the fix-forward deploy exited ${O8_DEPLOY_RC} (expected 2: the earlier stream is left unaddressed -- output above)"
   exit 1
 fi
-if ! grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-ff-2.log; then
-  echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanStream (output above)"
+# The warning is the only place the earlier stream is named once the journal
+# goes: it must name it.
+if ! grep -q 'Skipping failed CREATE of OrphanStream' /tmp/rollback-cmd-orphan-ff-2.log; then
+  echo "[verify] FAIL: the fix-forward deploy did not warn about the earlier attempt's OrphanStream (output above)"
   exit 1
 fi
-wait_orphan_stream_gone
-assert_gone "the earlier attempt's ${ORPHAN_STREAM_NAME} still exists after the fix-forward deploy" \
-  aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}"
+if ! grep 'Skipping failed CREATE of OrphanStream' /tmp/rollback-cmd-orphan-ff-2.log | grep -qF "${ORPHAN_STREAM_NAME}"; then
+  echo "[verify] FAIL: the fix-forward warning does not name ${ORPHAN_STREAM_NAME} (output above)"
+  exit 1
+fi
+if grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-ff-2.log; then
+  echo "[verify] FAIL: the fix-forward deploy deleted a stream its own op under the same id may own"
+  exit 1
+fi
 if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
   echo "[verify] FAIL: rollback journal still present after the fix-forward deploy"
+  exit 1
+fi
+if ! aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" >/dev/null; then
+  echo "[verify] FAIL: the earlier attempt's ${ORPHAN_STREAM_NAME} is gone -- the fix-forward deploy was expected to leave it"
   exit 1
 fi
 FF_PID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.OrphanStream.physicalId // "<absent>"')"
 if [ "${FF_PID}" != "${FIX_FORWARD_STREAM_NAME}" ]; then
   echo "[verify] FAIL: state records OrphanStream as ${FF_PID} (expected the fix-forward ${FIX_FORWARD_STREAM_NAME})"
+  exit 1
+fi
+# The named stream is the user's to delete; the fixture does it by hand.
+if ! delete_orphan_stream; then
+  echo "[verify] FAIL: the earlier ${ORPHAN_STREAM_NAME} could not be removed after step O8"
   exit 1
 fi
 # The fix-forward stream is a normal state resource: the next plain deploy
@@ -997,7 +1016,7 @@ ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
 wait_orphan_stream_gone "${FIX_FORWARD_STREAM_NAME}"
 assert_gone "${FIX_FORWARD_STREAM_NAME} still exists after the deploy that removed it" \
   aws kinesis describe-stream-summary --stream-name "${FIX_FORWARD_STREAM_NAME}" --region "${REGION}"
-echo "[verify] step O8 ok: the fix-forward deleted the earlier stream and kept its own, journal gone"
+echo "[verify] step O8 ok: the fix-forward named the earlier stream, exited 2 and dropped the journal; the stream was removed by hand"
 
 # ---------------------------------------------------------------------------
 # PHASE S: a SKIPPED rollback op on the automatic path (go-to-k/cdkd#3338)
