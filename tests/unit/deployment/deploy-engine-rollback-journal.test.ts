@@ -50,6 +50,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     markRollbackJournalSuperseded: ReturnType<typeof vi.fn>;
     popRollbackJournalSegment: ReturnType<typeof vi.fn>;
     reduceRollbackJournalToFailedOperations: ReturnType<typeof vi.fn>;
+    dropRollbackJournalFailedOperations: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(() => {
@@ -101,6 +102,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
       popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
       reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
+      dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
     };
 
     const mockStateBackend = {
@@ -1727,7 +1729,9 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(warned.some((w) => w.includes('--revert-failed') || w.includes('cdkd rollback'))).toBe(false);
     });
 
-    it('a state record under its logical id holding the SAME resource: not deleted, counted', async () => {
+    // Review CODE-M1: the record tracks this very resource (an idempotent
+    // create, an adoption) -- settled silently, never "delete it manually".
+    it('a state record under its logical id holding the SAME resource: not deleted, silent, exit 0', async () => {
       const engine = noChangeEngine({
         Orphan: { physicalId: 'orphan-stream', resourceType: 'AWS::Kinesis::Stream', properties: {}, attributes: {}, dependencies: [] },
       });
@@ -1737,7 +1741,9 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
 
       expect(orphanDeletes(engine)).toHaveLength(0);
       expect(journal.deleteRollbackJournal).toHaveBeenCalledWith(stackName, 'us-east-1');
-      expect(result.deleteSkipped).toBe(1);
+      expect(result.deleteSkipped).toBe(0);
+      const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+      expect(warned.some((w) => w.includes('delete it manually'))).toBe(false);
     });
 
     it("this deploy's completed DELETE under its logical id (no record left): not deleted, counted", async () => {
@@ -1851,6 +1857,78 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(warned.some((w) => w.includes('Skipping failed CREATE of Orphan'))).toBe(true);
     });
 
+    // Review SPEC-m4: a cleared entry's demotion lives in memory; a journal
+    // that survives must not keep it as proven for a scan-less rollback.
+    function foreignHeld(engine: DeployEngine) {
+      const backend = (
+        engine as unknown as {
+          stateBackend: { getState: ReturnType<typeof vi.fn>; listStacks: ReturnType<typeof vi.fn> };
+        }
+      ).stateBackend;
+      backend.listStacks.mockResolvedValue([{ stackName: 'OtherStack', region: 'us-east-1' }]);
+      const own = backend.getState.getMockImplementation()! as (...a: unknown[]) => Promise<unknown>;
+      backend.getState.mockImplementation((name: string, region: string) =>
+        name === 'OtherStack'
+          ? Promise.resolve({
+              state: { resources: { R: { physicalId: 'orphan-stream', resourceType: 'AWS::Kinesis::Stream' } } },
+            })
+          : own(name, region)
+      );
+    }
+
+    it('a journal delete that fails strips the cleared (demoted) entry from the surviving journal', async () => {
+      const engine = noChangeEngine();
+      foreignHeld(engine);
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+      journal.deleteRollbackJournal.mockResolvedValue(false);
+
+      await engine.deploy(stackName, template);
+
+      expect(orphanDeletes(engine)).toHaveLength(0);
+      expect(journal.dropRollbackJournalFailedOperations).toHaveBeenCalledTimes(1);
+      const [stack, region, drop] = journal.dropRollbackJournalFailedOperations.mock.calls[0]!;
+      expect([stack, region]).toEqual([stackName, 'us-east-1']);
+      const seg = journalWith(orphanOp()).segments[0]!;
+      expect(drop(orphanOp(), seg)).toBe(true);
+      expect(drop({ ...orphanOp(), logicalId: 'Other' }, seg)).toBe(false);
+    });
+
+    it('a journal delete that succeeds strips nothing', async () => {
+      const engine = noChangeEngine();
+      foreignHeld(engine);
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+      journal.deleteRollbackJournal.mockResolvedValue(true);
+
+      await engine.deploy(stackName, template);
+
+      expect(journal.dropRollbackJournalFailedOperations).not.toHaveBeenCalled();
+    });
+
+    it('a reduce that fails twice strips the cleared entries from the whole journal it keeps', async () => {
+      const engine = noChangeEngine();
+      foreignHeld(engine);
+      const j = journalWith(orphanOp());
+      // A second entry whose delete fails, so the journal is kept.
+      j.segments[0]!.failedOperations.push(
+        orphanOp({ logicalId: 'Failing', physicalId: 'failing-stream' }) as never
+      );
+      journal.loadRollbackJournal.mockResolvedValue(j);
+      journal.reduceRollbackJournalToFailedOperations.mockRejectedValue(new Error('PutObject denied'));
+      providerOf(engine).delete.mockImplementation((_id: string, physicalId: string) =>
+        physicalId === 'failing-stream' ? Promise.reject(new Error('AccessDenied')) : Promise.resolve(undefined)
+      );
+
+      const result = await engine.deploy(stackName, template);
+
+      expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
+      expect(journal.dropRollbackJournalFailedOperations).toHaveBeenCalledTimes(1);
+      const drop = journal.dropRollbackJournalFailedOperations.mock.calls[0]![2];
+      const seg = j.segments[0]!;
+      expect(drop(orphanOp(), seg)).toBe(true);
+      expect(drop(orphanOp({ logicalId: 'Failing', physicalId: 'failing-stream' }), seg)).toBe(false);
+      expect(result.deleteSkipped).toBe(2);
+    });
+
     it("the stack's own record in the listing is not another holder: the orphan is deleted", async () => {
       const engine = noChangeEngine();
       const backend = (
@@ -1926,7 +2004,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(result.deleteSkipped).toBe(1);
     });
 
-    it('a state record holding the orphan id owns it: not deleted', async () => {
+    it('a state record holding the orphan id under another logical id owns it: not deleted, exit 0', async () => {
       const engine = noChangeEngine({
         Adopted: {
           physicalId: 'orphan-stream',
@@ -1938,7 +2016,8 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       });
       journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
 
-      await engine.deploy(stackName, template);
+      const result = await engine.deploy(stackName, template);
+      expect(result.deleteSkipped).toBe(0);
 
       expect(orphanDeletes(engine)).toHaveLength(0);
       expect(journal.deleteRollbackJournal).toHaveBeenCalledWith(stackName, 'us-east-1');

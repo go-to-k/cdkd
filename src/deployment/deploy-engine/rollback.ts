@@ -366,8 +366,9 @@ export async function settleJournalAfterSuccess(
   }
   let nestedLeft = 0;
   // One bucket scan, made only when some journal holds an orphan to delete.
-  const foreignHolderFor = makeForeignHolderScan(this.stateBackend, this.stackRegion);
+  const foreignHolderFor = makeForeignHolderScan(this.stateBackend);
   const deployRunId = this.options.eventRecorder?.runId;
+  const stripOnFailure = new Map<string, () => Promise<void>>();
   const [ownLeft] = await Promise.all([
     (async (): Promise<number> => {
       // `previousState.orphans` is the surviving set `adoptRollbackOrphans`
@@ -391,10 +392,12 @@ export async function settleJournalAfterSuccess(
       // failed attempt of their ids; if the delete fails they are carried
       // onto the journal instead, so no older attempt counts as evidence
       // again.
-      await this.deleteRollbackJournalBestEffort(
+      const deleted = await this.deleteRollbackJournalBestEffort(
         stackName,
         completedOperations.map((op) => op.logicalId)
       );
+      // A surviving journal must not keep what this settle cleared as proven.
+      if (!deleted) await own.stripCleared?.();
       return own.unaddressed;
     })(),
     dropNestedChildJournals({
@@ -430,7 +433,11 @@ export async function settleJournalAfterSuccess(
           logger: this.logger,
         });
         nestedLeft += settled.unaddressed;
+        if (settled.stripCleared) stripOnFailure.set(child, settled.stripCleared);
         return !settled.keepJournal;
+      },
+      onDeleteFailed: async (child) => {
+        await stripOnFailure.get(child)?.();
       },
     }),
   ]);
@@ -448,12 +455,15 @@ export async function settleJournalAfterSuccess(
  * fails they are written onto the surviving journal's newest segment
  * (`markRollbackJournalSuperseded`) — or an older failed attempt of one of
  * them would count as adoption evidence again.
+ *
+ * Returns whether the journal is gone (go-to-k/cdkd#4600: a caller that
+ * settled entries in it strips them when it is not).
  */
 export async function deleteRollbackJournalBestEffort(
   this: DeployEngine,
   stackName: string,
   supersededLogicalIds: readonly string[] = []
-): Promise<void> {
+): Promise<boolean> {
   let deleted: boolean | void;
   try {
     // The backend REPORTS a DeleteObject failure (`false`) rather than
@@ -466,7 +476,8 @@ export async function deleteRollbackJournalBestEffort(
     deleted = false;
   }
   // Only an explicit `false` (or a throw) is a journal that may survive.
-  if (deleted !== false || supersededLogicalIds.length === 0) return;
+  if (deleted !== false) return true;
+  if (supersededLogicalIds.length === 0) return false;
   try {
     await this.stateBackend.markRollbackJournalSuperseded(
       stackName,
@@ -478,6 +489,7 @@ export async function deleteRollbackJournalBestEffort(
       safeMsg`Failed to record superseded logical ids on the rollback journal for ${stackName}: ${markErr instanceof Error ? markErr.message : String(markErr)}`
     );
   }
+  return false;
 }
 
 /**

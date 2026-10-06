@@ -27,6 +27,7 @@ function setup(journal: unknown) {
     loadRollbackJournal: vi.fn(async () => structuredClone(journal)),
     reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
     markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
+    dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
   };
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const ctx = {
@@ -51,8 +52,9 @@ const failedSeg = (ops: unknown[], extra: Record<string, unknown> = {}) => ({
 });
 
 describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
-  it('an interrupted deploy deletes nothing and keeps the entry', async () => {
+  it('an interrupted deploy deletes nothing, asks the scan nothing, and keeps the entry', async () => {
     const t = setup(journalOf(failedSeg([orphan()])));
+    const foreignHolder = vi.fn(async () => undefined);
 
     const left = await settleJournaledOrphansOnSuccess({
       stateBackend: t.stateBackend as never,
@@ -61,13 +63,14 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
       stateResources: {},
       rollbackOrphans: undefined,
       newerOperations: [],
-      foreignHolder: async () => undefined,
+      foreignHolder,
       ctx: t.ctx,
       isInterrupted: () => true,
       logger: t.logger as never,
     });
 
     expect(t.provider.delete).not.toHaveBeenCalled();
+    expect(foreignHolder).not.toHaveBeenCalled();
     expect(left).toEqual({ unaddressed: 1, keepJournal: true });
     expect(t.stateBackend.reduceRollbackJournalToFailedOperations).toHaveBeenCalledTimes(1);
   });
@@ -159,7 +162,10 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
         ctx: t.ctx,
         logger: t.logger as never,
       });
-      return { deletes: t.provider.delete.mock.calls.filter((c) => c[1] === 'orphan-stream').length, out };
+      return {
+        deletes: t.provider.delete.mock.calls.filter((c) => c[1] === 'orphan-stream').length,
+        out: { unaddressed: out.unaddressed, keepJournal: out.keepJournal },
+      };
     };
     expect(await run('run-1')).toEqual({ deletes: 1, out: { unaddressed: 0, keepJournal: false } });
     // Another run's pending segment is a real journal entry: the type rule holds.
@@ -189,7 +195,7 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
       logger: t.logger as never,
     });
     expect(t.provider.delete).not.toHaveBeenCalled();
-    expect(out).toEqual({ unaddressed: 1, keepJournal: false });
+    expect(out).toMatchObject({ unaddressed: 1, keepJournal: false });
   });
 
   it('a foreign holder demotes and clears; an unreadable scan keeps; no holder deletes', async () => {
@@ -208,7 +214,7 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
       });
       return {
         deletes: t.provider.delete.mock.calls.length,
-        out,
+        out: { unaddressed: out.unaddressed, keepJournal: out.keepJournal },
         reduced: t.stateBackend.reduceRollbackJournalToFailedOperations.mock.calls.length,
       };
     };
@@ -242,7 +248,7 @@ describe('makeForeignHolderScan (go-to-k/cdkd#4600)', () => {
         name,
       })),
     };
-    const scan = makeForeignHolderScan(stateBackend as never, REGION);
+    const scan = makeForeignHolderScan(stateBackend as never);
     const ask = scan({ stackName: 'Self', region: REGION });
 
     expect(await ask('AWS::IAM::Role', 'own')).toBeUndefined();
@@ -252,6 +258,49 @@ describe('makeForeignHolderScan (go-to-k/cdkd#4600)', () => {
     expect(held && held.kind === 'held' ? held.by : '').toContain('eu-west-1');
     expect(await ask('AWS::SQS::Queue', 'global-name')).toBeUndefined();
     expect(stateBackend.listStacks).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts another record's rollback-orphan records as holders", async () => {
+    const ask = makeForeignHolderScan({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'Other', region: REGION }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          resources: {},
+          orphans: [
+            {
+              logicalId: 'Kept',
+              orphanedAt: 1,
+              state: { physicalId: 'x', resourceType: 'AWS::Kinesis::Stream', properties: {}, attributes: {} },
+            },
+          ],
+        },
+      }),
+    } as never)({ stackName: 'Self', region: REGION });
+    expect((await ask('AWS::Kinesis::Stream', 'x'))?.kind).toBe('held');
+    expect(await ask('AWS::Kinesis::Stream', 'y')).toBeUndefined();
+  });
+
+  it.each([
+    ['a non-list orphans container', { resources: {}, orphans: 'abc' }],
+    ['an unreadable orphans row', { resources: {}, orphans: [{ logicalId: 'Bad' }] }],
+  ])('%s makes every answer unreadable', async (_what, state) => {
+    const ask = makeForeignHolderScan({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'Other', region: REGION }]),
+      getState: vi.fn().mockResolvedValue({ state }),
+    } as never)({ stackName: 'Self', region: REGION });
+    expect((await ask('AWS::Kinesis::Stream', 'z'))?.kind).toBe('unreadable');
+  });
+
+  it('a legacy key with no readable region makes every answer unreadable', async () => {
+    const getState = vi.fn();
+    const ask = makeForeignHolderScan({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'Legacy' }]),
+      getState,
+    } as never)({ stackName: 'Self', region: REGION });
+    const answer = await ask('AWS::Kinesis::Stream', 'z');
+    expect(answer?.kind).toBe('unreadable');
+    expect(answer && answer.kind === 'unreadable' ? answer.what : '').toContain('Legacy');
+    expect(getState).not.toHaveBeenCalled();
   });
 
   it('skips a record entry without a string type or physical id', async () => {
@@ -268,16 +317,14 @@ describe('makeForeignHolderScan (go-to-k/cdkd#4600)', () => {
             },
           },
         }),
-      } as never,
-      REGION
+      } as never
     )({ stackName: 'Self', region: REGION });
     expect(await ask('AWS::Kinesis::Stream', 'x')).toBeUndefined();
   });
 
   it('a listing or a record it cannot read answers for every question (fail closed)', async () => {
     const unlisted = makeForeignHolderScan(
-      { listStacks: vi.fn().mockRejectedValue(new Error('denied')), getState: vi.fn() } as never,
-      REGION
+      { listStacks: vi.fn().mockRejectedValue(new Error('denied')), getState: vi.fn() } as never
     )({ stackName: 'Self', region: REGION });
     expect((await unlisted('AWS::Kinesis::Stream', 'x'))?.kind).toBe('unreadable');
 
@@ -285,8 +332,7 @@ describe('makeForeignHolderScan (go-to-k/cdkd#4600)', () => {
       {
         listStacks: vi.fn().mockResolvedValue([{ stackName: 'Other', region: REGION }]),
         getState: vi.fn().mockResolvedValue({ state: { resources: 'abc' } }),
-      } as never,
-      REGION
+      } as never
     )({ stackName: 'Self', region: REGION });
     const answer = await malformed('AWS::Kinesis::Stream', 'x');
     expect(answer?.kind).toBe('unreadable');

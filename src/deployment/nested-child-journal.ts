@@ -325,6 +325,11 @@ export async function dropNestedChildJournals(args: {
    * deleted).
    */
   beforeDelete?: (child: string, state: StackState | undefined) => Promise<boolean>;
+  /**
+   * Run under the child's lock when its journal delete throws, so a caller
+   * can strip what `beforeDelete` settled from the journal that survives.
+   */
+  onDeleteFailed?: (child: string) => Promise<void>;
   /** Internal: how deep the walk already is. */
   depth?: number;
 }): Promise<void> {
@@ -366,7 +371,12 @@ export async function dropNestedChildJournals(args: {
             return false;
           }
         }
-        await stateBackend.deleteRollbackJournal(child, region);
+        try {
+          await stateBackend.deleteRollbackJournal(child, region);
+        } catch (error) {
+          await args.onDeleteFailed?.(child);
+          throw error;
+        }
         return true;
       });
       if (deleted) {

@@ -14,7 +14,11 @@
  */
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import { type RollbackJournalSegment, splitImportedOps } from '../../types/rollback-journal.js';
-import type { ResourceState } from '../../types/state.js';
+import type { ResourceState, StackState } from '../../types/state.js';
+import {
+  hasReadableOrphans,
+  unreadableOrphanRecords,
+} from '../../state/malformed-resources-bag.js';
 import type { Logger } from '../../types/config.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
@@ -227,6 +231,14 @@ export interface SuccessSettleOutcome {
   unaddressed: number;
   /** The journal still holds an entry: the caller must not delete it. */
   keepJournal: boolean;
+  /**
+   * Strip the entries this settle cleared (deleted, or demoted and warned
+   * about) from the journal, for a caller whose journal delete FAILED: a
+   * surviving entry would still read as proven, and a plain `cdkd rollback`
+   * or `cdkd destroy` has no foreign-holder scan. Best-effort, never throws;
+   * absent when nothing was cleared.
+   */
+  stripCleared?: () => Promise<void>;
 }
 
 /**
@@ -256,6 +268,7 @@ export async function settleJournaledOrphansOnSuccess(args: {
     | 'loadRollbackJournal'
     | 'reduceRollbackJournalToFailedOperations'
     | 'markRollbackJournalSuperseded'
+    | 'dropRollbackJournalFailedOperations'
   >;
   stackName: string;
   region: string;
@@ -325,7 +338,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
         orphans.deployLogicalIds ?? new Set(),
         args.foreignHolder,
         stack,
-        logger
+        logger,
+        args.isInterrupted
       );
       const acting: JournaledOrphans = {
         segments: orphans.segments
@@ -354,7 +368,27 @@ export async function settleJournaledOrphansOnSuccess(args: {
   const skipped = all.filter(
     ({ op }) => !keptOps.has(op) && op.physicalIdRecoveredFromError === false
   ).length;
-  if (kept.length === 0) return { unaddressed: skipped, keepJournal: false };
+  const cleared = all.filter(({ op }) => !keptOps.has(op));
+  const stripCleared =
+    cleared.length === 0
+      ? undefined
+      : async (): Promise<void> => {
+          try {
+            await stateBackend.dropRollbackJournalFailedOperations(
+              stackName,
+              region,
+              (op, segment) => isHandledOrphan(cleared, segment, op)
+            );
+          } catch (err) {
+            logger.warn(
+              safeMsg`Failed to remove the settled entries from the rollback journal of stack ${stack}: ` +
+                safeMsg`${errorDetail(err)}. A later cdkd rollback or cdkd destroy could act on them again.`
+            );
+          }
+        };
+  if (kept.length === 0) {
+    return { unaddressed: skipped, keepJournal: false, ...(stripCleared && { stripCleared }) };
+  }
   const keptIds = new Set(kept.map(({ op }) => op.logicalId));
   const supersededIds = newerIds.filter((id) => !keptIds.has(id));
   // A kept entry that was demoted keeps that verdict: the reduce drops the
@@ -382,7 +416,11 @@ export async function settleJournaledOrphansOnSuccess(args: {
       }
     }
   }
-  if (!reduced) await markSuperseded(stateBackend, stackName, region, supersededIds);
+  if (!reduced) {
+    await markSuperseded(stateBackend, stackName, region, supersededIds);
+    // The whole journal still holds what this settle cleared.
+    await stripCleared?.();
+  }
   // No `cdkd rollback` pointer: a plain rollback has none of this deploy's
   // ownership evidence.
   logger.warn(
@@ -406,12 +444,29 @@ async function applySuccessRule(
   deployLogicalIds: ReadonlySet<string>,
   foreignHolder: (resourceType: string, physicalId: string) => Promise<ForeignHolding>,
   stack: string,
-  logger: Logger
+  logger: Logger,
+  isInterrupted: (() => boolean) | undefined
 ): Promise<Set<FailedOperation>> {
   const unreadable = new Set<FailedOperation>();
+  let interrupted = false;
   for (const { ops } of orphans.segments) {
     for (const op of ops) {
       if (op.physicalIdRecoveredFromError !== true || !op.physicalId) continue;
+      // An interrupt stops the scan; what it did not reach is kept untouched.
+      if (interrupted || isInterrupted?.()) {
+        interrupted = true;
+        unreadable.add(op);
+        continue;
+      }
+      // A record of this stack holding this very resource tracks it (an
+      // idempotent create, an adoption): the classifier settles it silently.
+      if (
+        Object.values(stateResources).some(
+          (r) => r?.resourceType === op.resourceType && r.physicalId === op.physicalId
+        )
+      ) {
+        continue;
+      }
       if (
         Object.prototype.hasOwnProperty.call(stateResources, op.logicalId) ||
         deployLogicalIds.has(op.logicalId)
@@ -450,12 +505,12 @@ async function applySuccessRule(
  * and a read of every record, as the exports-index rebuild does, made lazily
  * on the first question and shared by every stack the settle asks about.
  *
- * Reads each record's `resources`; a record that cannot be read or listed
- * makes every answer `unreadable` (fail closed: the entry is kept).
+ * Reads each record's `resources` and rollback-orphan records; a record that
+ * cannot be read, listed or located (a legacy key with no region) makes every
+ * answer `unreadable` (fail closed: the entry is kept).
  */
 export function makeForeignHolderScan(
-  stateBackend: Pick<S3StateBackend, 'listStacks' | 'getState'>,
-  defaultRegion: string
+  stateBackend: Pick<S3StateBackend, 'listStacks' | 'getState'>
 ): (self: {
   stackName: string;
   region: string;
@@ -477,20 +532,42 @@ export function makeForeignHolderScan(
     let unreadable: string | undefined;
     await Promise.all(
       refs.map(async (ref) => {
-        const region = ref.region ?? defaultRegion;
-        let resources: unknown;
+        const named = (why: string): string =>
+          safeMsg`the state record of stack ${displayIdent(ref.stackName)} (${why})`;
+        // A legacy key whose body names no region: where its resources live
+        // is unknown, so it cannot vouch for anything (fail closed).
+        if (ref.region === undefined) {
+          unreadable ??= named('its region cannot be read');
+          return;
+        }
+        const region = ref.region;
+        let state: StackState | undefined;
         try {
-          resources = (await stateBackend.getState(ref.stackName, region))?.state?.resources;
+          state = (await stateBackend.getState(ref.stackName, region))?.state;
         } catch {
-          unreadable ??= safeMsg`the state record of stack ${displayIdent(ref.stackName)} (it could not be read)`;
+          unreadable ??= named('it could not be read');
           return;
         }
-        if (resources === undefined) return;
-        if (typeof resources !== 'object' || resources === null || Array.isArray(resources)) {
-          unreadable ??= safeMsg`the state record of stack ${displayIdent(ref.stackName)} (its resources cannot be read)`;
+        if (state === undefined) return;
+        const resources: unknown = state.resources;
+        if (
+          resources !== undefined &&
+          (typeof resources !== 'object' || resources === null || Array.isArray(resources))
+        ) {
+          unreadable ??= named('its resources cannot be read');
           return;
         }
-        for (const record of Object.values(resources as Record<string, unknown>)) {
+        // Its rollback-orphan records hold resources too (go-to-k/cdkd#3379's
+        // container and row guards first).
+        if (!hasReadableOrphans(state) || unreadableOrphanRecords(state).length > 0) {
+          unreadable ??= named('its rollback-orphan records cannot be read');
+          return;
+        }
+        const held: unknown[] = [
+          ...Object.values((resources ?? {}) as Record<string, unknown>),
+          ...(state.orphans ?? []).map((record) => record.state),
+        ];
+        for (const record of held) {
           const r = record as { resourceType?: unknown; physicalId?: unknown } | null;
           if (typeof r?.resourceType !== 'string' || typeof r.physicalId !== 'string') continue;
           const k = key(r.resourceType, r.physicalId);

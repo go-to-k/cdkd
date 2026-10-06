@@ -175,6 +175,7 @@ function build(opts: {
     popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
     dropRollbackJournalSegments: vi.fn().mockResolvedValue(1),
     reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
+    dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
     markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
   };
   const levels = opts.levels ?? [[...opts.changes.keys()]];
@@ -764,6 +765,26 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
         `${STACK}~Child`,
       ]);
       expect(result.deleteSkipped).toBe(0);
+    });
+
+    it("a child journal delete that throws strips the child's settled entry from the surviving journal", async () => {
+      const { engine, backend, provider } = harness();
+      backend.deleteRollbackJournal.mockImplementation((name: string) =>
+        name === `${STACK}~Child` ? Promise.reject(new Error('AccessDenied')) : Promise.resolve(undefined)
+      );
+
+      await engine.deploy(STACK, templateOf(['Q']));
+
+      expect(childOrphanDeletes(provider)).toHaveLength(1);
+      expect(backend.dropRollbackJournalFailedOperations.mock.calls.map((c) => c[0])).toEqual([`${STACK}~Child`]);
+    });
+
+    it('a child journal delete that succeeds strips nothing', async () => {
+      const { engine, backend } = harness();
+
+      await engine.deploy(STACK, templateOf(['Q']));
+
+      expect(backend.dropRollbackJournalFailedOperations).not.toHaveBeenCalled();
     });
 
     it('a failed delete keeps the child journal, reduced to it, and counts it as unaddressed', async () => {
