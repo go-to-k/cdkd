@@ -1051,16 +1051,59 @@ describe('CustomResourceProvider', () => {
           ),
       ],
       [
-        'delete',
+        'delete outside a stack destroy',
         () =>
           provider.delete('MyCustomResource', 'physical-id', 'Custom::MyType', {
             ServiceToken: rawIntrinsic,
           }),
       ],
-    ])('%s: the error names the recovery path so users know the fix', async (_, run) => {
-      // The whole point of the typed error is to make the bug class
-      // actionable. Verify the suggested-action sentence is there.
-      await expect(run()).rejects.toThrow(
+    ])('%s: names a recovery that never offers cdkd state orphan (go-to-k/cdkd#4596)', async (label, run) => {
+      // None of these may name the stack-wide `cdkd state orphan`, which on a
+      // deployed stack drops the record of every live resource.
+      const message = await run().then(
+        () => '',
+        (e: unknown) => String((e as Error).message)
+      );
+      expect(message).not.toContain('--stack-region <region>');
+      if (label === 'create') {
+        // A create reads the template (or, on a rollback, the journal's
+        // recorded value): no record to repair, and on a first deploy no
+        // deployed stack, so no state-orphan sentence at all.
+        expect(message).not.toContain('cdkd state orphan');
+        expect(message).not.toContain('cdkd import');
+        expect(message).toContain('This indicates an unresolved value in the template');
+        expect(message).toContain('Check that the template resolves ServiceToken');
+        expect(message).toContain('restore the template and re-deploy');
+        return;
+      }
+      expect(message).toContain(
+        "Do NOT run 'cdkd state orphan <stack>' on a stack that is still deployed"
+      );
+      expect(message.split('cdkd state orphan').length - 1).toBe(1);
+      if (label === 'update') {
+        // A deploy update reads the NEW template-resolved bag and a rollback
+        // the journal's record; `cdkd drift --revert` skips custom resources
+        // (#323), so no caller is helped by a re-import.
+        expect(message).toContain('This indicates an unresolved value in the template');
+        expect(message).not.toContain('state was written by a pre-fix cdkd import');
+        expect(message).toContain('Check that the template resolves ServiceToken');
+        expect(message).not.toContain('cdkd import');
+        expect(message).not.toContain('drift');
+      } else {
+        expect(message).toContain('back as ServiceToken in state.json');
+      }
+    });
+
+    it('delete on a stack destroy keeps the cdkd import / cdkd state orphan recovery', async () => {
+      await expect(
+        provider.delete(
+          'MyCustomResource',
+          'physical-id',
+          'Custom::MyType',
+          { ServiceToken: rawIntrinsic },
+          { stackDestroy: true }
+        )
+      ).rejects.toThrow(
         // Region-scoped (go-to-k/cdkd#3996), and quoted rather than
         // backticked, which would run the command when pasted.
         "re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover."

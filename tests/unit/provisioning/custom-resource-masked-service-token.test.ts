@@ -97,9 +97,15 @@ describe('CustomResourceProvider.delete: a masked ServiceToken (issue #3938)', (
   });
 
   it('warns naming the mask, the logical id, LEFT IN PLACE and the remedies', async () => {
-    await new CustomResourceProvider().delete('MaskedDependent', 'cr-physical-id', 'Custom::Thing', {
-      ServiceToken: SECRET_MASK,
-    });
+    // The `cdkd state orphan` remedy is a STACK-DESTROY answer (go-to-k/cdkd#4596);
+    // the deploy-side text is pinned in custom-resource-skip-remedy-4596.test.ts.
+    await new CustomResourceProvider().delete(
+      'MaskedDependent',
+      'cr-physical-id',
+      'Custom::Thing',
+      { ServiceToken: SECRET_MASK },
+      STACK_DESTROY
+    );
 
     const text = warnText();
     expect(text).toContain(
@@ -110,8 +116,8 @@ describe('CustomResourceProvider.delete: a masked ServiceToken (issue #3938)', (
     // The restore remedy is bounded: a destroy deletes the backing Lambda in
     // the same run, after which the issue-#804 pre-check can only skip again.
     expect(text).toContain('helps only while that handler still exists');
-    // The deploy-side caveat every skip in this file carries (issue #1762).
-    expect(text).toContain('https://github.com/go-to-k/cdkd/issues/1762');
+    // Not the deploy-side remedy, which forbids exactly that command.
+    expect(text).not.toContain("Do NOT run 'cdkd state orphan");
   });
 
   it('keeps the reason short, state-named, not-invoked and distinct from its siblings', () => {
@@ -219,9 +225,13 @@ describe('CustomResourceProvider.delete: a secret-reference ServiceToken (issue 
   });
 
   it('warns naming the logical id, the cause and the remedies, never the reference text', async () => {
-    await new CustomResourceProvider().delete('SecretTokenCr', 'cr-physical-id', 'Custom::Thing', {
-      ServiceToken: SECRET_REF,
-    });
+    await new CustomResourceProvider().delete(
+      'SecretTokenCr',
+      'cr-physical-id',
+      'Custom::Thing',
+      { ServiceToken: SECRET_REF },
+      STACK_DESTROY
+    );
 
     const text = warnText();
     expect(text).toContain(
@@ -235,7 +245,7 @@ describe('CustomResourceProvider.delete: a secret-reference ServiceToken (issue 
     expect(text).toContain("'cdkd state orphan <stack> --stack-region <region>'");
     expect(text).toContain('drops EVERY record for the stack in that region');
     expect(text).toContain('helps only while that handler still exists');
-    expect(text).toContain('https://github.com/go-to-k/cdkd/issues/1762');
+    expect(text).not.toContain("Do NOT run 'cdkd state orphan");
     // The logical id names the record; the expression (which names the
     // secret) is not repeated into a log line.
     expect(text).not.toContain('provider-arn');

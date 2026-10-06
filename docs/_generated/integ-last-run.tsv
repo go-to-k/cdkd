@@ -67,9 +67,9 @@ cross-stack-cfn-fallback	2026-10-02T23:48:50Z	PASS	150	verify.sh	rc ok, orph cle
 cross-stack-references	2026-10-03T09:48:51Z	PASS	40	std-flow	rc ok, orph clean (#4505)
 cross-stack-secret-import	2026-10-05T15:24:10Z	PASS	396	verify.sh	rc ok, orph clean (#2868 PR #4588)
 custom-resource-getatt-data	2026-10-05T18:13:45Z	PASS	95	verify.sh	rc ok, orph clean (#2115 PR #4589)
-custom-resource-masked-service-token	2026-10-05T18:15:00Z	PASS	170	verify.sh	rc ok, orph clean (#2115 PR #4589)
+custom-resource-masked-service-token	2026-10-06T03:49:47Z	PASS	170	verify.sh	rc ok, orph clean (#4596 PR #4603)
 custom-resource-noecho-nested	2026-10-05T18:42:03Z	PASS	957	verify.sh	rc ok, orph clean (#2115 PR #4589)
-custom-resource-provider	2026-10-05T18:24:22Z	PASS	732	verify.sh	rc ok, orph clean (#2115 PR #4589)
+custom-resource-provider	2026-10-06T03:59:28Z	PASS	752	verify.sh	rc ok, orph clean (#4596 PR #4603)
 custom-resource-resolved-secret	2026-10-05T18:18:01Z	PASS	351	verify.sh	rc ok, orph clean (#2115 PR #4589)
 data-analytics	2026-09-29T12:11:12Z	PASS	226	verify.sh	rc ok, orph clean; PR #4069 (#2177 Glue masker) head 3f6b908e9
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
