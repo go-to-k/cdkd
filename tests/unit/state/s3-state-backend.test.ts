@@ -2277,6 +2277,35 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
       expect(body.segments[0].failedOperations[0].physicalIdRecoveredFromError).toBe(true);
     });
 
+    it('writes a kept op the caller demoted back demoted, and leaves the others proven', async () => {
+      const proven = (id: string) => ({ ...fop(id), physicalId: `${id}-stream`, physicalIdRecoveredFromError: true });
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [{ ...segment('no-rollback-failure'), failedOperations: [proven('Demoted'), proven('Kept')] }],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+
+      await backend.reduceRollbackJournalToFailedOperations(
+        'S',
+        'us-east-1',
+        () => true,
+        [],
+        (o) => o.logicalId === 'Demoted'
+      );
+
+      const flags = Object.fromEntries(
+        putBody().segments[0].failedOperations.map((o: { logicalId: string; physicalIdRecoveredFromError: boolean }) => [
+          o.logicalId,
+          o.physicalIdRecoveredFromError,
+        ])
+      );
+      expect(flags).toEqual({ Demoted: false, Kept: true });
+    });
+
     it('drops a restored-outputs snapshot from a kept segment', async () => {
       s3Client.send.mockResolvedValueOnce({
         Body: rawBody({

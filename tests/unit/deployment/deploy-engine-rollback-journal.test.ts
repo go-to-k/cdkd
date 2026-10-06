@@ -1851,6 +1851,38 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(warned.some((w) => w.includes('Skipping failed CREATE of Orphan'))).toBe(true);
     });
 
+    it("the stack's own record in the listing is not another holder: the orphan is deleted", async () => {
+      const engine = noChangeEngine();
+      const backend = (
+        engine as unknown as {
+          stateBackend: { getState: ReturnType<typeof vi.fn>; listStacks: ReturnType<typeof vi.fn> };
+        }
+      ).stateBackend;
+      backend.listStacks.mockResolvedValue([{ stackName, region: 'us-east-1' }]);
+      const own = backend.getState.getMockImplementation()! as (...a: unknown[]) => Promise<unknown>;
+      // A stale copy of this stack's own record naming the orphan's id: the
+      // classifier judges this stack, the scan only the others.
+      backend.getState.mockImplementation(async (name: string, region: string) => {
+        const got = (await own(name, region)) as { state: Record<string, unknown> } | null;
+        return got && backend.listStacks.mock.calls.length > 0
+          ? {
+              ...got,
+              state: {
+                ...got.state,
+                resources: { Stale: { physicalId: 'orphan-stream', resourceType: 'AWS::Kinesis::Stream' } },
+              },
+            }
+          : got;
+      });
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+
+      const result = await engine.deploy(stackName, template);
+
+      expect(backend.listStacks).toHaveBeenCalled();
+      expect(orphanDeletes(engine)).toHaveLength(1);
+      expect(result.deleteSkipped).toBe(0);
+    });
+
     it('a state record the scan cannot read keeps the entry (fail closed)', async () => {
       const engine = noChangeEngine();
       const backend = (

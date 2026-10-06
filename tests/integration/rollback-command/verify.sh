@@ -996,8 +996,14 @@ if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNA
   echo "[verify] FAIL: rollback journal still present after the fix-forward deploy"
   exit 1
 fi
+# Both streams exist in AWS before the fixture touches either: the earlier one
+# warned about and left, the fix-forward one created.
 if ! aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" >/dev/null; then
   echo "[verify] FAIL: the earlier attempt's ${ORPHAN_STREAM_NAME} is gone -- the fix-forward deploy was expected to leave it"
+  exit 1
+fi
+if ! aws kinesis describe-stream-summary --stream-name "${FIX_FORWARD_STREAM_NAME}" --region "${REGION}" >/dev/null; then
+  echo "[verify] FAIL: the fix-forward stream ${FIX_FORWARD_STREAM_NAME} does not exist after the fix-forward deploy"
   exit 1
 fi
 FF_PID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.OrphanStream.physicalId // "<absent>"')"

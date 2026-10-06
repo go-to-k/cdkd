@@ -254,6 +254,26 @@ describe('makeForeignHolderScan (go-to-k/cdkd#4600)', () => {
     expect(stateBackend.listStacks).toHaveBeenCalledTimes(1);
   });
 
+  it('skips a record entry without a string type or physical id', async () => {
+    const ask = makeForeignHolderScan(
+      {
+        listStacks: vi.fn().mockResolvedValue([{ stackName: 'Other', region: REGION }]),
+        getState: vi.fn().mockResolvedValue({
+          state: {
+            resources: {
+              NoType: { physicalId: 'x' },
+              NumericType: { resourceType: 7, physicalId: 'x' },
+              NoId: { resourceType: 'AWS::Kinesis::Stream' },
+              Null: null,
+            },
+          },
+        }),
+      } as never,
+      REGION
+    )({ stackName: 'Self', region: REGION });
+    expect(await ask('AWS::Kinesis::Stream', 'x')).toBeUndefined();
+  });
+
   it('a listing or a record it cannot read answers for every question (fail closed)', async () => {
     const unlisted = makeForeignHolderScan(
       { listStacks: vi.fn().mockRejectedValue(new Error('denied')), getState: vi.fn() } as never,
