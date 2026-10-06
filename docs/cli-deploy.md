@@ -527,6 +527,37 @@ flag was reported as *missing from state*, with advice to drop the flag for a
 resource whose broken row was the reason it could not be recreated, and a row
 with no `resourceType` reached the confirmation prompt with no type to show.
 
+## A skipped custom-resource delete
+
+A deploy deletes a custom resource when it leaves the template, is replaced,
+or is rolled back (by the deploy itself or by `cdkd rollback`). That delete is
+skipped, as on `cdkd destroy`, when the handler answers `FAILED`, the invoke
+does not complete, or the recorded `ServiceToken` is the redaction mask `***`
+or a `{{resolve:...}}` reference.
+The remedy differs from destroy's, because the stack is still deployed:
+
+- **Removed from the template**: the record is kept and the deploy exits `2`.
+  The next `cdkd deploy` sends the `Delete` again, so fix the handler (or put
+  the provider's ARN back as `ServiceToken` in `state.json`) and re-deploy.
+  If the handler's Lambda function is gone by then, that deploy drops the
+  record with a warning; tear down what the handler manages by hand.
+  `--allow-unaddressed` lets a deploy exit `0` meanwhile (`cdkd rollback` has
+  no such flag).
+- **Replaced delete-first, or rolled back**: the resource usually fails and the
+  record is kept.
+- **Where the other copy already exists** (a replacement that created the new
+  resource first, or a rollback that re-created the old one first): the skip
+  only warns, and the surviving copy is no longer tracked; tear it down by hand.
+
+Do not run `cdkd state orphan '<stack>'` to clear such a record. It drops the
+record of every resource in the stack, so the next deploy re-creates or
+collides with all of them. That command is the remedy only on
+[`cdkd destroy`](cli-destroy.md), where the stack's other records are already
+gone. The same holds for a `ServiceToken` that is not a string (a leaked
+intrinsic): a create or update reads it from the template, and a rollback
+replays the recorded value, so fix the template and re-deploy. A delete reads
+the state record: restore the ARN in `state.json`.
+
 ## Exit codes
 
 | Code | Meaning |

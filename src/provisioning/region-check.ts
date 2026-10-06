@@ -216,7 +216,9 @@ export interface DeleteContext {
    * leaves it `DELETE_FAILED` (so the record is kept and the run exits 2),
    * while an UPDATE ignores delete failures in its cleanup phase (so the
    * deploy keeps its warn-and-drop). `CustomResourceProvider.delete` reads it
-   * on its backing-Lambda-gone arm.
+   * on its backing-Lambda-gone arm, and to choose a skip warning's remedy:
+   * `cdkd state orphan <stack>` only here, since on a deploy it would drop the
+   * records of the stack's live resources (go-to-k/cdkd#4596).
    */
   stackDestroy?: boolean | undefined;
 }

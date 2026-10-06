@@ -277,6 +277,11 @@ export const CR_BACKING_LAMBDA_GONE_SKIP_REASON =
  * exits non-zero, but the handler is never reached. So the record is described
  * here as what it actually is — a POINTER to something that has to be torn
  * down by hand — rather than as a retry that will not happen.
+ *
+ * Printed only on a STACK DESTROY (`DeleteContext.stackDestroy`): its
+ * `cdkd state orphan` remedy is safe only once the stack's other records are
+ * gone. Every other delete names {@link CR_DEPLOY_HANDLER_SKIP_REMEDY}
+ * instead (go-to-k/cdkd#4596).
  */
 const CR_SKIP_NOT_A_RETRY_CAVEAT =
   `NOTE this record is a POINTER, not a retry: the same destroy run deletes the backing Lambda, ` +
@@ -289,6 +294,117 @@ const DEPLOY_SKIP_CAVEAT =
   `removed from the template behaves like destroy — the record is KEPT and the next deploy ` +
   `re-attempts it — but a REPLACEMENT / rollback delete FAILS the resource instead ` +
   `(https://github.com/go-to-k/cdkd/issues/1762), leaving the old one untracked; there, tear the resource down by hand.`;
+
+/**
+ * go-to-k/cdkd#4596: the remedy a custom-resource skip names when the delete
+ * is NOT part of a stack destroy — a `cdkd deploy` template removal,
+ * replacement or rollback (`DeleteContext.stackDestroy` absent).
+ *
+ * The destroy-side advice, `cdkd state orphan <stack>`, is safe there only
+ * because the destroy has already deleted every other record. Here the stack
+ * is still deployed, so that command drops the record of every LIVE resource
+ * in it and the next deploy re-creates or collides with all of them; and
+ * `cdkd orphan '<stack>/<path>'` needs the construct the deploy just removed.
+ * The escapes that do exist on this path: the template-removal delete KEEPS
+ * the record (`deploy-engine/delete.ts`), so the next deploy re-attempts it;
+ * the backing-Lambda-gone arm DROPS the record outside a stack destroy;
+ * `--allow-unaddressed` forces exit 0. A delete-first replacement or a
+ * rollback delete usually fails the resource and keeps the record (issue
+ * #1762); where the other copy already exists (a create-first replacement, a
+ * rollback that re-created the old one first) it only warns, leaving the
+ * surviving copy untracked.
+ */
+const CR_DEPLOY_NO_STATE_ORPHAN =
+  `Do NOT run 'cdkd state orphan <stack>' on a stack that is still deployed to clear this record: ` +
+  `it drops the record of EVERY resource in the stack, so the next deploy re-creates or collides with all of them.`;
+
+const CR_DEPLOY_SKIP_TAIL =
+  `Meanwhile 'cdkd deploy --allow-unaddressed' exits 0 (a deploy-only flag; 'cdkd rollback' has none); ` +
+  `the record stays and each deploy re-attempts the delete. ` +
+  `A delete-first REPLACEMENT or a rollback delete usually FAILS the resource and keeps the record ` +
+  `(https://github.com/go-to-k/cdkd/issues/1762). Where the other copy already exists (a replacement that ` +
+  `created the new resource first, or a rollback that re-created the old one first), the skip only warns ` +
+  `and the surviving copy is no longer tracked, so tear it down by hand. ` +
+  CR_DEPLOY_NO_STATE_ORPHAN;
+
+/** The handler-FAILED and invoke-failed arms, outside a stack destroy. */
+const CR_DEPLOY_HANDLER_SKIP_REMEDY =
+  `This delete is not part of a stack destroy (a 'cdkd deploy' template removal, replacement or rollback, or a 'cdkd rollback'). ` +
+  `For a resource removed from the template the record is KEPT and the next 'cdkd deploy' re-sends the Delete: ` +
+  `fix what made it fail (the handler's Delete logic, or what stopped the invoke) and re-deploy. That reaches ` +
+  `the handler only while its function exists: if this deploy also deleted the backing Lambda, the next deploy ` +
+  `finds it gone and DROPS the record with a warning, so tear down what the handler manages by hand. ` +
+  CR_DEPLOY_SKIP_TAIL;
+
+/** The masked and `{{resolve:...}}` ServiceToken arms, outside a stack destroy. */
+const CR_DEPLOY_UNADDRESSABLE_REMEDY =
+  `This delete is not part of a stack destroy (a 'cdkd deploy' template removal, replacement or rollback, or a 'cdkd rollback'). ` +
+  `For a resource removed from the template the record is KEPT and every 'cdkd deploy' skips it again until ` +
+  `ServiceToken is restored: put the provider's Lambda function or SNS topic ARN back in state.json and ` +
+  `re-deploy, which sends the Delete while that handler exists. If its Lambda function is gone, that deploy ` +
+  `DROPS the record with a warning instead, so tear down what the handler manages by hand. ` +
+  CR_DEPLOY_SKIP_TAIL;
+
+/** The masked and `{{resolve:...}}` ServiceToken arms, on a stack destroy. */
+const CR_DESTROY_UNADDRESSABLE_REMEDY =
+  `Tear the resource down by hand, then clear the stack's records with 'cdkd state orphan <stack> --stack-region <region>' — that command ` +
+  `drops EVERY record for the stack in that region, not just this one. Restoring ServiceToken (the ` +
+  `provider's Lambda function or SNS topic ARN) in state.json and re-running helps only ` +
+  `while that handler still exists: a destroy goes on to delete its backing Lambda.`;
+
+/**
+ * The handler-FAILED / invoke-failed tail for this delete's phase
+ * (go-to-k/cdkd#4596), starting with its own separator. "KEEPING the state
+ * record" is stated only on a stack destroy: on a deploy a create-first
+ * replacement's cleanup skip only warns and the record is replaced, so the
+ * deploy remedy scopes the kept record to a template removal instead.
+ */
+function handlerSkipRemedy(context: DeleteContext | undefined): string {
+  return context?.stackDestroy === true
+    ? ` — cdkd is KEEPING the state record and the run exits non-zero. ${CR_SKIP_NOT_A_RETRY_CAVEAT}`
+    : `. ${CR_DEPLOY_HANDLER_SKIP_REMEDY}`;
+}
+
+/**
+ * The cause and recovery an unresolved (non-string) ServiceToken names on
+ * update (go-to-k/cdkd#4596). A deploy update reads ServiceToken from the NEW
+ * template-resolved bag (`deploy-engine/update-in-place.ts`); the only caller
+ * reading a recorded value is a rollback, through the journal's copy of the
+ * previous state record. `cdkd drift --revert` never reaches this provider:
+ * it skips custom resources (#323). A re-import changes none of these inputs,
+ * so the fix is the template. The stack is deployed, so never
+ * `cdkd state orphan <stack>`.
+ */
+const CR_UNRESOLVED_TOKEN_UPDATE_REMEDY =
+  `This indicates an unresolved value in the template, or, on a rollback, in the resource's recorded ` +
+  `state. Check that the template resolves ServiceToken to the provider's Lambda function or SNS topic ` +
+  `ARN and re-deploy; a rollback replays the recorded value, so restore the template and re-deploy ` +
+  `instead. ${CR_DEPLOY_NO_STATE_ORPHAN}`;
+
+/**
+ * The create-side cause and recovery. A create reads the template-resolved
+ * bag, or on a rollback the value the journal recorded; neither has a record
+ * to repair, and a first deploy has no deployed stack to warn about.
+ */
+const CR_UNRESOLVED_TOKEN_CREATE_REMEDY =
+  `This indicates an unresolved value in the template, or, on a rollback, in the resource's recorded ` +
+  `state. Check that the template resolves ServiceToken to the provider's Lambda function or SNS topic ` +
+  `ARN; a rollback replays the recorded value, so restore the template and re-deploy instead.`;
+
+/** The same recovery on delete, by phase (go-to-k/cdkd#4596). */
+function unresolvedTokenDeleteRemedy(context: DeleteContext | undefined): string {
+  return context?.stackDestroy === true
+    ? `re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover.`
+    : `put the provider's Lambda function or SNS topic ARN back as ServiceToken in state.json and ` +
+        `re-run to recover. ${CR_DEPLOY_NO_STATE_ORPHAN}`;
+}
+
+/** The masked / reference ServiceToken remedy for this delete's phase (go-to-k/cdkd#4596). */
+function unaddressableServiceTokenRemedy(context: DeleteContext | undefined): string {
+  return context?.stackDestroy === true
+    ? CR_DESTROY_UNADDRESSABLE_REMEDY
+    : CR_DEPLOY_UNADDRESSABLE_REMEDY;
+}
 
 /**
  * CloudFormation Custom Resource Response format
@@ -1631,8 +1747,7 @@ export class CustomResourceProvider implements ResourceProvider {
     if (typeof serviceToken !== 'string') {
       throw new ProvisioningError(
         `Custom Resource ${logicalId}: ServiceToken is not a resolved string ARN (got ${typeof serviceToken}). ` +
-          `This usually indicates state was written by a pre-fix cdkd import; ` +
-          `re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover.`,
+          CR_UNRESOLVED_TOKEN_CREATE_REMEDY,
         resourceType,
         logicalId
       );
@@ -1726,8 +1841,7 @@ export class CustomResourceProvider implements ResourceProvider {
     if (typeof serviceToken !== 'string') {
       throw new ProvisioningError(
         `Custom Resource ${logicalId}: ServiceToken is not a resolved string ARN (got ${typeof serviceToken}). ` +
-          `This usually indicates state was written by a pre-fix cdkd import; ` +
-          `re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover.`,
+          CR_UNRESOLVED_TOKEN_UPDATE_REMEDY,
         resourceType,
         logicalId,
         physicalId
@@ -1807,7 +1921,8 @@ export class CustomResourceProvider implements ResourceProvider {
     // managed resource, so the region-mismatch check has no signal to act on
     // here; the underlying Lambda's region is determined by its ARN, which is
     // already encoded in the ServiceToken regardless of the cdkd client's
-    // region. The context parameter is accepted for interface conformity.
+    // region. The context is read only for `stackDestroy`: the backing-Lambda-
+    // gone outcome, and the remedy four skip warnings below name, depend on it.
     this.logger.debug(`Deleting custom resource ${logicalId}: ${physicalId} (${resourceType})`);
 
     // Issue #1770: the two arms below are SKIPS, not deletes. A custom
@@ -1851,7 +1966,7 @@ export class CustomResourceProvider implements ResourceProvider {
       throw new ProvisioningError(
         `Custom Resource ${logicalId}: ServiceToken is not a resolved string ARN (got ${typeof serviceToken}). ` +
           `This usually indicates state was written by a pre-fix cdkd import; ` +
-          `re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover.`,
+          unresolvedTokenDeleteRemedy(context),
         resourceType,
         logicalId,
         physicalId
@@ -1872,12 +1987,9 @@ export class CustomResourceProvider implements ResourceProvider {
           safeMsg`mask '${SECRET_MASK}' (a NoEcho value this resource reads equals, or is contained ` +
           `in, its ServiceToken), so cdkd cannot address the handler; skipping deletion — ` +
           `anything this custom resource manages is LEFT IN PLACE. Re-deploying does not repair ` +
-          `the record while that attribute still carries the value. Tear the resource down by ` +
-          `hand, then clear the stack's records with 'cdkd state orphan <stack> --stack-region <region>' — that command ` +
-          `drops EVERY record for the stack in that region, not just this one. Restoring ServiceToken (the ` +
-          `provider's Lambda function or SNS topic ARN) in state.json and re-running helps only ` +
-          `while that handler still exists: a destroy goes on to delete its backing Lambda. ` +
-          safeMsg`${DEPLOY_SKIP_CAVEAT}`
+          `the record while that attribute still carries the value. ` +
+          // go-to-k/cdkd#4596: the `cdkd state orphan` remedy only on a stack destroy.
+          safeMsg`${unaddressableServiceTokenRemedy(context)}`
       );
       return { outcome: 'skipped', reason: CR_MASKED_SERVICE_TOKEN_SKIP_REASON };
     }
@@ -1898,12 +2010,8 @@ export class CustomResourceProvider implements ResourceProvider {
           `cannot address the handler; skipping deletion — anything this custom resource ` +
           `manages is LEFT IN PLACE. CloudFormation does not support secure (secretsmanager / ` +
           `ssm-secure) dynamic references in custom resources, and cdkd now refuses such a ` +
-          `template at deploy time. Tear the resource down by hand, then clear ` +
-          `the stack's records with 'cdkd state orphan <stack> --stack-region <region>' — that ` +
-          `command drops EVERY record for the stack in that region, not just this one. Restoring ServiceToken (the provider's ` +
-          `Lambda function or SNS topic ARN) in state.json and re-running helps only while that ` +
-          `handler still exists: a destroy goes on to delete its backing Lambda. ` +
-          safeMsg`${DEPLOY_SKIP_CAVEAT}`
+          `template at deploy time. ` +
+          safeMsg`${unaddressableServiceTokenRemedy(context)}`
       );
       return { outcome: 'skipped', reason: CR_REFERENCE_SERVICE_TOKEN_SKIP_REASON };
     }
@@ -1983,10 +2091,7 @@ export class CustomResourceProvider implements ResourceProvider {
         this.logger.warn(
           `Custom resource delete handler returned FAILED for ${logicalId}: ` +
             `${cfnResponse.Reason || 'Unknown reason'}. The handler reported that it did NOT ` +
-            `delete, so anything this custom resource manages is LEFT IN PLACE — cdkd is KEEPING ` +
-            `the state record and the run exits non-zero. ${CR_SKIP_NOT_A_RETRY_CAVEAT} ` +
-            `('cdkd deploy' also accepts --allow-unaddressed, which forces exit 0; ` +
-            `'cdkd destroy' has no such flag.) ${DEPLOY_SKIP_CAVEAT}`
+            `delete, so anything this custom resource manages is LEFT IN PLACE${handlerSkipRemedy(context)}`
         );
         return { outcome: 'skipped', reason: CR_DELETE_HANDLER_FAILED_SKIP_REASON };
       }
@@ -2014,8 +2119,7 @@ export class CustomResourceProvider implements ResourceProvider {
       this.logger.warn(
         `Failed to delete custom resource ${logicalId}, but continuing: ${describeAwsFailure(error).detail}. ` +
           `The Delete handler did not complete, so anything this custom resource manages may still ` +
-          `be LIVE — cdkd is KEEPING the state record and the run exits non-zero. ` +
-          `${CR_SKIP_NOT_A_RETRY_CAVEAT} ${DEPLOY_SKIP_CAVEAT}`
+          `be LIVE${handlerSkipRemedy(context)}`
       );
       return { outcome: 'skipped', reason: CR_DELETE_INVOKE_FAILED_SKIP_REASON };
     }

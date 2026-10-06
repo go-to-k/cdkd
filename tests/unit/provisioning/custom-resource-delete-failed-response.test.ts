@@ -319,9 +319,14 @@ describe('CustomResourceProvider delete: a handler that answers FAILED (issue #2
     wireHandlerResponse({ Status: 'FAILED', Reason: 'the upstream API refused the teardown' });
     const provider = makeProvider();
 
-    await provider.delete('CrResource', 'phys-123', 'Custom::CrResource', {
-      ServiceToken: SERVICE_TOKEN,
-    });
+    await provider.delete(
+      'CrResource',
+      'phys-123',
+      'Custom::CrResource',
+      { ServiceToken: SERVICE_TOKEN },
+      // The destroy-side remedy is scoped to a stack destroy (go-to-k/cdkd#4596).
+      { stackDestroy: true }
+    );
 
     expect(warnings()).not.toContain('a re-run can retry it');
     expect(warnings()).toContain('POINTER, not a retry');
