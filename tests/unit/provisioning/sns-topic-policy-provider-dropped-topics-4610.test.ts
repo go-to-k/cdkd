@@ -441,13 +441,22 @@ describe('SNSTopicPolicyProvider.delete resets each topic to its default policy 
     expect(sets().map(([arn]) => arn)).toEqual([T1]);
   });
 
-  it('refuses, non-retryably and before any write, an empty id with no listed topic ARN', async () => {
+  it('refuses, non-retryably and before any write, an empty id even when Topics lists ARNs', async () => {
     routeSend();
-    const err = await provider.delete('P', '', TYPE).catch((e: unknown) => e);
+    const err = await provider
+      .delete('P', '', TYPE, { Topics: [T1, T2] })
+      .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ProvisioningError);
-    expect((err as Error).message).toMatch(/names no SNS topic ARN and its Topics lists none either/);
+    expect((err as Error).message).toMatch(/its physical id is empty/);
+    expect((err as Error).message).toContain('cdkd state orphan');
     expect(isMarkedNonRetryable(err)).toBe(true);
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('resets a topic named by both an id ARN segment and Topics exactly once', async () => {
+    routeSend();
+    await provider.delete('P', `${T1},MyStack-Policy-XYZ`, TYPE, { Topics: [T1] });
+    expect(sets()).toEqual([[T1, defaultTopicPolicy(T1)!]]);
   });
 
   it('refuses a non-ARN id whose Topics lists no ARN, naming the by-hand reset and the record remedy', async () => {
@@ -526,6 +535,21 @@ describe('SNSTopicPolicyProvider.update edge cases (go-to-k/cdkd#4610)', () => {
     expect(sets().map(([arn]) => arn)).toEqual([T1]);
     const warned = childLogger.warn.mock.calls.map((c) => String(c[0]));
     expect(warned.some((w) => w.includes('no policy document recorded'))).toBe(true);
+  });
+
+  it('masks the non-ARN id segment warning', async () => {
+    routeSend();
+    await new SNSTopicPolicyProvider().update(
+      'P',
+      `${T1},secret-policy-name`,
+      TYPE,
+      { Topics: [T1], PolicyDocument: DOC_NEW },
+      { Topics: [{ Ref: 'X' }], PolicyDocument: DOC_OLD },
+      { maskSecrets: (t: string) => t.split('secret-policy-name').join('***') }
+    );
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0]));
+    expect(warned.some((w) => w.includes('may still carry') && w.includes('***'))).toBe(true);
+    expect(warned.some((w) => w.includes('secret-policy-name'))).toBe(false);
   });
 
   it('masks the "no recorded document" warning', async () => {

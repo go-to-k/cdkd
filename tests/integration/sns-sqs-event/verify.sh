@@ -212,7 +212,12 @@ fi
 # The baseline must not already carry the statement under test, or the
 # "reset to the baseline" checks below would pass on a policy never removed.
 for _arn in "${POLICY_TOPIC_A_ARN}" "${POLICY_TOPIC_B_ARN}"; do
-  if [ "$(policy_sid_count "${_arn}")" != "0" ]; then
+  _n=$(policy_sid_count "${_arn}") || _n=""
+  if [ -z "${_n}" ]; then
+    echo "FAIL: could not read the policy of ${_arn} before Phase 1" >&2
+    exit 1
+  fi
+  if [ "${_n}" != "0" ]; then
     echo "FAIL: ${_arn} already carries the ${POLICY_SID} statement before Phase 1" >&2
     exit 1
   fi

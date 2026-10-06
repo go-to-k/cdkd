@@ -246,18 +246,32 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     this.logger.debug(`Deleting SNS topic policy ${logicalId}: ${physicalId}`);
 
     const named = splitTopicArns(physicalId);
+    // An empty id records no write at all: refuse it rather than widen it to
+    // the Topics list (returning normally would read as DELETED).
+    if (named.length === 0) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Failed to delete SNS topic policy ${logicalId}: its physical id is empty, so cdkd changed no ` +
+            `topic. Set each topic the policy is attached to back to its default policy by hand, then ` +
+            `drop the record with ${stateOrphanRecordRemedy(context, logicalId)}.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
     // An id that names only topic ARNs is the written set: exactly those. A
     // failed create's mark is always that shape, so it never widens. Any
-    // other id falls back to the literal topic ARNs its Topics lists.
-    const topicArns =
-      named.length > 0 && named.every((arn) => isSnsTopicArn(arn))
-        ? named
-        : [
-            ...new Set([
-              ...named.filter((arn) => isSnsTopicArn(arn)),
-              ...listedTopics(properties ?? {}),
-            ]),
-          ];
+    // other id (a policy NAME) falls back to the literal topic ARNs its
+    // Topics lists.
+    const topicArns = named.every((arn) => isSnsTopicArn(arn))
+      ? named
+      : [
+          ...new Set([
+            ...named.filter((arn) => isSnsTopicArn(arn)),
+            ...listedTopics(properties ?? {}),
+          ]),
+        ];
     // Refuse before any write when nothing is addressable: returning normally
     // reads as DELETED, and the policy may still be on its topics.
     if (topicArns.length === 0) {
