@@ -1477,6 +1477,8 @@ DeployEngine.prototype.maskForResource = maskingMixin.maskForResource;
 DeployEngine.prototype.secretNameBagFor = maskingMixin.secretNameBagFor;
 DeployEngine.prototype.noteSecretNamedRecord = maskingMixin.noteSecretNamedRecord;
 DeployEngine.prototype.printingSecretsFor = maskingMixin.printingSecretsFor;
+DeployEngine.prototype.namingSecretsFor = maskingMixin.namingSecretsFor;
+DeployEngine.prototype.noteSecretNamedReads = maskingMixin.noteSecretNamedReads;
 
 DeployEngine.prototype.kickOffObservedCapture = observedCaptureMixin.kickOffObservedCapture;
 DeployEngine.prototype.drainObservedCaptures = observedCaptureMixin.drainObservedCaptures;

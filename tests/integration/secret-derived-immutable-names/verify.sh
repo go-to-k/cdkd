@@ -187,6 +187,16 @@ cleanup() {
       fi
       aws iam delete-role --role-name "${role}" >/dev/null 2>&1
     done
+    # SecretPolicy, once detached above, with its non-default versions
+    # (the update adds one), so a destroy that failed part-way leaves no
+    # orphan policy (go-to-k/cdkd#3869 added its attachment).
+    if [ -n "${POLICY_ARN:-}" ]; then
+      for version in $(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
+        --query 'Versions[?!IsDefaultVersion].VersionId' --output text 2>/dev/null); do
+        aws iam delete-policy-version --policy-arn "${POLICY_ARN}" --version-id "${version}" >/dev/null 2>&1
+      done
+      aws iam delete-policy --policy-arn "${POLICY_ARN}" >/dev/null 2>&1
+    fi
     if [ -n "${PLAIN_TARGET_QUEUE_URL:-}" ]; then
       aws sqs delete-queue --region "${REGION}" --queue-url "${PLAIN_TARGET_QUEUE_URL}" >/dev/null 2>&1
     fi
@@ -532,8 +542,10 @@ fi
 # By NAME, with indirect expansion, so a red names the variable that hit and the
 # log lines it is on (never its value, which is the secret-derived plaintext).
 # go-to-k/cdkd#3869: the readers of SecretQueue and SecretPolicy resolve on
-# the update too (the diff pass and the QueuePolicy's own update), so the
-# QUEUE_NAME and POLICY_PATH needles below cover what they read.
+# the update too, so the QUEUE_NAME and POLICY_PATH needles below cover what
+# they read. PlainScheduleRole does not change on the update, so its
+# 'Ref to resource: SecretPolicy' line comes from the DIFF pass alone, and the
+# QueuePolicy's from both passes (its Sid changes).
 expect_read_lines "${DEPLOY_LOG}" "update"
 for needle_var in STAGE_NAME SERVICE_NAME POLICY_PATH POLICY_DESC GQL_API_NAME DS_NAME QUEUE_NAME FILTER_NAME_ROTATED GROUP_NAME; do
   # A here-string, not a pipe: see state_holds.

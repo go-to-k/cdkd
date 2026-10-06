@@ -17,6 +17,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
+import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
 
@@ -203,6 +204,62 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     expect(replaced[0]).not.toContain(newId);
   });
 
+  it('CREATE: a name resolved this deploy and rewritten by its provider is masked WHILE it is created', async () => {
+    // The resolver records the secret into the pass's bag, as the real one
+    // does for a `{{resolve:...}}` reference; the provider then derives the
+    // name it creates from it, which is no recorded plaintext.
+    const secret = 'alice@example.com';
+    resolveSpy.mockImplementation((value: unknown, ctx: { recordedSecretValues?: Map<string, string> }) => {
+      if (value && typeof value === 'object' && 'RoleName' in (value as object)) {
+        ctx.recordedSecretValues?.set(secret, REF);
+        return Promise.resolve({ ...(value as object), RoleName: secret });
+      }
+      return Promise.resolve(value);
+    });
+    stateBackend.getState!.mockResolvedValue({ state: null, etag: undefined });
+    const desired = { RoleName: 'placeholder' };
+    diffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Role',
+          { logicalId: 'Role', changeType: 'CREATE', resourceType: 'AWS::IAM::Role', desiredProperties: desired },
+        ],
+      ])
+    );
+    let providerLine: string | undefined;
+    provider.create!.mockImplementation(() => {
+      providerLine = currentLogLineMasker()?.('Creating role alice-example-com');
+      return Promise.resolve({ physicalId: 'alice-example-com' });
+    });
+
+    await makeEngine().deploy(stackName, {
+      Resources: { Role: { Type: 'AWS::IAM::Role', Properties: desired } },
+    });
+
+    expect(provider.create).toHaveBeenCalledTimes(1);
+    expect(providerLine).toBe('Creating role ***');
+  });
+
+  it("a replacement's `Deleting old <id>` line withholds the old id", async () => {
+    const template = primeRoleUpdate(REF);
+    const change = (
+      (await diffCalculator.calculateDiff!()) as Map<string, ResourceChange>
+    ).get('Role')!;
+    change.propertyChanges = [
+      { path: 'RoleName', oldValue: REF, newValue: `${REF}x`, requiresReplacement: true },
+    ];
+    diffCalculator.calculateDiff!.mockResolvedValue(new Map([['Role', change]]));
+    provider.create!.mockResolvedValue({ physicalId: 'replacement-role-qz' });
+
+    await makeEngine()
+      .deploy(stackName, template)
+      .catch(() => undefined);
+
+    const deleting = logLines.filter((line) => line.includes('Deleting old Role'));
+    expect(deleting).toHaveLength(1);
+    expect(deleting[0]).not.toContain(ROLE_ID);
+  });
+
   it('negative control: an ordinary name binds nothing to mask', async () => {
     const template = primeRoleUpdate('plain-role-name');
     let masker: unknown = 'unset';
@@ -274,6 +331,102 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     );
   });
 
+  it.each([
+    ['AWS::CloudFormation::Stack', true],
+    ['AWS::IAM::Role', false],
+  ])('a %s row resolves with a print-only bag: %s', async (type, printOnly) => {
+    // A nested-stack row's own bag is its child's `inheritedSecrets`, so a
+    // read of a secret-named resource must not record into it.
+    stateBackend.getState!.mockResolvedValue({ state: null, etag: undefined });
+    diffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        ['Role', { logicalId: 'Role', changeType: 'CREATE', resourceType: type, desiredProperties: { A: 'b' } }],
+      ])
+    );
+    const contexts: Array<Record<string, unknown>> = [];
+    resolveSpy.mockImplementation((value: unknown, ctx: Record<string, unknown>) => {
+      contexts.push(ctx);
+      return Promise.resolve(value);
+    });
+
+    await makeEngine()
+      .deploy(stackName, { Resources: { Role: { Type: type, Properties: { A: 'b' } } } })
+      .catch(() => undefined);
+
+    const provisioning = contexts.filter((ctx) => Array.isArray(ctx['redactedAttributeReads']));
+    expect(provisioning).toHaveLength(1);
+    expect(provisioning[0]!['printingSecrets'] instanceof Map).toBe(printOnly);
+  });
+
+  it('a name taken from a NoEcho parameter is judged secret-derived too', () => {
+    const engine = makeEngine();
+    const noEcho = new Map<string, string>();
+    recordLogOnlyValue(noEcho, 'noecho-bucket-name');
+    (engine as unknown as { fingerprintNoEchoValues: unknown }).fingerprintNoEchoValues = noEcho;
+    const resources = {
+      Bucket: {
+        physicalId: 'noecho-bucket-name',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { BucketName: 'noecho-bucket-name' },
+        dependencies: [],
+      } as ResourceState,
+    };
+    const context = engine.buildResolverContext({ template: { Resources: {} }, resources }, stackName);
+    expect([...(context.secretNameNeedles?.('Bucket') ?? [])]).toContain('noecho-bucket-name');
+  });
+
+  it('a template DELETE carries what its record read from a secret-named resource', async () => {
+    // An instance profile the template dropped resolves nothing, yet its
+    // record holds the role name it once read, which its provider prints.
+    stateBackend.getState!.mockResolvedValue({
+      state: {
+        version: 8,
+        stackName,
+        region: 'us-east-1',
+        resources: {
+          Role: {
+            physicalId: ROLE_ID,
+            resourceType: 'AWS::IAM::Role',
+            properties: { RoleName: REF },
+          },
+          Profile: {
+            physicalId: 'profile-1',
+            resourceType: 'AWS::IAM::InstanceProfile',
+            properties: { Roles: [ROLE_ID] },
+          },
+        },
+        outputs: {},
+        lastModified: 1,
+      },
+      etag: 'etag-old',
+    });
+    diffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Profile',
+          {
+            logicalId: 'Profile',
+            changeType: 'DELETE',
+            resourceType: 'AWS::IAM::InstanceProfile',
+            currentProperties: { Roles: [ROLE_ID] },
+          },
+        ],
+      ])
+    );
+    let providerLine: string | undefined;
+    provider.delete!.mockImplementation(() => {
+      providerLine = currentLogLineMasker()?.(`Removed role ${ROLE_ID} from instance profile`);
+      return Promise.resolve(undefined);
+    });
+
+    await makeEngine().deploy(stackName, {
+      Resources: { Role: { Type: 'AWS::IAM::Role', Properties: { RoleName: REF } } },
+    });
+
+    expect(provider.delete).toHaveBeenCalledTimes(1);
+    expect(providerLine).toBe('Removed role *** from instance profile');
+  });
+
   it('the masked-input fingerprint pass and the outputs pass carry no needle callback', async () => {
     const engine = makeEngine();
     const template: CloudFormationTemplate = {
@@ -284,16 +437,19 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
       parameterInput: () => ({ kind: 'clean' }),
       bound: {},
     };
-    const contexts: Array<Record<string, unknown>> = [];
+    let contexts: Array<Record<string, unknown>> = [];
     resolveSpy.mockImplementation((value: unknown, ctx: Record<string, unknown>) => {
       contexts.push(ctx);
       return Promise.resolve(value);
     });
 
+    // Each pass on its own, so neither can satisfy the other's floor.
     await engine.maskedInputSources(template, {}, undefined, stackName)!.resolve('v');
+    expect(contexts.length).toBeGreaterThanOrEqual(1);
+    for (const ctx of contexts) expect(ctx).not.toHaveProperty('secretNameNeedles');
+    contexts = [];
     await engine.resolveOutputs(template, {}, stackName, template);
-
-    expect(contexts.length).toBeGreaterThanOrEqual(2);
+    expect(contexts.length).toBeGreaterThanOrEqual(1);
     for (const ctx of contexts) expect(ctx).not.toHaveProperty('secretNameNeedles');
     // The control: an ordinary context does carry it.
     expect(

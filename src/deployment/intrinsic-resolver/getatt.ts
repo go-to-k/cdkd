@@ -25,6 +25,7 @@ import {
   carriesSecretMask,
   crossStackSourceKey,
   recordFreshNoEchoValuesIn,
+  MIN_NEEDLE_LENGTH,
   recordLogOnlyValue,
   splitGetAttStringForm,
   wholeStringLeavesOf,
@@ -665,12 +666,24 @@ export function recordSecretNamedRead(
   value: unknown,
   context: ResolverContext
 ): void {
-  const bag = context.recordedSecretValues;
+  // A context carrying a print-only bag records there instead: the deploy
+  // engine gives one only to a nested-stack row, whose own bag seeds the
+  // child's decisions (`printNestedStackReadsOnly`).
+  const bag = context.printingSecrets ?? context.recordedSecretValues;
   if (bag === undefined || context.secretNameNeedles === undefined) return;
   const needles = context.secretNameNeedles(logicalId);
   if (needles === undefined) return;
   for (const needle of needles) recordLogOnlyValue(bag, needle);
-  for (const leaf of wholeStringLeavesOf(value)) recordLogOnlyValue(bag, leaf);
+  // A leaf only when it carries a needle (an ARN or URL around the name), so
+  // an unrelated attribute (`Endpoint.Port`'s `5432`) masks nothing.
+  for (const leaf of wholeStringLeavesOf(value)) {
+    for (const needle of needles) {
+      if (leaf === needle || (needle.length >= MIN_NEEDLE_LENGTH && leaf.includes(needle))) {
+        recordLogOnlyValue(bag, leaf);
+        break;
+      }
+    }
+  }
 }
 
 /**

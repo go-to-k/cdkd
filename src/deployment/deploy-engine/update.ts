@@ -46,6 +46,7 @@ import {
   possiblyMaskedKeys,
   recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
+import { printNestedStackReadsOnly } from './resolver-context.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -138,10 +139,18 @@ export async function provisionUpdate(
   // shared catch with an empty bag.
   const updateSecrets = context.recordedSecretValues ?? new Map<string, string>();
   this.perResourceSecrets.set(logicalId, updateSecrets);
+  printNestedStackReadsOnly(context, resourceType);
   const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
     string,
     unknown
   >;
+  // go-to-k/cdkd#3869: the name this deploy resolved, before the provider
+  // prints it (a rename, or a replacement's new resource).
+  this.noteSecretNamedRecord(logicalId, {
+    resourceType,
+    physicalId: stateResources[logicalId]?.physicalId,
+    properties: resolvedProps,
+  });
   // The #2274 refusal of a redacted read runs BELOW the no-change skip
   // (go-to-k/cdkd#3662), not here; see the note at that call.
   // Same position source on the UPDATE path (#1904).

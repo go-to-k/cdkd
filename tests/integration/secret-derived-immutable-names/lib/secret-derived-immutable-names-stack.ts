@@ -187,11 +187,11 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       },
     });
 
-    // Both schedules target this queue, whose name is NOT secret-derived: a
-    // `Fn::GetAtt` of the secret-named SecretQueue is resolved on an engine
-    // debug line that prints the ARN, name and all (go-to-k/cdkd#3869's open
-    // residual), which the update log's plaintext check would then catch. The
-    // shared target also leaves only the ROLE to tell the two schedules apart.
+    // Both schedules target this queue, whose name is NOT secret-derived, so
+    // each schedule's recorded target is a readable ARN the identity match
+    // compares; a `Fn::GetAtt` of the secret-named SecretQueue is exercised by
+    // SecretQueueReaderPolicy instead (go-to-k/cdkd#3869). The shared target
+    // also leaves only the ROLE to tell the two schedules apart.
     const plainTargetQueue = new sqs.CfnQueue(this, 'PlainTargetQueue', {});
     const scheduleRole = new iam.CfnRole(this, 'ScheduleRole', {
       assumeRolePolicyDocument: {

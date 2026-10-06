@@ -16,7 +16,7 @@ import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { DEFAULT_RESOURCE_TIMEOUT_MS, DEFAULT_RESOURCE_WARN_AFTER_MS } from './options.js';
 import { isReplacementCeiling } from '../deploy-value-equality.js';
 import { withResourceDeadline } from '../resource-deadline.js';
-import { maskSecretsInError } from '../secret-redaction.js';
+import { maskSecretsInError, maskSecretsInText } from '../secret-redaction.js';
 import {
   type NestedChildUnaddressed,
   collectNestedChildUnaddressed,
@@ -192,6 +192,12 @@ export async function provisionResource(
   // its id when its name came from a secret. Judged from the persisted
   // record here; the new one is judged after the body, with this deploy's bag.
   this.noteSecretNamedRecord(logicalId, stateResources[logicalId]);
+  // A DELETE resolves nothing, so what its record read from a secret-named
+  // resource is carried here; CREATE / UPDATE record it as they resolve, and
+  // register their own new name right after resolving (create.ts / update.ts).
+  if (change.changeType === 'DELETE') {
+    this.noteSecretNamedReads(logicalId, stateResources[logicalId], stateResources);
+  }
   // Bound around the whole body as a PRINTING bag, by reference: every line
   // logged for this resource (the engine's own `Deleting old ... (<id>)`, a
   // provider's) masks the registry's needles, one registered mid-body too.
@@ -245,7 +251,10 @@ export async function provisionResource(
             // only what THIS run resolved for the row: a template DELETE
             // resolves nothing, so its id goes out as destroy and `cdkd state`
             // show it, and an old id derived from a since-rotated secret is
-            // not in the new bag either.
+            // not in the new bag either. The derived-name registry
+            // (go-to-k/cdkd#3869) is NOT applied to this FIELD, like every
+            // other event's `physicalId`: it is the id a cleanup needs, and
+            // after a replacement no record holds it any more.
             for (const guard of deleteGuards.splice(0)) {
               this.recordEvent({
                 eventType: 'RESOURCE_GUARD_INDETERMINATE',
@@ -255,7 +264,10 @@ export async function provisionResource(
                 resourceType: guard.resourceType,
                 ...(guard.provisionedBy && { provisionedBy: guard.provisionedBy }),
                 ...(guard.physicalId && {
-                  physicalId: this.maskForResource(logicalId, guard.physicalId),
+                  physicalId: maskSecretsInText(
+                    guard.physicalId,
+                    this.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS
+                  ),
                 }),
                 guard: guard.guard,
                 reason: guard.reason,
@@ -292,8 +304,6 @@ export async function provisionResource(
         }
       )
     );
-    // go-to-k/cdkd#3869: the record the body wrote, resolved this deploy.
-    this.noteSecretNamedRecord(logicalId, stateResources[logicalId]);
     // Issue #1989: the child's own rows already logged each survivor and
     // recorded its `RESOURCE_SKIPPED` (a nested child's events belong to this
     // run), so what was missing is only the COUNT. Adding it here carries it
@@ -374,9 +384,6 @@ export async function provisionResource(
     });
   } catch (error) {
     renderer.removeTask(logicalId);
-    // go-to-k/cdkd#3869: whatever record the body left, so the masked lines,
-    // event and error below withhold its id when its name came from a secret.
-    this.noteSecretNamedRecord(logicalId, stateResources[logicalId]);
     const message = error instanceof Error ? error.message : String(error);
     // Issue #2038: MASKED, and at a strictly higher log level than the retry
     // give-up summary one statement below it. `perResourceSecrets` is

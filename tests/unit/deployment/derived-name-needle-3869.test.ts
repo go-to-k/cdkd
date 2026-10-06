@@ -201,7 +201,47 @@ describe('secretNameNeedlesOf — is a record named from a secret, and what does
     expect([...(needles ?? [])]).toEqual(['Query']);
   });
 
-  it('no physical id, or an ordinary name: nothing', () => {
+  it('before an id exists: the resolved name and its derived spellings, never a reference', () => {
+    const name = 'pre-create-name';
+    const needles = secretNameNeedlesOf(
+      'Queue',
+      { resourceType: 'AWS::SQS::Queue', properties: { QueueName: name } },
+      new Map([[name, REF]])
+    );
+    expect([...(needles ?? [])]).toEqual([name]);
+    // A reference has no plaintext to spell and no id to stand in for it.
+    expect(
+      secretNameNeedlesOf(
+        'Queue',
+        { resourceType: 'AWS::SQS::Queue', properties: { QueueName: REF } },
+        undefined
+      )
+    ).toBeUndefined();
+  });
+
+  it('short names: an id EQUAL to a recorded plaintext, and no short lower-cased spelling', () => {
+    expect([
+      ...(secretNameNeedlesOf(
+        'Stage',
+        { resourceType: 'AWS::ApiGatewayV2::Stage', physicalId: 'abc', properties: {} },
+        new Map([['abc', REF]])
+      ) ?? []),
+    ]).toEqual(['abc']);
+    // `ABC` lower-cased would be a 3-character needle masking every `abc`.
+    expect([
+      ...(secretNameNeedlesOf(
+        'Stage',
+        {
+          resourceType: 'AWS::ApiGatewayV2::Stage',
+          physicalId: 'stage-id-1',
+          properties: { StageName: 'ABC' },
+        },
+        new Map([['ABC', REF]])
+      ) ?? []),
+    ]).toEqual(['ABC']);
+  });
+
+  it('nothing named from a secret: nothing', () => {
     expect(
       secretNameNeedlesOf('Queue', { resourceType: 'AWS::SQS::Queue', properties: {} }, undefined)
     ).toBeUndefined();
@@ -306,6 +346,28 @@ describe('the resolver records what it read from a secret-named resource (go-to-
     expect(await new IntrinsicFunctionResolver().resolve({ 'Fn::GetAtt': ['Role', 'Arn'] }, context)).toBe(arn);
     expect(logLines.join('\n')).toContain('resolved to');
     expect(logLines.join('\n')).not.toContain('sdin-secret-path');
+  });
+
+  it('an attribute that carries no needle is not recorded (an endpoint port)', async () => {
+    const context = contextFor(true);
+    (context.resources['Queue'] as { attributes: Record<string, unknown> }).attributes = {
+      Arn: QUEUE_ARN,
+      Port: '5432',
+    };
+    await new IntrinsicFunctionResolver().resolve({ 'Fn::GetAtt': ['Queue', 'Port'] }, context);
+    expect(maskSecretsInText('port 5432', context.recordedSecretValues!)).toBe('port 5432');
+  });
+
+  it("a context carrying a print-only bag records there, never into the pass's own", async () => {
+    // The deploy engine's nested-stack row: its own bag seeds the child.
+    const context = contextFor(true);
+    const printing: Bag = new Map();
+    (context as { printingSecrets?: Bag }).printingSecrets = printing;
+    await new IntrinsicFunctionResolver().resolve({ 'Fn::GetAtt': ['Queue', 'Arn'] }, context);
+    expect(maskSecretsInText(QUEUE_ARN, context.recordedSecretValues!)).toBe(QUEUE_ARN);
+    expect(maskSecretsInText(QUEUE_ARN, printing)).not.toContain('sdin-secret-queue');
+    expect(logLines.join('\n')).toContain('resolved to');
+    expect(logLines.join('\n')).not.toContain('sdin-secret-queue');
   });
 
   it('negative control: a context without the callback prints the name', async () => {

@@ -186,6 +186,22 @@ export function buildResolverContext(
   };
 }
 
+/**
+ * Route a NESTED-STACK row's reads of a secret-named resource
+ * (go-to-k/cdkd#3869) to a print-only bag (`ResolverContext.printingSecrets`)
+ * instead of the row's own: that bag is the child's `inheritedSecrets`, where
+ * a log-only needle seeds the child's export-name verdict and would withhold
+ * an export the same template publishes at the root (security review). The
+ * row's own `resolved to` lines stay masked; its provider lines do not. A
+ * no-op for every other type.
+ */
+export function printNestedStackReadsOnly(
+  context: import('../intrinsic-function-resolver.js').ResolverContext,
+  resourceType: string
+): void {
+  if (resourceType === 'AWS::CloudFormation::Stack') context.printingSecrets = new Map();
+}
+
 /** The logical id an `Fn::GetAtt` input node reads. */
 function getAttTargetOf(node: unknown): string | undefined {
   if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined;
