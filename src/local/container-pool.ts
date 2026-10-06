@@ -135,6 +135,12 @@ interface ContainerSpecBase {
    * `--profile` was not passed (the env-var-only path stays in effect).
    */
   profileCredentialsFile?: { hostPath: string; containerPath: string };
+  /**
+   * Env keys whose VALUE must stay off the `docker run` argv — a resolved
+   * CloudFormation dynamic reference (issue #2056) is passed as a value-less
+   * `-e KEY` read from the spawn env. Unset when there are none.
+   */
+  sensitiveEnvKeys?: ReadonlySet<string>;
 }
 
 export interface ZipContainerSpec extends ContainerSpecBase {
@@ -397,6 +403,7 @@ export function createContainerPool(
           mounts: [{ hostPath: spec.codeDir, containerPath: containerCodePath, readOnly: true }],
           extraMounts,
           env: spec.env,
+          ...(spec.sensitiveEnvKeys !== undefined && { sensitiveEnvKeys: spec.sensitiveEnvKeys }),
           cmd: [spec.lambda.handler],
           hostPort,
           host: spec.containerHost,
@@ -435,6 +442,7 @@ export function createContainerPool(
             ],
           }),
           env: spec.env,
+          ...(spec.sensitiveEnvKeys !== undefined && { sensitiveEnvKeys: spec.sensitiveEnvKeys }),
           cmd: spec.command,
           hostPort,
           host: spec.containerHost,

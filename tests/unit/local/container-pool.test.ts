@@ -3,6 +3,7 @@ import {
   IN_FLIGHT_START_TIMEOUT_MS,
   createContainerPool,
   type ContainerSpec,
+  type ImageContainerSpec,
   type ZipContainerSpec,
 } from '../../../src/local/container-pool.js';
 import type { ResolvedZipLambda } from '../../../src/local/lambda-resolver.js';
@@ -91,6 +92,38 @@ describe('container-pool — basic acquire / release', () => {
     const h = await pool.acquire('Fn');
     expect(runDetached).toHaveBeenCalledWith(expect.objectContaining({ platform: 'linux/arm64' }));
     pool.release(h);
+    await pool.dispose();
+  });
+
+  // Issue #2056: a resolved `{{resolve:...}}` env value is marked sensitive
+  // on the spec; the pool must hand that set to `runDetached` on BOTH
+  // branches, which is what renders it as a value-less `-e KEY`.
+  it('threads the spec sensitiveEnvKeys into docker run, ZIP and IMAGE (issue #2056)', async () => {
+    const keys = new Set(['DB_PASSWORD']);
+    const zip = { ...makeSpec('Zip'), sensitiveEnvKeys: keys };
+    const image: ImageContainerSpec = {
+      kind: 'image',
+      lambda: makeSpec('Img').lambda as unknown as ImageContainerSpec['lambda'],
+      image: 'local/img:tag',
+      platform: 'linux/amd64',
+      command: [],
+      env: {},
+      containerHost: '127.0.0.1',
+      sensitiveEnvKeys: keys,
+    };
+    const specs = new Map<string, ZipContainerSpec | ImageContainerSpec>([
+      ['Zip', zip],
+      ['Img', image],
+    ]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+    const a = await pool.acquire('Zip');
+    const b = await pool.acquire('Img');
+    const calls = (runDetached as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => (c[0] as { sensitiveEnvKeys?: ReadonlySet<string> }).sensitiveEnvKeys
+    );
+    expect(calls).toEqual([keys, keys]);
+    pool.release(a);
+    pool.release(b);
     await pool.dispose();
   });
 

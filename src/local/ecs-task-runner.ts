@@ -4,6 +4,12 @@ import { dirname } from 'node:path';
 import { promisify } from 'node:util';
 import graphlib from 'graphlib';
 import {
+  containsDynamicReference,
+  firstUsableRegion,
+  resolveDynamicReferencesInEnv,
+} from 'cdk-local/internal';
+import { createCallerDynamicReferenceResolver } from './dynamic-reference.js';
+import {
   dockerSpawnEnvWithSensitive,
   getDockerCmd,
   partitionSensitiveEnv,
@@ -121,6 +127,19 @@ export interface RunEcsTaskOptions {
   detach: boolean;
   /** AWS region for secret resolution + metadata sidecar. */
   region?: string;
+  /**
+   * `--stack-region`: the region the task's stack lives in. A plain-name
+   * `{{resolve:...}}` reference in `Environment` resolves there ahead of the
+   * synth region and `region` (issue #2056).
+   */
+  stackRegion?: string;
+  /** `--profile`: the credentials a `{{resolve:...}}` lookup is made with. */
+  profile?: string;
+  /**
+   * The region of the `--from-state` / `--from-cfn-stack` record the task's
+   * stack was loaded from: first when resolving a plain-name `{{resolve:...}}`.
+   */
+  stateRecordRegion?: string;
   /**
    * Optional pre-resolved `ImagePlan` map — only used by tests. Production
    * callers leave undefined and let the runner walk every container's
@@ -591,13 +610,45 @@ export async function runEcsTask(
   // Every container is checked before throwing, so one run names them all.
   const finchRefusals: string[] = [];
   for (const c of task.containers) {
+    // A dynamic-reference env var (#2056) becomes plaintext before boot, so it
+    // counts here too. A same-stack one is decided from the token's syntax,
+    // before its fetch; a cross-stack one was fetched at the run-task boundary,
+    // but is still refused before anything boots.
     const refusal = finchSecretArgvRefusal(
-      c.secrets.map((s) => s.name).filter((n) => !isMalformedEnvKey(n) && !isDockerClientEnvKey(n)),
+      [
+        ...c.secrets.map((s) => s.name),
+        ...(c.resolvedDynamicReferenceKeys ?? []),
+        ...dynamicReferenceEnvKeys(c, options.envOverrides),
+      ].filter((n) => !isMalformedEnvKey(n) && !isDockerClientEnvKey(n)),
       `Container ${displayIdent(c.name)}`
     );
     if (refusal !== undefined) finchRefusals.push(refusal);
   }
   if (finchRefusals.length > 0) throw new EcsTaskRunnerError(finchRefusals.join('\n'));
+
+  // A dynamic reference in `Command` / `EntryPoint` / a health-check command
+  // would have to be resolved ONTO the `docker run` argv, where any local
+  // process can read it. Refuse instead of resolving it there or handing the
+  // container the token (issue #2056, mirroring go-to-k/cdk-local#784).
+  const argvRefusals: string[] = [];
+  for (const c of task.containers) {
+    const fields: Array<[string, string[] | undefined]> = [
+      ['Command', c.command],
+      ['EntryPoint', c.entryPoint],
+      ['HealthCheck.Command', c.healthCheck?.command],
+    ];
+    for (const [field, argv] of fields) {
+      if (argv?.some((a) => containsDynamicReference(a))) {
+        // cdkd-raw-beside-safe: `field` is one of the three literal labels above.
+        argvRefusals.push(
+          `Container ${displayIdent(c.name)}: ${field} carries a CloudFormation dynamic reference ({{resolve:...}}). ` +
+            'cdkd resolves dynamic references only in Environment, because resolving one here would put the secret on the docker run argv. ' +
+            'Move the value into an Environment variable or a Secrets entry.'
+        );
+      }
+    }
+  }
+  if (argvRefusals.length > 0) throw new EcsTaskRunnerError(argvRefusals.join('\n'));
 
   // Resolve every container's image. Production callers leave
   // `imagePlanByContainer` undefined — the resolver below walks the asset
@@ -620,6 +671,39 @@ export async function runEcsTask(
     ...(options.region !== undefined && { region: options.region }),
   });
   const secretsByContainer = groupSecretsByContainer(resolvedSecrets);
+
+  // CloudFormation dynamic references (`{{resolve:...}}`) in container
+  // `Environment` values (issue #2056), fail-fast before any network /
+  // container exists, like the Secrets above. Region: the stack owning the
+  // task definition. A key a `--env-vars` override names, or a same-name
+  // Secret replaces, is never what the container receives, so it is skipped.
+  const dynamicEnvByContainer = new Map<
+    string,
+    { env: Record<string, string>; resolvedKeys: string[] }
+  >();
+  const dynamicRefs = createCallerDynamicReferenceResolver(options.profile);
+  try {
+    for (const c of task.containers) {
+      const tokenKeys = new Set(dynamicReferenceEnvKeys(c, options.envOverrides));
+      if (tokenKeys.size === 0) continue;
+      dynamicEnvByContainer.set(
+        c.name,
+        await resolveDynamicReferencesInEnv(c.environment, {
+          region: firstUsableRegion(
+            options.stateRecordRegion,
+            options.stackRegion,
+            task.stack.region,
+            options.region
+          ),
+          label: `Container ${c.name}`,
+          skipKeys: new Set(Object.keys(c.environment).filter((k) => !tokenKeys.has(k))),
+          resolver: dynamicRefs,
+        })
+      );
+    }
+  } finally {
+    dynamicRefs.dispose();
+  }
 
   // Bring the network + sidecar up. From this point on the cleanup
   // path is non-trivial — any failure must `destroyTaskNetwork(state.network)`
@@ -702,9 +786,14 @@ export async function runEcsTask(
         `Internal: no resolved image for container '${container.name}'.`
       );
     }
+    const dynamic = dynamicEnvByContainer.get(container.name);
     const built = buildDockerRunArgs({
       task,
-      container,
+      container: dynamic ? { ...container, environment: dynamic.env } : container,
+      plaintextEnvKeys: [
+        ...(container.resolvedDynamicReferenceKeys ?? []),
+        ...(dynamic?.resolvedKeys ?? []),
+      ],
       image,
       network: state.network.networkName,
       volumeByName,
@@ -1260,6 +1349,46 @@ function randHex(bytes: number): string {
   return randomBytes(bytes).toString('hex');
 }
 
+/** Env keys a `--env-vars` override names for this container (a `null` clear included). */
+function overriddenEnvKeys(
+  overrides: RunEcsTaskOptions['envOverrides'],
+  containerName: string
+): string[] {
+  if (!overrides) return [];
+  // Only the entries `applyOverrideMap` actually APPLIES (a `null` clear or a
+  // literal): an object or array value is ignored there, so counting it here
+  // would skip the lookup and hand the container the token.
+  const applied = (map: Record<string, unknown> | undefined): string[] =>
+    Object.entries(map ?? {})
+      .filter(
+        ([, v]) =>
+          v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
+      )
+      .map(([k]) => k);
+  return [...applied(overrides['Parameters']), ...applied(overrides[containerName])];
+}
+
+/**
+ * `Environment` keys whose value holds a dynamic reference that will be
+ * resolved (issue #2056). A same-name `Secrets` entry replaces the env value
+ * in the container and a `--env-vars` override replaces it at `docker run`,
+ * so neither one's token is what the container receives; a value already
+ * resolved at the cross-stack boundary is plaintext and never re-scanned.
+ */
+function dynamicReferenceEnvKeys(
+  container: ResolvedEcsContainer,
+  overrides: RunEcsTaskOptions['envOverrides']
+): string[] {
+  const skip = new Set([
+    ...(container.resolvedDynamicReferenceKeys ?? []),
+    ...container.secrets.map((s) => s.name),
+    ...overriddenEnvKeys(overrides, container.name),
+  ]);
+  return Object.keys(container.environment).filter(
+    (k) => !skip.has(k) && containsDynamicReference(container.environment[k])
+  );
+}
+
 function groupSecretsByContainer(
   resolved: ResolvedSecret[]
 ): Map<string, { name: string; value: string }[]> {
@@ -1279,6 +1408,11 @@ interface BuildDockerRunArgs {
   network: string;
   volumeByName: Map<string, ResolvedEcsVolume & { dockerVolumeName?: string }>;
   secrets: { name: string; value: string }[];
+  /**
+   * `environment` keys holding a resolved CloudFormation dynamic reference
+   * (issue #2056): passed value-less like a resolved secret, off the argv.
+   */
+  plaintextEnvKeys?: readonly string[];
   envOverrides: Record<string, Record<string, string | null> | undefined> | undefined;
   containerHost: string;
   roleArn: string | undefined;
@@ -1485,7 +1619,11 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // the environ NAME the OS parses would differ from the key the denylist
   // checked — #2186 rounds 4-5), in which case it gets no flag at all and is
   // reported in `collisions`. Mirrors `runDetached` in `docker-runner.ts`.
-  const sensitiveKeys = new Set<string>([...SENSITIVE_ENV_KEYS, ...secrets.map((s) => s.name)]);
+  const sensitiveKeys = new Set<string>([
+    ...SENSITIVE_ENV_KEYS,
+    ...secrets.map((s) => s.name),
+    ...(opts.plaintextEnvKeys ?? []),
+  ]);
   const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(finalEnv, sensitiveKeys);
   args.push(...flags);
 

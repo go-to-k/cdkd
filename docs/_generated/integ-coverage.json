@@ -7021,6 +7021,7 @@
         "iam-access-key",
         "import-secret-observed",
         "lambda-esm-self-managed-kafka",
+        "local-invoke-from-state",
         "local-run-task-from-state",
         "output-never-resolved-diff",
         "replacement-immutable-name",
@@ -7056,6 +7057,9 @@
         "lambda-esm-self-managed-kafka": [
           "l2",
           "literal"
+        ],
+        "local-invoke-from-state": [
+          "l2"
         ],
         "local-run-task-from-state": [
           "l2",

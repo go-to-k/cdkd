@@ -25,6 +25,7 @@ import {
   ENGINE_ASSUME_ROLE_CHANNEL,
   engineRoleExposureWarning,
   ENGINE_ACCOUNT_ID_CHANNEL,
+  ENGINE_DYNAMIC_REFERENCE_CHANNEL,
   ENGINE_ECS_SECRETS_CHANNEL,
   type LocalStateSourceOptions,
 } from '../../../src/cli/commands/local-state-source.js';
@@ -561,6 +562,19 @@ describe('engineRoleExposureWarning (#3240, engine channels)', () => {
     ).not.toContain('KeyValueStore');
   });
 
+  it('names the {{resolve:...}} channel (#2056), which is not flag-only', () => {
+    expect(ENGINE_DYNAMIC_REFERENCE_CHANNEL.flagOnly).toBe(false);
+    expect(
+      engineRoleExposureWarning('start-agentcore', [ENGINE_DYNAMIC_REFERENCE_CHANNEL], CFN, base)
+    ).toContain('CloudFormation dynamic references ({{resolve:...}}) are fetched with the role');
+    expect(
+      engineRoleExposureWarning('start-agentcore', [ENGINE_DYNAMIC_REFERENCE_CHANNEL], CFN, {
+        ...base,
+        envProfile: 'me',
+      })
+    ).toBe(undefined);
+  });
+
   it('is silent for start-service with an exported AWS_PROFILE (no flag-only channel there)', () => {
     expect(
       engineRoleExposureWarning(
@@ -592,6 +606,36 @@ describe('the four engine commands install the warning', () => {
     quiet(cmd);
     await cmd.parseAsync(['--role-arn', 'arn:aws:iam::222222222222:role/deploy'], { from: 'user' });
     expect(warned('start-service').some((w) => w.includes('ECS task secrets'))).toBe(true);
+  });
+
+  // Issue #2056: each engine command builds container env through cdk-local's
+  // dynamic-reference resolver, whose clients take `profile` only.
+  it('start-service: names the {{resolve:...}} channel under --role-arn', async () => {
+    const cmd = createLocalStartServiceCommand();
+    quiet(cmd);
+    await cmd.parseAsync(['--role-arn', 'arn:aws:iam::222222222222:role/deploy'], { from: 'user' });
+    expect(warned('start-service').some((w) => w.includes('CloudFormation dynamic references'))).toBe(true);
+  });
+
+  it('start-alb: names the {{resolve:...}} channel under --role-arn', async () => {
+    const cmd = createLocalStartAlbCommand();
+    quiet(cmd);
+    await cmd.parseAsync(['--role-arn', 'arn:aws:iam::222222222222:role/deploy'], { from: 'user' });
+    expect(warned('start-alb').some((w) => w.includes('CloudFormation dynamic references'))).toBe(true);
+  });
+
+  it('start-agentcore: names the {{resolve:...}} channel under --role-arn', async () => {
+    const cmd = createLocalStartAgentCoreCommand();
+    quiet(cmd);
+    await cmd.parseAsync(['--role-arn', 'arn:aws:iam::222222222222:role/deploy'], { from: 'user' });
+    expect(warned('start-agentcore').some((w) => w.includes('CloudFormation dynamic references'))).toBe(true);
+  });
+
+  it('start-cloudfront: names the {{resolve:...}} channel under --role-arn', async () => {
+    const cmd = createLocalStartCloudFrontCommand();
+    quiet(cmd);
+    await cmd.parseAsync(['--role-arn', 'arn:aws:iam::222222222222:role/deploy'], { from: 'user' });
+    expect(warned('start-cloudfront').some((w) => w.includes('CloudFormation dynamic references'))).toBe(true);
   });
 
   it('start-service: warns under CDKD_ROLE_ARN with no profile', async () => {

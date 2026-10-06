@@ -1,4 +1,10 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  firstUsableRegion,
+  keysNotFromTemplate,
+  resolveDynamicReferencesInEnv,
+} from 'cdk-local/internal';
+import { createCallerDynamicReferenceResolver } from '../../local/dynamic-reference.js';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { Command, Option } from 'commander';
@@ -766,6 +772,7 @@ async function localStartApiCommand(
         ...(options.layerRoleArn !== undefined && { layerRoleArn: options.layerRoleArn }),
         ...(profileCredentials && { profileCredentials }),
         ...(profileCredsFile && { profileCredsFile }),
+        ...dynamicReferenceSpecOptions(options),
       });
       specs.set(logicalId, spec);
     }
@@ -1834,13 +1841,27 @@ function malformedAutoRoleError(logicalId: string, detail: string): Error {
 }
 
 /**
+ * The `{{resolve:...}}` inputs the server boot hands {@link buildContainerSpec}
+ * from the command's options (issue #2056): the `--profile` a lookup is made
+ * with, and `--stack-region` ahead of the synth region.
+ */
+export function dynamicReferenceSpecOptions(
+  options: Pick<LocalStartApiOptions, 'profile' | 'stackRegion'>
+): { profile?: string; stackRegionOverride?: string } {
+  return {
+    ...(options.profile !== undefined && { profile: options.profile }),
+    ...(options.stackRegion !== undefined && { stackRegionOverride: options.stackRegion }),
+  };
+}
+
+/**
  * Build the per-Lambda container spec — code dir, env vars (template +
  * --env-vars overlay), STS-issued creds when --assume-role names this
  * Lambda, optional --debug-port reservation. Errors out with a clear
  * message if the Lambda's code can't be resolved (asset directory
  * missing, runtime not supported).
  */
-async function buildContainerSpec(args: {
+export async function buildContainerSpec(args: {
   logicalId: string;
   stacks: StackInfo[];
   overrides: EnvOverrideFile | undefined;
@@ -1906,6 +1927,10 @@ async function buildContainerSpec(args: {
    * passed.
    */
   profileCredsFile?: ProfileCredentialsFile;
+  /** `--profile`: the credentials a `{{resolve:...}}` lookup is made with. */
+  profile?: string;
+  /** `--stack-region`, ahead of the synth region when resolving `{{resolve:...}}`. */
+  stackRegionOverride?: string;
 }): Promise<ContainerSpec> {
   const {
     logicalId,
@@ -1922,6 +1947,8 @@ async function buildContainerSpec(args: {
     layerRoleArn,
     profileCredentials,
     profileCredsFile,
+    profile,
+    stackRegionOverride,
   } = args;
   const lambda = resolveLambdaByLogicalId(logicalId, stacks);
 
@@ -2031,6 +2058,34 @@ async function buildContainerSpec(args: {
     );
   }
 
+  // CloudFormation dynamic references (`{{resolve:...}}`), resolved ONCE here
+  // at server boot against the region of the stack owning the Lambda (issue
+  // #2056, mirroring cdk-local#784's `buildContainerSpec`). Plaintext keys
+  // (the audit's `sensitiveKeys`) and `--env-vars` overrides are left as they
+  // are; a failed lookup throws, naming the reference, and the server does
+  // not start with the token in place of the value.
+  const plaintextKeys = new Set<string>(stateAudit?.sensitiveKeys ?? []);
+  for (const key of keysNotFromTemplate(templateEnv, envResult.resolved)) plaintextKeys.add(key);
+  const dynamicRefs = createCallerDynamicReferenceResolver(profile);
+  let dynamic: Awaited<ReturnType<typeof resolveDynamicReferencesInEnv>>;
+  try {
+    dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
+      region: firstUsableRegion(
+        stateBundle?.region,
+        stackRegionOverride,
+        lambda.stack.region,
+        stsRegion
+      ),
+      label: `Lambda ${logicalId}`,
+      skipKeys: plaintextKeys,
+      resolver: dynamicRefs,
+    });
+  } finally {
+    dynamicRefs.dispose();
+  }
+  const sensitiveKeyList = [...(stateAudit?.sensitiveKeys ?? []), ...dynamic.resolvedKeys];
+  const sensitiveEnvKeys = sensitiveKeyList.length > 0 ? new Set(sensitiveKeyList) : undefined;
+
   const dockerEnv: Record<string, string> = {
     AWS_LAMBDA_FUNCTION_NAME: logicalId,
     AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(lambda.memoryMb),
@@ -2038,7 +2093,7 @@ async function buildContainerSpec(args: {
     AWS_LAMBDA_FUNCTION_VERSION: '$LATEST',
     AWS_LAMBDA_LOG_GROUP_NAME: `/aws/lambda/${logicalId}`,
     AWS_LAMBDA_LOG_STREAM_NAME: 'local',
-    ...envResult.resolved,
+    ...dynamic.env,
   };
 
   const roleArn = resolveStartApiAssumeRoleArn({
@@ -2139,6 +2194,7 @@ async function buildContainerSpec(args: {
       // pool's `docker run` pins `--platform` (the IMAGE spec already does).
       platform: platform!,
       env: dockerEnv,
+      ...(sensitiveEnvKeys !== undefined && { sensitiveEnvKeys }),
       containerHost,
       ...(optDir !== undefined && { optDir }),
       ...(debugPort !== undefined && { debugPort }),
@@ -2167,6 +2223,7 @@ async function buildContainerSpec(args: {
       workingDir: lambda.imageConfig.workingDirectory,
     }),
     env: dockerEnv,
+    ...(sensitiveEnvKeys !== undefined && { sensitiveEnvKeys }),
     containerHost,
     ...(debugPort !== undefined && { debugPort }),
     ...(tmpfs !== undefined && { tmpfs }),
@@ -3361,6 +3418,11 @@ export async function reloadAllServers(args: {
 interface StackStateBundle {
   state: StackState;
   /**
+   * The region the state was loaded from — the owning stack's region, used
+   * first when resolving a `{{resolve:...}}` env value (issue #2056).
+   */
+  region?: string;
+  /**
    * AWS pseudo parameters (account / region / partition / URL suffix).
    * `undefined` when none of the stack's reachable Lambdas has a
    * pseudo-parameter intrinsic in its env map (skips the STS hop) OR
@@ -3404,7 +3466,7 @@ export function envHasIntrinsicValue(templateEnv: Record<string, unknown> | unde
  * warn and leave `pseudoParameters: undefined` — substitution still
  * runs for non-`AWS::*` refs.
  */
-async function loadStateForRoutedStacks(
+export async function loadStateForRoutedStacks(
   stacks: readonly StackInfo[],
   routes: readonly DiscoveredRoute[],
   routesWithAuth: readonly RouteWithAuth[],
@@ -3483,7 +3545,7 @@ async function loadStateForRoutedStacks(
         outputs: loaded.outputs,
         lastModified: 0,
       };
-      const bundle: StackStateBundle = { state: syntheticState };
+      const bundle: StackStateBundle = { state: syntheticState, region: loaded.region };
       if (stackHasIntrinsicEnv(stackName)) {
         const pseudo = await resolvePseudoParametersForStartApi(loaded.region, options);
         if (pseudo) bundle.pseudoParameters = pseudo;

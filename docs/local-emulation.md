@@ -160,6 +160,53 @@ no outputs". Repair the record (or run [`cdkd state
 show`](cli-state.md) with `--json` to see what is stored) before trusting a
 substitution that came back absent.
 
+### CloudFormation dynamic references (`{{resolve:...}}`)
+
+A container environment value that carries a CloudFormation dynamic reference —
+`{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}` or
+`{{resolve:ssm-secure:...}}` — is **resolved locally before the container
+starts**, so the handler sees the value the deployed resource receives rather
+than the token text. Two routes reach a token, and both are resolved:
+
+- **Same stack**: the reference is written into the function's or container's
+  own environment (for example `SecretValue.secretsManager(...)` rendered into
+  an env var). No state flag is needed.
+- **Cross stack, under `--from-state`**: cdkd persists a secret-bearing stack
+  output redacted back to its `{{resolve:...}}` expression, so an
+  `Fn::ImportValue` / `Fn::GetStackOutput` of it reads the token from state. It
+  is resolved against the **producing** stack's region. (`local start-api` does
+  not resolve cross-stack references under `--from-state` at all; it drops
+  them.)
+
+The lookup is a `GetSecretValue` / `GetParameter` (with decryption for
+`ssm-secure`) made with your own credentials, `--profile` honoured — never the
+`--role-arn` role, because the value lands in the container (the same reason
+`--from-cfn-stack` decrypts as you). An ARN reference uses its own
+region; any other uses the region of the stack that owns the value (the loaded
+state record's, then `--stack-region`, then the synth region, then `--region`).
+
+- **It fails loudly.** A missing permission, a missing secret or parameter, or a
+  malformed reference stops the command before any container starts, with an
+  error naming the reference, the consumer and the IAM permission the lookup
+  needs. The token is never passed through in place of the value.
+- **The plaintext stays off the command line.** A resolved key is passed as a
+  value-less `-e KEY` read from `docker run`'s environment, never on its argv,
+  and no log line or error message carries it. Under `CDK_DOCKER=finch` on macOS
+  or Windows such a container is refused unless `CDKD_ALLOW_SECRETS_ON_ARGV=1`
+  is set, as for any other secret.
+- **`--env-vars` skips the lookup.** An overridden key is never resolved — the
+  override is your local literal, which CloudFormation never sees — so an
+  override is also how to run without the permission.
+- **ECS `Command`, `EntryPoint` and health-check commands are refused** when
+  they carry a token (`local run-task`): resolving one would put the secret on
+  the `docker run` argv. Move it into an `Environment` variable or a `Secrets`
+  entry. `Secrets[].ValueFrom` is an ARN and is never resolved this way.
+
+`local invoke`, `local start-api` (once, at server boot), `local
+invoke-agentcore` and `local run-task` resolve in cdkd; the engine commands
+(`local start-agentcore`, `local start-cloudfront`, `local start-service`,
+`local start-alb`) get the same behaviour from cdk-local.
+
 ### `--stack-region`: choosing between records
 
 Only meaningful alongside `--from-state` or `--from-cfn-stack`. Pass it when the

@@ -613,6 +613,10 @@ bundle you uploaded to the deployed trust store.
 
 ## Environment variables and credentials
 
+A CloudFormation dynamic reference (`{{resolve:...}}`) in a Lambda's environment is resolved
+locally before the server starts, off the `docker run` argv; see
+[Local Execution](local-emulation.md#cloudformation-dynamic-references-resolve).
+
 ### `--env-vars`
 
 A JSON file in SAM's shape:

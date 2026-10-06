@@ -99,6 +99,15 @@ import { createLocalStartAgentCoreCommand } from './local-start-agentcore.js';
 import { createLocalStartAlbCommand } from './local-start-alb.js';
 import { createLocalStartCloudFrontCommand } from './local-start-cloudfront.js';
 import { setEmbedConfig } from 'cdk-local';
+import {
+  type DynamicReferenceResolver,
+  firstUsableRegion,
+  keysNotFromTemplate,
+  keysOverriddenBy,
+  resolveDynamicReferencesInEnv,
+  withoutKeys,
+} from 'cdk-local/internal';
+import { createCallerDynamicReferenceResolver } from '../../local/dynamic-reference.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import {
   applyCallerIdentityCredentials,
@@ -537,114 +546,14 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     // for cleanup.
     imagePlan = await resolveImagePlan(lambda, options);
 
-    // PR 2 — `--from-state`: load cdkd's S3 state for the target stack and
-    // pre-substitute intrinsic-valued env vars before they hit the regular
-    // env-resolver. State load failures are surfaced as warnings (we keep
-    // PR 1 behavior — drop intrinsic vars and continue) rather than hard
-    // errors, so a missing / corrupt state file doesn't abort an invoke
-    // that the user wanted to run with `--env-vars` overrides anyway.
-    //
-    // PR #294 follow-up (issue #293): when `--from-state` is set AND the
-    // function's template env contains any intrinsic value, build a
-    // `SubstitutionContext` carrying both the deployed `resources` map
-    // AND a `pseudoParameters` bag so `Fn::Join` / `Fn::Sub` bodies that
-    // splice `${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` /
-    // `${AWS::URLSuffix}` resolve cleanly. The pseudo bag is sourced from
-    // the resolved region (`--region` > AWS_REGION > AWS_DEFAULT_REGION >
-    // synth-derived stack region) + a single `sts:GetCallerIdentity` call.
-    // Mirrors the ECS run-task implementation so both `cdkd local *
-    // --from-state` paths share semantics.
-    let stateAudit: StateEnvSubstitutionAudit | undefined;
-    let templateEnv = getTemplateEnv(lambda.resource);
-    let stateForRoleHint: StackState | undefined;
-    // Issue #606: pick the right LocalStateProvider for the supplied
-    // flags. `--from-state` and `--from-cfn-stack` are mutually
-    // exclusive — the helper throws when both are set. Returns
-    // `undefined` when neither is set (skip the substitution pass
-    // entirely; PR 1 warn-and-drop behavior is preserved).
-    const stateProvider = createLocalStateProvider(
-      options,
-      lambda.stack.stackName,
-      lambda.stack.region
-    );
-    if (stateProvider) {
-      try {
-        const loaded = await stateProvider.load(lambda.stack.stackName, lambda.stack.region);
-        if (loaded) {
-          // Synthetic StackState shape consumed by the legacy
-          // `--assume-role` hint path. Sufficient for
-          // `resolveExecutionRoleArnFromState`, which only touches
-          // `state.resources[...].properties.Role` /
-          // `attributes.Arn`. The CFn provider leaves both empty per
-          // its v1 contract, so the auto-resolve fallback warns
-          // exactly as it would for a partially-populated cdkd state.
-          stateForRoleHint = {
-            version: 1,
-            stackName: lambda.stack.stackName,
-            resources: loaded.resources,
-            outputs: loaded.outputs,
-            lastModified: 0,
-          };
-          const subContext: SubstitutionContext = {
-            resources: loaded.resources,
-            consumerRegion: loaded.region,
-          };
-          if (envHasIntrinsicValue(templateEnv)) {
-            const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
-            if (pseudo) subContext.pseudoParameters = pseudo;
-          }
-          // Issue #454 — build the cross-stack resolver only when the env
-          // actually references `Fn::ImportValue` / `Fn::GetStackOutput`.
-          // The resolver opens an additional client; literal + same-stack-
-          // intrinsic env maps shouldn't pay that cost.
-          if (envHasCrossStackIntrinsic(templateEnv)) {
-            const resolver = await stateProvider.buildCrossStackResolver(loaded.region);
-            if (resolver) {
-              subContext.crossStackResolver = resolver;
-            }
-          }
-          const { env, audit } = await substituteEnvVarsFromStateAsync(templateEnv, subContext);
-          templateEnv = env;
-          stateAudit = audit;
-          const label = stateProvider.label;
-          for (const key of audit.resolvedKeys) {
-            logger.debug(`${label}: substituted env var ${key}`);
-          }
-          for (const { key, reason } of audit.unresolved) {
-            logger.warn(
-              `${label}: could not substitute env var ${key} (${reason}). ` +
-                `Override it via --env-vars or it will be dropped.`
-            );
-          }
-        }
-      } finally {
-        stateProvider.dispose();
-      }
-    }
-
-    // Resolve env vars. Intrinsic-valued template entries (i.e. the ones
-    // `--from-state` could not substitute, plus all of them when the flag
-    // is off) are warned about and dropped; the user can override them via
-    // --env-vars (SAM-shape).
-    const overrides = readEnvOverridesFile(options.envVars);
-    const lambdaCdkPath = readCdkPathOrUndefined(lambda.resource);
-    const envResult = resolveEnvVars(lambda.logicalId, lambdaCdkPath, templateEnv, overrides);
-    for (const key of envResult.unresolved) {
-      // The state-resolver already warned for keys it tried + failed on, so
-      // suppress the per-key duplicate warn here. The `--env-vars` /
-      // wait-for-state hints still fire for the no-flag path, which is the
-      // original PR 1 UX.
-      if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
-      // Prefer the L2 form (`MyStack/MyFn`) in the suggestion since that
-      // matches docs/local-invoke.md's target-resolution guidance and the
-      // `cdkd local invoke` target shape;
-      // the resolver's prefix rule accepts either form.
-      const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? lambda.logicalId;
-      logger.warn(
-        `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
-          `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), or pass --from-state (cdkd-deployed) / --from-cfn-stack (cdk-deployed) to recover deployed values.`
-      );
-    }
+    // The container's declared env: template literals, `--from-state` /
+    // `--from-cfn-stack` substitution, `--env-vars` overrides, and resolved
+    // CloudFormation dynamic references. See {@link resolveInvokeTemplateEnv}.
+    const {
+      env: templateEnvResolved,
+      sensitiveEnvKeys,
+      stateForRoleHint,
+    } = await resolveInvokeTemplateEnv(lambda, options);
 
     // Auto-resolve the execution-role ARN from state when the user passed
     // bare `--assume-role` together with `--from-state`. Resolution: walk
@@ -700,7 +609,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       AWS_LAMBDA_FUNCTION_VERSION: '$LATEST',
       AWS_LAMBDA_LOG_GROUP_NAME: `/aws/lambda/${lambda.logicalId}`,
       AWS_LAMBDA_LOG_STREAM_NAME: 'local',
-      ...envResult.resolved,
+      ...templateEnvResolved,
     };
     // Swap the developer's credentials for STS-issued temporary credentials
     // scoped to the function's deployed execution role when one was resolved,
@@ -779,6 +688,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       mounts: imagePlan.mounts,
       extraMounts: extraMountsWithProfile,
       env: dockerEnv,
+      ...(sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys }),
       ...(hostGatewayExtraHosts.length > 0 && { extraHosts: hostGatewayExtraHosts }),
       cmd: imagePlan.cmd,
       hostPort,
@@ -907,6 +817,209 @@ interface ImagePlan {
    * Lambdas.
    */
   tmpfs?: { target: string; sizeMb: number };
+}
+
+/** The container env {@link resolveInvokeTemplateEnv} built from the function's template. */
+export interface InvokeTemplateEnvResult {
+  /** The function's resolved declared env vars (before the `AWS_LAMBDA_*` and credential keys). */
+  env: Record<string, string>;
+  /**
+   * Keys whose VALUE must stay off the `docker run` argv (a value-less
+   * `-e KEY`): a decrypted SecureString, a value resolved at the cross-stack
+   * boundary, and a resolved CloudFormation dynamic reference.
+   */
+  sensitiveEnvKeys: Set<string>;
+  /** The loaded state, when a state-source flag loaded one (the `--assume-role` hint path). */
+  stateForRoleHint?: StackState;
+}
+
+/**
+ * Build the function's declared env for `cdkd local invoke`.
+ *
+ * PR 2 — `--from-state`: load cdkd's S3 state for the target stack and
+ * pre-substitute intrinsic-valued env vars before they hit the regular
+ * env-resolver. State load failures are surfaced as warnings (we keep PR 1
+ * behavior — drop intrinsic vars and continue) rather than hard errors, so a
+ * missing / corrupt state file doesn't abort an invoke that the user wanted to
+ * run with `--env-vars` overrides anyway.
+ *
+ * PR #294 follow-up (issue #293): when `--from-state` is set AND the
+ * function's template env contains any intrinsic value, build a
+ * `SubstitutionContext` carrying both the deployed `resources` map AND a
+ * `pseudoParameters` bag so `Fn::Join` / `Fn::Sub` bodies that splice
+ * `${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` /
+ * `${AWS::URLSuffix}` resolve cleanly. The pseudo bag is sourced from the
+ * resolved region (`--region` > AWS_REGION > AWS_DEFAULT_REGION >
+ * synth-derived stack region) + a single `sts:GetCallerIdentity` call.
+ * Mirrors the ECS run-task implementation so both `cdkd local * --from-state`
+ * paths share semantics.
+ *
+ * Issue #2056 / go-to-k/cdk-local#784: CloudFormation dynamic references
+ * (`{{resolve:...}}`) are resolved locally, with the developer's credentials
+ * (`--profile` honoured), before the container starts — a same-stack env value
+ * carrying one, and a cross-stack value whose producer output cdkd persisted
+ * REDACTED back to its token (#1899). A lookup that fails throws, naming the
+ * reference and the IAM permission, so the container never starts with the
+ * token in place of the value. This mirrors cdk-local's
+ * `resolveLambdaContainerEnv`, which cdkd's invoke does not use, with the same
+ * `cdk-local/internal` helpers; keep the two in step.
+ */
+export async function resolveInvokeTemplateEnv(
+  lambda: ResolvedLambda,
+  options: LocalInvokeOptions
+): Promise<InvokeTemplateEnvResult> {
+  // One resolver per invoke, shared by the cross-stack boundary and the final
+  // env pass, so each (reference, region) is fetched once.
+  const dynamicRefs = createCallerDynamicReferenceResolver(options.profile);
+  try {
+    return await resolveInvokeTemplateEnvWith(lambda, options, dynamicRefs);
+  } finally {
+    dynamicRefs.dispose();
+  }
+}
+
+async function resolveInvokeTemplateEnvWith(
+  lambda: ResolvedLambda,
+  options: LocalInvokeOptions,
+  dynamicRefs: DynamicReferenceResolver
+): Promise<InvokeTemplateEnvResult> {
+  const logger = getLogger();
+  let stateAudit: StateEnvSubstitutionAudit | undefined;
+  let stateForRoleHint: StackState | undefined;
+  // Region of the stack that owns the env: the loaded state record's.
+  let ownerRegion: string | undefined;
+  const declaredEnv = getTemplateEnv(lambda.resource);
+  const overrides = readEnvOverridesFile(options.envVars);
+  const lambdaCdkPath = readCdkPathOrUndefined(lambda.resource);
+  // Keys an `--env-vars` override replaces never reach state substitution, so
+  // an override also skips a cross-stack dynamic-reference lookup — the remedy
+  // the resolver's error message names.
+  const overriddenKeys = keysOverriddenBy(
+    declaredEnv,
+    (env) => resolveEnvVars(lambda.logicalId, lambdaCdkPath, env, overrides).resolved
+  );
+  let templateEnv = declaredEnv && withoutKeys(declaredEnv, overriddenKeys);
+  // Issue #606: pick the right LocalStateProvider for the supplied
+  // flags. `--from-state` and `--from-cfn-stack` are mutually
+  // exclusive — the helper throws when both are set. Returns
+  // `undefined` when neither is set (skip the substitution pass
+  // entirely; PR 1 warn-and-drop behavior is preserved).
+  const stateProvider = createLocalStateProvider(
+    options,
+    lambda.stack.stackName,
+    lambda.stack.region
+  );
+  if (stateProvider) {
+    try {
+      const loaded = await stateProvider.load(lambda.stack.stackName, lambda.stack.region);
+      if (loaded) {
+        ownerRegion = loaded.region;
+        // Synthetic StackState shape consumed by the legacy
+        // `--assume-role` hint path. Sufficient for
+        // `resolveExecutionRoleArnFromState`, which only touches
+        // `state.resources[...].properties.Role` /
+        // `attributes.Arn`. The CFn provider leaves both empty per
+        // its v1 contract, so the auto-resolve fallback warns
+        // exactly as it would for a partially-populated cdkd state.
+        stateForRoleHint = {
+          version: 1,
+          stackName: lambda.stack.stackName,
+          resources: loaded.resources,
+          outputs: loaded.outputs,
+          lastModified: 0,
+        };
+        const subContext: SubstitutionContext = {
+          resources: loaded.resources,
+          consumerRegion: loaded.region,
+          // A cross-stack value carrying a token is resolved at the boundary,
+          // against the PRODUCER's region, which cdk-local passes in. The key
+          // then lands in the audit's `sensitiveKeys`.
+          resolveDynamicReferences: (value, producerRegion) =>
+            dynamicRefs.resolveString(value, {
+              region: producerRegion,
+              consumer: `Lambda ${lambda.logicalId} cross-stack env value`,
+            }),
+        };
+        if (envHasIntrinsicValue(templateEnv)) {
+          const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
+          if (pseudo) subContext.pseudoParameters = pseudo;
+        }
+        // Issue #454 — build the cross-stack resolver only when the env
+        // actually references `Fn::ImportValue` / `Fn::GetStackOutput`.
+        // The resolver opens an additional client; literal + same-stack-
+        // intrinsic env maps shouldn't pay that cost.
+        if (envHasCrossStackIntrinsic(templateEnv)) {
+          const resolver = await stateProvider.buildCrossStackResolver(loaded.region);
+          if (resolver) {
+            subContext.crossStackResolver = resolver;
+          }
+        }
+        const { env, audit } = await substituteEnvVarsFromStateAsync(templateEnv, subContext);
+        templateEnv = env;
+        stateAudit = audit;
+        const label = stateProvider.label;
+        for (const key of audit.resolvedKeys) {
+          logger.debug(`${label}: substituted env var ${key}`);
+        }
+        for (const { key, reason } of audit.unresolved) {
+          logger.warn(
+            `${label}: could not substitute env var ${key} (${reason}). ` +
+              `Override it via --env-vars or it will be dropped.`
+          );
+        }
+      }
+    } finally {
+      stateProvider.dispose();
+    }
+  }
+
+  // Resolve env vars. Intrinsic-valued template entries (i.e. the ones
+  // `--from-state` could not substitute, plus all of them when the flag
+  // is off) are warned about and dropped; the user can override them via
+  // --env-vars (SAM-shape).
+  const envResult = resolveEnvVars(lambda.logicalId, lambdaCdkPath, templateEnv, overrides);
+  for (const key of envResult.unresolved) {
+    // The state-resolver already warned for keys it tried + failed on, so
+    // suppress the per-key duplicate warn here. The `--env-vars` /
+    // wait-for-state hints still fire for the no-flag path, which is the
+    // original PR 1 UX.
+    if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
+    // Prefer the L2 form (`MyStack/MyFn`) in the suggestion since that
+    // matches docs/local-invoke.md's target-resolution guidance and the
+    // `cdkd local invoke` target shape;
+    // the resolver's prefix rule accepts either form.
+    const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? lambda.logicalId;
+    logger.warn(
+      `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
+        `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), or pass --from-state (cdkd-deployed) / --from-cfn-stack (cdk-deployed) to recover deployed values.`
+    );
+  }
+
+  // Same-stack dynamic references, against the region of the stack that owns
+  // the env. Left as they are: keys already holding plaintext (the audit's
+  // `sensitiveKeys` — a decrypted SecureString, or a value resolved at the
+  // cross-stack boundary; scanning plaintext could quote a fragment of it in
+  // an error) and keys that did not come from the template unchanged
+  // (`--env-vars` overrides), which CloudFormation never sees.
+  const plaintextKeys = new Set<string>(stateAudit?.sensitiveKeys ?? []);
+  for (const key of keysNotFromTemplate(templateEnv, envResult.resolved)) plaintextKeys.add(key);
+  const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
+    region: firstUsableRegion(
+      ownerRegion,
+      options.stackRegion,
+      lambda.stack.region,
+      options.region
+    ),
+    label: `Lambda ${lambda.logicalId}`,
+    skipKeys: plaintextKeys,
+    resolver: dynamicRefs,
+  });
+
+  return {
+    env: dynamic.env,
+    sensitiveEnvKeys: new Set([...(stateAudit?.sensitiveKeys ?? []), ...dynamic.resolvedKeys]),
+    ...(stateForRoleHint !== undefined && { stateForRoleHint }),
+  };
 }
 
 /**

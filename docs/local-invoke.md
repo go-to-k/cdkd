@@ -171,8 +171,13 @@ by kind:
 | Literal (string / number / boolean) | Passed through as-is. | Passed through as-is. |
 | Intrinsic (`Ref`, `Fn::GetAtt`, `Fn::Sub`, `Fn::Join`, `Fn::ImportValue`) | Warned by name and **dropped**, rather than silently substituting garbage. | Substituted with the deployed value where the source can supply one; warned and dropped otherwise. |
 | AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) | Warned and dropped. | Resolved from `sts:GetCallerIdentity` plus the resolved region. |
+| CloudFormation dynamic reference (`{{resolve:secretsmanager:...}}` / `ssm` / `ssm-secure`) | Resolved locally with your credentials before the container starts; a failed lookup fails the invoke. | Same — and a cross-stack value whose producer output cdkd stored as its token is resolved too, in the producer's region. |
 
-You can always override any entry — intrinsic or not — with `--env-vars`.
+You can always override any entry — intrinsic or not — with `--env-vars`; an
+overridden dynamic reference is not looked up. A resolved value reaches the
+container as a value-less `-e KEY`, off the `docker run` argv. See
+[Local Execution](local-emulation.md#cloudformation-dynamic-references-resolve)
+for the region rule and failure behaviour.
 
 These standard Lambda runtime variables are always set, so the handler's
 `context.*` fields look real: `AWS_LAMBDA_FUNCTION_NAME`,

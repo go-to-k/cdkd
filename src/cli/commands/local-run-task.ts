@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createCallerDynamicReferenceResolver } from '../../local/dynamic-reference.js';
 import { Command, Option } from 'commander';
 import {
   appOptions,
@@ -351,6 +352,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
       );
       const resolver = await stateProvider.buildCrossStackResolver(consumerRegion);
       if (resolver) {
+        const dynamicRefs = createCallerDynamicReferenceResolver(options.profile);
         const subContext: SubstitutionContext = {
           // The image / env / secret sync passes already consumed
           // `imageContext.stateResources` / `imageContext.pseudoParameters`
@@ -362,8 +364,21 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
           }),
           consumerRegion,
           crossStackResolver: resolver,
+          // Issue #2056: a producer output persisted as its `{{resolve:...}}`
+          // token resolves against the producer's region at this boundary.
+          resolveDynamicReferences: (value, producerRegion) =>
+            dynamicRefs.resolveString(value, {
+              region: producerRegion,
+              consumer: `Task ${task.taskDefinitionLogicalId} cross-stack env value`,
+              // Overrides apply later, at docker-run time, so none can skip this.
+              overridable: false,
+            }),
         };
-        await applyCrossStackResolverToTask(task, subContext);
+        try {
+          await applyCrossStackResolverToTask(task, subContext);
+        } finally {
+          dynamicRefs.dispose();
+        }
       }
     } else if (!stateProvider && taskNeeds.needsCrossStackResolver) {
       logger.warn(
@@ -455,6 +470,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     const runOpts = buildRunEcsTaskOptions(options, channels, {
       ...(envOverrides !== undefined && { envOverrides }),
       ...(resolvedRoleArn !== undefined && { resolvedRoleArn }),
+      ...(stateRecordRegion !== undefined && { stateRecordRegion }),
     });
     // Let task containers reach a server on the host (an `AWS_ENDPOINT_URL_*`
     // local endpoint / tunneled VPC resource) via `host.docker.internal`.
@@ -1103,13 +1119,19 @@ export function buildRunEcsTaskOptions(
     | 'detach'
     | 'platform'
     | 'region'
+    | 'stackRegion'
+    | 'profile'
     | 'ecrRoleArn'
   >,
   // Derived from the producer rather than re-spelled: the two must agree, and a
   // structural copy is how they would come to disagree silently
   // (go-to-k/cdkd#3390 round 3).
   channels: Awaited<ReturnType<typeof resolveTaskCredentialChannels>>,
-  extra: { envOverrides?: RunEcsTaskOptions['envOverrides']; resolvedRoleArn?: string } = {}
+  extra: {
+    envOverrides?: RunEcsTaskOptions['envOverrides'];
+    resolvedRoleArn?: string;
+    stateRecordRegion?: string;
+  } = {}
 ): RunEcsTaskOptions {
   const runOpts: RunEcsTaskOptions = {
     cluster: options.cluster,
@@ -1123,6 +1145,9 @@ export function buildRunEcsTaskOptions(
   if (extra.resolvedRoleArn) runOpts.taskRoleArn = extra.resolvedRoleArn;
   if (options.platform) runOpts.platformOverride = options.platform;
   if (options.region) runOpts.region = options.region;
+  if (options.stackRegion) runOpts.stackRegion = options.stackRegion;
+  if (options.profile) runOpts.profile = options.profile;
+  if (extra.stateRecordRegion) runOpts.stateRecordRegion = extra.stateRecordRegion;
   if (options.ecrRoleArn !== undefined) runOpts.ecrRoleArn = options.ecrRoleArn;
   if (channels.profileCredsFile) {
     runOpts.profileCredentialsFile = {

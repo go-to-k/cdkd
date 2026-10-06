@@ -1495,6 +1495,7 @@
         "lambda-url-authtype-replay",
         "local-invoke",
         "local-invoke-agentcore-from-state",
+        "local-invoke-from-state",
         "local-start-alb-from-state",
         "macro-expansion",
         "nested-stack-3level",

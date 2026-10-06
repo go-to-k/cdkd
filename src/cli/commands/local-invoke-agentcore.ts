@@ -46,6 +46,15 @@ import type { LocalStateProvider, LocalStateRecord } from 'cdk-local';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { getEmbedConfig } from 'cdk-local';
 import {
+  type DynamicReferenceResolver,
+  firstUsableRegion,
+  keysNotFromTemplate,
+  keysOverriddenBy,
+  resolveDynamicReferencesInEnv,
+  withoutKeys,
+} from 'cdk-local/internal';
+import { createCallerDynamicReferenceResolver } from '../../local/dynamic-reference.js';
+import {
   AGENTCORE_A2A_PROTOCOL,
   AGENTCORE_AGUI_PROTOCOL,
   AGENTCORE_MCP_PROTOCOL,
@@ -1723,6 +1732,12 @@ function findFileAssetByObjectKey(
  *
  * The state provider + loaded record + image context are built once by the
  * caller and shared here, so this does not re-load state.
+ *
+ * CloudFormation dynamic references (`{{resolve:...}}`) are resolved locally
+ * before the container starts (issue #2056, go-to-k/cdk-local#784): a
+ * same-stack env value, and a cross-stack value whose producer output cdkd
+ * persisted REDACTED back to its token. Mirrors cdk-local's own AgentCore
+ * `buildContainerEnv`, with the same `cdk-local/internal` helpers.
  */
 export async function buildContainerEnv(
   resolved: ResolvedAgentCoreRuntime,
@@ -1735,14 +1750,63 @@ export async function buildContainerEnv(
   loaded: LocalStateRecord | undefined,
   imageContext: ImageResolutionContext | undefined
 ): Promise<{ env: Record<string, string>; sensitiveEnvKeys: Set<string> }> {
+  // One resolver per container env, shared by the cross-stack boundary and
+  // the final env pass, so each (reference, region) is fetched once.
+  const dynamicRefs = createCallerDynamicReferenceResolver(options.profile);
+  try {
+    return await buildContainerEnvWith(
+      resolved,
+      options,
+      profileCredentials,
+      profileCredsFile,
+      stateProvider,
+      loaded,
+      imageContext,
+      dynamicRefs
+    );
+  } finally {
+    dynamicRefs.dispose();
+  }
+}
+
+async function buildContainerEnvWith(
+  resolved: ResolvedAgentCoreRuntime,
+  options: LocalInvokeAgentCoreOptions,
+  profileCredentials:
+    | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+    | undefined,
+  profileCredsFile: ProfileCredentialsFile | undefined,
+  stateProvider: LocalStateProvider | undefined,
+  loaded: LocalStateRecord | undefined,
+  imageContext: ImageResolutionContext | undefined,
+  dynamicRefs: DynamicReferenceResolver
+): Promise<{ env: Record<string, string>; sensitiveEnvKeys: Set<string> }> {
   const logger = getLogger();
-  let templateEnv: Record<string, unknown> = resolved.environmentVariables;
+  const overrides = readEnvOverridesFile(options.envVars);
+  const cdkPath = readCdkPathOrUndefined(resolved.resource);
+  // Keys an `--env-vars` override replaces never reach state substitution, so
+  // an override also skips a cross-stack dynamic-reference lookup.
+  const overriddenKeys = keysOverriddenBy(
+    resolved.environmentVariables,
+    (env) => resolveEnvVars(resolved.logicalId, cdkPath, env, overrides).resolved
+  );
+  let templateEnv: Record<string, unknown> = withoutKeys(
+    resolved.environmentVariables,
+    overriddenKeys
+  );
   const sensitiveEnvKeys = new Set<string>();
 
   if (stateProvider && loaded) {
     const subContext: SubstitutionContext = {
       resources: imageContext?.stateResources ?? loaded.resources,
       consumerRegion: loaded.region,
+      // A cross-stack value carrying a token is resolved at the boundary,
+      // against the PRODUCER's region; the key then lands in `sensitiveKeys`.
+      resolveDynamicReferences: (value, producerRegion) =>
+        dynamicRefs.resolveString(value, {
+          region: producerRegion,
+          consumer: `AgentCore Runtime ${resolved.logicalId} cross-stack env value`,
+        }),
     };
     const pseudo =
       imageContext?.pseudoParameters ?? derivePseudoParametersFromRegion(loaded.region);
@@ -1758,7 +1822,8 @@ export async function buildContainerEnv(
     for (const key of audit.resolvedKeys) {
       logger.debug(`${stateProvider.label}: substituted env var ${key}`);
     }
-    // Decrypted SecureString SSM values: keep them off the `docker run` argv.
+    // Decrypted SecureString SSM values and values resolved at the cross-stack
+    // boundary: keep them off the `docker run` argv.
     for (const key of audit.sensitiveKeys) sensitiveEnvKeys.add(key);
     for (const { key, reason } of audit.unresolved) {
       logger.warn(
@@ -1768,8 +1833,6 @@ export async function buildContainerEnv(
     }
   }
 
-  const overrides = readEnvOverridesFile(options.envVars);
-  const cdkPath = readCdkPathOrUndefined(resolved.resource);
   const envResult = resolveEnvVars(resolved.logicalId, cdkPath, templateEnv, overrides);
   for (const key of envResult.unresolved) {
     const overrideKeyExample = cdkPath?.replace(/\/Resource$/, '') ?? resolved.logicalId;
@@ -1780,7 +1843,25 @@ export async function buildContainerEnv(
     );
   }
 
-  const dockerEnv: Record<string, string> = { ...envResult.resolved };
+  // Same-stack dynamic references, against the region of the stack owning
+  // the runtime. Plaintext keys (the `sensitiveKeys` above) and `--env-vars`
+  // overrides are left as they are; a failed lookup throws before boot.
+  const skipKeys = keysNotFromTemplate(templateEnv, envResult.resolved);
+  for (const key of sensitiveEnvKeys) skipKeys.add(key);
+  const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
+    region: firstUsableRegion(
+      loaded?.region,
+      options.stackRegion,
+      resolved.stack.region,
+      options.region
+    ),
+    label: `AgentCore Runtime ${resolved.logicalId}`,
+    skipKeys,
+    resolver: dynamicRefs,
+  });
+  for (const key of dynamic.resolvedKeys) sensitiveEnvKeys.add(key);
+
+  const dockerEnv: Record<string, string> = { ...dynamic.env };
   const assumeRoleArn = resolveAssumeRoleArn(options, resolved, loaded);
   await applyAgentCoreCredentialEnv(dockerEnv, {
     ...(assumeRoleArn !== undefined && { assumeRoleArn }),

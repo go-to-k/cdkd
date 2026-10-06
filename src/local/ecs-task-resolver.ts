@@ -101,6 +101,12 @@ export interface ResolvedEcsContainer {
   /** SecretArn entries. Resolved to real values by `ecs-secrets-resolver.ts`. */
   secrets: { name: string; valueFrom: string }[];
   /**
+   * `environment` keys whose value is ALREADY plaintext from a CloudFormation
+   * dynamic reference resolved at the cross-stack boundary (issue #2056).
+   * The runner keeps them off the `docker run` argv and never re-scans them.
+   */
+  resolvedDynamicReferenceKeys?: string[];
+  /**
    * Container port mappings. `name` (mirrors the CFn `Name` field) is
    * surfaced for Service Connect resolution (Phase 3 of #262 / Issue
    * #460) — the resolver matches `ServiceConnectConfiguration.Services[].PortName`
@@ -1651,6 +1657,9 @@ export async function applyCrossStackResolverToTask(
   context: SubstitutionContext
 ): Promise<void> {
   if (!context.crossStackResolver) return;
+  // A ValueFrom is an ARN, never a value: the Secrets pass gets no
+  // dynamic-reference hook, so no plaintext can land where an ARN is echoed.
+  const { resolveDynamicReferences: _envOnly, ...secretContext } = context;
   const props = task.resource.Properties ?? {};
   const rawContainers = props['ContainerDefinitions'];
   if (!Array.isArray(rawContainers)) return;
@@ -1690,13 +1699,34 @@ export async function applyCrossStackResolverToTask(
           // produce a different outcome.
           continue;
         }
-        const sub = await substituteAgainstStateAsync(value, context);
+        // Issue #2056: a producer output persisted as its `{{resolve:...}}`
+        // token is resolved by the context's hook against the producer's
+        // region; note it so the runner keeps the plaintext off the argv.
+        let resolvedToken = false;
+        const hook = context.resolveDynamicReferences;
+        const keyContext: SubstitutionContext = hook
+          ? {
+              ...context,
+              resolveDynamicReferences: async (v, producerRegion) => {
+                const plain = await hook(v, producerRegion);
+                resolvedToken = true;
+                return plain;
+              },
+            }
+          : context;
+        const sub = await substituteAgainstStateAsync(value, keyContext);
         if (sub.kind === 'literal') {
           // Own-key define, as in the sync pass above (issue #3515): a plain
           // assignment of `__proto__` created no key, yet the key was still
           // marked resolved and its "dropped" warning cleared.
           defineOwnKey(container.environment, key, String(sub.value));
           resolvedEnvKeys.add(key);
+          if (resolvedToken) {
+            container.resolvedDynamicReferenceKeys = [
+              ...(container.resolvedDynamicReferenceKeys ?? []),
+              key,
+            ];
+          }
         }
       }
     }
@@ -1712,7 +1742,7 @@ export async function applyCrossStackResolverToTask(
         if (typeof valueFromRaw === 'string' && valueFromRaw.length > 0) continue;
         if (container.secrets.some((s) => s.name === sName)) continue;
         if (!isCrossStackIntrinsic(valueFromRaw)) continue;
-        const sub = await substituteAgainstStateAsync(valueFromRaw, context);
+        const sub = await substituteAgainstStateAsync(valueFromRaw, secretContext);
         if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
           container.secrets.push({ name: sName, valueFrom: sub.value });
           resolvedSecretNames.add(sName);

@@ -470,6 +470,16 @@ export const ENGINE_ECS_SECRETS_CHANNEL: EngineRoleChannel = {
 };
 
 /**
+ * CloudFormation dynamic references in a container's env: cdk-local's resolver
+ * builds its Secrets Manager / SSM clients from `profile` alone (go-to-k/cdkd#2056;
+ * the cdkd-owned commands inject caller-identity clients instead).
+ */
+export const ENGINE_DYNAMIC_REFERENCE_CHANNEL: EngineRoleChannel = {
+  what: "CloudFormation dynamic references ({{resolve:...}}) are fetched with the role and injected as plaintext into the container's environment",
+  flagOnly: false,
+};
+
+/**
  * `--assume-role` / `--assume-task-role` for the workload: cdk-local's STS client
  * is built from `{region, profile}`, so the role makes the AssumeRole call and
  * the container can receive a role the caller could not assume.
