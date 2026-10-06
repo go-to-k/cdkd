@@ -9,13 +9,14 @@
  * that no calculator-level case can check: *"Nothing was provisioned and no
  * state was written FOR THIS STACK."*
  *
- * That claim is not free. By the time the diff runs, `deploy` has already
- * taken the stack lock and fired fire-and-forget
- * `provider.readCurrentState` reads (`kickOffAutoRefreshObservedProperties`).
- * Neither persists anything — the save they would be drained into never
- * happens — but a guard written any later, or a refusal that stranded the
- * lock, would make the sentence false. So the assertions below are the claim,
- * not a restatement of the analyzer's.
+ * That claim is not free. The deploy takes the stack lock before it reads
+ * state, and the observed-state auto-refresh
+ * (`kickOffAutoRefreshObservedProperties`) hands each record's map to
+ * `provider.readCurrentState` before the diff runs — which is why the engine
+ * refuses at its STATE LOAD too (go-to-k/cdkd#3211), naming its own stack. A
+ * guard written any later, or a refusal that stranded the lock, would make the
+ * sentence false. So the assertions below are the claim, not a restatement of
+ * the analyzer's.
  *
  * The calculator is the REAL one here, deliberately: the sibling
  * `deploy-engine-malformed-outputs-refusal.test.ts` mocks it, which is right
@@ -127,7 +128,10 @@ describe('DeployEngine refuses an unreadable properties map (go-to-k/cdkd#3191)'
         return Promise.resolve();
       }),
       getAttribute: vi.fn().mockResolvedValue(undefined),
-      readCurrentState: vi.fn().mockResolvedValue({}),
+      readCurrentState: vi.fn().mockImplementation(() => {
+        provisioned.push('readCurrentState');
+        return Promise.resolve({});
+      }),
     };
     return {
       getProvider: vi.fn().mockReturnValue(provider),
@@ -140,14 +144,16 @@ describe('DeployEngine refuses an unreadable properties map (go-to-k/cdkd#3191)'
     };
   }
 
-  function makeState(properties: unknown): StackState {
+  /** `physicalId` is taken as given when passed, `undefined` included. */
+  function makeState(properties: unknown, ...physicalIdArg: [unknown?]): StackState {
+    const physicalId = physicalIdArg.length > 0 ? physicalIdArg[0] : 'phys-param-a';
     return {
       version: STATE_SCHEMA_VERSION_CURRENT,
       region: REGION,
       stackName: STACK,
       resources: {
         ParamA: {
-          physicalId: 'phys-param-a',
+          physicalId: physicalId as string,
           resourceType: 'AWS::SSM::Parameter',
           properties: properties as Record<string, unknown>,
           attributes: {},
@@ -163,14 +169,17 @@ describe('DeployEngine refuses an unreadable properties map (go-to-k/cdkd#3191)'
     Resources: { ParamA: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
   };
 
-  function makeEngine(dryRun = false): DeployEngine {
+  // `captureObservedState` arms the auto-refresh, whose read of a record with
+  // no `observedProperties` (every record `makeState` builds) is the provider
+  // call the load refusal must precede (go-to-k/cdkd#3211).
+  function makeEngine(dryRun = false, captureObservedState = true): DeployEngine {
     return new DeployEngine(
       stateBackend as never,
       lockManager as never,
       dagBuilder as never,
       new DiffCalculator(),
       makeProviderRegistry() as never,
-      { dryRun },
+      { dryRun, captureObservedState },
       REGION,
       exportIndexStore as never
     );
@@ -190,6 +199,10 @@ describe('DeployEngine refuses an unreadable properties map (go-to-k/cdkd#3191)'
 
       expect(err).toBeInstanceOf(CdkdError);
       expect(err.code).toBe(STATE_RESOURCES_MALFORMED);
+      // Raised at the LOAD, which names the stack it was handed; the diff's
+      // copy names none (go-to-k/cdkd#3211).
+      expect(err.message).toContain(STACK);
+      expect(err.message).not.toContain('The state record this command loaded');
 
       // The claim the refusal's own text makes, in two halves. Without the
       // guard this fixture is a REPLACEMENT — `AWS::SSM::Parameter`'s `Value`
@@ -231,6 +244,7 @@ describe('DeployEngine refuses an unreadable properties map (go-to-k/cdkd#3191)'
     // It names the command that DOES produce a usable preview, which is what
     // makes refusing here cost the user nothing.
     expect(err.message).toContain("'cdkd diff' previews the rest of the stack");
+    expect(err.message).toContain(STACK);
     expect(provisioned).toEqual([]);
     expect(stateBackend.saveState).not.toHaveBeenCalled();
     expect(lockManager.releaseLock).toHaveBeenCalledWith(STACK, REGION);
@@ -262,5 +276,39 @@ describe('DeployEngine refuses an unreadable properties map (go-to-k/cdkd#3191)'
       .catch((e: unknown) => e);
     expect(result).not.toBeInstanceOf(CdkdError);
     expect(lockManager.releaseLock).toHaveBeenCalledWith(STACK, REGION);
+  });
+  // go-to-k/cdkd#3211: the auto-refresh addresses AWS by the record's
+  // `physicalId`. An unchanged row with none usable is not read, and is not
+  // refused either: nothing this deploy does addresses it.
+  for (const [label, physicalId] of [
+    ['an empty', ''],
+    ['a whitespace-only', '   '],
+    ['an absent', undefined],
+    ['a non-string', 5],
+  ] as Array<[string, unknown]>) {
+    it(`does not auto-refresh an unchanged record with ${label} physicalId`, async () => {
+      stateBackend.getState.mockResolvedValue({
+        state: makeState({ Value: 'x' }, physicalId),
+        etag: 'etag-old',
+      });
+      const result = await makeEngine()
+        .deploy(STACK, template)
+        .catch((e: unknown) => e);
+      expect(result).not.toBeInstanceOf(Error);
+      expect(provisioned).toEqual([]);
+    });
+  }
+
+  it('auto-refreshes an unchanged record whose physicalId is usable', async () => {
+    // The control for the arm above: the harness does reach the read.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ Value: 'x' }),
+      etag: 'etag-old',
+    });
+    const result = await makeEngine()
+      .deploy(STACK, template)
+      .catch((e: unknown) => e);
+    expect(result).not.toBeInstanceOf(Error);
+    expect(provisioned).toEqual(['readCurrentState']);
   });
 });

@@ -467,6 +467,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     const prevA = {
       physicalId: 'phys-A',
       resourceType: 'AWS::S3::Bucket',
+      properties: {},
       attributes: {},
       dependencies: [],
     } as unknown as ResourceState;
@@ -481,6 +482,13 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       currentEtag: 'e0',
       currentResources: { A: prevA },
     });
+    // The deploy refuses a record with no `properties` bag at its load
+    // (go-to-k/cdkd#3211), so the bag is removed after it: what this case
+    // needs is a completed op whose recorded previous state has none.
+    (engine as unknown as { options: Record<string, unknown> }).options['onCurrentStateLoaded'] =
+      async (_stack: string, state: StackState | undefined) => {
+        delete (state!.resources['A'] as { properties?: unknown }).properties;
+      };
     const provider = (
       engine as unknown as {
         providerRegistry: { getProviderFor: () => { provider: { update: ReturnType<typeof vi.fn> } } };
@@ -525,6 +533,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     const prevA = {
       physicalId: 'phys-A',
       resourceType: 'AWS::S3::Bucket',
+      properties: {},
       attributes: {},
       dependencies: [],
     } as unknown as ResourceState;
@@ -539,6 +548,13 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       currentEtag: 'e0',
       currentResources: { A: prevA },
     });
+    // The deploy refuses a record with no `properties` bag at its load
+    // (go-to-k/cdkd#3211), so the bag is removed after it: what this case
+    // needs is a completed op whose recorded previous state has none.
+    (engine as unknown as { options: Record<string, unknown> }).options['onCurrentStateLoaded'] =
+      async (_stack: string, state: StackState | undefined) => {
+        delete (state!.resources['A'] as { properties?: unknown }).properties;
+      };
     const provider = (
       engine as unknown as {
         providerRegistry: { getProviderFor: () => { provider: { update: ReturnType<typeof vi.fn> } } };
@@ -828,6 +844,84 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
       expect(seg.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
       expect(seg.failedOperations[0].physicalId).toBeUndefined();
+    });
+
+    // go-to-k/cdkd#3211, through `deploy()`: the UPDATE of a record with no
+    // usable physical id is refused before anything is sent, so it fails the
+    // deploy and journals no attempted bag.
+    it('an UPDATE over a record with a blank physical id fails the deploy with no attempted bag (go-to-k/cdkd#3211)', async () => {
+      const change = {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        desiredProperties: { p: 'new' },
+        currentProperties: { p: 'old' },
+        propertyChanges: [{ path: 'p', requiresReplacement: false }],
+      } as unknown as ResourceChange;
+      const prevB = {
+        physicalId: '  ',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { p: 'old' },
+        attributes: {},
+        dependencies: [],
+      } as unknown as ResourceState;
+      const engine = buildEngine({
+        changes: new Map([['B', change]]),
+        deps: { B: [] },
+        noRollback: true,
+        currentEtag: 'e0',
+        currentResources: { B: prevB },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { update: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      const error = await engine.deploy(stackName, template).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      let chain = '';
+      for (let e: unknown = error; e instanceof Error; e = (e as { cause?: unknown }).cause) {
+        chain += `${e.message} | `;
+      }
+      expect(chain).toContain('did not try to update it');
+      expect(provider.update).not.toHaveBeenCalled();
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      expect(seg.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['B']);
+      expect(seg.failedOperations[0]).not.toHaveProperty('attemptedProperties');
+    });
+
+    it('a template-removal DELETE over a blank physical id reports deleteSkipped (go-to-k/cdkd#3211)', async () => {
+      const change = {
+        logicalId: 'D',
+        changeType: 'DELETE',
+        resourceType: 'AWS::S3::Bucket',
+        currentProperties: {},
+      } as unknown as ResourceChange;
+      const prevD = {
+        physicalId: '',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      } as unknown as ResourceState;
+      const engine = buildEngine({
+        changes: new Map([['D', change]]),
+        deps: { D: [] },
+        currentEtag: 'e0',
+        currentResources: { D: prevD },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { delete: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      const result = await engine.deploy(stackName, template);
+      expect(provider.delete).not.toHaveBeenCalled();
+      // The count the CLI turns into exit 2 (`--allow-unaddressed`).
+      expect(result.deleteSkipped).toBe(1);
+      expect(result.deleted).toBe(0);
     });
 
     it('control: a refused CREATE that carries a physical id is still journaled', async () => {

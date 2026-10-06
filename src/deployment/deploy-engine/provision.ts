@@ -11,6 +11,7 @@ import {
 } from '../../types/deployment-events.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceChange, ResourceState } from '../../types/state.js';
+import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
 import { ProvisioningError, ResourceTimeoutError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { DEFAULT_RESOURCE_TIMEOUT_MS, DEFAULT_RESOURCE_WARN_AFTER_MS } from './options.js';
@@ -330,9 +331,12 @@ export async function provisionResource(
         ...(stateResources[logicalId]?.provisionedBy
           ? { provisionedBy: stateResources[logicalId]?.provisionedBy }
           : labelRouting && { provisionedBy: labelRouting }),
-        ...(stateResources[logicalId]?.physicalId && {
-          physicalId: stateResources[logicalId]?.physicalId,
-        }),
+        // Only an id that names something (go-to-k/cdkd#3211): a whitespace
+        // one is truthy, and the event's `physicalId` is read as a resource.
+        ...(stateResources[logicalId] !== undefined &&
+          hasAddressablePhysicalId(stateResources[logicalId]) && {
+            physicalId: stateResources[logicalId].physicalId,
+          }),
         reason: deleteSkipped,
         durationMs: Date.now() - resourceStartedAt,
       });

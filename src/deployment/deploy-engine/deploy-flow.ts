@@ -7,6 +7,7 @@ import {
   refuseMalformedOrphans,
   refuseMalformedOutputs,
   refuseMalformedResourceEntriesForDeploy,
+  refuseMalformedResourceProperties,
   refuseMalformedResourcesForDeploy,
 } from '../../state/malformed-resources-bag.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
@@ -195,6 +196,12 @@ export async function doDeployWithPrefetch(
     // It does not dominate the CLI's PRE-lock `--recreate-via-*` check, which
     // reads the named rows itself (go-to-k/cdkd#3202 owns that site).
     refuseMalformedResourceEntriesForDeploy(currentState, stackName, this.stackRegion);
+    // And each row's `properties` MAP (go-to-k/cdkd#3211), BELOW the row guard,
+    // which names a typeless row with a torn map more precisely. `calculateDiff`
+    // refuses it too, but the observed-state auto-refresh below hands the map
+    // to `provider.readCurrentState` first, and the walks between here and the
+    // diff read it. The load dominates every one of them.
+    refuseMalformedResourceProperties(currentState, stackName, this.stackRegion);
     // The `orphans` CONTAINER, beside it and for the same placement reason
     // (go-to-k/cdkd#3379): the adoption pass below reads it on a bare `?? []`
     // and ASSIGNS `currentState.orphans` from what it read, so an unreadable
