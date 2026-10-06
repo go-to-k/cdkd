@@ -173,8 +173,8 @@ in the table above, and the same ownership checks skip it with a warning. A
 delete that fails keeps the entry: the automatic rollback keeps its full
 segment, and `cdkd destroy` keeps the state and the journal for a re-run. A
 successful deploy keeps the entry only when it could not act on it (a delete
-that failed, an interrupt, or a state record it could not read, anywhere under
-the state prefix); it keeps the
+that failed, an interrupt, or a state record it could not read, or a legacy
+record with no region, anywhere under the state prefix); it keeps the
 journal (reduced to that entry where it can), warns, and exits `2`
 (`--allow-unaddressed` exits `0`), and the next successful deploy retries it.
 

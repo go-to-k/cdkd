@@ -779,6 +779,18 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       expect(backend.dropRollbackJournalFailedOperations.mock.calls.map((c) => c[0])).toEqual([`${STACK}~Child`]);
     });
 
+    it("a child journal delete that REPORTS false strips the child's settled entry too", async () => {
+      const { engine, backend, provider } = harness();
+      backend.deleteRollbackJournal.mockImplementation((name: string) =>
+        Promise.resolve(name === `${STACK}~Child` ? false : true)
+      );
+
+      await engine.deploy(STACK, templateOf(['Q']));
+
+      expect(childOrphanDeletes(provider)).toHaveLength(1);
+      expect(backend.dropRollbackJournalFailedOperations.mock.calls.map((c) => c[0])).toEqual([`${STACK}~Child`]);
+    });
+
     it('a child journal delete that succeeds strips nothing', async () => {
       const { engine, backend } = harness();
 

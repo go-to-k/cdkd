@@ -1893,6 +1893,37 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(drop({ ...orphanOp(), logicalId: 'Other' }, seg)).toBe(false);
     });
 
+    it('a strip that also fails names the remedy: a successful deploy before any rollback or destroy', async () => {
+      const engine = noChangeEngine();
+      foreignHeld(engine);
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+      journal.deleteRollbackJournal.mockResolvedValue(false);
+      journal.dropRollbackJournalFailedOperations.mockRejectedValue(new Error('PutObject denied'));
+
+      await engine.deploy(stackName, template);
+
+      const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+      expect(warned.some((w) => w.includes('run a successful cdkd deploy of the stack first'))).toBe(true);
+    });
+
+    // Review CODE-N1: a record holding the orphan's very resource tracks it,
+    // even when the record under its logical id holds another one.
+    it('tracked under another logical id while its own id holds another resource: settled silently', async () => {
+      const engine = noChangeEngine({
+        Orphan: { physicalId: 'new-stream', resourceType: 'AWS::Kinesis::Stream', properties: {}, attributes: {}, dependencies: [] },
+        Adopted: { physicalId: 'orphan-stream', resourceType: 'AWS::Kinesis::Stream', properties: {}, attributes: {}, dependencies: [] },
+      });
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+
+      const result = await engine.deploy(stackName, template);
+
+      expect(orphanDeletes(engine)).toHaveLength(0);
+      expect(result.deleteSkipped).toBe(0);
+      const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+      expect(warned.some((w) => w.includes('manual attention') || w.includes('delete it manually'))).toBe(false);
+      expect(journal.deleteRollbackJournal).toHaveBeenCalledWith(stackName, 'us-east-1');
+    });
+
     it('a journal delete that succeeds strips nothing', async () => {
       const engine = noChangeEngine();
       foreignHeld(engine);

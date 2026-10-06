@@ -332,7 +332,7 @@ export async function settleJournaledOrphansOnSuccess(args: {
     // One call per line: each is masked and bounded by `journaledOrphanLines`.
     for (const line of journaledOrphanLines(orphans, logger)) logger.info(line);
     try {
-      const unreadable = await applySuccessRule(
+      const { unreadable, tracked } = await applySuccessRule(
         orphans,
         stateResources,
         orphans.deployLogicalIds ?? new Set(),
@@ -343,9 +343,12 @@ export async function settleJournaledOrphansOnSuccess(args: {
       );
       const acting: JournaledOrphans = {
         segments: orphans.segments
-          .map(({ segment, ops }) => ({ segment, ops: ops.filter((op) => !unreadable.has(op)) }))
+          .map(({ segment, ops }) => ({
+            segment,
+            ops: ops.filter((op) => !unreadable.has(op) && !tracked.has(op)),
+          }))
           .filter(({ ops }) => ops.length > 0),
-        count: orphans.count - unreadable.size,
+        count: orphans.count - unreadable.size - tracked.size,
       };
       const outcome = await deleteJournaledOrphans(
         acting,
@@ -355,7 +358,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
         args.isInterrupted ? { isInterrupted: args.isInterrupted } : {}
       );
       kept = all.filter(
-        ({ segment, op }) => unreadable.has(op) || !isHandledOrphan(outcome.handled, segment, op)
+        ({ segment, op }) =>
+          unreadable.has(op) || (!tracked.has(op) && !isHandledOrphan(outcome.handled, segment, op))
       );
     } catch (err) {
       logger.warn(
@@ -382,7 +386,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
           } catch (err) {
             logger.warn(
               safeMsg`Failed to remove the settled entries from the rollback journal of stack ${stack}: ` +
-                safeMsg`${errorDetail(err)}. A later cdkd rollback or cdkd destroy could act on them again.`
+                safeMsg`${errorDetail(err)}. A cdkd rollback or cdkd destroy could act on them again; run a ` +
+                'successful cdkd deploy of the stack first, which settles them again.'
             );
           }
         };
@@ -436,7 +441,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
 /**
  * The success-path rule (see {@link settleJournaledOrphansOnSuccess}): demote
  * every proven orphan this deploy's outcome may own, and return those whose
- * ownership could not be read (kept, not acted on).
+ * ownership could not be read (kept, not acted on) and those a record of this
+ * stack tracks (settled, not acted on).
  */
 async function applySuccessRule(
   orphans: JournaledOrphans,
@@ -446,8 +452,9 @@ async function applySuccessRule(
   stack: string,
   logger: Logger,
   isInterrupted: (() => boolean) | undefined
-): Promise<Set<FailedOperation>> {
+): Promise<{ unreadable: Set<FailedOperation>; tracked: Set<FailedOperation> }> {
   const unreadable = new Set<FailedOperation>();
+  const tracked = new Set<FailedOperation>();
   let interrupted = false;
   for (const { ops } of orphans.segments) {
     for (const op of ops) {
@@ -459,12 +466,15 @@ async function applySuccessRule(
         continue;
       }
       // A record of this stack holding this very resource tracks it (an
-      // idempotent create, an adoption): the classifier settles it silently.
+      // idempotent create, an adoption): settled here, silently, without the
+      // classifier, whose same-logical-id check would call a record holding
+      // another resource under that id a mismatch.
       if (
         Object.values(stateResources).some(
           (r) => r?.resourceType === op.resourceType && r.physicalId === op.physicalId
         )
       ) {
+        tracked.add(op);
         continue;
       }
       if (
@@ -492,7 +502,7 @@ async function applySuccessRule(
       unreadable.add(op);
     }
   }
-  return unreadable;
+  return { unreadable, tracked };
 }
 
 /**

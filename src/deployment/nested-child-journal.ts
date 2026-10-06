@@ -326,7 +326,8 @@ export async function dropNestedChildJournals(args: {
    */
   beforeDelete?: (child: string, state: StackState | undefined) => Promise<boolean>;
   /**
-   * Run under the child's lock when its journal delete throws, so a caller
+   * Run under the child's lock when its journal delete fails (throws or
+   * reports `false`), so a caller
    * can strip what `beforeDelete` settled from the journal that survives.
    */
   onDeleteFailed?: (child: string) => Promise<void>;
@@ -371,11 +372,17 @@ export async function dropNestedChildJournals(args: {
             return false;
           }
         }
+        let gone: boolean | void;
         try {
-          await stateBackend.deleteRollbackJournal(child, region);
+          gone = await stateBackend.deleteRollbackJournal(child, region);
         } catch (error) {
           await args.onDeleteFailed?.(child);
           throw error;
+        }
+        // The backend REPORTS a failed DeleteObject as `false` (it has warned).
+        if (gone === false) {
+          await args.onDeleteFailed?.(child);
+          return false;
         }
         return true;
       });

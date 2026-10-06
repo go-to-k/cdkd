@@ -1046,6 +1046,33 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
     expect(beforeDelete).toHaveBeenCalledWith('Root~Child', undefined);
   });
 
+  // The backend REPORTS a failed DeleteObject as `false` (#4402): that is a
+  // failed delete too.
+  it('a journal delete that reports false runs onDeleteFailed and logs no deletion', async () => {
+    const t = tree();
+    t.stateBackend.deleteRollbackJournal.mockImplementation(async (name: string) => {
+      t.order.push(`delete ${name}`);
+      return name === 'Root~Child' ? false : true;
+    });
+    const onDeleteFailed = vi.fn(async () => undefined);
+
+    await dropNestedChildJournals({
+      stateBackend: t.stateBackend as never,
+      lockManager: t.lockManager as never,
+      parentStackName: 'Root',
+      region: REGION,
+      resources: t.resources as never,
+      logger: t.logger,
+      beforeDelete: async () => true,
+      onDeleteFailed,
+    });
+
+    expect(onDeleteFailed.mock.calls).toEqual([['Root~Child']]);
+    const debug = t.logger.debug.mock.calls.map((c) => String(c[0]));
+    expect(debug).not.toContain('Deleted the rollback journal of nested stack Root~Child');
+    expect(debug).toContain('Deleted the rollback journal of nested stack Root~Child~Grand');
+  });
+
   it('a failed delete warns and carries on', async () => {
     const t = tree();
     t.stateBackend.deleteRollbackJournal.mockRejectedValueOnce(new Error('AccessDenied'));
