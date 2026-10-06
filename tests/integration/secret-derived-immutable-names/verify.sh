@@ -50,8 +50,13 @@
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
 #      LOAD-BEARING for the Schedules: each delete runs through the recorded
 #      identity (the --verbose line naming it is asserted).
+#   6b. A failed-CREATE orphan named from the secret (go-to-k/cdkd#3869): deploy
+#      CdkdSecretDerivedOrphan with --no-rollback (ECR makes the repository,
+#      then rejects its lifecycle policy, so the journal records it), then
+#      destroy that stack: its --verbose log does not name the repository,
+#      whose delete runs from the journal alone.
 #   7. Remove the secret; assert 0 orphans.
-#   8. Sweep every object version under the stack's state prefix.
+#   8. Sweep every object version under both stacks' state prefixes.
 #
 # Discrimination (for a mutation probe on real AWS): revert
 # src/provisioning/providers/apigatewayv2-provider.ts ALONE and step 4 fails
@@ -78,6 +83,11 @@
 # a secret-named resource in plaintext: ${QUEUE_NAME}": the `resolved to` line
 # of SecretQueueReaderPolicy's Ref / Fn::GetAtt prints the queue URL and ARN
 # raw (not yet measured on real AWS).
+# Revert the `withPrintingSecrets` wrap in
+# src/deployment/rollback-executor/journaled-orphans.ts ALONE (go-to-k/cdkd#3869)
+# and step 6b fails naming the repository on the ECR provider's
+# "Deleting ECR Repository SecretOrphanRepo: <name>" line (not yet measured on
+# real AWS).
 # Revert the `secretNameNeedles` / `secretNameSink` lines of
 # src/cli/commands/diff-recursive.ts ALONE and step 5b fails naming
 # ${QUEUE_NAME}; revert the `withPrintingSecrets` wrap in
@@ -139,7 +149,12 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+ORPHAN_STACK="CdkdSecretDerivedOrphan"
+ORPHAN_STATE_KEY="cdkd/${ORPHAN_STACK}/${REGION}/state.json"
+ORPHAN_JOURNAL_KEY="cdkd/${ORPHAN_STACK}/${REGION}/rollback-journal.json"
+ORPHAN_PREFIX="$(s3_stack_prefix "${ORPHAN_STACK}" "${REGION}")"
 DEPLOY_LOG="$(mktemp -t secret-derived-immutable-names.XXXXXX)"
+ORPHAN_LOG="$(mktemp -t secret-derived-immutable-names-orphan.XXXXXX)"
 API_NAME="CdkdSecretDerivedImmutableNamesApi"
 
 # One run's names: unique, so a leftover from a failed run cannot be mistaken
@@ -157,6 +172,8 @@ DS_NAME="sdin_ds_${SUFFIX//-/_}"
 QUEUE_NAME="sdin-q-${SUFFIX}"
 FILTER_NAME="sdin-mf-${SUFFIX}"
 FILTER_NAME_ROTATED="sdin-mfr-${SUFFIX}"
+# ECR repository names are lower-case.
+REPO_NAME="sdin-repo-${SUFFIX}"
 GROUP_NAME="sdin-grp-${SUFFIX}"
 SCHEDULE_NAME="CdkdSdinSchedule"
 PLAIN_SCHEDULE_NAME="CdkdSdinSchedulePlainTarget"
@@ -166,6 +183,8 @@ SEEDED_SECRET=0
 # the pre-flight must not destroy (or sweep the state history of) a stack an
 # earlier or concurrent run left behind.
 DEPLOYED=0
+# The same for the orphan stack, set just before its deploy.
+ORPHAN_DEPLOYED=0
 
 log_tail() {
   tail -60 "${DEPLOY_LOG}" >&2
@@ -215,6 +234,14 @@ cleanup() {
       aws sqs delete-queue --region "${REGION}" --queue-url "${LEFT_QUEUE_URL}" >/dev/null 2>&1
     fi
   fi
+  if [ "${ORPHAN_DEPLOYED}" = "1" ] && [ -f "${LOCAL_DIST}" ]; then
+    node "${LOCAL_DIST}" destroy "${ORPHAN_STACK}" --region "${REGION}" \
+      --state-bucket "${STATE_BUCKET:-}" --force >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${ORPHAN_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
+    aws ecr delete-repository --region "${REGION}" --repository-name "${REPO_NAME}" --force >/dev/null 2>&1
+    aws s3 rm "s3://${STATE_BUCKET:-}/${ORPHAN_JOURNAL_KEY}" >/dev/null 2>&1
+    s3_purge_prefix_versions "${STATE_BUCKET:-}" "${ORPHAN_PREFIX}" noncurrent || true
+  fi
   if [ "${SEEDED_SECRET}" = "1" ]; then
     aws secretsmanager delete-secret --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
       --force-delete-without-recovery >/dev/null 2>&1
@@ -222,7 +249,7 @@ cleanup() {
   if [ "${DEPLOYED}" = "1" ]; then
     s3_purge_prefix_versions "${STATE_BUCKET:-}" "${PREFIX}" noncurrent || true
   fi
-  rm -f "${DEPLOY_LOG}" "${SECRET_FILE:-}" 2>/dev/null || true
+  rm -f "${DEPLOY_LOG}" "${ORPHAN_LOG}" "${SECRET_FILE:-}" 2>/dev/null || true
   set -e
   exit "${rc}"
 }
@@ -241,6 +268,12 @@ if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/n
   echo "FAIL: state already exists at ${STATE_KEY} - clean up first." >&2
   exit 1
 fi
+for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}"; do
+  if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}" >/dev/null 2>&1; then
+    echo "FAIL: ${key} already exists - clean up first." >&2
+    exit 1
+  fi
+done
 LEFTOVER_APIS="$(aws apigatewayv2 get-apis --region "${REGION}" \
   --query "Items[?Name=='${API_NAME}'].ApiId" --output text)"
 if [ -n "${LEFTOVER_APIS}" ] && [ "${LEFTOVER_APIS}" != "None" ]; then
@@ -262,8 +295,8 @@ fi
 echo "==> Step 1: seed the secret naming every secret-derived property"
 # From a file, not argv, so the value never shows in the host's process list.
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" "${REPO_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager create-secret --region "${REGION}" --name "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -497,8 +530,8 @@ done
 
 echo "==> Step 3b: rotate the secret's filter field only"
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" "${REPO_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager put-secret-value --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -711,6 +744,65 @@ if ! grep -qF "Deleted Schedule PlainTargetSchedule (found by its recorded creat
 fi
 echo "    OK: PlainTargetSchedule was deleted by its recorded identity"
 
+echo "==> Step 6b: a failed-CREATE orphan named from the secret, destroyed from the journal"
+ORPHAN_DEPLOYED=1
+set +e
+node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --yes --no-rollback > "${ORPHAN_LOG}" 2>&1
+ORPHAN_DEPLOY_RC=$?
+set -e
+if [ "${ORPHAN_DEPLOY_RC}" -eq 0 ]; then
+  echo "FAIL: premise: the orphan stack's deploy exited 0; ECR accepted the invalid lifecycle policy" >&2
+  tail -40 "${ORPHAN_LOG}" >&2
+  exit 1
+fi
+# PREMISE: ECR made the repository, and the journal records it as a proven
+# orphan (no state record holds it).
+if ! aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}" >/dev/null; then
+  echo "FAIL: premise: the failed deploy left no repository ${REPO_NAME} (ECR refused the create itself?)" >&2
+  tail -40 "${ORPHAN_LOG}" >&2
+  exit 1
+fi
+# `|| echo`: a missing or unparseable journal must reach the FAIL below, not
+# end the run at the assignment with no diagnostic.
+ORPHAN_PROVEN="$(aws s3 cp "s3://${STATE_BUCKET}/${ORPHAN_JOURNAL_KEY}" - \
+  | jq -r '[.segments[].failedOperations[]? | select(.logicalId == "SecretOrphanRepo" and .physicalIdRecoveredFromError == true)] | length' 2>&1 \
+  || echo "unreadable journal")"
+if [ "${ORPHAN_PROVEN}" != "1" ]; then
+  echo "FAIL: premise: the journal holds ${ORPHAN_PROVEN} proven SecretOrphanRepo orphan(s), expected 1" >&2
+  tail -40 "${ORPHAN_LOG}" >&2
+  exit 1
+fi
+echo "    OK: the failed deploy journaled the repository as a proven orphan"
+set +e
+node "${LOCAL_DIST}" destroy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --force --verbose > "${ORPHAN_LOG}" 2>&1
+ORPHAN_DESTROY_RC=$?
+set -e
+if [ "${ORPHAN_DESTROY_RC}" -ne 0 ]; then
+  echo "FAIL: the orphan stack's destroy exited ${ORPHAN_DESTROY_RC}" >&2
+  tail -60 "${ORPHAN_LOG}" >&2
+  exit 1
+fi
+# PREMISE: the provider's delete line for the orphan is in the log.
+if ! grep -qF -- "Deleting ECR Repository SecretOrphanRepo: " "${ORPHAN_LOG}"; then
+  echo "FAIL: premise: the destroy log has no 'Deleting ECR Repository SecretOrphanRepo: ' line (the --verbose debug stream is missing, the orphan was not deleted, or the wording drifted)" >&2
+  tail -60 "${ORPHAN_LOG}" >&2
+  exit 1
+fi
+if grep -qF -- "${REPO_NAME}" "${ORPHAN_LOG}"; then
+  HIT_LINES="$(grep -nF -- "${REPO_NAME}" "${ORPHAN_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+  echo "FAIL: the orphan stack's destroy log names the secret-derived repository name in plaintext on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+assert_gone "orphan repository ${REPO_NAME} still exists after destroy" \
+  aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}"
+for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}"; do
+  assert_gone "${key} still exists after the orphan stack's destroy" \
+    aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
+done
+echo "    OK: the journaled orphan was deleted, and the destroy log withholds its name"
+
 echo "==> Step 7: remove the secret; assert 0 orphans"
 aws secretsmanager delete-secret --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
   --force-delete-without-recovery >/dev/null
@@ -785,12 +877,14 @@ fi
 echo "    OK: 0 orphans (state, API with both stages, ECS service, cluster and task definition, managed policy, GraphQL API with its data source, queue, log group with its metric filter, both schedules with their group, roles and the second target queue)"
 
 trap - EXIT INT TERM
-rm -f "${DEPLOY_LOG}" 2>/dev/null || true
+rm -f "${DEPLOY_LOG}" "${ORPHAN_LOG}" 2>/dev/null || true
 
-echo "==> Step 8: sweep every object version under the stack's state prefix"
+echo "==> Step 8: sweep every object version under both stacks' state prefixes"
 # On the SUCCESS path, after the disarm: a sweep living only in `cleanup` never
 # runs here, and `noncurrent` would leave the delete marker behind.
 s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
+s3_purge_prefix_versions "${STATE_BUCKET}" "${ORPHAN_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${ORPHAN_PREFIX}" "orphan stack state teardown"
 echo ""
 echo "[verify] PASS - an in-place update of a Stage, an ECS Service, a managed policy, a GraphQL API, a data source, a Cloud Control-routed metric filter and a schedule whose immutable values come from a secret succeeded, in place, and destroy was clean"

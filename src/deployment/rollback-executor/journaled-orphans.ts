@@ -24,6 +24,8 @@ import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-
 import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
+import { withPrintingSecrets } from '../resource-secrets-scope.js';
+import { journaledOrphanPrintingBag, maskEventTextWithBoundBags } from '../secret-name-needles.js';
 import { NESTED_PENDING_PARENT_REASON, displacedPhysicalIdShown } from '../nested-child-journal.js';
 import {
   type CompletedOperation,
@@ -200,6 +202,23 @@ export async function deleteJournaledOrphans(
     handled: [] as Array<{ segment: RollbackJournalSegment; op: FailedOperation }>,
   };
   const inlinePolicyWriters = new RollbackInlinePolicyWriters();
+  // go-to-k/cdkd#3869: each event is masked by the batch's printing bag too,
+  // as its log lines are. The op's own masker holds only the names the entry
+  // spells, never one it read from a state record. Both callers (destroy, and
+  // a successful deploy's settle) get it here.
+  const record = ctx.recordEvent;
+  // go-to-k/cdkd#3869: every delete of the batch runs under ONE printing bag of
+  // each entry's own name spellings, so a provider's delete lines and the
+  // final-snapshot lines mask a name derived from a secret. Nothing reads it
+  // to decide: `getCurrentResourceSecrets` never returns it.
+  const printing = journaledOrphanPrintingBag(
+    orphans.segments.flatMap(({ ops, companions }) => [...(companions ?? []), ...ops]),
+    stateResources
+  );
+  const maskedCtx: RollbackExecutorContext =
+    record === undefined
+      ? ctx
+      : { ...ctx, recordEvent: (event) => record(maskEventTextWithBoundBags(event)) };
   for (const { segment, ops: orphanOps, companions } of orphans.segments) {
     if (options.isInterrupted?.()) {
       total.interrupted = true;
@@ -209,15 +228,17 @@ export async function deleteJournaledOrphans(
     // before the UPDATE they were journaled beside, as `--revert-failed` runs.
     const ops = [...(companions ?? []), ...orphanOps];
     const replay = (): ReturnType<typeof replayFailedOperations> =>
-      withStackName(stackName, () =>
-        replayFailedOperations(ops, stateResources, stackName, ctx, {
-          // A destroy run, not a rollback: its own run events frame these
-          // ops, so no ROLLBACK_STARTED / ROLLBACK_FINISHED envelope.
-          emitEnvelope: false,
-          inlinePolicyWriters,
-          forDestroy: true,
-          ...(options.isInterrupted && { isInterrupted: options.isInterrupted }),
-        })
+      withPrintingSecrets(printing, () =>
+        withStackName(stackName, () =>
+          replayFailedOperations(ops, stateResources, stackName, maskedCtx, {
+            // A destroy run, not a rollback: its own run events frame these
+            // ops, so no ROLLBACK_STARTED / ROLLBACK_FINISHED envelope.
+            emitEnvelope: false,
+            inlinePolicyWriters,
+            forDestroy: true,
+            ...(options.isInterrupted && { isInterrupted: options.isInterrupted }),
+          })
+        )
       );
     const result =
       segment.skipPrefix === undefined

@@ -32,12 +32,19 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 const { IntrinsicFunctionResolver } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
-const { secretNamePrintingBag, secretNamesReadBy, stateSecretNameNeedles } = await import(
+const {
+  journaledOrphanPrintingBag,
+  maskEventTextWithBoundBags,
+  secretNamePrintingBag,
+  secretNamesReadBy,
+  stateSecretNameNeedles,
+} = await import(
   '../../../src/deployment/secret-name-needles.js'
 );
 const { hasMaskableValues, maskSecretsInText, recordLogOnlyValue } = await import(
   '../../../src/deployment/secret-redaction.js'
 );
+const { withPrintingSecrets } = await import('../../../src/deployment/resource-secrets-scope.js');
 
 const REF = '{{resolve:secretsmanager:team:SecretString:user::}}';
 const USER_ID = 'team-secret-user';
@@ -193,5 +200,84 @@ describe('ResolverContext.secretNameSink — a command’s print-only sink', () 
     // Premise: the printing arm took it.
     expect(maskSecretsInText(encoded, printing)).toBe('***');
     expect(maskSecretsInText(encoded, sink)).toBe(encoded);
+  });
+});
+
+describe('journaledOrphanPrintingBag (go-to-k/cdkd#3869)', () => {
+  const user = (userName: string): Records[string] => ({
+    physicalId: USER_ID,
+    resourceType: 'AWS::IAM::User',
+    properties: { UserName: userName },
+    attributes: {},
+    dependencies: [],
+  });
+  const userOp = (userName: string) => ({
+    logicalId: 'User',
+    resourceType: 'AWS::IAM::User',
+    physicalId: USER_ID,
+    attemptedProperties: { UserName: userName },
+  });
+  const keyOp = {
+    logicalId: 'Key',
+    resourceType: 'AWS::IAM::AccessKey',
+    physicalId: 'AKIAEXAMPLEKEY',
+    attemptedProperties: { UserName: USER_ID },
+  };
+  const masks = (bag: Map<string, string>): boolean =>
+    maskSecretsInText(`user ${USER_ID}`, bag) === 'user ***';
+
+  it.each([
+    ['its own entry names it from a secret', REF, true],
+    ['negative control, an ordinary name', 'plain-user-name', false],
+  ])("judges an orphan from its own journal entry: %s", (_l, name, masked) => {
+    expect(masks(journaledOrphanPrintingBag([userOp(name)], {}))).toBe(masked);
+  });
+
+  it.each([
+    ['a secret-named user in state', REF, true],
+    ['negative control, an ordinary user', 'plain-user-name', false],
+  ])('carries a name an orphan read from a state record: %s', (_l, name, masked) => {
+    expect(masks(journaledOrphanPrintingBag([keyOp], { User: user(name) }))).toBe(masked);
+  });
+
+  it.each([
+    ['a secret-named record', REF, true],
+    ['negative control, an ordinary record', 'plain-user-name', false],
+  ])("masks the state record under the orphan's own logical id: %s", (_l, name, masked) => {
+    // A replacement orphan: the record is the resource being replaced.
+    const op = { ...userOp('plain-new-name'), physicalId: 'new-user-id' };
+    expect(masks(journaledOrphanPrintingBag([op], { User: user(name) }))).toBe(masked);
+  });
+});
+
+describe('maskEventTextWithBoundBags (go-to-k/cdkd#3869)', () => {
+  const event = (ownLines?: boolean) => ({
+    eventType: 'RESOURCE_FAILED',
+    physicalId: USER_ID,
+    reason: `skipped ${USER_ID}`,
+    error: { message: `AccessDenied on ${USER_ID}`, ...(ownLines !== undefined && { ownLines }) },
+  });
+  const bound = <T>(fn: () => T): T => {
+    const bag = new Map<string, string>();
+    recordLogOnlyValue(bag, USER_ID);
+    return withPrintingSecrets(bag, fn);
+  };
+
+  it("masks the message and the reason under a bound bag, never the physicalId field", () => {
+    const masked = bound(() => maskEventTextWithBoundBags(event()));
+    expect(masked.error.message).toBe('AccessDenied on ***');
+    expect(masked.reason).toBe('skipped ***');
+    expect(masked.physicalId).toBe(USER_ID);
+  });
+
+  it('negative control: unchanged with no bag bound', () => {
+    expect(maskEventTextWithBoundBags(event())).toEqual(event());
+  });
+
+  it("leaves a replay refusal's own message (ownLines) as constructed", () => {
+    const masked = bound(() => maskEventTextWithBoundBags(event(true)));
+    expect(masked.error.message).toBe(`AccessDenied on ${USER_ID}`);
+    // Premise: the bag was bound; the reason beside it is masked.
+    expect(masked.reason).toBe('skipped ***');
   });
 });

@@ -136,6 +136,14 @@ only the previous generation carried was missed. Masking at the shared executor
 makes both callers equal; the deploy engine's own `maskSecretsInEvent` still runs
 and double-masking is a no-op.
 
+`cdkd destroy` and `cdkd state destroy` resolve no secret, but a resource can be
+NAMED from one: its record (or, for a resource a failed deploy created, its
+rollback-journal entry) spells the name as its `{{resolve:...}}` reference. Each
+delete's event `reason` and error message are masked with that name's spellings
+and with those of the secret-named resources its record holds, the same needles
+that mask the delete's log lines. A successful `cdkd deploy` that deletes such a
+journaled resource before removing its journal masks those events the same way.
+
 The `name`, `awsErrorCode` and `requestId` fields are NOT masked — they are AWS
 enum-shaped identifiers that never carry a caller-supplied value.
 

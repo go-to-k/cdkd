@@ -97,7 +97,10 @@ import {
   sameJournaledOrphans,
 } from '../../deployment/rollback-executor/journaled-orphans.js';
 import { producerRegionsFromState } from '../../deployment/rollback-executor.js';
-import { secretNamePrintingBag } from '../../deployment/secret-name-needles.js';
+import {
+  maskEventTextWithBoundBags,
+  secretNamePrintingBag,
+} from '../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 
 /**
@@ -391,6 +394,19 @@ export interface DestroyRunnerResult {
  * child's own state file (`<parent>~<logicalId>`) — see `skippedStateTargets`.
  */
 const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
+
+/**
+ * Record one destroy event with its human-authored text masked by the
+ * printing bags bound where it is recorded (go-to-k/cdkd#3869,
+ * {@link maskEventTextWithBoundBags}): a delete's own bag, or a
+ * journaled-orphan batch's.
+ */
+function recordDestroyEvent(
+  recorder: DeploymentEventRecorder | undefined,
+  event: Parameters<DeploymentEventRecorder['record']>[0]
+): void {
+  recorder?.record(maskEventTextWithBoundBags(event));
+}
 
 /**
  * The remedy both skip arms of the per-stack summary name (go-to-k/cdkd#2122).
@@ -1581,7 +1597,7 @@ export async function runDestroyForStack(
               `  ⊘ ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) retained — DeletionPolicy: ${displaySafe(resource.deletionPolicy)}`
             );
             result.retainedCount++;
-            ctx.eventRecorder?.record({
+            recordDestroyEvent(ctx.eventRecorder, {
               eventType: 'RESOURCE_RETAINED',
               stackName,
               operation: 'DELETE',
@@ -1624,7 +1640,7 @@ export async function runDestroyForStack(
             );
             result.skippedCount++;
             skippedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
-            ctx.eventRecorder?.record({
+            recordDestroyEvent(ctx.eventRecorder, {
               eventType: 'RESOURCE_SKIPPED',
               stackName,
               operation: 'DELETE',
@@ -1639,7 +1655,7 @@ export async function runDestroyForStack(
           const baseLabel = `Deleting ${logicalId} (${resource.resourceType})`;
           renderer.addTask(logicalId, baseLabel);
           const resourceStartedAt = Date.now();
-          ctx.eventRecorder?.record({
+          recordDestroyEvent(ctx.eventRecorder, {
             eventType: 'RESOURCE_STARTED',
             stackName,
             operation: 'DELETE',
@@ -1909,7 +1925,7 @@ export async function runDestroyForStack(
             for (const guard of deleteIndeterminateGuards(deleteResult)) {
               result.guardIndeterminateCount++;
               guardIndeterminateTargets.add(logicalId);
-              ctx.eventRecorder?.record({
+              recordDestroyEvent(ctx.eventRecorder, {
                 eventType: 'RESOURCE_GUARD_INDETERMINATE',
                 stackName,
                 operation: 'DELETE',
@@ -1954,7 +1970,7 @@ export async function runDestroyForStack(
               );
               result.skippedCount++;
               skippedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
-              ctx.eventRecorder?.record({
+              recordDestroyEvent(ctx.eventRecorder, {
                 eventType: 'RESOURCE_SKIPPED',
                 stackName,
                 operation: 'DELETE',
@@ -1978,7 +1994,7 @@ export async function runDestroyForStack(
 
             logger.info(`  ${formatResourceLine('deleted', logicalId, resource.resourceType)}`);
             result.deletedCount++;
-            ctx.eventRecorder?.record({
+            recordDestroyEvent(ctx.eventRecorder, {
               eventType: 'RESOURCE_SUCCEEDED',
               stackName,
               operation: 'DELETE',
@@ -2045,7 +2061,7 @@ export async function runDestroyForStack(
             ) {
               logger.debug(`  ${displaySafe(logicalId)} already deleted, removing from state`);
               result.deletedCount++;
-              ctx.eventRecorder?.record({
+              recordDestroyEvent(ctx.eventRecorder, {
                 eventType: 'RESOURCE_SUCCEEDED',
                 stackName,
                 operation: 'DELETE',
@@ -2071,7 +2087,7 @@ export async function runDestroyForStack(
               logger.error(`  ✗ Failed to delete ${displaySafe(logicalId)}:`, wrapped.message);
               result.errorCount++;
               failedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
-              ctx.eventRecorder?.record({
+              recordDestroyEvent(ctx.eventRecorder, {
                 eventType: 'RESOURCE_FAILED',
                 stackName,
                 operation: 'DELETE',
@@ -2085,7 +2101,7 @@ export async function runDestroyForStack(
               logger.error(`  ✗ Failed to delete ${displaySafe(logicalId)}:`, safeStringify(error));
               result.errorCount++;
               failedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
-              ctx.eventRecorder?.record({
+              recordDestroyEvent(ctx.eventRecorder, {
                 eventType: 'RESOURCE_FAILED',
                 stackName,
                 operation: 'DELETE',
