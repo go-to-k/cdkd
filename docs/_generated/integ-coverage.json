@@ -6558,6 +6558,7 @@
       "integs": [
         "iam-propagation-stress",
         "migrate-from-cfn",
+        "secret-derived-immutable-names",
         "sns-subscription-filter"
       ],
       "signals": {
@@ -6565,6 +6566,10 @@
           "literal"
         ],
         "migrate-from-cfn": [
+          "literal"
+        ],
+        "secret-derived-immutable-names": [
+          "l1",
           "literal"
         ],
         "sns-subscription-filter": [
