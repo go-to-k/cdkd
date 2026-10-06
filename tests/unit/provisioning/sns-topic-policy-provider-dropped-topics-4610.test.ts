@@ -31,6 +31,7 @@ import {
   defaultTopicPolicy,
 } from '../../../src/provisioning/providers/sns-topic-policy-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::SNS::TopicPolicy';
 const T1 = 'arn:aws:sns:us-east-1:123456789012:topic-1';
@@ -105,6 +106,32 @@ describe('defaultTopicPolicy (go-to-k/cdkd#4610)', () => {
     });
     expect(doc.Statement[0]!.Principal).toEqual({ AWS: '*' });
     expect(doc.Statement[0]!.Action).toContain('SNS:Publish');
+  });
+
+  it('is exactly the CloudFormation handler document', () => {
+    expect(JSON.parse(defaultTopicPolicy(T2)!)).toEqual({
+      Version: '2008-10-17',
+      Id: '__default_policy_ID',
+      Statement: [
+        {
+          Sid: '__default_statement_ID',
+          Effect: 'Allow',
+          Principal: { AWS: '*' },
+          Action: [
+            'SNS:GetTopicAttributes',
+            'SNS:SetTopicAttributes',
+            'SNS:AddPermission',
+            'SNS:RemovePermission',
+            'SNS:DeleteTopic',
+            'SNS:Subscribe',
+            'SNS:ListSubscriptionsByTopic',
+            'SNS:Publish',
+          ],
+          Resource: T2,
+          Condition: { StringEquals: { 'AWS:SourceOwner': '123456789012' } },
+        },
+      ],
+    });
   });
 
   it('takes the account of another partition from the ARN', () => {
@@ -312,8 +339,8 @@ describe('SNSTopicPolicyProvider.update resets a dropped topic (go-to-k/cdkd#461
 
   it('refuses a dropped topic NotFound when the client is in another region than the record', async () => {
     routeSend({}, { [T2]: notFound() });
-    await expect(
-      provider.update(
+    const err = await provider
+      .update(
         'P',
         `${T1},${T2}`,
         TYPE,
@@ -321,7 +348,12 @@ describe('SNSTopicPolicyProvider.update resets a dropped topic (go-to-k/cdkd#461
         { Topics: [T1, T2], PolicyDocument: DOC_OLD },
         { expectedRegion: 'us-west-2' }
       )
-    ).rejects.toThrow(/us-west-2/);
+      .catch((e: unknown) => e);
+    // The region refusal passes through the catch unwrapped, addressed to the topic.
+    expect(err).toBeInstanceOf(ProvisioningError);
+    expect((err as Error).message).toMatch(/^Refusing to treat NotFound/);
+    expect((err as Error).message).toContain('us-west-2');
+    expect((err as ProvisioningError).physicalId).toBe(T2);
   });
 
   it('fails the update when resetting a dropped topic fails', async () => {
@@ -375,27 +407,59 @@ describe('SNSTopicPolicyProvider.delete resets each topic to its default policy 
 
   it('refuses a NotFound when the client is in another region than the record', async () => {
     routeSend({}, { [T1]: notFound() });
-    await expect(
-      provider.delete('P', T1, TYPE, undefined, { expectedRegion: 'us-west-2' })
-    ).rejects.toThrow(/us-west-2/);
+    const err = await provider
+      .delete('P', T1, TYPE, undefined, { expectedRegion: 'us-west-2' })
+      .catch((e: unknown) => e);
+    // Passed through unwrapped: not the "Failed to delete" wrapper, addressed to the topic.
+    expect(err).toBeInstanceOf(ProvisioningError);
+    expect((err as Error).message).toMatch(/^Refusing to treat NotFound/);
+    expect((err as Error).message).toContain('us-west-2');
+    expect((err as ProvisioningError).physicalId).toBe(T1);
   });
 
-  it('throws on an id naming no topic', async () => {
+  it('falls back to the literal topic ARNs Topics lists when the id is a policy NAME (old CFn migration)', async () => {
     routeSend();
-    await expect(provider.delete('P', '', TYPE)).rejects.toThrow(/names no topic ARN/);
+    await provider.delete('P', 'MyStack-MyTopicPolicy-XYZ', TYPE, {
+      Topics: [T1, T1, { Ref: 'X' }, 'not-an-arn', T2],
+    });
+    // Deduplicated, non-ARN entries dropped.
+    expect(sets()).toEqual([
+      [T1, defaultTopicPolicy(T1)!],
+      [T2, defaultTopicPolicy(T2)!],
+    ]);
+  });
+
+  it('keeps the id ARNs and adds the listed ones when the id mixes an ARN with a non-ARN segment', async () => {
+    routeSend();
+    await provider.delete('P', `${T3},MyStack-Policy-XYZ`, TYPE, { Topics: [T1] });
+    expect(sets().map(([arn]) => arn)).toEqual([T3, T1]);
+  });
+
+  it('never widens an all-ARN id (a failed create mark) to the Topics list', async () => {
+    routeSend();
+    await provider.delete('P', T1, TYPE, { Topics: [T1, T2, T3] });
+    expect(sets().map(([arn]) => arn)).toEqual([T1]);
+  });
+
+  it('refuses, non-retryably and before any write, an empty id with no listed topic ARN', async () => {
+    routeSend();
+    const err = await provider.delete('P', '', TYPE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProvisioningError);
+    expect((err as Error).message).toMatch(/names no SNS topic ARN and its Topics lists none either/);
+    expect(isMarkedNonRetryable(err)).toBe(true);
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('throws on a segment that is not a topic ARN before writing ANY topic, naming the record remedy', async () => {
+  it('refuses a non-ARN id whose Topics lists no ARN, naming the by-hand reset and the record remedy', async () => {
     routeSend();
     const err = await provider
-      .delete('P', `${T1},MyStack-Policy-XYZ,${T2}`, TYPE)
+      .delete('P', 'MyStack-Policy-XYZ', TYPE, { Topics: [{ Ref: 'X' }] })
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ProvisioningError);
-    expect((err as Error).message).toMatch(/1 segment\(s\) of its physical id are not SNS topic ARNs/);
+    expect(isMarkedNonRetryable(err)).toBe(true);
+    expect((err as Error).message).toContain('back to its default policy by hand');
     expect((err as Error).message).toContain('cdkd state orphan');
     expect((err as Error).message).toContain('--resource P');
-    // T1 precedes the bad segment and is still not written.
     expect(mockSend).not.toHaveBeenCalled();
   });
 });
@@ -406,18 +470,77 @@ describe('SNSTopicPolicyProvider.update edge cases (go-to-k/cdkd#4610)', () => {
     vi.clearAllMocks();
   });
 
-  it('warns about, and does not address, a dropped recorded segment that is not a topic ARN', async () => {
+  it('does not address a non-ARN id segment; only debug-logs it when the previous Topics was checked instead', async () => {
+    // An old CFn-migrated record: the id is the policy NAME, Topics the ARNs.
+    routeSend({ [T2]: JSON.stringify(DOC_OLD) });
+    await new SNSTopicPolicyProvider().update(
+      'P',
+      'MyStack-Policy-XYZ',
+      TYPE,
+      { Topics: [T1], PolicyDocument: DOC_NEW },
+      { Topics: [T1, T2], PolicyDocument: DOC_OLD }
+    );
+    // T2 carried the record's document, so the content check resets it.
+    expect(sets().map(([arn]) => arn)).toEqual([T1, T2]);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+    const debugged = childLogger.debug.mock.calls.map((c) => String(c[0]));
+    expect(debugged.some((d) => d.includes('MyStack-Policy-XYZ') && d.includes('checked instead'))).toBe(true);
+  });
+
+  it('warns about a non-ARN id segment when the previous Topics lists no ARN either', async () => {
     routeSend();
     await new SNSTopicPolicyProvider().update(
       'P',
       `${T1},not-an-arn`,
       TYPE,
       { Topics: [T1], PolicyDocument: DOC_NEW },
-      { Topics: [T1], PolicyDocument: DOC_OLD }
+      { Topics: [{ Ref: 'X' }], PolicyDocument: DOC_OLD }
     );
     expect(sets().map(([arn]) => arn)).toEqual([T1]);
     const warned = childLogger.warn.mock.calls.map((c) => String(c[0]));
-    expect(warned.some((w) => w.includes('not-an-arn'))).toBe(true);
+    expect(warned.some((w) => w.includes('not-an-arn') && w.includes('may still carry'))).toBe(true);
+  });
+
+  it('reads only literal topic ARNs from the previous Topics, once each', async () => {
+    routeSend({ [T2]: JSON.stringify(DOC_NEW) });
+    await new SNSTopicPolicyProvider().update(
+      'P',
+      T1,
+      TYPE,
+      { Topics: [T1], PolicyDocument: DOC_OLD },
+      { Topics: [T2, T2, 'not-an-arn', `${T2},${T3}`, { Ref: 'X' }], PolicyDocument: DOC_NEW }
+    );
+    expect(reads()).toEqual([T2]);
+  });
+
+  it('treats an empty-string previous PolicyDocument as none recorded', async () => {
+    routeSend({ [T2]: '' });
+    await new SNSTopicPolicyProvider().update(
+      'P',
+      T1,
+      TYPE,
+      { Topics: [T1], PolicyDocument: DOC_OLD },
+      { Topics: [T1, T2], PolicyDocument: '' }
+    );
+    expect(reads()).toEqual([]);
+    expect(sets().map(([arn]) => arn)).toEqual([T1]);
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0]));
+    expect(warned.some((w) => w.includes('no policy document recorded'))).toBe(true);
+  });
+
+  it('masks the "no recorded document" warning', async () => {
+    routeSend();
+    await new SNSTopicPolicyProvider().update(
+      'P',
+      T1,
+      TYPE,
+      { Topics: [T1], PolicyDocument: DOC_OLD },
+      { Topics: [T1, T2] },
+      { maskSecrets: (t: string) => t.split('topic-2').join('***') }
+    );
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0]));
+    expect(warned.some((w) => w.includes('no policy document recorded') && w.includes('***'))).toBe(true);
+    expect(warned.some((w) => w.includes('topic-2'))).toBe(false);
   });
 
   it('masks the update-path warnings with the context masker', async () => {

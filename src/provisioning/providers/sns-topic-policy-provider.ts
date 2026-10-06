@@ -167,14 +167,20 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
       mask
     );
     const dropped = written.filter((arn) => !topics.includes(arn));
-    // A recorded segment that is not a topic ARN cannot be addressed.
+    // A recorded segment that is not a topic ARN (the policy NAME an old
+    // --migrate-from-cloudformation recorded) cannot be addressed. The topics
+    // `previousProperties` lists were checked above in its place; only when
+    // it lists none is a topic possibly left carrying the policy.
     const unaddressable = dropped.filter((arn) => !isSnsTopicArn(arn));
     if (unaddressable.length > 0) {
-      this.logger.warn(
-        mask(
-          safeMsg`The recorded topics ${unaddressable.join(', ')} of ${logicalId} are not topic ARNs, so they are not reset: they may still carry its policy.`
-        )
+      const message = mask(
+        safeMsg`The recorded id segment(s) ${unaddressable.join(', ')} of ${logicalId} are not topic ARNs; ` +
+          (listedTopics(previousProperties).length > 0
+            ? 'the topics its previous Topics listed were checked instead.'
+            : 'its previous Topics lists no topic ARN either, so a topic it was attached to may still carry its policy.')
       );
+      if (listedTopics(previousProperties).length > 0) this.logger.debug(message);
+      else this.logger.warn(message);
     }
     const removed = [...dropped.filter((arn) => isSnsTopicArn(arn)), ...listedOnly];
 
@@ -190,7 +196,7 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
           resourceType,
           logicalId,
           context?.expectedRegion,
-          'pre-update',
+          'not-found',
           mask
         );
       }
@@ -223,40 +229,44 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
    *
    * Resets each topic the physical id names (the comma-joined set create() /
    * update() wrote, or a failed create's mark of the topics it reached) to
-   * the default policy SNS gives a new topic. SNS rejects an empty `Policy`
-   * (`InvalidParameter`), so a topic cannot be left without one; this is what
-   * CloudFormation's own TopicPolicy delete handler writes (go-to-k/cdkd#4610).
+   * the topic's default policy. SNS requires a policy on a topic (per
+   * CloudFormation's own TopicPolicy handler, which writes that default on
+   * delete; go-to-k/cdkd#4610), so an empty `Policy` cannot remove one.
+   * An id with a segment that is not a topic ARN (the policy NAME an old
+   * --migrate-from-cloudformation recorded) falls back to the literal topic
+   * ARNs its `Topics` lists.
    */
   async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting SNS topic policy ${logicalId}: ${physicalId}`);
 
-    const topicArns = splitTopicArns(physicalId);
-    // An id naming no topic must not return normally: that reads as DELETED.
+    const named = splitTopicArns(physicalId);
+    // An id that names only topic ARNs is the written set: exactly those. A
+    // failed create's mark is always that shape, so it never widens. Any
+    // other id falls back to the literal topic ARNs its Topics lists.
+    const topicArns =
+      named.length > 0 && named.every((arn) => isSnsTopicArn(arn))
+        ? named
+        : [
+            ...new Set([
+              ...named.filter((arn) => isSnsTopicArn(arn)),
+              ...listedTopics(properties ?? {}),
+            ]),
+          ];
+    // Refuse before any write when nothing is addressable: returning normally
+    // reads as DELETED, and the policy may still be on its topics.
     if (topicArns.length === 0) {
-      throw new ProvisioningError(
-        `Failed to delete SNS topic policy ${logicalId}: its physical id names no topic ARN`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    // Refuse before any write: a segment that is not a topic ARN (a policy
-    // NAME an old --migrate-from-cloudformation recorded) cannot be addressed,
-    // and failing after resetting the others would leave a half-done delete.
-    const unaddressable = topicArns.filter((arn) => !isSnsTopicArn(arn)).length;
-    if (unaddressable > 0) {
       throw markNonRetryable(
         new ProvisioningError(
-          `Failed to delete SNS topic policy ${logicalId}: ${unaddressable} segment(s) of its physical id ` +
-            `are not SNS topic ARNs, so cdkd cannot address those topics and changed none. Remove the ` +
-            `policy from them by hand, then drop the record with ${stateOrphanRecordRemedy(context, logicalId)}.`,
+          `Failed to delete SNS topic policy ${logicalId}: its physical id names no SNS topic ARN and ` +
+            `its Topics lists none either, so cdkd changed no topic. Set each topic the policy is ` +
+            `attached to back to its default policy by hand, then drop the record with ` +
+            `${stateOrphanRecordRemedy(context, logicalId)}.`,
           resourceType,
           logicalId,
           physicalId

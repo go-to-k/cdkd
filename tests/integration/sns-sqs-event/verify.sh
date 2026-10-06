@@ -165,7 +165,9 @@ cleanup() {
   for _name in "${POLICY_TOPIC_A_NAME}" "${POLICY_TOPIC_B_NAME}"; do
     _arn=$(topic_arn_by_name "${_name}" 2>/dev/null)
     if [ -n "${_arn}" ]; then
-      aws sns delete-topic --topic-arn "${_arn}" --region "${REGION}" >/dev/null 2>&1
+      if ! _err=$(aws sns delete-topic --topic-arn "${_arn}" --region "${REGION}" 2>&1 >/dev/null); then
+        echo "WARN: could not delete the policy topic ${_arn}; delete it by hand: ${_err}" >&2
+      fi
     fi
   done
   set -eu
@@ -207,6 +209,14 @@ if [ -z "${POLICY_A_BASELINE}" ] || [ -z "${POLICY_B_BASELINE}" ]; then
   echo "FAIL: could not read the default policy of the freshly created policy topics" >&2
   exit 1
 fi
+# The baseline must not already carry the statement under test, or the
+# "reset to the baseline" checks below would pass on a policy never removed.
+for _arn in "${POLICY_TOPIC_A_ARN}" "${POLICY_TOPIC_B_ARN}"; do
+  if [ "$(policy_sid_count "${_arn}")" != "0" ]; then
+    echo "FAIL: ${_arn} already carries the ${POLICY_SID} statement before Phase 1" >&2
+    exit 1
+  fi
+done
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
