@@ -932,6 +932,150 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
     ]);
   });
 
+  // go-to-k/cdkd#4600: the root's success acts on each child's journaled
+  // proven orphans first, under the child's lock, and keeps a journal still
+  // holding one.
+  it('runs beforeDelete under the child lock with its record; false keeps that journal', async () => {
+    const t = tree();
+    const seen: Array<[string, unknown]> = [];
+    const beforeDelete = vi.fn(async (child: string, state: StackState | undefined) => {
+      t.order.push(`settle ${child}`);
+      seen.push([child, state?.resources]);
+      return child !== 'Root~Child';
+    });
+
+    await dropNestedChildJournals({
+      stateBackend: t.stateBackend as never,
+      lockManager: t.lockManager as never,
+      parentStackName: 'Root',
+      region: REGION,
+      resources: t.resources as never,
+      logger: t.logger,
+      beforeDelete,
+    });
+
+    expect(t.order).toEqual([
+      'lock Root~Child~Grand',
+      'settle Root~Child~Grand',
+      'delete Root~Child~Grand',
+      'unlock Root~Child~Grand',
+      'lock Root~Child',
+      'settle Root~Child',
+      'unlock Root~Child',
+    ]);
+    expect(seen).toEqual([
+      ['Root~Child~Grand', {}],
+      ['Root~Child', { Grand: { resourceType: 'AWS::CloudFormation::Stack' }, Leaf: { resourceType: 'AWS::SQS::Queue' } }],
+    ]);
+    expect(t.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('hands beforeDelete the record re-read under the child lock, not the walk snapshot', async () => {
+    const t = tree();
+    const fresh = { state: { resources: { Imported: { resourceType: 'AWS::Kinesis::Stream' } } } };
+    let locked = false;
+    t.lockManager.acquireLockWithRetry.mockImplementation(async () => {
+      locked = true;
+      return true;
+    });
+    t.lockManager.releaseLock.mockImplementation(async () => {
+      locked = false;
+    });
+    const base = t.stateBackend.getState.getMockImplementation()!;
+    t.stateBackend.getState.mockImplementation(async (name: string) =>
+      name === 'Root~Child' && locked ? fresh : base(name)
+    );
+    const beforeDelete = vi.fn(async () => true);
+
+    await dropNestedChildJournals({
+      stateBackend: t.stateBackend as never,
+      lockManager: t.lockManager as never,
+      parentStackName: 'Root',
+      region: REGION,
+      resources: t.resources as never,
+      logger: t.logger,
+      beforeDelete,
+    });
+
+    expect(beforeDelete).toHaveBeenCalledWith('Root~Child', fresh.state);
+  });
+
+  it.each([
+    ['a non-object resources bag', { state: { resources: 'abc' } }],
+    ['a record naming another stack', { state: { stackName: 'Root', resources: {} } }],
+  ])('hands beforeDelete no record for %s', async (_what, body) => {
+    const t = tree();
+    const base = t.stateBackend.getState.getMockImplementation()!;
+    t.stateBackend.getState.mockImplementation(async (name: string) =>
+      name === 'Root~Child' ? body : base(name)
+    );
+    const beforeDelete = vi.fn(async () => true);
+
+    await dropNestedChildJournals({
+      stateBackend: t.stateBackend as never,
+      lockManager: t.lockManager as never,
+      parentStackName: 'Root',
+      region: REGION,
+      resources: t.resources as never,
+      logger: t.logger,
+      beforeDelete,
+    });
+
+    expect(beforeDelete).toHaveBeenCalledWith('Root~Child', undefined);
+  });
+
+  it('hands beforeDelete no record when the child state cannot be read', async () => {
+    const t = tree();
+    const base = t.stateBackend.getState.getMockImplementation()!;
+    t.stateBackend.getState.mockImplementation(async (name: string) => {
+      if (name === 'Root~Child') throw new Error('unparseable state.json');
+      return base(name);
+    });
+    const beforeDelete = vi.fn(async () => true);
+
+    await dropNestedChildJournals({
+      stateBackend: t.stateBackend as never,
+      lockManager: t.lockManager as never,
+      parentStackName: 'Root',
+      region: REGION,
+      resources: t.resources as never,
+      logger: t.logger,
+      beforeDelete,
+    });
+
+    expect(beforeDelete).toHaveBeenCalledWith('Root~Child', undefined);
+  });
+
+  // The backend REPORTS a failed DeleteObject as `false` (#4402): that is a
+  // failed delete too.
+  it('a journal delete that reports false runs onDeleteFailed and logs no deletion', async () => {
+    const t = tree();
+    // The tree's double resolves `void`; the real backend's type is `boolean`.
+    (t.stateBackend.deleteRollbackJournal as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      async (name: string) => {
+        t.order.push(`delete ${name}`);
+        return name === 'Root~Child' ? false : true;
+      }
+    );
+    const onDeleteFailed = vi.fn(async () => undefined);
+
+    await dropNestedChildJournals({
+      stateBackend: t.stateBackend as never,
+      lockManager: t.lockManager as never,
+      parentStackName: 'Root',
+      region: REGION,
+      resources: t.resources as never,
+      logger: t.logger,
+      beforeDelete: async () => true,
+      onDeleteFailed,
+    });
+
+    expect(onDeleteFailed.mock.calls).toEqual([['Root~Child']]);
+    const debug = t.logger.debug.mock.calls.map((c) => String(c[0]));
+    expect(debug).not.toContain('Deleted the rollback journal of nested stack Root~Child');
+    expect(debug).toContain('Deleted the rollback journal of nested stack Root~Child~Grand');
+  });
+
   it('a failed delete warns and carries on', async () => {
     const t = tree();
     t.stateBackend.deleteRollbackJournal.mockRejectedValueOnce(new Error('AccessDenied'));

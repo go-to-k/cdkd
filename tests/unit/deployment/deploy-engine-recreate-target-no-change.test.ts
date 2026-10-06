@@ -98,7 +98,10 @@ describe('a --recreate-via-* target with no template change is recreated (#2651)
     mockStateBackend = {
       getState: vi.fn(),
       saveState: vi.fn().mockResolvedValue('etag-new'),
-    };
+      // No journal: the success settle reads it first (go-to-k/cdkd#4600).
+      loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      deleteRollbackJournal: vi.fn().mockResolvedValue(true),
+    } as typeof mockStateBackend;
     // The real calculator's two summary methods, over whatever map it returned.
     mockDiffCalculator = {
       calculateDiff: vi.fn(),

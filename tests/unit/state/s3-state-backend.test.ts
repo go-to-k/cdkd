@@ -2194,6 +2194,166 @@ describe('S3StateBackend rollback journal (issue #1183)', () => {
     });
   });
 
+  // go-to-k/cdkd#4600: a successful deploy that could not delete every
+  // journaled orphan keeps only those.
+  describe('reduceRollbackJournalToFailedOperations (go-to-k/cdkd#4600)', () => {
+    const fop = (logicalId: string) => ({ logicalId, changeType: 'CREATE', resourceType: 'AWS::Kinesis::Stream' });
+    const op = (logicalId: string) => ({ logicalId, changeType: 'CREATE', resourceType: 'AWS::X::Y' });
+    const putBody = () => {
+      const put = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .find((cmd: unknown) => cmd instanceof PutObjectCommand) as PutObjectCommand | undefined;
+      return put ? JSON.parse(put.input.Body as string) : undefined;
+    };
+
+    it('keeps only the selected failed ops, dropping every completed op and emptied segment', async () => {
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [
+            {
+              ...segment('no-rollback-failure', [op('Old')]),
+              initialDeploy: true,
+              failedOperations: [fop('Orphan'), fop('Other')],
+              supersededLogicalIds: ['Before'],
+            },
+            { ...segment('no-rollback-failure', [op('Mid')]), timestamp: 2, failedOperations: [fop('Gone')] },
+            {
+              ...segment('nested-pending-parent', [op('Newest')]),
+              timestamp: 3,
+              previousOutputs: { outputs: { O: 'v' } },
+            },
+          ],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+
+      const kept = await backend.reduceRollbackJournalToFailedOperations(
+        'S',
+        'us-east-1',
+        (o) => o.logicalId === 'Orphan',
+        ['Run']
+      );
+
+      expect(kept).toBe(1);
+      const body = putBody();
+      expect(body.segments).toHaveLength(1);
+      const [only] = body.segments;
+      expect(only.timestamp).toBe(1);
+      expect(only.operations).toEqual([]);
+      expect(only.failedOperations.map((o: { logicalId: string }) => o.logicalId)).toEqual(['Orphan']);
+      // The deploy moved the baseline: no longer a first deploy.
+      expect(only.initialDeploy).toBe(false);
+      expect([...only.supersededLogicalIds].sort()).toEqual(['Before', 'Mid', 'Newest', 'Old', 'Run']);
+    });
+
+    it('never carries a kept op own id, so the next read does not demote it', async () => {
+      const orphan = { ...fop('Orphan'), physicalId: 'orphan-stream', physicalIdRecoveredFromError: true };
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [
+            {
+              ...segment('no-rollback-failure', [{ ...op('Orphan'), changeType: 'DELETE' }, op('Other')]),
+              failedOperations: [orphan],
+            },
+            { ...segment('no-rollback-failure', [{ ...op('Orphan'), changeType: 'UPDATE' }]), timestamp: 2 },
+          ],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+
+      await backend.reduceRollbackJournalToFailedOperations('S', 'us-east-1', () => true, ['Orphan', 'Run']);
+
+      const body = putBody();
+      expect([...body.segments[0].supersededLogicalIds].sort()).toEqual(['Other', 'Run']);
+      // The reader that would act on it next keeps it a proven orphan.
+      const { demoteSupersededOrphans } = await import('../../../src/deployment/rollback-executor/plan.js');
+      expect(demoteSupersededOrphans(body.segments)).toBe(0);
+      expect(body.segments[0].failedOperations[0].physicalIdRecoveredFromError).toBe(true);
+    });
+
+    it('writes a kept op the caller demoted back demoted, and leaves the others proven', async () => {
+      const proven = (id: string) => ({ ...fop(id), physicalId: `${id}-stream`, physicalIdRecoveredFromError: true });
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [{ ...segment('no-rollback-failure'), failedOperations: [proven('Demoted'), proven('Kept')] }],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+
+      await backend.reduceRollbackJournalToFailedOperations(
+        'S',
+        'us-east-1',
+        () => true,
+        [],
+        (o) => o.logicalId === 'Demoted'
+      );
+
+      const flags = Object.fromEntries(
+        putBody().segments[0].failedOperations.map((o: { logicalId: string; physicalIdRecoveredFromError: boolean }) => [
+          o.logicalId,
+          o.physicalIdRecoveredFromError,
+        ])
+      );
+      expect(flags).toEqual({ Demoted: false, Kept: true });
+    });
+
+    it('drops a restored-outputs snapshot from a kept segment', async () => {
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [
+            {
+              ...segment('no-rollback-failure'),
+              failedOperations: [fop('Orphan')],
+              previousOutputs: { outputs: { O: 'v' } },
+              previousCrossStackReads: { imports: [] },
+            },
+          ],
+        }),
+      });
+      s3Client.send.mockResolvedValueOnce({});
+      await backend.reduceRollbackJournalToFailedOperations('S', 'us-east-1', () => true);
+      expect(putBody().segments[0]).not.toHaveProperty('previousOutputs');
+      expect(putBody().segments[0]).not.toHaveProperty('previousCrossStackReads');
+      expect(putBody().segments[0]).not.toHaveProperty('supersededLogicalIds');
+    });
+
+    it('deletes the journal when nothing is kept', async () => {
+      s3Client.send.mockResolvedValueOnce({
+        Body: rawBody({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [{ ...segment('no-rollback-failure'), failedOperations: [fop('A')] }],
+        }),
+      });
+      const kept = await backend.reduceRollbackJournalToFailedOperations('S', 'us-east-1', () => false);
+      expect(kept).toBe(0);
+      expect(putBody()).toBeUndefined();
+      const deletes = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand) as DeleteObjectCommand[];
+      expect(deletes.map((d) => d.input.Key)).toContain(journalKey);
+    });
+
+    it('returns 0 and writes nothing with no journal', async () => {
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'nope', $metadata: {} }));
+      expect(await backend.reduceRollbackJournalToFailedOperations('S', 'us-east-1', () => true)).toBe(0);
+      expect(putBody()).toBeUndefined();
+    });
+  });
+
   // go-to-k/cdkd#4402: a pop / drop removes a segment after its ops were
   // reverted; its completed ops superseded older failed attempts, so their ids
   // are carried onto the nearest older remaining segment.

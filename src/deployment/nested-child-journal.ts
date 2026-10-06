@@ -298,8 +298,9 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  * ROOT deploy having succeeded: the tree's baseline moved, exactly as a lone
  * stack's success drops its whole journal. Depth-first.
  *
- * The delete is unconditional — no load first — so a journal that no longer
- * parses (a newer `journalVersion`, a planted body) is removed too, and the
+ * The delete is unconditional but for `beforeDelete` — no load of its own —
+ * so a journal that no longer parses (a newer `journalVersion`, a planted
+ * body) is removed too, and the
  * noncurrent-version purge `deleteRollbackJournal` carries runs even when no
  * current object is left.
  *
@@ -316,6 +317,20 @@ export async function dropNestedChildJournals(args: {
   region: string;
   resources: Record<string, ResourceState> | undefined;
   logger: Pick<Logger, 'debug' | 'warn'>;
+  /**
+   * Run under the child's lock before its journal is deleted, with the
+   * child's record re-read under that lock (undefined when it cannot be
+   * read or is not the child's); `false` keeps the
+   * journal (go-to-k/cdkd#4600: a proven orphan it still records was not
+   * deleted).
+   */
+  beforeDelete?: (child: string, state: StackState | undefined) => Promise<boolean>;
+  /**
+   * Run under the child's lock when its journal delete fails (throws or
+   * reports `false`), so a caller
+   * can strip what `beforeDelete` settled from the journal that survives.
+   */
+  onDeleteFailed?: (child: string) => Promise<void>;
   /** Internal: how deep the walk already is. */
   depth?: number;
 }): Promise<void> {
@@ -349,14 +364,57 @@ export async function dropNestedChildJournals(args: {
     // Outside the state read's `try`: a child whose state.json cannot be read
     // (so its descendants cannot be walked) still has its OWN journal deleted.
     try {
-      await withChildLock(args.lockManager, child, region, logger, () =>
-        stateBackend.deleteRollbackJournal(child, region)
-      );
-      logger.debug(safeMsg`Deleted the rollback journal of nested stack ${displaySafe(child)}`);
+      const deleted = await withChildLock(args.lockManager, child, region, logger, async () => {
+        if (args.beforeDelete) {
+          // Re-read under the lock: what decides whether a record owns a
+          // resource must be the record no other command can be rewriting.
+          if (!(await args.beforeDelete(child, await readOwnRecord(stateBackend, child, region)))) {
+            return false;
+          }
+        }
+        let gone: boolean | void;
+        try {
+          gone = await stateBackend.deleteRollbackJournal(child, region);
+        } catch (error) {
+          await args.onDeleteFailed?.(child);
+          throw error;
+        }
+        // The backend REPORTS a failed DeleteObject as `false` (it has warned).
+        if (gone === false) {
+          await args.onDeleteFailed?.(child);
+          return false;
+        }
+        return true;
+      });
+      if (deleted) {
+        logger.debug(safeMsg`Deleted the rollback journal of nested stack ${displaySafe(child)}`);
+      }
     } catch (error) {
       warnUncleared(logger, child, error);
     }
   }
+}
+
+/** `child`'s record when it reads as its own, else undefined (never throws). */
+async function readOwnRecord(
+  stateBackend: S3StateBackend,
+  child: string,
+  region: string
+): Promise<StackState | undefined> {
+  try {
+    const data = await stateBackend.getState(child, region);
+    if (
+      data &&
+      isPlainRecord(data.state) &&
+      isPlainRecord(data.state.resources) &&
+      (data.state.stackName === undefined || data.state.stackName === child)
+    ) {
+      return data.state;
+    }
+  } catch {
+    // Unreadable: the caller treats it as a record that may own anything.
+  }
+  return undefined;
 }
 
 /**

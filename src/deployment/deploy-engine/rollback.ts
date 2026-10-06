@@ -32,6 +32,11 @@ import {
 } from '../rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import {
+  makeForeignHolderScan,
+  settleJournaledOrphansOnSuccess,
+} from '../rollback-executor/journaled-orphans.js';
+import { hasReadableOrphans } from '../../state/malformed-resources-bag.js';
+import {
   STATE_SOURCED_READBACK_RULES,
   markSameGenerationBag,
   redactSecretsForState,
@@ -332,6 +337,13 @@ export async function performRollback(
  * - The ROOT engine deletes its own journal (issue #1183: the baseline
  *   moved) and every descendant's, which is the same statement made for the
  *   whole tree — and it sweeps anything a crashed run left behind.
+ *
+ * go-to-k/cdkd#4600: a journal's proven failed-CREATE orphans are its only
+ * record of a live resource, so the root first acts on each journal's
+ * (`settleJournaledOrphansOnSuccess`: deleted, or skipped with a warning when
+ * this deploy's outcome may own it) and keeps one whose entry could not be
+ * acted on. Returns how many it left in AWS, which the caller counts as
+ * unaddressed (the deploy exits 2).
  */
 export async function settleJournalAfterSuccess(
   this: DeployEngine,
@@ -340,7 +352,7 @@ export async function settleJournalAfterSuccess(
   previousState: StackState,
   finalResources: Record<string, ResourceState>,
   initialDeploy: boolean
-): Promise<void> {
+): Promise<number> {
   if (this.options.parentStackInfo) {
     await this.writeRollbackJournalSegment(
       stackName,
@@ -350,16 +362,44 @@ export async function settleJournalAfterSuccess(
       initialDeploy,
       nestedPendingSnapshot(previousState)
     );
-    return;
+    return 0;
   }
-  await Promise.all([
-    // go-to-k/cdkd#4402: this run's completed ops supersede every older
-    // failed attempt of their ids; if the delete fails they are carried onto
-    // the journal instead, so no older attempt counts as evidence again.
-    this.deleteRollbackJournalBestEffort(
-      stackName,
-      completedOperations.map((op) => op.logicalId)
-    ),
+  let nestedLeft = 0;
+  // One bucket scan, made only when some journal holds an orphan to delete.
+  const foreignHolderFor = makeForeignHolderScan(this.stateBackend);
+  const deployRunId = this.options.eventRecorder?.runId;
+  const stripOnFailure = new Map<string, () => Promise<void>>();
+  const [ownLeft] = await Promise.all([
+    (async (): Promise<number> => {
+      // `previousState.orphans` is the surviving set `adoptRollbackOrphans`
+      // left: what the saved record holds. The deploy flow guarded it before
+      // either of this method's call sites.
+      const own = await settleJournaledOrphansOnSuccess({
+        stateBackend: this.stateBackend,
+        stackName,
+        region: this.stackRegion,
+        stateResources: finalResources,
+        rollbackOrphans: previousState.orphans,
+        newerOperations: completedOperations,
+        ...(deployRunId !== undefined && { deployRunId }),
+        foreignHolder: foreignHolderFor({ stackName, region: this.stackRegion }),
+        ctx: this.rollbackExecutorContext(previousState, stackName),
+        isInterrupted: () => this.interrupted,
+        logger: this.logger,
+      });
+      if (own.keepJournal) return own.unaddressed;
+      // go-to-k/cdkd#4402: this run's completed ops supersede every older
+      // failed attempt of their ids; if the delete fails they are carried
+      // onto the journal instead, so no older attempt counts as evidence
+      // again.
+      const deleted = await this.deleteRollbackJournalBestEffort(
+        stackName,
+        completedOperations.map((op) => op.logicalId)
+      );
+      // A surviving journal must not keep what this settle cleared as proven.
+      if (!deleted) await own.stripCleared?.();
+      return own.unaddressed;
+    })(),
     dropNestedChildJournals({
       stateBackend: this.stateBackend,
       lockManager: this.lockManager,
@@ -367,8 +407,41 @@ export async function settleJournalAfterSuccess(
       region: this.stackRegion,
       resources: finalResources,
       logger: this.logger,
+      beforeDelete: async (child, childRecord) => {
+        // An unreadable orphans container is an unreadable record: a rollback-
+        // orphan record in it may own the resource, so nothing is deleted.
+        const childState =
+          childRecord !== undefined && hasReadableOrphans(childRecord) ? childRecord : undefined;
+        const settled = await settleJournaledOrphansOnSuccess({
+          stateBackend: this.stateBackend,
+          stackName: child,
+          region: this.stackRegion,
+          stateResources: childState?.resources,
+          rollbackOrphans: childState?.orphans,
+          // The child's own success appended its completed ops as a
+          // `nested-pending-parent` segment of this run (`deployRunId`).
+          newerOperations: [],
+          ...(deployRunId !== undefined && { deployRunId }),
+          foreignHolder: foreignHolderFor({ stackName: child, region: this.stackRegion }),
+          isInterrupted: () => this.interrupted,
+          ctx: {
+            ...this.rollbackExecutorContext(childState ?? previousState, child),
+            // Its parent's reads are not in the child's record (as destroy).
+            producerRegionsIncomplete: true,
+            nestedChildStack: child,
+          },
+          logger: this.logger,
+        });
+        nestedLeft += settled.unaddressed;
+        if (settled.stripCleared) stripOnFailure.set(child, settled.stripCleared);
+        return !settled.keepJournal;
+      },
+      onDeleteFailed: async (child) => {
+        await stripOnFailure.get(child)?.();
+      },
     }),
   ]);
+  return ownLeft + nestedLeft;
 }
 
 /**
@@ -382,12 +455,15 @@ export async function settleJournalAfterSuccess(
  * fails they are written onto the surviving journal's newest segment
  * (`markRollbackJournalSuperseded`) — or an older failed attempt of one of
  * them would count as adoption evidence again.
+ *
+ * Returns whether the journal is gone (go-to-k/cdkd#4600: a caller that
+ * settled entries in it strips them when it is not).
  */
 export async function deleteRollbackJournalBestEffort(
   this: DeployEngine,
   stackName: string,
   supersededLogicalIds: readonly string[] = []
-): Promise<void> {
+): Promise<boolean> {
   let deleted: boolean | void;
   try {
     // The backend REPORTS a DeleteObject failure (`false`) rather than
@@ -400,7 +476,8 @@ export async function deleteRollbackJournalBestEffort(
     deleted = false;
   }
   // Only an explicit `false` (or a throw) is a journal that may survive.
-  if (deleted !== false || supersededLogicalIds.length === 0) return;
+  if (deleted !== false) return true;
+  if (supersededLogicalIds.length === 0) return false;
   try {
     await this.stateBackend.markRollbackJournalSuperseded(
       stackName,
@@ -412,6 +489,7 @@ export async function deleteRollbackJournalBestEffort(
       safeMsg`Failed to record superseded logical ids on the rollback journal for ${stackName}: ${markErr instanceof Error ? markErr.message : String(markErr)}`
     );
   }
+  return false;
 }
 
 /**

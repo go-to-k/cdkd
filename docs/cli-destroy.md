@@ -372,7 +372,8 @@ takes CloudFormation's default (see [Which policy cdkd reads](#which-policy-cdkd
 `cdkd rollback --revert-failed` deletes one whose recorded physical id state
 still records. A CREATE whose provider proved it made the resource before
 failing has no state record and is deleted on the journaled policy by every
-rollback and by `cdkd destroy` (see
+rollback, by `cdkd destroy` and, when no state record may own it, by a later
+successful deploy (see
 [Resources only the rollback journal records](#resources-only-the-rollback-journal-records)).
 Either way it only engages when AWS actually provisioned the resource, so the
 policy is never applied to a resource that never existed.

@@ -1383,6 +1383,82 @@ export class S3StateBackend {
   }
 
   /**
+   * Reduce the journal to the failed ops `keep` answers `true` for
+   * (go-to-k/cdkd#4600: a successful deploy whose journaled orphans could not
+   * all be deleted keeps only those). The deploy moved the baseline, so every
+   * completed op and every other failed op goes, a segment left with none is
+   * dropped, and a kept one no longer describes a first deploy
+   * (`initialDeploy: false`, no restored outputs). As a segment removal
+   * carries them, each kept segment records as `supersededLogicalIds` the ids
+   * of the completed ops removed from it and from every newer segment, plus
+   * `supersededLogicalIds` (the deploy's own completed ids), except a kept
+   * op's own id, which would demote it. Deletes the
+   * journal when nothing is kept. Returns the number of failed ops kept.
+   */
+  async reduceRollbackJournalToFailedOperations(
+    stackName: string,
+    region: string,
+    keep: (op: FailedOperation, segment: RollbackJournalSegment) => boolean,
+    supersededLogicalIds: readonly string[] = [],
+    /**
+     * A kept op the caller's supersede pass demoted: it is written with
+     * `physicalIdRecoveredFromError: false`, since the evidence that demoted
+     * it may be among what this drops.
+     */
+    demote: (op: FailedOperation, segment: RollbackJournalSegment) => boolean = () => false
+  ): Promise<number> {
+    const journal = await this.loadRollbackJournal(stackName, region);
+    if (!journal) return 0;
+    const carried = new Set(supersededLogicalIds);
+    const kept: RollbackJournalSegment[] = [];
+    let count = 0;
+    const keptBySegment = journal.segments.map((segment) =>
+      (segment.failedOperations ?? [])
+        .filter((op) => keep(op, segment))
+        .map((op) =>
+          op.physicalIdRecoveredFromError === true && demote(op, segment)
+            ? { ...op, physicalIdRecoveredFromError: false }
+            : op
+        )
+    );
+    // A kept op's own id is never carried: `demoteSupersededOrphans` reads a
+    // segment's `supersededLogicalIds` against its own ops too, so carrying it
+    // would demote the very entry this keeps on the next read.
+    const keptIds = new Set(keptBySegment.flat().map((op) => op.logicalId));
+    for (let s = journal.segments.length - 1; s >= 0; s--) {
+      const segment = journal.segments[s]!;
+      for (const op of segment.operations) carried.add(op.logicalId);
+      for (const id of segment.supersededLogicalIds ?? []) carried.add(id);
+      const failed = keptBySegment[s]!;
+      if (failed.length === 0) continue;
+      const reduced: RollbackJournalSegment = {
+        ...segment,
+        initialDeploy: false,
+        operations: [],
+        failedOperations: failed,
+      };
+      delete reduced.previousOutputs;
+      delete reduced.previousCrossStackReads;
+      addSupersededIds(
+        reduced,
+        [...carried].filter((id) => !keptIds.has(id) || segment.supersededLogicalIds?.includes(id))
+      );
+      kept.unshift(reduced);
+      count += failed.length;
+    }
+    if (kept.length === 0) {
+      await this.deleteRollbackJournal(stackName, region);
+      return 0;
+    }
+    journal.segments = kept;
+    await this.putRawObject(
+      this.getRollbackJournalKey(stackName, region),
+      JSON.stringify(journal, null, 2)
+    );
+    return count;
+  }
+
+  /**
    * Pop the newest segment off the stack's rollback journal after it has
    * been fully replayed. When the last segment is removed, the journal
    * object is deleted entirely. Returns the number of segments remaining.

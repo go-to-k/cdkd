@@ -113,13 +113,18 @@ export class RollbackCommandStack extends cdk.Stack {
       // 8760), which cdkd does not pre-flight. The L1 is used because the L2
       // `Stream` refuses the value at synth. Marker is unchanged in this phase,
       // so the segment is failed-only, the shape a lone failed create leaves.
+      // go-to-k/cdkd#4600: ORPHAN_FIX_FORWARD is the fix-forward — the same
+      // logical id under another name with a valid retention, so the CREATE
+      // succeeds and the earlier failed attempt's stream is the orphan.
+      const fixForward = process.env.ORPHAN_FIX_FORWARD === 'true';
       const orphanStream = new kinesis.CfnStream(this, 'OrphanStream', {
-        name: `${this.stackName}-orphan-stream`,
+        name: `${this.stackName}-orphan-stream${fixForward ? '-b' : ''}`,
         shardCount: 1,
-        retentionPeriodHours: 9000,
+        retentionPeriodHours: fixForward ? 24 : 9000,
       });
-      // go-to-k/cdkd#4584: the Retain arm — every rollback path keeps the
-      // stream in AWS instead of deleting it.
+      // go-to-k/cdkd#4584: the Retain arm — every rollback path, and a later
+      // successful deploy (go-to-k/cdkd#4600), keeps the stream in AWS
+      // instead of deleting it.
       if (process.env.ORPHAN_RETAIN === 'true') {
         orphanStream.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
       }

@@ -156,8 +156,8 @@ the full segment instead.
 ### Failed CREATEs that made their resource
 
 A CREATE whose provider proved the resource was made before the failure (the
-table row above) has no state record. The rollbacks and `cdkd destroy` act on
-its journal entry before they drop it, as CloudFormation's rollback deletes a
+table row above) has no state record. The rollbacks, `cdkd destroy` and a successful deploy act
+on its journal entry before they drop it, as CloudFormation's rollback deletes a
 failed CREATE:
 
 | Path | What happens to the resource |
@@ -166,12 +166,17 @@ failed CREATE:
 | `--no-rollback` failure | Nothing is deleted; the journal keeps the entry for a later `cdkd rollback`. |
 | `cdkd rollback`, with or without `--revert-failed` | Deleted, per its `DeletionPolicy`. Other failed operations still need the flag. |
 | `cdkd destroy` | Deleted first, per its `DeletionPolicy`, before the journal is removed with the state. A journal destroy cannot read is warned about and removed with the state, and nothing it records is deleted. |
-| A later successful `cdkd deploy` | Not covered: the deploy deletes the journal, and the resource stays in AWS untracked. Roll back or destroy first. |
+| A later successful `cdkd deploy` | Deleted, per its `DeletionPolicy`, before the deploy removes the journal, but only when, after the deploy, no state record sits under its logical id, the deploy completed no operation under it, no record of the stack holds a resource of its type under its physical id, and no resource or rollback-orphan record of any other stack under the same state prefix does. A record of the stack holding that very resource tracks it, and the entry is dropped silently. Otherwise it is not deleted: the deploy warns, naming its physical id so you can delete it if it is not that record's resource, removes the entry with the journal, and exits `2`. A fix-forward that keeps the logical id under another name lands here, so the earlier attempt's resource is left for you to delete. A top-level deploy does the same for each nested stack's journal, judged by that stack's record. A journal the deploy cannot read is warned about and removed, and nothing it records is deleted. |
 
 `Retain` keeps the resource in AWS and `Snapshot` takes the final snapshot, as
 in the table above, and the same ownership checks skip it with a warning. A
 delete that fails keeps the entry: the automatic rollback keeps its full
-segment, and `cdkd destroy` keeps the state and the journal for a re-run.
+segment, and `cdkd destroy` keeps the state and the journal for a re-run. A
+successful deploy keeps the entry only when it could not act on it (a delete
+that failed, an interrupt, or a state record it could not read, or a legacy
+record with no region, anywhere under the state prefix); it keeps the
+journal (reduced to that entry where it can), warns, and exits `2`
+(`--allow-unaddressed` exits `0`), and the next successful deploy retries it.
 
 ## Known limitations
 
