@@ -29,6 +29,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { SQSQueuePolicyProvider } from '../../../src/provisioning/providers/sqs-queue-policy-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { GetQueueAttributesCommand, SetQueueAttributesCommand } from '@aws-sdk/client-sqs';
 
 const TYPE = 'AWS::SQS::QueuePolicy';
 const Q1 = 'https://sqs.us-east-1.amazonaws.com/123456789012/queue-1';
@@ -49,7 +50,9 @@ async function createError(props: Record<string, unknown> = PROPS): Promise<unkn
 }
 
 function clearedUrls(): unknown[] {
-  return mockSend.mock.calls.map((c) => (c[0] as { input: { QueueUrl?: unknown } }).input.QueueUrl);
+  return mockSend.mock.calls
+    .filter((c) => c[0] instanceof SetQueueAttributesCommand)
+    .map((c) => (c[0] as { input: { QueueUrl?: unknown } }).input.QueueUrl);
 }
 
 describe('SQSQueuePolicyProvider create marks exactly the written queues (#4583)', () => {
@@ -88,10 +91,13 @@ describe('SQSQueuePolicyProvider create marks exactly the written queues (#4583)
     expect(createdBeforeFailure(error, 'QueuePolicy', TYPE)).toBeUndefined();
   });
 
-  it('still returns the first queue URL as the physical id on success', async () => {
+  it('keeps the first queue URL as the physical id on success, recording the written set apart (#4594)', async () => {
     mockSend.mockResolvedValue({});
     const result = await new SQSQueuePolicyProvider().create('QueuePolicy', TYPE, PROPS);
-    expect(result.physicalId).toBe(Q1);
+    expect(result).toEqual({
+      physicalId: Q1,
+      attributes: { 'cdkd:WrittenQueues': `${Q1},${Q2},${Q3}` },
+    });
   });
 });
 
@@ -123,8 +129,19 @@ describe('SQSQueuePolicyProvider delete clears exactly the queues its id names (
     expect(clearedUrls()).toEqual([Q1, Q2]);
   });
 
-  it('clears only the single URL of a state id, whatever Queues lists', async () => {
-    mockSend.mockResolvedValue({});
+  it('clears only the URL of a one-queue mark while the attempted queues carry another writer policy (#4594)', async () => {
+    // The mark `Q1` with the attempted Queues [Q1, Q2, Q3] has the shape of a
+    // pre-#4594 record; Q2 / Q3 were never written, so they carry another
+    // writer's policy (or none) and must not be cleared.
+    mockSend.mockImplementation((command: { input: { QueueUrl?: string } }) => {
+      if (command instanceof GetQueueAttributesCommand) {
+        const url = command.input.QueueUrl;
+        if (url === Q1) return Promise.resolve({ Attributes: { Policy: '{"ours":1}' } });
+        if (url === Q2) return Promise.resolve({ Attributes: { Policy: '{"theirs":1}' } });
+        return Promise.resolve({ Attributes: {} });
+      }
+      return Promise.resolve({});
+    });
     await new SQSQueuePolicyProvider().delete('QueuePolicy', Q1, TYPE, PROPS);
     expect(clearedUrls()).toEqual([Q1]);
   });
