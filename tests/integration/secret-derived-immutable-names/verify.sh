@@ -765,7 +765,7 @@ if ! aws ecr describe-repositories --region "${REGION}" --repository-names "${RE
 fi
 # `|| echo`: a missing or unparseable journal must reach the FAIL below, not
 # end the run at the assignment with no diagnostic.
-ORPHAN_PROVEN="$(aws s3 cp "s3://${STATE_BUCKET}/${ORPHAN_JOURNAL_KEY}" - 2>&1 \
+ORPHAN_PROVEN="$(aws s3 cp "s3://${STATE_BUCKET}/${ORPHAN_JOURNAL_KEY}" - \
   | jq -r '[.segments[].failedOperations[]? | select(.logicalId == "SecretOrphanRepo" and .physicalIdRecoveredFromError == true)] | length' 2>&1 \
   || echo "unreadable journal")"
 if [ "${ORPHAN_PROVEN}" != "1" ]; then

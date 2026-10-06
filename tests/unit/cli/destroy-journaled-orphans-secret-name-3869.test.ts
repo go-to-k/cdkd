@@ -317,6 +317,60 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
     expect(guards[0]!.reason!.includes(NAME)).toBe(shown);
   });
 
+  it.each([
+    ['a secret-named user orphan', REF, false],
+    ['negative control, an ordinary user name', 'plain-user-name', true],
+  ])('masks a name an orphan read from an orphan in ANOTHER segment: %s', async (_l, userName, shown) => {
+    // Two failed deploys: the older journaled a user named from a secret, the
+    // newer an access key for it. One bag spans the batch, so the key's lines
+    // carry the user's needles although no state record holds the user.
+    const USER = 'team-secret-user';
+    const segment = (timestamp: number, op: Record<string, unknown>) => ({
+      timestamp,
+      reason: 'no-rollback-failure',
+      initialDeploy: false,
+      skipPrefix: false,
+      operations: [],
+      failedOperations: [
+        { changeType: 'CREATE', provisionedBy: 'sdk', physicalIdRecoveredFromError: true, ...op },
+      ],
+    });
+    loadJournal.mockResolvedValue({
+      journalVersion: 1,
+      stackName: 'TestStack',
+      region: REGION,
+      segments: [
+        segment(1, {
+          logicalId: 'User',
+          resourceType: 'AWS::IAM::User',
+          physicalId: USER,
+          attemptedProperties: { UserName: userName },
+        }),
+        segment(2, {
+          logicalId: 'Key',
+          resourceType: 'AWS::IAM::AccessKey',
+          physicalId: 'AKIAEXAMPLEKEY',
+          attemptedProperties: { UserName: USER },
+        }),
+      ],
+    });
+    providerDelete.mockImplementation((logicalId: string, physicalId: string) => {
+      if (logicalId === 'Key') {
+        const line = `Deleting access key ${physicalId} of user ${USER}`;
+        lines.push(currentLogLineMasker()?.(line) ?? line);
+        return Promise.reject(new Error(`AccessDenied on user ${USER}`));
+      }
+      return Promise.resolve(undefined);
+    });
+    await runDestroyForStack('TestStack', stateOf({}), ctx());
+    // Premise: the key's delete ran, logged, and failed quoting AWS's text.
+    expect(lines).toEqual([expect.stringContaining('Deleting access key AKIAEXAMPLEKEY of user ')]);
+    const keyFailure = failed().find((e) => e.logicalId === 'Key');
+    expect(keyFailure?.error?.message).toContain('AccessDenied on user ');
+    expect(lines[0]!.includes(USER)).toBe(shown);
+    expect(keyFailure!.error!.message!.includes(USER)).toBe(shown);
+  });
+
   it('keeps an event physicalId FIELD exact', async () => {
     providerDelete.mockImplementation(logging(false));
     await runDestroyForStack(
