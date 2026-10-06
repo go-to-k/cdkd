@@ -1781,6 +1781,17 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
     expect(Object.values(causes(report!))).not.toContain('readAborted');
   });
 
+  it('a provider read that returns resets the Cloud Control count as well (#2151 across paths)', async () => {
+    mockGetState.mockResolvedValue(stackOf('XXXXGXQ'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    expect(reads).toHaveLength(7);
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R04', 'R06']);
+    expect(Object.values(causes(report!))).not.toContain('readAborted');
+  });
+
   it('is per READ PATH: a role missing only the Cloud Control permission still reads through the providers', async () => {
     mockGetState.mockResolvedValue(stackOf('XXXXXGXXG'));
     installProviders();
