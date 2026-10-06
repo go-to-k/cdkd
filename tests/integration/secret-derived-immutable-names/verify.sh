@@ -55,6 +55,10 @@
 #      then rejects its lifecycle policy, so the journal records it), then
 #      destroy that stack: its --verbose log does not name the repository,
 #      whose delete runs from the journal alone.
+#   6c. The same failed deploy again, then a plain `cdkd rollback`: its log
+#      does not name the repository either (its failed-op replay, go-to-k/cdkd#3869).
+#   6d. The same deploy WITHOUT --no-rollback: the automatic rollback deletes the
+#      orphan, and the deploy's --verbose log does not name the repository.
 #   7. Remove the secret; assert 0 orphans.
 #   8. Sweep every object version under both stacks' state prefixes.
 #
@@ -88,6 +92,12 @@
 # and step 6b fails naming the repository on the ECR provider's
 # "Deleting ECR Repository SecretOrphanRepo: <name>" line (not yet measured on
 # real AWS).
+# Revert the `withPrintingSecrets` wrap around the failed-op replay in
+# src/cli/commands/rollback.ts ALONE (go-to-k/cdkd#3869) and step 6c fails the
+# same way on the rollback's log (not yet measured on real AWS).
+# Revert the `withPrintingSecrets` wrap around the orphan replay in
+# src/deployment/deploy-engine/rollback.ts ALONE and step 6d fails the same way
+# on the deploy's log (not yet measured on real AWS).
 # Revert the `secretNameNeedles` / `secretNameSink` lines of
 # src/cli/commands/diff-recursive.ts ALONE and step 5b fails naming
 # ${QUEUE_NAME}; revert the `withPrintingSecrets` wrap in
@@ -744,36 +754,43 @@ if ! grep -qF "Deleted Schedule PlainTargetSchedule (found by its recorded creat
 fi
 echo "    OK: PlainTargetSchedule was deleted by its recorded identity"
 
+# Deploys the orphan stack, which must FAIL after ECR made the repository, and
+# checks the journal records it as a proven orphan (no state record holds it).
+# Used by step 6b (destroy) and step 6c (rollback).
+orphan_deploy_failing() {
+  ORPHAN_DEPLOYED=1
+  set +e
+  node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    --yes --no-rollback > "${ORPHAN_LOG}" 2>&1
+  ORPHAN_DEPLOY_RC=$?
+  set -e
+  if [ "${ORPHAN_DEPLOY_RC}" -eq 0 ]; then
+    echo "FAIL: premise: the orphan stack's deploy exited 0; ECR accepted the invalid lifecycle policy" >&2
+    tail -40 "${ORPHAN_LOG}" >&2
+    exit 1
+  fi
+  # PREMISE: ECR made the repository, and the journal records it as a proven
+  # orphan (no state record holds it).
+  if ! aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}" >/dev/null; then
+    echo "FAIL: premise: the failed deploy left no repository ${REPO_NAME} (ECR refused the create itself?)" >&2
+    tail -40 "${ORPHAN_LOG}" >&2
+    exit 1
+  fi
+  # `|| echo`: a missing or unparseable journal must reach the FAIL below, not
+  # end the run at the assignment with no diagnostic.
+  ORPHAN_PROVEN="$(aws s3 cp "s3://${STATE_BUCKET}/${ORPHAN_JOURNAL_KEY}" - \
+    | jq -r '[.segments[].failedOperations[]? | select(.logicalId == "SecretOrphanRepo" and .physicalIdRecoveredFromError == true)] | length' 2>&1 \
+    || echo "unreadable journal")"
+  if [ "${ORPHAN_PROVEN}" != "1" ]; then
+    echo "FAIL: premise: the journal holds ${ORPHAN_PROVEN} proven SecretOrphanRepo orphan(s), expected 1" >&2
+    tail -40 "${ORPHAN_LOG}" >&2
+    exit 1
+  fi
+  echo "    OK: the failed deploy journaled the repository as a proven orphan"
+}
+
 echo "==> Step 6b: a failed-CREATE orphan named from the secret, destroyed from the journal"
-ORPHAN_DEPLOYED=1
-set +e
-node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-  --yes --no-rollback > "${ORPHAN_LOG}" 2>&1
-ORPHAN_DEPLOY_RC=$?
-set -e
-if [ "${ORPHAN_DEPLOY_RC}" -eq 0 ]; then
-  echo "FAIL: premise: the orphan stack's deploy exited 0; ECR accepted the invalid lifecycle policy" >&2
-  tail -40 "${ORPHAN_LOG}" >&2
-  exit 1
-fi
-# PREMISE: ECR made the repository, and the journal records it as a proven
-# orphan (no state record holds it).
-if ! aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}" >/dev/null; then
-  echo "FAIL: premise: the failed deploy left no repository ${REPO_NAME} (ECR refused the create itself?)" >&2
-  tail -40 "${ORPHAN_LOG}" >&2
-  exit 1
-fi
-# `|| echo`: a missing or unparseable journal must reach the FAIL below, not
-# end the run at the assignment with no diagnostic.
-ORPHAN_PROVEN="$(aws s3 cp "s3://${STATE_BUCKET}/${ORPHAN_JOURNAL_KEY}" - \
-  | jq -r '[.segments[].failedOperations[]? | select(.logicalId == "SecretOrphanRepo" and .physicalIdRecoveredFromError == true)] | length' 2>&1 \
-  || echo "unreadable journal")"
-if [ "${ORPHAN_PROVEN}" != "1" ]; then
-  echo "FAIL: premise: the journal holds ${ORPHAN_PROVEN} proven SecretOrphanRepo orphan(s), expected 1" >&2
-  tail -40 "${ORPHAN_LOG}" >&2
-  exit 1
-fi
-echo "    OK: the failed deploy journaled the repository as a proven orphan"
+orphan_deploy_failing
 set +e
 node "${LOCAL_DIST}" destroy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --force --verbose > "${ORPHAN_LOG}" 2>&1
@@ -802,6 +819,69 @@ for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}"; do
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
 echo "    OK: the journaled orphan was deleted, and the destroy log withholds its name"
+
+echo "==> Step 6c: the same orphan, deleted by a plain cdkd rollback from the journal"
+# go-to-k/cdkd#3869: a plain rollback replays the journal's proven orphans
+# through its own failed-op replay, which ran under no printing bag. The stack
+# is gone after step 6b, so this deploy is an initial one and the rollback
+# removes state.json and the journal with it.
+orphan_deploy_failing
+set +e
+node "${LOCAL_DIST}" rollback "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" \
+  --force --verbose > "${ORPHAN_LOG}" 2>&1
+ORPHAN_ROLLBACK_RC=$?
+set -e
+if [ "${ORPHAN_ROLLBACK_RC}" -ne 0 ]; then
+  echo "FAIL: the orphan stack's rollback exited ${ORPHAN_ROLLBACK_RC}" >&2
+  tail -60 "${ORPHAN_LOG}" >&2
+  exit 1
+fi
+# PREMISE: the provider's delete line for the orphan is in the log.
+if ! grep -qF -- "Deleting ECR Repository SecretOrphanRepo: " "${ORPHAN_LOG}"; then
+  echo "FAIL: premise: the rollback log has no 'Deleting ECR Repository SecretOrphanRepo: ' line (the --verbose debug stream is missing, the orphan was not deleted, or the wording drifted)" >&2
+  tail -60 "${ORPHAN_LOG}" >&2
+  exit 1
+fi
+if grep -qF -- "${REPO_NAME}" "${ORPHAN_LOG}"; then
+  HIT_LINES="$(grep -nF -- "${REPO_NAME}" "${ORPHAN_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+  echo "FAIL: the orphan stack's rollback log names the secret-derived repository name in plaintext on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+assert_gone "orphan repository ${REPO_NAME} still exists after the rollback" \
+  aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}"
+for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}"; do
+  assert_gone "${key} still exists after the orphan stack's initial-deploy rollback" \
+    aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
+done
+echo "    OK: the rollback deleted the journaled orphan, and its log withholds the name"
+
+echo "==> Step 6d: the same failed deploy WITHOUT --no-rollback: the automatic rollback deletes the orphan"
+# go-to-k/cdkd#3869: the deploy engine's own rollback replays the orphan
+# through its failed-op replay, which ran under no printing bag.
+set +e
+node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --yes --verbose > "${ORPHAN_LOG}" 2>&1
+ORPHAN_AUTO_RC=$?
+set -e
+if [ "${ORPHAN_AUTO_RC}" -eq 0 ]; then
+  echo "FAIL: premise: the orphan stack's deploy exited 0; ECR accepted the invalid lifecycle policy" >&2
+  tail -60 "${ORPHAN_LOG}" >&2
+  exit 1
+fi
+# PREMISE: the automatic rollback's delete line for the orphan is in the log.
+if ! grep -qF -- "Deleting ECR Repository SecretOrphanRepo: " "${ORPHAN_LOG}"; then
+  echo "FAIL: premise: the deploy log has no 'Deleting ECR Repository SecretOrphanRepo: ' line (the automatic rollback did not delete the orphan, the --verbose debug stream is missing, or the wording drifted)" >&2
+  tail -60 "${ORPHAN_LOG}" >&2
+  exit 1
+fi
+if grep -qF -- "${REPO_NAME}" "${ORPHAN_LOG}"; then
+  HIT_LINES="$(grep -nF -- "${REPO_NAME}" "${ORPHAN_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+  echo "FAIL: the failed deploy's log (its automatic rollback included) names the secret-derived repository name in plaintext on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+assert_gone "orphan repository ${REPO_NAME} still exists after the automatic rollback" \
+  aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}"
+echo "    OK: the automatic rollback deleted the orphan, and the deploy log withholds its name"
 
 echo "==> Step 7: remove the secret; assert 0 orphans"
 aws secretsmanager delete-secret --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \

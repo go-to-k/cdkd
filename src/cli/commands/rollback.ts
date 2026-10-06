@@ -44,6 +44,11 @@ import { resolveSkipPrefix } from '../config-loader.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { setupStateBackend, resolveSingleRegion } from './state.js';
 import { startRunRecorder } from './deployment-events-run.js';
+import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
+import {
+  journaledOrphanPrintingBag,
+  maskEventTextWithBoundBags,
+} from '../../deployment/secret-name-needles.js';
 import {
   replayRollback,
   replayFailedOperations,
@@ -1118,7 +1123,9 @@ export async function rollbackCommand(
         providerRegistry,
         region,
         logger: logger.child('rollback'),
-        recordEvent: (e) => eventRecorder.record(e),
+        // go-to-k/cdkd#3869: masked by the printing bags bound where the event
+        // is recorded (a failed-op replay's), as its log lines are.
+        recordEvent: (e) => eventRecorder.record(maskEventTextWithBoundBags(e)),
         finalSnapshotClients,
         skipFinalSnapshot: options.skipFinalSnapshot === true,
         // Issue #2057: the producer regions this stack read across. A replayed
@@ -1294,34 +1301,37 @@ export async function rollbackCommand(
                     options.revertFailed === true
                   );
                   if (failedToReplay.length > 0) {
-                    const failedResult = await replayFailedOperations(
-                      failedToReplay,
-                      stateResources,
-                      stackName,
-                      ctx,
-                      {
-                        afterOp: saveState,
-                        isInterrupted: () => interrupted,
-                        // Failed-only segment: replayRollback below returns
-                        // early without the STARTED/FINISHED envelope, so the
-                        // failed-op replay owns it (events symmetry). For a
-                        // MIXED segment the failed-op ROLLBACK_RESOURCE_*
-                        // events land just before replayRollback's
-                        // ROLLBACK_STARTED — accepted cosmetic ordering (the
-                        // events stream is informational; the reader derives
-                        // nothing from envelope position).
-                        // The REPLAYED list, not `segment.operations`: an
-                        // all-imported segment hands replayRollback nothing,
-                        // and it then emits no envelope (cosmetic ordering
-                        // only, unpinned on purpose).
-                        emitEnvelope: completedOps.length === 0,
-                        // Same reason as the sibling replay below: `afterOp`
-                        // saves per op, so a record appended only after this
-                        // returns is absent from every intermediate save
-                        // (issue #2934).
-                        onOrphan: (record) => mintedOrphans.push(record),
-                        inlinePolicyWriters,
-                      }
+                    // go-to-k/cdkd#3869: the failed ops replay under a PRINTING
+                    // bag judged from their journal entries, as `cdkd
+                    // destroy`'s orphans do: a provider's delete lines and the
+                    // events mask a name derived from a secret, and one an
+                    // orphan READ from a record.
+                    const failedResult = await withPrintingSecrets(
+                      journaledOrphanPrintingBag(failedToReplay, stateResources),
+                      () =>
+                        replayFailedOperations(failedToReplay, stateResources, stackName, ctx, {
+                          afterOp: saveState,
+                          isInterrupted: () => interrupted,
+                          // Failed-only segment: replayRollback below returns
+                          // early without the STARTED/FINISHED envelope, so the
+                          // failed-op replay owns it (events symmetry). For a
+                          // MIXED segment the failed-op ROLLBACK_RESOURCE_*
+                          // events land just before replayRollback's
+                          // ROLLBACK_STARTED — accepted cosmetic ordering (the
+                          // events stream is informational; the reader derives
+                          // nothing from envelope position).
+                          // The REPLAYED list, not `segment.operations`: an
+                          // all-imported segment hands replayRollback nothing,
+                          // and it then emits no envelope (cosmetic ordering
+                          // only, unpinned on purpose).
+                          emitEnvelope: completedOps.length === 0,
+                          // Same reason as the sibling replay below: `afterOp`
+                          // saves per op, so a record appended only after this
+                          // returns is absent from every intermediate save
+                          // (issue #2934).
+                          onOrphan: (record) => mintedOrphans.push(record),
+                          inlinePolicyWriters,
+                        })
                     );
                     failedOpFailures = failedResult.failures;
                     failedOpWarnings = failedResult.warnings;

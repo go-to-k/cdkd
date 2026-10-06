@@ -32,6 +32,8 @@ import {
   replayRollback,
 } from '../rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
+import { withPrintingSecrets } from '../resource-secrets-scope.js';
+import { journaledOrphanPrintingBag, maskEventTextWithBoundBags } from '../secret-name-needles.js';
 import {
   makeForeignHolderScan,
   settleJournaledOrphansOnSuccess,
@@ -300,12 +302,18 @@ export async function performRollback(
     // made, never the reverse.
     const failedResult =
       orphanOps.length > 0
-        ? await replayFailedOperations(orphanOps, stateResources, stackName, ctx, {
-            // `replayRollback` emits no envelope over zero ops (a failed-only
-            // attempt), so this replay owns it then.
-            emitEnvelope: completedOperations.length === 0,
-            inlinePolicyWriters,
-          })
+        ? // go-to-k/cdkd#3869: the orphans' deletes run under a PRINTING bag
+          // judged from their journal entries, as `cdkd destroy`'s do, so a
+          // provider's delete lines mask a name derived from a secret, and
+          // the context's events mask a name an orphan READ from a record.
+          await withPrintingSecrets(journaledOrphanPrintingBag(orphanOps, stateResources), () =>
+            replayFailedOperations(orphanOps, stateResources, stackName, ctx, {
+              // `replayRollback` emits no envelope over zero ops (a failed-only
+              // attempt), so this replay owns it then.
+              emitEnvelope: completedOperations.length === 0,
+              inlinePolicyWriters,
+            })
+          )
         : undefined;
     return {
       failed: failedResult,
@@ -632,7 +640,9 @@ export function rollbackExecutorContext(
     providerRegistry: this.providerRegistry,
     region: this.stackRegion,
     logger: this.logger,
-    recordEvent: (event) => this.recordEvent(event),
+    // go-to-k/cdkd#3869: masked by the printing bags bound where the event
+    // is recorded too (a journaled orphan batch's), as its log lines are.
+    recordEvent: (event) => this.recordEvent(maskEventTextWithBoundBags(event)),
     // `DeletionPolicy: Snapshot` on a rolled-back CREATE (issue #1358) —
     // the executor needs the same region-pinned clients + data-loss
     // opt-out the engine's own delete sites use.
