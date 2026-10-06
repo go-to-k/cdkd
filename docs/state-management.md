@@ -1399,9 +1399,15 @@ records that would **survive**. Three ways out, and the order matters:
    live AWS resource standing like any other orphan. `cdkd orphan` addresses
    resources by **construct path**, and construct paths come from the
    synthesized template — so a resource your app no longer declares (a record
-   left behind after the construct was deleted) has no path, and must take
-   option 1 or 2. There is deliberately no flag for addressing one by logical
-   id.
+   left behind after the construct was deleted) has no path there. For that
+   one, and without a CDK app at all, address it by logical id instead:
+
+   ```bash
+   cdkd state orphan MyStack --stack-region us-east-1 --resource TheDamagedResource
+   ```
+
+   It makes the same scoped refusals and the same rewrite as `cdkd orphan`
+   ([`--resource`](cli-state.md#removing-one-resource-from-the-record)).
 
 A **legacy** record (`<prefix>/<stack>/state.json`) that `cdkd state list`
 shows with no region (its body names none, or could not be read) is the
@@ -2812,6 +2818,7 @@ underlying AWS resources:
 | `cdkd destroy '<stack>'` | Yes (synth) | Yes | Yes |
 | `cdkd state destroy '<stack>'` | No | Yes | Yes |
 | `cdkd orphan '<constructPath>'...` | Yes (synth) | **No** | Only the named resources' entries |
+| `cdkd state orphan '<stack>' --resource <logicalId>` | No | **No** | Only the named resources' entries |
 | `cdkd state orphan '<stack>'` | No | **No** | Yes, the whole record |
 
 `cdkd destroy` is the canonical path when you have the CDK source — it synths
@@ -2833,10 +2840,13 @@ them:
   (`MyStack/MyTable`) and drops those resources from the record, leaving the
   rest of the stack tracked. It synthesizes, so it also rewrites the sibling
   references to each orphan and needs the CDK source.
+- `cdkd state orphan '<stack>' --resource <logicalId>` drops those resources'
+  entries by logical id and rewrites the same sibling references, with no CDK
+  app — so it also reaches a resource whose construct is already gone.
 - `cdkd state orphan '<stack>'` removes the entire record for a stack and
   operates on the bucket alone, with no CDK app.
 
-[Orphan vs Destroy](orphan-vs-destroy.md) compares all four side by side.
+[Orphan vs Destroy](orphan-vs-destroy.md) compares them side by side.
 
 ## Security and Best Practices
 

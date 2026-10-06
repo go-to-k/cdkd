@@ -22,12 +22,10 @@ Index of every area: [code-layout.md](code-layout.md).
   STATE-driven: no synth, so they still work when the CDK app is missing.
   `drift` compares state-recorded properties against each provider's optional
   `readCurrentState` (Cloud Control covers the rest).
-- The two `orphan` commands differ in GRANULARITY: `cdkd orphan
-  <constructPath>...` is per-resource and rewrites every sibling reference
-  (`Ref` / `Fn::GetAtt` / `Fn::Sub` / dependencies) so the next deploy does not
-  re-create the orphan; `cdkd state orphan <stack>...` drops the whole state
-  record without touching siblings. Both delete ONLY cdkd state — the AWS
-  resources stay.
+- `cdkd orphan <constructPath>...` and `cdkd state orphan <stack> --resource
+  <id>` are per-resource and rewrite every sibling `Ref` / `Fn::GetAtt` /
+  `Fn::Sub` / dependency; bare `cdkd state orphan <stack>...` drops the whole
+  record. All delete ONLY cdkd state — the AWS resources stay.
 
 ## Important files
 

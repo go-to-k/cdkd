@@ -32,6 +32,7 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
+import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
 
 /**
  * The short `ResourceDeleteResult.reason` the missing-`FunctionName` DELETE arm
@@ -442,7 +443,9 @@ export class LambdaPermissionProvider implements ResourceProvider {
           safeMsg`("${physicalId}"), skipping deletion — no AWS call is issued, so the permission ` +
           `statement is LEFT IN PLACE on the function's resource policy, UNLESS the function ` +
           `itself is part of this stack (deleting it removes its whole resource policy, and ` +
-          `then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). ` +
+          `then only the cdkd record is stale — clear it with ` +
+          // go-to-k/cdkd#4602: the whole-stack form only on a stack destroy.
+          safeMsg`${stateOrphanRecordRemedy(context, logicalId)}). ` +
           `Otherwise repair the physicalId in state.json and re-run, or remove the statement ` +
           `by hand ('aws lambda remove-permission'). ${DEPLOY_SKIP_CAVEAT}`
       );
@@ -451,9 +454,13 @@ export class LambdaPermissionProvider implements ResourceProvider {
 
     const functionName = functionNameFromProperties || functionNameFromPhysicalId;
     if (!functionName && functionNameRedacted) {
-      const skip = redactedDeleteAddressSkip(this.logger, logicalId, 'Lambda permission', [
-        'FunctionName',
-      ]);
+      const skip = redactedDeleteAddressSkip(
+        this.logger,
+        logicalId,
+        'Lambda permission',
+        ['FunctionName'],
+        context
+      );
       if (skip) return skip;
     }
     if (!functionName) {
@@ -463,7 +470,8 @@ export class LambdaPermissionProvider implements ResourceProvider {
           `AWS call is issued, so the permission statement is LEFT IN PLACE on the function's ` +
           `resource policy, UNLESS the function itself is part of this stack (deleting it ` +
           `removes its whole resource policy, and then only the cdkd record is stale — clear ` +
-          `it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). Otherwise repair the record's FunctionName in ` +
+          safeMsg`it with ${stateOrphanRecordRemedy(context, logicalId)}). ` +
+          `Otherwise repair the record's FunctionName in ` +
           `state.json and re-run, or remove the statement by hand ` +
           `('aws lambda remove-permission'). ${DEPLOY_SKIP_CAVEAT}`
       );

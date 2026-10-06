@@ -233,6 +233,71 @@ describe('cdkd orphan (per-resource)', () => {
     expect(mockReleaseLock).toHaveBeenCalledWith('MyStack', 'us-east-1');
   });
 
+  it('--force does not splice a cached credential into a survivor, nor print it (go-to-k/cdkd#4602)', async () => {
+    const PLAINTEXT = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYORPHANTEST';
+    const { ProviderRegistry } = await import('../../../src/provisioning/provider-registry.js');
+    vi.mocked(ProviderRegistry).mockImplementationOnce(
+      () =>
+        ({
+          getProviderFor: vi.fn(() => ({
+            provider: {
+              getAttribute: vi.fn(async () => {
+                throw new Error('throttled');
+              }),
+            },
+          })),
+        }) as never
+    );
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        {
+          stackName: 'MyStack',
+          displayName: 'MyStack',
+          template: templateWith({}, { Key: { Type: 'AWS::IAM::AccessKey', cdkPath: 'MyStack/Key' } }),
+          region: 'us-east-1',
+        },
+      ],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({
+      state: {
+        version: 2,
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        resources: {
+          Key: {
+            physicalId: 'AKIA',
+            resourceType: 'AWS::IAM::AccessKey',
+            properties: {},
+            attributes: { SecretAccessKey: PLAINTEXT },
+          },
+          Param: {
+            physicalId: 'p',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] } },
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"e"',
+    });
+
+    await runOrphan(['MyStack/Key', '--app', 'noop', '--force']);
+
+    const saved = mockSaveState.mock.calls[0]![2] as {
+      resources: Record<string, { properties: unknown }>;
+    };
+    expect(saved.resources['Param']!.properties).toEqual({
+      Value: { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] },
+    });
+    const printed = [...infoSpy.mock.calls, ...warnSpy.mock.calls, ...errorSpy.mock.calls]
+      .map((c) => String(c[0]))
+      .join('\n');
+    expect(printed).toContain('a credential-named attribute');
+    expect(printed).not.toContain(PLAINTEXT);
+  });
+
   it('errors when paths reference different stacks', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [

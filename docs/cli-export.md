@@ -123,8 +123,8 @@ the record does not say which:
   resource read the secret at run time instead; do not write the secret's
   plaintext into the template, which cdkd would then record in state in the
   clear.
-- **A mask copied from another record**, by `cdkd orphan --force` or by a
-  `cdkd import` resolving an `Fn::GetAtt` or a `Ref` over a masked value. Repair
+- **A mask copied from another record**, by `cdkd orphan --force` in a cdkd
+  release before it stopped copying masks, or by a `cdkd import` resolving an `Fn::GetAtt` or a `Ref` over a masked value. Repair
   the record that holds the mask with a selective `cdkd import --force`, then
   re-run whichever command wrote this property.
 

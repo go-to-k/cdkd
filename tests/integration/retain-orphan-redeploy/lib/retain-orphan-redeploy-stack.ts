@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
  * Retain-orphan-redeploy integ stack (issue #2902).
@@ -92,5 +93,43 @@ export class RetainOrphanAdoptStack extends cdk.Stack {
     queue.node.addDependency(role);
 
     new cdk.CfnOutput(this, 'AdoptedRoleName', { value: role.roleName });
+  }
+}
+
+/**
+ * The SINGLE-RECORD orphan arm (go-to-k/cdkd#4602): `cdkd state orphan <stack>
+ * --resource <logicalId>`.
+ *
+ * Two modes, driven by `CDKD_TEST_ORPHAN_RESOURCE`:
+ *
+ *   - `with` (default) -- a queue, and a parameter whose value is the queue's
+ *     URL, so the parameter's record DEPENDS on the queue. That dependency is
+ *     what the orphan must rewrite out of the surviving record.
+ *   - `without` -- the queue has LEFT the template, the case the option exists
+ *     for (a resource whose construct is gone, which `cdkd orphan` cannot
+ *     address). The parameter keeps its logical id with a literal value, so the
+ *     redeploy also exercises an ordinary UPDATE of the surviving record.
+ *
+ * Both resources take `RemovalPolicy.DESTROY`: the queue is orphaned on
+ * purpose and deleted by `verify.sh` by URL, and the parameter is destroyed
+ * with the stack.
+ */
+export class RetainOrphanResourceStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const mode = process.env['CDKD_TEST_ORPHAN_RESOURCE'] ?? 'with';
+
+    let value = 'detached';
+    if (mode === 'with') {
+      const queue = new sqs.Queue(this, 'DetachedQueue', {
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+      value = queue.queueUrl;
+      new cdk.CfnOutput(this, 'DetachedQueueName', { value: queue.queueName });
+    }
+
+    const keeper = new ssm.StringParameter(this, 'Keeper', { stringValue: value });
+    keeper.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
   }
 }

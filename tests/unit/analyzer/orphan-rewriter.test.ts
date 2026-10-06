@@ -421,108 +421,160 @@ describe('rewriteResourceReferences', () => {
     });
   });
 
-  it('--force WARNS when the cached attribute is an unresolved dynamic reference (#2055)', async () => {
-    // The SECOND reader of `state.attributes`. Since issue #2055 a nested
-    // stack's `Outputs.<Key>` attribute legitimately holds its unresolved
-    // `{{resolve:...}}` expression — the resolver re-resolves it at the READ
-    // site, where a resolver context exists. This path has none, so it can only
-    // splice the token verbatim into the referring resource's state; `--force`
-    // is an explicit "use the cached value" escape hatch so it does not refuse,
-    // but it must SAY what it wrote.
-    const TOKEN = '{{resolve:secretsmanager:prod/db/cred:SecretString:password::}}';
+  // go-to-k/cdkd#4602: `--force`'s cache fallback refuses the classes
+  // `servableRecordedAttribute` will not serve. The splice would land in the
+  // referring resource's PERSISTED properties and print in the audit table, so
+  // a plaintext credential would be written and shown, and a mask or an
+  // unresolved `{{resolve:...}}` would later be sent to AWS. The intrinsic is
+  // left in place and the site reported unresolved.
+  const TOKEN = '{{resolve:secretsmanager:prod/db/cred:SecretString:password::}}';
+  it.each([
+    [
+      'a credential-named attribute (AccessKey SecretAccessKey)',
+      'AWS::IAM::AccessKey',
+      'SecretAccessKey',
+      'wJalrXUtnFEMI/K7MDENG/bPxRfiCYPLAINTEXT',
+      'a credential-named attribute',
+    ],
+    [
+      "a custom resource's attribute",
+      'Custom::Thing',
+      'Token',
+      'plaintext-from-a-pre-NoEcho-record',
+      "a custom resource's attribute",
+    ],
+    [
+      'a secret-valued attribute (AppSync ApiKey)',
+      'AWS::AppSync::ApiKey',
+      'ApiKey',
+      'da2-plaintextapikey',
+      'a secret-valued attribute',
+    ],
+    [
+      'a secret-valued attribute (IVS StreamKey Value)',
+      'AWS::IVS::StreamKey',
+      'Value',
+      'sk_us-east-1_plaintextstreamkey',
+      'a secret-valued attribute',
+    ],
+    [
+      'a secret-valued attribute (IPAM verification TokenValue)',
+      'AWS::EC2::IpamExternalResourceVerificationToken',
+      'TokenValue',
+      'ipam-ext-res-ver-token-plaintext',
+      'a secret-valued attribute',
+    ],
+    ['the redaction mask (#2847)', 'AWS::Pinpoint::APNSChannel', 'Channel', SECRET_MASK, 'the redaction mask'],
+    [
+      'an unresolved dynamic reference (#2055)',
+      'AWS::CloudFormation::Stack',
+      'Outputs.DbEndpoint',
+      TOKEN,
+      'an unresolved dynamic reference',
+    ],
+    [
+      'a value with a credential-named leaf',
+      'AWS::SSM::Parameter',
+      'Config',
+      { password: 'hunter2-plaintext' },
+      'a value with a credential-named field',
+    ],
+  ])('--force does NOT splice %s', async (_what, resourceType, attribute, cached, why) => {
     const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
     warn.mockClear();
     const getAttribute = vi.fn(async () => {
       throw new Error('throttled');
     });
     const state = baseState({
-      Child: {
-        physicalId: 'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child',
-        resourceType: 'AWS::CloudFormation::Stack',
+      Src: {
+        physicalId: 'src-1',
+        resourceType,
         properties: {},
-        attributes: { 'Outputs.DbPassword': TOKEN },
+        attributes: { [attribute]: cached },
       },
       Other: {
         physicalId: 'o',
         resourceType: 'AWS::SSM::Parameter',
-        properties: { Value: { 'Fn::GetAtt': ['Child', 'Outputs.DbPassword'] } },
+        properties: { Value: { 'Fn::GetAtt': ['Src', attribute] } },
       },
     });
 
-    const result = await rewriteResourceReferences(state, ['Child'], fakeRegistry(getAttribute), {
+    const result = await rewriteResourceReferences(state, ['Src'], fakeRegistry(getAttribute), {
       force: true,
     });
 
-    // Behaviour is unchanged: the token IS spliced.
-    expect(result.state.resources['Other']?.properties).toEqual({ Value: TOKEN });
+    expect(result.state.resources['Other']?.properties).toEqual({
+      Value: { 'Fn::GetAtt': ['Src', attribute] },
+    });
+    expect(result.unresolvable).toHaveLength(1);
+    expect(result.unresolvable[0]!.reason).toContain(`holds ${why}`);
     const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(warned).toContain('UNRESOLVED');
-    expect(warned).toContain('Outputs.DbPassword');
+    expect(warned).toContain(why);
+    expect(warned).not.toContain('falling back to cached value');
+    // Neither the warning nor the reason carries the cached value itself.
+    if (typeof cached === 'string' && cached !== SECRET_MASK) {
+      expect(warned).not.toContain(cached);
+      expect(result.unresolvable[0]!.reason).not.toContain(cached);
+    }
+    // The credential-named leaf's own value.
+    expect(warned).not.toContain('hunter2-plaintext');
+    expect(result.unresolvable[0]!.reason).not.toContain('hunter2-plaintext');
   });
 
-  it('--force WARNS when the cached attribute is the REDACTION MASK (#2847)', async () => {
-    // THE SECOND UNRESOLVABLE CLASS at this seam, and not the same as the one
-    // above: a `{{resolve:...}}` token still NAMES the value, while
-    // `SECRET_MASK` is all cdkd kept of it. Pre-existing for a `NoEcho` custom
-    // resource, but issue #2847 WIDENED the population — `CloudControlProvider`
-    // implements no `getAttribute` at all, so every CC-routed orphan lands in
-    // this fallback, and `import` now masks every model key it cannot certify
-    // as a read-only attribute.
-    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
-    warn.mockClear();
-    // No `getAttribute` on the provider — the real CC shape, and the reason
-    // this fallback is now the DEFAULT path for such a resource rather than an
-    // error arm.
+  // The classes `servableRecordedAttribute` refuses for STALENESS, not
+  // secrecy, are still `--force`'s to splice: that is its contract.
+  it('--force still splices a VPC Ipv6CidrBlocks the record serves for staleness reasons only', async () => {
+    const getAttribute = vi.fn(async () => {
+      throw new Error('throttled');
+    });
     const state = baseState({
-      Chan: {
-        physicalId: 'chan-1',
-        resourceType: 'AWS::Pinpoint::APNSChannel',
+      Vpc: {
+        physicalId: 'vpc-1',
+        resourceType: 'AWS::EC2::VPC',
         properties: {},
-        attributes: { PrivateKey: SECRET_MASK },
-        provisionedBy: 'cc-api',
+        attributes: { Ipv6CidrBlocks: ['2600:1f18::/56'] },
       },
       Other: {
         physicalId: 'o',
         resourceType: 'AWS::SSM::Parameter',
-        properties: { Value: { 'Fn::GetAtt': ['Chan', 'PrivateKey'] } },
+        properties: { Value: { 'Fn::GetAtt': ['Vpc', 'Ipv6CidrBlocks'] } },
       },
     });
-
-    const result = await rewriteResourceReferences(state, ['Chan'], fakeRegistry(), {
+    const result = await rewriteResourceReferences(state, ['Vpc'], fakeRegistry(getAttribute), {
       force: true,
     });
+    expect(getAttribute).toHaveBeenCalled();
+    expect(result.unresolvable).toEqual([]);
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: ['2600:1f18::/56'] });
+  });
 
-    // Behaviour is deliberately unchanged — `--force` means "use the cached
-    // value" — so the POSITIVE is the warning, not a refusal.
-    expect(result.state.resources['Other']?.properties).toEqual({ Value: SECRET_MASK });
-    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(warned).toContain('REDACTION MASK');
-    expect(warned).toContain('PrivateKey');
-    // It must say what happens NEXT — and say it TRUTHFULLY. An earlier
-    // revision promised "a later 'cdkd deploy' will REFUSE that resource",
-    // which review measured false: `refuseRedactedAttributeReads` reads the
-    // DESIRED-side resolution bag, while this splice lands in the CURRENT
-    // (persisted) properties, which no deploy-path guard tests. These pin the
-    // readers that really do recognise it.
-    expect(warned).toContain('spurious change');
-    expect(warned).toContain('cdkd rollback');
-    expect(warned).toContain('cdkd export');
-    // ...and pin the retracted claim as retracted, so restoring it reds.
-    //
-    // THE PROPOSITION, NOT THE TYPOGRAPHY. This asserted `not.toContain('REFUSE')`
-    // and review measured that green against the IDENTICAL false claim in
-    // sentence case (`…a later 'cdkd deploy' will refuse that resource…`). A
-    // pin that a re-word defeats fences the shouting, not the statement.
-    expect(warned).not.toMatch(/deploy'? will refuse/i);
-    expect(warned).not.toMatch(/deploy will refuse/i);
-    // The re-import remedy is scoped to the one population it reaches (issue
-    // #2881): a custom resource's `import()` records no attributes, and the
-    // SSM provider's records `Value` only for a plain literal, so a NoEcho
-    // value or an `Fn::Base64` encoding of a secret survives a re-import.
-    expect(warned).toContain("re-import the record that holds the mask (only for a mask 'cdkd import' wrote");
-    expect(warned).toContain(
-      'a re-import does not recover a NoEcho custom-resource value or the Fn::Base64 encoding of a secret'
-    );
+  it('--force still splices an ordinary cached value (control)', async () => {
+    const getAttribute = vi.fn(async () => {
+      throw new Error('throttled');
+    });
+    const state = baseState({
+      Src: {
+        physicalId: 'src-1',
+        resourceType: 'AWS::SQS::Queue',
+        properties: {},
+        attributes: { Arn: 'arn:aws:sqs:us-east-1:123456789012:q' },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { 'Fn::GetAtt': ['Src', 'Arn'] } },
+      },
+    });
+    // The recorded value is served only once a live read answered (#4186);
+    // this one throws, so the value comes from the fallback.
+    const result = await rewriteResourceReferences(state, ['Src'], fakeRegistry(getAttribute), {
+      force: true,
+    });
+    expect(getAttribute).toHaveBeenCalled();
+    expect(result.unresolvable).toEqual([]);
+    expect(result.state.resources['Other']?.properties).toEqual({
+      Value: 'arn:aws:sqs:us-east-1:123456789012:q',
+    });
   });
 
   it('REFUSES a {Ref: orphan} whose recovery key is the redaction mask, without --force', async () => {
@@ -594,18 +646,12 @@ describe('rewriteResourceReferences', () => {
     }
   });
 
-  it('--force substitutes the MASK, never the physical id, so downstream readers still catch it', async () => {
-    // THE ROUND-2 SECURITY FINDING. `--force`'s contract is "use a
-    // possibly-wrong value rather than stranding me", so the escape hatch
-    // still produces a value — but WHICH value decides whether the damage
-    // stays inside cdkd. The physical id here is a UUID-tailed `TableARN`
-    // where the table NAME belongs; `refuseMaskedReplayBaseline`, `cdkd
-    // export`'s blocker, drift and the deploy refusal all pass it, so every
-    // later deploy would ship it to AWS. `SECRET_MASK` is the value those
-    // four DO recognise, which is what `cacheFallback` — this arm's stated
-    // mirror — already substitutes.
-    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
-    warn.mockClear();
+  it('--force does NOT splice the mask or the physical id for a masked Ref recovery key (go-to-k/cdkd#4602)', async () => {
+    // Splicing the physical id would be an unguarded wrong value (a
+    // UUID-tailed `TableARN` where the table NAME belongs, issue #2847);
+    // splicing `***` is the #1498 corrupted-write class. `--force` now
+    // refuses it as `cacheFallback` refuses a masked cached attribute: the
+    // `Ref` stays and the site is reported unresolved, naming the class.
     const TABLE_ARN =
       'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/6f1f5a90-2847-4b1a-9d6f-bbbb';
     const state = baseState({
@@ -627,61 +673,14 @@ describe('rewriteResourceReferences', () => {
       force: true,
     });
 
-    // POSITIVE: the escape hatch completed and the reference WAS rewritten.
-    expect(result.state.resources['Other']?.properties).toEqual({ Value: SECRET_MASK });
-    expect(result.unresolvable).toHaveLength(0);
-    // NEGATIVE, and the one the finding turns on: the physical id must not
-    // appear anywhere in the rewritten record.
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: { Ref: 'Tbl' } });
     expect(JSON.stringify(result.state.resources['Other'])).not.toContain(TABLE_ARN);
-    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(warned).toContain('TableName');
-    expect(warned).toContain('rather than the physical id');
-    // The same truthfulness rule as the cacheFallback arm: no promise that a
-    // deploy will refuse — it reads the DESIRED side, and this lands in the
-    // persisted CURRENT one.
-    expect(warned).not.toMatch(/deploy'? will refuse/i);
+    expect(result.unresolvable).toHaveLength(1);
+    expect(result.unresolvable[0]?.orphanLogicalId).toBe('Tbl');
+    expect(result.unresolvable[0]?.reason).toMatch(/^the redaction mask: .*'TableName'/);
   });
 
-  it('--force warns ONCE per masked orphan however many references it has', async () => {
-    // `cacheFallback` memoizes through `this.cache`; the `Ref` arm has no
-    // cacheable value, so without its own set N references print N identical
-    // warnings over one orphan.
-    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
-    warn.mockClear();
-    const state = baseState({
-      Tbl: {
-        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/eeee',
-        resourceType: 'AWS::S3Tables::Table',
-        properties: {},
-        attributes: { TableName: SECRET_MASK },
-      },
-      A: {
-        physicalId: 'a',
-        resourceType: 'AWS::SSM::Parameter',
-        properties: { Value: { Ref: 'Tbl' } },
-      },
-      B: {
-        physicalId: 'b',
-        resourceType: 'AWS::SSM::Parameter',
-        properties: { Value: { Ref: 'Tbl' }, Other: { 'Fn::Sub': 'x-${Tbl}' } },
-      },
-    });
-
-    await rewriteResourceReferences(state, ['Tbl'], fakeRegistry(), { force: true });
-
-    const maskWarnings = warn.mock.calls
-      .map((call) => String(call[0]))
-      .filter((m) => m.includes('rather than the physical id'));
-    expect(maskWarnings).toHaveLength(1);
-  });
-
-  it('warns once PER ORPHAN, not once per run', async () => {
-    // THE KEY, not just the count. With one masked orphan in the fixture,
-    // "one warning per run" and "one per orphan" are indistinguishable — so
-    // keying the set on a constant stayed green while a SECOND masked
-    // orphan's warning vanished, which is the diagnosis the user needs most.
-    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
-    warn.mockClear();
+  it('--force reports EVERY reference to a masked Ref, per orphan', async () => {
     const state = baseState({
       TblA: {
         physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/aaaa1',
@@ -698,22 +697,20 @@ describe('rewriteResourceReferences', () => {
       Other: {
         physicalId: 'o',
         resourceType: 'AWS::SSM::Parameter',
-        properties: { A: { Ref: 'TblA' }, B: { Ref: 'TblB' } },
+        properties: { A: { Ref: 'TblA' }, B: { Ref: 'TblB' }, C: { 'Fn::Sub': 'x-${TblA}' } },
       },
     });
 
-    await rewriteResourceReferences(state, ['TblA', 'TblB'], fakeRegistry(), { force: true });
+    const result = await rewriteResourceReferences(state, ['TblA', 'TblB'], fakeRegistry(), {
+      force: true,
+    });
 
-    const maskWarnings = warn.mock.calls
-      .map((call) => String(call[0]))
-      .filter((m) => m.includes('rather than the physical id'));
-    expect(maskWarnings).toHaveLength(2);
-    // ...and each NAMES its own orphan. Without the id the two lines render
-    // byte-identically (same key, same type), so a reader could not tell which
-    // record to repair — and a count alone would not notice a set keyed on the
-    // RESOURCE TYPE either.
-    expect(maskWarnings.some((m) => m.includes("'TblA'"))).toBe(true);
-    expect(maskWarnings.some((m) => m.includes("'TblB'"))).toBe(true);
+    expect(result.unresolvable.map((u) => u.orphanLogicalId).sort()).toEqual([
+      'TblA',
+      'TblA',
+      'TblB',
+    ]);
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(SECRET_MASK);
   });
 
   it('does NOT refuse an ordinary Ref recovery key (scope control)', async () => {

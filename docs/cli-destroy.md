@@ -719,9 +719,11 @@ The causes:
   - the resolved value is not an IAM name.
 
   The warning says when resolution was attempted and failed; fix that and
-  re-run. Otherwise remove the attachment or the memberships by hand; the rest
-  of the stack is still destroyed, so once this is the stack's last record,
-  `cdkd state orphan '<stack>'` clears it. While a record whose list can still
+  re-run. Otherwise remove the attachment or the memberships by hand, then
+  drop the record with
+  `cdkd state orphan '<stack>' --stack-region <region> --resource <logicalId>`;
+  the rest of the stack is still destroyed, so once this is the stack's last
+  record the same command without `--resource` clears it too. While a record whose list can still
   be resolved remains (not one holding the mask), the stack keeps its
   cross-stack read records, so a producer stack's destroy still refuses to go
   first.
@@ -736,7 +738,7 @@ The causes:
     before the policy or membership (a retry within one destroy does not
     count). Remove it from any old principal by hand, then drop the record
     with `cdkd orphan '<stack>/<path>'`, or, without the CDK app,
-    `cdkd state orphan '<stack>'` once it is the stack's last record.
+    `cdkd state orphan '<stack>' --stack-region <region> --resource <logicalId>`.
   - A principal only the current value names loses a same-named inline policy
     or membership it holds from elsewhere. cdkd cannot tell that apart.
 
@@ -1202,6 +1204,7 @@ non-TTY rule as the destroy prompts above:
 | --- | --- | --- |
 | `cdkd rollback` | `Roll back <stack> (<region>)?` | `--force` (or `-y` / `--yes`) |
 | `cdkd state orphan` | `Remove state for <refs> from s3://...?` | `-y` / `--yes`, or `-f` / `--force` |
+| `cdkd state orphan --resource` | `Remove the record(s) of <ids> from state for <stack> (<region>)?` | `-y` / `--yes` (`-f` / `--force` too, but it also enables the cached-attribute fallback) |
 | `cdkd state refresh-observed` | `Refresh observedProperties for N stack(s)...?` | `-y` / `--yes` |
 | `cdkd orphan` | `Orphan N resource(s) from cdkd state...?` | `-y` / `--yes`, or `-f` / `--force` |
 | `cdkd import` | `Write state for <stack> with N resource(s)?` | `-y` / `--yes` |

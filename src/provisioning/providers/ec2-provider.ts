@@ -100,6 +100,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import {
   compositeIdFormatMessage,
@@ -4685,9 +4686,11 @@ export class EC2Provider implements ResourceProvider {
           new ProvisioningError(
             `Cannot update SecurityGroupIngress ${logicalId}: the previous rule could not be ` +
               `revoked because ${why}, so the new rule was ` +
-              `NOT authorized. Revoke the old rule by hand, then clear the stack's records with ` +
-              `'cdkd state orphan <stack>' — that command drops EVERY record for the stack, not ` +
-              `just this one — and re-deploy.`,
+              `NOT authorized. Revoke the old rule by hand, then drop its record with ` +
+              // go-to-k/cdkd#4602: an UPDATE, so the stack is deployed and the
+              // whole-stack form would drop every live record; no context
+              // carries a stack destroy here, so this is the `--resource` form.
+              `${stateOrphanRecordRemedy(undefined, logicalId)}; then re-deploy.`,
             resourceType,
             logicalId,
             physicalId
@@ -4872,7 +4875,8 @@ export class EC2Provider implements ResourceProvider {
           SourceSecurityGroupId: properties['SourceSecurityGroupId'],
           SourceSecurityGroupOwnerId: properties['SourceSecurityGroupOwnerId'],
           SourcePrefixListId: properties['SourcePrefixListId'],
-        })
+        }),
+        context
       );
       if (redactedSkip) return redactedSkip;
     }
@@ -6400,6 +6404,7 @@ export class EC2Provider implements ResourceProvider {
       this.logger.warn(
         compositeIdFormatMessage(EC2_NETWORK_ACL_ENTRY_ID_FORMAT, logicalId, physicalId, {
           skipping: true,
+          context,
         })
       );
       // Issue #1752: report the SKIP rather than returning void — a bare

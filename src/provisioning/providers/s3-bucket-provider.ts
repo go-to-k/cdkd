@@ -74,6 +74,7 @@ import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import {
   coerceCfnBoolean,
@@ -6235,7 +6236,10 @@ export class S3BucketProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     physicalId: string,
-    expectedRegion: string
+    expectedRegion: string,
+    // The delete's context: its remedy names the whole-stack
+    // `cdkd state orphan` only on a stack destroy (go-to-k/cdkd#4602).
+    context?: DeleteContext
   ): Promise<void> {
     const wantRegion = canonicalizeRegion(expectedRegion);
     const probe = await this.probeBucketRegion(physicalId);
@@ -6280,9 +6284,8 @@ export class S3BucketProvider implements ResourceProvider {
           `that region if the template fixes this one, since S3 names are global.`
         : `Confirm which bucket you mean. If ${displaySafe(physicalId)} is genuinely yours to delete, ` +
           `delete it deliberately in ${probe.region}; if this record is simply stale, drop it ` +
-          `with 'cdkd state orphan <stack> --stack-region <region>' (this stack's region, not the ` +
-          `bucket's), which removes EVERY record the stack has in that region without touching ` +
-          `any AWS resource, so run it once this is the stack's last record.`;
+          `without touching any AWS resource (<region> is this stack's region, not the ` +
+          `bucket's) with ${stateOrphanRecordRemedy(context, logicalId)}.`;
 
     throw markNonRetryable(
       new ProvisioningError(
@@ -7057,7 +7060,8 @@ export class S3BucketProvider implements ResourceProvider {
         logicalId,
         resourceType,
         physicalId,
-        context.expectedRegion
+        context.expectedRegion,
+        context
       );
     } else {
       // The FIFTH way this guard can fail to run, and the quietest: no probe is

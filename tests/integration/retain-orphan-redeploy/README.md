@@ -46,6 +46,27 @@ resource, so a fixture built on one of those would redeploy green.
 it reaches the same end state (resource live, record gone) deterministically,
 where a failure injection's timing would decide what got created.
 
+## The single-record orphan arm
+
+A third stack, `CdkdRetainOrphanResourceExample`, covers
+`cdkd state orphan <stack> --resource <logicalId>`
+([#4602](https://github.com/go-to-k/cdkd/issues/4602)): a queue, and an SSM
+parameter whose value is the queue's URL, so the parameter's record depends on
+the queue.
+
+| Phase | Assertion |
+|---|---|
+| 12 deploy | the parameter's record lists the queue in its `dependencies` (else the rewrite below is vacuous) |
+| 13 unknown `--resource` | refuses, and the record's resource keys are unchanged |
+| 14 `state orphan --resource <queue>` | exactly the queue's record is gone, the parameter's dependency on it is rewritten out, its recorded value is the queue URL, and the queue is still live |
+| 15 redeploy without the queue | succeeds, never plans a delete of the queue, updates the parameter, and leaves the orphaned queue alone (cdkd holds no record of it) |
+| 16 destroy | the parameter and the state are gone and the queue is not; the fixture then deletes it by URL |
+
+The redeploy drops the queue from the template on purpose: a resource whose
+construct has left the template is the case the option exists for. Redeploying
+with the queue still declared would create it again under the same generated
+name.
+
 ## Run
 
 ```bash

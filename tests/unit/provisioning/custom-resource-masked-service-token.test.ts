@@ -116,8 +116,9 @@ describe('CustomResourceProvider.delete: a masked ServiceToken (issue #3938)', (
     // The restore remedy is bounded: a destroy deletes the backing Lambda in
     // the same run, after which the issue-#804 pre-check can only skip again.
     expect(text).toContain('helps only while that handler still exists');
-    // Not the deploy-side remedy, which forbids exactly that command.
-    expect(text).not.toContain("Do NOT run 'cdkd state orphan");
+    // Not the deploy-side single-record form (go-to-k/cdkd#4602).
+    expect(text).toContain("add '--resource MaskedDependent' to drop only this one");
+    expect(text).not.toContain('never run it without --resource');
   });
 
   it('keeps the reason short, state-named, not-invoked and distinct from its siblings', () => {
@@ -243,9 +244,9 @@ describe('CustomResourceProvider.delete: a secret-reference ServiceToken (issue 
     expect(text).toContain('LEFT IN PLACE');
     // Region-scoped, and scoped to that region's records (go-to-k/cdkd#3996).
     expect(text).toContain("'cdkd state orphan <stack> --stack-region <region>'");
-    expect(text).toContain('drops EVERY record for the stack in that region');
+    expect(text).toContain('drops every record the stack still has in that region');
     expect(text).toContain('helps only while that handler still exists');
-    expect(text).not.toContain("Do NOT run 'cdkd state orphan");
+    expect(text).not.toContain('never run it without --resource');
     // The logical id names the record; the expression (which names the
     // secret) is not repeated into a log line.
     expect(text).not.toContain('provider-arn');

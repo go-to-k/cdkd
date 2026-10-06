@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import type { DeleteContext } from '../../../src/provisioning/region-check.js';
 
 /**
  * Issue #1770: the eight warn-and-continue DELETE arms OUTSIDE the
@@ -288,66 +289,78 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
     name: string;
     head: string;
     qualifier: string;
-    run: () => Promise<unknown>;
+    run: (context?: DeleteContext) => Promise<unknown>;
   }> = [
     {
       name: 'AWS::Lambda::Permission',
       head: 'FunctionName not available for Lambda permission',
       qualifier: 'UNLESS the function itself is part of this stack',
-      run: () =>
+      run: (context) =>
         new LambdaPermissionProvider().delete(
           'MyPerm',
           '|AllowInvoke',
           'AWS::Lambda::Permission',
-          {}
+          {},
+          context
         ),
     },
     {
       name: 'AWS::Lambda::Permission — no StatementId',
       head: 'has no StatementId in its physicalId',
       qualifier: 'UNLESS the function itself is part of this stack',
-      run: () =>
-        new LambdaPermissionProvider().delete('MyPerm', 'my-fn|', 'AWS::Lambda::Permission', {
-          FunctionName: 'my-fn',
-        }),
+      run: (context) =>
+        new LambdaPermissionProvider().delete(
+          'MyPerm',
+          'my-fn|',
+          'AWS::Lambda::Permission',
+          { FunctionName: 'my-fn' },
+          context
+        ),
     },
     {
       name: 'AWS::IAM::Policy — no policy name',
       head: "and no PolicyName in the state record's",
       qualifier: 'UNLESS the role / group / user it is attached to is itself part of this stack',
-      run: () =>
-        new IAMPolicyProvider().delete('MyPolicy', ':my-role', 'AWS::IAM::Policy', {
-          Roles: ['my-role'],
-        }),
+      run: (context) =>
+        new IAMPolicyProvider().delete(
+          'MyPolicy',
+          ':my-role',
+          'AWS::IAM::Policy',
+          { Roles: ['my-role'] },
+          context
+        ),
     },
     {
       name: 'AWS::IAM::Policy — no target principal',
       head: 'No Roles, Groups or Users in the state record',
       qualifier: 'UNLESS the role / group / user it is attached to is itself part of this stack',
-      run: () =>
-        new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {}),
+      run: (context) =>
+        new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {}, context),
     },
     {
       name: 'AWS::IAM::UserToGroupAddition — no properties',
       head: 'No properties for UserToGroupAddition',
       qualifier: 'UNLESS the group or the users are themselves part of this stack',
-      run: () =>
+      run: (context) =>
         new IAMUserGroupProvider().delete(
           'MyAddition',
           'MyAddition',
-          'AWS::IAM::UserToGroupAddition'
+          'AWS::IAM::UserToGroupAddition',
+          undefined,
+          context
         ),
     },
     {
       name: 'AWS::IAM::UserToGroupAddition — missing fields',
       head: 'Missing GroupName or Users',
       qualifier: 'UNLESS the group or the users are themselves part of this stack',
-      run: () =>
+      run: (context) =>
         new IAMUserGroupProvider().delete(
           'MyAddition',
           'MyAddition',
           'AWS::IAM::UserToGroupAddition',
-          { GroupName: 'my-group' }
+          { GroupName: 'my-group' },
+          context
         ),
     },
   ];
@@ -362,12 +375,33 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
       // so a qualifier lifted from a sibling cannot satisfy both.
       expect(text).toContain(head);
       expect(text).toContain(qualifier);
-      // Region-scoped: without --stack-region the command drops that stack
-      // name's record in EVERY region; and it drops every record in that
-      // region, not just this one (go-to-k/cdkd#3996).
-      expect(text).toContain(
-        "'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region"
+      // Region-scoped (go-to-k/cdkd#3996), and outside a stack destroy (no
+      // context here) the single-record form (go-to-k/cdkd#4602).
+      expect(text).toMatch(
+        /'cdkd state orphan <stack> --stack-region <region> --resource My\w+', which drops only this record/
       );
+    }
+  );
+
+  // go-to-k/cdkd#4602: the whole-stack form is named only on a STACK DESTROY,
+  // where the stack's other records are already gone; a deploy-side context
+  // (no `stackDestroy`) gets the single-record form and never the bare one.
+  it.each(parentQualifiedCases)(
+    '$name names the whole-stack state orphan only on a stack destroy',
+    async ({ head, run }) => {
+      await run({ stackDestroy: true });
+      const destroyText = warnText();
+      expect(destroyText).toContain(head);
+      expect(destroyText).toMatch(
+        /'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack still has in that region, not just this one \(add '--resource My\w+' to drop only this one\)/
+      );
+
+      warnSpy.mockClear();
+      await run({ expectedRegion: 'us-east-1' });
+      const deployText = warnText();
+      expect(deployText).toContain(head);
+      expect(deployText).toMatch(/--stack-region <region> --resource My\w+', which drops only this record/);
+      expect(deployText).not.toContain("'cdkd state orphan <stack> --stack-region <region>',");
     }
   );
 
@@ -933,9 +967,9 @@ describe('the round-2 fallbacks do not create a false delete (issue #1770 delta 
       `The recorded ${kind} is secret-derived (cdkd keeps the dynamic reference or its mask in ` +
         'state), so do not write the name into state.json: cdkd will keep skipping this record. ' +
         'Remove the inline policy from its principals by hand (a principal this stack also ' +
-        'deletes takes its inline policies with it); on cdkd destroy every other resource is ' +
-        "still deleted, so once this is the stack's last record 'cdkd state orphan <stack> " +
-        "--stack-region <region>' clears it."
+        'deletes takes its inline policies with it), then drop this record with ' +
+        "'cdkd state orphan <stack> --stack-region <region> --resource MyPolicy', which drops " +
+        'only this record — never run it without --resource on a stack that is still deployed'
     );
     expect(text).not.toContain('in state.json to a list');
     expect(text).not.toContain('{{resolve:');
@@ -955,9 +989,11 @@ describe('the round-2 fallbacks do not create a false delete (issue #1770 delta 
         'dynamic reference or its mask in state), so do not write the name into state.json: ' +
         'cdkd will keep skipping this record, whatever is repaired in the recorded Roles. ' +
         'Remove the inline policy from its principals by hand (a principal this stack also ' +
-        'deletes takes its inline policies with it); on cdkd destroy every other resource is ' +
-        "still deleted, so once this is the stack's last record 'cdkd state orphan <stack> " +
-        "--stack-region <region>' clears it. NOTE this arm is ALSO reached from cdkd deploy."
+        'deletes takes its inline policies with it), then drop this record with ' +
+        "'cdkd state orphan <stack> --stack-region <region> --resource MyPolicy', which drops " +
+        'only this record — never run it without --resource on a stack that is still deployed, ' +
+        "where that drops every resource's record and the next deploy re-creates or collides " +
+        'with all of them. NOTE this arm is ALSO reached from cdkd deploy.'
     );
     expect(text).not.toContain('Repair Roles');
   });

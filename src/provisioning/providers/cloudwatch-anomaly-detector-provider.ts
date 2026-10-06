@@ -16,6 +16,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -207,7 +208,9 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
       throw new ProvisioningError(
         `Cannot delete AnomalyDetector ${logicalId}: the state record carries no properties, ` +
           `and DeleteAnomalyDetector addresses the model by its metric descriptor. ` +
-          `Use 'cdkd state orphan <stack> --stack-region <region>' to drop the record (that command drops every record the stack has in that region) and delete the detector manually.`,
+          `Delete the detector manually and drop the record with ` +
+          // go-to-k/cdkd#4602: the whole-stack form only on a stack destroy.
+          `${stateOrphanRecordRemedy(context, logicalId)}.`,
         resourceType,
         logicalId,
         physicalId
@@ -230,7 +233,8 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
         Dimensions: properties['Dimensions'],
         SingleMetricAnomalyDetector: properties['SingleMetricAnomalyDetector'],
         MetricMathAnomalyDetector: properties['MetricMathAnomalyDetector'],
-      })
+      }),
+      context
     );
     if (skip) return skip;
 

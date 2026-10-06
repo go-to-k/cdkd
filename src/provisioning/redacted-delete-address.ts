@@ -1,6 +1,8 @@
 import { carriesSecretMask, dynamicReferenceTokens } from '../deployment/secret-redaction.js';
 import type { ResourceDeleteResult } from '../types/resource.js';
 import { safeMsg } from '../utils/display-safe.js';
+import type { DeleteContext } from './region-check.js';
+import { stateOrphanRecordRemedy } from './state-orphan-remedy.js';
 
 /**
  * A recorded property a `delete()` ADDRESSES the resource through, that cdkd
@@ -57,13 +59,16 @@ export function redactedDeleteAddressFields(fields: Record<string, unknown>): st
  * Names the FIELDS, never their values: the value is the mask or a reference
  * expression, and a reference names a secret. The remedies hold on every path
  * this is reached from: re-deploying rewrites the same redaction, so the way
- * out is removing the resource by hand and dropping the record.
+ * out is removing the resource by hand and dropping the record. Which
+ * `cdkd state orphan` form drops it depends on the phase: `context` is the
+ * caller's `DeleteContext` ({@link stateOrphanRecordRemedy}, go-to-k/cdkd#4602).
  */
 export function redactedDeleteAddressSkip(
   logger: { warn: (message: string) => void },
   logicalId: string,
   what: string,
-  redactedFields: readonly string[]
+  redactedFields: readonly string[],
+  context?: DeleteContext
 ): ResourceDeleteResult | undefined {
   if (redactedFields.length === 0) return undefined;
   logger.warn(
@@ -75,8 +80,8 @@ export function redactedDeleteAddressSkip(
       `state record is KEPT and the run reports the skip: on 'cdkd destroy' / 'cdkd state ` +
       `destroy' (which exits non-zero) and, since issue 1762, on the plain DELETE of a ` +
       `resource removed from the template during cdkd deploy. Remove the resource by hand, ` +
-      `then clear the stack's records with 'cdkd state orphan <stack>' — that command drops ` +
-      `EVERY record for the stack, not just this one. NOTE a deploy-side REPLACEMENT or ` +
+      safeMsg`then drop the record with ${stateOrphanRecordRemedy(context, logicalId)}. ` +
+      `NOTE a deploy-side REPLACEMENT or ` +
       `rollback delete instead FAILS the resource ` +
       `(https://github.com/go-to-k/cdkd/issues/1762) — the old resource is left untracked ` +
       `there, so remove it by hand.`

@@ -785,7 +785,24 @@ describe('IAMUserGroupProvider AWS::IAM::UserToGroupAddition (go-to-k/cdkd#3888)
     // names it only inside the UNLESS clause (this arm is also reached from a
     // deploy).
     expect(warned.split('cdkd state orphan').length - 1).toBe(1);
+    // No context marks a stack destroy: this record only (go-to-k/cdkd#4602).
+    expect(warned).toContain(
+      "'cdkd state orphan <stack> --stack-region <region> --resource M', which drops only this record"
+    );
     expect(warned).not.toContain(LEAK);
+  });
+
+  it('delete: a malformed Users skip names the whole-stack drop only on a stack destroy (go-to-k/cdkd#4602)', async () => {
+    await new IAMUserGroupProvider().delete(
+      'M',
+      'M',
+      TYPE,
+      { GroupName: 'grp', Users: 'alice' },
+      { stackDestroy: true }
+    );
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain(
+      "'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack still has in that region"
+    );
   });
 
   it.each(SECRET_DERIVED)('delete: a recorded %s is SKIPPED, with the way out stated', async (_what, value) => {
@@ -798,11 +815,11 @@ describe('IAMUserGroupProvider AWS::IAM::UserToGroupAddition (go-to-k/cdkd#3888)
     const warned = String(warnSpy.mock.calls[0]?.[0]);
     expect(warned).toContain('The recorded Users is secret-derived');
     expect(warned).toContain('cdkd will keep skipping this record');
-    // The way out when the group and users are OUTSIDE the stack: scoped to
-    // the destroy that leaves this as the last record.
+    // The way out when the group and users are OUTSIDE the stack: this
+    // record only, since no context marks a stack destroy (go-to-k/cdkd#4602).
     expect(warned).toContain(
-      "on cdkd destroy every other resource is still deleted, so once this is the stack's last " +
-        "record 'cdkd state orphan <stack> --stack-region <region>' clears it"
+      'Remove the users from the group by hand, then drop this record with ' +
+        "'cdkd state orphan <stack> --stack-region <region> --resource M', which drops only this record"
     );
     expect(warned).not.toContain('Repair the recorded Users');
   });

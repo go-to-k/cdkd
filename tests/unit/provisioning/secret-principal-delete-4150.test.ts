@@ -447,7 +447,28 @@ describe('IAMPolicyProvider.delete with a secret-derived principal list (go-to-k
       "a principal the secret's CURRENT value names does not hold this inline policy"
     );
     expect(printed()).toContain("'cdkd orphan <constructPath>'");
+    // No `stackDestroy`: the single-record form (go-to-k/cdkd#4602).
+    expect(printed()).toContain(
+      "with no CDK app, 'cdkd state orphan <stack> --stack-region <region> --resource P', which drops only this record"
+    );
     expect(printed()).not.toContain(ROLE);
+  });
+
+  it('opted in on a STACK DESTROY: the rotation skip names the whole-stack drop (go-to-k/cdkd#4602)', async () => {
+    send.mockImplementation((cmd: { input: Record<string, unknown> }) =>
+      cmd.input['RoleName'] === ROLE ? Promise.reject(noSuchEntity(`no ${ROLE}`)) : Promise.resolve({})
+    );
+    await new IAMPolicyProvider().delete(
+      'P',
+      'pol',
+      'AWS::IAM::Policy',
+      { ...record, Groups: ['plain-group'] },
+      { ...OPT_IN, stackDestroy: true }
+    );
+    expect(printed()).toContain(
+      "with no CDK app, 'cdkd state orphan <stack> --stack-region <region>', which drops every " +
+        "record the stack still has in that region, not just this one (add '--resource P' to drop only this one)"
+    );
   });
 
   it.each([
@@ -800,7 +821,41 @@ describe('UserToGroupAddition delete with a secret-derived Users (go-to-k/cdkd#4
     expect(inputs()).toEqual([]);
     expect(printed()).toContain("a user the secret's CURRENT value names is not in the group");
     expect(printed()).toContain("'cdkd orphan <constructPath>'");
+    // No `stackDestroy`: the single-record form (go-to-k/cdkd#4602).
+    expect(printed()).toContain(
+      "with no CDK app, 'cdkd state orphan <stack> --stack-region <region> --resource M', which drops only this record"
+    );
     expect(printed()).not.toContain(ROLE);
+  });
+
+  it('opted in on a STACK DESTROY: the rotation skip names the whole-stack drop (go-to-k/cdkd#4602)', async () => {
+    send.mockImplementation(iamSend([ROLE]));
+    await new IAMUserGroupProvider().delete('M', 'M', TYPE, record, {
+      ...OPT_IN,
+      stackDestroy: true,
+    });
+    expect(printed()).toContain(
+      "with no CDK app, 'cdkd state orphan <stack> --stack-region <region>', which drops every " +
+        "record the stack still has in that region, not just this one (add '--resource M' to drop only this one)"
+    );
+  });
+
+  it('a secret-derived Users skip names the drop for its phase (go-to-k/cdkd#4602)', async () => {
+    await new IAMUserGroupProvider().delete('M', 'M', TYPE, record, {
+      expectedRegion: 'us-east-1',
+      stackDestroy: true,
+    });
+    expect(printed()).toContain(
+      "Remove the users from the group by hand, then drop this record with 'cdkd state orphan " +
+        "<stack> --stack-region <region>', which drops every record the stack still has in that region"
+    );
+    warnSpy.mockClear();
+    debugSpy.mockClear();
+    await new IAMUserGroupProvider().delete('M', 'M', TYPE, record, { expectedRegion: 'us-east-1' });
+    expect(printed()).toContain(
+      "Remove the users from the group by hand, then drop this record with 'cdkd state orphan " +
+        "<stack> --stack-region <region> --resource M', which drops only this record"
+    );
   });
 
   it('opted in: a resolved user that no longer exists keeps the record too', async () => {

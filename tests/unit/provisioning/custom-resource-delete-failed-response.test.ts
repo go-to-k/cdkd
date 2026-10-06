@@ -261,7 +261,8 @@ describe('CustomResourceProvider delete: a handler that answers FAILED (issue #2
     expect(warnings()).toContain('LIVE');
     expect(warnings()).toContain('DELETE_FAILED');
     expect(warnings()).toContain("'cdkd state orphan <stack> --stack-region <region>'");
-    expect(warnings()).toContain('EVERY record for the stack in that region');
+    expect(warnings()).toContain('drops every record the stack still has in that region');
+    expect(warnings()).toContain("add '--resource CrResource' to drop only this one");
     // Reached only from a destroy, so it carries no deploy-side caveat.
     expect(warnings()).not.toContain('ALSO reached from cdkd deploy');
   });
@@ -336,7 +337,8 @@ describe('CustomResourceProvider delete: a handler that answers FAILED (issue #2
     expect(warnings()).toContain('cdkd state orphan <stack> --stack-region <region>');
     // ...and it says what that command actually does, which is not a
     // single-record drop.
-    expect(warnings()).toContain('EVERY record for the stack in that region');
+    expect(warnings()).toContain('drops every record the stack still has in that region');
+    expect(warnings()).toContain("add '--resource CrResource' to drop only this one");
   });
 
   it('leaves the create / update FAILED arms throwing, unchanged', async () => {
