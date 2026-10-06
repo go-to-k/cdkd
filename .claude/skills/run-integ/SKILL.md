@@ -145,7 +145,7 @@ verify, clean up.
    ```
 
    The `grep` and `rc` lines are load-bearing: rc=137 is a `kill -9` (a FIRE
-   when the grep counts one, else a manual stop); other non-zero is a crash.
+   when the grep counts one, else a manual stop); other non-zero is a FAIL, so read the LOG.
    **Steps 6-11 are LATER calls that read this output**
    — a marker or a `PASS` ledger row chained into this same call is written
    before any verdict exists.
