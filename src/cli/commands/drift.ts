@@ -4037,7 +4037,9 @@ async function runDriftForStack(
             // go-to-k/cdkd#2207: the old "every other resource in this stack was
             // still compared" became false once a later failure can trip the
             // breaker, so the clause speaks only for what happens next.
-            (breakerTripped ? '' : `cdkd goes on with the rest of this stack. `) +
+            // Said only while NO path has tripped: after one has, part of the
+            // rest of the stack is not read, whichever path this failure took.
+            (trippedReadPaths.size > 0 ? '' : `cdkd goes on with the rest of this stack. `) +
             `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
         );
         if (breakerTripped) {

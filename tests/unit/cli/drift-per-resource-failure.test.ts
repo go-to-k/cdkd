@@ -1840,6 +1840,19 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
     expect(causes(report!)['Z2Api']).toBe('readAborted');
   });
 
+  it('once a path has tripped, a failure on the other path no longer promises the rest of the stack', async () => {
+    mockGetState.mockResolvedValue(stackOf('BBBBBX'));
+    installProviders();
+
+    await runJson();
+
+    const warns = warnSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    const fallbackFailure = warns.filter((w) => w.startsWith('R05 '));
+    expect(fallbackFailure).toHaveLength(1);
+    expect(fallbackFailure[0]).not.toContain('cdkd goes on with the rest of this stack');
+    expect(warns.filter((w) => w.includes('cdkd goes on with the rest of this stack'))).toHaveLength(4);
+  });
+
   it('is per STACK: a later stack in an --all run is still read and compared', async () => {
     mockListStacks.mockResolvedValue([
       { stackName: 'StackA', region: 'us-east-1' },
