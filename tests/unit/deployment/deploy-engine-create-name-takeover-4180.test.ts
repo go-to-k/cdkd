@@ -400,6 +400,31 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(h.callOrder).toEqual(['import']);
   });
 
+  it('ends on a pasteable `cdkd import` adopting the holder under this logical id', async () => {
+    h.importResult = { physicalId: '/aws/lambda/MyStack-Fn' };
+
+    const err = await create(makeEngine(h), 'AWS::Logs::LogGroup', {
+      LogGroupName: '/aws/lambda/MyStack-Fn',
+    });
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(err!.message).toContain('kept by an earlier `cdkd destroy` under DeletionPolicy: Retain');
+    const lines = err!.message.split('\n');
+    expect(lines.at(-1)).toBe(
+      "Adopt with: cdkd import MyStack --resource 'Res=/aws/lambda/MyStack-Fn'"
+    );
+  });
+
+  it('withholds the adopt command when the holder carries a masked secret-derived name', async () => {
+    h.importResult = { physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/q-SECRETVALUE' };
+
+    const err = await create(makeEngine(h), QUEUE, { QueueName: 'q-SECRETVALUE' });
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(err!.message).toContain('adopt it with `cdkd import`');
+    expect(err!.message).not.toContain('Adopt with:');
+  });
+
   it('looks up a NUMERIC explicit name, which the create sends too', async () => {
     h.importResult = { physicalId: 'https://sqs.us-east-1.amazonaws.com/123456789012/42' };
 
@@ -420,6 +445,7 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(err!.code).toBe('NAMED_CREATE_COLLISION');
     expect(err!.message).toContain('delete it and re-run');
     expect(err!.message).not.toContain('cdkd import');
+    expect(err!.message).not.toContain('Adopt with:');
   });
 
   it('refuses a state machine when the account id is malformed', async () => {
