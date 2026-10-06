@@ -14,7 +14,11 @@
 
 ### 8-b. Integ ordering vs review rounds and rebases
 
-**Run the integ LAST — after the final edit to any `integ-destroy`-scoped file.**
+**Run the integ LAST — after the final edit to any `integ-destroy`-scoped file
+— and a NEW arm also EARLY, beside the review rounds:** a lane cannot run it,
+and both new arms of one run failed their first AWS contact on a policy shape
+SNS / SQS reject, one also measuring a normalization that reshaped the fix
+(#4618, #4626).
 Sequence: dispatch reviewers → apply EVERY finding, nits included → rebase →
 integ → marker. A UNIT-test-only fix round may overlap the parent's integ in
 the lane's tree. Brief the lane: no build, `/check` or `/verify-pr` there (a
