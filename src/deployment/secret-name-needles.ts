@@ -193,14 +193,15 @@ export function stateSecretNameNeedles(
 }
 
 /**
- * The PRINTING bag one resource's `cdkd destroy` delete runs under
- * (go-to-k/cdkd#3869): an empty map whose LOG-ONLY needles are the resource's
- * own name spellings and those of each secret-named sibling its record holds.
- * Bound by `withPrintingSecrets` around the delete, so the provider's delete
- * lines, a deleted reader's warnings and the final-snapshot lines mask them.
- * Judged from the state records alone: a destroy resolves nothing.
+ * The PRINTING bag one resource's operation runs under when a command
+ * provisions from STATE (go-to-k/cdkd#3869): `cdkd destroy`'s delete and
+ * `cdkd drift --revert`'s update. An empty map whose LOG-ONLY needles are the
+ * resource's own name spellings and those of each secret-named sibling its
+ * record holds. Bound by `withPrintingSecrets` around the call, so the
+ * provider's lines, a reader's warnings and the final-snapshot lines mask
+ * them. Judged from the state records alone.
  */
-export function destroySecretNameBag(
+export function secretNamePrintingBag(
   logicalId: string,
   resources: Readonly<Record<string, ResourceState>>
 ): RecordedSecretValues {

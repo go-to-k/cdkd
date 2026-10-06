@@ -565,13 +565,21 @@ export async function resolveBase64(
   // the print-only corpus masks is recorded THERE, never into the pass's
   // bag, whose log-only needles decide an export alias.
   const printing = context.printingSecrets;
-  if (
-    printing !== undefined &&
-    hasMaskableValues(printing) &&
-    this.maskRenderedNeedlesForLog(resolvedValue, context) !==
-      this.maskPrintedNeedlesForLog(resolvedValue, context)
-  ) {
+  const printed = this.maskPrintedNeedlesForLog(resolvedValue, context);
+  const withPrinting = this.maskNeedlesOfBags(resolvedValue, context, printing);
+  if (printing !== undefined && hasMaskableValues(printing) && withPrinting !== printed) {
     recordLogOnlyValue(printing, result);
+  }
+  // The same for a command's derived-name sink (go-to-k/cdkd#3869): the
+  // encoding of text embedding a secret-derived name (a CDK `UserData` over a
+  // `Ref`) decodes straight back to it.
+  const sink = context.secretNameSink;
+  if (
+    sink !== undefined &&
+    hasMaskableValues(sink) &&
+    this.maskNeedlesOfBags(resolvedValue, context, printing, sink) !== withPrinting
+  ) {
+    recordLogOnlyValue(sink, result);
   }
 
   this.logger.debug(

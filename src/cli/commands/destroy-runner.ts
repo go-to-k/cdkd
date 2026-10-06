@@ -97,7 +97,7 @@ import {
   sameJournaledOrphans,
 } from '../../deployment/rollback-executor/journaled-orphans.js';
 import { producerRegionsFromState } from '../../deployment/rollback-executor.js';
-import { destroySecretNameBag } from '../../deployment/secret-name-needles.js';
+import { secretNamePrintingBag } from '../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 
 /**
@@ -1555,7 +1555,7 @@ export async function runDestroyForStack(
       // warnings and the final-snapshot lines mask a name derived from a
       // secret. `getCurrentResourceSecrets` never returns it.
       const deletePromises = level.map((logicalId) =>
-        withPrintingSecrets(destroySecretNameBag(logicalId, state.resources), async () => {
+        withPrintingSecrets(secretNamePrintingBag(logicalId, state.resources), async () => {
           // Graceful SIGINT (issue #816): if the interrupt landed after this
           // level's promises were created but before this resource's delete was
           // dispatched, skip it. It stays in the preserved state for re-run.

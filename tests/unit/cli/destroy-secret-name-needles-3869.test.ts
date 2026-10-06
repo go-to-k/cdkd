@@ -127,4 +127,41 @@ describe('cdkd destroy masks a name derived from a secret (go-to-k/cdkd#3869)', 
     expect(lines['User']).toBe(`Deleting User ${USER_ID} of user ${USER_ID}`);
     expect(lines['Key']).toBe(`Deleting Key AKIAEXAMPLEKEY of user ${USER_ID}`);
   });
+
+  it("masks the final-snapshot identifier a Snapshot delete derives from the name", async () => {
+    // The identifier is lower-cased and suffixed: no literal of the reference,
+    // only the judge's final-snapshot spelling covers it.
+    const state: StackState = {
+      version: 8,
+      stackName: 'TestStack',
+      region: REGION,
+      resources: {
+        Db: {
+          physicalId: 'Team-Secret-Db',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { DBInstanceIdentifier: REF },
+          attributes: {},
+          dependencies: [],
+          deletionPolicy: 'Snapshot',
+        } as ResourceState,
+      },
+      outputs: {},
+      lastModified: 1,
+    };
+    let snapshotLine: string | undefined;
+    let identifier: string | undefined;
+    const providerDelete = vi.fn(
+      (_l: string, _p: string, _t: string, _props: unknown, ctx: { finalSnapshotIdentifier?: string }) => {
+        identifier = ctx.finalSnapshotIdentifier;
+        const line = `Final snapshot ${identifier}`;
+        snapshotLine = currentLogLineMasker()?.(line) ?? line;
+        return Promise.resolve(undefined);
+      }
+    );
+    const result = await runDestroyForStack('TestStack', state, makeCtx(providerDelete));
+    expect(result.errorCount).toBe(0);
+    // Premise: an identifier derived from the name was built and handed over.
+    expect(identifier).toMatch(/^team-secret-db/);
+    expect(snapshotLine).not.toContain('team-secret-db');
+  });
 });

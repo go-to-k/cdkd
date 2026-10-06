@@ -27,6 +27,10 @@ vi.mock('../../../../src/utils/logger.js', () => {
 
 const { scrubStack } = await import('../../../../src/cli/commands/scrub.js');
 const { getLogger } = await import('../../../../src/utils/logger.js');
+const { IntrinsicFunctionResolver } = await import(
+  '../../../../src/deployment/intrinsic-function-resolver.js'
+);
+const { hasMaskableValues } = await import('../../../../src/deployment/secret-redaction.js');
 
 const USER_ID = 'team-secret-scrub-user';
 
@@ -41,6 +45,7 @@ function stackInfo() {
         User: { Type: 'AWS::IAM::User', Properties: { UserName: 'from-a-secret' } },
         Key: { Type: 'AWS::IAM::AccessKey', Properties: { UserName: { Ref: 'User' } } },
       },
+      Outputs: { KeyUser: { Value: { 'Fn::Sub': 'user=${User}' } } },
     } as CloudFormationTemplate,
   };
 }
@@ -66,12 +71,15 @@ function stateWith(userName: string) {
         dependencies: ['User'],
       },
     },
-    outputs: {},
+    outputs: { KeyUser: `user=${USER_ID}` },
     lastModified: 0,
   };
 }
 
-async function scrubLines(userName: string): Promise<string> {
+async function scrubRun(userName: string): Promise<{
+  lines: string;
+  result: { recordsChanged: number; secretsFound: number; secretBearingKeys: number };
+}> {
   logLines.length = 0;
   const stateBackend = {
     getState: vi.fn().mockResolvedValue({ state: stateWith(userName), etag: 'etag-1' }),
@@ -82,11 +90,18 @@ async function scrubLines(userName: string): Promise<string> {
     acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
     releaseLock: vi.fn().mockResolvedValue(undefined),
   };
-  await scrubStack(stackInfo() as never, 'us-east-1', stateBackend as never, lockManager as never, {
-    dryRun: true,
-    logger: getLogger(),
-  });
-  return logLines.join('\n');
+  const result = await scrubStack(
+    stackInfo() as never,
+    'us-east-1',
+    stateBackend as never,
+    lockManager as never,
+    { dryRun: true, logger: getLogger() }
+  );
+  return { lines: logLines.join('\n'), result };
+}
+
+async function scrubLines(userName: string): Promise<string> {
+  return (await scrubRun(userName)).lines;
 }
 
 describe('cdkd scrub masks a name derived from a secret (go-to-k/cdkd#3869)', () => {
@@ -98,6 +113,35 @@ describe('cdkd scrub masks a name derived from a secret (go-to-k/cdkd#3869)', ()
     const lines = await scrubLines('{{resolve:secretsmanager:team:SecretString:user::}}');
     expect(lines).toContain('Ref to resource: User resolved to');
     expect(lines).not.toContain(USER_ID);
+  });
+
+  it('masks an output reading the secret-named resource, and finds no secret to scrub', async () => {
+    const { lines, result } = await scrubRun('{{resolve:secretsmanager:team:SecretString:user::}}');
+    // Premise: the output's read was resolved and printed.
+    expect(lines.split('\n').filter((l) => l.includes('Ref to resource: User resolved to')).length).toBeGreaterThanOrEqual(2);
+    expect(lines).not.toContain(USER_ID);
+    // A derived name is no secret plaintext: scrub decides nothing from it.
+    expect(result).toMatchObject({ recordsChanged: 0, secretsFound: 0 });
+  });
+
+  it("records the reads into its print-only sink, never a resource's bag scrub positions with", async () => {
+    const bags: Array<Map<string, string>> = [];
+    const original = IntrinsicFunctionResolver.prototype.resolve;
+    const spy = vi
+      .spyOn(IntrinsicFunctionResolver.prototype, 'resolve')
+      .mockImplementation(function (this: unknown, value: unknown, context: unknown) {
+        const bag = (context as { recordedSecretValues?: Map<string, string> }).recordedSecretValues;
+        if (bag) bags.push(bag);
+        return original.call(this as never, value, context as never);
+      });
+    try {
+      const { lines } = await scrubRun('{{resolve:secretsmanager:team:SecretString:user::}}');
+      expect(lines).toContain('Ref to resource: User resolved to');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(bags.length).toBeGreaterThan(0);
+    for (const bag of bags) expect(hasMaskableValues(bag)).toBe(false);
   });
 
   it('negative control: an ordinary name prints as it is', async () => {

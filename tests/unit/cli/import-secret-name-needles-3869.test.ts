@@ -29,6 +29,10 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 }));
 
 const { resolveImportedProperties } = await import('../../../src/cli/commands/import.js');
+const { IntrinsicFunctionResolver } = await import(
+  '../../../src/deployment/intrinsic-function-resolver.js'
+);
+const { hasMaskableValues } = await import('../../../src/deployment/secret-redaction.js');
 const { getLogger } = await import('../../../src/utils/logger.js');
 
 const USER_ID = 'team-secret-import-user';
@@ -79,6 +83,26 @@ describe('cdkd import masks a name derived from a secret (go-to-k/cdkd#3869)', (
     expect(lines).not.toContain(USER_ID);
     // What import persists is the real reference value: the needle is print-only.
     expect(keyUser).toBe(USER_ID);
+  });
+
+  it('records the read into its print-only sink, never the per-resource bag import persists with', async () => {
+    const bags: Array<Map<string, string>> = [];
+    const original = IntrinsicFunctionResolver.prototype.resolve;
+    const spy = vi
+      .spyOn(IntrinsicFunctionResolver.prototype, 'resolve')
+      .mockImplementation(function (this: unknown, value: unknown, context: unknown) {
+        const bag = (context as { recordedSecretValues?: Map<string, string> }).recordedSecretValues;
+        if (bag) bags.push(bag);
+        return original.call(this as never, value, context as never);
+      });
+    try {
+      const { lines } = await importLines('***');
+      expect(lines).toContain('Ref to resource: User resolved to');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(bags.length).toBeGreaterThan(0);
+    for (const bag of bags) expect(hasMaskableValues(bag)).toBe(false);
   });
 
   it('negative control: an ordinary name prints as it is', async () => {

@@ -146,6 +146,8 @@ import {
   type ResourceProvider,
 } from '../../types/resource.js';
 import type { ResourceState, StackState } from '../../types/state.js';
+import { secretNamePrintingBag } from '../../deployment/secret-name-needles.js';
+import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 
 /**
  * Why cdkd did not compare every property a resource records.
@@ -6986,68 +6988,74 @@ async function runRevert(
             return;
           }
           try {
+            // go-to-k/cdkd#3869: a resource named from a secret, or a reader of
+            // one, is masked on every line its provider's update logs.
             const updateResult = await withRetry(
               () =>
-                provider.update(
-                  outcome.logicalId,
-                  stateResource.physicalId,
-                  outcome.resourceType,
-                  newProperties,
-                  outcome.awsProperties,
-                  // The desired bag here is `observedProperties ?? properties`
-                  // overlaid onto the AWS-current snapshot — an AWS READBACK, not
-                  // a template (issue #1732). Several `readCurrentState`
-                  // implementations spell "this feature is not set" as an EMPTY
-                  // collection rather than an absent key, so without this flag a
-                  // provider cannot tell "restore the unset state" (delete) from
-                  // a template's condition-collapsed array (leave the live value
-                  // alone), and picking either arm breaks the other caller.
-                  //
-                  // `maskSecrets` (issue #1932 item 3) is the THIRD caller of the
-                  // provider masking contract, alongside `deploy-engine.ts` and
-                  // `rollback-executor.ts`, and it is not optional here: the bag
-                  // this call carries was re-resolved from state back to
-                  // PLAINTEXT a few hundred lines up (`resolveStateSecretExpressions`,
-                  // the counterpart of the rollback replay's `resolveReplayProps`),
-                  // so it provably holds the concrete secret whenever the resource
-                  // has one. Without it, a provider warning that names a
-                  // mis-shaped property value — e.g. a state record holding
-                  // `EnabledMfas: "{{resolve:secretsmanager:...}}"`, which
-                  // re-resolves to a plaintext string and so is `not a list` —
-                  // prints that plaintext on `cdkd drift --revert`.
-                  //
-                  // Bound to `secrets`, the SAME map `resolveStateSecretExpressions`
-                  // resolved into and the retry logger below masks with, so the
-                  // masker and that logger can never disagree about what this call
-                  // considers secret.
-                  //
-                  // `expectedRegion` (issue #2301 item 1) is `report.region` --
-                  // the region segment of the state key this report was built
-                  // from, i.e. where the record says its resources live. It is
-                  // NOT necessarily where the ambient clients point: this command
-                  // installs its clients ONCE (the `setAwsClients` call at the top
-                  // of `runDrift`) and then loops over stacks in whatever regions
-                  // `listStacks()` returned, so a `--revert` for a stack outside
-                  // the ambient region was previously issued against the ambient
-                  // one -- a write addressed by a state-recorded physical id, in
-                  // the wrong region, which is exactly the hazard the guard
-                  // exists for. With this threaded, a Cloud-Control-routed
-                  // resource in that position REFUSES instead. Same-region
-                  // reverts, which is every ordinary run, are unaffected.
-                  //
-                  // `recordedAttributes` (issue #4051): the identity evidence of
-                  // the record `stateResource.physicalId` came from.
-                  {
-                    desiredFromAwsReadback: true,
-                    maskSecrets: createSecretMasker(secrets),
-                    expectedRegion: report.region,
-                    recordedAttributes: stateResource.attributes,
-                    // Issue #1160: nothing reads as REMOVED here, so no
-                    // provider `removalDefaults` value is injected. Removal is
-                    // judged template-vs-template, and the previous side above
-                    // is an AWS readback, never a template declaration.
-                    removedProperties: new Set<string>(),
-                  }
+                withPrintingSecrets(
+                  secretNamePrintingBag(outcome.logicalId, report.state.resources),
+                  () =>
+                    provider.update(
+                      outcome.logicalId,
+                      stateResource.physicalId,
+                      outcome.resourceType,
+                      newProperties,
+                      outcome.awsProperties,
+                      // The desired bag here is `observedProperties ?? properties`
+                      // overlaid onto the AWS-current snapshot — an AWS READBACK, not
+                      // a template (issue #1732). Several `readCurrentState`
+                      // implementations spell "this feature is not set" as an EMPTY
+                      // collection rather than an absent key, so without this flag a
+                      // provider cannot tell "restore the unset state" (delete) from
+                      // a template's condition-collapsed array (leave the live value
+                      // alone), and picking either arm breaks the other caller.
+                      //
+                      // `maskSecrets` (issue #1932 item 3) is the THIRD caller of the
+                      // provider masking contract, alongside `deploy-engine.ts` and
+                      // `rollback-executor.ts`, and it is not optional here: the bag
+                      // this call carries was re-resolved from state back to
+                      // PLAINTEXT a few hundred lines up (`resolveStateSecretExpressions`,
+                      // the counterpart of the rollback replay's `resolveReplayProps`),
+                      // so it provably holds the concrete secret whenever the resource
+                      // has one. Without it, a provider warning that names a
+                      // mis-shaped property value — e.g. a state record holding
+                      // `EnabledMfas: "{{resolve:secretsmanager:...}}"`, which
+                      // re-resolves to a plaintext string and so is `not a list` —
+                      // prints that plaintext on `cdkd drift --revert`.
+                      //
+                      // Bound to `secrets`, the SAME map `resolveStateSecretExpressions`
+                      // resolved into and the retry logger below masks with, so the
+                      // masker and that logger can never disagree about what this call
+                      // considers secret.
+                      //
+                      // `expectedRegion` (issue #2301 item 1) is `report.region` --
+                      // the region segment of the state key this report was built
+                      // from, i.e. where the record says its resources live. It is
+                      // NOT necessarily where the ambient clients point: this command
+                      // installs its clients ONCE (the `setAwsClients` call at the top
+                      // of `runDrift`) and then loops over stacks in whatever regions
+                      // `listStacks()` returned, so a `--revert` for a stack outside
+                      // the ambient region was previously issued against the ambient
+                      // one -- a write addressed by a state-recorded physical id, in
+                      // the wrong region, which is exactly the hazard the guard
+                      // exists for. With this threaded, a Cloud-Control-routed
+                      // resource in that position REFUSES instead. Same-region
+                      // reverts, which is every ordinary run, are unaffected.
+                      //
+                      // `recordedAttributes` (issue #4051): the identity evidence of
+                      // the record `stateResource.physicalId` came from.
+                      {
+                        desiredFromAwsReadback: true,
+                        maskSecrets: createSecretMasker(secrets),
+                        expectedRegion: report.region,
+                        recordedAttributes: stateResource.attributes,
+                        // Issue #1160: nothing reads as REMOVED here, so no
+                        // provider `removalDefaults` value is injected. Removal is
+                        // judged template-vs-template, and the previous side above
+                        // is an AWS readback, never a template declaration.
+                        removedProperties: new Set<string>(),
+                      }
+                    )
                 ),
               outcome.logicalId,
               // Issue #1914: the retry logger echoes the failing call's AWS error

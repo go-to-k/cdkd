@@ -23,6 +23,18 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => fns };
 });
 
+// A changed row asks CloudFormation for the type's create-only properties; a
+// refusal falls back to the bundled schema, so nothing leaves the process.
+vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
+  return {
+    ...actual,
+    CloudFormationClient: vi.fn().mockImplementation(() => ({
+      send: () => Promise.reject(new Error('DescribeType unavailable in this test')),
+    })),
+  };
+});
+
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -121,6 +133,87 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     );
     expect(debugLines.join('\n')).toContain('Ref to resource: Queue resolved to');
     expect(hasMaskableValues(result.printingSecrets)).toBe(false);
+  });
+
+  it.each([
+    ['a secret-named target', '{{resolve:secretsmanager:sdin:SecretString:queue::}}', false],
+    ['negative control, an ordinary name', 'plain-queue-name', true],
+  ])('masks the rows it renders, a reader\'s changed value included: %s', async (_l, name, shown) => {
+    // The reader's recorded document differs from what it now resolves to, so
+    // its row carries the ARN; without `--verbose`, this is what prints.
+    const s = state(name);
+    (s.resources['Policy']!.properties as Record<string, unknown>)['PolicyDocument'] = {
+      Statement: [{ Resource: 'arn:aws:sqs:us-east-1:123456789012:older-queue' }],
+    };
+    const result = await computeStackDiff(s, template(name), 'us-east-1', 'S', backend, new DiffCalculator());
+    // What the renderer prints: the property rows.
+    const row = JSON.stringify(result.changes.get('Policy')?.propertyChanges);
+    // Premise: the row is rendered (a masked new side withholds the old one).
+    expect(row).toContain('"path":"PolicyDocument"');
+    expect(row.includes('sdin-diff-secret-queue')).toBe(shown);
+  });
+
+  it("masks an OUTPUT reading a secret-named resource, on the outputs pass's line", async () => {
+    const tpl = template('{{resolve:secretsmanager:sdin:SecretString:queue::}}');
+    tpl.Outputs = { QueueArn: { Value: { 'Fn::GetAtt': ['Queue', 'Arn'] } } };
+    debugLines.length = 0;
+    const result = await computeStackDiff(
+      state('{{resolve:secretsmanager:sdin:SecretString:queue::}}'),
+      tpl,
+      'us-east-1',
+      'S',
+      backend,
+      new DiffCalculator()
+    );
+    const lines = debugLines.join('\n');
+    expect(lines).toContain('Queue.Arn resolved to');
+    expect(lines).not.toContain('sdin-diff-secret-queue');
+    // The outputs pass's own bag decides export aliases: it holds nothing.
+    expect(hasMaskableValues(result.printingSecrets)).toBe(false);
+  });
+
+  it.each([
+    ['the stack-wide NoEcho values judge it', true],
+    ['negative control, a non-NoEcho parameter', false],
+  ])('masks a resource named from a NoEcho value in the spelling AWS keeps: %s', async (_l, noEcho) => {
+    // RDS lower-cases the identifier: the id is no substring of the NoEcho
+    // value the diff masks, only its lower-cased spelling is.
+    const tpl: CloudFormationTemplate = {
+      Parameters: { DbName: { Type: 'String', Default: 'TeamSecretDb', ...(noEcho && { NoEcho: true }) } },
+      Resources: {
+        Db: { Type: 'AWS::RDS::DBInstance', Properties: { DBInstanceIdentifier: { Ref: 'DbName' } } },
+        Reader: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'Db' } } },
+      },
+    };
+    const s: StackState = {
+      stackName: 'S',
+      region: 'us-east-1',
+      version: 9,
+      resources: {
+        Db: {
+          physicalId: 'teamsecretdb',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { DBInstanceIdentifier: 'TeamSecretDb' },
+          attributes: {},
+          dependencies: [],
+        },
+        Reader: {
+          physicalId: 'reader',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Value: 'teamsecretdb' },
+          attributes: {},
+          dependencies: ['Db'],
+        },
+      },
+      outputs: {},
+      exportNames: [],
+      lastModified: 0,
+    };
+    debugLines.length = 0;
+    await computeStackDiff(s, tpl, 'us-east-1', 'S', backend, new DiffCalculator());
+    const lines = debugLines.join('\n');
+    expect(lines).toContain('Ref to resource: Db resolved to');
+    expect(lines.includes('teamsecretdb')).toBe(!noEcho);
   });
 
   it('negative control: an ordinary name prints as it is', async () => {

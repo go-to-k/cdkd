@@ -1651,9 +1651,9 @@ export async function computeStackDiff(
   const splitPieces: RecordedSecretValues = new Map();
   // go-to-k/cdkd#3869: what a `Ref` / `Fn::GetAtt` read from a resource NAMED
   // from a secret, recorded by the resolver as print-only needles. A bag of
-  // its OWN, read only by the resolver's render mask: the bags above feed this
-  // node's corpus (a nested child's inherited bag), where a needle would move
-  // a child's export preview.
+  // its OWN, like `splitPieces`: this node's masker reads it, and its corpus
+  // (a nested child's inherited bag) leaves it out, so no child's export
+  // preview moves.
   const derivedNames: RecordedSecretValues = new Map();
   const splitDelimiters = literalSplitDelimitersOf(
     template,
@@ -1689,7 +1689,7 @@ export async function computeStackDiff(
   const outputsPassSecrets: RecordedSecretValues = new Map();
   const printing = createDiffPrintingMasker(
     [diffSecrets, inheritedForResolver, outputsPassSecrets],
-    [splitPieces]
+    [splitPieces, derivedNames]
   );
   const maskForLog: MaskerFn = printing.mask;
 
@@ -1957,7 +1957,7 @@ export async function computeStackDiff(
           const value = await intrinsicResolver.resolve(structuredClone(node), {
             recordedSecretValues: secrets,
             // go-to-k/cdkd#3869: its lines masked, its deciding bag untouched.
-            secretNameNeedles: stateSecretNameNeedles(resourcesForInputs),
+            secretNameNeedles: stateSecretNameNeedles(resourcesForInputs, diffSecrets),
             secretNameSink: derivedNames,
             template: effectiveTemplate,
             resources: resourcesForInputs,
@@ -2283,7 +2283,10 @@ export async function computeStackDiff(
   let shownOutputChanges = outputChanges;
   let shownBlocking = blocking;
   let shownDeployRefusals = deployRefusals;
-  if (hasMaskableValues(printingSecrets)) {
+  // The MASK corpus, not `printingSecrets`: it adds the mask-only bags, so a
+  // node whose only needles are a secret-derived name a row read
+  // (`derivedNames`, go-to-k/cdkd#3869) still masks what it prints.
+  if (hasMaskableValues(printing.maskCorpus())) {
     const mask: MaskerFn = printing.mask;
     // A refusal can quote a physical id or a record value that embeds one.
     // Masked, stripped, then masked again: the renderer strips control
