@@ -493,6 +493,18 @@ export class DeployEngine {
   /** @internal */
   noEchoAttributeResources = new Map<string, true | ReadonlySet<string>>();
   /**
+   * The deploy-wide DERIVED-NAME registry (go-to-k/cdkd#3869): per logical
+   * id, an EMPTY map whose LOG-ONLY needles are what its physical ids print as
+   * when its name came from a secret (`noteSecretNamedRecord` in
+   * `deploy-engine/masking.ts`). The resource's own printed lines mask with it
+   * (`printingSecretsFor`, and the printing bag `provisionResource` binds),
+   * and a resource reading it through `Ref` / `Fn::GetAtt` records its needles,
+   * with the value it read, as LOG-ONLY needles of its own bag. Never
+   * persisted. Reset per `deploy()`, like `perResourceSecrets`.
+   */
+  /** @internal */
+  secretNameNeedles = new Map<string, RecordedSecretValues>();
+  /**
    * PER-RESOURCE unresolved TEMPLATE properties, keyed by logicalId (issues
    * #1904 / #1900). The redaction choke point uses this as the POSITION source:
    * wherever the template leaf is a `{{resolve:...}}` string, state persists
@@ -835,6 +847,7 @@ export class DeployEngine {
     this.recordedOutputReads = [];
     this.perResourceSecrets = new Map();
     this.noEchoAttributeResources = new Map();
+    this.secretNameNeedles = new Map();
     this.perResourceTemplateProps = new Map();
     this.constructPathTemplate = undefined;
     // Reset with its siblings (issue #2934). Inert today — a stale TRUE pairs
@@ -1291,7 +1304,11 @@ export class DeployEngine {
   >(event: T): T {
     // Mask with the event's own resource secrets; a resource-less (run-level)
     // event carries no properties-derived text.
-    const secrets = event.logicalId ? this.perResourceSecrets.get(event.logicalId) : undefined;
+    // `printingSecretsFor`: a resource named from a secret also masks its
+    // physical-id needles here (go-to-k/cdkd#3869). The event's `physicalId`
+    // FIELD is left as is: it is the id a cleanup pass needs, and `state.json`
+    // beside this store records it too.
+    const secrets = event.logicalId ? this.printingSecretsFor(event.logicalId) : undefined;
     if (!secrets || !hasMaskableValues(secrets)) return event;
     const next: T = { ...event };
     if (next.error?.message) {
@@ -1457,6 +1474,11 @@ DeployEngine.prototype.allRecordedSecrets = maskingMixin.allRecordedSecrets;
 DeployEngine.prototype.readReaderForFreshNoEchoCeiling =
   maskingMixin.readReaderForFreshNoEchoCeiling;
 DeployEngine.prototype.maskForResource = maskingMixin.maskForResource;
+DeployEngine.prototype.secretNameBagFor = maskingMixin.secretNameBagFor;
+DeployEngine.prototype.noteSecretNamedRecord = maskingMixin.noteSecretNamedRecord;
+DeployEngine.prototype.printingSecretsFor = maskingMixin.printingSecretsFor;
+DeployEngine.prototype.namingSecretsFor = maskingMixin.namingSecretsFor;
+DeployEngine.prototype.noteSecretNamedReads = maskingMixin.noteSecretNamedReads;
 
 DeployEngine.prototype.kickOffObservedCapture = observedCaptureMixin.kickOffObservedCapture;
 DeployEngine.prototype.drainObservedCaptures = observedCaptureMixin.drainObservedCaptures;

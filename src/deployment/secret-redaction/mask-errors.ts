@@ -152,6 +152,29 @@ function isAuxiliaryAnchor(key: PropertyKey, descriptor: PropertyDescriptor): bo
   );
 }
 
+/**
+ * `markCreatedBeforeFailure`'s mark (`src/provisioning/auxiliary-failure.ts`),
+ * spelled here through the GLOBAL symbol registry so this family stays a leaf:
+ * `Symbol.for` returns the one symbol both modules name. Its `physicalId` is
+ * what the deploy engine journals so `--revert-failed` can DELETE a resource
+ * the failed create made (go-to-k/cdkd#1710); a masked copy names nothing, and
+ * the orphan stays (go-to-k/cdkd#3869 review). Kept only in the mark's own
+ * shape, a frozen object on a non-enumerable, read-only descriptor; it is
+ * never rendered, and the id it holds is the one `state.json` records.
+ */
+const CREATED_BEFORE_FAILURE_MARK = Symbol.for('cdkd.createdBeforeFailure');
+
+function isCreatedBeforeFailureMark(key: PropertyKey, descriptor: PropertyDescriptor): boolean {
+  return (
+    key === CREATED_BEFORE_FAILURE_MARK &&
+    descriptor.enumerable === false &&
+    descriptor.writable === false &&
+    typeof descriptor.value === 'object' &&
+    descriptor.value !== null &&
+    Object.isFrozen(descriptor.value)
+  );
+}
+
 function isPlainContainer(value: object): boolean {
   const proto: unknown = Object.getPrototypeOf(value);
   return Array.isArray(value)
@@ -423,7 +446,8 @@ export function maskSecretsInError<T>(
         (typeof key === 'string' &&
           CLASSIFIER_IDENTIFIER_FIELDS.has(key) &&
           typeof descriptor.value === 'string') ||
-        isAuxiliaryAnchor(key, descriptor)
+        isAuxiliaryAnchor(key, descriptor) ||
+        isCreatedBeforeFailureMark(key, descriptor)
           ? descriptor
           : maskDescriptorValue(descriptor, maskText);
       if (descriptors[key] !== descriptor) changed = true;

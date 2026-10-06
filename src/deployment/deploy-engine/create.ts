@@ -32,6 +32,7 @@ import {
   possiblyMaskedKeys,
   recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
+import { printNestedStackReadsOnly } from './resolver-context.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -94,10 +95,14 @@ export async function provisionCreate(
   if (context.recordedSecretValues) {
     this.perResourceSecrets.set(logicalId, context.recordedSecretValues);
   }
+  printNestedStackReadsOnly(context, resourceType);
   const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
     string,
     unknown
   >;
+  // go-to-k/cdkd#3869: the name this deploy resolved, registered before the
+  // provider creates (and prints) it; there is no physical id yet.
+  this.noteSecretNamedRecord(logicalId, { resourceType, properties: resolvedProps });
   // Issue #2274: before ANY of the resolved bag reaches a provider, refuse
   // if the resolution had to serve an attribute a previous deploy
   // redacted. See the helper — the value would be the literal `***`.

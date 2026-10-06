@@ -59,6 +59,11 @@ import * as scheduler from 'aws-cdk-lib/aws-scheduler';
  *     and the destroy skipped it. cdkd now records the schedule's creation
  *     date and confirms the group the secret resolves to holds that schedule
  *     before the update, and finds it by that date to delete it.
+ *   - `SecretQueueReaderPolicy` (AWS::SQS::QueuePolicy) reads SecretQueue by
+ *     `Ref` and `Fn::GetAtt`, and `PlainScheduleRole` attaches SecretPolicy by
+ *     `Ref` (go-to-k/cdkd#3869): each read resolves to a value embedding a
+ *     secret-derived name (the queue name, the policy path), which no log line
+ *     may print.
  *   - `PlainTargetSchedule`, in the same group with its own role. Both
  *     schedules target `PlainTargetQueue`, whose name is NOT secret-derived,
  *     so each one's recorded target ARN and role are compared with the live
@@ -80,6 +85,7 @@ import * as scheduler from 'aws-cdk-lib/aws-scheduler';
  * covers: AWS::AppSync::GraphQLApi
  * covers: AWS::AppSync::DataSource
  * covers: AWS::SQS::Queue
+ * covers: AWS::SQS::QueuePolicy
  * covers: AWS::Logs::LogGroup
  * covers: AWS::Logs::MetricFilter
  * covers: AWS::Scheduler::ScheduleGroup
@@ -129,7 +135,7 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       enableEcsManagedTags: update,
     });
 
-    new iam.CfnManagedPolicy(this, 'SecretPolicy', {
+    const secretPolicy = new iam.CfnManagedPolicy(this, 'SecretPolicy', {
       path: fromSecret('path'),
       description: fromSecret('policydesc'),
       policyDocument: {
@@ -156,16 +162,36 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       description,
     });
 
-    new sqs.CfnQueue(this, 'SecretQueue', {
+    const secretQueue = new sqs.CfnQueue(this, 'SecretQueue', {
       queueName: fromSecret('queue'),
       visibilityTimeout: update ? 60 : 30,
     });
+    // READERS of the secret-named queue (go-to-k/cdkd#3869): a `Ref` (its URL)
+    // and a `Fn::GetAtt` (its ARN) each resolve to a value embedding the name
+    // and are no recorded secret, so before the fix the resolver's `resolved
+    // to` lines printed the name. The Sid changes on update, so the policy is
+    // written on both deploys.
+    new sqs.CfnQueuePolicy(this, 'SecretQueueReaderPolicy', {
+      queues: [secretQueue.ref],
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: update ? 'SdinReaderUpdated' : 'SdinReaderInitial',
+            Effect: 'Allow',
+            Principal: { AWS: cdk.Stack.of(this).account },
+            Action: 'sqs:SendMessage',
+            Resource: secretQueue.attrArn,
+          },
+        ],
+      },
+    });
 
-    // Both schedules target this queue, whose name is NOT secret-derived: a
-    // `Fn::GetAtt` of the secret-named SecretQueue is resolved on an engine
-    // debug line that prints the ARN, name and all (go-to-k/cdkd#3869's open
-    // residual), which the update log's plaintext check would then catch. The
-    // shared target also leaves only the ROLE to tell the two schedules apart.
+    // Both schedules target this queue, whose name is NOT secret-derived, so
+    // each schedule's recorded target is a readable ARN the identity match
+    // compares; a `Fn::GetAtt` of the secret-named SecretQueue is exercised by
+    // SecretQueueReaderPolicy instead (go-to-k/cdkd#3869). The shared target
+    // also leaves only the ROLE to tell the two schedules apart.
     const plainTargetQueue = new sqs.CfnQueue(this, 'PlainTargetQueue', {});
     const scheduleRole = new iam.CfnRole(this, 'ScheduleRole', {
       assumeRolePolicyDocument: {
@@ -209,6 +235,10 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
     // A second schedule in the same secret-derived group, with its own role:
     // the two share a name prefix, a group and a target.
     const plainScheduleRole = new iam.CfnRole(this, 'PlainScheduleRole', {
+      // A `Ref` to SecretPolicy, whose ARN carries the secret's path
+      // (go-to-k/cdkd#3869): the role provider's attach line and the
+      // resolver's `resolved to` line print it.
+      managedPolicyArns: [secretPolicy.ref],
       assumeRolePolicyDocument: {
         Version: '2012-10-17',
         Statement: [

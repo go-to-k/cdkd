@@ -1081,6 +1081,13 @@ export async function updateInPlace(
   }
 
   if (result.wasReplaced) {
+    // go-to-k/cdkd#3869: the NEW id, judged with this deploy's bag, before
+    // the line names it (the old one was judged before the body ran).
+    this.noteSecretNamedRecord(logicalId, {
+      resourceType,
+      physicalId: result.physicalId,
+      properties: resolvedProps,
+    });
     this.logger.info(
       `Resource ${logicalId} was replaced: ${currentResource.physicalId} -> ${result.physicalId}`
     );

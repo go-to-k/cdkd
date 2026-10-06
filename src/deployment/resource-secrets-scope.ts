@@ -89,6 +89,19 @@ export function withCurrentResourceSecrets<T>(secrets: RecordedSecretValues, fn:
 }
 
 /**
+ * Run `fn` with `secrets` masking every log line it emits, and nothing else:
+ * {@link getCurrentResourceSecrets} still answers the bag an enclosing
+ * {@link withCurrentResourceSecrets} bound, so no provider SEEDS or compares
+ * with it. For a PRINTING bag whose needles must never reach a reader that
+ * decides: the deploy engine binds a resource's derived-name registry around
+ * its whole provisioning (go-to-k/cdkd#3869).
+ */
+export function withPrintingSecrets<T>(secrets: RecordedSecretValues, fn: () => T): T {
+  const outer = boundSecretBagsStore.getStore() ?? [];
+  return boundSecretBagsStore.run([...outer, secrets], fn);
+}
+
+/**
  * The bag {@link withCurrentResourceSecrets} bound for the provider call
  * currently in flight, or `undefined` when no binder is on the stack.
  *

@@ -903,6 +903,63 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(op.attemptedProperties).toEqual({ p: 'new' });
     });
 
+    // go-to-k/cdkd#3869 review: the error is MASKED before it reaches the
+    // journal (`printingSecretsFor`, now with the derived-name registry), and
+    // the mark's id spells the secret-derived name. It must survive exact, or
+    // `--revert-failed` gets `***` and cannot delete what the create made.
+    it.each([
+      ['a name equal to the resolved secret', 'AWS::S3::Bucket', 'BucketName', 'team-secret-bucket', 'team-secret-bucket'],
+      ['a name its provider rewrote', 'AWS::IAM::Role', 'RoleName', 'alice@example.com', 'alice-example-com'],
+    ] as const)('journals the marked id EXACT for %s', async (_label, type, nameKey, secret, id) => {
+      const changes = new Map([
+        ['B', { ...makeChange('B'), resourceType: type, desiredProperties: { p: 'new' } } as ResourceChange],
+      ]);
+      const engine = buildEngine({ changes, deps: { B: [] }, noRollback: true, currentEtag: 'e0' });
+      (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry
+        .getProviderFor()
+        .provider.create.mockRejectedValue(
+          markCreatedBeforeFailure(
+            new ProvisioningError(`failed after creating ${id}`, type, 'B', id),
+            'B',
+            type,
+            id
+          )
+        );
+      const tmpl: CloudFormationTemplate = {
+        Resources: { B: { Type: type, Properties: { [nameKey]: 'ref' } } },
+      };
+      const resolver = (engine as unknown as { resolver: { resolve: ReturnType<typeof vi.fn> } }).resolver;
+      resolver.resolve.mockImplementation(
+        (value: unknown, ctx?: { recordedSecretValues?: Map<string, string> }) => {
+          if (value && typeof value === 'object' && 'p' in (value as object)) {
+            ctx?.recordedSecretValues?.set(secret, '{{resolve:secretsmanager:s:SecretString:n::}}');
+            return Promise.resolve({ ...(value as object), [nameKey]: secret });
+          }
+          return Promise.resolve(value);
+        }
+      );
+      const caught = await engine.deploy(stackName, tmpl).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      const op = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations.find(
+        (o: { logicalId: string }) => o.logicalId === 'B'
+      );
+      expect(op.physicalId).toBe(id);
+      expect(op.physicalIdRecoveredFromError).toBe(true);
+      // Non-vacuity: the printed error text WAS masked.
+      const chain: string[] = [];
+      for (let e: unknown = caught; e instanceof Error; e = (e as { cause?: unknown }).cause) {
+        chain.push(e.message);
+      }
+      expect(chain.join('\n')).toContain('failed after creating');
+      expect(chain.join('\n')).not.toContain(id);
+    });
+
     // The hazard the mark exists for: a provider names the resource it was
     // GOING to create on every failure, including a collision with another
     // owner's. That id must never reach a `--revert-failed` delete.

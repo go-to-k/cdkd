@@ -21,7 +21,10 @@
 #   1. Seed the secret naming the stage, the service, the policy's path and
 #      description, the GraphQL API, the data source and the queue.
 #   2. Deploy. Cloud Control's create line withholds SecretFilter's id
-#      (go-to-k/cdkd#3869).
+#      (go-to-k/cdkd#3869), and the log names neither the queue name nor the
+#      policy path that SecretQueueReaderPolicy and PlainScheduleRole read by
+#      Ref / Fn::GetAtt (go-to-k/cdkd#3869: a value read from a resource named
+#      from a secret is no recorded secret).
 #   3. PREMISE: state records each secret-derived property as the
 #      {{resolve:secretsmanager: expression, and each resource lives under the
 #      name (path, description) the secret holds.
@@ -67,6 +70,11 @@
 # NotUpdatableException "Invalid patch update: createOnlyProperties
 # [/properties/FilterName] cannot be updated" (measured by that probe, read
 # from the run's persisted deployment event).
+# Revert src/deployment/intrinsic-resolver/{refs,getatt}.ts ALONE
+# (go-to-k/cdkd#3869) and step 2 fails "the deploy log names a value read from
+# a secret-named resource in plaintext: ${QUEUE_NAME}": the `resolved to` line
+# of SecretQueueReaderPolicy's Ref / Fn::GetAtt prints the queue URL and ARN
+# raw (not yet measured on real AWS).
 # With the fix the patch leaves FilterName out, so the filter keeps its
 # pre-rotation name, as CloudFormation leaves an unchanged reference alone.
 # Revert the IdScrubLog in cloud-control-provider.ts and step 2 fails
@@ -173,8 +181,22 @@ cleanup() {
     for role in "${SCHEDULE_ROLE:-}" "${PLAIN_SCHEDULE_ROLE:-}"; do
       [ -n "${role}" ] || continue
       aws iam delete-role-policy --role-name "${role}" --policy-name send >/dev/null 2>&1
+      # PlainScheduleRole attaches SecretPolicy (go-to-k/cdkd#3869).
+      if [ -n "${POLICY_ARN:-}" ]; then
+        aws iam detach-role-policy --role-name "${role}" --policy-arn "${POLICY_ARN}" >/dev/null 2>&1
+      fi
       aws iam delete-role --role-name "${role}" >/dev/null 2>&1
     done
+    # SecretPolicy, once detached above, with its non-default versions
+    # (the update adds one), so a destroy that failed part-way leaves no
+    # orphan policy (go-to-k/cdkd#3869 added its attachment).
+    if [ -n "${POLICY_ARN:-}" ]; then
+      for version in $(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
+        --query 'Versions[?!IsDefaultVersion].VersionId' --output text 2>/dev/null); do
+        aws iam delete-policy-version --policy-arn "${POLICY_ARN}" --version-id "${version}" >/dev/null 2>&1
+      done
+      aws iam delete-policy --policy-arn "${POLICY_ARN}" >/dev/null 2>&1
+    fi
     if [ -n "${PLAIN_TARGET_QUEUE_URL:-}" ]; then
       aws sqs delete-queue --region "${REGION}" --queue-url "${PLAIN_TARGET_QUEUE_URL}" >/dev/null 2>&1
     fi
@@ -299,6 +321,21 @@ expect_eq() { # usage: expect_eq <what> <want> <got>
   echo "    OK: $1"
 }
 
+# go-to-k/cdkd#3869: each read of a secret-named resource must have its
+# --verbose 'resolved to' line in the log (usage: expect_read_lines <log file>
+# <which deploy>); the callers then assert the names are absent from it.
+expect_read_lines() {
+  local log="$1" which="$2" marker
+  for marker in "Ref to resource: SecretQueue resolved to " "SecretQueue.Arn resolved to " \
+    "Ref to resource: SecretPolicy resolved to "; do
+    if ! grep -qF -- "${marker}" "${log}"; then
+      echo "FAIL: premise: the ${which} log has no '${marker}' line (the --verbose debug stream is missing, the reader was not resolved, or the wording drifted)" >&2
+      log_tail
+      exit 1
+    fi
+  done
+}
+
 echo "==> Step 2: deploy"
 DEPLOYED=1
 set +e
@@ -312,6 +349,27 @@ if [ "${DEPLOY_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: deploy exited 0"
+# Read right after the deploy, BEFORE the log assertions below: cleanup()'s
+# fallback sweep (SecretPolicy, the schedule roles, the target queue) needs
+# these ids on exactly the failure path those assertions catch.
+API_ID="$(state_physical_id Api)"
+# A Cluster's physical id is its NAME, which --cluster / --clusters accept.
+CLUSTER_ID="$(state_physical_id Cluster)"
+SERVICE_ARN="$(state_physical_id SecretService)"
+TASK_DEF_ARN="$(state_physical_id TaskDef)"
+POLICY_ARN="$(state_physical_id SecretPolicy)"
+GQL_API_ID="$(state_physical_id SecretApi)"
+QUEUE_URL="$(state_physical_id SecretQueue)"
+FILTER_LOG_GROUP="$(state_physical_id FilterLogGroup)"
+FILTER_ID="$(state_physical_id SecretFilter)"
+# An IAM role's physical id is its name, which --role-name takes.
+SCHEDULE_ROLE="$(state_physical_id ScheduleRole)"
+PLAIN_SCHEDULE_ROLE="$(state_physical_id PlainScheduleRole)"
+PLAIN_TARGET_QUEUE_URL="$(state_physical_id PlainTargetQueue)"
+for v in API_ID CLUSTER_ID SERVICE_ARN TASK_DEF_ARN POLICY_ARN GQL_API_ID QUEUE_URL FILTER_LOG_GROUP FILTER_ID SCHEDULE_ROLE PLAIN_SCHEDULE_ROLE PLAIN_TARGET_QUEUE_URL; do
+  if [ -z "${!v}" ]; then echo "FAIL: ${v} not found in ${STATE_KEY}" >&2; exit 1; fi
+done
+
 # go-to-k/cdkd#3869: Cloud Control's create line names the identifier it
 # returned, `<LogGroupName>|<FilterName>`; the desired FilterName is the
 # secret's, so the whole id is withheld (before, only the FilterName part was
@@ -331,24 +389,20 @@ if grep -qF -- "${FILTER_NAME}" "${DEPLOY_LOG}"; then
   exit 1
 fi
 echo "    OK: the deploy log withholds SecretFilter's physical id"
-
-API_ID="$(state_physical_id Api)"
-# A Cluster's physical id is its NAME, which --cluster / --clusters accept.
-CLUSTER_ID="$(state_physical_id Cluster)"
-SERVICE_ARN="$(state_physical_id SecretService)"
-TASK_DEF_ARN="$(state_physical_id TaskDef)"
-POLICY_ARN="$(state_physical_id SecretPolicy)"
-GQL_API_ID="$(state_physical_id SecretApi)"
-QUEUE_URL="$(state_physical_id SecretQueue)"
-FILTER_LOG_GROUP="$(state_physical_id FilterLogGroup)"
-FILTER_ID="$(state_physical_id SecretFilter)"
-# An IAM role's physical id is its name, which --role-name takes.
-SCHEDULE_ROLE="$(state_physical_id ScheduleRole)"
-PLAIN_SCHEDULE_ROLE="$(state_physical_id PlainScheduleRole)"
-PLAIN_TARGET_QUEUE_URL="$(state_physical_id PlainTargetQueue)"
-for v in API_ID CLUSTER_ID SERVICE_ARN TASK_DEF_ARN POLICY_ARN GQL_API_ID QUEUE_URL FILTER_LOG_GROUP FILTER_ID SCHEDULE_ROLE PLAIN_SCHEDULE_ROLE PLAIN_TARGET_QUEUE_URL; do
-  if [ -z "${!v}" ]; then echo "FAIL: ${v} not found in ${STATE_KEY}" >&2; exit 1; fi
+# go-to-k/cdkd#3869: SecretQueueReaderPolicy reads SecretQueue by Ref and
+# Fn::GetAtt, and PlainScheduleRole attaches SecretPolicy by Ref. Each value
+# embeds a secret-derived name (the queue name, the policy path) and is no
+# recorded secret. PREMISE: each read's --verbose line is in the log, so the
+# absence below is about a printed value, not a missing line.
+expect_read_lines "${DEPLOY_LOG}" "deploy"
+for needle_var in QUEUE_NAME POLICY_PATH; do
+  if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
+    HIT_LINES="$(grep -nF -- "${!needle_var}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+    echo "FAIL: the deploy log names a value read from a secret-named resource in plaintext: \${${needle_var}} on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+    exit 1
+  fi
 done
+echo "    OK: the deploy log withholds what its readers read from SecretQueue and SecretPolicy"
 
 echo "==> Step 3 (PREMISE): state records the names as the redacted expression"
 for field in stage service path policydesc api datasource queue filter group; do
@@ -490,6 +544,12 @@ fi
 # resolved; it is reported below rather than asserted.
 # By NAME, with indirect expansion, so a red names the variable that hit and the
 # log lines it is on (never its value, which is the secret-derived plaintext).
+# go-to-k/cdkd#3869: the readers of SecretQueue and SecretPolicy resolve on
+# the update too, so the QUEUE_NAME and POLICY_PATH needles below cover what
+# they read. PlainScheduleRole does not change on the update, so its
+# 'Ref to resource: SecretPolicy' line comes from the DIFF pass alone, and the
+# QueuePolicy's from both passes (its Sid changes).
+expect_read_lines "${DEPLOY_LOG}" "update"
 for needle_var in STAGE_NAME SERVICE_NAME POLICY_PATH POLICY_DESC GQL_API_NAME DS_NAME QUEUE_NAME FILTER_NAME_ROTATED GROUP_NAME; do
   # A here-string, not a pipe: see state_holds.
   if grep -qF -- "${!needle_var}" <<< "${UPDATE_LOG_BODY}"; then

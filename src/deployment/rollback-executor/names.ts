@@ -399,7 +399,7 @@ function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T | undef
  * message quotes back. A reference's "derivations" would spell the
  * reference, not the secret.
  */
-function secretDerivedNamePairs(record: {
+export function secretDerivedNamePairs(record: {
   resourceType: unknown;
   properties: unknown;
   logicalId: unknown;
