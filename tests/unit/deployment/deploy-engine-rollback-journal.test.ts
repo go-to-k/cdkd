@@ -1900,10 +1900,31 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       journal.deleteRollbackJournal.mockResolvedValue(false);
       journal.dropRollbackJournalFailedOperations.mockRejectedValue(new Error('PutObject denied'));
 
-      await engine.deploy(stackName, template);
+      // The deploy itself still succeeds: the strip is best-effort.
+      const result = await engine.deploy(stackName, template);
 
+      expect(result.deleteSkipped).toBe(1);
+      expect(journal.dropRollbackJournalFailedOperations).toHaveBeenCalledTimes(1);
       const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
-      expect(warned.some((w) => w.includes('run a successful cdkd deploy of the stack first'))).toBe(true);
+      const strip = warned.find((w) => w.includes('Failed to remove the settled entries'));
+      expect(strip).toContain('run a successful cdkd deploy of the stack first');
+    });
+
+    // Review CODE-M1's type check: a record of ANOTHER type holding the same id
+    // string is a different resource, so it neither tracks nor saves the orphan.
+    it('a record of another type holding the same id string does not track it: the foreign holder still demotes', async () => {
+      const engine = noChangeEngine({
+        Queue: { physicalId: 'orphan-stream', resourceType: 'AWS::SQS::Queue', properties: {}, attributes: {}, dependencies: [] },
+      });
+      foreignHeld(engine);
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+
+      const result = await engine.deploy(stackName, template);
+
+      expect(orphanDeletes(engine)).toHaveLength(0);
+      expect(result.deleteSkipped).toBe(1);
+      const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+      expect(warned.some((w) => w.includes('Skipping failed CREATE of Orphan'))).toBe(true);
     });
 
     // Review CODE-N1: a record holding the orphan's very resource tracks it,
