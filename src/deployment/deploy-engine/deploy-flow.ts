@@ -942,8 +942,11 @@ export async function doDeployWithPrefetch(
         );
 
         // `--require-approval=any-change` covers an Outputs-only change too,
-        // asked before anything below writes it.
-        if (outputsChanged || exportSetChanged) {
+        // asked before anything below writes it. An export-set change on a
+        // record with no `exportNames` (written before v9) is the backfill of
+        // that list, not a change the user made: asking there would fail every
+        // non-interactive deploy of an unchanged stack.
+        if (outputsChanged || (exportSetChanged && currentState.exportNames !== undefined)) {
           await requireOutputsOnlyApproval({ options: this.options, stackName });
         }
 

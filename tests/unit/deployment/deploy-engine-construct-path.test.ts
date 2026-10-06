@@ -5,8 +5,6 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
-import type { DeploymentApprovalRequest } from '../../../src/deployment/deploy-engine/options.js';
-import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
@@ -54,33 +52,6 @@ function record(extra: Partial<ResourceState> = {}): ResourceState {
   } as ResourceState;
 }
 
-/** An in-place UPDATE of `Kept`, plus whatever `extra` rows the case adds. */
-function arrange(
-  mocks: { getState: ReturnType<typeof vi.fn>; calculateDiff: ReturnType<typeof vi.fn> },
-  resources: Record<string, ResourceState>,
-  changes: ResourceChange[]
-): CloudFormationTemplate {
-  const state: StackState = {
-    version: STATE_SCHEMA_VERSION_CURRENT,
-    region: 'us-east-1',
-    stackName: STACK_NAME,
-    resources,
-    outputs: {},
-    lastModified: 0,
-  };
-  mocks.getState.mockResolvedValue({ state, etag: 'etag-old' });
-  mocks.calculateDiff.mockResolvedValue(new Map(changes.map((c) => [c.logicalId, c])));
-  return {
-    Resources: {
-      Kept: {
-        Type: 'AWS::SQS::Queue',
-        Properties: { Marker: 'new' },
-        Metadata: { 'aws:cdk:path': 'MyStack/Kept/Resource' },
-      },
-    },
-  } as CloudFormationTemplate;
-}
-
 const inPlaceUpdate: ResourceChange = {
   logicalId: 'Kept',
   changeType: 'UPDATE',
@@ -89,14 +60,6 @@ const inPlaceUpdate: ResourceChange = {
   desiredProperties: { Marker: 'new' },
   propertyChanges: [{ path: 'Marker', oldValue: 'old', newValue: 'new', requiresReplacement: false }],
 };
-
-const deletion: ResourceChange = {
-  logicalId: 'Gone',
-  changeType: 'DELETE',
-  resourceType: 'AWS::SQS::Queue',
-  currentProperties: { Marker: 'old' },
-};
-
 
 describe('DeployEngine stamps constructPath on every save', () => {
   let getState: ReturnType<typeof vi.fn>;
@@ -215,5 +178,22 @@ describe('DeployEngine stamps constructPath on every save', () => {
     hasChanges.mockReturnValue(false);
     await engine().deploy(STACK_NAME, template());
     expect(saveState).not.toHaveBeenCalled();
+  });
+
+  it('stamps each deploy from its own template, never a previous deploy\'s on the same engine', async () => {
+    const shared = engine();
+    load({ Kept: record(), NoPath: record({ physicalId: 'np' }) });
+    calculateDiff.mockResolvedValue(new Map([['Kept', inPlaceUpdate]]));
+    await shared.deploy(STACK_NAME, template());
+    // A second stack (as a child engine would be: a different template) whose
+    // `Kept` declares no path must not inherit the first deploy's.
+    load({ Kept: record() });
+    calculateDiff.mockResolvedValue(new Map([['Kept', inPlaceUpdate]]));
+    await shared.deploy('OtherStack', {
+      Resources: { Kept: { Type: 'AWS::SQS::Queue', Properties: { Marker: 'new' } } },
+    } as CloudFormationTemplate);
+    expect(saveState.mock.calls.at(-1)![0]).toBe('OtherStack');
+    const saved = saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['Kept']).not.toHaveProperty('constructPath');
   });
 });

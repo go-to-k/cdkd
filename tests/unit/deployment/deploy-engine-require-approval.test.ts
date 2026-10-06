@@ -291,8 +291,58 @@ describe('DeployEngine --require-approval', () => {
         outputsOnly: true,
       });
       expect(err).toMatchObject({ code: 'DEPLOY_NOT_APPROVED' });
+      // A retried decline would ask again.
+      expect(isMarkedNonRetryable(err)).toBe(true);
       expect(mockStateBackend.saveState).not.toHaveBeenCalled();
       expect(releaseLock).toHaveBeenCalled();
+    });
+
+    function loadOutputs(outputs: Record<string, string>, exportNames?: string[]): void {
+      mockStateBackend.getState.mockResolvedValue({
+        state: {
+          version: STATE_SCHEMA_VERSION_CURRENT,
+          region: 'us-east-1',
+          stackName: STACK_NAME,
+          resources: { Kept: record() },
+          outputs,
+          ...(exportNames && { exportNames }),
+          lastModified: 0,
+        },
+        etag: 'etag-old',
+      });
+    }
+
+    it('any-change: does not ask for the export-list backfill of a record written before v9', async () => {
+      const template = arrangeOutputs();
+      // Unchanged output, no `exportNames` on the record: the no-change path
+      // backfills the list (a save) though the user changed nothing.
+      loadOutputs({ Url: 'new' });
+      await makeEngine({ requireApproval: 'any-change' }).deploy(STACK_NAME, template);
+      expect(approve).not.toHaveBeenCalled();
+      expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+    });
+
+    it('any-change: asks when a v9 record\'s export set changes with equal values', async () => {
+      approve.mockResolvedValue(true);
+      const template = arrangeOutputs();
+      // The bag already holds the alias key, so the values are equal and only
+      // the recorded export set (`[]`) differs.
+      loadOutputs({ Url: 'new', 'shared-url': 'new' }, []);
+      await makeEngine({ requireApproval: 'any-change' }).deploy(STACK_NAME, {
+        ...template,
+        Outputs: { Url: { Value: 'new', Export: { Name: 'shared-url' } } },
+      } as CloudFormationTemplate);
+      expect(approve).toHaveBeenCalledTimes(1);
+      expect(approve.mock.calls[0]![0]).toMatchObject({ outputsOnly: true });
+    });
+
+    it('never asks under --dry-run, which writes nothing', async () => {
+      await makeEngine({ requireApproval: 'any-change', dryRun: true }).deploy(
+        STACK_NAME,
+        arrangeOutputs()
+      );
+      expect(approve).not.toHaveBeenCalled();
+      expect(mockStateBackend.saveState).not.toHaveBeenCalled();
     });
 
     it('any-change: writes the outputs once approved', async () => {

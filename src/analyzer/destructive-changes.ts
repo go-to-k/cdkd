@@ -71,7 +71,9 @@ export function findDestructiveChanges(
     if (impact === undefined) continue;
     // A removed resource is no longer in the template: the path the deploy
     // that created it recorded is the one to show.
-    const constructPath = constructPathOf(template, change.logicalId) ?? record?.constructPath;
+    // state.json is hand-editable: a non-string recorded path is ignored.
+    const recorded = typeof record?.constructPath === 'string' ? record.constructPath : undefined;
+    const constructPath = constructPathOf(template, change.logicalId) ?? recorded;
     found.push({
       stackName,
       logicalId: change.logicalId,

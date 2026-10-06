@@ -171,4 +171,13 @@ describe('constructPath from state', () => {
     expect(moved).toEqual({ ...r, constructPath: 'S/B/Resource' });
     expect(r.constructPath).toBe('S/A/Resource');
   });
+
+  it('ignores a non-string recorded path from a hand-edited state', () => {
+    const change: ResourceChange = { logicalId: 'T', changeType: 'DELETE', resourceType: 'AWS::DynamoDB::Table' };
+    const [found] = findDestructiveChanges('S', [change], {
+      T: rec({ constructPath: 42 as unknown as string }),
+    });
+    expect(found).not.toHaveProperty('constructPath');
+    expect(formatDestructiveChange(found!)).toBe('S: AWS::DynamoDB::Table T will be destroyed');
+  });
 });

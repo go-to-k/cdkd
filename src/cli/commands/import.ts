@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
-import { constructPathOf } from '../../analyzer/destructive-changes.js';
 import * as nodePath from 'node:path';
+import { constructPathOf } from '../../analyzer/destructive-changes.js';
 import { Command } from 'commander';
 import {
   appOptions,
