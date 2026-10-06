@@ -196,11 +196,16 @@ export class SnsSqsEventStack extends cdk.Stack {
         topics: named,
         policyDocument: new iam.PolicyDocument({
           statements: [
+            // `Resource: '*'`, the shape of CloudFormation's own TopicPolicy
+            // example (User Guide, "Declaring an Amazon SNS topic policy").
+            // SNS rejects a statement listing several topic ARNs ("Policy
+            // statement must apply to a single resource"), and the same
+            // document is written to every topic in Topics.
             new iam.PolicyStatement({
               sid: 'CdkdIssue4610',
               actions: ['sns:Publish'],
               principals: [new iam.ServicePrincipal('events.amazonaws.com')],
-              resources: named.map((t) => t.topicArn),
+              resources: ['*'],
             }),
           ],
         }),
