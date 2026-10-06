@@ -45,7 +45,7 @@ ci-cd	2026-09-27T14:43:09Z	PASS	70	verify.sh	rc ok, orph clean (#3866)
 cloudfront-function-url	2026-10-01T10:13:53Z	PASS	261	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 7 deleted 0 errors, orph clean
 cloudtrail-trail	2026-10-06T02:22:44Z	PASS	191	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
-cloudwatch-anomaly-detector	2026-10-06T05:40:20Z	PASS	65	verify.sh	rc ok, orph clean (#4602 PR #4609)
+cloudwatch-anomaly-detector	2026-10-06T07:02:26Z	PASS	65	verify.sh	rc ok, orph clean (#2207 PR #4613)
 codebuild-project	2026-10-03T04:24:03Z	PASS	97	verify.sh	rc ok, orph clean (#4283 PR #4449)
 codecommit	2026-10-06T02:22:44Z	PASS	161	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
@@ -86,7 +86,7 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-10-04T16:44:59Z	PASS	105	verify.sh	rc ok, orph clean (#2080 PR #4557)
 docdb-neptune	2026-10-06T02:22:44Z	PASS	5209	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-06T02:22:44Z	PASS	311	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+drift-revert	2026-10-06T07:02:26Z	PASS	315	verify.sh	rc ok, orph clean (#2207 PR #4613)
 drift-revert-arrays	2026-10-04T10:29:43Z	PASS	185	verify.sh	rc ok, orph clean (#4476)
 drift-revert-vpc	2026-10-06T05:39:06Z	PASS	400	verify.sh	rc ok, orph clean (#4602 PR #4609)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
@@ -148,7 +148,7 @@ iam-managed-policy	2026-10-06T05:49:28Z	PASS	70	verify.sh	rc ok, orph clean (#46
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
 iam-propagation-stress	2026-10-03T04:24:06Z	PASS	97	verify.sh	rc ok, orph clean (#4283 PR #4449)
 iam-recreate-reattach	2026-10-06T02:22:44Z	PASS	210	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
-iam-role-policies-drift-clean	2026-10-04T17:04:46Z	PASS	170	verify.sh	rc ok, orph clean (#4408)
+iam-role-policies-drift-clean	2026-10-06T07:02:26Z	PASS	170	verify.sh	rc ok, orph clean (#2207 PR #4613)
 iam-role-prefixed-name-update	2026-10-03T04:27:32Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
 iam-secret-derived-principals	2026-10-06T05:51:13Z	PASS	175	verify.sh	rc ok, orph clean (#4602 PR #4609)
 import-attribute-readback	2026-09-27T12:27:25Z	PASS	150	verify.sh	rc ok, orph clean (#3861)
