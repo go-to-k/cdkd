@@ -372,3 +372,35 @@ describe('maskSecretsInError - the extraMask transform (issue #3234)', () => {
     expect(maskSecretsInError('prod-q7', new Map(), swap('prod-q7', '***'))).toBe('prod-q7');
   });
 });
+
+describe('maskSecretsInError keeps the created-before-failure mark exact (go-to-k/cdkd#3869 review)', () => {
+  const MARK = Symbol.for('cdkd.createdBeforeFailure');
+  const bag = new Map([['team-secret-bucket', '{{resolve:secretsmanager:s:SecretString:n::}}']]);
+
+  it("keeps markCreatedBeforeFailure's physical id, which --revert-failed deletes by", async () => {
+    const { markCreatedBeforeFailure, createdBeforeFailure } = await import(
+      '../../../src/provisioning/auxiliary-failure.js'
+    );
+    const error = markCreatedBeforeFailure(
+      new Error('failed after creating team-secret-bucket'),
+      'B',
+      'AWS::S3::Bucket',
+      'team-secret-bucket'
+    );
+    const masked = maskSecretsInError(error, bag);
+    expect(masked.message).toBe('failed after creating ***');
+    expect(createdBeforeFailure(masked, 'B', 'AWS::S3::Bucket')).toBe('team-secret-bucket');
+  });
+
+  it('masks a same-key field that does not have the mark shape (enumerable)', () => {
+    const error = new Error('x');
+    Object.defineProperty(error, MARK, {
+      value: Object.freeze({ physicalId: 'team-secret-bucket' }),
+      enumerable: true,
+      writable: false,
+      configurable: true,
+    });
+    const masked = maskSecretsInError(error, bag) as unknown as Record<symbol, { physicalId: string }>;
+    expect(masked[MARK]!.physicalId).toBe('***');
+  });
+});
