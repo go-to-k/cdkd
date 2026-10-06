@@ -32,6 +32,7 @@ import {
   malformedDeployResourceEntriesRefusalMessage,
   malformedDestroyResourceEntriesRefusalMessage,
   malformedDestroyResourcePropertiesRefusalMessage,
+  unaddressableUpdateRefusalMessage,
   malformedImportUnrepairedEntriesRefusalMessage,
   malformedScrubResourceEntriesRefusalMessage,
   malformedResourceEntriesWarning,
@@ -8052,6 +8053,10 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
       (s, r) => malformedDestroyResourcePropertiesRefusalMessage(s as string, r as string, ['A']),
     ],
     [
+      'unaddressableUpdateRefusalMessage',
+      (s, r) => unaddressableUpdateRefusalMessage(s as string, r as string, 'A', 'AWS::S3::Bucket'),
+    ],
+    [
       'malformedScrubResourceEntriesRefusalMessage',
       (s, r) => malformedScrubResourceEntriesRefusalMessage(s as string, r as string, ['A']),
     ],
@@ -8317,6 +8322,7 @@ describe('the inspect command explains a withheld value before its label (go-to-
     entry(malformedDestroyOutputsRefusalMessage, (f, s, r) => f(s, r)),
     entry(malformedDestroyResourceEntriesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
     entry(malformedDestroyResourcePropertiesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
+    entry(unaddressableUpdateRefusalMessage, (f, s, r) => f(s, r, 'A', 'AWS::S3::Bucket')),
     entry(malformedDriftResourcePropertiesRefusalMessage, (f, s, r) => f(s, r, ['A'])),
     entry(malformedDriftResourcePropertiesWarning, (f, s, r) => f(s, r, ['A'])),
     entry(malformedExportNamesWarning, (f, s, r) => f(s, r)),

@@ -1914,10 +1914,17 @@ themselves:
 
 | Summary row | Cause | Next `cdkd deploy` retries it? |
 | --- | --- | --- |
-| `Skipped (not deleted): N` | A resource removed from the template whose provider could not issue the delete — typically a malformed `physicalId` in state | **Yes.** The state record is deliberately KEPT, so the resource is still diffed as a DELETE next run |
+| `Skipped (not deleted): N` | A resource removed from the template whose provider could not issue the delete — typically a malformed `physicalId` in state — or whose record has no usable `physicalId` at all (absent, not a string, empty or whitespace; `skipped (state record has no physical id)`, no AWS call; a nested stack row is exempt unless its record names Cloud Control) | **Yes.** The state record is deliberately KEPT, so the resource is still diffed as a DELETE next run |
 | `Skipped (not deleted): N` | A resource a failed CREATE made before it failed, recorded only in the rollback journal, that the deploy could not delete or that a state record may own (see [Failed CREATEs that made their resource](cli-rollback.md#failed-creates-that-made-their-resource)) | **Only when the deploy could not act on it** (a delete that failed, an interrupt, or a record it could not read): the journal is KEPT (reduced to that entry where it can) and the next successful deploy retries. One a record may own is warned about, naming its physical id, and dropped with the journal — delete it by hand if it is not that record's |
 | `of which left an orphaned predecessor: N` | A replacement the provider performed INSIDE its own `update()` whose old resource it could not retire, or an update-failure replacement where `UpdateReplacePolicy: Retain` said not to delete it | **No.** State now points at the replacement, so the survivor is untracked — delete it by hand |
 | `Left an orphaned predecessor in a nested stack: N` | The same as the row above, for a resource inside a nested child or grandchild stack | **No**, as above |
+
+A record with no usable `physicalId` that the template still declares is
+handled differently when the template CHANGES it: the deploy fails on that
+resource before anything is sent (`STATE_RESOURCES_MALFORMED`), and the usual
+automatic rollback follows unless `--no-rollback` is set, since skipping the
+update would finish the deploy without the change. A record the template leaves unchanged is not touched.
+Repair the `physicalId` in `state.json` and re-run.
 
 To give up on a skipped DELETE instead, delete the resource by hand and drop
 its record with the command its warning prints last:

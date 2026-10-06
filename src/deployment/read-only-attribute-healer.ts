@@ -19,6 +19,7 @@
  */
 import type { ResourceState } from '../types/state.js';
 import type { ResourceProvider } from '../types/resource.js';
+import { hasAddressablePhysicalId } from '../state/malformed-resources-bag.js';
 import { injectiveKey } from '../state/record-keys.js';
 import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
@@ -49,6 +50,10 @@ export async function readRecordAttributes(input: {
 }): Promise<StaleAttributeHealOutcome> {
   const { provider, logicalId, resource, stackName, region } = input;
   if (!provider.import) return { kind: 'not-attempted' };
+  // go-to-k/cdkd#3211: the read addresses AWS by the record's id, and a torn
+  // record's names no resource. Not attempted, rather than a provider call
+  // with that value.
+  if (!hasAddressablePhysicalId(resource)) return { kind: 'not-attempted' };
   const found = await provider.import({
     logicalId,
     resourceType: resource.resourceType,

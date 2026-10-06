@@ -40,13 +40,12 @@ delete and re-create. `cdkd diff` repairs and warns instead, since it provisions
 nothing; its warning must say BOTH halves — the preview is wrong in the
 addition/replacement direction, and `cdkd deploy` refuses the record.
 
-The refusal is at `DiffCalculator.calculateDiff`'s ENTRY — the single CHOKEPOINT
-both callers share — DOMINATING every `currentResource.properties` read rather
-than sitting on the reads. It names NO stack identity: the record's own
-`stackName` / `region` are unvalidated and could aim the remedy elsewhere.
-The ENTRY refusal `refuseMalformedResourceEntriesForDeploy` (go-to-k/cdkd#3314)
-sits just ABOVE it, and ALSO at `DeployEngine`'s load: two walks before the diff
-die on a `null` row, so only the load reaches the user.
+The refusal is at `DiffCalculator.calculateDiff`'s ENTRY, naming NO stack
+(the record's own `stackName` / `region` are unvalidated), and ALSO at
+`DeployEngine`'s load with the caller's identity, under the ENTRY refusal
+(go-to-k/cdkd#3314): the auto-refresh hands the map to a provider before the
+diff (go-to-k/cdkd#3211). A `physicalId` failing `hasAddressablePhysicalId` is
+per site: the DELETE skips, the UPDATE refuses, nested-stack rows exempt.
 
 `loadStateOrEmpty` (`diff-recursive.ts`) carries the read-only half AFTER the
 `resources` bag repair and the entry drop, and `computeStackDiff` runs it a

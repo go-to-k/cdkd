@@ -2866,13 +2866,13 @@ export function unreadableResourcePropertyBags(state: StackState): readonly stri
  * The cost is stated rather than argued away: a deploy over ONE torn record
  * aborts the whole run, including the stacks and resources that are fine.
  * That is the right trade against replacing a resource nobody asked to
- * replace, and it is paid before anything irreversible: the refusal is raised
- * from the diff, so nothing is provisioned and no state is written for the
- * stack, and the deploy's lock is released by its own `finally`. NOT "before
- * any provider call" — that claim is false and was corrected in review:
- * `DeployEngine.kickOffAutoRefreshObservedProperties` fires fire-and-forget
- * `provider.readCurrentState` READS earlier in the same run. They persist
- * nothing, because the save they would be drained into never happens.
+ * replace, and it is paid before anything irreversible: nothing is provisioned
+ * and no state is written for the stack, and the deploy's lock is released by
+ * its own `finally`. The deploy raises it at its STATE LOAD too, with its own
+ * stack and region (go-to-k/cdkd#3211), because a provider call ran before the
+ * diff: `DeployEngine.kickOffAutoRefreshObservedProperties` handed the record's
+ * map to `provider.readCurrentState`. The diff call stays for `cdkd diff`'s
+ * sibling caller contract and any future caller.
  *
  * The identity in the message is the CALLER's, never the record's — see
  * {@link stackClause}, where an absent identity is the honest case rather than
@@ -4894,6 +4894,50 @@ function hasStringPhysicalId(entry: unknown): boolean {
   // claims. Nothing cdkd writes can produce it — a provider returns the real id —
   // so this refuses only a hand-damaged record.
   return typeof physicalId === 'string' && physicalId !== '';
+}
+
+/**
+ * Can cdkd ADDRESS this `resources` record's resource in AWS — does it carry a
+ * string `physicalId` with something other than whitespace in it
+ * (go-to-k/cdkd#3211)?
+ *
+ * The per-resource half {@link isReadableResourceEntry} leaves to "where it is
+ * used": the deploy asks it before each provider call that would address AWS
+ * by the field, since a provider handed an absent or blank id fails, or answers
+ * `*NotFound`, which a delete reads as ALREADY DELETED and drops the record of
+ * a resource still live. Whitespace counts as blank here, unlike
+ * {@link hasStringPhysicalId}: nothing cdkd writes produces either, and no AWS
+ * identifier is whitespace.
+ */
+export function hasAddressablePhysicalId(entry: { physicalId?: unknown }): boolean {
+  const physicalId = entry.physicalId;
+  return typeof physicalId === 'string' && physicalId.trim() !== '';
+}
+
+/**
+ * The text `cdkd deploy` raises for an UPDATE of a record failing
+ * {@link hasAddressablePhysicalId} (go-to-k/cdkd#3211). A refusal of that one
+ * resource, not the destroy's skip: a skipped update would end the deploy
+ * without the template's change and resolve its dependents from the stale
+ * record. The identity is the CALLER's, never the record's.
+ */
+export function unaddressableUpdateRefusalMessage(
+  rawStackName: string,
+  rawRegion: string,
+  logicalId: string,
+  resourceType: string
+): string {
+  const stackName = absentIfEmpty(rawStackName);
+  const region = absentIfEmpty(rawRegion);
+  return (
+    `${stackClause(stackName, region)} holds a record for ${displayIdent(logicalId)} ` +
+    `(${displayIdent(resourceType)}) with no non-empty string 'physicalId', so cdkd cannot ` +
+    `address that resource in AWS and did not try to update it. 'cdkd deploy' fails on it ` +
+    `rather than skipping it, since a skipped update would end the deploy without the ` +
+    `template's change. Nothing was sent for this resource. Repair the record's ` +
+    `'physicalId' and re-run. ${inspectClause(stackName, region)}Inspect the record with: ` +
+    inspectCommand(stackName, region)
+  );
 }
 
 /**

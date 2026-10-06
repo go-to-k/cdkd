@@ -13,6 +13,7 @@ import {
   type StackState,
   hasReasonlessBaselineRefusal,
 } from '../../types/state.js';
+import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
   isMaskedBaselineRecaptureCandidate,
@@ -418,6 +419,11 @@ export function kickOffAutoRefreshObservedProperties(
   // `masked-baseline-recapture.ts` for what may change and what may not.
   const masked: Array<{ logicalId: string; resource: ResourceState }> = [];
   for (const [logicalId, resource] of Object.entries(stateResources)) {
+    // go-to-k/cdkd#3211: both reads below address AWS by the record's
+    // `physicalId`, so a record with none usable is not read at all: the
+    // value names no resource, and whatever a provider answered for it would
+    // become the record's drift baseline.
+    if (!hasAddressablePhysicalId(resource)) continue;
     if (resource.observedProperties !== undefined) {
       if (isMaskedBaselineRecaptureCandidate(resource)) masked.push({ logicalId, resource });
       continue;

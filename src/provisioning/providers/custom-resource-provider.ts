@@ -19,6 +19,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getLogger } from '../../utils/logger.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { UNRENDERABLE } from '../../state/lock-contention-message.js';
+import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import {
   getAccountInfo,
@@ -1333,6 +1334,19 @@ function describeCfnResponseBody(body: string, parsed: CfnResponseBodyParse): st
 }
 
 /**
+ * The handler's `PhysicalResourceId` when cdkd can address the resource by it,
+ * else `undefined` (go-to-k/cdkd#3211). CloudFormation requires a non-empty
+ * string; cdkd has always read an empty or absent one as "none given" and
+ * fallen back, and a whitespace-only or non-string one takes that same
+ * fallback rather than a refusal of a handler that did its work.
+ */
+function respondedPhysicalId(response: { PhysicalResourceId?: unknown }): string | undefined {
+  return hasAddressablePhysicalId({ physicalId: response.PhysicalResourceId })
+    ? (response.PhysicalResourceId as string)
+    : undefined;
+}
+
+/**
  * Custom Resource Provider
  *
  * Implements Lambda-backed custom resources by invoking the Lambda function
@@ -1811,7 +1825,11 @@ export class CustomResourceProvider implements ResourceProvider {
         );
       }
 
-      const physicalId: string = cfnResponse.PhysicalResourceId || logicalId;
+      // go-to-k/cdkd#3211: an id cdkd could not address later (blank,
+      // whitespace-only or not a string) is read as ABSENT, the fallback an
+      // empty one always took. Recorded, it would refuse every later update
+      // and skip every delete of this resource.
+      const physicalId: string = respondedPhysicalId(cfnResponse) ?? logicalId;
       const attributes: Record<string, unknown> = cfnResponse.Data || {};
 
       this.logger.debug(`Successfully created custom resource ${logicalId}: ${physicalId}`);
@@ -1906,7 +1924,9 @@ export class CustomResourceProvider implements ResourceProvider {
         );
       }
 
-      const newPhysicalId: string = cfnResponse.PhysicalResourceId || physicalId;
+      // go-to-k/cdkd#3211: see `create()`. An unaddressable id keeps the
+      // current one rather than reading as a REPLACEMENT.
+      const newPhysicalId: string = respondedPhysicalId(cfnResponse) ?? physicalId;
       const wasReplaced: boolean = newPhysicalId !== physicalId;
       const attributes: Record<string, unknown> = cfnResponse.Data || {};
 

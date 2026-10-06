@@ -107,6 +107,27 @@ describe('readRecordAttributes (go-to-k/cdkd#3456)', () => {
     await expect(read(noImport)).resolves.toEqual({ kind: 'not-attempted' });
   });
 
+  // go-to-k/cdkd#3211: the provider here echoes whatever id it is asked about,
+  // so without the guard each of these reads back as `read` for a record that
+  // names no resource.
+  for (const [label, physicalId] of [
+    ['an empty', ''],
+    ['a whitespace-only', '  '],
+    ['an absent', undefined],
+    ['a non-string', 5],
+  ] as Array<[string, unknown]>) {
+    it(`does not call import() for ${label} physical id (go-to-k/cdkd#3211)`, async () => {
+      const provider = providerAnswering((id) => ({
+        physicalId: id as string,
+        attributes: { Arn: 'arn:x' },
+      }));
+      await expect(
+        read(provider, record({ physicalId: physicalId as string }))
+      ).resolves.toEqual({ kind: 'not-attempted' });
+      expect(provider.import).not.toHaveBeenCalled();
+    });
+  }
+
   it('refuses an answer for a DIFFERENT physical id', async () => {
     const provider = providerAnswering(() => ({ physicalId: '/other', attributes: { Arn: 'arn:other' } }));
     await expect(read(provider)).rejects.toThrow(
