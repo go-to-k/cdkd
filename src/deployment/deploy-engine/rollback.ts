@@ -33,17 +33,20 @@ import {
 } from '../rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
-import { journaledOrphanPrintingBag, maskEventTextWithBoundBags } from '../secret-name-needles.js';
+import { maskEventTextWithBoundBags, secretNamesReadBy } from '../secret-name-needles.js';
 import {
   makeForeignHolderScan,
   settleJournaledOrphansOnSuccess,
 } from '../rollback-executor/journaled-orphans.js';
 import { hasReadableOrphans } from '../../state/malformed-resources-bag.js';
 import {
+  type RecordedSecretValues,
   STATE_SOURCED_READBACK_RULES,
   markSameGenerationBag,
+  recordLogOnlyValue,
   redactSecretsForState,
   scrubResourceRecord,
+  unionOfSecretBags,
 } from '../secret-redaction.js';
 
 declare module '../deploy-engine.js' {
@@ -215,6 +218,42 @@ export async function adoptRollbackOrphans(
  * command drives identical semantics). Thin wrapper that builds the
  * executor context from the engine's collaborators and delegates.
  */
+/**
+ * The PRINTING bag the automatic rollback replays its journaled orphans under
+ * (go-to-k/cdkd#3869). Unlike `cdkd rollback`'s, the ops and records here are
+ * IN MEMORY, so a name this deploy resolved is plaintext and no `{{resolve:`
+ * spelling marks it: the judge is the engine's own, which also sees a record
+ * still spelling a reference (one loaded from state). The union of:
+ *  - each orphan's printing bag (`printingSecretsFor`): its resolved secrets
+ *    and the derived-name registry `create.ts` filled right after resolving;
+ *  - the names each orphan READ from a record, judged with that record's own
+ *    resolution (`namingSecretsFor`), as `noteSecretNamedReads` judges them.
+ * Log-only: bound with `withPrintingSecrets`, read by nothing that decides.
+ */
+function orphanReplayPrintingBag(
+  engine: DeployEngine,
+  orphanOps: readonly FailedOperation[],
+  stateResources: Record<string, ResourceState>
+): RecordedSecretValues {
+  const read: RecordedSecretValues = new Map();
+  for (const op of orphanOps) {
+    const names = secretNamesReadBy(
+      op.logicalId,
+      { properties: op.attemptedProperties },
+      stateResources,
+      (otherId) => ({
+        secrets: engine.namingSecretsFor(otherId),
+        embedded: engine.perResourceSecrets.get(otherId),
+      })
+    );
+    for (const needle of names) recordLogOnlyValue(read, needle);
+  }
+  return unionOfSecretBags([
+    ...orphanOps.map((op) => engine.printingSecretsFor(op.logicalId)),
+    read,
+  ]);
+}
+
 export async function performRollback(
   this: DeployEngine,
   completedOperations: CompletedOperation[],
@@ -302,11 +341,10 @@ export async function performRollback(
     // made, never the reverse.
     const failedResult =
       orphanOps.length > 0
-        ? // go-to-k/cdkd#3869: the orphans' deletes run under a PRINTING bag
-          // judged from their journal entries, as `cdkd destroy`'s do, so a
-          // provider's delete lines mask a name derived from a secret, and
-          // the context's events mask a name an orphan READ from a record.
-          await withPrintingSecrets(journaledOrphanPrintingBag(orphanOps, stateResources), () =>
+        ? // go-to-k/cdkd#3869: the orphans' deletes run under a PRINTING bag,
+          // so a provider's delete lines mask a name derived from a secret,
+          // and the context's events mask a name an orphan READ from a record.
+          await withPrintingSecrets(orphanReplayPrintingBag(this, orphanOps, stateResources), () =>
             replayFailedOperations(orphanOps, stateResources, stackName, ctx, {
               // `replayRollback` emits no envelope over zero ops (a failed-only
               // attempt), so this replay owns it then.

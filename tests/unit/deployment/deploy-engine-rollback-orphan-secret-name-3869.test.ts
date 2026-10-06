@@ -25,7 +25,20 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
-    resolve: vi.fn().mockImplementation((props: unknown) => Promise.resolve(props)),
+    // A `{{resolve:` leaf resolves to its plaintext, recorded in the pass's
+    // bag as the real resolver records a secret.
+    resolve: vi.fn().mockImplementation(
+      (props: unknown, ctx?: { recordedSecretValues?: Map<string, string> }) => {
+        const out = JSON.parse(JSON.stringify(props ?? {}), (_k, v: unknown) => {
+          if (typeof v === 'string' && Object.hasOwn(SECRETS, v)) {
+            ctx?.recordedSecretValues?.set(SECRETS[v]!, v);
+            return SECRETS[v];
+          }
+          return v;
+        });
+        return Promise.resolve(out);
+      }
+    ),
     resolveParameters: vi.fn().mockReturnValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
   })),
@@ -36,6 +49,11 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 
 const REF = '{{resolve:secretsmanager:team:SecretString:user::}}';
 const USER = 'team-secret-user';
+const QUEUE_REF = '{{resolve:secretsmanager:team:SecretString:queue::}}';
+const QUEUE = 'team-secret-queue';
+const URL = `https://sqs.us-east-1.amazonaws.com/123456789012/${QUEUE}`;
+const SECRETS = vi.hoisted(() => ({}) as Record<string, string>);
+SECRETS[QUEUE_REF] = QUEUE;
 const STACK = 'orphan-mask-test';
 
 async function autoRollback(userName: string) {
@@ -147,5 +165,91 @@ describe("a deploy's automatic rollback masks a name a journaled orphan read (go
     expect(failed[0]!.error?.message).toContain('AccessDenied on user ');
     expect(lines[0]!.includes(USER)).toBe(shown);
     expect(failed[0]!.error!.message!.includes(USER)).toBe(shown);
+  });
+});
+
+describe("a deploy's automatic rollback masks a journaled orphan's OWN name this deploy resolved (go-to-k/cdkd#3869)", () => {
+  // In memory the orphan's attempted properties are RESOLVED plaintext, so no
+  // `{{resolve:` spelling marks the name: the engine's own bag and registry do.
+  async function queueRollback(queueName: string) {
+    const lines: string[] = [];
+    const provider = {
+      create: vi.fn((logicalId: string) =>
+        Promise.reject(
+          markCreatedBeforeFailure(new Error('follow-up rejected'), logicalId, 'AWS::SQS::Queue', URL)
+        )
+      ),
+      update: vi.fn(),
+      delete: vi.fn((logicalId: string, physicalId: string) => {
+        const line = `Deleting SQS queue ${logicalId}: ${physicalId}`;
+        lines.push(currentLogLineMasker()?.(line) ?? line);
+        return Promise.resolve(undefined);
+      }),
+    };
+    const change = {
+      logicalId: 'Queue',
+      changeType: 'CREATE',
+      resourceType: 'AWS::SQS::Queue',
+      desiredProperties: { QueueName: queueName },
+      propertyChanges: [],
+    } as unknown as ResourceChange;
+    const engine = new DeployEngine(
+      {
+        getState: vi.fn().mockResolvedValue({
+          state: { version: 8, stackName: STACK, region: 'us-east-1', resources: {}, outputs: {}, lastModified: 1 },
+          etag: 'e0',
+        }),
+        saveState: vi.fn().mockResolvedValue('etag-1'),
+        listStacks: vi.fn().mockResolvedValue([]),
+        appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
+        deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
+        loadRollbackJournal: vi.fn().mockResolvedValue(null),
+        markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
+        popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
+        reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
+        dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
+      } as never,
+      {
+        acquireLockWithRetry: vi.fn().mockResolvedValue(true),
+        releaseLock: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      {
+        buildGraph: vi.fn().mockReturnValue({}),
+        getExecutionLevels: vi.fn().mockReturnValue([['Queue']]),
+        getDirectDependencies: vi.fn(() => []),
+      } as never,
+      {
+        calculateDiff: vi.fn().mockResolvedValue(new Map([['Queue', change]])),
+        hasChanges: vi.fn().mockReturnValue(true),
+        filterByType: vi.fn((changes: Map<string, ResourceChange>, type: string) =>
+          [...changes.values()].filter((c) => c.changeType === type)
+        ),
+      } as never,
+      {
+        getProvider: vi.fn().mockReturnValue(provider),
+        getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
+        getRegisteredTypes: vi.fn().mockReturnValue([]),
+        getCloudControlProvider: vi.fn(),
+        validateResourceTypes: vi.fn(),
+        validateResourceProperties: vi.fn(),
+      } as never,
+      { concurrency: 4, noRollback: false, roleArn: 'arn:aws:iam::1:role/r' },
+      'us-east-1'
+    );
+    await engine
+      .deploy(STACK, { Resources: { Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: queueName } } } })
+      .catch(() => undefined);
+    return { lines, provider };
+  }
+
+  it.each([
+    ['a name resolved from a secret', QUEUE_REF, false],
+    ['negative control, a literal name', QUEUE, true],
+  ])("on its provider's delete line: %s", async (_l, queueName, shown) => {
+    const { lines, provider } = await queueRollback(queueName);
+    // Premise: the rollback deleted the proven orphan and logged its line.
+    expect(provider.delete.mock.calls.map((c) => c[1])).toEqual([URL]);
+    expect(lines).toEqual([expect.stringContaining('Deleting SQS queue Queue: ')]);
+    expect(lines[0]!.includes(QUEUE)).toBe(shown);
   });
 });

@@ -45,7 +45,7 @@ import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 const REF = '{{resolve:secretsmanager:team:SecretString:user::}}';
 const USER = 'team-secret-user';
 
-function install(userName: string): void {
+function install(userName: string, failedOperations?: unknown[]): void {
   setupMock.mockResolvedValue({
     stateBackend: {
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
@@ -80,7 +80,7 @@ function install(userName: string): void {
             reason: 'no-rollback-failure',
             initialDeploy: false,
             operations: [],
-            failedOperations: [
+            failedOperations: failedOperations ?? [
               {
                 logicalId: 'Key',
                 changeType: 'CREATE',
@@ -142,5 +142,45 @@ describe('cdkd rollback masks a name a journaled orphan read (go-to-k/cdkd#3869)
     expect(failed[0]!.error?.message).toContain('AccessDenied on user ');
     expect(lines[0]!.includes(USER)).toBe(shown);
     expect(failed[0]!.error!.message!.includes(USER)).toBe(shown);
+  });
+});
+
+describe("cdkd rollback masks a journaled orphan's OWN secret-derived name (go-to-k/cdkd#3869)", () => {
+  const QUEUE_REF = '{{resolve:secretsmanager:team:SecretString:queue::}}';
+  const QUEUE = 'team-secret-queue';
+  const URL = `https://sqs.us-east-1.amazonaws.com/123456789012/${QUEUE}`;
+  const lines: string[] = [];
+  beforeEach(() => {
+    lines.length = 0;
+    events.length = 0;
+    provider.delete.mockReset().mockImplementation((logicalId: string, physicalId: string) => {
+      const line = `Deleting SQS queue ${logicalId}: ${physicalId}`;
+      lines.push(currentLogLineMasker()?.(line) ?? line);
+      return Promise.resolve(undefined);
+    });
+  });
+
+  it.each([
+    ['a name journaled as its reference', QUEUE_REF, false],
+    ['negative control, a literal name', QUEUE, true],
+  ])("on its provider's delete line: %s", async (_l, queueName, shown) => {
+    install('plain-user-name', [
+      {
+        logicalId: 'Queue',
+        changeType: 'CREATE',
+        resourceType: 'AWS::SQS::Queue',
+        provisionedBy: 'sdk',
+        physicalId: URL,
+        physicalIdRecoveredFromError: true,
+        attemptedProperties: { QueueName: queueName },
+      },
+    ]);
+    await rollbackCommand('S', { statePrefix: 'cdkd', verbose: false, force: true }).catch(
+      () => undefined
+    );
+    // Premise: the plain rollback deleted the proven orphan and logged its line.
+    expect(provider.delete.mock.calls.map((c) => c[1])).toEqual([URL]);
+    expect(lines).toEqual([expect.stringContaining('Deleting SQS queue Queue: ')]);
+    expect(lines[0]!.includes(QUEUE)).toBe(shown);
   });
 });

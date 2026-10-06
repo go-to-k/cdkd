@@ -266,9 +266,10 @@ export function journaledOrphanPrintingBag(
  * identity a cleanup needs, and `state.json` records it too. Identity when
  * nothing is bound.
  *
- * The `ownLines` exemption is DEFENSIVE: no path this masker serves can carry
- * such a message today. Own-remedy refusals come only from the completed-op
- * arms, and the failed-op replay and the destroy runner raise none. It keeps
+ * The `ownLines` exemption is DEFENSIVE. Own-remedy refusals come only from
+ * the completed-op arms. Both rollback contexts route those arms' events
+ * through this masker, but record them under no bound bag, so it is identity
+ * there; the failed-op replay and the destroy runner raise none. It keeps
  * a replay refusal's pasteable commands, masked at construction, from being
  * cut by a short needle. Wiring one through here must re-evaluate it: the op
  * masker that built the message does not hold a name the entry READ from a

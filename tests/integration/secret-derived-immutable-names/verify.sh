@@ -857,7 +857,11 @@ echo "    OK: the rollback deleted the journaled orphan, and its log withholds t
 
 echo "==> Step 6d: the same failed deploy WITHOUT --no-rollback: the automatic rollback deletes the orphan"
 # go-to-k/cdkd#3869: the deploy engine's own rollback replays the orphan
-# through its failed-op replay, which ran under no printing bag.
+# through its failed-op replay, which ran under no printing bag. This is also
+# the first check of the failing deploy's OWN lines (create, failure summary):
+# no earlier step greps that log, so read HIT_LINES to tell which phase leaked.
+# State and journal are not asserted gone: the automatic rollback never deletes
+# state.json, and cleanup / step 8 sweep the prefix.
 set +e
 node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --yes --verbose > "${ORPHAN_LOG}" 2>&1

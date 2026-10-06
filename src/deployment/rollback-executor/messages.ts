@@ -188,10 +188,11 @@ export function replayingStateCreateContext(secrets: RecordedSecretValues): Crea
  * `extractDeploymentEventError` copies `err.message` VERBATIM, and the events
  * store is a DURABLE sink — `deployments/{runId}.jsonl` in S3 outlives the
  * terminal the `logger.warn` beside it scrolls past, and `cdkd events` replays
- * it later. The standalone `cdkd rollback` command wires
- * `recordEvent: (e) => eventRecorder.record(e)` (`src/cli/commands/rollback.ts`)
- * with NO masking of its own, so without this the plaintext the terminal line
- * masks is persisted one statement later.
+ * it later. The standalone `cdkd rollback` command's `recordEvent`
+ * (`src/cli/commands/rollback.ts`) masks only under a bound printing bag
+ * (`maskEventTextWithBoundBags`, its failed-op replay), never with the
+ * replay's re-resolved secrets, so without this the plaintext the terminal
+ * line masks is persisted one statement later.
  *
  * The in-process caller (`DeployEngine.rollbackExecutorContext`) routes through
  * `maskSecretsInEvent`, but that masks with the DEPLOY's `perResourceSecrets`
