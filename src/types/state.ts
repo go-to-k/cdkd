@@ -562,6 +562,15 @@ export interface ResourceState {
   metadata?: Record<string, unknown>;
 
   /**
+   * The template resource's `aws:cdk:path` at its last deploy, stamped on every
+   * deploy save. Shown for a resource the template no longer declares, which a
+   * developer knows by construct path rather than logical ID. Informational: no
+   * behavior reads it, so an older binary dropping it changes nothing (no
+   * schema bump).
+   */
+  constructPath?: string;
+
+  /**
    * CloudFormation `DeletionPolicy` attribute recorded at deploy time
    * (schema v5+). Compared against the template on the next deploy so an
    * attribute-only change (e.g. `RemovalPolicy.DESTROY` removed →

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   findDestructiveChanges,
   formatDestructiveChange,
+  withConstructPath,
 } from '../../../src/analyzer/destructive-changes.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
@@ -136,5 +137,38 @@ describe('formatDestructiveChange', () => {
       impact: 'WILL_DESTROY',
     });
     expect(line).not.toContain('\n');
+  });
+});
+
+describe('constructPath from state', () => {
+  it('names a removed resource by the path its last deploy recorded', () => {
+    const change: ResourceChange = { logicalId: 'T', changeType: 'DELETE', resourceType: 'AWS::DynamoDB::Table' };
+    const [found] = findDestructiveChanges('S', [change], {
+      T: rec({ deletionPolicy: 'Retain', constructPath: 'S/Data/Table/Resource' }),
+    });
+    expect(formatDestructiveChange(found!)).toBe('S: AWS::DynamoDB::Table Data/Table T will be orphaned');
+  });
+
+  it('prefers the template path over a recorded one', () => {
+    const template = {
+      Resources: { T: { Type: 'AWS::DynamoDB::Table', Metadata: { 'aws:cdk:path': 'S/New/Resource' } } },
+    } as CloudFormationTemplate;
+    const [found] = findDestructiveChanges(
+      'S',
+      [update([{ path: 'TableName', oldValue: 'a', newValue: 'b', requiresReplacement: true }])],
+      { T: rec({ constructPath: 'S/Old/Resource' }) },
+      template
+    );
+    expect(found?.constructPath).toBe('S/New/Resource');
+  });
+
+  it('withConstructPath returns the record itself when nothing changes', () => {
+    const r = rec({ constructPath: 'S/A/Resource' });
+    expect(withConstructPath(r, 'S/A/Resource')).toBe(r);
+    expect(withConstructPath(r, undefined)).toBe(r);
+    const moved = withConstructPath(r, 'S/B/Resource');
+    expect(moved).not.toBe(r);
+    expect(moved).toEqual({ ...r, constructPath: 'S/B/Resource' });
+    expect(r.constructPath).toBe('S/A/Resource');
   });
 });

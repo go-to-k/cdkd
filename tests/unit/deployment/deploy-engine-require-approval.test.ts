@@ -256,6 +256,60 @@ describe('DeployEngine --require-approval', () => {
     ]);
   });
 
+  describe('an Outputs-only change (no resource change)', () => {
+    function arrangeOutputs(): CloudFormationTemplate {
+      const template = arrange(mocks(), { Kept: record() }, []);
+      mockStateBackend.getState.mockResolvedValue({
+        state: {
+          version: STATE_SCHEMA_VERSION_CURRENT,
+          region: 'us-east-1',
+          stackName: STACK_NAME,
+          resources: { Kept: record() },
+          outputs: { Url: 'old' },
+          lastModified: 0,
+        },
+        etag: 'etag-old',
+      });
+      mockDiffCalculator.hasChanges.mockReturnValue(false);
+      return { ...template, Outputs: { Url: { Value: 'new' } } } as CloudFormationTemplate;
+    }
+
+    it('any-change: asks before the outputs are written, and a decline writes nothing', async () => {
+      approve.mockResolvedValue(false);
+      const err = await makeEngine({ requireApproval: 'any-change' })
+        .deploy(STACK_NAME, arrangeOutputs())
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(approve).toHaveBeenCalledTimes(1);
+      expect(approve.mock.calls[0]![0]).toEqual({
+        stackName: STACK_NAME,
+        level: 'any-change',
+        counts: { create: 0, update: 0, delete: 0 },
+        destructiveChanges: [],
+        outputsOnly: true,
+      });
+      expect(err).toMatchObject({ code: 'DEPLOY_NOT_APPROVED' });
+      expect(mockStateBackend.saveState).not.toHaveBeenCalled();
+      expect(releaseLock).toHaveBeenCalled();
+    });
+
+    it('any-change: writes the outputs once approved', async () => {
+      approve.mockResolvedValue(true);
+      await makeEngine({ requireApproval: 'any-change' }).deploy(STACK_NAME, arrangeOutputs());
+      expect(approve).toHaveBeenCalledTimes(1);
+      const saved = mockStateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+      expect(saved.outputs).toEqual({ Url: 'new' });
+    });
+
+    it('destructive: does not ask, since no resource is touched', async () => {
+      await makeEngine({ requireApproval: 'destructive' }).deploy(STACK_NAME, arrangeOutputs());
+      expect(approve).not.toHaveBeenCalled();
+      expect(mockStateBackend.saveState).toHaveBeenCalled();
+    });
+  });
+
   it('never asks under --dry-run', async () => {
     const template = arrange(mocks(), { Kept: record(), Gone: record({ physicalId: 'gone' }) }, [
       deletion,

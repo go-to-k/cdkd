@@ -34,7 +34,7 @@ import {
   mergeNoChangeOutputs,
 } from '../no-change-outputs-merge.js';
 import { refuseNoValueOutputs } from '../output-value-preflight.js';
-import { requireDeploymentApproval } from '../deployment-approval.js';
+import { requireDeploymentApproval, requireOutputsOnlyApproval } from '../deployment-approval.js';
 import {
   buildConditionVerdictRecord,
   conditionInputsFrom,
@@ -437,6 +437,8 @@ export async function doDeployWithPrefetch(
     // way), and a condition-false resource is never created in the first
     // place.
     const effectiveTemplate = this.templateParser.filterResourcesByCondition(template, conditions);
+    // Every save from here on stamps each record's construct path from it.
+    this.constructPathTemplate = effectiveTemplate;
 
     // 2b. Re-adopt anything a previous rollback left in AWS (issue #2934).
     //
@@ -938,6 +940,12 @@ export async function doDeployWithPrefetch(
           readRecordedConditionVerdicts(currentState),
           conditionVerdicts
         );
+
+        // `--require-approval=any-change` covers an Outputs-only change too,
+        // asked before anything below writes it.
+        if (outputsChanged || exportSetChanged) {
+          await requireOutputsOnlyApproval({ options: this.options, stackName });
+        }
 
         if (
           observedRefresh ||

@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import { constructPathOf } from '../../analyzer/destructive-changes.js';
 import * as nodePath from 'node:path';
 import { Command } from 'commander';
 import {
@@ -2055,6 +2056,9 @@ export function buildStackState(
       // not the Retain-injected copy the CloudFormation retirement uploads.
       deletionPolicy: tmplResource.DeletionPolicy,
       updateReplacePolicy: tmplResource.UpdateReplacePolicy,
+      // As `DeployEngine` stamps it on every save, so an imported resource the
+      // template later drops is still named by its construct path.
+      ...constructPathField(constructPathOf(template, row.logicalId)),
       // v7+ (#614): every imported resource is owned by its SDK Provider
       // (the import() method lives on SDK Providers). Explicit so the
       // post-import drift / destroy paths route through the SDK provider
@@ -4135,4 +4139,9 @@ export function indexGrandchildTemplatePaths(
     result[grandLogicalId] = resolved.path;
   }
   return result;
+}
+
+/** `{ constructPath }` when the template declares one, else nothing. */
+function constructPathField(path: string | undefined): { constructPath?: string } {
+  return path === undefined ? {} : { constructPath: path };
 }

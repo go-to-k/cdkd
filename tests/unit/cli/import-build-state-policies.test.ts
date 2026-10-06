@@ -17,6 +17,7 @@ describe('buildStackState records the template policies (issue #3645)', () => {
         Properties: {},
         DeletionPolicy: 'Retain',
         UpdateReplacePolicy: 'Snapshot',
+        Metadata: { 'aws:cdk:path': 'Stack/Kept/Resource' },
       },
       Plain: { Type: 'AWS::SQS::Queue', Properties: {} },
     },
@@ -74,5 +75,11 @@ describe('buildStackState records the template policies (issue #3645)', () => {
     } as Parameters<typeof buildStackState>[5]);
     // The template no longer declares it, as `DeployEngine` would record.
     expect(resources['Plain']!.deletionPolicy).toBeUndefined();
+  });
+
+  it('records the construct path as the deploy stamps it, and none when the template has none (#4607)', () => {
+    const { resources } = build();
+    expect(resources['Kept']!.constructPath).toBe('Stack/Kept/Resource');
+    expect(JSON.parse(JSON.stringify(resources['Plain']))).not.toHaveProperty('constructPath');
   });
 });

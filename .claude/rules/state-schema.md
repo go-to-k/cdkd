@@ -55,6 +55,7 @@ interface ResourceState {
   observedBaselineRefused?: true;           // v10+: import refused a baseline; no writer may synthesize one from `properties`
   observedBaselineRefusalReason?: 'unverifiable-parameter' | 'incomplete-resolution'; // no bump: only the first survives an in-place UPDATE
   acceptedCreateOnlyDrops?: string[];       // no bump: create-only keys in `properties` the SDK route was told to drop (#2790)
+  constructPath?: string;                   // no bump: display only; stamped in `redactStateForPersist` on every deploy save (#4607)
   maskedPropertyFingerprints?: Record<string, string>; // no bump: per property held as `***`, sha256 of template text (#4451)
   maskedPropertyInputFingerprints?: Record<string, string>; // no bump: non-secret inputs resolved, bound to that hash (#4543)
 }

@@ -69,7 +69,9 @@ export function findDestructiveChanges(
         ? 'WILL_REPLACE'
         : destructiveImpactOf(change, record);
     if (impact === undefined) continue;
-    const constructPath = constructPathOf(template, change.logicalId);
+    // A removed resource is no longer in the template: the path the deploy
+    // that created it recorded is the one to show.
+    const constructPath = constructPathOf(template, change.logicalId) ?? record?.constructPath;
     found.push({
       stackName,
       logicalId: change.logicalId,
@@ -107,7 +109,8 @@ function destructiveImpactOf(
   }
 }
 
-function constructPathOf(
+/** The template resource's `aws:cdk:path` metadata, if it declares one. */
+export function constructPathOf(
   template: CloudFormationTemplate | undefined,
   logicalId: string
 ): string | undefined {
@@ -159,4 +162,15 @@ function displayPath(constructPath: string): string {
     }
   }
   return parts.join('/');
+}
+
+/**
+ * `record` with `constructPath` set to `path`. Returned BY IDENTITY when it
+ * already matches, or when the template declares none (a removed resource
+ * keeps the path its last deploy recorded), so a save allocates nothing for an
+ * unchanged record.
+ */
+export function withConstructPath<R extends ResourceState>(record: R, path: string | undefined): R {
+  if (path === undefined || record.constructPath === path) return record;
+  return { ...record, constructPath: path };
 }
