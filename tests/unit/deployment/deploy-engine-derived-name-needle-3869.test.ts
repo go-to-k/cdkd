@@ -413,6 +413,34 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     expect(provisioning[0]!['printingSecrets'] instanceof Map).toBe(printOnly);
   });
 
+  it('a stack-wide NoEcho value an id contains by chance is no evidence, for a reader or a deleted reader', async () => {
+    const noEcho = new Map<string, string>();
+    recordLogOnlyValue(noEcho, 'prod');
+    const resolverRecord = {
+      physicalId: 'api1|prod|field',
+      resourceType: 'AWS::AppSync::Resolver',
+      properties: { FieldName: 'field' },
+      dependencies: [],
+    } as ResourceState;
+    // A reader resolving it (noteSecretNamedRecord's embedded bag).
+    const engine = makeEngine();
+    (engine as unknown as { fingerprintNoEchoValues: unknown }).fingerprintNoEchoValues = noEcho;
+    const context = engine.buildResolverContext(
+      { template: { Resources: {} }, resources: { Field: resolverRecord } },
+      stackName
+    );
+    expect(context.secretNameNeedles?.('Field')).toBeUndefined();
+    // A deleted reader holding it (noteSecretNamedReads' embedded bag).
+    const deleting = makeEngine();
+    (deleting as unknown as { fingerprintNoEchoValues: unknown }).fingerprintNoEchoValues = noEcho;
+    deleting.noteSecretNamedReads(
+      'Reader',
+      { properties: { Target: 'api1|prod|field' } },
+      { Field: resolverRecord }
+    );
+    expect(deleting.printingSecretsFor('Reader')).toBeUndefined();
+  });
+
   it('a name taken from a NoEcho parameter is judged secret-derived too', () => {
     const engine = makeEngine();
     const noEcho = new Map<string, string>();
