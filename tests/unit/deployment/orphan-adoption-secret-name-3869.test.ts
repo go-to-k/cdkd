@@ -42,10 +42,21 @@ describe('the orphan-adoption line masks a name derived from a secret (go-to-k/c
     physicalId: string;
     /** The template no longer names it: the deploy generates the name. */
     templateDropsName?: boolean;
+    /** Another stack's record holds the same physical id: adoption refuses. */
+    claimedElsewhere?: boolean;
+    /** Receives the thrown refusal, when one is thrown. */
+    onError?: (error: unknown) => void;
   }): Promise<string[]> {
     const provider = { import: vi.fn(async () => ({ physicalId: opts.physicalId })) };
     const engine = new DeployEngine(
-      { getState: vi.fn(), listStacks: vi.fn().mockResolvedValue([]) } as unknown as never,
+      (opts.claimedElsewhere === true
+        ? {
+            listStacks: vi.fn().mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]),
+            getState: vi.fn().mockResolvedValue({
+              state: { resources: { X: { physicalId: opts.physicalId } } },
+            }),
+          }
+        : { getState: vi.fn(), listStacks: vi.fn().mockResolvedValue([]) }) as unknown as never,
       {} as unknown as never,
       {} as unknown as never,
       {} as unknown as never,
@@ -86,7 +97,10 @@ describe('the orphan-adoption line masks a name derived from a secret (go-to-k/c
           Properties: opts.templateDropsName === true ? {} : { [opts.nameKey]: opts.name },
         },
       },
-    } as unknown as CloudFormationTemplate);
+    } as unknown as CloudFormationTemplate).catch((e: unknown) => {
+      if (opts.onError === undefined) throw e;
+      opts.onError(e);
+    });
     return quiet.info.mock.calls.map((c) => String(c[0]));
   }
 
@@ -127,5 +141,28 @@ describe('the orphan-adoption line masks a name derived from a secret (go-to-k/c
     // Premise: the notice was logged.
     expect(lines).toEqual([expect.stringContaining('Kept (AWS::SQS::Queue) is still in AWS as ')]);
     expect(lines[0]!.includes(NAME)).toBe(shown);
+  });
+
+  it.each([
+    ['a record naming it by its reference', REF, false],
+    ['negative control, a literal name', BUCKET, true],
+  ])('on the thrown refusal of a record another stack holds: %s', async (_l, name, shown) => {
+    let error: unknown;
+    await infoLines({
+      type: 'AWS::S3::Bucket',
+      nameKey: 'BucketName',
+      name,
+      physicalId: BUCKET,
+      templateDropsName: true,
+      claimedElsewhere: true,
+      onError: (e) => {
+        error = e;
+      },
+    });
+    // Premise: the deploy was refused, naming the record.
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toContain('is already recorded by another cdkd stack');
+    expect(message.includes(BUCKET)).toBe(shown);
   });
 });

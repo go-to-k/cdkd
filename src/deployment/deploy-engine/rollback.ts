@@ -197,7 +197,8 @@ export async function adoptRollbackOrphans(
   // printing bag, so a record named from a secret (its name still a
   // `{{resolve:` reference) masks its id spellings here. One log-only bag over
   // every record: a line names one record, and a sibling's needle only
-  // over-masks. The refusals are not masked: they carry the commands to run.
+  // over-masks. The thrown refusal too: it names the id and carries no
+  // command, and the logical id beside it is what the user acts on.
   const named: RecordedSecretValues = new Map();
   for (const entry of records) {
     if (entry === null || typeof entry !== 'object') continue;
@@ -212,7 +213,7 @@ export async function adoptRollbackOrphans(
   if (plan.refusals.length > 0) {
     throw new Error(
       `Deploy refused — cdkd left ${plan.refusals.length} resource(s) in AWS that it cannot ` +
-        `safely re-adopt:\n  ${plan.refusals.join('\n  ')}`
+        `safely re-adopt:\n  ${plan.refusals.map((r) => maskSecretsInText(r, named)).join('\n  ')}`
     );
   }
 
