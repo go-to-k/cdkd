@@ -1550,7 +1550,9 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
    * One Lambda per character of `spec`, logical ids `R00`, `R01`, ... so the
    * loop's sort keeps `spec` order. `B` = the READ throws (account-wide error),
    * `G` = reads back and matches, `C` = reads back fine and the COMPARISON
-   * throws, `U` = a Cloud Control fallback with no READ handler.
+   * throws, `U` = a Cloud Control fallback with no READ handler, `Q` = a Cloud
+   * Control fallback read that returns and matches, `X` = a Cloud Control
+   * fallback read that throws (a role missing `cloudcontrol:GetResource`).
    */
   function stackOf(spec: string, stackName = 'TestStack'): ReturnType<typeof makeState> {
     const resources: StackState['resources'] = {};
@@ -1559,12 +1561,20 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
       resources[id] = {
         physicalId: `phys-${id}`,
         // `U` takes the fallback, which needs a type with no SDK read.
-        resourceType: role === 'U' ? 'AWS::CloudWatch::AnomalyDetector' : LAMBDA,
+        resourceType:
+          role === 'U'
+            ? 'AWS::CloudWatch::AnomalyDetector'
+            : role === 'Q' || role === 'X'
+              ? CC_READ_TYPE
+              : LAMBDA,
         properties: { MemorySize: 128, Role: role },
       };
     });
     return makeState(resources, stackName);
   }
+
+  /** A type the mocked registry gives no SDK read, so it takes the fallback. */
+  const CC_READ_TYPE = 'AWS::Logs::LogGroup';
 
   function installProviders(): void {
     mockRegistryGetProvider.mockImplementation((type: string) =>
@@ -1589,8 +1599,16 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
           }
         : {}
     );
-    mockCcReadCurrentState.mockImplementation(async (_p: string, logicalId: string) => {
+    mockCcReadCurrentState.mockImplementation(async (...args: unknown[]) => {
+      const [, logicalId, type] = args as [string, string, string];
+      const properties = args[3] as Record<string, unknown>;
       reads.push(logicalId);
+      if (type === CC_READ_TYPE) {
+        if (properties['Role'] === 'X') {
+          throw awsError('AccessDeniedException', 'not authorized to perform: cloudcontrol:GetResource');
+        }
+        return { MemorySize: 128, Role: properties['Role'] };
+      }
       throw awsError(
         'UnsupportedActionException',
         'Resource type AWS::CloudWatch::AnomalyDetector does not support READ action'
@@ -1650,10 +1668,11 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
     const { output } = await runDrift(ARGS);
 
     const warns = warnSpy.mock.calls.map((c: unknown[]) => String(c[0]));
-    expect(warns.filter((w) => w.includes('cdkd stops reading this stack'))).toEqual([
-      '5 resources in a row in this stack could not be read, which looks account-wide ' +
-        '(expired credentials, a revoked role, an account-wide throttle) — cdkd stops reading ' +
-        'this stack, and reports each remaining resource as not compared. Fix the cause and re-run.',
+    expect(warns.filter((w) => w.includes('cdkd stops reading'))).toEqual([
+      "5 reads in a row in this stack failed through cdkd's own resource providers, which " +
+        'looks account-wide (expired credentials, a revoked role, an account-wide throttle) or ' +
+        "like a permission all of them need — cdkd stops reading this stack's resources that " +
+        'way, and reports each one left as not compared. Fix the cause and re-run.',
     ]);
     // The failure that tripped it no longer promises the rest of the stack.
     expect(warns.filter((w) => w.includes('cdkd goes on with the rest of this stack'))).toHaveLength(4);
@@ -1663,8 +1682,9 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
     );
     expect(output).toContain(
       '! R05 (AWS::Lambda::Function) — cdkd never read it: 5 reads in a row earlier in this ' +
-        'stack failed, which looks account-wide (expired credentials, a revoked role, an ' +
-        'account-wide throttle), so the rest of the stack was not read (fix that and re-run)'
+        'stack, the same way it would have been read, failed, which looks account-wide ' +
+        '(expired credentials, a revoked role, an account-wide throttle) or like a permission ' +
+        'all of them need, so cdkd stopped reading that way (fix that and re-run)'
     );
     expect(exitSpy).toHaveBeenCalledWith(2);
   });
@@ -1731,7 +1751,9 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
   });
 
   it('a resource that would never reach AWS keeps its own outcome after the breaker trips', async () => {
-    const base = stackOf('BBBBB');
+    // Both paths tripped, so the deny-listed type (a fallback-path resource)
+    // is behind a tripped path and still reports `unsupported`.
+    const base = stackOf('BBBBBXXXXX');
     base.state.resources['Z1Custom'] = resource('Custom::Thing', { ServiceToken: 'arn' });
     // Deny-listed for the Cloud Control fallback: reported `unsupported`
     // without a read, with or without the breaker.
@@ -1741,10 +1763,70 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
 
     const [report] = await runJson();
 
-    expect(reads).toHaveLength(5);
+    expect(reads).toHaveLength(10);
+    expect(Object.values(causes(report!)).filter((c) => c === 'readFailed')).toHaveLength(10);
     expect(report!.notSupported.map((n) => n.logicalId)).toEqual(['Z2Api']);
     expect(causes(report!)).not.toHaveProperty('Z1Custom');
     expect(causes(report!)).not.toHaveProperty('Z2Api');
+  });
+
+  it('a Cloud Control fallback read that returns resets the count too', async () => {
+    mockGetState.mockResolvedValue(stackOf('BBBBQBBBBG'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    expect(reads).toHaveLength(10);
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R04', 'R09']);
+    expect(Object.values(causes(report!))).not.toContain('readAborted');
+  });
+
+  it('is per READ PATH: a role missing only the Cloud Control permission still reads through the providers', async () => {
+    mockGetState.mockResolvedValue(stackOf('XXXXXGXXG'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    // Five fallback reads trip the fallback path; the provider reads go on.
+    expect(reads).toEqual(['R00', 'R01', 'R02', 'R03', 'R04', 'R05', 'R08']);
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R05', 'R08']);
+    expect(causes(report!)).toEqual({
+      R00: 'readFailed',
+      R01: 'readFailed',
+      R02: 'readFailed',
+      R03: 'readFailed',
+      R04: 'readFailed',
+      // A provider read in between resets the COUNT, but a tripped path stays
+      // tripped: otherwise every good read would buy five more failing ones.
+      R06: 'readAborted',
+      R07: 'readAborted',
+    });
+    const warns = warnSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(warns.filter((w) => w.includes('failed through the Cloud Control API'))).toHaveLength(1);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('a deny-listed type whose provider DOES read is aborted like any provider read', async () => {
+    const base = stackOf('BBBBB');
+    base.state.resources['Z2Api'] = resource('AWS::ApiGateway::RestApi', { Name: 'api' });
+    mockGetState.mockResolvedValue(base);
+    installProviders();
+    const lambdaProvider = mockRegistryGetProvider.getMockImplementation()!;
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === 'AWS::ApiGateway::RestApi'
+        ? {
+            readCurrentState: async (_p: string, logicalId: string) => {
+              reads.push(logicalId);
+              return { Name: 'api' };
+            },
+          }
+        : lambdaProvider(type)
+    );
+
+    const [report] = await runJson();
+
+    expect(reads).toHaveLength(5);
+    expect(causes(report!)['Z2Api']).toBe('readAborted');
   });
 
   it('is per STACK: a later stack in an --all run is still read and compared', async () => {

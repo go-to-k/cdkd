@@ -212,8 +212,9 @@ export type NotComparedCause =
   | 'readFailed'
   /**
    * cdkd never READ this resource: {@link DRIFT_READ_FAILURE_BREAKER_THRESHOLD}
-   * resources in a row earlier in the same stack had a read that THREW, so the
-   * stack's remaining reads were abandoned (go-to-k/cdkd#2207). A run of
+   * reads in a row earlier in the same stack, through the same read path, THREW,
+   * so the stack's remaining reads through that path were abandoned
+   * (go-to-k/cdkd#2207). A run of
    * consecutive read failures is what an account-wide condition looks like —
    * expired credentials, a revoked role, an account-wide throttle — and reading
    * on only paid the SDK's backoff once per resource for the same answer.
@@ -2073,8 +2074,9 @@ function notComparedReason(cause: NotComparedCause, record?: ResourceState): str
     readFailed: 'the read or comparison threw, so NONE of its properties were compared',
     readAborted:
       `cdkd never read it: ${DRIFT_READ_FAILURE_BREAKER_THRESHOLD} reads in a row earlier in ` +
-      'this stack failed, which looks account-wide (expired credentials, a revoked role, an ' +
-      'account-wide throttle), so the rest of the stack was not read (fix that and re-run)',
+      'this stack, the same way it would have been read, failed, which looks account-wide ' +
+      '(expired credentials, a revoked role, an account-wide throttle) or like a permission ' +
+      'all of them need, so cdkd stopped reading that way (fix that and re-run)',
     unreadableRecord:
       'its state record is not readable as a resource — not an object, carrying no ' +
       "resource type, or holding a 'properties' map that is not an object — so there was " +
@@ -2098,28 +2100,44 @@ function notComparedReason(cause: NotComparedCause, record?: ResourceState): str
 }
 
 /**
- * The two Cloud Control error names that mean "this type has no READ handler".
- * `CloudControlProvider.handleError` recognizes the same pair, so the two sites
- * agree on the population by construction.
- */
-/**
- * How many resources IN A ROW within one stack must have a READ that threw
- * before `cdkd drift` stops reading that stack (go-to-k/cdkd#2207). Each later
- * resource the stack would have read is reported `notCompared: readAborted`.
+ * How many READS in a row within one stack must throw before `cdkd drift` stops
+ * reading that stack through the same read path (go-to-k/cdkd#2207). Each later
+ * resource it would have read that way is reported `notCompared: readAborted`.
+ * Resources that never reach AWS (skipped, deny-listed, refused baselines)
+ * neither count nor reset.
  *
  * A breaker on CONSECUTIVE failures rather than a classifier of the error: it
  * keeps go-to-k/cdkd#2151's fix for the interleaved case — one unreadable
  * resource among readable ones resets the count and never trips it — without a
  * hand-written list of which error names are account-wide. Per STACK, not per
- * run: a stack in another region or account may well read fine.
+ * run: a stack in another region or account may well read fine. Per READ PATH
+ * (a provider's own `readCurrentState` vs the Cloud Control fallback): a role
+ * missing only `cloudcontrol:GetResource` fails every fallback read, and
+ * must not stop the provider reads that work. A path that trips stays tripped
+ * for the rest of the stack.
  *
  * Only a READ that threw counts. A read that returned (a value, not-found, or
- * nothing) proves the credentials work, so it resets the count — including
+ * nothing) proves the credentials work, so it resets BOTH paths' counts — and
+ * so keeps the interleaved guarantee across paths — including
  * when the COMPARISON after it then throws, which is a per-resource defect. A
  * type with no READ handler resets it too: that throw is about the type.
  */
 export const DRIFT_READ_FAILURE_BREAKER_THRESHOLD = 5;
 
+/** The two ways the drift loop reads a resource; the breaker counts each apart. */
+type DriftReadPath = 'provider' | 'ccApi';
+
+/** How the trip warning names a read path. */
+const DRIFT_READ_PATH_LABELS: Record<DriftReadPath, string> = {
+  provider: "through cdkd's own resource providers",
+  ccApi: 'through the Cloud Control API',
+};
+
+/**
+ * The two Cloud Control error names that mean "this type has no READ handler".
+ * `CloudControlProvider.handleError` recognizes the same pair, so the two sites
+ * agree on the population by construction.
+ */
 const NO_READ_HANDLER_NAMES = new Set(['UnsupportedActionException', 'TypeNotFoundException']);
 
 /**
@@ -3231,7 +3249,12 @@ async function runDriftForStack(
     const entries = Object.entries(state.resources ?? {}).sort(([a], [b]) => a.localeCompare(b));
     // go-to-k/cdkd#2207: resources in a row whose READ threw. See
     // `DRIFT_READ_FAILURE_BREAKER_THRESHOLD` for what resets it.
-    let consecutiveReadFailures = 0;
+    const consecutiveReadFailures: Record<DriftReadPath, number> = { provider: 0, ccApi: 0 };
+    const trippedReadPaths = new Set<DriftReadPath>();
+    const noteReadReturned = (): void => {
+      consecutiveReadFailures.provider = 0;
+      consecutiveReadFailures.ccApi = 0;
+    };
 
     for (const [logicalId, resource] of entries) {
       // go-to-k/cdkd#3315. FIRST, above the skip rules: the warning names every
@@ -3426,15 +3449,16 @@ async function runDriftForStack(
       // still degrades to `refused` / `unresolvedToken` -- an inner catch that
       // handles its error never reaches this one, so the causes cannot collide.
       //
-      // go-to-k/cdkd#2207: once the breaker has tripped, a resource that WOULD
-      // be read below is reported unread instead. The condition is the one the
-      // try body reads AWS under (a provider read, or a Cloud Control fallback
-      // the deny-list does not short-circuit to `unsupported`), so a resource
-      // that never reaches AWS keeps the outcome it gets without the breaker.
+      // go-to-k/cdkd#2207: once this resource's read path has tripped, a
+      // resource that WOULD be read below is reported unread instead. The
+      // condition is the one the try body reads AWS under (a provider read, or
+      // a Cloud Control fallback the deny-list does not short-circuit to
+      // `unsupported`), so a resource that never reaches AWS keeps the outcome
+      // it gets without the breaker.
+      const readPath: DriftReadPath = provider.readCurrentState ? 'provider' : 'ccApi';
       if (
-        consecutiveReadFailures >= DRIFT_READ_FAILURE_BREAKER_THRESHOLD &&
-        (provider.readCurrentState !== undefined ||
-          !CC_API_FALLBACK_DENY_LIST[resource.resourceType])
+        trippedReadPaths.has(readPath) &&
+        (readPath === 'provider' || !CC_API_FALLBACK_DENY_LIST[resource.resourceType])
       ) {
         outcomes.push({
           kind: 'notCompared',
@@ -3458,7 +3482,7 @@ async function runDriftForStack(
             buildReadCurrentStateContext(state, logicalId)
           );
           readReturned = true;
-          consecutiveReadFailures = 0;
+          noteReadReturned();
         } else {
           if (CC_API_FALLBACK_DENY_LIST[resource.resourceType]) {
             outcomes.push({
@@ -3475,7 +3499,7 @@ async function runDriftForStack(
             resource.properties ?? {}
           );
           readReturned = true;
-          consecutiveReadFailures = 0;
+          noteReadReturned();
           if (ccApiAws === undefined) {
             outcomes.push({
               kind: 'unsupported',
@@ -3947,7 +3971,7 @@ async function runDriftForStack(
               `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
           );
           // go-to-k/cdkd#2207: a throw about the TYPE, not the account.
-          consecutiveReadFailures = 0;
+          noteReadReturned();
           outcomes.push({
             kind: 'unsupported',
             logicalId,
@@ -3999,8 +4023,14 @@ async function runDriftForStack(
         });
         // go-to-k/cdkd#2207: only a READ that threw counts toward the breaker;
         // a comparison that threw after a good read was reset above.
-        if (!readReturned) consecutiveReadFailures++;
-        const breakerTripped = consecutiveReadFailures === DRIFT_READ_FAILURE_BREAKER_THRESHOLD;
+        let breakerTripped = false;
+        if (!readReturned) {
+          consecutiveReadFailures[readPath]++;
+          if (consecutiveReadFailures[readPath] === DRIFT_READ_FAILURE_BREAKER_THRESHOLD) {
+            trippedReadPaths.add(readPath);
+            breakerTripped = true;
+          }
+        }
         logger.warn(
           `${logicalId} (${resource.resourceType}): could not be compared — the read or ` +
             `comparison failed, so NONE of its properties were checked. ` +
@@ -4012,10 +4042,11 @@ async function runDriftForStack(
         );
         if (breakerTripped) {
           logger.warn(
-            safeMsg`${DRIFT_READ_FAILURE_BREAKER_THRESHOLD} resources in a row in this stack could not ` +
-              `be read, which looks account-wide (expired credentials, a revoked role, an ` +
-              `account-wide throttle) — cdkd stops reading this stack, and reports each ` +
-              `remaining resource as not compared. Fix the cause and re-run.`
+            safeMsg`${DRIFT_READ_FAILURE_BREAKER_THRESHOLD} reads in a row in this stack failed ` +
+              safeMsg`${DRIFT_READ_PATH_LABELS[readPath]}, which looks account-wide (expired ` +
+              `credentials, a revoked role, an account-wide throttle) or like a permission all ` +
+              `of them need — cdkd stops reading this stack's resources that way, and reports ` +
+              `each one left as not compared. Fix the cause and re-run.`
           );
         }
         // The message alone is enough for the population this arm is FOR (an
