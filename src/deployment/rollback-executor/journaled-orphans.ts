@@ -215,6 +215,7 @@ export async function deleteJournaledOrphans(
           // ops, so no ROLLBACK_STARTED / ROLLBACK_FINISHED envelope.
           emitEnvelope: false,
           inlinePolicyWriters,
+          forDestroy: true,
           ...(options.isInterrupted && { isInterrupted: options.isInterrupted }),
         })
       );

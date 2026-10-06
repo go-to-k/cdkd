@@ -464,6 +464,18 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     );
   });
 
+  // go-to-k/cdkd#4604: it turns the failed UPDATE's force-revert off.
+  it('refuses a planted replacementOrphaned', () => {
+    const update = { ...op, changeType: 'UPDATE', replacementOrphaned: 'delete-first' };
+    expect(parseRollbackJournal(journalWith([], [update]), 'S').segments[0]!.failedOperations).toHaveLength(1);
+    expect(messageOf(journalWith([], [{ ...update, replacementOrphaned: 'yes' }]))).toContain(
+      'replacementOrphaned must be create-first or delete-first when present (got string).'
+    );
+    expect(messageOf(journalWith([], [{ ...update, changeType: 'CREATE' }]))).toContain(
+      'replacementOrphaned is only valid on an UPDATE.'
+    );
+  });
+
   // go-to-k/cdkd#4615: it picks the in-place revert arm.
   it('refuses a non-boolean wasReplaced', () => {
     expect(messageOf(journalWith([{ ...op, changeType: 'UPDATE', wasReplaced: 'false' }]))).toContain(

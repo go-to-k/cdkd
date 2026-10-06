@@ -399,6 +399,19 @@ describe('DeployEngine — custom-named replacement collision', () => {
     expect(err!.cause?.cause).toBe(raw);
   });
 
+  // go-to-k/cdkd#4604: the delete-first fallback records that the old resource
+  // went before the create, which a journaled replacement orphan says.
+  it('records the delete-first fallback, and only after the old resource is deleted', async () => {
+    createFailures = [alreadyExists(), new Error('AccessDenied: not authorized')];
+    const engine = makeEngine({ replace: true });
+    await invokeProvision(engine).catch(() => undefined);
+    expect((engine as unknown as { oldDeletedBeforeCreate: Set<string> }).oldDeletedBeforeCreate.has('Pipe')).toBe(true);
+    const plain = makeEngine();
+    createFailures = [alreadyExists()];
+    await invokeProvision(plain).catch(() => undefined);
+    expect((plain as unknown as { oldDeletedBeforeCreate: Set<string> }).oldDeletedBeforeCreate.size).toBe(0);
+  });
+
   it('passes a NON-collision create failure through unchanged', async () => {
     createFailures = [new Error('AccessDenied: not authorized')];
 

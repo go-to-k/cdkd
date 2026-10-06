@@ -336,33 +336,6 @@ export async function executeDeployment(
             change.changeType === 'CREATE' && statePhysicalId === undefined
               ? createdBeforeFailure(provisionError, logicalId, change.resourceType)
               : undefined;
-          failedOperations.push({
-            logicalId,
-            changeType: change.changeType as 'CREATE' | 'UPDATE',
-            resourceType: change.resourceType,
-            provisionedBy:
-              createdId !== undefined
-                ? 'sdk'
-                : (newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy),
-            ...(previousState && { previousState }),
-            physicalId: createdId ?? statePhysicalId,
-            ...(createdId !== undefined && {
-              physicalIdRecoveredFromError: true,
-              deletionPolicy: journaledOrphanPolicy(
-                this.extractTemplateAttributes(template, logicalId).deletionPolicy
-              ),
-            }),
-            // go-to-k/cdkd#4355: a failed op whose attempted bag is
-            // provably not this stack's resource (a refusal, or a write AWS
-            // definitely rejected) journals no attempted bag. The bag is what a later deploy
-            // reads as "this stack attempted that resource"
-            // (`priorAttemptsInJournal`), and `--revert-failed` reverts an
-            // UPDATE FROM it — both would then act on a resource the
-            // refusal found belonging to someone else.
-            ...(!refused && {
-              attemptedProperties: this.attemptedResolvedProps.get(logicalId),
-            }),
-          });
           // go-to-k/cdkd#4604: the same proof on a REPLACEMENT — the UPDATE
           // above names the resource being replaced, and the new one its
           // create made is recorded nowhere else. Journaled beside it as a
@@ -389,23 +362,60 @@ export async function executeDeployment(
           const replacementCreatedId = replaced
             ? createdBeforeFailure(provisionError, logicalId, change.resourceType)
             : undefined;
-          if (
+          const orphanedBy =
             replaced !== undefined &&
             replacementCreatedId !== undefined &&
             replacementCreatedId !== replaced.physicalId
-          ) {
+              ? { record: replaced, createdId: replacementCreatedId }
+              : undefined;
+          failedOperations.push({
+            logicalId,
+            changeType: change.changeType as 'CREATE' | 'UPDATE',
+            resourceType: change.resourceType,
+            provisionedBy:
+              createdId !== undefined
+                ? 'sdk'
+                : (newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy),
+            ...(previousState && { previousState }),
+            physicalId: createdId ?? statePhysicalId,
+            ...(createdId !== undefined && {
+              physicalIdRecoveredFromError: true,
+              deletionPolicy: journaledOrphanPolicy(
+                this.extractTemplateAttributes(template, logicalId).deletionPolicy
+              ),
+            }),
+            // go-to-k/cdkd#4355: a failed op whose attempted bag is
+            // provably not this stack's resource (a refusal, or a write AWS
+            // definitely rejected) journals no attempted bag. The bag is what a later deploy
+            // reads as "this stack attempted that resource"
+            // (`priorAttemptsInJournal`), and `--revert-failed` reverts an
+            // UPDATE FROM it — both would then act on a resource the
+            // refusal found belonging to someone else.
+            // The UPDATE says so itself, so it never reads as a revert of
+            // the old resource even once its orphan's entry is gone (an
+            // interrupted rollback can settle one and not the other).
+            ...(orphanedBy !== undefined && {
+              replacementOrphaned: this.oldDeletedBeforeCreate.has(logicalId)
+                ? ('delete-first' as const)
+                : ('create-first' as const),
+            }),
+            ...(!refused && {
+              attemptedProperties: this.attemptedResolvedProps.get(logicalId),
+            }),
+          });
+          if (orphanedBy !== undefined) {
             failedOperations.push({
               logicalId,
               changeType: 'CREATE',
               resourceType: change.resourceType,
               provisionedBy: 'sdk',
-              physicalId: replacementCreatedId,
+              physicalId: orphanedBy.createdId,
               physicalIdRecoveredFromError: true,
               deletionPolicy: journaledOrphanPolicy(
                 this.extractTemplateAttributes(template, logicalId).deletionPolicy
               ),
-              replacedPhysicalId: replaced.physicalId,
-              replacedResourceType: replaced.resourceType,
+              replacedPhysicalId: orphanedBy.record.physicalId,
+              replacedResourceType: orphanedBy.record.resourceType,
               // The replacement deleted the old resource before its create:
               // the record names a resource that is gone.
               ...(this.oldDeletedBeforeCreate.has(logicalId) && {
@@ -900,7 +910,10 @@ export async function executeDeployment(
         if (
           autoRollbackJournaled &&
           this.options.parentStackInfo === undefined &&
-          failedOperations.some((op) => op.changeType !== 'DELETE')
+          // What the replay left, not every failed op: one it settled (a
+          // replacement's UPDATE warned about with its orphan) is gone, and a
+          // `--revert-failed` would only repeat its warning.
+          rollbackResult.remainingFailedOps.some((op) => op.changeType !== 'DELETE')
         ) {
           this.logger.warn(
             safeMsg`The record of the operation that failed is kept too. Revert it with: ${

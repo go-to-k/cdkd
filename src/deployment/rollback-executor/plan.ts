@@ -420,9 +420,10 @@ export function classifyFailedOp(
   // delete-first removed it), so it is never force-reverted: that would send
   // AWS the revert of a change it never received, or, once a later operation
   // moved the record, aim this op's previous properties at that one's resource.
-  if (replacementNeverSwapped(op, siblings)) {
+  if (op.replacementOrphaned !== undefined || replacementNeverSwapped(op, siblings)) {
     // Delete-first, record unmoved: it names a resource the replacement removed.
-    return current.physicalId === op.physicalId && replacedResourceDeleted(op, siblings)
+    return current.physicalId === op.physicalId &&
+      (op.replacementOrphaned === 'delete-first' || replacedResourceDeleted(op, siblings))
       ? 'skip-failed-replaced-deleted'
       : 'skip-failed-noop';
   }

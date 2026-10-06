@@ -720,3 +720,91 @@ describe("the success settle clears a replacement orphan's failed UPDATE with it
     expect(keep(fresh.failedOperations[1]!, fresh)).toBe(true);
   });
 });
+
+describe('a failed replacement UPDATE reads on its own (go-to-k/cdkd#4604 review round 5)', () => {
+  const update = (over: Partial<FailedOperation> = {}): FailedOperation => ({
+    logicalId: 'S',
+    changeType: 'UPDATE',
+    resourceType: TYPE,
+    physicalId: 'stream-a',
+    previousState: res(),
+    ...over,
+  });
+
+  // An interrupted rollback can settle the orphan and leave the UPDATE.
+  it('is never a force-revert without its orphan, once stamped', () => {
+    expect(classifyFailedOp(update({ replacementOrphaned: 'create-first' }), { S: res() }, [])).toBe(
+      'skip-failed-noop'
+    );
+    expect(classifyFailedOp(update({ replacementOrphaned: 'delete-first' }), { S: res() }, [])).toBe(
+      'skip-failed-replaced-deleted'
+    );
+    expect(
+      classifyFailedOp(update({ replacementOrphaned: 'delete-first' }), { S: res({ physicalId: 'c' }) }, [])
+    ).toBe('skip-failed-noop');
+  });
+
+  // Another resource's orphan sharing the physical id proves nothing about it.
+  it('control: an orphan of another logical id is no sibling', () => {
+    expect(classifyFailedOp(update(), { S: res() }, [orphan({ logicalId: 'Other' })])).toBe(
+      'revert-failed-update'
+    );
+  });
+
+  it('names what recreates the deleted resource on a rollback, and the record drop on a destroy', async () => {
+    const { ctx } = ctxWith({ delete: vi.fn(), update: vi.fn() });
+    const op = update({ replacementOrphaned: 'delete-first' });
+    await replayFailedOperations([op], { S: res() }, 'Stack', ctx, {});
+    expect(warned()).toContain('--recreate-via-sdk-provider');
+    vi.mocked(logger.warn).mockClear();
+    await replayFailedOperations([op], { S: res() }, 'Stack', ctx, { forDestroy: true });
+    expect(warned()).toContain('the destroy drops its record');
+    expect(warned()).not.toContain('--recreate-via');
+  });
+});
+
+describe('the inline-policy settle of the failed replacement pair (go-to-k/cdkd#4604 review round 5)', () => {
+  const ROLE = 'AWS::IAM::Role';
+  const role: ResourceState = {
+    physicalId: 'role-a',
+    resourceType: ROLE,
+    properties: { Policies: [{ PolicyName: 'n', PolicyDocument: 'd' }] },
+    attributes: {},
+    dependencies: [],
+  };
+  const roleOrphan = (): FailedOperation =>
+    orphan({
+      logicalId: 'R',
+      resourceType: ROLE,
+      physicalId: 'role-b',
+      replacedPhysicalId: 'role-a',
+      replacedResourceType: ROLE,
+    });
+  const unsettledAfter = async (ops: FailedOperation[], del: ReturnType<typeof vi.fn>) => {
+    const writers = new RollbackInlinePolicyWriters();
+    const { ctx } = ctxWith({ delete: del });
+    const state: Record<string, ResourceState> = { R: role };
+    await replayFailedOperations(ops, state, 'Stack', ctx, { inlinePolicyWriters: writers });
+    writers.claimedFor('AWS::IAM::Policy', 'Remover', {})!('role', 'role-a', 'n');
+    return writers.takeHeldRemovals(state)[0]?.unsettled;
+  };
+
+  it('a warned delete-first UPDATE settles its logical id', async () => {
+    const upd: FailedOperation = {
+      logicalId: 'R',
+      changeType: 'UPDATE',
+      resourceType: ROLE,
+      physicalId: 'role-a',
+      previousState: role,
+      replacementOrphaned: 'delete-first',
+    };
+    // The UPDATE runs last (newest-first replay): its outcome is the final word.
+    expect(await unsettledAfter([upd, roleOrphan()], vi.fn().mockResolvedValue(undefined))).toEqual([]);
+  });
+
+  it('an orphan whose delete failed leaves its logical id unsettled', async () => {
+    expect(await unsettledAfter([roleOrphan()], vi.fn().mockRejectedValue(new Error('AccessDenied')))).toEqual([
+      'R',
+    ]);
+  });
+});

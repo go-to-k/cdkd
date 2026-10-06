@@ -166,6 +166,14 @@ export interface FailedOperation {
    */
   replacedResourceDeleted?: boolean | undefined;
   /**
+   * go-to-k/cdkd#4604, on a failed replacement UPDATE: its create made the new
+   * resource, journaled beside it as a replacement orphan, so this op applied
+   * nothing to the record it names (`create-first`: the old resource is
+   * untouched; `delete-first`: the replacement removed it). Read without the
+   * orphan's entry, which an interrupted rollback can settle alone.
+   */
+  replacementOrphaned?: 'create-first' | 'delete-first' | undefined;
+  /**
    * The intrinsic-RESOLVED desired properties the failed op attempted to
    * apply, if resolution got that far. Load-bearing for the revert: a
    * Cloud-Control-routed revert patches previous-vs-attempted, so without

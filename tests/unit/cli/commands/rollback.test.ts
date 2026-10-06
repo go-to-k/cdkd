@@ -1136,6 +1136,43 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
         expect(backend.setRollbackJournalFailedOperations).toHaveBeenCalledWith('S', 'us-east-1', []);
       });
 
+      // go-to-k/cdkd#4604: the plan the user confirms shows the failed UPDATE
+      // beside its orphan as a skip, never a force-revert.
+      it('--revert-failed previews a replacement orphan\'s failed UPDATE as nothing to revert', async () => {
+        installReplacementStack({
+          oldResourceRetained: false,
+          failedOperations: [
+            {
+              logicalId: 'R',
+              changeType: 'UPDATE',
+              resourceType: 'AWS::SQS::Queue',
+              physicalId: 'phys-new',
+              previousState: {
+                physicalId: 'phys-new',
+                resourceType: 'AWS::SQS::Queue',
+                properties: { a: 2 },
+                attributes: {},
+                dependencies: [],
+              },
+            },
+            {
+              logicalId: 'R',
+              changeType: 'CREATE',
+              resourceType: 'AWS::SQS::Queue',
+              provisionedBy: 'sdk',
+              physicalId: 'phys-orphan',
+              physicalIdRecoveredFromError: true,
+              replacedPhysicalId: 'phys-new',
+              replacedResourceType: 'AWS::SQS::Queue',
+            },
+          ],
+        });
+        await rollbackCommand('S', { ...baseOpts, revertFailed: true }).catch(() => undefined);
+        const lines = await plannedLines();
+        expect(lines.some((l) => /FAILED update — remote state unknown/.test(l))).toBe(false);
+        expect(lines.some((l) => /- skip\s+R .*failed UPDATE left nothing to revert/.test(l))).toBe(true);
+      });
+
       // go-to-k/cdkd#4604: the preview keeps the record under a replacement
       // orphan's id (the replaced resource), so the completed ops are planned
       // against the state the replay really leaves.

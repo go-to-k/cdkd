@@ -1303,6 +1303,8 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(ops).toHaveLength(2);
       const update = ops.find((o) => o['changeType'] === 'UPDATE')!;
       expect(update['physicalId']).toBe('b-old');
+      // Self-contained: it never reads as a revert, even without the orphan.
+      expect(update['replacementOrphaned']).toBe('create-first');
       expect(update).not.toHaveProperty('replacedPhysicalId');
       const orphan = ops.find((o) => o['changeType'] === 'CREATE')!;
       expect(orphan).toMatchObject({
@@ -1375,6 +1377,54 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         physicalId: 'b-new',
         replacedPhysicalId: 'b-old',
         replacedResourceDeleted: true,
+      });
+      expect(ops.find((o) => o['changeType'] === 'UPDATE')).toMatchObject({
+        replacementOrphaned: 'delete-first',
+      });
+    });
+
+    // The automatic rollback warns about the delete-first UPDATE itself and
+    // settles it with its orphan: no `--revert-failed` hint, which would only
+    // repeat that warning.
+    it('names no --revert-failed after warning about a delete-first replacement', async () => {
+      const { engine, provider } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new'),
+        { inPlace: true, noRollback: false }
+      );
+      (provider as unknown as { update: ReturnType<typeof vi.fn> }).update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      const warn = vi.mocked(getLogger().warn);
+      warn.mockClear();
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => l.includes('its replacement deleted the old resource'))).toBe(true);
+      expect(lines.some((l) => l.includes('--revert-failed'))).toBe(false);
+    });
+
+    // A reused engine: the previous deploy's delete-first must not mark this
+    // deploy's create-first orphan.
+    it("does not carry a previous deploy's delete-first onto a reused engine", async () => {
+      const { engine, provider } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new'),
+        { inPlace: true }
+      );
+      (provider as unknown as { update: ReturnType<typeof vi.fn> }).update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      const internals = engine as unknown as {
+        diffCalculator: { calculateDiff: () => Promise<Map<string, ResourceChange>> };
+      };
+      const change = [...(await internals.diffCalculator.calculateDiff()).values()][0]!;
+      (change.propertyChanges as Array<{ requiresReplacement: boolean }>)[0]!.requiresReplacement = true;
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      const ops = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2].failedOperations as Array<
+        Record<string, unknown>
+      >;
+      expect(ops.find((o) => o['changeType'] === 'CREATE')).not.toHaveProperty('replacedResourceDeleted');
+      expect(ops.find((o) => o['changeType'] === 'UPDATE')).toMatchObject({
+        replacementOrphaned: 'create-first',
       });
     });
 

@@ -567,6 +567,11 @@ async function replayFailedOperationsUnbound(
     emitEnvelope?: boolean;
     /** go-to-k/cdkd#4225: as on {@link replayRollback}. */
     inlinePolicyWriters?: RollbackInlinePolicyWriters;
+    /**
+     * A `cdkd destroy` replays these ops before it deletes the stack: a line
+     * says what happens next in that run, not in a later deploy.
+     */
+    forDestroy?: boolean;
   } = {}
 ): Promise<FailedOpReplayResult> {
   const inlinePolicyWriters = options.inlinePolicyWriters ?? new RollbackInlinePolicyWriters();
@@ -658,7 +663,10 @@ async function replayFailedOperationsUnbound(
           // later `--revert-failed` would aim a force-revert at a resource
           // that is gone.
           logger.warn(
-            safeMsg`  Rollback: Skipping failed UPDATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — its replacement deleted the old resource ${mask(String(op.physicalId))} before the new one's create failed, so there is nothing to revert; state still records it, and a deploy of the template that replaces it creates it again`
+            safeMsg`  Rollback: Skipping failed UPDATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — its replacement deleted the old resource ${mask(String(op.physicalId))} before the new one's create failed, so there is nothing to revert` +
+              (options.forDestroy === true
+                ? '; the destroy drops its record with the stack'
+                : safeMsg`; state still records it, and only a deploy that replaces it creates it again: one whose template still replaces it, or one naming ${shownLogicalId(op.logicalId)} in --recreate-via-sdk-provider (or --recreate-via-cc-api)`)
           );
           recordRollbackSkip(
             skipScope,

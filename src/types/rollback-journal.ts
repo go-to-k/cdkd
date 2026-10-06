@@ -405,6 +405,20 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
   if (o['oldResourceRetained'] !== undefined && typeof o['oldResourceRetained'] !== 'boolean') {
     fail('oldResourceRetained', o['oldResourceRetained'], 'a boolean when present');
   }
+  // go-to-k/cdkd#4604: COMPUTED by the engine on a failed replacement UPDATE;
+  // it turns the force-revert off.
+  if (o['replacementOrphaned'] !== undefined) {
+    if (!(['create-first', 'delete-first'] as unknown[]).includes(o['replacementOrphaned'])) {
+      fail(
+        'replacementOrphaned',
+        o['replacementOrphaned'],
+        'create-first or delete-first when present'
+      );
+    }
+    if (o['changeType'] !== 'UPDATE') {
+      refuseMalformed(shownStack, `${where}.replacementOrphaned is only valid on an UPDATE.`);
+    }
+  }
   // go-to-k/cdkd#4615: COMPUTED from the provider's answer; it picks the
   // in-place revert arm over the reverse-replacement one.
   if (o['wasReplaced'] !== undefined && typeof o['wasReplaced'] !== 'boolean') {
@@ -462,7 +476,8 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
     if (typeof replacedType !== 'string' || replacedType === '') {
       fail('replacedResourceType', replacedType, 'a non-empty string beside replacedPhysicalId');
     }
-    if (o['changeType'] !== 'CREATE' || typeof o['physicalIdRecoveredFromError'] !== 'boolean') {
+    // `physicalIdRecoveredFromError` is itself refused off a CREATE above.
+    if (typeof o['physicalIdRecoveredFromError'] !== 'boolean') {
       refuseMalformed(
         shownStack,
         `${where}.replacedPhysicalId is only valid on a CREATE carrying physicalIdRecoveredFromError.`
