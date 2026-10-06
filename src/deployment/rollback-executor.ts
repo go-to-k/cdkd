@@ -666,7 +666,7 @@ async function replayFailedOperationsUnbound(
             safeMsg`  Rollback: Skipping failed UPDATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — its replacement deleted the old resource ${mask(String(op.physicalId))} before the new one's create failed, so there is nothing to revert` +
               (options.forDestroy === true
                 ? '; the destroy drops its record with the stack'
-                : safeMsg`; state still records it, and only a deploy that replaces it creates it again: one whose template still replaces it, or one naming ${shownLogicalId(op.logicalId)} in --recreate-via-sdk-provider (or --recreate-via-cc-api)`)
+                : '; state still records it, and a deploy whose template still replaces it creates it again')
           );
           recordRollbackSkip(
             skipScope,

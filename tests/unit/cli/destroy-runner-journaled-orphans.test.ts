@@ -465,6 +465,32 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(drop(fresh.failedOperations[1], fresh)).toBe(true);
   });
 
+  // go-to-k/cdkd#4604: a delete-first replacement's UPDATE is warned about in
+  // the destroy's own terms, never a later deploy's.
+  it('warns about a delete-first replacement in the destroy\'s terms', async () => {
+    const update = {
+      logicalId: 'R',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SSM::Parameter',
+      physicalId: 'phys-r',
+      previousState: res(),
+      replacementOrphaned: 'delete-first',
+    };
+    const orphan = {
+      ...structuredClone(orphanOp),
+      logicalId: 'R',
+      resourceType: 'AWS::SSM::Parameter',
+      physicalId: 'phys-new',
+      replacedPhysicalId: 'phys-r',
+      replacedResourceType: 'AWS::SSM::Parameter',
+      replacedResourceDeleted: true,
+    };
+    mockLoadJournal.mockResolvedValue(journalOf([update, orphan]));
+    await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    expect(warn()).toContain('the destroy drops its record');
+    expect(warn()).not.toContain('a deploy whose template still replaces it');
+  });
+
   // A failed journaled delete: never the `cdkd state orphan` hint, which would
   // delete the journal, the resource's only record.
   it('reports a failed journaled delete apart, without the state-orphan hint', async () => {

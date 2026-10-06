@@ -755,7 +755,8 @@ describe('a failed replacement UPDATE reads on its own (go-to-k/cdkd#4604 review
     const { ctx } = ctxWith({ delete: vi.fn(), update: vi.fn() });
     const op = update({ replacementOrphaned: 'delete-first' });
     await replayFailedOperations([op], { S: res() }, 'Stack', ctx, {});
-    expect(warned()).toContain('--recreate-via-sdk-provider');
+    expect(warned()).toContain('a deploy whose template still replaces it creates it again');
+    expect(warned()).not.toContain('--recreate-via');
     vi.mocked(logger.warn).mockClear();
     await replayFailedOperations([op], { S: res() }, 'Stack', ctx, { forDestroy: true });
     expect(warned()).toContain('the destroy drops its record');
