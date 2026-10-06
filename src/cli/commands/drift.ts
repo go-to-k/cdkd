@@ -214,12 +214,10 @@ export type NotComparedCause =
    * cdkd never READ this resource: {@link DRIFT_READ_FAILURE_BREAKER_THRESHOLD}
    * reads in a row earlier in the same stack, through the same read path, THREW,
    * so the stack's remaining reads through that path were abandoned
-   * (go-to-k/cdkd#2207). A run of
-   * consecutive read failures is what an account-wide condition looks like —
-   * expired credentials, a revoked role, a permission every such read needs —
-   * and reading on only paid the SDK's backoff once per resource for the same
-   * answer. A burst of per-request throttling can trip it too; a re-run clears
-   * that.
+   * (go-to-k/cdkd#2207). A run of consecutive read failures is what expired
+   * credentials, a revoked role, a permission all of those reads need, or a
+   * burst of throttling looks like, and reading on only paid the SDK's backoff
+   * once per resource for the same answer. A re-run clears the throttling case.
    * Exit 2 like `readFailed`: nothing was compared, and a re-run clears it once
    * the condition does.
    */
