@@ -97,16 +97,33 @@ policy_sid_count() {
   printf '%s' "${policy}" | jq --arg sid "${POLICY_SID}" '[.Statement[] | select(.Sid == $sid)] | length'
 }
 
-# A topic's live Policy Id (SNS's default policy carries __default_policy_ID).
-policy_id() {
+# A topic's live Policy as canonical JSON (keys sorted, each Action list
+# sorted), so two documents compare by content.
+policy_canonical() {
   aws sns get-topic-attributes --topic-arn "${1}" --region "${REGION}" \
-    --query 'Attributes.Policy' --output text | jq -r '.Id // empty'
+    --query 'Attributes.Policy' --output text \
+    | jq -cS '.Statement |= map(if (.Action | type) == "array" then .Action |= sort else . end)'
 }
 
-# Wait (bounded) for a topic's policy to drop POLICY_SID, then require it gone
-# and the policy to be SNS's default; $2 names the phase in the failure.
-assert_policy_reset() {
+# Wait (bounded) for a topic's policy to carry exactly one POLICY_SID
+# statement; $2 names the phase in the failure.
+assert_policy_present() {
   local arn="$1" phase="$2" n=""
+  for _i in 1 2 3 4 5 6; do
+    n=$(policy_sid_count "${arn}") || n=""
+    [ "${n}" = "1" ] && return 0
+    sleep 5
+  done
+  echo "FAIL: ${phase}: ${arn} does not carry the ${POLICY_SID} statement (count '${n}')" >&2
+  exit 1
+}
+
+# Wait (bounded) for a topic's policy to drop POLICY_SID, then require the
+# policy to equal $3, the policy SNS gave the topic at creation (captured
+# before any deploy); $2 names the phase in the failure. The equality also
+# proves the policy cdkd writes is no broader than SNS's own default.
+assert_policy_reset() {
+  local arn="$1" phase="$2" baseline="$3" n=""
   for _i in 1 2 3 4 5 6; do
     n=$(policy_sid_count "${arn}") || n=""
     [ "${n}" = "0" ] && break
@@ -116,10 +133,12 @@ assert_policy_reset() {
     echo "FAIL: ${phase}: ${arn} still carries the ${POLICY_SID} statement (go-to-k/cdkd#4610: the TopicPolicy was not removed from it)" >&2
     exit 1
   fi
-  local id
-  id=$(policy_id "${arn}") || id=""
-  if [ "${id}" != "__default_policy_ID" ]; then
-    echo "FAIL: ${phase}: ${arn} policy Id is '${id}', expected SNS's default policy (__default_policy_ID)" >&2
+  local current
+  current=$(policy_canonical "${arn}") || current=""
+  if [ -z "${baseline}" ] || [ "${current}" != "${baseline}" ]; then
+    echo "FAIL: ${phase}: ${arn} policy is not the one SNS gave it at creation" >&2
+    echo "      expected: ${baseline}" >&2
+    echo "      actual:   ${current}" >&2
     exit 1
   fi
 }
@@ -180,6 +199,14 @@ POLICY_TOPIC_A_ARN=$(aws sns create-topic --name "${POLICY_TOPIC_A_NAME}" --regi
   --query 'TopicArn' --output text)
 POLICY_TOPIC_B_ARN=$(aws sns create-topic --name "${POLICY_TOPIC_B_NAME}" --region "${REGION}" \
   --query 'TopicArn' --output text)
+# The policy SNS itself gives each new topic: what a removed TopicPolicy must
+# leave behind.
+POLICY_A_BASELINE=$(policy_canonical "${POLICY_TOPIC_A_ARN}")
+POLICY_B_BASELINE=$(policy_canonical "${POLICY_TOPIC_B_ARN}")
+if [ -z "${POLICY_A_BASELINE}" ] || [ -z "${POLICY_B_BASELINE}" ]; then
+  echo "FAIL: could not read the default policy of the freshly created policy topics" >&2
+  exit 1
+fi
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
@@ -337,10 +364,7 @@ echo "    OK: secondary subscription RedrivePolicy.deadLetterTargetArn is set on
 
 # --- Assertion 4: the two-topic TopicPolicy reached both topics (#4610) ---
 for _arn in "${POLICY_TOPIC_A_ARN}" "${POLICY_TOPIC_B_ARN}"; do
-  if [ "$(policy_sid_count "${_arn}")" != "1" ]; then
-    echo "FAIL: ${_arn} does not carry the ${POLICY_SID} statement after Phase 1" >&2
-    exit 1
-  fi
+  assert_policy_present "${_arn}" "after Phase 1"
 done
 echo "    OK: the two-topic TopicPolicy is on both out-of-stack topics"
 
@@ -421,11 +445,8 @@ echo "    OK: http/s feedback attrs reset on removal (RoleArns cleared, rate 0)"
 # --- Assertion 4b: the narrowed TopicPolicy left the dropped topic (#4610) --
 # Pre-fix update() wrote the new list and never touched the topic it dropped,
 # so topic B kept granting events.amazonaws.com sns:Publish.
-if [ "$(policy_sid_count "${POLICY_TOPIC_A_ARN}")" != "1" ]; then
-  echo "FAIL: ${POLICY_TOPIC_A_ARN} lost the ${POLICY_SID} statement the narrowed TopicPolicy still names" >&2
-  exit 1
-fi
-assert_policy_reset "${POLICY_TOPIC_B_ARN}" "after narrowing Topics to the first topic"
+assert_policy_present "${POLICY_TOPIC_A_ARN}" "after narrowing Topics to the first topic (the kept topic)"
+assert_policy_reset "${POLICY_TOPIC_B_ARN}" "after narrowing Topics to the first topic" "${POLICY_B_BASELINE}"
 echo "    OK: the dropped topic is back on SNS's default policy; the kept one still carries the statement"
 
 # --- Phase 3: destroy -----------------------------------------------------
@@ -450,8 +471,8 @@ echo "    OK: delivery-status topic is gone"
 # go-to-k/cdkd#4610: the destroy resets every topic the TopicPolicy names.
 # Pre-fix delete() sent an empty Policy, which SNS rejects; the rejection
 # ("Invalid parameter") was read as already removed, so the policy stayed.
-assert_policy_reset "${POLICY_TOPIC_A_ARN}" "after destroy"
-assert_policy_reset "${POLICY_TOPIC_B_ARN}" "after destroy"
+assert_policy_reset "${POLICY_TOPIC_A_ARN}" "after destroy" "${POLICY_A_BASELINE}"
+assert_policy_reset "${POLICY_TOPIC_B_ARN}" "after destroy" "${POLICY_B_BASELINE}"
 echo "    OK: destroy reset both out-of-stack topics to SNS's default policy"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

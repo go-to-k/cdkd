@@ -24,6 +24,8 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 
 /**
  * AWS SNS Topic Policy Provider
@@ -242,6 +244,23 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
         resourceType,
         logicalId,
         physicalId
+      );
+    }
+
+    // Refuse before any write: a segment that is not a topic ARN (a policy
+    // NAME an old --migrate-from-cloudformation recorded) cannot be addressed,
+    // and failing after resetting the others would leave a half-done delete.
+    const unaddressable = topicArns.filter((arn) => !isSnsTopicArn(arn)).length;
+    if (unaddressable > 0) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Failed to delete SNS topic policy ${logicalId}: ${unaddressable} segment(s) of its physical id ` +
+            `are not SNS topic ARNs, so cdkd cannot address those topics and changed none. Remove the ` +
+            `policy from them by hand, then drop the record with ${stateOrphanRecordRemedy(context, logicalId)}.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
       );
     }
 

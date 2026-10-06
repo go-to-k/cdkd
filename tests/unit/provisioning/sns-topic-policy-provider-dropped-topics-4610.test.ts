@@ -386,11 +386,16 @@ describe('SNSTopicPolicyProvider.delete resets each topic to its default policy 
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('throws on a segment that is not a topic ARN, issuing no call for it', async () => {
+  it('throws on a segment that is not a topic ARN before writing ANY topic, naming the record remedy', async () => {
     routeSend();
-    await expect(provider.delete('P', 'MyStack-Policy-XYZ', TYPE)).rejects.toThrow(
-      /not an SNS topic ARN/
-    );
+    const err = await provider
+      .delete('P', `${T1},MyStack-Policy-XYZ,${T2}`, TYPE)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProvisioningError);
+    expect((err as Error).message).toMatch(/1 segment\(s\) of its physical id are not SNS topic ARNs/);
+    expect((err as Error).message).toContain('cdkd state orphan');
+    expect((err as Error).message).toContain('--resource P');
+    // T1 precedes the bad segment and is still not written.
     expect(mockSend).not.toHaveBeenCalled();
   });
 });
