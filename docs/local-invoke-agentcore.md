@@ -197,6 +197,10 @@ hatch, assumed before `ecr:GetAuthorizationToken` and the pull.
 
 ## Environment variables
 
+A CloudFormation dynamic reference (`{{resolve:...}}`) in the runtime's environment is resolved
+locally before the container starts, off the `docker run` argv; see
+[Local Execution](local-emulation.md#cloudformation-dynamic-references-resolve).
+
 The runtime's env vars are substituted the same way
 [`cdkd local invoke`](local-invoke.md#environment-variables) substitutes a
 Lambda's. Without a state source, intrinsic-valued entries are warned and

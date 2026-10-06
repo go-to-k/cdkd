@@ -7,6 +7,7 @@ import {
   cdkdExtraStateProviders,
   engineCredentialTripleChannel,
   ENGINE_ACCOUNT_ID_CHANNEL,
+  ENGINE_DYNAMIC_REFERENCE_CHANNEL,
   warnEngineRoleExposure,
 } from './local-state-source.js';
 import { adoptDeprecatedRegionFlag } from '../region-options.js';
@@ -111,6 +112,7 @@ export function createLocalStartAgentCoreCommand(): Command {
   warnEngineRoleExposure(cmd, 'start-agentcore', [
     engineCredentialTripleChannel('the agent container'),
     ENGINE_ACCOUNT_ID_CHANNEL,
+    ENGINE_DYNAMIC_REFERENCE_CHANNEL,
   ]);
 
   // cdk-local declares a visible `--region <region>` and owns this command's

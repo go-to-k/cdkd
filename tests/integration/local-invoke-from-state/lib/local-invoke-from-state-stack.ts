@@ -5,6 +5,7 @@ import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import { EXPORT_NAME, secretReference } from './shared.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -54,6 +55,23 @@ export class LocalInvokeFromStateStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
+    // Issue #2056: a function fed a secret two ways. IMPORTED_SECRET imports
+    // the producer's export, which cdkd persists as its `{{resolve:...}}`
+    // token, so `--from-state` reads the token back; SAME_STACK_SECRET is the
+    // reference written into this template directly. Both must reach the
+    // container RESOLVED. A separate function, so the other steps' target and
+    // the step-4e state-read role (which cannot read the secret) are untouched.
+    new lambda.Function(this, 'EchoSecretHandler', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
+      environment: {
+        IMPORTED_SECRET: cdk.Fn.importValue(EXPORT_NAME),
+        SAME_STACK_SECRET: secretReference(),
+      },
+      timeout: cdk.Duration.seconds(10),
+    });
+
     // The `--role-arn` the verify script reads state through, scoped to the
     // state bucket: `cdkd local invoke --from-state` asks the role only for
     // that bucket's location, listing and objects (and `GetCallerIdentity`,
@@ -75,6 +93,15 @@ export class LocalInvokeFromStateStack extends cdk.Stack {
       new iam.PolicyStatement({
         actions: ['s3:GetObject'],
         resources: [`arn:${cdk.Aws.PARTITION}:s3:::${stateBucketName}/cdkd/${this.stackName}/*`],
+      })
+    );
+    // Issue #2056's step 4i imports the producer's export through the shared
+    // exports index under this role, so the role reads that one key too. It
+    // holds no Secrets Manager permission: that is what step 4i relies on.
+    readRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:GetObject'],
+        resources: [`arn:${cdk.Aws.PARTITION}:s3:::${stateBucketName}/cdkd/_index/*`],
       })
     );
   }

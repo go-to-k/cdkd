@@ -7,6 +7,7 @@ import {
   cdkdExtraStateProviders,
   engineCredentialTripleChannel,
   engineFromCfnStackChannel,
+  ENGINE_DYNAMIC_REFERENCE_CHANNEL,
   warnEngineRoleExposure,
 } from './local-state-source.js';
 import { adoptDeprecatedRegionFlag } from '../region-options.js';
@@ -135,7 +136,10 @@ export function createLocalStartCloudFrontCommand(): Command {
   warnEngineRoleExposure(
     cmd,
     'start-cloudfront',
-    [engineCredentialTripleChannel('the Function URL and Lambda@Edge containers')],
+    [
+      engineCredentialTripleChannel('the Function URL and Lambda@Edge containers'),
+      ENGINE_DYNAMIC_REFERENCE_CHANNEL,
+    ],
     engineFromCfnStackChannel("a deployed S3 origin's objects and KeyValueStore entries")
   );
 

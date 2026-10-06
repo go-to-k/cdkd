@@ -256,6 +256,10 @@ lookup is needed.
 
 ## Environment variables and secrets
 
+A CloudFormation dynamic reference (`{{resolve:...}}`) in a container's `Environment` is resolved
+locally before any container starts and passed off the `docker run` argv; one in `Command`, `EntryPoint` or a health-check command is refused. See
+[Local Execution](local-emulation.md#cloudformation-dynamic-references-resolve).
+
 `ContainerDefinitions[].Environment[].Value` and `Secrets[].ValueFrom` are
 routinely intrinsic-valued in real CDK ECS apps: `table.tableName` synthesizes as
 `Ref`, `table.tableArn` as `Fn::GetAtt`,

@@ -11,37 +11,36 @@ paths:
 Issue [#3130](https://github.com/go-to-k/cdkd/issues/3130)'s other half:
 [local-caller-identity.md](local-caller-identity.md). Only `local-invoke`,
 `local-start-api`, `local-run-task` and `local-invoke-agentcore` call
-`applyRoleArnIfSet`, so nothing is restored for the four `start-*` commands. The
-overwrite is cdk-local's OWN `applyRoleArnIfSet`, inside the emulator entry
-point, so fixing `process.env` around the call cannot work: it returns only
-after every container started.
+`applyRoleArnIfSet`; nothing is restored for the four `start-*` commands, whose
+overwrite is cdk-local's OWN `applyRoleArnIfSet` inside the emulator entry
+point — it returns only after every container started.
 
 **Reason from the RULE, not the list**: cdk-local builds its clients from the
-region and `options.profile` alone, never seeing `ignoreAssumedRole`, so with
-`--role-arn` set and no profile it resolves everything AS THE ROLE.
+region and `options.profile` alone (no `ignoreAssumedRole`), so with
+`--role-arn` and no profile it resolves everything AS THE ROLE.
 
 1. **The credential triple** copied into the container (`start-alb`,
-   `start-cloudfront`, `start-agentcore`), gated on the `options.profile` FLAG —
-   an exported `AWS_PROFILE` does NOT mitigate it. `start-service` uses the
+   `start-cloudfront`, `start-agentcore`), gated on the `options.profile` FLAG
+   (`AWS_PROFILE` does NOT mitigate it). `start-service` uses the
    metadata sidecar.
 2. **ECS task SECRETS** (`start-service` / `start-alb`) via cdk-local's
    `resolveEcsSecrets`; cdkd's own opts out.
 3. **`${AWS::AccountId}`**: cdk-local's `resolveCallerAccountId` takes
-   `options.profile` only, so the id in the container env, `secrets` refs and
-   ECR URIs is the ROLE's.
+   `options.profile` only: the id in the env, `secrets` refs and ECR URIs.
 4. **`--from-cfn-stack`** — `GetParameters` with `WithDecryption: true`.
    On the four cdkd-owned commands `bindCallerIdentityClients` shadows the
    provider's PRIVATE getters; `cfnProviderShapeDrift` refuses (under a role,
-   no profile) any change to the reviewed member ALLOWLIST. It checks shape,
-   not use: a client built inline in an existing method, or cached at module
-   level, is undetectable.
+   no profile) any change to the reviewed member ALLOWLIST — shape, not use: a
+   client built inline or cached at module level is undetectable.
 5. **`--assume-role` / `--assume-task-role`** for the workload: the STS
-   AssumeRole call itself is made as the role.
+   AssumeRole call is made as the role.
 6. **A literal layer ARN** (`local invoke` / `start-api`): cdk-local's
-   `materializeLayerFromArn` fetches the layer as the role — a residual on the
-   cdkd-owned commands too.
+   `materializeLayerFromArn` fetches it as the role, cdkd-owned commands too.
+7. **A `{{resolve:...}}` lookup**: cdk-local's resolver takes `profile` only.
+   cdkd-owned commands build its clients as the caller
+   (`src/local/dynamic-reference.ts`, #2056).
 
-Either profile spelling mitigates 2-6. The fix is upstream
+Either profile spelling mitigates 2-7. The fix is upstream
 (go-to-k/cdk-local#783); patching `CfnLocalStateProvider.prototype` would
 reach only 4, so `warnEngineRoleExposure` warns at startup meanwhile.
 

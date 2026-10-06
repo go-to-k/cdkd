@@ -13,6 +13,7 @@ import {
   cdkdExtraStateProviders,
   ENGINE_ACCOUNT_ID_CHANNEL,
   ENGINE_ECS_SECRETS_CHANNEL,
+  ENGINE_DYNAMIC_REFERENCE_CHANNEL,
   warnEngineRoleExposure,
 } from './local-state-source.js';
 import { adoptDeprecatedRegionFlag } from '../region-options.js';
@@ -142,6 +143,7 @@ export function createLocalStartServiceCommand(): Command {
   warnEngineRoleExposure(cmd, 'start-service', [
     ENGINE_ECS_SECRETS_CHANNEL,
     ENGINE_ACCOUNT_ID_CHANNEL,
+    ENGINE_DYNAMIC_REFERENCE_CHANNEL,
   ]);
   // Last, so cdk-local's own `--region` has already been added and can be
   // replaced by cdkd's deprecated twin + the entry fold (issue #2522).

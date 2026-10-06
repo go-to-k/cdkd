@@ -372,6 +372,9 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       'iam-access-key',
       'import-secret-observed',
       'lambda-esm-self-managed-kafka',
+      // Issue #2056: an `unsafePlainText` secret behind a `{{resolve:...}}`
+      // export; both stacks' prefixes are swept and asserted on success.
+      'local-invoke-from-state',
       'local-run-task-from-state',
       // Issue #2740: one `unsafePlainText` secret holding a `username` only; the
       // fixture sources the helper and asserts the sweep on its success path.
