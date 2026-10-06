@@ -35,6 +35,10 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate, ResourceDeleteResult } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import {
+  setPasteableRunFlags,
+  setPasteableVerbFlags,
+} from '../../../src/utils/pasteable-run-context.js';
 import { PASTE_PAYLOADS, filesTouchedBy, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 // No real AWS client: the create-only DescribeType prefetch reads the
@@ -105,11 +109,11 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
     deleteCalls = [];
   });
 
-  function deleteChange(logicalId: string): ResourceChange {
+  function deleteChange(logicalId: string, resourceType: string = TYPE): ResourceChange {
     return {
       logicalId,
       changeType: 'DELETE',
-      resourceType: TYPE,
+      resourceType,
       propertyChanges: [],
     } as unknown as ResourceChange;
   }
@@ -124,10 +128,10 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
     } as unknown as ResourceChange;
   }
 
-  function stateRecord(logicalId: string): ResourceState {
+  function stateRecord(logicalId: string, resourceType: string = TYPE): ResourceState {
     return {
       physicalId: `phys-${logicalId}`,
-      resourceType: TYPE,
+      resourceType,
       properties: {},
       attributes: {},
       dependencies: [],
@@ -139,7 +143,11 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
    * deletes normally. Both delete records are in the pre-deploy state, so the
    * DELETE executor dispatches both.
    */
-  function buildEngine(stackName: string = STACK, region: string = 'us-east-1') {
+  function buildEngine(
+    stackName: string = STACK,
+    region: string = 'us-east-1',
+    skipped: { logicalId: string; type: string; reason?: string } = { logicalId: SKIPPED, type: TYPE }
+  ) {
     const provider = {
       create: vi.fn().mockImplementation((logicalId: string) =>
         Promise.resolve({ physicalId: `phys-${logicalId}`, attributes: {} })
@@ -147,7 +155,13 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
       update: vi.fn().mockResolvedValue({ physicalId: 'phys-x', wasReplaced: false }),
       delete: vi.fn().mockImplementation((logicalId: string) => {
         deleteCalls.push(logicalId);
-        return Promise.resolve(logicalId === SKIPPED ? SKIP : undefined);
+        return Promise.resolve(
+          logicalId === skipped.logicalId
+            ? skipped.reason === undefined
+              ? SKIP
+              : { outcome: 'skipped', reason: skipped.reason }
+            : undefined
+        );
       }),
     };
 
@@ -156,7 +170,7 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
       stackName,
       region,
       resources: {
-        [SKIPPED]: stateRecord(SKIPPED),
+        [skipped.logicalId]: stateRecord(skipped.logicalId, skipped.type),
         [KEPT]: stateRecord(KEPT),
       },
       outputs: {},
@@ -173,7 +187,7 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
 
     const changes = new Map<string, ResourceChange>([
       [CREATED, createChange(CREATED)],
-      [SKIPPED, deleteChange(SKIPPED)],
+      [skipped.logicalId, deleteChange(skipped.logicalId, skipped.type)],
       [KEPT, deleteChange(KEPT)],
     ]);
 
@@ -286,7 +300,128 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
     expect(result.created).toBe(1);
   });
 
-  it('names no shell-active stack or region in its two commands, and no pasted span runs (go-to-k/cdkd#4205)', async () => {
+  /** The skip warning a deploy printed, found by its trailing drop line. */
+  function skipWarning(label: string): string {
+    const message = vi
+      .mocked(getLogger().warn)
+      .mock.calls.map((c) => String(c[0]))
+      .find((m) => m.includes('Drop the record with:'));
+    expect(message, label).toBeDefined();
+    return message!;
+  }
+
+  it('drops only the skipped record: the command carries --resource, never the whole-stack form (go-to-k/cdkd#4602)', async () => {
+    vi.mocked(getLogger().warn).mockClear();
+    await buildEngine().deploy(STACK, template);
+    const message = skipWarning('plain');
+    expect(message.split('\n').slice(-2)).toEqual([
+      `Inspect it with: cdkd state show ${STACK} --stack-region us-east-1`,
+      `Drop the record with: cdkd state orphan ${STACK} --stack-region us-east-1 --resource ${SKIPPED}`,
+    ]);
+    // The whole-stack form drops every live record of this deployed stack: no
+    // line may END at the region, with no `--resource` after it.
+    expect(message).not.toMatch(/cdkd state orphan [^\n]*--stack-region us-east-1$/m);
+    expect(message).toContain("Keep '--resource' on the drop");
+  });
+
+  it('keeps --resource ahead of the run flags a deploy was given (go-to-k/cdkd#4602)', async () => {
+    // A real run appends its explicit `--state-bucket` after the command's own
+    // arguments; a check keyed on the line ENDING at `--stack-region <r>`
+    // cannot see the whole-stack form there, so assert the words themselves.
+    setPasteableVerbFlags(
+      new Map([
+        ['cdkd state show', new Set(['--state-bucket'])],
+        ['cdkd state orphan', new Set(['--state-bucket'])],
+      ])
+    );
+    setPasteableRunFlags({ stateBucket: 'my-bucket' });
+    try {
+      vi.mocked(getLogger().warn).mockClear();
+      await buildEngine().deploy(STACK, template);
+      expect(skipWarning('run flags').split('\n').at(-1)).toBe(
+        `Drop the record with: cdkd state orphan ${STACK} --stack-region us-east-1 ` +
+          `--resource ${SKIPPED} --state-bucket my-bucket`
+      );
+    } finally {
+      setPasteableRunFlags({});
+      setPasteableVerbFlags(undefined);
+    }
+  });
+
+  it("names the nested stack's CHILD record, without --resource, on a nested-stack skip (go-to-k/cdkd#4602)", async () => {
+    // `cdkd state orphan <parent> --resource <id>` refuses a nested-stack row
+    // while the child's record exists, and the record to repair is the
+    // child's, which this delete removes whole.
+    vi.mocked(getLogger().warn).mockClear();
+    await buildEngine(STACK, 'us-east-1', {
+      logicalId: SKIPPED,
+      type: 'AWS::CloudFormation::Stack',
+    }).deploy(STACK, template);
+    const message = skipWarning('nested');
+    const child = `'${STACK}~${SKIPPED}'`;
+    expect(message.split('\n').slice(-2)).toEqual([
+      `Inspect it with: cdkd state show ${child} --stack-region us-east-1`,
+      `Drop the record with: cdkd state orphan ${child} --stack-region us-east-1`,
+    ]);
+    expect(message).not.toContain('--resource');
+    expect(message).not.toContain(`cdkd state orphan ${STACK} `);
+    expect(message).toContain('The commands name the child stack record');
+    expect(message).toContain('first delete by hand');
+  });
+
+  it('says to re-run the deploy, not to clear the child by hand, when the nested child destroy was interrupted (go-to-k/cdkd#4602)', async () => {
+    // The reason `NestedStackProvider.delete` returns for an interrupted child.
+    const child = `${STACK}~${SKIPPED}`;
+    for (const [reason, interrupted] of [
+      [`nested stack ${child} was interrupted`, true],
+      [`nested stack ${child} skipped 1 resource(s) and was interrupted`, true],
+      [`nested stack ${child} skipped 1 resource(s)`, false],
+    ] as const) {
+      vi.mocked(getLogger().warn).mockClear();
+      await buildEngine(STACK, 'us-east-1', {
+        logicalId: SKIPPED,
+        type: 'AWS::CloudFormation::Stack',
+        reason,
+      }).deploy(STACK, template);
+      const message = skipWarning(reason);
+      expect(message.includes('first delete by hand'), reason).toBe(!interrupted);
+      expect(message.includes("re-run 'cdkd deploy' to resume it"), reason).toBe(interrupted);
+      // Either arm names the grandchild records a child drop leaves behind.
+      expect(message, reason).toContain('--show-nested lists every level');
+      expect(message.split('\n').at(-1), reason).toBe(
+        `Drop the record with: cdkd state orphan '${child}' --stack-region us-east-1`
+      );
+    }
+  });
+
+  it("names a withheld nested record as '<child-stack>', never the parent's '<stack>' hole (go-to-k/cdkd#4602)", async () => {
+    // A hole spelled `<stack>` invites the deployed parent's name -- the
+    // whole-stack drop this issue removes.
+    vi.mocked(getLogger().warn).mockClear();
+    const id = 'Child$(touch x)';
+    await buildEngine(STACK, 'us-east-1', {
+      logicalId: id,
+      type: 'AWS::CloudFormation::Stack',
+    }).deploy(STACK, template);
+    const message = skipWarning('withheld child');
+    expect(message.split('\n').slice(-2)).toEqual([
+      "Inspect it with: cdkd state show '<child-stack>' --stack-region us-east-1",
+      "Drop the record with: cdkd state orphan '<child-stack>' --stack-region us-east-1",
+    ]);
+    expect(message).not.toContain("'<stack>'");
+  });
+
+  it('holds the stack name to the plain-identifier gate its sibling remedies use (go-to-k/cdkd#4602)', async () => {
+    // `a@b` is shell-inert, so only `plainIdent` withholds it -- as
+    // `destroy-runner.ts` and `state orphan --resource` do for the same line.
+    vi.mocked(getLogger().warn).mockClear();
+    await buildEngine('a@b').deploy('a@b', template);
+    expect(skipWarning('a@b').split('\n').at(-1)).toBe(
+      `Drop the record with: cdkd state orphan '<stack>' --stack-region us-east-1 --resource ${SKIPPED}`
+    );
+  });
+
+  it('names no shell-active stack, region or logical id in its two commands, and no pasted span runs (go-to-k/cdkd#4205, #4602)', async () => {
     // The skip warning's `CHILD's` (in `for a nested stack it is the CHILD's
     // own state`) is its one unpaired apostrophe (`'cdkd deploy'` is a paired
     // literal), on the line above the `Inspect it with:` / `Drop the record
@@ -300,23 +435,36 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
     // what reds a shell-quoted stack spliced back into the two commands.
     const warn = vi.mocked(getLogger().warn);
     const messages: Array<[string, string]> = [];
+    const NESTED = 'AWS::CloudFormation::Stack';
     for (const { label, value } of PASTE_PAYLOADS) {
-      // A withheld REGION holes only the region: the gate judges each value.
-      for (const [stack, region, name, where] of [
-        [value, 'us-east-1', "'<stack>'", 'us-east-1'],
-        [STACK, value, STACK, "'<region>'"],
+      // A withheld value holes only itself: the gate judges each one. The
+      // nested rows name the CHILD `<stack>~<id>`, so a payload in either
+      // half holes the whole stack argument.
+      for (const [what, stack, region, id, type, inspect, drop] of [
+        ['stack', value, 'us-east-1', SKIPPED, TYPE,
+          "cdkd state show '<stack>' --stack-region us-east-1",
+          `cdkd state orphan '<stack>' --stack-region us-east-1 --resource ${SKIPPED}`],
+        ['region', STACK, value, SKIPPED, TYPE,
+          `cdkd state show ${STACK} --stack-region '<region>'`,
+          `cdkd state orphan ${STACK} --stack-region '<region>' --resource ${SKIPPED}`],
+        ['logical id', STACK, 'us-east-1', value, TYPE,
+          `cdkd state show ${STACK} --stack-region us-east-1`,
+          `cdkd state orphan ${STACK} --stack-region us-east-1 --resource '<logicalId>'`],
+        ['nested stack', value, 'us-east-1', SKIPPED, NESTED,
+          "cdkd state show '<child-stack>' --stack-region us-east-1",
+          "cdkd state orphan '<child-stack>' --stack-region us-east-1"],
+        ['nested logical id', STACK, 'us-east-1', value, NESTED,
+          "cdkd state show '<child-stack>' --stack-region us-east-1",
+          "cdkd state orphan '<child-stack>' --stack-region us-east-1"],
       ] as const) {
         warn.mockClear();
-        await buildEngine(stack, region).deploy(stack, template);
-        const message = warn.mock.calls
-          .map((c) => String(c[0]))
-          .find((m) => m.includes('Drop the record with:'));
-        expect(message, label).toBeDefined();
-        expect(message!.split('\n').slice(-2), label).toEqual([
-          `Inspect it with: cdkd state show ${name} --stack-region ${where}`,
-          `Drop the record with: cdkd state orphan ${name} --stack-region ${where}`,
+        await buildEngine(stack, region, { logicalId: id, type }).deploy(stack, template);
+        const message = skipWarning(`${label} ${what}`);
+        expect(message.split('\n').slice(-2), `${label} ${what}`).toEqual([
+          `Inspect it with: ${inspect}`,
+          `Drop the record with: ${drop}`,
         ]);
-        messages.push([`${label} ${stack === STACK ? 'region' : 'stack'}`, message!]);
+        messages.push([`${label} ${what}`, message]);
       }
     }
     withPasteDir((dir) => {
@@ -327,7 +475,7 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
         expect(filesTouchedBy(message.slice(at), dir), `${label} from CHILD's`).toEqual([]);
       }
     });
-  }, 120_000);
+  }, 240_000);
 
   it('keeps the skipped resource in the persisted state and drops the deleted one', async () => {
     const engine = buildEngine();

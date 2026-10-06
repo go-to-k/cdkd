@@ -1914,6 +1914,22 @@ themselves:
 | `of which left an orphaned predecessor: N` | A replacement the provider performed INSIDE its own `update()` whose old resource it could not retire, or an update-failure replacement where `UpdateReplacePolicy: Retain` said not to delete it | **No.** State now points at the replacement, so the survivor is untracked — delete it by hand |
 | `Left an orphaned predecessor in a nested stack: N` | The same as the row above, for a resource inside a nested child or grandchild stack | **No**, as above |
 
+To give up on a skipped DELETE instead, delete the resource by hand and drop
+its record with the command its warning prints last:
+`cdkd state orphan <stack> --stack-region <region> --resource <logicalId>`,
+which drops that record only
+([one resource's record](cli-state.md#removing-one-resource-from-the-record)).
+For a nested stack's row the command names the child's own record,
+`'<stack>~<logicalId>'`, with no `--resource`: the child is being removed with
+the row, and once its record is gone the next deploy drops the row. Dropping it
+untracks everything the child still holds, so delete those resources by hand
+first (`cdkd state show '<stack>~<logicalId>' --show-nested` lists every
+level; a grandchild record needs the same drop). When the child's destroy was
+interrupted, the warning says to re-run `cdkd deploy` instead, which resumes it. Never run
+`cdkd state orphan` on the deployed stack without `--resource`: that drops
+every resource's record, and the next deploy re-creates or collides with all
+of them.
+
 ```bash
 cdkd deploy MyStack                       # exit 2 if any of these rows is non-zero
 cdkd deploy MyStack --allow-unaddressed   # exit 0 for the same run
