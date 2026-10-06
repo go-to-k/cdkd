@@ -497,6 +497,18 @@ describe('withPrintingSecrets — a printing bag, not the resource bag (go-to-k/
     expect(await a).toBe('*** second-derived-name');
   });
 
+  it('an inner scope leaves the enclosing scope as it was once it returns', () => {
+    const own: Bag = new Map([['own-plaintext', REF]]);
+    withCurrentResourceSecrets(own, () => {
+      withPrintingSecrets(logOnlyBag(['inner-derived-name']), () => {
+        expect(currentLogLineMasker()?.('inner-derived-name')).toBe('***');
+      });
+      expect(currentLogLineMasker()?.('inner-derived-name own-plaintext')).toBe(
+        'inner-derived-name ***'
+      );
+    });
+  });
+
   it('reads the bag by reference, so a needle registered mid-scope masks too', () => {
     const printing: Bag = new Map();
     withPrintingSecrets(printing, () => {

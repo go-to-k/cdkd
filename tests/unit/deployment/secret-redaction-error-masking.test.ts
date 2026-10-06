@@ -392,12 +392,19 @@ describe('maskSecretsInError keeps the created-before-failure mark exact (go-to-
     expect(createdBeforeFailure(masked, 'B', 'AWS::S3::Bucket')).toBe('team-secret-bucket');
   });
 
-  it('masks a same-key field that does not have the mark shape (enumerable)', () => {
+  // Each condition of the mark's shape on its own: `Symbol.for` is the global
+  // registry, so any module can spell a same-keyed field.
+  it.each([
+    ['enumerable', { enumerable: true, writable: false, frozen: true }],
+    ['writable', { enumerable: false, writable: true, frozen: true }],
+    ['a value that is not frozen', { enumerable: false, writable: false, frozen: false }],
+  ])('masks a same-key field that does not have the mark shape (%s)', (_label, shape) => {
     const error = new Error('x');
+    const value = { physicalId: 'team-secret-bucket' };
     Object.defineProperty(error, MARK, {
-      value: Object.freeze({ physicalId: 'team-secret-bucket' }),
-      enumerable: true,
-      writable: false,
+      value: shape.frozen ? Object.freeze(value) : value,
+      enumerable: shape.enumerable,
+      writable: shape.writable,
       configurable: true,
     });
     const masked = maskSecretsInError(error, bag) as unknown as Record<symbol, { physicalId: string }>;
