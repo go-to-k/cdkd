@@ -97,6 +97,17 @@ policy_sid_count() {
   printf '%s' "${policy}" | jq --arg sid "${POLICY_SID}" '[.Statement[] | select(.Sid == $sid)] | length'
 }
 
+# "true" when a POLICY_SID statement of a topic's live Policy carries the
+# action $2 (lower-case; Action may be a string or a list), else "false". A
+# failed read returns non-zero with no answer.
+policy_sid_has_action() {
+  local policy
+  policy=$(aws sns get-topic-attributes --topic-arn "${1}" --region "${REGION}" \
+    --query 'Attributes.Policy' --output text) || return 1
+  printf '%s' "${policy}" | jq -r --arg sid "${POLICY_SID}" --arg action "${2}" \
+    '[.Statement[] | select(.Sid == $sid) | (.Action | if type == "array" then .[] else . end) | ascii_downcase] | index($action) != null'
+}
+
 # A topic's live Policy as canonical JSON (keys sorted, each Action list
 # sorted), so two documents compare by content.
 policy_canonical() {
@@ -463,19 +474,14 @@ echo "    OK: http/s feedback attrs reset on removal (RoleArns cleared, rate 0)"
 assert_policy_present "${POLICY_TOPIC_A_ARN}" "after narrowing Topics to the first topic (the kept topic)"
 # The narrowed TopicPolicy also adds sns:GetTopicAttributes, so the kept
 # topic must carry the Phase 2 statement, not a stale Phase 1 one.
-_a_policy=""
 _a_shape=""
 for _i in 1 2 3 4 5 6; do
-  _a_policy=$(aws sns get-topic-attributes --topic-arn "${POLICY_TOPIC_A_ARN}" --region "${REGION}" \
-    --query 'Attributes.Policy' --output text) || _a_policy=""
-  _a_shape=$(printf '%s' "${_a_policy}" | jq -r --arg sid "${POLICY_SID}" \
-    '[.Statement[] | select(.Sid == $sid) | (.Action | if type == "array" then .[] else . end) | ascii_downcase] | index("sns:gettopicattributes") != null' 2>/dev/null) || _a_shape=""
+  _a_shape=$(policy_sid_has_action "${POLICY_TOPIC_A_ARN}" "sns:gettopicattributes") || _a_shape=""
   [ "${_a_shape}" = "true" ] && break
   sleep 5
 done
 if [ "${_a_shape}" != "true" ]; then
-  echo "FAIL: after narrowing Topics, ${POLICY_TOPIC_A_ARN}'s ${POLICY_SID} statement lacks sns:GetTopicAttributes: the update did not re-write the kept topic" >&2
-  echo "      policy: ${_a_policy}" >&2
+  echo "FAIL: after narrowing Topics, ${POLICY_TOPIC_A_ARN}'s ${POLICY_SID} statement lacks sns:GetTopicAttributes (got '${_a_shape}'): the update did not re-write the kept topic" >&2
   exit 1
 fi
 assert_policy_reset "${POLICY_TOPIC_B_ARN}" "after narrowing Topics to the first topic" "${POLICY_B_BASELINE}"
