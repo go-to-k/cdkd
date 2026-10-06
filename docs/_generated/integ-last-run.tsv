@@ -86,9 +86,9 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-10-04T16:44:59Z	PASS	105	verify.sh	rc ok, orph clean (#2080 PR #4557)
 docdb-neptune	2026-10-06T02:22:44Z	PASS	5209	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-06T18:08:58Z	PASS	361	verify.sh	rc ok, orph clean (#3869 PR #4631)
+drift-revert	2026-10-06T23:27:59Z	PASS	360	verify.sh	rc ok, orph clean (#3869 PR #4636)
 drift-revert-arrays	2026-10-04T10:29:43Z	PASS	185	verify.sh	rc ok, orph clean (#4476)
-drift-revert-vpc	2026-10-06T18:08:58Z	PASS	391	verify.sh	rc ok, orph clean (#3869 PR #4631)
+drift-revert-vpc	2026-10-06T23:27:59Z	PASS	381	verify.sh	rc ok, orph clean (#3869 PR #4636)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-05T15:21:15Z	PASS	221	verify.sh	rc ok, orph clean (#2868 PR #4588)
 dynamodb-autoscaling	2026-10-03T04:27:36Z	PASS	83	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -128,7 +128,7 @@ eventbridge-pipes	2026-10-06T02:22:44Z	PASS	161	verify.sh	PR #4598 (#4583/#4595 
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-03T19:15:22Z	PASS	100	verify.sh	rc ok, orph clean (#2080 PR #4515)
-export	2026-10-06T18:08:58Z	PASS	241	verify.sh	rc ok, orph clean (#3869 PR #4631)
+export	2026-10-06T23:27:59Z	PASS	231	verify.sh	rc ok, orph clean (#3869 PR #4636)
 export-nested-stack	2026-10-04T19:49:12Z	PASS	181	verify.sh	rc ok, orph clean (#4547)
 fallback-recreate-children	2026-10-05T02:29:22Z	PASS	105	verify.sh	rc ok, orph clean (#4569 @480676155)
 fifo-sqs-event-source	2026-10-01T10:13:53Z	PASS	135	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 6 deleted 0 errors, orph clean
@@ -175,7 +175,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kinesis-stream-mode-switch	2026-10-03T04:24:24Z	PASS	102	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-06T18:08:58Z	PASS	125	verify.sh	rc ok, orph clean (#3869 PR #4631)
+lambda	2026-10-06T23:27:59Z	PASS	125	verify.sh	rc ok, orph clean (#3869 PR #4636)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
@@ -270,7 +270,7 @@ recreate-via-cc-api	2026-10-05T15:03:08Z	PASS	100	verify.sh	PR #4585 (#3869 CC c
 recreate-via-sdk-provider	2026-10-05T02:29:22Z	PASS	95	verify.sh	rc ok, orph clean (#4569 @480676155)
 redacted-delete-address	2026-10-06T05:40:55Z	PASS	100	verify.sh	rc ok, orph clean (#4602 PR #4609)
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
-remove-protection	2026-10-06T18:08:58Z	PASS	2139	verify.sh	rc ok, orph clean (#3869 PR #4631)
+remove-protection	2026-10-06T23:27:59Z	PASS	2130	verify.sh	rc ok, orph clean (#3869 PR #4636)
 remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replace-squatter-refusal	2026-10-05T02:29:22Z	PASS	65	verify.sh	rc ok, orph clean (#4569 @480676155)
@@ -311,7 +311,7 @@ schema-v9-to-v10-migration	2026-10-04T19:49:12Z	PASS	155	verify.sh	rc ok, orph c
 scrub-nested-child	2026-10-05T15:20:25Z	PASS	171	verify.sh	rc ok, orph clean (#2868 PR #4588)
 sdk-ccapi-crossref	2026-09-25T09:51:57Z	PASS	115	verify.sh	rc ok, orph clean; sha c6b23156e (#3713)
 sdk-to-cc-autoroute	2026-10-04T06:31:24Z	PASS	225	verify.sh	rc ok, orph clean (#2790 PR #4516 phases 7-10)
-secret-derived-immutable-names	2026-10-06T18:08:58Z	PASS	221	verify.sh	rc ok, orph clean (#3869 PR #4631)
+secret-derived-immutable-names	2026-10-06T23:27:59Z	PASS	266	verify.sh	rc ok, orph clean (#3869 PR #4636)
 secrets-array-nested	2026-10-03T18:30:14Z	PASS	425	verify.sh	rc ok, orph clean
 secrets-dynamic-ref	2026-10-06T14:31:29Z	PASS	839	verify.sh	rc ok, orph clean (#3869 PR #4625)
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
