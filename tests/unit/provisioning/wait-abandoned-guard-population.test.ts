@@ -80,8 +80,8 @@ const SDK_PROVIDER_REASON =
 const EXEMPT: { file: string; sites: number; reason: string }[] = [
   {
     file: 'provisioning/providers/sns-topic-policy-provider.ts',
-    sites: 2,
-    reason: `${SDK_PROVIDER_REASON} Here: SetTopicAttributes on the delete path, GetTopicAttributes on the read-back.`,
+    sites: 3,
+    reason: `${SDK_PROVIDER_REASON} Here: SetTopicAttributes resetting a topic's policy (delete, and a topic an update drops), GetTopicAttributes on the update's content check and on the read-back.`,
   },
   // The ten the COMPILER-API rewrite of this scan surfaced and the hand-rolled
   // `if (`-only version could not see. They are the repo's DOMINANT spelling —

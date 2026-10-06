@@ -250,7 +250,6 @@ export const OMITS_UPDATE_CONTEXT: readonly string[] = [
   'S3DirectoryBucketProvider',
   'S3TablesProvider',
   'SNSSubscriptionProvider',
-  'SNSTopicPolicyProvider',
   'SQSQueueProvider',
   'StepFunctionsProvider',
   'WAFv2WebACLProvider',
