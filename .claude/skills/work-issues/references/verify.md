@@ -15,9 +15,14 @@
 ### 8-b. Integ ordering vs review rounds and rebases
 
 **Run the integ LAST — after the final edit to any `integ-destroy`-scoped file.**
-Sequence: dispatch reviewers → apply EVERY finding, nits included → rebase →
-integ → marker. A UNIT-test-only fix round may overlap the parent's integ in
-the lane's tree. Brief the lane: no build, `/check` or `/verify-pr` there (a
+A lane cannot touch AWS, so only the parent finds an AWS-side rejection: run a
+NEW arm once EARLY too, as soon as the lane has written it and between review
+rounds (never during a `src` fix round); that run sets no marker and is no
+§8-d proof. Two new arms failed their first AWS contact on a policy shape the
+service rejects, one also measuring a normalization that reshaped the fix
+(#4618, #4626). Sequence: dispatch reviewers → (new arm: early run) → apply
+EVERY finding, nits included → rebase → integ → marker. A UNIT-test-only fix
+round may overlap the parent's integ in the lane's tree. Brief the lane: no build, `/check` or `/verify-pr` there (a
 build rewrites the live fixture's `dist/`), no rebase or install, never the
 live fixture's directory, and stage only its own test files, since the
 integ's ledger row lands in the same tree (#4302). A lane REPORTS
