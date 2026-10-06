@@ -107,6 +107,16 @@ AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd deploy '<stack>' --dry-run
 
 Review the complete plan for replacements, deletions, IAM changes, unsupported properties, retained resources, and state-bucket selection. Do not hide confirmation prompts with `--yes` or force flags by default.
 
+To check mechanically whether the change would lose an existing resource, run the diff with `--fail-on=destructive`. It exits `1` when a change replaces, deletes, or orphans an existing resource (always walking nested stacks), and lists each one after the diff; additions and in-place updates exit `0`. Exit `3` means `cdkd deploy` would refuse the stack regardless, and takes precedence over the list. On exit `1` with listed resources, show them to the user and get explicit confirmation before deploying; exit `1` with no list means the command itself failed:
+
+```bash
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd diff '<stack>' --fail-on=destructive
+```
+
+`--fail-on` takes `any-change`, `destructive`, or `never` (default); `--fail` / `--no-fail` are aliases for `any-change` / `never`. The AWS CDK CLI's `broadening` is not available on `--fail-on` or `--require-approval`.
+
+`cdkd deploy --require-approval=destructive` (or `any-change`) makes the deploy itself ask after the diff and before changing the stack; it is also read from `"requireApproval"` in `cdk.json`, except that a `"broadening"` value there is ignored with a warning and nothing is asked. It asks only on a terminal: without one — an agent's non-interactive shell, or CI — that stack's deploy fails instead of asking. That failure is not "nothing changed" for the whole run: a nested stack is asked only when its parent's deploy reaches it, so the parent may already have changed and then rolls back (or keeps the changes under `--no-rollback`), and other stacks in the same run that do not depend on it still deploy. Treat the failure as the stop it is: check `cdkd state show` / `cdkd events` for what did change, report the destructive changes to the user, and do not add `--yes` (which approves without asking) unless the user approved that exact scope.
+
 ## Deploy and choose what "done" means
 
 For an ordinary development deployment:
@@ -139,7 +149,7 @@ AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd state show '<stack>' --stack-
 AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd events '<stack>' --stack-region '<region>'
 ```
 
-Also verify the stack outputs, the critical AWS resource state, and an application-level smoke test when applicable. Treat a non-zero exit as an unsuccessful command, but interpret it per command: exit `1` normally indicates failure, while `diff --fail` and `drift` also use it to report detected changes; exit `2` indicates partial failure for commands that support it. Inspect state and events, then follow the command-specific recovery guidance.
+Also verify the stack outputs, the critical AWS resource state, and an application-level smoke test when applicable. Treat a non-zero exit as an unsuccessful command, but interpret it per command: exit `1` normally indicates failure, while `diff --fail` / `diff --fail-on` and `drift` also use it to report detected changes; exit `2` indicates partial failure for commands that support it. Inspect state and events, then follow the command-specific recovery guidance.
 
 For an interrupted or failed deployment:
 
@@ -231,6 +241,7 @@ cdkd's main CI use case is per-PR preview environments: deploy on PR open/sync, 
 - One stack per PR: pass the PR number as CDK context (`-c prNumber=...`) and suffix the stack name in the app. State is keyed by (stack name, region) and locks are per-stack, so PR environments deploy concurrently.
 - Credentials: have the workflow's OIDC base role hold ONLY `sts:AssumeRole` on a dedicated deploy role, switch into it with `--role-arn` / `CDKD_ROLE_ARN`, and pin the deploy role's trust policy to that base role. The deploy role needs direct permissions for every deployed resource — CDK's `cdk-hnb659fds-*` roles do not work with cdkd. Run `cdkd bootstrap` once per account beforehand.
 - Non-interactive exception: in a CI workflow, `--yes` on `deploy` / `destroy` / `state destroy` is the sanctioned confirmation mechanism — the approval happened when a human reviewed the workflow. The interactive-confirmation rules above still apply whenever a human is driving the session.
+- Gate a pull request on resource loss with `cdkd diff '<stack>' --fail-on=destructive`: beyond the command failing or a deploy-would-refuse exit `3`, it fails the job only when a change would replace, delete, or orphan an existing resource. `--require-approval` cannot ask without a terminal, so in CI it fails the deploy rather than pausing it; use the diff gate for review and keep `--yes` as the approval.
 - Destroy on PR close with `cdkd state destroy '<stack>' --yes`: it works from the state record alone (no checkout, `npm ci`, or synth — works even after the branch is deleted). When the environment contains protection-enabled resources (RDS / DynamoDB deletion protection, EC2 termination protection, and more), add `--remove-protection` so the teardown completes in one pass — appropriate for ephemeral PR environments; do not default it for long-lived stacks.
 - Resources with `DeletionPolicy: Snapshot` leave a final snapshot behind on every close by default, and so does an RDS DB cluster or standalone DB instance that declares NO `DeletionPolicy` (CloudFormation's default for them is `Snapshot`); add `--skip-final-snapshot` ONLY when the user confirms the environment's data is disposable (it is an explicit data-loss opt-out). To leave an object listing of the state bucket empty, `cdkd destroy --purge-events` also deletes the event history (after a `state destroy`, use `cdkd events prune '<stack>' --all`); on the versioned state bucket both also purge every earlier version under the stack's `deployments/` prefix, including history an earlier delete left behind a delete marker, unless a warning says otherwise.
 - A cancelled mid-deploy job can leave a stack lock; it expires after its TTL (30 minutes), or clear it with `cdkd force-unlock '<stack>'`.
@@ -270,8 +281,10 @@ Use the same verified profile, region, state bucket, and binary form throughout 
 cdkd bootstrap
 cdkd synth
 cdkd diff '<stack>'
+cdkd diff '<stack>' --fail-on=destructive
 cdkd deploy '<stack>' --dry-run
 cdkd deploy '<stack>'
+cdkd deploy '<stack>' --require-approval=destructive   # terminal only; fails without one
 cdkd deploy '<stack>' --full-wait
 cdkd state info
 cdkd state show '<stack>' --stack-region '<region>'
