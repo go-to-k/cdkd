@@ -203,7 +203,9 @@ export class SnsSqsEventStack extends cdk.Stack {
             // document is written to every topic in Topics.
             new iam.PolicyStatement({
               sid: 'CdkdIssue4610',
-              actions: ['sns:Publish'],
+              // The removal phase also changes the document, so verify.sh can
+              // see that the update re-wrote the KEPT topic.
+              actions: removal ? ['sns:Publish', 'sns:GetTopicAttributes'] : ['sns:Publish'],
               principals: [new iam.ServicePrincipal('events.amazonaws.com')],
               resources: ['*'],
             }),

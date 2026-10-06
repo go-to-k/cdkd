@@ -461,6 +461,23 @@ echo "    OK: http/s feedback attrs reset on removal (RoleArns cleared, rate 0)"
 # Pre-fix update() wrote the new list and never touched the topic it dropped,
 # so topic B kept granting events.amazonaws.com sns:Publish.
 assert_policy_present "${POLICY_TOPIC_A_ARN}" "after narrowing Topics to the first topic (the kept topic)"
+# The narrowed TopicPolicy also adds sns:GetTopicAttributes, so the kept
+# topic must carry the Phase 2 statement, not a stale Phase 1 one.
+_a_policy=""
+_a_shape=""
+for _i in 1 2 3 4 5 6; do
+  _a_policy=$(aws sns get-topic-attributes --topic-arn "${POLICY_TOPIC_A_ARN}" --region "${REGION}" \
+    --query 'Attributes.Policy' --output text) || _a_policy=""
+  _a_shape=$(printf '%s' "${_a_policy}" | jq -r --arg sid "${POLICY_SID}" \
+    '[.Statement[] | select(.Sid == $sid) | (.Action | if type == "array" then .[] else . end) | ascii_downcase] | index("sns:gettopicattributes") != null' 2>/dev/null) || _a_shape=""
+  [ "${_a_shape}" = "true" ] && break
+  sleep 5
+done
+if [ "${_a_shape}" != "true" ]; then
+  echo "FAIL: after narrowing Topics, ${POLICY_TOPIC_A_ARN}'s ${POLICY_SID} statement lacks sns:GetTopicAttributes: the update did not re-write the kept topic" >&2
+  echo "      policy: ${_a_policy}" >&2
+  exit 1
+fi
 assert_policy_reset "${POLICY_TOPIC_B_ARN}" "after narrowing Topics to the first topic" "${POLICY_B_BASELINE}"
 echo "    OK: the dropped topic is back on SNS's default policy; the kept one still carries the statement"
 
