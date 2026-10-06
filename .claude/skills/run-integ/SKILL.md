@@ -113,11 +113,12 @@ verify, clean up.
 
    **Never run it unwatched, and do not reach for `timeout`** — it is not in
    stock macOS (its absence is exit 127 in 0s, which reads as instant
-   completion). Shell watchdog, firing made visible:
+   completion). Shell watchdog, firing made visible. A SET runs this whole block
+   per fixture, in a background subshell `cd`'d into it (own `LOG`, `T`, `VPID`);
+   stop one with `kill -9 -- -<its VPID>` (the gate refuses `pkill -f`):
 
    ```bash
-   LOG=$(mktemp)   # assign HERE: a separate block is a separate shell, and
-                   # `> ""` is a loud failure that costs you the whole run
+   LOG=$(mktemp)   # assign HERE: a separate block is a separate shell
    # Budget: 2x the last PASS's duration, floor 1500s. A FAIL row times the
    # failure, not a pass: walk the ledger's history back to a numeric PASS.
    L=../../../docs/_generated/integ-last-run.tsv; T="<test-name>"
@@ -140,11 +141,11 @@ verify, clean up.
    wait "$VPID"; RC=$?
    wait "$WPID"   # at most 5s more
    grep -c WATCHDOG_FIRED "$LOG" || echo "watchdog did not fire"
-   echo "verify.sh rc=$RC"   # the verdict steps 6-11 read; nothing else carries it out
+   echo "verify.sh rc=$RC"   # the verdict steps 6-11 read
    ```
 
-   The `grep` and the `rc` line are load-bearing (`kill -9` surfaces as rc=137,
-   otherwise just a crash). **Steps 6-11 are LATER calls that read this output**
+   The `grep` and `rc` lines are load-bearing (a FIRE is rc=137, else a
+   crash). **Steps 6-11 are LATER calls that read this output**
    — a marker or a `PASS` ledger row chained into this same call is written
    before any verdict exists.
 
