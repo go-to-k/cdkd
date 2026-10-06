@@ -240,6 +240,30 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     expect(providerLine).toBe('Creating role ***');
   });
 
+  it('UPDATE: a rename onto a name resolved this deploy is masked while the provider applies it', async () => {
+    // The OLD record's name is ordinary, so only the post-resolution
+    // registration knows the new one is secret-derived.
+    const secret = 'alice@example.com';
+    const template = primeRoleUpdate('old-plain-role');
+    resolveSpy.mockImplementation((value: unknown, ctx: { recordedSecretValues?: Map<string, string> }) => {
+      if (value && typeof value === 'object' && 'RoleName' in (value as object)) {
+        ctx.recordedSecretValues?.set(secret, REF);
+        return Promise.resolve({ ...(value as object), RoleName: secret });
+      }
+      return Promise.resolve(value);
+    });
+    let providerLine: string | undefined;
+    provider.update!.mockImplementation(() => {
+      providerLine = currentLogLineMasker()?.('Renaming role to alice-example-com');
+      return Promise.resolve({ physicalId: ROLE_ID });
+    });
+
+    await makeEngine().deploy(stackName, template);
+
+    expect(provider.update).toHaveBeenCalledTimes(1);
+    expect(providerLine).toBe('Renaming role to ***');
+  });
+
   it("a replacement's `Deleting old <id>` line withholds the old id", async () => {
     const template = primeRoleUpdate(REF);
     const change = (
@@ -332,15 +356,43 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
   });
 
   it.each([
-    ['AWS::CloudFormation::Stack', true],
-    ['AWS::IAM::Role', false],
-  ])('a %s row resolves with a print-only bag: %s', async (type, printOnly) => {
+    ['AWS::CloudFormation::Stack', 'CREATE', true],
+    ['AWS::CloudFormation::Stack', 'UPDATE', true],
+    ['AWS::IAM::Role', 'CREATE', false],
+    ['AWS::IAM::Role', 'UPDATE', false],
+  ] as const)('a %s %s row resolves with a print-only bag: %s', async (type, changeType, printOnly) => {
     // A nested-stack row's own bag is its child's `inheritedSecrets`, so a
     // read of a secret-named resource must not record into it.
-    stateBackend.getState!.mockResolvedValue({ state: null, etag: undefined });
+    stateBackend.getState!.mockResolvedValue(
+      changeType === 'CREATE'
+        ? { state: null, etag: undefined }
+        : {
+            state: {
+              version: 8,
+              stackName,
+              region: 'us-east-1',
+              resources: { Role: { physicalId: 'phys-1', resourceType: type, properties: { A: 'a' } } },
+              outputs: {},
+              lastModified: 1,
+            },
+            etag: 'etag-old',
+          }
+    );
     diffCalculator.calculateDiff!.mockResolvedValue(
       new Map<string, ResourceChange>([
-        ['Role', { logicalId: 'Role', changeType: 'CREATE', resourceType: type, desiredProperties: { A: 'b' } }],
+        [
+          'Role',
+          {
+            logicalId: 'Role',
+            changeType,
+            resourceType: type,
+            desiredProperties: { A: 'b' },
+            ...(changeType === 'UPDATE' && {
+              currentProperties: { A: 'a' },
+              propertyChanges: [{ path: 'A', oldValue: 'a', newValue: 'b', requiresReplacement: false }],
+            }),
+          },
+        ],
       ])
     );
     const contexts: Array<Record<string, unknown>> = [];
