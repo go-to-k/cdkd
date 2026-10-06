@@ -454,6 +454,8 @@ export interface DeploymentApprovalRequest {
   counts: { create: number; update: number; delete: number };
   /** The changes that replace, delete or orphan a resource; non-empty under `destructive`. */
   destructiveChanges: DestructiveChange[];
+  /** The stack's Outputs (or its export set) change with no resource change. */
+  outputsOnly?: true;
 }
 
 /**

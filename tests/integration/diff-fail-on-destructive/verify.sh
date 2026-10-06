@@ -154,8 +154,9 @@ CDKD_TEST_UPDATE=destructive run_cdkd diff "${STACK}" --fail-on=destructive
 expect_rc 1 "diff --fail-on=destructive over a replacement + orphaning"
 expect_log "Found 2 destructive change(s) (--fail-on=destructive):"
 expect_log "${STACK}: AWS::SSM::Parameter Renamed Renamed9CF9602B will be replaced"
-# A removal has no construct path: the template no longer declares it.
-expect_log "${STACK}: AWS::SSM::Parameter Kept118DB03B will be orphaned"
+# The template no longer declares it: the path comes from the state record
+# the baseline deploy stamped (#4607).
+expect_log "${STACK}: AWS::SSM::Parameter Kept Kept118DB03B will be orphaned"
 # stdout alone is the --json payload; the error block goes to stderr.
 RC=0
 CDKD_TEST_UPDATE=destructive node "${LOCAL_DIST}" diff "${STACK}" --fail-on=destructive --json \

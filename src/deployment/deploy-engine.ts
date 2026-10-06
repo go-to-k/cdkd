@@ -41,6 +41,7 @@ import type { LockManager } from '../state/lock-manager.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
+import { constructPathOf, withConstructPath } from '../analyzer/destructive-changes.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { injectiveKey } from '../state/record-keys.js';
 import {
@@ -613,6 +614,13 @@ export class DeployEngine {
   /** @internal */
   skippedOutputs: Record<string, string> | undefined;
   /**
+   * The condition-pruned template of the deploy in progress, read by
+   * `redactStateForPersist` to stamp each record's `constructPath` on every
+   * save. `undefined` until the template is pruned; reset per deploy.
+   */
+  /** @internal */
+  constructPathTemplate: CloudFormationTemplate | undefined;
+  /**
    * Whether {@link outputsTemplateSource} may be used to POSITION the outputs
    * redaction. False once an outputs pass threw partway: the post-loop
    * name pass never ran, so the bag holds only the alias keys written before
@@ -828,6 +836,7 @@ export class DeployEngine {
     this.perResourceSecrets = new Map();
     this.noEchoAttributeResources = new Map();
     this.perResourceTemplateProps = new Map();
+    this.constructPathTemplate = undefined;
     // Reset with its siblings (issue #2934). Inert today — a stale TRUE pairs
     // with cleared needle maps and reduces to the identity fallback — but this
     // map's whole job is to answer "do those needles describe THIS record",
@@ -928,13 +937,16 @@ export class DeployEngine {
       // record this deploy wrote; a failed update keeps the previous bag and
       // its previous fingerprints. This resource's needles refuse a hash to a
       // template value that holds one as a literal.
-      resources[logicalId] = withMaskedPropertyFingerprints(
-        scrubbed,
-        record.properties,
-        templateProps,
-        secrets,
-        this.fingerprintNoEchoValues,
-        this.perResourceInputFingerprints.get(logicalId)
+      resources[logicalId] = withConstructPath(
+        withMaskedPropertyFingerprints(
+          scrubbed,
+          record.properties,
+          templateProps,
+          secrets,
+          this.fingerprintNoEchoValues,
+          this.perResourceInputFingerprints.get(logicalId)
+        ),
+        constructPathOf(this.constructPathTemplate, logicalId)
       );
     }
     // `outputs` is also secret-bearing: a `CfnOutput` whose Value resolves a

@@ -710,11 +710,13 @@ $ cdkd diff --fail-on=destructive MyStack
 ...
 ❌  Found 2 destructive change(s) (--fail-on=destructive):
   MyStack: AWS::S3::Bucket Bucket MyBucketF68F3FF0 will be replaced
-  MyStack: AWS::DynamoDB::Table MyTable794EDED1 will be orphaned
+  MyStack: AWS::DynamoDB::Table Table MyTable794EDED1 will be orphaned
 ```
 
-A removed resource is listed without its construct path: the template no
-longer declares it, and cdkd's state does not record the path.
+A removed resource is listed with the construct path its last deploy
+recorded in cdkd state. A stack last saved by a cdkd release that did not
+record paths lists such a resource by logical ID only, until its next deploy
+that writes state (a no-change deploy writes none).
 
 | Impact | When |
 | --- | --- |

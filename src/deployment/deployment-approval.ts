@@ -98,3 +98,41 @@ function approvalAfterTimeout(stackName: string): Error {
     )
   );
 }
+
+/**
+ * `--require-approval=any-change` for a deploy with no resource change whose
+ * Outputs (or export set) still change — the AWS CDK CLI asks for any change,
+ * and a changed `Export` reaches every stack importing it. Asked before the
+ * no-change path persists the outputs. `destructive` never asks here: no
+ * resource is touched.
+ */
+export async function requireOutputsOnlyApproval(args: {
+  options: Pick<DeployEngineOptions, 'requireApproval' | 'approveDeployment'>;
+  stackName: string;
+}): Promise<void> {
+  const approve = args.options.approveDeployment;
+  if (args.options.requireApproval !== 'any-change' || approve === undefined) return;
+  if (enclosingDeadlineExpired()) throw approvalAfterTimeout(args.stackName);
+  let approved: boolean;
+  try {
+    approved = await whileEnclosingDeadlinesPaused(() =>
+      approve({
+        stackName: args.stackName,
+        level: 'any-change',
+        counts: { create: 0, update: 0, delete: 0 },
+        destructiveChanges: [],
+        outputsOnly: true,
+      })
+    );
+  } catch (error) {
+    throw error instanceof Error ? markNonRetryable(error) : error;
+  }
+  if (!approved) {
+    throw markNonRetryable(
+      new CdkdError(
+        safeMsg`Deployment of stack ${args.stackName} was not approved (--require-approval=any-change). Nothing was changed.`,
+        'DEPLOY_NOT_APPROVED'
+      )
+    );
+  }
+}

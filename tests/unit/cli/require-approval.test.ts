@@ -116,4 +116,16 @@ describe('renderApprovalRequest', () => {
     expect(text).not.toContain('Destructive changes:');
     expect(text).toContain(`"--require-approval" is set to 'any-change'.`);
   });
+
+  it('says an Outputs-only change has no resource changes', () => {
+    const text = renderApprovalRequest({
+      ...request('S'),
+      level: 'any-change',
+      destructiveChanges: [],
+      counts: { create: 0, update: 0, delete: 0 },
+      outputsOnly: true,
+    });
+    expect(text).toContain('Stack S: no resource changes; its Outputs change.');
+    expect(text).not.toContain('to create');
+  });
 });

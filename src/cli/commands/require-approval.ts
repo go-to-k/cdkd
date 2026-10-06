@@ -99,7 +99,9 @@ export function renderApprovalRequest(request: DeploymentApprovalRequest): strin
   }
   const { create, update, delete: del } = request.counts;
   lines.push(
-    `Stack ${displayIdent(request.stackName)}: ${create} to create, ${update} to update, ${del} to delete.`
+    request.outputsOnly
+      ? `Stack ${displayIdent(request.stackName)}: no resource changes; its Outputs change.`
+      : `Stack ${displayIdent(request.stackName)}: ${create} to create, ${update} to update, ${del} to delete.`
   );
   lines.push(
     request.level === 'destructive'
