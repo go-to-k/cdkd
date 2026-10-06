@@ -69,9 +69,11 @@
 #         `-a`, and the journal carries `-b` as a proven orphan naming `-a` as
 #         the replaced record.
 #     P2. `cdkd rollback --force --revert-failed`: exit 0, `-b` gone, `-a`
-#         intact and still in state, journal gone.
+#         ACTIVE and still in state (the failed UPDATE is a no-op, never a
+#         force-revert of `-a`), journal gone.
 #     P3. The same deploy with the automatic rollback: `-b` deleted, `-a`
-#         intact and still in state; the journal keeps only the failed UPDATE.
+#         ACTIVE and still in state, journal gone (the failed UPDATE settles
+#         with its orphan: the old stream was never written to).
 #     P4. A plain deploy without WITH_REPLACE_STREAM removes `-a`; journal gone.
 #   PHASE S (a SKIPPED rollback op on the automatic path, go-to-k/cdkd#3338):
 #     S1. Deploy with WITH_SKIP_PAIR=true (clean): SkipBucket + SkipDoomed.
@@ -1074,7 +1076,9 @@ assert_replacement_orphan_journaled() { # usage: assert_replacement_orphan_journ
   if [ -z "${op}" ] \
     || [ "$(printf '%s' "${op}" | jq -r '.physicalId // "<absent>"')" != "${REPLACE_STREAM_B_NAME}" ] \
     || [ "$(printf '%s' "${op}" | jq -r '.physicalIdRecoveredFromError // "<absent>"')" != "true" ] \
-    || [ "$(printf '%s' "${op}" | jq -r '.replacedPhysicalId // "<absent>"')" != "${REPLACE_STREAM_A_NAME}" ]; then
+    || [ "$(printf '%s' "${op}" | jq -r '.replacedPhysicalId // "<absent>"')" != "${REPLACE_STREAM_A_NAME}" ] \
+    || [ "$(printf '%s' "${op}" | jq -r '.replacedResourceType // "<absent>"')" != "AWS::Kinesis::Stream" ] \
+    || [ "$(printf '%s' "${op}" | jq -r '.deletionPolicy // "<absent>"')" != "Delete" ]; then
     echo "[verify] FAIL: the journal does not carry the replacement's new stream as a proven orphan ${when} (op: ${op:-<none>})"
     echo "         (before go-to-k/cdkd#4604 only the UPDATE naming ${REPLACE_STREAM_A_NAME} was journaled)"
     exit 1
@@ -1085,12 +1089,17 @@ assert_replacement_orphan_journaled() { # usage: assert_replacement_orphan_journ
 # The verdict after each rollback arm: `-b` gone, `-a` live and still in state,
 # journal gone.
 assert_replacement_rolled_back() { # usage: assert_replacement_rolled_back "<arm>"
-  local arm="$1" pid
+  local arm="$1" pid status
   wait_orphan_stream_gone "${REPLACE_STREAM_B_NAME}"
   assert_gone "${REPLACE_STREAM_B_NAME} still exists after ${arm}" \
     aws kinesis describe-stream-summary --stream-name "${REPLACE_STREAM_B_NAME}" --region "${REGION}"
-  if ! aws kinesis describe-stream-summary --stream-name "${REPLACE_STREAM_A_NAME}" --region "${REGION}" >/dev/null; then
+  if ! status="$(aws kinesis describe-stream-summary --stream-name "${REPLACE_STREAM_A_NAME}" --region "${REGION}" \
+    --query 'StreamDescriptionSummary.StreamStatus' --output text)"; then
     echo "[verify] FAIL: the replaced ${REPLACE_STREAM_A_NAME} is gone after ${arm}"
+    exit 1
+  fi
+  if [ "${status}" != "ACTIVE" ]; then
+    echo "[verify] FAIL: the replaced ${REPLACE_STREAM_A_NAME} is ${status} after ${arm} (expected ACTIVE)"
     exit 1
   fi
   pid="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.ReplaceStream.physicalId // "<absent>"')"
@@ -1098,18 +1107,10 @@ assert_replacement_rolled_back() { # usage: assert_replacement_rolled_back "<arm
     echo "[verify] FAIL: state records ReplaceStream as ${pid} after ${arm} (expected ${REPLACE_STREAM_A_NAME})"
     exit 1
   fi
-  if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
-    return 0
-  fi
-  # The automatic rollback keeps the failed UPDATE for --revert-failed; the
-  # orphan entry it settled must be gone from it.
-  if [ "${arm}" != "the automatic rollback" ]; then
+  # The failed UPDATE settles with its orphan (the old stream was never
+  # written to), so nothing is kept for --revert-failed either.
+  if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
     echo "[verify] FAIL: rollback journal still present after ${arm}"
-    exit 1
-  fi
-  if [ "$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - \
-    | jq '[.segments[].failedOperations[]? | select(.logicalId == "ReplaceStream" and .changeType == "CREATE")] | length')" != "0" ]; then
-    echo "[verify] FAIL: the journal still records the deleted ${REPLACE_STREAM_B_NAME} after ${arm}"
     exit 1
   fi
 }

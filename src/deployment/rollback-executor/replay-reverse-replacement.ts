@@ -11,9 +11,8 @@ import {
 } from '../../provisioning/final-snapshot.js';
 import { createdBeforeFailure } from '../../provisioning/auxiliary-failure.js';
 import { deleteSkipReason } from '../delete-outcome.js';
-import { safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import {
   maskSecretsInError,
   recordNestedStackParameterExpressions,

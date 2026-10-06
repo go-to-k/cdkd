@@ -36,6 +36,13 @@ import type { SettledNestedRows } from '../nested-child-journal.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
 import { isRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import { createdBeforeFailure } from '../../provisioning/auxiliary-failure.js';
+
+/** go-to-k/cdkd#4604: types whose replacement's new resource is never journaled (see execute). */
+const NO_REPLACEMENT_ORPHAN_TYPES: ReadonlySet<string> = new Set([
+  'AWS::CloudFormation::Stack',
+  'AWS::SQS::QueuePolicy',
+  'AWS::SNS::TopicPolicy',
+]);
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 
 declare module '../deploy-engine.js' {
@@ -363,12 +370,16 @@ export async function executeDeployment(
           // so the classifier does not read that record as a later owner.
           // Not on a nested-stack row: a grandchild stack sharing its logical
           // id and type marks its own create, which its own journal records,
-          // and this row's replacement keeps its physical id.
+          // and this row's replacement keeps its physical id. Not on a policy
+          // attachment whose id is its comma-joined targets: a new id can
+          // share targets with the replaced record, so deleting it would clear
+          // the old one's (neither type is replaced today).
           const heldRecord = newResources[logicalId] ?? previousState;
           const replaced =
             change.changeType === 'UPDATE' &&
-            change.resourceType !== 'AWS::CloudFormation::Stack' &&
+            !NO_REPLACEMENT_ORPHAN_TYPES.has(change.resourceType) &&
             statePhysicalId !== undefined &&
+            statePhysicalId !== '' &&
             // False only for a running record with no physical id, where
             // `statePhysicalId` fell back to the pre-deploy record's: no single
             // record is then the one being replaced.

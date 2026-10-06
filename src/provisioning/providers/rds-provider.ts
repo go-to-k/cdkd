@@ -770,7 +770,7 @@ export class RDSProvider implements ResourceProvider {
             ? aws`aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; `
             : aws``;
           this.logger.warn(
-            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${describeAwsFailure(cleanupError).detail}. THE CLUSTER IS STILL RUNNING AND BILLING. In a deploy, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
+            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${describeAwsFailure(cleanupError).detail}. THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
           );
         }
         throw innerError;

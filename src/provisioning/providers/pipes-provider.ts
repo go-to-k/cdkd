@@ -966,7 +966,7 @@ export class PipesPipeProvider implements ResourceProvider {
       const region = await orphanCommandRegionArg(this.getClient(), aws);
       const command = aws`aws pipes delete-pipe --name ${name}${region}`;
       original.message +=
-        ` (cdkd could not delete the pipe it had created: ${why}; in a deploy, the failed deploy's rollback ` +
+        ` (cdkd could not delete the pipe it had created: ${why}; outside a rollback's re-create, the failed deploy's rollback ` +
         `journal records it for \`cdkd rollback --revert-failed\`. ` +
         (command.text !== undefined
           ? `Otherwise delete it yourself with: ${command.text})`

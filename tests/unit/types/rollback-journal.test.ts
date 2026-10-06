@@ -431,6 +431,12 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     expect(messageOf(journalWith([], [{ ...orphan, replacedPhysicalId: 7 }]))).toContain(
       'replacedPhysicalId must be a non-empty string beside replacedResourceType (got number).'
     );
+    expect(messageOf(journalWith([], [{ ...orphan, replacedPhysicalId: '' }]))).toContain(
+      'replacedPhysicalId must be a non-empty string beside replacedResourceType (got string).'
+    );
+    expect(messageOf(journalWith([], [{ ...orphan, replacedResourceType: '' }]))).toContain(
+      'replacedResourceType must be a non-empty string beside replacedPhysicalId (got string).'
+    );
     expect(messageOf(journalWith([], [{ ...orphan, replacedResourceType: undefined }]))).toContain(
       'replacedResourceType must be a non-empty string beside replacedPhysicalId (got undefined).'
     );

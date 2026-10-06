@@ -144,11 +144,13 @@ export class RollbackCommandStack extends cdk.Stack {
       // `IncreaseStreamRetentionPeriod` rejects after `CreateStream` returned.
       // The journal must carry the new stream so every rollback path deletes
       // it while the old stream, still in state, stays intact.
-      new kinesis.CfnStream(this, 'ReplaceStream', {
+      const replaceStream = new kinesis.CfnStream(this, 'ReplaceStream', {
         name: `${this.stackName}-replace-stream-${process.env.REPLACE_STREAM_SUFFIX ?? 'a'}`,
         shardCount: 1,
         retentionPeriodHours: process.env.REPLACE_STREAM_FAIL === 'true' ? 9000 : 24,
       });
+      // An explicit `DeletionPolicy: Delete`, which the journal must carry.
+      replaceStream.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     }
 
     if (process.env.WITH_SKIP_PAIR === 'true') {

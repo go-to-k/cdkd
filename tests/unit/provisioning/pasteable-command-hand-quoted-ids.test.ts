@@ -215,7 +215,7 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
       expect(warnings()).toContain('`cdkd rollback --revert-failed`; otherwise delete it yourself');
       // go-to-k/cdkd#4604: a deploy journals the id (a first-time CREATE and a
       // replacement alike); a rollback's re-create does not.
-      expect(warnings()).toContain("In a deploy, the failed deploy's rollback journal");
+      expect(warnings()).toContain("Outside a rollback's re-create, the failed deploy's rollback journal");
     });
 
     it('SUPPRESSES the command for a name the MASKER would change', async () => {

@@ -61,8 +61,9 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
   retention follow-up fails → assert both streams exist, state still records
   `-a`, and the journal carries `-b` as a proven orphan naming `-a` as the
   replaced record → `cdkd rollback --force --revert-failed` deletes `-b` and
-  leaves `-a` intact in state; the same deploy with the automatic rollback
-  does too. A plain deploy then removes `-a`.
+  leaves `-a` ACTIVE and in state, settling the failed UPDATE as a no-op (the
+  old stream was never written to), so the journal is gone; the same deploy
+  with the automatic rollback does too. A plain deploy then removes `-a`.
 - **Phase S (a skipped op on the automatic path, issue
   [#3338](https://github.com/go-to-k/cdkd/issues/3338))**: deploy with
   `WITH_SKIP_PAIR=true` (a `SkipBucket` holding one object, no

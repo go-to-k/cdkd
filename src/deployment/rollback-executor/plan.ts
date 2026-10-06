@@ -338,7 +338,9 @@ export function classifyRollbackOp(
  */
 export function classifyFailedOp(
   op: FailedOperation,
-  stateResources: Record<string, ResourceState>
+  stateResources: Record<string, ResourceState>,
+  /** The segment's other failed ops (go-to-k/cdkd#4604's replacement orphan). */
+  siblings: readonly FailedOperation[] = []
 ): FailedOpActionKind {
   if (op.changeType === 'DELETE') {
     // The delete FAILED, so the resource is still in place and state still
@@ -412,6 +414,15 @@ export function classifyFailedOp(
   }
   // UPDATE
   if (!current || !op.previousState) return 'skip-failed-absent';
+  // go-to-k/cdkd#4604: a replacement whose create made its new resource and
+  // failed. The new resource is the sibling orphan entry's, and the record
+  // the UPDATE names is still the old one, which the replacement never wrote
+  // to (create-first left it alone; delete-first removed it). Force-applying
+  // the previous properties over it would send AWS the revert of a change it
+  // never received.
+  if (current.physicalId === op.physicalId && replacementNeverSwapped(op, siblings)) {
+    return 'skip-failed-noop';
+  }
   // Issue #2668: a failed Type change was a REPLACEMENT in flight, and the
   // force-revert below is an in-place `update()` routed on `op.resourceType` —
   // the NEW type — against the OLD resource's physical id. There is no in-place
@@ -453,6 +464,25 @@ export function failedOpOwnRecord(
   stateResources: Record<string, ResourceState>
 ): ResourceState | undefined {
   return isReplacementOrphan(op) ? undefined : stateResources[op.logicalId];
+}
+
+/**
+ * Whether `siblings` hold the replacement orphan the failed UPDATE `op` left
+ * (go-to-k/cdkd#4604): same logical id, naming `op`'s physical id as the
+ * record it was replacing. Demoted or not, it proves the replacement's create
+ * ran and the record was never swapped to a new resource.
+ */
+export function replacementNeverSwapped(
+  op: FailedOperation,
+  siblings: readonly FailedOperation[]
+): boolean {
+  return siblings.some(
+    (s) =>
+      s !== op &&
+      isReplacementOrphan(s) &&
+      s.logicalId === op.logicalId &&
+      s.replacedPhysicalId === op.physicalId
+  );
 }
 
 /** Whether any state record of `resourceType` holds `physicalId`. */
@@ -567,7 +597,7 @@ export function planFailedOps(
 ): FailedOpPlanItem[] {
   return failedOps.map((op) => ({
     op,
-    action: classifyFailedOp(op, stateResources),
+    action: classifyFailedOp(op, stateResources, failedOps),
     effectiveProvisionedBy: effectiveProvisionedBy(
       failedOpOwnRecord(op, stateResources),
       op.provisionedBy

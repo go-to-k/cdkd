@@ -1244,7 +1244,13 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
 
     function replacingEngine(
       failure: Error,
-      opts: { noRollback?: boolean; type?: string; inPlace?: boolean; prevType?: string } = {}
+      opts: {
+        noRollback?: boolean;
+        type?: string;
+        inPlace?: boolean;
+        prevType?: string;
+        prevPhysicalId?: string;
+      } = {}
     ) {
       const type = opts.type ?? 'AWS::SQS::Queue';
       const change = {
@@ -1261,7 +1267,12 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         deps: { B: [] },
         noRollback: opts.noRollback ?? true,
         currentEtag: 'e0',
-        currentResources: { B: prevB(opts.prevType ?? type) },
+        currentResources: {
+          B: {
+            ...prevB(opts.prevType ?? type),
+            ...(opts.prevPhysicalId !== undefined && { physicalId: opts.prevPhysicalId }),
+          },
+        },
       });
       const internals = engine as unknown as {
         stateBackend: { saveState: ReturnType<typeof vi.fn> };
@@ -1343,6 +1354,29 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(ops.map((o) => o['changeType'])).toEqual(['UPDATE']);
     });
 
+    // A policy attachment's id is its comma-joined targets, which a new id
+    // can share with the replaced record's.
+    it('journals nothing beside a QueuePolicy or TopicPolicy replacement', async () => {
+      for (const type of ['AWS::SQS::QueuePolicy', 'AWS::SNS::TopicPolicy']) {
+        const ops = await failedOpsOf(markCreatedBeforeFailure(new Error('x'), 'B', type, 'q2'), { type });
+        expect(ops.map((o) => o['changeType']), type).toEqual(['UPDATE']);
+      }
+    });
+
+    // A record with an empty id names no resource; a replacedPhysicalId of ''
+    // would also make the journal unreadable.
+    it('journals nothing beside a replaced record with an empty physical id', async () => {
+      const { engine } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new'),
+        { prevPhysicalId: '' }
+      );
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      const ops = (journal.appendRollbackJournalSegment.mock.calls[0]?.[2].failedOperations ?? []) as Array<
+        Record<string, unknown>
+      >;
+      expect(ops.some((o) => o['changeType'] === 'CREATE')).toBe(false);
+    });
+
     // A grandchild stack can share a nested-stack row's logical id and type;
     // its mark rides the child deploy's failure out of the row's `update()`,
     // and is its own journal's, never this row's.
@@ -1369,6 +1403,12 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(deleted).toEqual(['b-new']);
       const saved = saveState.mock.calls.at(-1)![2] as StackState;
       expect(saved.resources['B']?.physicalId).toBe('b-old');
+      // The failed UPDATE settles with its orphan: no failed-only segment is
+      // kept for a later `--revert-failed` to force-revert the old resource.
+      expect(journal.appendRollbackJournalSegment.mock.calls.map((c) => c[2].reason)).toEqual([
+        'auto-rollback-started',
+      ]);
+      expect(journal.popRollbackJournalSegment).toHaveBeenCalled();
     });
   });
 

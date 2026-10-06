@@ -144,6 +144,7 @@ export {
   isJournaledOrphan,
   isReplacedRecord,
   isReplacementOrphan,
+  replacementNeverSwapped,
   planFailedOps,
   planRollback,
   sortRollbackCreates,
@@ -597,7 +598,7 @@ async function replayFailedOperationsUnbound(
       break;
     }
     const op = failedOps[i]!;
-    const action = classifyFailedOp(op, stateResources);
+    const action = classifyFailedOp(op, stateResources, failedOps);
     /**
      * This op's re-resolved secret bag — the twin of `replaySingle`'s, and
      * hoisted above this iteration's `try` for the same reason (issues #2038 /
@@ -1127,7 +1128,15 @@ async function replayFailedOperationsUnbound(
       action === 'skip-failed-noop' ||
         action === 'skip-failed-mismatch' ||
         action === 'skip-failed-superseded' ||
-        ownRecord(stateResources, op.logicalId) !== recordBefore
+        ownRecord(stateResources, op.logicalId) !== recordBefore ||
+        // go-to-k/cdkd#4604: a replacement orphan's arm acts on its resource
+        // and leaves the record under its id, the replaced one, as it found
+        // it: completed when it did not throw.
+        (isReplacementOrphan(op) &&
+          !pending.has(op) &&
+          (action === 'delete-failed-create' ||
+            action === 'delete-failed-create-with-final-snapshot' ||
+            action === 'orphan-failed-create-retain'))
     );
   }
   // go-to-k/cdkd#4408: no put-back here — the caller's `replayRollback` of

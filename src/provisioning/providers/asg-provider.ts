@@ -1101,7 +1101,7 @@ export class ASGProvider implements ResourceProvider {
         : `cdkd could not delete it`;
       return maskSecrets(
         `The group was created, and ${outcome} (` +
-          `${describeAwsFailure(cleanupError).detail}); in a deploy, the failed deploy's rollback journal records ` +
+          `${describeAwsFailure(cleanupError).detail}); outside a rollback's re-create, the failed deploy's rollback journal records ` +
           `it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ` +
           pasteableAwsCommand(
             maskSecrets

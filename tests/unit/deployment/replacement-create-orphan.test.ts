@@ -25,6 +25,7 @@ import {
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
 import { settleJournaledOrphansOnSuccess } from '../../../src/deployment/rollback-executor/journaled-orphans.js';
+import { RollbackInlinePolicyWriters } from '../../../src/deployment/inline-policy-claims.js';
 import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
@@ -273,20 +274,33 @@ describe('settleJournaledOrphansOnSuccess: a replacement orphan (go-to-k/cdkd#46
 
 describe('a rollback re-create that made its resource and failed (go-to-k/cdkd#4604)', () => {
   /** The replacement being reversed: stream-a was replaced by stream-b. */
-  const replacementOp = (prev: Partial<ResourceState> = {}): CompletedOperation => ({
+  const replacementOp = (
+    prev: Partial<ResourceState> = {},
+    type: string = TYPE
+  ): CompletedOperation => ({
     logicalId: 'S',
     changeType: 'UPDATE',
-    resourceType: TYPE,
+    resourceType: type,
     physicalId: 'stream-b',
     provisionedBy: 'sdk',
-    previousState: res({ provisionedBy: 'sdk', ...prev }),
+    previousState: res({ provisionedBy: 'sdk', resourceType: type, ...prev }),
     oldResourceRetained: false,
+    ...(prev.resourceType !== undefined &&
+      prev.resourceType !== type && { previousResourceType: prev.resourceType }),
   });
 
   function run(
     failure: Error,
-    opts: { prev?: Partial<ResourceState>; deleteFails?: boolean; deleteSkips?: boolean } = {}
+    opts: {
+      prev?: Partial<ResourceState>;
+      deleteFails?: boolean;
+      deleteSkips?: boolean;
+      /** The template's (new) type, the current record's too. */
+      type?: string;
+      extraState?: Record<string, ResourceState>;
+    } = {}
   ) {
+    const type = opts.type ?? TYPE;
     const create = vi.fn().mockRejectedValue(failure);
     const del = vi.fn(async (..._args: unknown[]) => {
       if (opts.deleteFails) throw new Error('AccessDenied');
@@ -295,12 +309,18 @@ describe('a rollback re-create that made its resource and failed (go-to-k/cdkd#4
     });
     const { ctx } = ctxWith({ create, delete: del });
     const state: Record<string, ResourceState> = {
-      S: res({ physicalId: 'stream-b', properties: { Name: 'stream-b' }, provisionedBy: 'sdk' }),
+      S: res({
+        physicalId: 'stream-b',
+        resourceType: type,
+        properties: { Name: 'stream-b' },
+        provisionedBy: 'sdk',
+      }),
+      ...opts.extraState,
     };
     return {
       del,
       state,
-      result: replayRollback([replacementOp(opts.prev)], state, 'Stack', ctx),
+      result: replayRollback([replacementOp(opts.prev, type)], state, 'Stack', ctx),
     };
   }
 
@@ -314,6 +334,40 @@ describe('a rollback re-create that made its resource and failed (go-to-k/cdkd#4
     expect(state['S']?.physicalId).toBe('stream-b');
     // The persisted bag, never the resolved one handed to the re-create.
     expect(del.mock.calls[0]![3]).toEqual({ Name: 'stream-a' });
+    expect(del.mock.calls[0]![2]).toBe(TYPE);
+    expect(del.mock.calls[0]![4]).toEqual({ expectedRegion: 'us-east-1', deletionPolicy: 'Delete' });
+  });
+
+  // Only a record of the made resource's own type holds it.
+  it('control: a record of another type under the made id does not block the delete', async () => {
+    const other = res({ physicalId: 'stream-a', resourceType: 'AWS::SQS::Queue' });
+    const { del, result } = run(madeA(), { extraState: { Q: other } });
+    await result;
+    expect(del.mock.calls.map((c) => c[1])).toEqual(['stream-a']);
+  });
+
+  // A Type change: the re-create made the OLD type, which the mark must name.
+  it('reads the mark by the old type across a Type change', async () => {
+    const OLD = 'AWS::SQS::Queue';
+    const prev = { resourceType: OLD };
+    const marked = run(markCreatedBeforeFailure(new Error('x'), 'S', OLD, 'stream-a'), { prev });
+    await marked.result;
+    expect(marked.del.mock.calls.map((c) => [c[1], c[2]])).toEqual([['stream-a', OLD]]);
+    const newType = run(markCreatedBeforeFailure(new Error('x'), 'S', TYPE, 'stream-a'), { prev });
+    await newType.result;
+    expect(newType.del).not.toHaveBeenCalled();
+  });
+
+  // CloudFormation's absent default for a standalone DB instance is Snapshot.
+  it('keeps an RDS instance whose old record declares no DeletionPolicy', async () => {
+    const RDS = 'AWS::RDS::DBInstance';
+    const { del, result } = run(markCreatedBeforeFailure(new Error('x'), 'S', RDS, 'db-a'), {
+      type: RDS,
+      prev: { physicalId: 'db-a', properties: {} },
+    });
+    await result;
+    expect(del).not.toHaveBeenCalled();
+    expect(warned()).toContain('DeletionPolicy: Snapshot');
   });
 
   it('keeps it, named, under the old record’s Retain', async () => {
@@ -496,5 +550,85 @@ describe('the in-place revert of an id-changing update (go-to-k/cdkd#4615)', () 
     expect(del).not.toHaveBeenCalled();
     expect(update.mock.calls[0]!.slice(0, 4)).toEqual(['P', 'q2', QP, { Queues: ['q1', 'q2', 'q3'] }]);
     expect(state['P']?.physicalId).toBe('q1');
+  });
+});
+
+describe('a settled replacement orphan settles its logical id for the inline-policy put-back (go-to-k/cdkd#4604)', () => {
+  const ROLE = 'AWS::IAM::Role';
+  const role: ResourceState = {
+    physicalId: 'role-a',
+    resourceType: ROLE,
+    properties: { Policies: [{ PolicyName: 'n', PolicyDocument: 'd' }] },
+    attributes: {},
+    dependencies: [],
+  };
+
+  it.each([
+    ['deleted', undefined],
+    ['kept under Retain', 'Retain'],
+  ] as const)('leaves the replaced record no unsettled holder once the orphan is %s', async (_l, policy) => {
+    const writers = new RollbackInlinePolicyWriters();
+    const { ctx } = ctxWith({ delete: vi.fn().mockResolvedValue(undefined) });
+    const state: Record<string, ResourceState> = { R: role };
+    const op = orphan({
+      logicalId: 'R',
+      resourceType: ROLE,
+      physicalId: 'role-b',
+      replacedPhysicalId: 'role-a',
+      replacedResourceType: ROLE,
+      ...(policy && { deletionPolicy: policy }),
+    });
+    await replayFailedOperations([op], state, 'Stack', ctx, { inlinePolicyWriters: writers });
+    // Another revert of this rollback removes `n` from role-a, which R holds.
+    writers.claimedFor('AWS::IAM::Policy', 'Remover', {})!('role', 'role-a', 'n');
+    const [held] = writers.takeHeldRemovals(state);
+    expect(held?.holders.map((h) => h.logicalId)).toEqual(['R']);
+    expect(held?.unsettled).toEqual([]);
+  });
+});
+
+describe('a failed replacement UPDATE beside its orphan (go-to-k/cdkd#4604)', () => {
+  const update = (): FailedOperation => ({
+    logicalId: 'S',
+    changeType: 'UPDATE',
+    resourceType: TYPE,
+    provisionedBy: 'sdk',
+    physicalId: 'stream-a',
+    previousState: res(),
+    attemptedProperties: { Name: 'stream-b', RetentionPeriodHours: 9000 },
+  });
+
+  it('settles as a no-op, never a force-revert of the old resource', () => {
+    expect(classifyFailedOp(update(), { S: res() }, [update(), orphan()])).toBe('skip-failed-noop');
+    // Demoted, the orphan still proves the replacement never swapped.
+    expect(
+      classifyFailedOp(update(), { S: res() }, [orphan({ physicalIdRecoveredFromError: false })])
+    ).toBe('skip-failed-noop');
+  });
+
+  it('control: without the orphan, or once the record moved, it is reverted as before', () => {
+    expect(classifyFailedOp(update(), { S: res() }, [])).toBe('revert-failed-update');
+    expect(classifyFailedOp(update(), { S: res() }, [orphan({ replacedPhysicalId: 'other' })])).toBe(
+      'revert-failed-update'
+    );
+    expect(classifyFailedOp(update(), { S: res({ physicalId: 'stream-c' }) }, [orphan()])).toBe(
+      'revert-failed-update'
+    );
+  });
+
+  // The pair as the engine journals it, replayed in one run: the orphan is
+  // deleted, the old stream is never updated, and both entries settle.
+  it('replays the journaled pair: deletes the new stream, leaves the old one untouched', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const upd = vi.fn();
+    const { ctx } = ctxWith({ delete: del, update: upd });
+    const record = res();
+    const state: Record<string, ResourceState> = { S: record };
+    const result = await replayFailedOperations([update(), orphan()], state, 'Stack', ctx, {});
+    expect(del.mock.calls.map((c) => c[1])).toEqual(['stream-b']);
+    expect(upd).not.toHaveBeenCalled();
+    expect(state['S']).toBe(record);
+    expect(result.failures).toBe(0);
+    expect(result.remainingFailedOps).toEqual([]);
   });
 });
