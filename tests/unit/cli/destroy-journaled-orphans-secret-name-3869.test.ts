@@ -5,8 +5,10 @@
  *  - a journaled failed-CREATE orphan's delete (`deleteJournaledOrphans`): no
  *    state record holds it, so it is judged from its own journal entry, and
  *    its provider's lines ran under no printing bag;
- *  - the `RESOURCE_FAILED` event's error text, which the durable events store
- *    kept verbatim while the log line beside it was masked.
+ *  - destroy's events (`RESOURCE_FAILED`'s error text, a `RESOURCE_SKIPPED` /
+ *    `RESOURCE_GUARD_INDETERMINATE` reason, and a journaled orphan's rollback
+ *    events for a name it READ), which the durable events store kept verbatim
+ *    while the log line beside each was masked.
  *
  * The event's `physicalId` FIELD stays exact.
  */
@@ -164,6 +166,9 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
     expect(lines[0]!.includes(NAME)).toBe(shown);
   });
 
+  // Not new coverage: the replay's own op masker (#4037) already masks the
+  // orphan's OWN name here. Kept as a regression guard; the case below (a name
+  // the orphan READ) is the one this change pins.
   it.each([
     ['a secret-named orphan', REF, false],
     ['negative control, an ordinary name', 'plain-queue-name', true],
@@ -277,6 +282,39 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
     expect(skipped).toHaveLength(1);
     expect(skipped[0]!.reason).toContain('handler did not confirm ');
     expect(skipped[0]!.reason!.includes(NAME)).toBe(shown);
+  });
+
+  it.each([
+    ['a secret-named resource', REF, false],
+    ['negative control, an ordinary name', 'plain-queue-name', true],
+  ])("masks a RESOURCE_GUARD_INDETERMINATE reason: %s", async (_l, queueName, shown) => {
+    // A pre-flight guard that could not answer names the id it probed.
+    providerDelete.mockImplementation((_id: string, physicalId: string) =>
+      Promise.resolve({
+        outcome: 'deleted',
+        indeterminateGuards: [
+          { guard: 'cc-delete-region-identity', reason: `could not read the region of ${physicalId}` },
+        ],
+      })
+    );
+    await runDestroyForStack(
+      'TestStack',
+      stateOf({
+        Queue: {
+          physicalId: URL,
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: queueName },
+          attributes: {},
+          dependencies: [],
+        },
+      }),
+      ctx()
+    );
+    const guards = events.filter((e) => e.eventType === 'RESOURCE_GUARD_INDETERMINATE');
+    // Premise: the guard was recorded with its reason.
+    expect(guards).toHaveLength(1);
+    expect(guards[0]!.reason).toContain('could not read the region of ');
+    expect(guards[0]!.reason!.includes(NAME)).toBe(shown);
   });
 
   it('keeps an event physicalId FIELD exact', async () => {

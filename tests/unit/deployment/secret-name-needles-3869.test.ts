@@ -34,6 +34,7 @@ const { IntrinsicFunctionResolver } = await import(
 );
 const {
   journaledOrphanPrintingBag,
+  maskEventTextWithBoundBags,
   secretNamePrintingBag,
   secretNamesReadBy,
   stateSecretNameNeedles,
@@ -43,6 +44,7 @@ const {
 const { hasMaskableValues, maskSecretsInText, recordLogOnlyValue } = await import(
   '../../../src/deployment/secret-redaction.js'
 );
+const { withPrintingSecrets } = await import('../../../src/deployment/resource-secrets-scope.js');
 
 const REF = '{{resolve:secretsmanager:team:SecretString:user::}}';
 const USER_ID = 'team-secret-user';
@@ -245,5 +247,37 @@ describe('journaledOrphanPrintingBag (go-to-k/cdkd#3869)', () => {
     // A replacement orphan: the record is the resource being replaced.
     const op = { ...userOp('plain-new-name'), physicalId: 'new-user-id' };
     expect(masks(journaledOrphanPrintingBag([op], { User: user(name) }))).toBe(masked);
+  });
+});
+
+describe('maskEventTextWithBoundBags (go-to-k/cdkd#3869)', () => {
+  const event = (ownLines?: boolean) => ({
+    eventType: 'RESOURCE_FAILED',
+    physicalId: USER_ID,
+    reason: `skipped ${USER_ID}`,
+    error: { message: `AccessDenied on ${USER_ID}`, ...(ownLines !== undefined && { ownLines }) },
+  });
+  const bound = <T>(fn: () => T): T => {
+    const bag = new Map<string, string>();
+    recordLogOnlyValue(bag, USER_ID);
+    return withPrintingSecrets(bag, fn);
+  };
+
+  it("masks the message and the reason under a bound bag, never the physicalId field", () => {
+    const masked = bound(() => maskEventTextWithBoundBags(event()));
+    expect(masked.error.message).toBe('AccessDenied on ***');
+    expect(masked.reason).toBe('skipped ***');
+    expect(masked.physicalId).toBe(USER_ID);
+  });
+
+  it('negative control: unchanged with no bag bound', () => {
+    expect(maskEventTextWithBoundBags(event())).toEqual(event());
+  });
+
+  it("leaves a replay refusal's own message (ownLines) as constructed", () => {
+    const masked = bound(() => maskEventTextWithBoundBags(event(true)));
+    expect(masked.error.message).toBe(`AccessDenied on ${USER_ID}`);
+    // Premise: the bag was bound; the reason beside it is masked.
+    expect(masked.reason).toBe('skipped ***');
   });
 });

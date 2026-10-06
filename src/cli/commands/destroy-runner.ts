@@ -97,9 +97,11 @@ import {
   sameJournaledOrphans,
 } from '../../deployment/rollback-executor/journaled-orphans.js';
 import { producerRegionsFromState } from '../../deployment/rollback-executor.js';
-import { secretNamePrintingBag } from '../../deployment/secret-name-needles.js';
+import {
+  maskEventTextWithBoundBags,
+  secretNamePrintingBag,
+} from '../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
-import { currentLogLineMasker } from '../../utils/log-line-masker.js';
 
 /**
  * Execution context passed by the caller (`cdkd destroy` or
@@ -394,28 +396,16 @@ export interface DestroyRunnerResult {
 const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
 
 /**
- * Record one destroy event with its human-authored text (`error.message`,
- * `reason`) masked by the printing bags bound where it is recorded
- * (go-to-k/cdkd#3869): a delete's own bag, or a journaled-orphan batch's. The
- * events store is DURABLE, so the name its log lines withhold must not land
- * there one statement later. The `physicalId` FIELD stays exact: it is the
- * identity a cleanup needs, and `state.json` records it too.
+ * Record one destroy event with its human-authored text masked by the
+ * printing bags bound where it is recorded (go-to-k/cdkd#3869,
+ * {@link maskEventTextWithBoundBags}): a delete's own bag, or a
+ * journaled-orphan batch's.
  */
 function recordDestroyEvent(
   recorder: DeploymentEventRecorder | undefined,
   event: Parameters<DeploymentEventRecorder['record']>[0]
 ): void {
-  if (recorder === undefined) return;
-  const mask = currentLogLineMasker();
-  if (mask === undefined) {
-    recorder.record(event);
-    return;
-  }
-  const masked = { ...event };
-  if (masked.error?.message)
-    masked.error = { ...masked.error, message: mask(masked.error.message) };
-  if (masked.reason) masked.reason = mask(masked.reason);
-  recorder.record(masked);
+  recorder?.record(maskEventTextWithBoundBags(event));
 }
 
 /**
@@ -1447,7 +1437,7 @@ export async function runDestroyForStack(
           region: regionForState,
           logger,
           ...(ctx.eventRecorder !== undefined && {
-            recordEvent: (event) => recordDestroyEvent(ctx.eventRecorder, event),
+            recordEvent: (event) => ctx.eventRecorder!.record(event),
           }),
           finalSnapshotClients: destroyAwsClients ?? ctx.baseAwsClients,
           skipFinalSnapshot: ctx.skipFinalSnapshot === true,

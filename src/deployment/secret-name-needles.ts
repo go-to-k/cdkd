@@ -12,6 +12,7 @@
 import type { ResourceState } from '../types/state.js';
 import { isSecretDerivedValue } from '../provisioning/masked-retry-logger.js';
 import { secretDerivedNamePairs } from './rollback-executor/names.js';
+import { currentLogLineMasker } from '../utils/log-line-masker.js';
 import {
   type RecordedSecretValues,
   hasMaskableValues,
@@ -255,4 +256,28 @@ export function journaledOrphanPrintingBag(
     }
   }
   return bag;
+}
+
+/**
+ * An event with its human-authored text (`error.message`, `reason`) masked by
+ * the printing bags bound where it is recorded (go-to-k/cdkd#3869): the events
+ * store is DURABLE, so a name the log lines beside it withhold must not land
+ * there one statement later. The `physicalId` FIELD stays exact: it is the
+ * identity a cleanup needs, and `state.json` records it too. A message marked
+ * `ownLines` is one of the replay's own refusals, already masked at
+ * construction bar its pasteable commands, which a short needle must not cut.
+ * Identity when nothing is bound.
+ */
+export function maskEventTextWithBoundBags<
+  T extends { error?: { message?: string; ownLines?: boolean }; reason?: string },
+>(event: T): T {
+  if (event.reason === undefined && event.error === undefined) return event;
+  const mask = currentLogLineMasker();
+  if (mask === undefined) return event;
+  const masked: T = { ...event };
+  if (masked.error?.message && masked.error.ownLines !== true) {
+    masked.error = { ...masked.error, message: mask(masked.error.message) };
+  }
+  if (masked.reason) masked.reason = mask(masked.reason);
+  return masked;
 }

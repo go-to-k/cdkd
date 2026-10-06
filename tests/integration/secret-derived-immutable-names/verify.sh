@@ -763,8 +763,11 @@ if ! aws ecr describe-repositories --region "${REGION}" --repository-names "${RE
   tail -40 "${ORPHAN_LOG}" >&2
   exit 1
 fi
-ORPHAN_PROVEN="$(aws s3 cp "s3://${STATE_BUCKET}/${ORPHAN_JOURNAL_KEY}" - \
-  | jq -r '[.segments[].failedOperations[]? | select(.logicalId == "SecretOrphanRepo" and .physicalIdRecoveredFromError == true)] | length')"
+# `|| echo`: a missing or unparseable journal must reach the FAIL below, not
+# end the run at the assignment with no diagnostic.
+ORPHAN_PROVEN="$(aws s3 cp "s3://${STATE_BUCKET}/${ORPHAN_JOURNAL_KEY}" - 2>&1 \
+  | jq -r '[.segments[].failedOperations[]? | select(.logicalId == "SecretOrphanRepo" and .physicalIdRecoveredFromError == true)] | length' 2>&1 \
+  || echo "unreadable journal")"
 if [ "${ORPHAN_PROVEN}" != "1" ]; then
   echo "FAIL: premise: the journal holds ${ORPHAN_PROVEN} proven SecretOrphanRepo orphan(s), expected 1" >&2
   tail -40 "${ORPHAN_LOG}" >&2
