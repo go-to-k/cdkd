@@ -186,7 +186,8 @@ directly, each under that record's lock.
 | --- | --- | --- |
 | `refused` | cdkd declined to resolve a dynamic reference the resource's state records, because it could not attribute the reference to a region. Its secret-bearing properties were never looked at. | Yes — spell the reference as a full ARN, which names its region. |
 | `unresolvedToken` | State records a `{{resolve:...}}` spelling cdkd resolves for nobody. cdkd resolves all three CloudFormation services (`secretsmanager`, `ssm`, `ssm-secure`), so this is reserved for text that is not a dynamic reference at all, or a service AWS adds later. | No — a re-run cannot clear it, which is why it alone does not affect the exit code. |
-| `readFailed` | The read or the comparison threw, so NONE of that resource's properties were compared. Every other resource in the stack is still compared and reported. | Yes — usually a missing permission or a throttle; grant it or re-run. |
+| `readFailed` | The read or the comparison threw, so NONE of that resource's properties were compared. Every other resource in the stack is still compared and reported, unless the reads keep failing (`readAborted`). | Yes — usually a missing permission or a throttle; grant it or re-run. |
+| `readAborted` | cdkd never read the resource: 5 resources in a row earlier in the same stack had a read that failed, which is what an account-wide condition looks like (expired credentials, a revoked role, an account-wide throttle), so cdkd stopped reading that stack instead of paying the same failure for every remaining resource. A read that succeeds resets the count, so one unreadable resource among readable ones never causes this. Other stacks in the run are still read. | Yes — fix the condition (refresh the credentials, restore the role) and re-run. |
 | `baselineRefused` | A [`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused to capture that resource's observed baseline, so the only baseline available is the recorded properties that refusal already found untrustworthy. NONE of its properties were compared, and cdkd does not read it back from AWS at all. | Yes — deploy a change to the resource; for a [template-parameter refusal](#clearing-a-baseline-refusal), replace it, or re-import it while a CloudFormation stack can prove the parameter. |
 | `uncertifiedBaseline` | The recorded baseline holds the redaction mask `***` at a position cdkd could not pair with the secret reference there (see [a position cdkd could not certify](#another-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify)), and the mask is the only difference at that position. Every other property was compared. | Yes — a `cdkd deploy` that changes nothing replaces each such mask the resource's own secret references can certify, and one that changes the resource re-captures the whole baseline. |
 | `unreadableRecord` | The state record holds a row that cannot be read as a resource — it is not an object, or it carries no resource type — or a row whose `properties` map is not a JSON object. cdkd drops the row so the rest of the stack is still compared, and reports it here rather than only warning, so a `--json` gate sees it. A row with an unreadable `properties` map keeps its real resource type and is not read back from AWS. | Yes — repair or re-import the record. |
@@ -223,7 +224,7 @@ Everything not fully compared is listed under the human report's
 `N resource(s) only PARTIALLY compared` block — headed
 `N resource(s) NOT fully compared — K not compared AT ALL (<causes>)` when a
 resource none of whose properties were compared is present — `readFailed`,
-`baselineRefused`, `unreadableRecord` or `unreadableMap` — with each cause present named in the
+`readAborted`, `baselineRefused`, `unreadableRecord` or `unreadableMap` — with each cause present named in the
 parentheses, since calling such a resource "partially compared" understates
 it. Each entry names its own
 reason, and the per-resource detail also goes to the log, which a caller
@@ -385,14 +386,15 @@ leaves something uncompared exits `1`, not `2`. Both the drift case and the
 crash case go through the same error handler; drift detection emits the full
 human report before throwing, so that report is the only output for it.
 
-**Exit `2` on detection is narrower than `notCompared`, deliberately.** Six of
+**Exit `2` on detection is narrower than `notCompared`, deliberately.** Seven of
 the causes in the [table above](#why-a-resource-was-not-compared) produce it: a
 resource cdkd `refused` to compare, one whose read or comparison `readFailed`,
+one cdkd stopped reading after repeated read failures (`readAborted`),
 one whose baseline an import refused (`baselineRefused`), one whose baseline
 holds a mask cdkd could not certify (`uncertifiedBaseline`), a state row that
 is not readable as a resource or whose `properties` map is not an object
 (`unreadableRecord`), and a `resources` map that is not an object
-(`unreadableMap`). The seventh does not: a
+(`unreadableMap`). The eighth does not: a
 resource whose only uncompared properties hold an
 `unresolvedToken` is listed under `notCompared` and in the report's
 not-fully-compared block, but does not produce this exit code — cdkd resolves
