@@ -673,8 +673,10 @@ export function recordSecretNamedRead(
   context: ResolverContext
 ): void {
   // A context carrying a print-only bag records there instead: the deploy
-  // engine gives one only to a nested-stack row, whose own bag seeds the
-  // child's decisions (`printNestedStackReadsOnly`).
+  // engine gives one to every context whose own bag DECIDES something from
+  // its log-only needles (a nested-stack row, the masked-input fingerprint
+  // pass, the outputs pass; the list is at `secretNameNeedles` in
+  // `deploy-engine/resolver-context.ts`).
   const bag = context.printingSecrets ?? context.recordedSecretValues;
   if (bag === undefined || context.secretNameNeedles === undefined) return;
   const needles = context.secretNameNeedles(logicalId);

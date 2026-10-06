@@ -395,19 +395,25 @@ describe('maskSecretsInError keeps the created-before-failure mark exact (go-to-
   // Each condition of the mark's shape on its own: `Symbol.for` is the global
   // registry, so any module can spell a same-keyed field.
   it.each([
-    ['enumerable', { enumerable: true, writable: false, frozen: true }],
-    ['writable', { enumerable: false, writable: true, frozen: true }],
-    ['a value that is not frozen', { enumerable: false, writable: false, frozen: false }],
-  ])('masks a same-key field that does not have the mark shape (%s)', (_label, shape) => {
+    ['enumerable', MARK, { enumerable: true, writable: false, frozen: true }],
+    ['writable', MARK, { enumerable: false, writable: true, frozen: true }],
+    ['a value that is not frozen', MARK, { enumerable: false, writable: false, frozen: false }],
+    // The full shape under ANOTHER symbol: only the mark's own key is kept.
+    [
+      'another symbol key',
+      Symbol.for('cdkd.other'),
+      { enumerable: false, writable: false, frozen: true },
+    ],
+  ] as const)('masks a field that is not the mark (%s)', (_label, key, shape) => {
     const error = new Error('x');
     const value = { physicalId: 'team-secret-bucket' };
-    Object.defineProperty(error, MARK, {
+    Object.defineProperty(error, key, {
       value: shape.frozen ? Object.freeze(value) : value,
       enumerable: shape.enumerable,
       writable: shape.writable,
       configurable: true,
     });
     const masked = maskSecretsInError(error, bag) as unknown as Record<symbol, { physicalId: string }>;
-    expect(masked[MARK]!.physicalId).toBe('***');
+    expect(masked[key]!.physicalId).toBe('***');
   });
 });
