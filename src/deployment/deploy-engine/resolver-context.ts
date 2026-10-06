@@ -169,6 +169,17 @@ export function buildResolverContext(
     // belongs only where a reader exists. The `base` field's own doc carries
     // the measurement that forced the split.
     noEchoAttributeResources: this.noEchoAttributeResources,
+    // go-to-k/cdkd#3869: on every context, the diff pass included, since each
+    // one prints a `resolved to` line for what it reads. It only ADDS log-only
+    // needles to the reading pass's bag, judged from `base.resources` (the
+    // record a read is served from) and the target's own bag. The two
+    // contexts whose bag DECIDES something from its log-only needles drop it:
+    // `maskedInputSources` below and `resolveOutputs`.
+    secretNameNeedles: (logicalId: string) =>
+      this.noteSecretNamedRecord(
+        logicalId,
+        Object.hasOwn(base.resources, logicalId) ? base.resources[logicalId] : undefined
+      ),
     ...(base.redactedAttributeReads && {
       redactedAttributeReads: base.redactedAttributeReads,
     }),
@@ -223,7 +234,13 @@ export function maskedInputSources(
       // unknown input. The fingerprint pass must neither bump that counter nor
       // repeat the warning, and a guessed value is no input to hash.
       // `cdkd diff` builds its context the same way.
-      const { attributeHealer: _healer, ...base } = this.buildResolverContext(
+      // No derived-name needles either (go-to-k/cdkd#3869): this bag decides
+      // whether an input is kept as written, from its log-only needles too.
+      const {
+        attributeHealer: _healer,
+        secretNameNeedles: _needles,
+        ...base
+      } = this.buildResolverContext(
         {
           template,
           resources,

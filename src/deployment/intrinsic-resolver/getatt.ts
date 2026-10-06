@@ -25,7 +25,9 @@ import {
   carriesSecretMask,
   crossStackSourceKey,
   recordFreshNoEchoValuesIn,
+  recordLogOnlyValue,
   splitGetAttStringForm,
+  wholeStringLeavesOf,
 } from '../secret-redaction.js';
 import { type StaleAttributeHealOutcome } from '../stale-attribute-heal.js';
 import { NOT_CONSTRUCTED, constructAttributeForCoreTypes } from './getatt-construct-core.js';
@@ -474,6 +476,10 @@ export async function resolveGetAtt(
     context,
     logicalId
   );
+  // Before the line, like `noteAttributeSecrecy` (go-to-k/cdkd#3869): a
+  // CONSTRUCTED value (an ARN built from the physical id) is served outside
+  // that note.
+  recordSecretNamedRead(logicalId, value, context);
   this.logger.debug(
     `Resolved Fn::GetAtt: ${this.logRender(logicalId, context)}.${this.logRender(attributeName, context)} resolved to ${this.logRender(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
   );
@@ -581,6 +587,7 @@ export function noteAttributeSecrecy(
   value: unknown,
   context: ResolverContext
 ): unknown {
+  recordSecretNamedRead(logicalId, value, context);
   const declared = context.noEchoAttributeResources?.get(logicalId);
   const attributeIsDeclared =
     declared === true || (declared !== undefined && declared.has(attributeName));
@@ -638,6 +645,32 @@ export function noteAttributeSecrecy(
     });
   }
   return value;
+}
+
+/**
+ * Record what a `Ref` / `Fn::GetAtt` read from a resource NAMED from a secret
+ * (go-to-k/cdkd#3869) as LOG-ONLY needles of the reading pass's bag: the
+ * resource's own physical-id needles ({@link ResolverContext.secretNameNeedles})
+ * and each string leaf of `value`. A name derived from a secret, or an ARN /
+ * URL embedding one, is no recorded plaintext, so without them the reader's
+ * provider masker, the engine's error and event masking and the resolver's
+ * `resolved to` line all print it.
+ *
+ * LOG-ONLY: the value is the reader's real input and is persisted and sent
+ * as it is. Call it BEFORE any line printing `value`. A context without the
+ * callback or a bag records nothing.
+ */
+export function recordSecretNamedRead(
+  logicalId: string,
+  value: unknown,
+  context: ResolverContext
+): void {
+  const bag = context.recordedSecretValues;
+  if (bag === undefined || context.secretNameNeedles === undefined) return;
+  const needles = context.secretNameNeedles(logicalId);
+  if (needles === undefined) return;
+  for (const needle of needles) recordLogOnlyValue(bag, needle);
+  for (const leaf of wholeStringLeavesOf(value)) recordLogOnlyValue(bag, leaf);
 }
 
 /**

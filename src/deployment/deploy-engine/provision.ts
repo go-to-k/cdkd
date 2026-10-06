@@ -27,6 +27,7 @@ import {
   withPriorAttempts,
 } from '../prior-attempt-scope.js';
 import { withStackRecords } from '../stack-records-scope.js';
+import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import { type ReportedDeleteGuard, collectDeleteGuards } from '../delete-guard-scope.js';
 
 declare module '../deploy-engine.js' {
@@ -186,6 +187,15 @@ export async function provisionResource(
   // id is gone from state and only the free-text reason would still carry it.
   const physicalIdBeforeUpdate = stateResources[logicalId]?.physicalId;
   const provisionedByBeforeUpdate = stateResources[logicalId]?.provisionedBy;
+  // go-to-k/cdkd#3869: the record as it stands BEFORE the body, so the lines
+  // naming the old resource (a replacement's `Deleting old ... (<id>)`) mask
+  // its id when its name came from a secret. Judged from the persisted
+  // record here; the new one is judged after the body, with this deploy's bag.
+  this.noteSecretNamedRecord(logicalId, stateResources[logicalId]);
+  // Bound around the whole body as a PRINTING bag, by reference: every line
+  // logged for this resource (the engine's own `Deleting old ... (<id>)`, a
+  // provider's) masks the registry's needles, one registered mid-body too.
+  const printingRegistry = this.secretNameBagFor(logicalId);
   // Issue #1989: what a nested child's deploy left unaddressed, when this row
   // is an `AWS::CloudFormation::Stack`. Added to `counts` only once the row
   // has succeeded, beside the row's own outcome, never in place of it.
@@ -195,91 +205,95 @@ export async function provisionResource(
   // update-not-supported fallback deletes inside an UPDATE.
   const deleteGuards: ReportedDeleteGuard[] = [];
   try {
-    await withResourceDeadline(
-      async () => {
-        try {
-          const { value: bodyResult, unaddressed } = await collectDeleteGuards(deleteGuards, () =>
-            collectNestedChildUnaddressed(() =>
-              this.provisionResourceBody(
-                logicalId,
-                change,
-                stateResources,
-                stackName,
-                template,
-                parameterValues,
-                conditions,
-                counts,
-                progress
+    await withPrintingSecrets(printingRegistry, () =>
+      withResourceDeadline(
+        async () => {
+          try {
+            const { value: bodyResult, unaddressed } = await collectDeleteGuards(deleteGuards, () =>
+              collectNestedChildUnaddressed(() =>
+                this.provisionResourceBody(
+                  logicalId,
+                  change,
+                  stateResources,
+                  stackName,
+                  template,
+                  parameterValues,
+                  conditions,
+                  counts,
+                  progress
+                )
               )
-            )
-          );
-          deleteSkipped = bodyResult?.deleteSkipped;
-          updatePartial = bodyResult?.updatePartial;
-          nestedChildUnaddressed = unaddressed;
-        } finally {
-          // The ONE emission site for the deploy path's guard rows, in a
-          // `finally` so a guard survives a later throw in the same row (a
-          // `'skipped'` replacement delete fails the resource right after the
-          // guarded delete returned). Runs before the row's own outcome event
-          // on both paths, mirroring the destroy runner's order -- except
-          // after a timeout: the deadline rejects while the body keeps
-          // running, so a guard reported later lands after RESOURCE_FAILED,
-          // or is dropped if the run's recorder has already finalized.
-          //
-          // `operation: 'DELETE'` even when the row is an UPDATE: the guard
-          // ran on the DELETE call, which is what the row describes. The
-          // row's own outcome event keeps `operation: 'UPDATE'`. Payload as
-          // in `destroy-runner.ts`; `reason` is masked by `recordEvent`, and
-          // the physical id with this resource's own secrets. That bag holds
-          // only what THIS run resolved for the row: a template DELETE
-          // resolves nothing, so its id goes out as destroy and `cdkd state`
-          // show it, and an old id derived from a since-rotated secret is
-          // not in the new bag either.
-          for (const guard of deleteGuards.splice(0)) {
-            this.recordEvent({
-              eventType: 'RESOURCE_GUARD_INDETERMINATE',
-              stackName,
-              operation: 'DELETE',
-              logicalId,
-              resourceType: guard.resourceType,
-              ...(guard.provisionedBy && { provisionedBy: guard.provisionedBy }),
-              ...(guard.physicalId && {
-                physicalId: this.maskForResource(logicalId, guard.physicalId),
-              }),
-              guard: guard.guard,
-              reason: guard.reason,
-            });
-          }
-        }
-      },
-      {
-        warnAfterMs,
-        timeoutMs,
-        onWarn: (elapsedMs) => {
-          const minutes = Math.max(1, Math.round(elapsedMs / 60_000));
-          const warnSuffix = ` [taking longer than expected, ${minutes}m+]`;
-          // Mutate the live renderer's task label in place (TTY mode)
-          // and emit a warn line above the live area (non-TTY / verbose).
-          const current = this.liveTaskLabels.get(logicalId);
-          if (current !== undefined) current.warnSuffix = warnSuffix;
-          renderer.updateTaskLabel(logicalId, `${current?.label ?? baseLabel}${warnSuffix}`);
-          renderer.printAbove(() => {
-            this.logger.warn(
-              `${logicalId} (${resourceType}) has been ${operationKind === 'CREATE' ? 'creating' : operationKind === 'DELETE' ? 'deleting' : 'updating'} for ${minutes}m — still waiting`
             );
-          });
+            deleteSkipped = bodyResult?.deleteSkipped;
+            updatePartial = bodyResult?.updatePartial;
+            nestedChildUnaddressed = unaddressed;
+          } finally {
+            // The ONE emission site for the deploy path's guard rows, in a
+            // `finally` so a guard survives a later throw in the same row (a
+            // `'skipped'` replacement delete fails the resource right after the
+            // guarded delete returned). Runs before the row's own outcome event
+            // on both paths, mirroring the destroy runner's order -- except
+            // after a timeout: the deadline rejects while the body keeps
+            // running, so a guard reported later lands after RESOURCE_FAILED,
+            // or is dropped if the run's recorder has already finalized.
+            //
+            // `operation: 'DELETE'` even when the row is an UPDATE: the guard
+            // ran on the DELETE call, which is what the row describes. The
+            // row's own outcome event keeps `operation: 'UPDATE'`. Payload as
+            // in `destroy-runner.ts`; `reason` is masked by `recordEvent`, and
+            // the physical id with this resource's own secrets. That bag holds
+            // only what THIS run resolved for the row: a template DELETE
+            // resolves nothing, so its id goes out as destroy and `cdkd state`
+            // show it, and an old id derived from a since-rotated secret is
+            // not in the new bag either.
+            for (const guard of deleteGuards.splice(0)) {
+              this.recordEvent({
+                eventType: 'RESOURCE_GUARD_INDETERMINATE',
+                stackName,
+                operation: 'DELETE',
+                logicalId,
+                resourceType: guard.resourceType,
+                ...(guard.provisionedBy && { provisionedBy: guard.provisionedBy }),
+                ...(guard.physicalId && {
+                  physicalId: this.maskForResource(logicalId, guard.physicalId),
+                }),
+                guard: guard.guard,
+                reason: guard.reason,
+              });
+            }
+          }
         },
-        onTimeout: (elapsedMs) =>
-          new ResourceTimeoutError(
-            logicalId,
-            resourceType,
-            this.stackRegion,
-            elapsedMs,
-            operationKind,
-            timeoutMs
-          ),
-      }
+        {
+          warnAfterMs,
+          timeoutMs,
+          onWarn: (elapsedMs) => {
+            const minutes = Math.max(1, Math.round(elapsedMs / 60_000));
+            const warnSuffix = ` [taking longer than expected, ${minutes}m+]`;
+            // Mutate the live renderer's task label in place (TTY mode)
+            // and emit a warn line above the live area (non-TTY / verbose).
+            const current = this.liveTaskLabels.get(logicalId);
+            if (current !== undefined) current.warnSuffix = warnSuffix;
+            renderer.updateTaskLabel(logicalId, `${current?.label ?? baseLabel}${warnSuffix}`);
+            renderer.printAbove(() => {
+              this.logger.warn(
+                `${logicalId} (${resourceType}) has been ${operationKind === 'CREATE' ? 'creating' : operationKind === 'DELETE' ? 'deleting' : 'updating'} for ${minutes}m — still waiting`
+              );
+            });
+          },
+          onTimeout: (elapsedMs) =>
+            new ResourceTimeoutError(
+              logicalId,
+              resourceType,
+              this.stackRegion,
+              elapsedMs,
+              operationKind,
+              timeoutMs
+            ),
+        }
+      )
     );
+    // go-to-k/cdkd#3869: the record the body wrote, resolved this deploy.
+    this.noteSecretNamedRecord(logicalId, stateResources[logicalId]);
     // Issue #1989: the child's own rows already logged each survivor and
     // recorded its `RESOURCE_SKIPPED` (a nested child's events belong to this
     // run), so what was missing is only the COUNT. Adding it here carries it
@@ -360,6 +374,9 @@ export async function provisionResource(
     });
   } catch (error) {
     renderer.removeTask(logicalId);
+    // go-to-k/cdkd#3869: whatever record the body left, so the masked lines,
+    // event and error below withhold its id when its name came from a secret.
+    this.noteSecretNamedRecord(logicalId, stateResources[logicalId]);
     const message = error instanceof Error ? error.message : String(error);
     // Issue #2038: MASKED, and at a strictly higher log level than the retry
     // give-up summary one statement below it. `perResourceSecrets` is
@@ -423,7 +440,7 @@ export async function provisionResource(
       logicalId,
       stateResources[logicalId]?.physicalId,
       error instanceof Error
-        ? maskSecretsInError(error, this.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS)
+        ? maskSecretsInError(error, this.printingSecretsFor(logicalId) ?? EMPTY_SECRETS)
         : undefined
     );
   } finally {

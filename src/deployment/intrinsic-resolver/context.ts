@@ -688,6 +688,22 @@ export interface ResolverContext {
    */
   noEchoAttributeResources?: ReadonlyMap<string, true | ReadonlySet<string>>;
   /**
+   * The needles of a resource in this stack NAMED from a secret, or
+   * `undefined` when it is not (go-to-k/cdkd#3869); the deploy engine answers
+   * from its derived-name registry. A `Ref` / `Fn::GetAtt` serving such a
+   * resource records them, and each string leaf of the value it served, as
+   * LOG-ONLY needles of {@link recordedSecretValues} BEFORE its `resolved to`
+   * line: a name derived from a secret, or an ARN embedding one, is no
+   * recorded plaintext, so the reading resource's maskers and this
+   * resolver's own lines would print it.
+   *
+   * LOG-ONLY, never a map entry: the value is the reader's real input and is
+   * persisted as it is. Absent on a context whose bag DECIDES something from
+   * its log-only needles: the masked-input fingerprint pass and the outputs
+   * pass, whose export-name verdict reads them.
+   */
+  secretNameNeedles?: (logicalId: string) => ReadonlySet<string> | undefined;
+  /**
    * Bag the resolver pushes `<logicalId>.<attributeName>` into whenever it
    * serves a PERSISTED attribute that is nothing but {@link SECRET_MASK}
    * (issue #2274).

@@ -19,16 +19,24 @@ import {
   carriesFreshNoEchoValue,
   carriesSecretMask,
   createUnionSecretMasker,
+  hasMaskableValues,
   inheritedParameterExpression,
   literalSplitDelimitersOf,
   maskSecretsInError,
   maskSecretsInText,
   mergeResolvedPairs,
+  MIN_NEEDLE_LENGTH,
+  printingCorpusOf,
   recordLogOnlyParameterValue,
+  recordLogOnlyValue,
   recordNoEchoAttributeValues,
   recordRecoverableMaskedOutput,
   redactSecretsForState,
+  SECRET_MASK,
+  unionOfSecretBags,
 } from '../secret-redaction.js';
+import { isSecretDerivedValue } from '../../provisioning/masked-retry-logger.js';
+import { secretDerivedNamePairs } from '../rollback-executor/names.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -54,6 +62,12 @@ declare module '../deploy-engine.js' {
     readReaderForFreshNoEchoCeiling: OmitThisParameter<typeof readReaderForFreshNoEchoCeiling>;
     /** @internal */
     maskForResource: OmitThisParameter<typeof maskForResource>;
+    /** @internal */
+    secretNameBagFor: OmitThisParameter<typeof secretNameBagFor>;
+    /** @internal */
+    noteSecretNamedRecord: OmitThisParameter<typeof noteSecretNamedRecord>;
+    /** @internal */
+    printingSecretsFor: OmitThisParameter<typeof printingSecretsFor>;
   }
 }
 
@@ -686,7 +700,145 @@ export async function readReaderForFreshNoEchoCeiling(
  * non-secret resource is byte-identical to before.
  */
 export function maskForResource(this: DeployEngine, logicalId: string, text: string): string {
-  return maskSecretsInText(text, this.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS);
+  return maskSecretsInText(text, this.printingSecretsFor(logicalId) ?? EMPTY_SECRETS);
+}
+
+/**
+ * The needles of a resource NAMED from a secret (go-to-k/cdkd#3869), or
+ * `undefined` when nothing says it is.
+ *
+ * A physical name a provider DERIVES from a secret (`generateResourceNameWithFallback`
+ * prefixes, folds and truncates it), or one minted from a value since rotated,
+ * no longer occurs as any recorded plaintext, so no masker recognises it. The
+ * name keys and spellings are the rollback's (`secretDerivedNamePairs`,
+ * go-to-k/cdkd#4037), judged with `secrets` (the resource's own bag) by
+ * `isSecretDerivedValue`, so a deploy and its rollback withhold the same
+ * names. Per name value:
+ *
+ *  - one this deploy RESOLVED (in memory): the value, its lower-cased
+ *    spelling (a service that folds case) and the names a rewriting provider
+ *    derives from it. Those are what the id spells, so the rest of the id
+ *    (an ARN's account, a hash) stays readable;
+ *  - one still spelling a `{{resolve:` reference or the mask (a record read
+ *    from state, where a secret leaf persists as its reference and a public
+ *    ssm value is stored resolved): its plaintext is not in hand, so the id's
+ *    own spellings stand in, the whole id and its name segments.
+ *
+ * Two more arms: an IAM `Path` (the ARN carries it, and the rollback's keys
+ * omit it) adds the whole id, and a needle of `secrets` the id embeds as it
+ * is (a queue URL ending in the resolved name) is added for a READER's bag,
+ * which does not hold the resource's plaintext.
+ *
+ * LOG-ONLY wherever they are recorded: they mask what PRINTS and never what
+ * is persisted, diffed or sent, since a physical id is the record's identity.
+ */
+export function secretNameNeedlesOf(
+  logicalId: string,
+  record: { resourceType?: unknown; physicalId?: unknown; properties?: unknown } | undefined,
+  secrets: RecordedSecretValues | undefined
+): Set<string> | undefined {
+  const physicalId = record?.physicalId;
+  if (typeof physicalId !== 'string' || physicalId === '') return undefined;
+  const bag = secrets !== undefined && hasMaskableValues(secrets) ? secrets : undefined;
+  const mask = (text: string): string => (bag === undefined ? text : maskSecretsInText(text, bag));
+  const unresolved = (value: string): boolean =>
+    value.includes('{{resolve:') || value === SECRET_MASK;
+  const named = {
+    resourceType: record?.resourceType,
+    properties: record?.properties,
+    logicalId,
+  };
+  const needles = new Set<string>();
+  const add = (needle: unknown): void => {
+    if (typeof needle === 'string' && needle !== '') needles.add(needle);
+  };
+  // The names a rewriting provider derives from a resolved value: the pairs
+  // with no id to spell carry only those.
+  for (const [raw, derived] of secretDerivedNamePairs({ ...named, physicalIds: [] })) {
+    if (typeof raw === 'string' && !unresolved(raw) && isSecretDerivedValue(raw, mask))
+      add(derived);
+  }
+  for (const [raw, spelling] of secretDerivedNamePairs({ ...named, physicalIds: [physicalId] })) {
+    if (!isSecretDerivedValue(raw, mask)) continue;
+    if (unresolved(raw)) {
+      add(spelling);
+    } else {
+      add(raw);
+      if (raw.toLowerCase() !== raw && raw.length >= MIN_NEEDLE_LENGTH) add(raw.toLowerCase());
+    }
+  }
+  const properties = record?.properties;
+  const path =
+    properties !== null && typeof properties === 'object' && Object.hasOwn(properties, 'Path')
+      ? (properties as Record<string, unknown>)['Path']
+      : undefined;
+  if (isSecretDerivedValue(path, mask)) add(physicalId);
+  if (bag !== undefined) {
+    for (const needle of printingCorpusOf(bag).keys()) {
+      if (
+        needle !== '' &&
+        (needle === physicalId ||
+          (needle.length >= MIN_NEEDLE_LENGTH && physicalId.includes(needle)))
+      ) {
+        add(needle);
+      }
+    }
+  }
+  return needles.size > 0 ? needles : undefined;
+}
+
+/**
+ * The derived-name REGISTRY bag of `logicalId` (go-to-k/cdkd#3869): an EMPTY
+ * map whose LOG-ONLY needles are the physical-id needles of every record of it
+ * this deploy judged named from a secret. Created on first ask, so a binder
+ * can hold it by reference before anything is registered: `provisionResource`
+ * binds it as a PRINTING bag around the resource's whole body, so every line
+ * logged there masks a needle registered mid-body too.
+ */
+export function secretNameBagFor(this: DeployEngine, logicalId: string): RecordedSecretValues {
+  let bag = this.secretNameNeedles.get(logicalId);
+  if (bag === undefined) {
+    bag = new Map();
+    this.secretNameNeedles.set(logicalId, bag);
+  }
+  return bag;
+}
+
+/**
+ * Register `record` of `logicalId` in this deploy's derived-name registry
+ * when it is named from a secret (go-to-k/cdkd#3869), and return its needles.
+ * Judged with the resource's own bag, so call it after the resource resolved
+ * to see a name this deploy resolved. The registry only GROWS within a
+ * deploy: a replaced resource keeps its old id's needles, which the lines
+ * naming the old resource still print.
+ */
+export function noteSecretNamedRecord(
+  this: DeployEngine,
+  logicalId: string,
+  record: { resourceType?: unknown; physicalId?: unknown; properties?: unknown } | undefined
+): ReadonlySet<string> | undefined {
+  const needles = secretNameNeedlesOf(logicalId, record, this.perResourceSecrets.get(logicalId));
+  if (needles === undefined) return undefined;
+  const registry = this.secretNameBagFor(logicalId);
+  for (const needle of needles) recordLogOnlyValue(registry, needle);
+  return needles;
+}
+
+/**
+ * The bag a PRINTED line about `logicalId` masks with: its own recorded
+ * secrets plus its derived-name registry (go-to-k/cdkd#3869). The resource's
+ * own bag by identity when the registry holds nothing, so every other
+ * resource masks exactly as before. A NEW bag otherwise: never hand it to
+ * anything that persists, positions or decides.
+ */
+export function printingSecretsFor(
+  this: DeployEngine,
+  logicalId: string
+): RecordedSecretValues | undefined {
+  const secrets = this.perResourceSecrets.get(logicalId);
+  const registry = this.secretNameNeedles.get(logicalId);
+  if (!hasMaskableValues(registry)) return secrets;
+  return unionOfSecretBags([secrets, registry]);
 }
 
 /**

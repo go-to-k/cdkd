@@ -256,6 +256,10 @@ export async function resolveOutputs(
     },
     stackName
   );
+  // No derived-name needles (go-to-k/cdkd#3869): this pass's bag decides which
+  // export names are refused from its log-only needles, and an output is
+  // published as resolved anyway.
+  delete context.secretNameNeedles;
 
   /**
    * Fail an output whose resolution served a value out of a MASKED state
