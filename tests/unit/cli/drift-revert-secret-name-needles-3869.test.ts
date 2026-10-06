@@ -153,7 +153,8 @@ async function revertLine(userName: string, fail = false): Promise<string | unde
   } finally {
     process.stdout.write = original;
   }
-  expect(keyProvider.update).toHaveBeenCalled();
+  // Once on the success path; a non-retryable failure is not retried either.
+  expect(keyProvider.update).toHaveBeenCalledTimes(1);
   return line;
 }
 
