@@ -71,6 +71,9 @@
 - **This flow parks a LOT, so the State line carries its weight**: lane
   subagents, `gh pr checks --watch` and `/run-integ` are all **WAITING**, one
   line each naming its signal; STOPPED only when every lane is merged.
-- **A lane needing a user decision goes through `AskUserQuestion`, never prose**,
-  which ends the turn as STOPPED. That prompt is CHAT, not a published artifact,
-  so it goes in the USER's language; everything else you decide.
+- **A user decision (a lane's or a triaged issue's) goes through
+  `AskUserQuestion`, never prose**, which ends the turn as STOPPED. It is CHAT,
+  so in the USER's language, and it states the problem and each option's fix in
+  plain words plus what CloudFormation / the AWS CDK CLI does for the same
+  shape, where one applies; without those the maintainer asks back instead of choosing (#2868).
+  Everything else you decide.
