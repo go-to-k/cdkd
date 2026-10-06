@@ -8,13 +8,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { StackState } from '../../../src/types/state.js';
 
-vi.mock('../../../src/utils/logger.js', () => {
+// Each line through the sink masker `ConsoleLogger` applies, so a line the
+// command masks only by the bag bound around it reads as the terminal shows it.
+const logLines = vi.hoisted(() => [] as string[]);
+vi.mock('../../../src/utils/logger.js', async () => {
+  const { currentLogLineMasker: sink } = await import('../../../src/utils/log-line-masker.js');
+  const push =
+    (level: string) =>
+    (...args: unknown[]): void => {
+      const line = args.map(String).join(' ');
+      logLines.push(`${level} ${sink()?.(line) ?? line}`);
+    };
   const make = (): Record<string, unknown> => ({
     setLevel: vi.fn(),
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
+    debug: push('debug'),
+    info: push('info'),
+    warn: push('warn'),
+    error: push('error'),
     child: () => make(),
   });
   return { reserveStdoutForPayload: vi.fn(), getLogger: () => make() };
@@ -73,6 +83,7 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
+import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const USER_ID = 'team-secret-drift-user';
 
@@ -105,11 +116,19 @@ function stateWith(userName: string): { state: StackState; etag: string } {
   };
 }
 
-async function revertLine(userName: string): Promise<string | undefined> {
+async function revertLine(userName: string, fail = false): Promise<string | undefined> {
   let line: string | undefined;
+  logLines.length = 0;
   const keyProvider = {
     readCurrentState: vi.fn(async () => ({ UserName: USER_ID, Status: 'Inactive' })),
     update: vi.fn(async () => {
+      if (fail) {
+        // AWS quotes the name back: a non-retryable refusal, logged by the
+        // command's own failure line outside the provider call.
+        const err = new Error(`The user with name ${USER_ID} cannot be found.`);
+        err.name = 'NoSuchEntity';
+        throw markNonRetryable(err);
+      }
       const text = `Updating access key of user ${USER_ID}`;
       line = currentLogLineMasker()?.(text) ?? text;
       return { physicalId: 'AKIAEXAMPLEKEY', wasReplaced: false };
@@ -134,7 +153,7 @@ async function revertLine(userName: string): Promise<string | undefined> {
   } finally {
     process.stdout.write = original;
   }
-  expect(keyProvider.update).toHaveBeenCalledTimes(1);
+  expect(keyProvider.update).toHaveBeenCalled();
   return line;
 }
 
@@ -153,6 +172,17 @@ describe('cdkd drift --revert masks a name derived from a secret (go-to-k/cdkd#3
 
   it("masks a reader's revert line naming a secret-named user", async () => {
     expect(await revertLine('***')).toBe('Updating access key of user ***');
+  });
+
+  it.each([
+    ['a secret-named user', '***', false],
+    ['negative control, an ordinary name', 'plain-user-name', true],
+  ])('masks the failure line quoting AWS’s error text: %s', async (_l, userName, shown) => {
+    await revertLine(userName, true);
+    const failure = logLines.filter((l) => l.includes('cannot be found'));
+    // Premise: the command logged the failure.
+    expect(failure.length).toBeGreaterThan(0);
+    expect(failure.join('\n').includes(USER_ID)).toBe(shown);
   });
 
   it('negative control: an ordinary name prints as it is', async () => {

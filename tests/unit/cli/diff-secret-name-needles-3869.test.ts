@@ -40,7 +40,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildDiffTree, computeStackDiff } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
-import { hasMaskableValues } from '../../../src/deployment/secret-redaction.js';
+import { hasMaskableValues, maskSecretsInText } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -166,7 +166,8 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
       new DiffCalculator()
     );
     const lines = debugLines.join('\n');
-    expect(lines).toContain('Queue.Arn resolved to');
+    // Premise: the outputs pass resolved it too, not only the reader's row.
+    expect(lines.split('\n').filter((l) => l.includes('Queue.Arn resolved to')).length).toBeGreaterThanOrEqual(2);
     expect(lines).not.toContain('sdin-diff-secret-queue');
     // The outputs pass's own bag decides export aliases: it holds nothing.
     expect(hasMaskableValues(result.printingSecrets)).toBe(false);
@@ -214,6 +215,27 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     const lines = debugLines.join('\n');
     expect(lines).toContain('Ref to resource: Db resolved to');
     expect(lines.includes('teamsecretdb')).toBe(!noEcho);
+  });
+
+  it("keeps an output's Fn::Base64 of the name out of the corpus a child inherits, with a NoEcho value in it", async () => {
+    // The outputs pass sets `printingSecrets` (the diff bag, holding the
+    // NoEcho value) AND the sink: the encoding belongs to the sink only.
+    const tpl = template('{{resolve:secretsmanager:sdin:SecretString:queue::}}');
+    tpl.Parameters = { Tok: { Type: 'String', NoEcho: true, Default: 'unrelated-noecho-token' } };
+    tpl.Outputs = { Enc: { Value: { 'Fn::Base64': { Ref: 'Queue' } } } };
+    debugLines.length = 0;
+    const result = await computeStackDiff(
+      state('{{resolve:secretsmanager:sdin:SecretString:queue::}}'),
+      tpl,
+      'us-east-1',
+      'S',
+      backend,
+      new DiffCalculator()
+    );
+    const encoded = Buffer.from(URL).toString('base64');
+    expect(debugLines.join('\n')).toContain('Resolved Fn::Base64');
+    expect(debugLines.join('\n')).not.toContain(encoded);
+    expect(maskSecretsInText(encoded, result.printingSecrets)).toBe(encoded);
   });
 
   it('negative control: an ordinary name prints as it is', async () => {

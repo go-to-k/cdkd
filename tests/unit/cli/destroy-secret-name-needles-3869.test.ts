@@ -129,8 +129,8 @@ describe('cdkd destroy masks a name derived from a secret (go-to-k/cdkd#3869)', 
   });
 
   it("masks the final-snapshot identifier a Snapshot delete derives from the name", async () => {
-    // The identifier is lower-cased and suffixed: no literal of the reference,
-    // only the judge's final-snapshot spelling covers it.
+    // The identifier is derived from the id (lower-cased and suffixed), so it
+    // is no literal of the reference: the judge's id spellings cover it.
     const state: StackState = {
       version: 8,
       stackName: 'TestStack',
