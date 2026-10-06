@@ -249,29 +249,41 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
   });
 
   describe("the masked-input pass's reads (previewMaskedInputs)", () => {
-    // A reader whose masked property embeds `Ref: Queue`. The Queue's
-    // TEMPLATE name is now a literal, so the pass's taint check lets the read
-    // through, while its STATE record still spells the name as a reference:
-    // the judge reads the record, so the read is secret-named.
-    const VALUE = {
+    // A reader whose masked property reads the Queue. The Queue's TEMPLATE
+    // name is now a literal, so the pass's taint check lets the read through,
+    // while its STATE record still spells the name as a reference: the judge
+    // reads the record, so the read is secret-named.
+    //
+    // SHARED: the main pass resolves the same `Ref: Queue` first, so the row
+    // is the one the Queue's replacement makes.
+    const SHARED = {
       'Fn::Base64': {
         'Fn::Join': ['', [{ Ref: 'Queue' }, ';pw=', '{{resolve:secretsmanager:app-pw}}']],
       },
     };
-    const inputTemplate = (): CloudFormationTemplate => {
-      const tpl = template('plain-literal-queue');
-      tpl.Resources['R'] = {
-        Type: 'AWS::SSM::Parameter',
-        Properties: { Name: 'n', Type: 'String', Value: VALUE },
-      };
-      return tpl;
+    // ONLY_HERE: a read only this pass makes. The custom resource's record
+    // lacks `OutArn`, so the main pass refuses `${Thing.OutArn}` (an `*Arn`
+    // name takes no physical-id fallback) before reaching `${Queue}` and
+    // leaves `Value` as written; this pass keeps the opaque attribute as
+    // written and resolves the Queue alone.
+    const ONLY_HERE = {
+      'Fn::Base64': { 'Fn::Sub': '${Thing.OutArn}-${Queue};pw={{resolve:secretsmanager:app-pw}}' },
     };
-    async function inputState(stateName: string): Promise<StackState> {
-      const tpl = inputTemplate();
-      const fingerprint = await maskedInputFingerprint(VALUE, {
+    const TOKEN = 'arn:aws:lambda:us-east-1:123456789012:function:thing';
+    const inputTemplate = (value: unknown): CloudFormationTemplate => ({
+      Resources: {
+        Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'plain-literal-queue' } },
+        Thing: { Type: 'Custom::Thing', Properties: { ServiceToken: TOKEN } },
+        R: { Type: 'AWS::SSM::Parameter', Properties: { Name: 'n', Type: 'String', Value: value } },
+      },
+    });
+    async function inputState(stateName: string, value: unknown): Promise<StackState> {
+      const tpl = inputTemplate(value);
+      const fingerprint = await maskedInputFingerprint(value, {
         template: tpl,
         parameterInput: parameterInputsFor({ template: tpl, values: {} }).parameterInput,
         // Stamped over the URL, as the deploy that wrote the record saw it.
+        // Only the Queue is resolved: the custom attribute is opaque.
         resolve: async (node: unknown) => {
           if (JSON.stringify(node) !== JSON.stringify({ Ref: 'Queue' })) {
             throw new Error(`unexpected node ${JSON.stringify(node)}`);
@@ -281,22 +293,30 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
       });
       expect(fingerprint).toBeDefined();
       const s = state(stateName);
+      delete s.resources['Policy'];
+      s.resources['Thing'] = {
+        physicalId: 'thing-1',
+        resourceType: 'Custom::Thing',
+        properties: { ServiceToken: TOKEN },
+        attributes: {},
+        dependencies: [],
+      };
       s.resources['R'] = {
         physicalId: 'n',
         resourceType: 'AWS::SSM::Parameter',
         properties: { Name: 'n', Type: 'String', Value: '***' },
         attributes: {},
-        dependencies: ['Queue'],
-        maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(VALUE) },
+        dependencies: ['Queue', 'Thing'],
+        maskedPropertyFingerprints: { Value: maskedPropertyFingerprint(value) },
         maskedPropertyInputFingerprints: { Value: fingerprint! },
       };
       return s;
     }
-    async function run(stateName: string, preview: boolean) {
+    async function run(stateName: string, value: unknown, preview: boolean) {
       debugLines.length = 0;
       const result = await computeStackDiff(
-        await inputState(stateName),
-        inputTemplate(),
+        await inputState(stateName, value),
+        inputTemplate(value),
         'us-east-1',
         'S',
         backend,
@@ -309,24 +329,26 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     }
     const SECRET_NAME = '{{resolve:ssm:/sdin/queue-name}}';
 
-    it("masks the name on the pass's own resolver lines", async () => {
-      const off = await run(SECRET_NAME, false);
-      const on = await run(SECRET_NAME, true);
-      // Premise: the pass resolved the read and printed it.
-      expect(on.refLines.length).toBeGreaterThan(off.refLines.length);
+    it("masks the name on the pass's own resolver lines, a read no other pass makes", async () => {
+      const off = await run(SECRET_NAME, ONLY_HERE, false);
+      const on = await run(SECRET_NAME, ONLY_HERE, true);
+      // Premise: only this pass resolved the read, and it printed it.
+      expect(off.refLines).toEqual([]);
+      expect(on.refLines.length).toBeGreaterThan(0);
       expect(on.lines).not.toContain('sdin-diff-secret-queue');
     });
 
     it('negative control: an ordinary name prints as it is', async () => {
-      const off = await run('plain-older-queue', false);
-      const on = await run('plain-older-queue', true);
-      expect(on.refLines.length).toBeGreaterThan(off.refLines.length);
+      const on = await run('plain-older-queue', ONLY_HERE, true);
+      expect(on.refLines.length).toBeGreaterThan(0);
       expect(on.lines).toContain('sdin-diff-secret-queue');
     });
 
     it("keeps the needles out of the pass's deciding bag: no masked-expression change", async () => {
-      const { result, refLines } = await run(SECRET_NAME, true);
-      expect(refLines.length).toBeGreaterThan(0);
+      const off = await run(SECRET_NAME, SHARED, false);
+      const { result, refLines } = await run(SECRET_NAME, SHARED, true);
+      // Premise: the pass resolved the read too.
+      expect(refLines.length).toBeGreaterThan(off.refLines.length);
       const change = result.changes.get('R')!;
       expect(change.propertyChanges?.length).toBe(1);
       // A needle in the bag the pass returns would class the read as a secret
