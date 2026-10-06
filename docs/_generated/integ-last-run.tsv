@@ -81,7 +81,7 @@ deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Re
 deployment-events	2026-09-28T17:37:19Z	PASS	45	verify.sh	rc ok, orph clean (#3950 lane B)
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
 destroy-interrupt	2026-10-05T18:18:46Z	PASS	396	verify.sh	rc ok, orph clean (#2115 PR #4589)
-diff-fail-on-destructive	2026-10-05T17:32:16Z	PASS	80	verify.sh	rc ok, orph clean (#4429 PR #4593)
+diff-fail-on-destructive	2026-10-06T02:45:41Z	PASS	85	verify.sh	rc ok, orph clean (#4607 PR #4608)
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-10-04T16:44:59Z	PASS	105	verify.sh	rc ok, orph clean (#2080 PR #4557)
 docdb-neptune	2026-10-06T02:22:44Z	PASS	5209	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
@@ -156,12 +156,12 @@ import-attribute-readback-final	2026-09-25T01:44:41Z	PASS	276	verify.sh	rc ok, o
 import-attribute-readback-misc	2026-09-27T14:13:26Z	PASS	266	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
 import-attribute-readback-network	2026-09-24T14:52:27Z	PASS	327	verify.sh	rc ok, orph clean; CFn-written SSM values as oracle
 import-attributes	2026-09-28T18:32:16Z	PASS	60	verify.sh	PR #4007 merge-gate run; rc ok, orph clean
-import-auto-mode	2026-10-04T03:21:48Z	PASS	90	verify.sh	rc ok, orph clean (#4521 lazy provider classes)
+import-auto-mode	2026-10-06T02:45:41Z	PASS	85	verify.sh	rc ok, orph clean (#4607 PR #4608)
 import-deployed-parameter-secret	2026-10-01T06:24:56Z	PASS	440	verify.sh	rc ok, orph clean; #4273 ssm-parameter import refusal (10 del/0 err)
 import-heal-prefix-record	2026-09-25T10:36:04Z	PASS	165	verify.sh	rc ok, orph clean; resolver at origin/main leaves all 4 rows wrong
 import-lambda-url-attributes	2026-10-01T10:13:53Z	PASS	105	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
 import-migrate-vpc	2026-09-28T17:48:20Z	PASS	350	verify.sh	rc ok, orph clean (#3950 lane B)
-import-nested-stack	2026-10-04T19:49:12Z	PASS	141	verify.sh	rc ok, orph clean (#4547)
+import-nested-stack	2026-10-06T02:45:41Z	PASS	141	verify.sh	rc ok, orph clean (#4607 PR #4608)
 import-reimport-masked-attrs	2026-09-28T18:03:10Z	PASS	186	verify.sh	PR #4007 merge-gate run; new fixture; pre-fix binary red at phase 2; rc ok, orph clean
 import-retain-destroy	2026-10-04T20:48:56Z	PASS	135	verify.sh	rc ok, orph clean (#4566); R3b red at origin/main (rollback --revert-failed exited 0, want 2)
 import-secret-observed	2026-10-03T10:38:15Z	PASS	135	verify.sh	rc ok, orph clean (#4508)
@@ -175,7 +175,7 @@ intrinsics-torture-2	2026-09-26T12:49:55Z	PASS	60	verify.sh	#3809 final sha (reb
 kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kinesis-stream-mode-switch	2026-10-03T04:24:24Z	PASS	102	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-05T18:13:55Z	PASS	105	verify.sh	rc ok, orph clean (#2115 PR #4589)
+lambda	2026-10-06T02:45:41Z	PASS	105	verify.sh	rc ok, orph clean (#4607 PR #4608)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
@@ -241,11 +241,11 @@ multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 sta
 multi-resource	2026-10-03T09:39:45Z	PASS	65	std-flow	rc ok, orph clean (#4505)
 multi-stack-deps	2026-10-03T09:41:05Z	PASS	80	std-flow	rc ok, orph clean (#4505)
 nested-required-preflight	2026-09-23T18:43:53Z	PASS	53	verify.sh	rc ok, orph clean (#1802)
-nested-stack	2026-10-06T02:22:44Z	PASS	75	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+nested-stack	2026-10-06T02:45:41Z	PASS	75	verify.sh	rc ok, orph clean (#4607 PR #4608)
 nested-stack-3level	2026-10-05T18:10:14Z	PASS	531	verify.sh	rc ok, orph clean (#2115 PR #4589)
 nested-stack-deep	2026-10-05T18:26:04Z	PASS	100	verify.sh	rc ok, orph clean (#2115 PR #4589)
 nested-stack-replace-guard	2026-10-04T09:21:25Z	PASS	65	verify.sh	rc ok, orph clean (#3932)
-nested-stack-rollback	2026-10-06T02:22:44Z	PASS	105	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+nested-stack-rollback	2026-10-06T02:45:41Z	PASS	101	verify.sh	rc ok, orph clean (#4607 PR #4608)
 nested-stack-secret	2026-10-04T15:13:49Z	PASS	231	verify.sh	rc ok, orph clean (#4451)
 nlb-source-nat	2026-10-01T07:41:42Z	PASS	376	verify.sh	PR #4298 (#4259 masked ELBv2/Logs retry stamp) at 469259081; rc ok, 24 deleted 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
@@ -353,9 +353,3 @@ vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-prov
 vpc-nat-gateway	2026-10-06T02:22:44Z	PASS	325	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 wafv2	2026-08-11T03:29:45Z	PASS	240	standard	1544 lane: Scope guard replay-downgrade wiring; destroy 0 err 0 orph
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
-diff-fail-on-destructive 85	2026-10-06T02:45:41Z	PASS		verify.sh	rc ok, orph clean (#4607 PR #4608)
-lambda 105	2026-10-06T02:45:41Z	PASS		verify.sh	rc ok, orph clean (#4607 PR #4608)
-nested-stack 75	2026-10-06T02:45:41Z	PASS		verify.sh	rc ok, orph clean (#4607 PR #4608)
-nested-stack-rollback 101	2026-10-06T02:45:41Z	PASS		verify.sh	rc ok, orph clean (#4607 PR #4608)
-import-auto-mode 85	2026-10-06T02:45:41Z	PASS		verify.sh	rc ok, orph clean (#4607 PR #4608)
-import-nested-stack 141	2026-10-06T02:45:41Z	PASS		verify.sh	rc ok, orph clean (#4607 PR #4608)
