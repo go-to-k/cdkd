@@ -23,6 +23,7 @@ cdkd state resources MyStack             # logical id / type / physical id
 cdkd state show MyStack --json           # the whole record, including properties
 cdkd state destroy MyStack --yes         # delete the AWS resources, then the record
 cdkd state orphan MyStack                # delete ONLY the record; AWS resources survive
+cdkd state orphan MyStack --resource MyQueue  # drop one resource's record; the stack stays deployed
 cdkd state refresh-observed MyStack      # repopulate the drift baseline without deploying
 ```
 
@@ -34,7 +35,7 @@ cdkd state refresh-observed MyStack      # repopulate the drift baseline without
 | [`list`](#cdkd-state-list) | nothing | Lists the stacks registered in the bucket, flat or as a nested-stack tree. |
 | [`resources`](#cdkd-state-resources) | nothing | Lists one stack's recorded resources. |
 | [`show`](#cdkd-state-show) | nothing | Prints one stack's full record — metadata, lock, outputs, resources with properties. |
-| [`orphan`](#cdkd-state-orphan) | the state record | Removes a state record and leaves the AWS resources running. |
+| [`orphan`](#cdkd-state-orphan) | the state record | Removes a state record, or with `--resource` one resource's entry in it, and leaves the AWS resources running. |
 | [`destroy`](#cdkd-state-destroy) | AWS resources, then the record | Deletes the AWS resources and then the record, with no CDK app. |
 | [`migrate`](#cdkd-state-migrate) | the bucket the records live in | Copies a legacy region-suffixed state bucket into the region-free one. |
 | [`refresh-observed`](#cdkd-state-refresh-observed) | the state record | Repopulates `observedProperties` — the drift baseline — from live AWS. |
@@ -598,26 +599,77 @@ of the record.
 cdkd state orphan MyStack
 cdkd state orphan MyStack --stack-region us-east-1
 cdkd state orphan StackA StackB --force
+cdkd state orphan MyStack --stack-region us-east-1 --resource MyQueue
 ```
 
 Removes cdkd's state record for one or more stacks and **leaves every AWS
 resource running**. After this, cdkd no longer knows the stack exists; the
-resources become untracked rather than deleted.
+resources become untracked rather than deleted. With `--resource`, it removes
+only the named resources' entries and keeps the rest of the stack's record
+([Removing one resource from the record](#removing-one-resource-from-the-record)).
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `<stacks...>` | — | Stack name(s) to orphan, as physical CloudFormation names. At least one is required. |
-| `-f`, `--force` | off | Skip the confirmation prompt **and** remove the record even when the stack is locked. |
-| `--stack-region <region>` | — | Orphan only the record in this region. Omitting it removes every record for the name — `orphan` does not refuse an ambiguous name. |
+| `<stacks...>` | — | Stack name(s) to orphan, as physical CloudFormation names. At least one is required; exactly one with `--resource`. |
+| `-f`, `--force` | off | Skip the confirmation prompt **and** remove the record even when the stack is locked. With `--resource`: skip the prompt **and** enable the cached-attribute fallback (a reference that cannot be resolved live takes the value cached in state); a held lock still refuses. |
+| `--stack-region <region>` | — | Orphan only the record in this region. Omitting it removes every record for the name — `orphan` does not refuse an ambiguous name. With `--resource` it does: a stack with records in several regions needs this flag. |
+| `--resource <logicalId>` | — | Remove only this resource's entry from the stack's record. Repeat the flag for several. |
 
 `-y` / `--yes` skips the prompt but does *not* bypass the lock guard; only
-`--force` does both. A locked stack otherwise fails with the exact
+`--force` does both — except with `--resource`, where no flag bypasses a held
+lock. A locked stack otherwise fails with the exact
 `cdkd force-unlock` command to run first. Orphaning a stack that has no record
 is a no-op, not an error, so the command is safe to re-run.
 
 Force-releasing a lock this way deletes whatever lock is present, including a
 live one belonging to an in-flight deploy — deliberately, so a stuck lock can
 never make a record unremovable. The command warns when it is about to do that.
+
+### Removing one resource from the record
+
+`--resource <logicalId>` removes one resource's entry from a stack's record
+and keeps the stack deployed: the resource stays in AWS, untracked, and every
+other resource stays under cdkd. It reads the record, not your CDK app, so it
+also reaches a resource whose construct has already left the template — a
+delete that `cdkd deploy` skipped, for example, which
+[`cdkd orphan`](orphan-vs-destroy.md) cannot address because it resolves
+construct paths through the synthesized template.
+
+It edits the record the way `cdkd orphan` does:
+
+- Every `Ref`, `Fn::GetAtt` and `Fn::Sub` to the removed resource that another
+  record or a stack output still holds is replaced with the value it resolved
+  to, and the removed resource is dropped from every `dependencies` list. A
+  `Fn::GetAtt` the record cannot serve is read live from AWS in the stack's
+  region. One that still cannot be resolved stops the run, and nothing is
+  written. `--force` takes the value cached in the removed record instead, and
+  keeps the original intrinsic where there is none — or where it is a value
+  cdkd recognises as a credential (a credential-named attribute, any custom
+  resource's attribute, a known secret-valued attribute such as AppSync's
+  `ApiKey`, or a value holding a credential-named field), the redaction mask
+  or an unresolved `{{resolve:...}}` reference, which are never copied into
+  another record (the same rule applies to `cdkd orphan --force`).
+- It takes the stack's lock and saves with a conditional write. A held lock
+  refuses with the `cdkd force-unlock` command to run, `--force` included.
+- A logical id the record does not hold refuses, listing the ones it does.
+- A record it cannot read is refused rather than rewritten, wherever
+  `cdkd orphan` refuses one
+  ([State Management](state-management.md#when-resources-is-not-an-object)
+  lists each container): the record as a whole, its outputs, and any part of a
+  resource entry it would keep.
+- A target whose child record (`<parent>~<logicalId>`, a nested stack's)
+  still exists in any region refuses: the child's records would be left with
+  nothing that removes them. The refusal prints the
+  `cdkd state orphan '<parent>~<logicalId>'` to run first, with the child's own
+  region, and says when the child has records in other regions too. Once the child has no record, the parent's entry is removed like any
+  other.
+
+What the next `cdkd deploy` does with the resource depends on the template.
+If the construct has left it, the deploy leaves the resource alone, since
+cdkd holds no record of it. If the construct is still there, the deploy
+creates it again: a resource whose name cdkd generates or the template sets
+collides with the one still in AWS, so delete that by hand first or import
+it back with [`cdkd import`](import.md).
 
 When to reach for it, and when not to:
 [Orphan vs Destroy](orphan-vs-destroy.md) draws the line against `cdkd orphan`,

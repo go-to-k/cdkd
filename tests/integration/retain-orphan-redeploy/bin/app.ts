@@ -3,6 +3,7 @@ import * as cdk from 'aws-cdk-lib';
 import {
   RetainOrphanRedeployStack,
   RetainOrphanAdoptStack,
+  RetainOrphanResourceStack,
 } from '../lib/retain-orphan-redeploy-stack.ts';
 
 const app = new cdk.App();
@@ -20,3 +21,7 @@ new RetainOrphanRedeployStack(app, 'CdkdRetainOrphanRedeployExample', { env });
 // it is the property under test). Both are always synthesized; each phase of
 // `verify.sh` names the stack it operates on.
 new RetainOrphanAdoptStack(app, 'CdkdRetainOrphanAdoptExample', { env });
+
+// The single-record orphan arm (go-to-k/cdkd#4602), a third stack so its
+// `state orphan --resource` never touches the two arms above.
+new RetainOrphanResourceStack(app, 'CdkdRetainOrphanResourceExample', { env });

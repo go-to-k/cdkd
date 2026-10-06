@@ -334,8 +334,8 @@ It can change hands while its holder is still working. Three ways:
   another process to take.
 - [`cdkd force-unlock`](cli-force-unlock.md) removes one outright, live holder
   included.
-- `cdkd state orphan --force` force-releases the stack's lock the same way on
-  its way to dropping the state record.
+- `cdkd state orphan --force` (without `--resource`) force-releases the
+  stack's lock the same way on its way to dropping the state record.
 
 A holder that notices warns and declines to delete a lock it no longer owns,
 but past that point two processes can be writing one stack's state.
@@ -549,14 +549,22 @@ The remedy differs from destroy's, because the stack is still deployed:
   resource first, or a rollback that re-created the old one first): the skip
   only warns, and the surviving copy is no longer tracked; tear it down by hand.
 
-Do not run `cdkd state orphan '<stack>'` to clear such a record. It drops the
-record of every resource in the stack, so the next deploy re-creates or
-collides with all of them. That command is the remedy only on
+For a resource removed from the template, to give up on the delete and stop
+tracking it, drop only its record with `cdkd state orphan '<stack>' --stack-region <region> --resource <logicalId>`
+([one resource's record](cli-state.md#removing-one-resource-from-the-record)).
+Do not run `cdkd state orphan '<stack>'` without `--resource` to clear it. That
+drops the record of every resource in the stack, so the next deploy re-creates
+or collides with all of them; the whole-stack form is the remedy only on
 [`cdkd destroy`](cli-destroy.md), where the stack's other records are already
-gone. The same holds for a `ServiceToken` that is not a string (a leaked
-intrinsic): a create or update reads it from the template, and a rollback
-replays the recorded value, so fix the template and re-deploy. A delete reads
-the state record: restore the ARN in `state.json`.
+gone.
+
+A `ServiceToken` that is not a string (a leaked intrinsic) is different. A
+create or update reads it from the template, and a rollback replays the
+recorded value, so fix the template and re-deploy; do not drop the record, with
+or without `--resource`, because the template still declares the resource and
+the next deploy would send the handler a fresh Create. A delete reads the state
+record: restore the ARN in `state.json`, or, for a resource removed from the
+template, drop only its record with `--resource` as above.
 
 ## Exit codes
 

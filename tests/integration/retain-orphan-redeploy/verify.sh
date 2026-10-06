@@ -64,6 +64,26 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 
+# The orphaned queue's existence, retried: SQS answers a just-deleted queue for
+# up to 60 s, and a throttle is not an answer. `queue_state <url> exists`
+# returns 0 once the queue answers and 1 on NonExistentQueue; `queue_state
+# <url> gone` returns 0 once it reports NonExistentQueue. Anything still
+# undetermined after ~90 s FAILs the run.
+queue_state() { # usage: queue_state <url> <exists|gone>
+  local url="$1" want="$2" out="" i
+  for i in $(seq 1 15); do
+    if out="$(aws sqs get-queue-attributes --queue-url "${url}" --attribute-names QueueArn 2>&1)"; then
+      [ "${want}" = exists ] && return 0
+    elif printf '%s' "${out}" | grep -qiE 'NonExistentQueue|does not exist'; then
+      [ "${want}" = gone ] && return 0
+      return 1
+    fi
+    sleep 6
+  done
+  echo "FAIL: queue ${url} is still not '${want}' after ~90 s: ${out:-it still answers}" >&2
+  exit 1
+}
+
 cd "$(dirname "$0")"
 
 export AWS_PAGER=""
@@ -83,6 +103,13 @@ ADOPT_STATE_KEY="cdkd/${ADOPT_STACK}/${REGION}/state.json"
 ADOPT_ROLE_NAME=""
 ADOPT_LOGICAL_ID=""
 ADOPT_LOG=""
+# The single-record orphan arm (go-to-k/cdkd#4602) — a THIRD stack.
+ORPHAN_STACK="CdkdRetainOrphanResourceExample"
+ORPHAN_STATE_KEY="cdkd/${ORPHAN_STACK}/${REGION}/state.json"
+ORPHAN_QUEUE_URL=""
+REFUSE_LOG=""
+REDEPLOY_ORPHAN_LOG=""
+DESTROY_ORPHAN_LOG=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -126,13 +153,27 @@ cleanup() {
     done
     aws iam delete-role --role-name "${ADOPT_ROLE_NAME}" >/dev/null 2>&1
   fi
+  # The single-record arm's stack, then its queue: `state orphan --resource`
+  # drops the queue's record on purpose, so no destroy can reach it and the
+  # by-URL delete below is the only thing that stops a leak.
+  if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    node "${LOCAL_DIST}" state destroy "${ORPHAN_STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" \
+      --yes
+  fi
+  if [ -n "${ORPHAN_QUEUE_URL}" ]; then
+    aws sqs delete-queue --queue-url "${ORPHAN_QUEUE_URL}" >/dev/null 2>&1
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${ORPHAN_STATE_KEY}" >/dev/null 2>&1
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${ORPHAN_STACK}/${REGION}/lock.json" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/${ADOPT_STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${ADOPT_STACK}/${REGION}/lock.json" >/dev/null 2>&1
   fi
-  rm -f "${REDEPLOY_LOG:-}" "${ADOPT_LOG:-}"
+  rm -f "${REDEPLOY_LOG:-}" "${ADOPT_LOG:-}" "${REFUSE_LOG:-}" "${REDEPLOY_ORPHAN_LOG:-}" "${DESTROY_ORPHAN_LOG:-}"
   set -eu
 }
 
@@ -450,8 +491,158 @@ assert_gone "state file s3://${STATE_BUCKET}/${ADOPT_STATE_KEY} still exists aft
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${ADOPT_STATE_KEY}"
 echo "    OK: adoption-arm state file is gone"
 
+# ---------------------------------------------------------------------------
+# The SINGLE-RECORD orphan arm (go-to-k/cdkd#4602).
+#
+# `cdkd state orphan <stack> --resource <logicalId>` drops ONE record of a
+# stack that stays deployed, without the CDK app. Asserted: only that record
+# goes, a surviving record's dependency on it is rewritten out, the resource
+# stays in AWS, and the next deploy — with the construct gone from the
+# template, the case the option exists for — leaves it alone rather than
+# deleting it, because cdkd no longer holds a record of it.
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "==> Phase 12: deploy the single-record arm (a queue + a parameter that depends on it)"
+CDKD_TEST_ORPHAN_RESOURCE=with node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+ORPHAN_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${ORPHAN_STATE_KEY}" - 2>/dev/null || echo '{}')"
+QUEUE_LOGICAL_ID=$(printf '%s' "${ORPHAN_STATE}" | jq -r \
+  '[.resources | to_entries[] | select(.value.resourceType == "AWS::SQS::Queue") | .key] | first // ""')
+KEEPER_LOGICAL_ID=$(printf '%s' "${ORPHAN_STATE}" | jq -r \
+  '[.resources | to_entries[] | select(.value.resourceType == "AWS::SSM::Parameter") | .key] | first // ""')
+ORPHAN_QUEUE_URL=$(printf '%s' "${ORPHAN_STATE}" | jq -r --arg k "${QUEUE_LOGICAL_ID}" '.resources[$k].physicalId // ""')
+KEEPER_NAME=$(printf '%s' "${ORPHAN_STATE}" | jq -r --arg k "${KEEPER_LOGICAL_ID}" '.resources[$k].physicalId // ""')
+BEFORE_KEYS=$(printf '%s' "${ORPHAN_STATE}" | jq -c '.resources | keys')
+if [ -z "${QUEUE_LOGICAL_ID}" ] || [ -z "${KEEPER_LOGICAL_ID}" ] || [ -z "${ORPHAN_QUEUE_URL}" ] || [ -z "${KEEPER_NAME}" ]; then
+  echo "FAIL: could not resolve the queue / parameter records from ${ORPHAN_STATE_KEY}" >&2
+  printf '%s\n' "${ORPHAN_STATE}" | jq '{resources: (.resources | keys)}' >&2
+  exit 1
+fi
+# Premise: the parameter's record DEPENDS on the queue, or the rewrite asserted
+# below has nothing to rewrite and passes vacuously.
+if ! printf '%s' "${ORPHAN_STATE}" | jq -e --arg k "${KEEPER_LOGICAL_ID}" --arg q "${QUEUE_LOGICAL_ID}" \
+  '.resources[$k].dependencies | index($q) != null' >/dev/null; then
+  echo "FAIL: premise: ${KEEPER_LOGICAL_ID}'s record does not list ${QUEUE_LOGICAL_ID} in its dependencies" >&2
+  printf '%s\n' "${ORPHAN_STATE}" | jq --arg k "${KEEPER_LOGICAL_ID}" '.resources[$k]' >&2
+  exit 1
+fi
+echo "    queue=${QUEUE_LOGICAL_ID} parameter=${KEEPER_LOGICAL_ID} (depends on the queue)"
+
+echo "==> Phase 13: an unknown --resource refuses and writes nothing"
+REFUSE_LOG="$(mktemp)"
+if node "${LOCAL_DIST}" state orphan "${ORPHAN_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" \
+  --resource NoSuchLogicalId4602 --yes > "${REFUSE_LOG}" 2>&1; then
+  echo "FAIL: 'state orphan --resource NoSuchLogicalId4602' succeeded; it must refuse an id the record does not hold" >&2
+  cat "${REFUSE_LOG}" >&2
+  exit 1
+fi
+# The REASON, not just the exit code: a flag typo, a bucket miss or a crash
+# also exits non-zero.
+if ! grep -q "Resource(s) not in state for" "${REFUSE_LOG}"; then
+  echo "FAIL: the refusal is not the unknown-logical-id one" >&2
+  cat "${REFUSE_LOG}" >&2
+  exit 1
+fi
+AFTER_KEYS=$(aws s3 cp "s3://${STATE_BUCKET}/${ORPHAN_STATE_KEY}" - 2>/dev/null | jq -c '.resources | keys')
+if [ "${AFTER_KEYS}" != "${BEFORE_KEYS}" ]; then
+  echo "FAIL: the refused run changed the record: ${BEFORE_KEYS} -> ${AFTER_KEYS}" >&2
+  exit 1
+fi
+echo "    OK: refused, record unchanged"
+
+echo "==> Phase 14: state orphan --resource ${QUEUE_LOGICAL_ID} (drop ONLY the queue's record)"
+node "${LOCAL_DIST}" state orphan "${ORPHAN_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" \
+  --resource "${QUEUE_LOGICAL_ID}" --yes
+
+ORPHAN_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${ORPHAN_STATE_KEY}" - 2>/dev/null || echo '{}')"
+EXPECTED_KEYS=$(printf '%s' "${BEFORE_KEYS}" | jq -c --arg q "${QUEUE_LOGICAL_ID}" 'map(select(. != $q))')
+AFTER_KEYS=$(printf '%s' "${ORPHAN_STATE}" | jq -c '.resources | keys')
+if [ "${AFTER_KEYS}" != "${EXPECTED_KEYS}" ]; then
+  echo "FAIL: expected exactly the queue's record to go: ${BEFORE_KEYS} -> ${AFTER_KEYS} (wanted ${EXPECTED_KEYS})" >&2
+  exit 1
+fi
+if printf '%s' "${ORPHAN_STATE}" | jq -e --arg k "${KEEPER_LOGICAL_ID}" --arg q "${QUEUE_LOGICAL_ID}" \
+  '.resources[$k].dependencies | index($q) != null' >/dev/null; then
+  echo "FAIL: ${KEEPER_LOGICAL_ID}'s record still depends on the removed ${QUEUE_LOGICAL_ID}" >&2
+  exit 1
+fi
+if [ "$(printf '%s' "${ORPHAN_STATE}" | jq -r --arg k "${KEEPER_LOGICAL_ID}" '.resources[$k].physicalId // ""')" != "${KEEPER_NAME}" ]; then
+  echo "FAIL: the surviving parameter's record lost its physical id" >&2
+  exit 1
+fi
+# The surviving record's value names the queue's URL, not a {Ref} to a
+# record that no longer exists.
+KEEPER_RECORDED=$(printf '%s' "${ORPHAN_STATE}" | jq -c --arg k "${KEEPER_LOGICAL_ID}" '.resources[$k].properties.Value')
+if [ "${KEEPER_RECORDED}" != "$(jq -cn --arg u "${ORPHAN_QUEUE_URL}" '$u')" ]; then
+  echo "FAIL: ${KEEPER_LOGICAL_ID}'s recorded Value is ${KEEPER_RECORDED}, expected the queue URL" >&2
+  exit 1
+fi
+if ! queue_state "${ORPHAN_QUEUE_URL}" exists; then
+  echo "FAIL: 'state orphan --resource' deleted the queue — it must only drop the record" >&2
+  exit 1
+fi
+echo "    OK: only the queue's record is gone, the dependency is rewritten, the queue is live"
+
+echo "==> Phase 15: redeploy with the queue gone from the template (must leave the queue alone)"
+REDEPLOY_ORPHAN_LOG="$(mktemp)"
+CDKD_TEST_ORPHAN_RESOURCE=without node "${LOCAL_DIST}" deploy "${ORPHAN_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${REDEPLOY_ORPHAN_LOG}"
+# The deploy must not even PLAN the queue: it holds no record of it.
+# ONE process: under pipefail a `grep | grep -q` whose first stage takes
+# SIGPIPE reads as no match, which is the failure this assertion exists for.
+# A line carrying the queue URL is skipped: the URL holds the logical id
+# (cdkd's generated name), so the survivor's old value would match otherwise.
+if awk -v id="${QUEUE_LOGICAL_ID}" -v url="${ORPHAN_QUEUE_URL}" 'index($0, id) && !index($0, url) && tolower($0) ~ /delet/ {f = 1} END {exit !f}' \
+  "${REDEPLOY_ORPHAN_LOG}"; then
+  echo "FAIL: the redeploy planned or ran a delete of ${QUEUE_LOGICAL_ID}, whose record was orphaned" >&2
+  rm -f "${REDEPLOY_ORPHAN_LOG}"
+  exit 1
+fi
+rm -f "${REDEPLOY_ORPHAN_LOG}"
+if ! queue_state "${ORPHAN_QUEUE_URL}" exists; then
+  echo "FAIL: the redeploy deleted the orphaned queue; with no record cdkd must leave it alone" >&2
+  exit 1
+fi
+KEEPER_VALUE=$(aws ssm get-parameter --name "${KEEPER_NAME}" --query 'Parameter.Value' --output text)
+if [ "${KEEPER_VALUE}" != "detached" ]; then
+  echo "FAIL: the surviving parameter was not updated by the redeploy (value: ${KEEPER_VALUE})" >&2
+  exit 1
+fi
+echo "    OK: redeploy updated the survivor and left the orphaned queue in place"
+
+echo "==> Phase 16: destroy the single-record arm, then delete the orphaned queue by URL"
+DESTROY_ORPHAN_LOG="$(mktemp)"
+CDKD_TEST_ORPHAN_RESOURCE=without node "${LOCAL_DIST}" destroy "${ORPHAN_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1 | tee "${DESTROY_ORPHAN_LOG}"
+# The LOG, as in Phase 15: `queue_state exists` cannot catch a wrong delete,
+# since SQS answers a just-deleted queue for up to 60 s.
+if awk -v id="${QUEUE_LOGICAL_ID}" -v url="${ORPHAN_QUEUE_URL}" 'index($0, id) && !index($0, url) && tolower($0) ~ /delet/ {f = 1} END {exit !f}' \
+  "${DESTROY_ORPHAN_LOG}"; then
+  echo "FAIL: the destroy deleted ${QUEUE_LOGICAL_ID}, whose record was orphaned" >&2
+  exit 1
+fi
+assert_gone "state file s3://${STATE_BUCKET}/${ORPHAN_STATE_KEY} still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${ORPHAN_STATE_KEY}"
+assert_gone "SSM parameter ${KEEPER_NAME} still exists after destroy" \
+  aws ssm get-parameter --name "${KEEPER_NAME}"
+# The destroy holds no record of the queue, so it must still be there (the
+# log check above is the discriminating one; this catches a delete by other
+# means once SQS stops answering).
+if ! queue_state "${ORPHAN_QUEUE_URL}" exists; then
+  echo "FAIL: the destroy deleted the orphaned queue, which no record names" >&2
+  exit 1
+fi
+aws sqs delete-queue --queue-url "${ORPHAN_QUEUE_URL}"
+queue_state "${ORPHAN_QUEUE_URL}" gone
+ORPHAN_QUEUE_URL=""
+echo "    OK: stack destroyed, orphaned queue deleted by URL"
+
 cleanup
 trap - EXIT INT TERM
 
 echo ""
-echo "=== PASS: retain-orphan-redeploy integ (orphan diagnosed + advised remedy recovers; a recorded orphan is re-adopted automatically) ==="
+echo "=== PASS: retain-orphan-redeploy integ (orphan diagnosed + advised remedy recovers; a recorded orphan is re-adopted automatically; state orphan --resource drops one record) ==="

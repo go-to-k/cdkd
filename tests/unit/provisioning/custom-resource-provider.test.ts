@@ -1064,7 +1064,7 @@ describe('CustomResourceProvider', () => {
         () => '',
         (e: unknown) => String((e as Error).message)
       );
-      expect(message).not.toContain('--stack-region <region>');
+      expect(message).not.toContain("'cdkd state orphan <stack> --stack-region <region>',");
       if (label === 'create') {
         // A create reads the template (or, on a rollback, the journal's
         // recorded value): no record to repair, and on a first deploy no
@@ -1076,11 +1076,14 @@ describe('CustomResourceProvider', () => {
         expect(message).toContain('restore the template and re-deploy');
         return;
       }
-      expect(message).toContain(
-        "Do NOT run 'cdkd state orphan <stack>' on a stack that is still deployed"
-      );
       expect(message.split('cdkd state orphan').length - 1).toBe(1);
       if (label === 'update') {
+        // go-to-k/cdkd#4602: the template still declares the resource, so no
+        // drop at all — not even the single-record one.
+        expect(message).toContain(
+          "Do not drop this record with 'cdkd state orphan', with or without --resource"
+        );
+        expect(message).not.toContain('--resource MyCustomResource');
         // A deploy update reads the NEW template-resolved bag and a rollback
         // the journal's record; `cdkd drift --revert` skips custom resources
         // (#323), so no caller is helped by a re-import.
@@ -1091,6 +1094,13 @@ describe('CustomResourceProvider', () => {
         expect(message).not.toContain('drift');
       } else {
         expect(message).toContain('back as ServiceToken in state.json');
+        // go-to-k/cdkd#4602: only the single-record drop, scoped to a
+        // template removal, never the bare form.
+        expect(message).toContain(
+          'For a resource removed from the template, to give up on the delete and stop tracking ' +
+            "it, drop the record with 'cdkd state orphan <stack> --stack-region <region> --resource " +
+            "MyCustomResource', which drops only this record — never run it without --resource"
+        );
       }
     });
 
@@ -1106,7 +1116,9 @@ describe('CustomResourceProvider', () => {
       ).rejects.toThrow(
         // Region-scoped (go-to-k/cdkd#3996), and quoted rather than
         // backticked, which would run the command when pasted.
-        "re-run 'cdkd import' or 'cdkd state orphan <stack> --stack-region <region>' to recover."
+        "re-run 'cdkd import', or drop the record with 'cdkd state orphan <stack> --stack-region " +
+          "<region>', which drops every record the stack still has in that region, not just this " +
+          "one (add '--resource MyCustomResource' to drop only this one), to recover."
       );
     });
   });

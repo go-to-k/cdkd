@@ -517,11 +517,31 @@ describe('S3BucketProvider state-record region guard (issue #2245)', () => {
         );
 
       expect(error?.message).not.toContain('rerun this stack against');
-      expect(error?.message).toContain(
-        "(this stack's region, not the bucket's), which removes EVERY record the stack has in that region"
-      );
+      expect(error?.message).toContain("(<region> is this stack's region, not the bucket's)");
       expect(error?.message).toContain('delete it deliberately in us-west-2');
-      expect(error?.message).toContain("so run it once this is the stack's last record");
+      // No `stackDestroy`: a deploy-side delete, so this record only (go-to-k/cdkd#4602).
+      expect(error?.message).toContain(
+        "'cdkd state orphan <stack> --stack-region <region> --resource MyBucket', which drops only this record"
+      );
+    });
+
+    it('names the whole-stack drop only on a stack destroy (go-to-k/cdkd#4602)', async () => {
+      mockSend.mockResolvedValueOnce(location('us-west-2'));
+
+      const error = await provider
+        .delete('MyBucket', BUCKET, RESOURCE_TYPE, undefined, {
+          expectedRegion: 'us-east-1',
+          stackDestroy: true,
+        })
+        .then(
+          () => undefined,
+          (e: unknown) => e as Error
+        );
+
+      expect(error?.message).toContain(
+        "'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack " +
+          "still has in that region, not just this one (add '--resource MyBucket' to drop only this one)"
+      );
     });
   });
 

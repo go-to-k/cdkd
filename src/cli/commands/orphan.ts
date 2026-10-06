@@ -722,7 +722,11 @@ async function pickStackRegion(
   );
 }
 
-function printRewriteSummary(rewrites: OrphanRewrite[], orphanLogicalIds: string[]): void {
+/**
+ * The rewrite audit table. Exported for `cdkd state orphan --resource`, which
+ * runs the same rewrite without a CDK app (go-to-k/cdkd#4602).
+ */
+export function printRewriteSummary(rewrites: OrphanRewrite[], orphanLogicalIds: string[]): void {
   const logger = getLogger();
   logger.info('');
   logger.info(
@@ -742,7 +746,8 @@ function printRewriteSummary(rewrites: OrphanRewrite[], orphanLogicalIds: string
   }
 }
 
-function printUnresolvable(unresolvable: UnresolvableReference[]): void {
+/** Every unresolvable reference, one line each. Shared with `cdkd state orphan --resource`. */
+export function printUnresolvable(unresolvable: UnresolvableReference[]): void {
   const logger = getLogger();
   logger.error(`${unresolvable.length} reference(s) could not be resolved:`);
   for (const u of unresolvable) {

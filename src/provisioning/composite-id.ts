@@ -3,6 +3,8 @@ import { plainIdentOr } from '../utils/display-safe.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { plainOrDescribed } from '../utils/pasteable-command.js';
 import { maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
+import type { DeleteContext } from './region-check.js';
+import { stateOrphanRecordRemedy } from './state-orphan-remedy.js';
 
 /**
  * Refuse a composite physicalId whose segments would make it ambiguous
@@ -451,12 +453,17 @@ function formatShape(segments: readonly string[]): string {
  * rollback delete, which fails the resource and can leave the old one
  * untracked — there "drop the record with 'cdkd state orphan'" is not the
  * remedy, deleting the resource by hand is.
+ *
+ * `options.context` is the skipping delete's `DeleteContext`: only a stack
+ * destroy names the whole-stack `cdkd state orphan`; every other phase (and a
+ * caller passing none) names the single-record `--resource` form
+ * ({@link stateOrphanRecordRemedy}, go-to-k/cdkd#4602).
  */
 export function compositeIdFormatMessage(
   format: CompositeIdFormat,
   logicalId: string,
   physicalId: string,
-  options?: { readonly skipping?: boolean }
+  options?: { readonly skipping?: boolean; readonly context?: DeleteContext | undefined }
 ): string {
   const accepted = format.alsoAccepts
     ? `"${formatShape(format.segments)}" or ${format.alsoAccepts}`
@@ -475,8 +482,8 @@ export function compositeIdFormatMessage(
     `1762, on the plain DELETE of a resource removed from the template during ` +
     `cdkd deploy (which re-attempts it on the next deploy). So repair the id in ` +
     `state.json and re-run, or delete the resource by hand and drop the record ` +
-    `with 'cdkd state orphan <stack> --stack-region <region>' (which drops every record ` +
-    `the stack has in that region). NOTE a deploy-side REPLACEMENT or rollback delete ` +
+    `with ${stateOrphanRecordRemedy(options.context, logicalId)}. NOTE a deploy-side ` +
+    `REPLACEMENT or rollback delete ` +
     `instead FAILS the resource ` +
     `(https://github.com/go-to-k/cdkd/issues/1762) — the old resource is left ` +
     `untracked there, so delete it by hand.`

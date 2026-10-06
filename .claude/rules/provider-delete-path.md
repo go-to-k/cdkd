@@ -33,13 +33,13 @@ Keep `reason` a FIXED constant with the AWS message in the warning: a reason is 
 
 `NestedStackProvider.delete` returns `skipped` on `childResult.skippedCount > 0` or `interrupted`, and THROWS on `errorCount > 0`: an attempted-and-failed child must fail the parent's row. The split is decided by what was ATTEMPTED. The throw's wording must avoid the already-deleted needles (`deleteSkippedMessage` in `delete-outcome.ts` lists them), which both callers read as success and DROP the state row. Its remedy must name the CHILD's state file.
 
-A provider that DELEGATES a delete must `return await` it. A REPLACE inside `update()` splits on ORDERING: create-then-delete cannot abort, so it warns in orphan wording and reports `partial`; delete-then-create must ABORT before creating the replacement, on BOTH the skip and the throw arm, since cdkd must not issue a CREATE whose precondition it failed to establish. The abort must suit every `update()` caller.
+A provider that DELEGATES a delete must `return await` it. A REPLACE inside `update()` splits on ORDERING: create-then-delete cannot abort, so it warns in orphan wording and reports `partial`; delete-then-create must ABORT before creating the replacement, on BOTH the skip and the throw arm, since cdkd must not issue a CREATE whose precondition it failed to establish.
 
 Never interpolate a provider-supplied `reason` into a thrown message: `retryable-errors.ts` classifies by SUBSTRING, so `does not exist` or `Rate exceeded` inside it burns the backoff schedule. Interpolate the TEMPLATE logical id only, and `markNonRetryable` it.
 
 ## Skip quality
 
-- **EXHAUST every addressable source before skipping.** A skip preserves the record, warns, exits 2 and repeats forever, so reading ONE source is a defect wherever a second carries the same value — a composite physicalId often holds an ARN the properties lack. Order sources by what was DEPLOYED.
+- **EXHAUST every addressable source before skipping.** A skip preserves the record, warns, exits 2 and repeats forever, so reading ONE source is a defect wherever a second carries the same value. Order sources by what was DEPLOYED.
 - **Validate a fallback source, or it is worse than the skip.** Apply the `typeof === 'string'` guard to BOTH sources: a truthy non-string coerces and the call can SUCCEED against the wrong resource. Check its REGION — a provider holds ONE client, so a cross-region ARN returns `ResourceNotFoundException`, which the idempotent arm reports as DELETED.
 - **A guard that admits a record must open a path that DOES something.** A record reaching a body where every branch is skipped returns `undefined`, i.e. DELETED, so trace it to an AWS call and use the SAME truthiness spelling as the branches downstream.
-- **A skip warning's remedy must be true on the path taken.** "Repair state.json and re-run" holds only where the record is kept (destroy, template-removal DELETE), not on a replacement or rollback one.
+- **A skip warning's remedy must be true on the path taken.** "Repair state.json and re-run" holds only where the record is kept (destroy, template-removal DELETE), not on a replacement or rollback one. Name `cdkd state orphan` via `stateOrphanRecordRemedy` (whole-stack only on `stackDestroy`, #4602).

@@ -4,7 +4,7 @@ import {
   plainOrDescribed,
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
-import { Command, Option } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   GetBucketLocationCommand,
   GetObjectCommand,
@@ -30,6 +30,7 @@ import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/e
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import {
+  displayAwsMessage,
   displayIdent,
   displayStackName,
   isPasteableIdent,
@@ -55,7 +56,12 @@ import {
   isReadableBag,
   malformedRenderedContainersWarning,
   malformedResourcesWarning,
+  refuseMalformedOrphansForOrphan,
+  refuseMalformedOutputs,
+  refuseMalformedResourceAttributesForOrphan,
   refuseMalformedResourceEntries,
+  refuseMalformedResourceEntriesForOrphan,
+  refuseMalformedResourcePropertiesForOrphan,
   refuseMalformedState,
   repairMalformedResourcesForReadOnly,
   type RenderedStateContainer,
@@ -85,6 +91,8 @@ import {
 import { PublicSsmProver } from '../../deployment/public-ssm-proof.js';
 import { stripControlChars } from '../../utils/regexp.js';
 import { buildReadCurrentStateContext, driftProducerRegionEvidence } from './drift.js';
+import { printRewriteSummary, printUnresolvable } from './orphan.js';
+import { rewriteResourceReferences } from '../../analyzer/orphan-rewriter.js';
 import { runDestroyForStack, type DestroyRunnerResult } from './destroy-runner.js';
 import { startRunRecorder, recordRunFailed, recordRunOutcome } from './deployment-events-run.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
@@ -2184,25 +2192,37 @@ function createStateShowCommand(): Command {
  * - `--yes` / `--force` skip the prompt.
  * - Skips cleanly when a stack has no state (idempotent).
  */
-async function stateOrphanCommand(
-  stackArgs: string[],
-  options: {
-    force: boolean;
-    yes: boolean;
-    stateBucket?: string;
-    statePrefix: string;
-    region?: string;
-    stackRegion?: string;
-    profile?: string;
-    roleArn?: string;
-    verbose: boolean;
-  }
-): Promise<void> {
+interface StateOrphanOptions {
+  force: boolean;
+  yes: boolean;
+  /** `--resource <logicalId>`, repeatable (go-to-k/cdkd#4602). */
+  resource?: string[];
+  stateBucket?: string;
+  statePrefix: string;
+  region?: string;
+  stackRegion?: string;
+  profile?: string;
+  roleArn?: string;
+  verbose: boolean;
+}
+
+async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
   if (stackArgs.length === 0) {
     throw new Error(`Stack name is required. Usage: cdkd state orphan ${commandHole('stacks...')}`);
+  }
+
+  if (options.resource !== undefined && options.resource.length > 0) {
+    if (stackArgs.length !== 1) {
+      throw new Error(
+        `--resource names resources of ONE stack, but ${stackArgs.length} stacks were given. ` +
+          `Run 'cdkd state orphan' once per stack.`
+      );
+    }
+    await stateOrphanResources(stackArgs[0]!, options.resource, options);
+    return;
   }
 
   const setup = await setupStateBackend(options);
@@ -2417,6 +2437,237 @@ async function stateOrphanCommand(
   }
 }
 
+/** Accumulate `--resource <logicalId>` (repeatable), refusing an empty value. */
+function collectResourceOption(value: string, previous: string[] | undefined): string[] {
+  if (value.trim() === '') {
+    throw new InvalidArgumentError('expected a logical id, got an empty value.');
+  }
+  return [...(previous ?? []), value];
+}
+
+/**
+ * `cdkd state orphan <stack> --resource <logicalId>...` (go-to-k/cdkd#4602).
+ *
+ * The state-driven sibling of `cdkd orphan <constructPath>`: removes the named
+ * records from ONE stack's state without a CDK app, and leaves every AWS
+ * resource in place. It is the way to drop the record of a resource whose
+ * construct has already left the template (a delete the deploy skipped),
+ * which `cdkd orphan` cannot address and whole-stack `cdkd state orphan`
+ * over-reaches on: that drops every record of a still-deployed stack.
+ *
+ * Shares `cdkd orphan`'s write path: the same malformed-record refusals at the
+ * load, `rewriteResourceReferences` for the `Ref` / `Fn::GetAtt` / `Fn::Sub` /
+ * `dependencies` / `outputs` other records hold to a removed one (unresolvable
+ * refuses unless `--force`), the create-token rotation, and an If-Match save
+ * under the stack's lock. Unlike the whole-stack form, `--force` does NOT
+ * bypass a held lock: this is a read-modify-write of a record another run may
+ * be writing.
+ *
+ * Refuses: more than one stack, a region-ambiguous stack without
+ * `--stack-region` (`resolveSingleRegion`), a legacy region-less record, an id
+ * not in the record, and an `AWS::CloudFormation::Stack` record whose child
+ * state record still exists (the child's records would be left with nothing
+ * that removes them).
+ */
+async function stateOrphanResources(
+  stackName: string,
+  requested: string[],
+  options: StateOrphanOptions
+): Promise<void> {
+  // Awaited first, so provider construction below stays synchronous once the
+  // stack client scope is set (see `loadProviderClasses`).
+  const providerClasses = await loadProviderClasses();
+  const logger = getLogger();
+  const logicalIds = [...new Set(requested)];
+
+  const setup = await setupStateBackend(options);
+  let clients: AwsClients | undefined;
+  try {
+    const refs = await setup.stateBackend.listStacks();
+    const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
+    if (!ref.region) {
+      throw legacyRecordRefusal(stackName);
+    }
+    const region = ref.region;
+    const recovery: LockRecoveryContext = {
+      profile: options.profile,
+      stateBucket: setup.bucket,
+      statePrefix: options.statePrefix,
+    };
+
+    const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
+    const acquired = await setup.lockManager.acquireLock(stackName, region, owner, 'state-orphan');
+    if (!acquired) {
+      throw new Error(
+        await buildLockContentionMessage({
+          lockManager: setup.lockManager,
+          stackName,
+          region,
+          recovery,
+        })
+      );
+    }
+
+    try {
+      const stateData = await setup.stateBackend.getState(stackName, region);
+      if (!stateData) {
+        throw new Error(
+          `No state found for ${describedStackRef(ref)} in s3://${setup.bucket}/${setup.prefix}/. ` +
+            `Run 'cdkd state list' to see available stacks.`
+        );
+      }
+      const { state, etag, migrationPending } = stateData;
+
+      // The refusals `cdkd orphan` makes at the load, for the same reason:
+      // this run SAVES the rewritten record, so a container it cannot read is
+      // refused rather than laundered into a well-formed one. Scoped to the
+      // survivors where `cdkd orphan` scopes them.
+      refuseMalformedState(state, stackName, region, recovery);
+      refuseMalformedOutputs(state, stackName, region, recovery);
+      refuseMalformedResourceEntriesForOrphan(state, logicalIds, stackName, region, recovery);
+      refuseMalformedResourcePropertiesForOrphan(state, logicalIds, stackName, region, recovery);
+      refuseMalformedResourceAttributesForOrphan(state, logicalIds, stackName, region, recovery);
+      refuseMalformedOrphansForOrphan(state, stackName, region, recovery);
+
+      // OWN keys: `in` would answer true for an id spelled `constructor`.
+      const missing = logicalIds.filter((id) => !Object.hasOwn(state.resources, id));
+      if (missing.length > 0) {
+        throw new Error(
+          `Resource(s) not in state for ${describedStackRef(ref)}: ` +
+            `${missing.map((id) => displayIdent(id)).join(', ')}.\n` +
+            `Available logical IDs: ${Object.keys(state.resources)
+              .map((id) => displayIdent(id))
+              .join(', ')}`
+        );
+      }
+
+      // A nested stack's resources live in the CHILD's own state record
+      // (`<parent>~<logicalId>`). Dropping only the parent's row would leave
+      // the child's records with nothing that ever removes them: no parent
+      // deploy or destroy reaches a child its record no longer names. Checked
+      // for EVERY target, whatever its recorded type (a torn row's type proves
+      // nothing), in any region, and listed again here under the lock so a
+      // child a concurrent deploy created after the first listing is seen.
+      const refsUnderLock = await setup.stateBackend.listStacks();
+      for (const id of logicalIds) {
+        const child = `${stackName}~${id}`;
+        const childRefs = refsUnderLock.filter((r) => r.stackName === child);
+        // The parent's own region first, where a nested child normally lives.
+        const childRef = childRefs.find((r) => r.region === region) ?? childRefs[0];
+        if (childRef === undefined) continue;
+        const otherRegions = childRefs.length - 1;
+        // The CHILD's own region selects its record, which need not be the
+        // parent's.
+        const childCommand = pasteableCommand('cdkd state orphan', [
+          { value: child, hole: 'stack', opts: { plainIdent: true } },
+          ...(childRef.region !== undefined
+            ? [
+                {
+                  flag: '--stack-region',
+                  value: childRef.region,
+                  hole: 'region',
+                  opts: { plainIdent: true },
+                },
+              ]
+            : []),
+        ]);
+        throw new Error(
+          `${capitalize(plainOrDescribed(id, 'logical id'))} has a nested stack's state record ` +
+            `of its own. The child's resources are recorded there, and removing this row would ` +
+            `leave that record behind with nothing that removes it. Drop the child's record ` +
+            `first (it keeps the child's AWS resources; a child with nested stacks of its own ` +
+            `has records under '<child>~<logicalId>' too), then re-run.` +
+            withheldTargetClause(childCommand, 'stack', 'cdkd state orphan') +
+            (otherRegions > 0
+              ? ` The child also has records in ${otherRegions} other region(s); ` +
+                `'cdkd state list' shows them, and each needs the same drop.`
+              : '') +
+            `\nDrop the child with: ${childCommand.command}`
+        );
+      }
+
+      // Per-STACK-region clients and providers for the live `Fn::GetAtt`
+      // reads the rewrite may make: a provider takes its clients at
+      // construction, and the record lives in `region`, not the command's.
+      clients = new AwsClients({
+        region,
+        ...(options.profile && { profile: options.profile }),
+      });
+      const scopedClients = clients;
+      const registry = runWithStackAwsClients(scopedClients, () => {
+        const scoped = new ProviderRegistry();
+        registerAllProviders(scoped, providerClasses);
+        return scoped;
+      });
+      const rewriteResult = await runWithStackAwsClients(scopedClients, () =>
+        rewriteResourceReferences(state, logicalIds, registry, { force: options.force })
+      );
+
+      printRewriteSummary(rewriteResult.rewrites, logicalIds);
+
+      if (rewriteResult.unresolvable.length > 0 && !options.force) {
+        printUnresolvable(rewriteResult.unresolvable);
+        throw new Error(
+          `Orphan aborted: ${rewriteResult.unresolvable.length} reference(s) could not be resolved.\n` +
+            `Re-run with --force to fall back to cached attribute values from state, ` +
+            `or fix the underlying provider/AWS issue and retry.`
+        );
+      }
+      if (rewriteResult.unresolvable.length > 0) {
+        printUnresolvable(rewriteResult.unresolvable);
+        logger.warn(
+          safeMsg`--force: continuing despite ${rewriteResult.unresolvable.length} unresolved reference(s); ` +
+            `the original intrinsic was left in place where the cache also lacked the value.`
+        );
+      }
+
+      const idList = logicalIds.map((id) => displayIdent(id)).join(', ');
+      if (!options.yes && !options.force) {
+        process.stdout.write(
+          `\nWARNING: This removes cdkd's state record of ${logicalIds.length} resource(s) ` +
+            `[${idList}] from ${describedStackRef(ref)} only. AWS resources will NOT be deleted, ` +
+            `and cdkd stops managing them. The stack's other records are kept.` +
+            (refIsDescribed(ref) ? ` ${STATE_LIST_POINTER}` : '') +
+            `\n\n`
+        );
+        const ok = await confirmStateOrphanRemoval(
+          `Remove the record(s) of ${idList} from state for ${describedStackRef(ref)}?`,
+          { resource: true }
+        );
+        if (!ok) {
+          logger.info(
+            safeMsg`Cancelled removal of resource record(s) for stack: ${plainOrDescribed(stackName, 'stack name')}`
+          );
+          return;
+        }
+      }
+
+      // go-to-k/cdkd#4438, as `cdkd orphan`: the removed resources still hold
+      // this stack's create tokens, so the next create of them must send new
+      // ones. Before the save, fail-closed.
+      await setup.stateBackend.rotateCreateTokenNonce(stackName, region, logicalIds);
+      await setup.stateBackend.saveState(stackName, region, rewriteResult.state, {
+        expectedEtag: etag,
+        ...(migrationPending && { migrateLegacy: true }),
+      });
+
+      logger.info(
+        safeMsg`✓ Removed ${logicalIds.length} resource record(s) from state: ${idList} ` +
+          safeMsg`(${describedStackRef(ref)}). AWS resources are still in AWS; cdkd will no longer manage them.`
+      );
+    } finally {
+      await setup.lockManager.releaseLock(stackName, region).catch((err: unknown) => {
+        logger.warn(
+          safeMsg`Failed to release lock: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}`
+        );
+      });
+    }
+  } finally {
+    clients?.destroy();
+    setup.dispose();
+  }
+}
+
 /**
  * Reusable `--region <region>` option for state subcommands. Aliased at the
  * commander level via `stackRegion` so it doesn't collide with the global
@@ -2438,7 +2689,22 @@ function createStateOrphanCommand(): Command {
       'Orphan one or more stacks from cdkd state (removes the state record; does NOT delete AWS resources)'
     )
     .argument('<stacks...>', 'Stack name(s) to orphan from state')
-    .option('-f, --force', 'Skip confirmation and remove even if the stack is locked', false)
+    .option(
+      '-f, --force',
+      'Skip confirmation and remove even if the stack is locked. With --resource it does NOT ' +
+        'bypass a held lock, and it ALSO enables the cached-attribute fallback: a reference ' +
+        'another record holds that cannot be resolved live takes the value cached in state, ' +
+        "except a value cdkd recognises as a credential (by attribute name, a custom resource's " +
+        'attribute, or a known secret-valued attribute), a redaction mask or a secret ' +
+        'reference, which are left unresolved',
+      false
+    )
+    .option(
+      '--resource <logicalId>',
+      "Remove only this resource's record from the stack's state, rewriting the references " +
+        'other records hold to it (repeatable; requires exactly one stack). The stack stays deployed',
+      collectResourceOption
+    )
     .addOption(stackRegionOption())
     .action(withErrorHandling(stateOrphanCommand));
 
@@ -4206,13 +4472,21 @@ async function refreshObservedForStack(
  *
  * Exported for unit testing — internal to the state-orphan flow otherwise.
  */
-export async function confirmStateOrphanRemoval(prompt: string): Promise<boolean> {
+export async function confirmStateOrphanRemoval(
+  prompt: string,
+  opts?: { readonly resource?: boolean }
+): Promise<boolean> {
   return confirmOrRefuse(prompt, {
     suffix: ' (y/N): ',
-    refusal:
-      'The cdkd state orphan confirmation prompt cannot run in a non-interactive ' +
-      'environment. Pass -y / --yes (or -f / --force) to confirm the removal, or ' +
-      'run the command from a real terminal.',
+    // With `--resource`, `--force` also turns on the rewriter's cached-attribute
+    // fallback, so the refusal points at `-y` alone (go-to-k/cdkd#4602).
+    refusal: opts?.resource
+      ? 'The cdkd state orphan confirmation prompt cannot run in a non-interactive ' +
+        'environment. Pass -y / --yes to confirm the removal, or run the command from ' +
+        'a real terminal.'
+      : 'The cdkd state orphan confirmation prompt cannot run in a non-interactive ' +
+        'environment. Pass -y / --yes (or -f / --force) to confirm the removal, or ' +
+        'run the command from a real terminal.',
   });
 }
 
