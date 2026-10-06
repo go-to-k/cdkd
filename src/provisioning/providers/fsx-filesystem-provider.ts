@@ -615,7 +615,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
           this.logger.warn(
             `Failed to roll back partially-created FSx FileSystem ${fileSystemId}: ${
               describeAwsFailure(cleanupError).detail
-            } — on a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself to stop billing`
+            } — in a deploy, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself to stop billing`
           );
         }
       }

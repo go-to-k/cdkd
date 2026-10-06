@@ -1080,6 +1080,9 @@ export async function updateInPlace(
     }
   }
 
+  // go-to-k/cdkd#4615: journaled on the completed op, so a rollback reverts an
+  // in-place update in place even when it changed the physical id.
+  this.updateWasReplaced.set(logicalId, result.wasReplaced === true);
   if (result.wasReplaced) {
     this.logger.info(
       `Resource ${logicalId} was replaced: ${currentResource.physicalId} -> ${result.physicalId}`

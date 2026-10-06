@@ -412,6 +412,52 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     expect(parsed.segments[0]!.failedOperations).toHaveLength(2);
   });
 
+  // go-to-k/cdkd#4604: the pair lets the classifier delete an orphan beside
+  // the record it names, so a value outside the engine's shape is planted.
+  it('refuses a planted replacedPhysicalId / replacedResourceType pair', () => {
+    const orphan = {
+      ...op,
+      changeType: 'CREATE',
+      physicalId: 'new',
+      physicalIdRecoveredFromError: true,
+      replacedPhysicalId: 'old',
+      replacedResourceType: 'AWS::S3::Bucket',
+    };
+    expect(parseRollbackJournal(journalWith([], [orphan]), 'S').segments[0]!.failedOperations).toHaveLength(1);
+    expect(
+      parseRollbackJournal(journalWith([], [{ ...orphan, physicalIdRecoveredFromError: false }]), 'S')
+        .segments[0]!.failedOperations
+    ).toHaveLength(1);
+    expect(messageOf(journalWith([], [{ ...orphan, replacedPhysicalId: 7 }]))).toContain(
+      'replacedPhysicalId must be a non-empty string beside replacedResourceType (got number).'
+    );
+    expect(messageOf(journalWith([], [{ ...orphan, replacedResourceType: undefined }]))).toContain(
+      'replacedResourceType must be a non-empty string beside replacedPhysicalId (got undefined).'
+    );
+    expect(
+      messageOf(
+        journalWith([], [{ ...orphan, changeType: 'UPDATE', physicalIdRecoveredFromError: undefined }])
+      )
+    ).toContain('replacedPhysicalId is only valid on a CREATE carrying physicalIdRecoveredFromError.');
+    expect(
+      messageOf(journalWith([], [{ ...orphan, physicalIdRecoveredFromError: undefined }]))
+    ).toContain('replacedPhysicalId is only valid on a CREATE carrying physicalIdRecoveredFromError.');
+    expect(messageOf(journalWith([], [{ ...orphan, replacedPhysicalId: 'new' }]))).toContain(
+      "replacedPhysicalId must differ from the op's own physicalId."
+    );
+  });
+
+  // go-to-k/cdkd#4615: it picks the in-place revert arm.
+  it('refuses a non-boolean wasReplaced', () => {
+    expect(messageOf(journalWith([{ ...op, changeType: 'UPDATE', wasReplaced: 'false' }]))).toContain(
+      'wasReplaced must be a boolean when present (got string).'
+    );
+    expect(
+      parseRollbackJournal(journalWith([{ ...op, changeType: 'UPDATE', wasReplaced: false }]), 'S')
+        .segments[0]!.operations[0]
+    ).toMatchObject({ wasReplaced: false });
+  });
+
   it('TOLERATES what the state boundary tolerates: an absent nested field, and any provisionedBy', () => {
     // `previousState` is forwarded verbatim from the state record, which
     // `parseStateBody` deliberately does not validate (`s3-state-backend.ts`,

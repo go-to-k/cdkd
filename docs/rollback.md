@@ -74,7 +74,8 @@ journal is deleted automatically on the next successful deploy and by
 `cdkd destroy`; after a clean automatic rollback it keeps only the
 failed resource's record so `cdkd rollback --revert-failed` still works
 in the default deploy flow. A resource a failed CREATE made before it
-failed, which only the journal records, is deleted per its `DeletionPolicy`
+failed (or the new resource a failed replacement made), which only the
+journal records, is deleted per its `DeletionPolicy`
 by the automatic rollback, any `cdkd rollback`, `cdkd destroy` and a later
 successful deploy before they drop the journal (see [Failed CREATEs that made their resource](cli-rollback.md#failed-creates-that-made-their-resource));
 a successful deploy that cannot act on one keeps the journal (reduced to that

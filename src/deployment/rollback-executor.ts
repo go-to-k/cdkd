@@ -78,6 +78,8 @@ import {
   unroutableReplacementError,
   deepEqual,
   classifyFailedOp,
+  failedOpOwnRecord,
+  isReplacementOrphan,
 } from './rollback-executor/plan.js';
 import {
   createOpMasker,
@@ -140,6 +142,8 @@ export {
   classifyFailedOp,
   demoteSupersededOrphans,
   isJournaledOrphan,
+  isReplacedRecord,
+  isReplacementOrphan,
   planFailedOps,
   planRollback,
   sortRollbackCreates,
@@ -719,7 +723,10 @@ async function replayFailedOperationsUnbound(
           // Resolved BEFORE the record is dropped (issue #1366): the event
           // reports the resource's effective route, and the record — the
           // authoritative side — is about to go away.
-          const failedCreateRecord = stateResources[op.logicalId];
+          // go-to-k/cdkd#4604: a replacement orphan's logical id holds the
+          // resource it was replacing, which this arm must neither orphan nor
+          // drop.
+          const failedCreateRecord = failedOpOwnRecord(op, stateResources);
           const orphanProvisionedBy = effectiveProvisionedBy(failedCreateRecord, op.provisionedBy);
           createRollbackRoute = orphanProvisionedBy;
           // The `orphan-retain` twin's record, for the same reason (issue
@@ -738,7 +745,7 @@ async function replayFailedOperationsUnbound(
             result.orphaned.push(orphaned);
             options.onOrphan?.(orphaned);
           }
-          delete stateResources[op.logicalId];
+          if (!isReplacementOrphan(op)) delete stateResources[op.logicalId];
           // go-to-k/cdkd#4438: as on the `orphan-retain` arm.
           await noteRetainedResource(op.resourceType, op.logicalId);
           logger.info(
@@ -765,10 +772,10 @@ async function replayFailedOperationsUnbound(
           // cc-api refusal is only meaningful if it judges the route the
           // delete actually takes. The state record wins over the journaled
           // op for the same reason it does on the completed-CREATE path.
-          const deleteProvisionedBy = effectiveProvisionedBy(
-            stateResources[op.logicalId],
-            op.provisionedBy
-          );
+          // go-to-k/cdkd#4604: none for a replacement orphan, as on the
+          // Retain arm above.
+          const failedCreateRecord = failedOpOwnRecord(op, stateResources);
+          const deleteProvisionedBy = effectiveProvisionedBy(failedCreateRecord, op.provisionedBy);
           createRollbackRoute = deleteProvisionedBy;
           // `DeletionPolicy: Snapshot` (issue #1362): snapshot BEFORE the
           // delete, through the same mechanism matrix as the completed-CREATE
@@ -837,7 +844,7 @@ async function replayFailedOperationsUnbound(
               deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
               // Issue #4157; as on the completed-CREATE arm, the record names
               // `op.physicalId` here.
-              recordedAttributes: stateResources[op.logicalId]?.attributes,
+              recordedAttributes: failedCreateRecord?.attributes,
             }
           );
           // Issue #1762: the partially-created resource is still there, so
@@ -857,7 +864,7 @@ async function replayFailedOperationsUnbound(
               mask,
             }
           );
-          delete stateResources[op.logicalId];
+          if (!isReplacementOrphan(op)) delete stateResources[op.logicalId];
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({
             eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',

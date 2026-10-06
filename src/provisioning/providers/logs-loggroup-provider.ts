@@ -554,8 +554,8 @@ export class LogsLogGroupProvider implements ResourceProvider {
               maskSecrets: mask,
             });
             const manualStep = deleteCommand
-              ? `On a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${deleteCommand}`
-              : "On a first-time create the failed deploy's rollback journal records it for `cdkd rollback --revert-failed`; otherwise delete it yourself before the next deploy, via the console: the log " +
+              ? `In a deploy, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${deleteCommand}`
+              : "In a deploy, the failed deploy's rollback journal records it for `cdkd rollback --revert-failed`; otherwise delete it yourself before the next deploy, via the console: the log " +
                 'group name cannot be reproduced safely on a command line.';
             this.logger.warn(
               mask(

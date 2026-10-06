@@ -356,6 +356,47 @@ export async function executeDeployment(
               attemptedProperties: this.attemptedResolvedProps.get(logicalId),
             }),
           });
+          // go-to-k/cdkd#4604: the same proof on a REPLACEMENT — the UPDATE
+          // above names the resource being replaced, and the new one its
+          // create made is recorded nowhere else. Journaled beside it as a
+          // proven orphan of the same logical id, naming the replaced record
+          // so the classifier does not read that record as a later owner.
+          // Not on a nested-stack row: a grandchild stack sharing its logical
+          // id and type marks its own create, which its own journal records,
+          // and this row's replacement keeps its physical id.
+          const heldRecord = newResources[logicalId] ?? previousState;
+          const replaced =
+            change.changeType === 'UPDATE' &&
+            change.resourceType !== 'AWS::CloudFormation::Stack' &&
+            statePhysicalId !== undefined &&
+            heldRecord?.physicalId === statePhysicalId
+              ? heldRecord
+              : undefined;
+          const replacementCreatedId = replaced
+            ? createdBeforeFailure(provisionError, logicalId, change.resourceType)
+            : undefined;
+          if (
+            replaced !== undefined &&
+            replacementCreatedId !== undefined &&
+            replacementCreatedId !== replaced.physicalId
+          ) {
+            failedOperations.push({
+              logicalId,
+              changeType: 'CREATE',
+              resourceType: change.resourceType,
+              provisionedBy: 'sdk',
+              physicalId: replacementCreatedId,
+              physicalIdRecoveredFromError: true,
+              deletionPolicy: journaledOrphanPolicy(
+                this.extractTemplateAttributes(template, logicalId).deletionPolicy
+              ),
+              replacedPhysicalId: replaced.physicalId,
+              replacedResourceType: replaced.resourceType,
+              ...(!refused && {
+                attemptedProperties: this.attemptedResolvedProps.get(logicalId),
+              }),
+            });
+          }
           throw provisionError;
         }
 
@@ -385,6 +426,13 @@ export async function executeDeployment(
           ...(change.changeType === 'UPDATE' && {
             oldResourceRetained: this.retainedOldOnReplacement.has(logicalId),
           }),
+          // go-to-k/cdkd#4615: the provider's own answer, where an `update()`
+          // gave one; absent, the rollback infers a replacement from a changed
+          // physical id, as it does for a journal an older binary wrote.
+          ...(change.changeType === 'UPDATE' &&
+            this.updateWasReplaced.has(logicalId) && {
+              wasReplaced: this.updateWasReplaced.get(logicalId),
+            }),
           // Issue #2668: `resourceType` above is the TEMPLATE's type, so
           // on a Type change the journal would otherwise name only the
           // NEW one and the rollback would re-create the OLD resource

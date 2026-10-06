@@ -1159,7 +1159,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
                 `but before its ServiceAttributes were applied. Nothing in cdkd state refers to ` +
                 `it, so cdkd is deleting it now — left behind it would fail the next deploy on a ` +
                 `name collision AND block deletion of its namespace with ResourceInUse. If that ` +
-                `delete fails, on a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise remove it yourself: ` +
+                `delete fails, in a deploy, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise remove it yourself: ` +
                 `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
             )
           );
@@ -1179,7 +1179,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
             // beside masked ones is what a later author copies.
             `Failed to clean up partially-created ServiceDiscovery Service ${logicalId} ` +
               `(${serviceId}) after ServiceAttributes wiring failure: ` +
-              `${this.maskErrorMessage(cleanupError, maskSecrets)}. On a first-time create the failed deploy's rollback ` +
+              `${this.maskErrorMessage(cleanupError, maskSecrets)}. In a deploy, the failed deploy's rollback ` +
               `journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself ` +
               `before the next deploy: ` +
               `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`

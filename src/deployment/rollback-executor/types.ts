@@ -92,6 +92,15 @@ export interface CompletedOperation {
    * the previous record) is the fallback.
    */
   previousResourceType?: string | undefined;
+  /**
+   * go-to-k/cdkd#4615: the provider's `wasReplaced` answer for an UPDATE that
+   * ran through its `update()`. `false` means the resource was updated in
+   * place even if its physical id changed (an SQS QueuePolicy's id is its
+   * first queue, an SNS TopicPolicy's its topic list), so the rollback reverts
+   * it in place. Absent (a replacement arm, or an older binary's journal):
+   * a changed physical id still reads as a replacement.
+   */
+  wasReplaced?: boolean | undefined;
 }
 
 /**
@@ -137,6 +146,18 @@ export interface FailedOperation {
    * what `Retain` / `Snapshot` promised to keep.
    */
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
+  /**
+   * go-to-k/cdkd#4604: set, with {@link replacedResourceType}, on a proven
+   * orphan journaled beside a failed replacement UPDATE — the NEW resource the
+   * replacement's create made before failing. The state record under the same
+   * logical id is the resource that replacement was replacing; while it still
+   * names this physical id and type it is not a later owner of the orphan, so
+   * the classifier does not read it as a mismatch, and no arm acting on the
+   * orphan touches that record.
+   */
+  replacedPhysicalId?: string | undefined;
+  /** The type of the record {@link replacedPhysicalId} names. */
+  replacedResourceType?: string | undefined;
   /**
    * The intrinsic-RESOLVED desired properties the failed op attempted to
    * apply, if resolution got that far. Load-bearing for the revert: a

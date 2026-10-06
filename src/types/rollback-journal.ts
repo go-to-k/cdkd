@@ -405,6 +405,11 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
   if (o['oldResourceRetained'] !== undefined && typeof o['oldResourceRetained'] !== 'boolean') {
     fail('oldResourceRetained', o['oldResourceRetained'], 'a boolean when present');
   }
+  // go-to-k/cdkd#4615: COMPUTED from the provider's answer; it picks the
+  // in-place revert arm over the reverse-replacement one.
+  if (o['wasReplaced'] !== undefined && typeof o['wasReplaced'] !== 'boolean') {
+    fail('wasReplaced', o['wasReplaced'], 'a boolean when present');
+  }
   // go-to-k/cdkd#1710: both COMPUTED by the deploy engine and both select a
   // `--revert-failed` delete arm for a resource no state record holds, so a
   // value outside their shape is planted. A misspelled policy would otherwise
@@ -438,6 +443,31 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
       o['deletionPolicy'],
       'one of Delete, Retain, Snapshot, RetainExceptOnCreate when present'
     );
+  }
+  // go-to-k/cdkd#4604: COMPUTED by the deploy engine, as a pair, on a proven
+  // orphan only. They let the classifier delete the orphan beside the record
+  // they name, so anything outside that shape is planted.
+  const replacedId: unknown = o['replacedPhysicalId'];
+  const replacedType: unknown = o['replacedResourceType'];
+  if (replacedId !== undefined || replacedType !== undefined) {
+    if (typeof replacedId !== 'string' || replacedId === '') {
+      fail('replacedPhysicalId', replacedId, 'a non-empty string beside replacedResourceType');
+    }
+    if (typeof replacedType !== 'string' || replacedType === '') {
+      fail('replacedResourceType', replacedType, 'a non-empty string beside replacedPhysicalId');
+    }
+    if (o['changeType'] !== 'CREATE' || typeof o['physicalIdRecoveredFromError'] !== 'boolean') {
+      refuseMalformed(
+        shownStack,
+        `${where}.replacedPhysicalId is only valid on a CREATE carrying physicalIdRecoveredFromError.`
+      );
+    }
+    if (replacedId === o['physicalId']) {
+      refuseMalformed(
+        shownStack,
+        `${where}.replacedPhysicalId must differ from the op's own physicalId.`
+      );
+    }
   }
   // Issue #2668: this value picks the PROVIDER a replacement's re-create is
   // dispatched at, so a non-string is refused here rather than coerced there.

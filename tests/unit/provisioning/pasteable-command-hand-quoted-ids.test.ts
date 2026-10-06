@@ -213,8 +213,9 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
       await runFailedCleanup(name);
       expect(warnings()).toContain('Failed to clean up partially-created SSM parameter MyParam');
       expect(warnings()).toContain('`cdkd rollback --revert-failed`; otherwise delete it yourself');
-      // go-to-k/cdkd#4604: only a first-time CREATE is journaled with the id.
-      expect(warnings()).toContain("On a first-time create the failed deploy's rollback journal");
+      // go-to-k/cdkd#4604: a deploy journals the id (a first-time CREATE and a
+      // replacement alike); a rollback's re-create does not.
+      expect(warnings()).toContain("In a deploy, the failed deploy's rollback journal");
     });
 
     it('SUPPRESSES the command for a name the MASKER would change', async () => {

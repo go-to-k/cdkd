@@ -31,6 +31,7 @@ import {
   type RollbackExecutorContext,
   demoteSupersededOrphans,
   isJournaledOrphan,
+  isReplacedRecord,
   replayFailedOperations,
 } from '../rollback-executor.js';
 
@@ -247,8 +248,9 @@ export interface SuccessSettleOutcome {
  * rollback, `cdkd rollback` and `cdkd destroy` do (go-to-k/cdkd#4584).
  *
  * The rule. An orphan is deleted, per its journaled `DeletionPolicy`, only
- * when after this deploy no state record sits under its logical id, this
- * deploy completed no op under it, no record of this stack holds its type and
+ * when after this deploy no state record sits under its logical id (other
+ * than the record a replacement orphan's replacement was replacing,
+ * go-to-k/cdkd#4604), this deploy completed no op under it, no record of this stack holds its type and
  * physical id (the classifier's check), and no resource record of another
  * stack under the same state prefix does (`foreignHolder`). Anything else is
  * DEMOTED (`physicalIdRecoveredFromError: false`) and goes through the
@@ -477,8 +479,12 @@ async function applySuccessRule(
         tracked.add(op);
         continue;
       }
+      // go-to-k/cdkd#4604: a replacement's new resource shares its logical
+      // id with the resource it was replacing; a record still naming THAT
+      // resource is not one this deploy or a later one put there.
       if (
-        Object.prototype.hasOwnProperty.call(stateResources, op.logicalId) ||
+        (Object.prototype.hasOwnProperty.call(stateResources, op.logicalId) &&
+          !isReplacedRecord(op, stateResources[op.logicalId])) ||
         deployLogicalIds.has(op.logicalId)
       ) {
         op.physicalIdRecoveredFromError = false;

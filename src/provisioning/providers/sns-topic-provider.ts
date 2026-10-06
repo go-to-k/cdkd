@@ -371,7 +371,7 @@ export class SNSTopicProvider implements ResourceProvider {
           } catch (cleanupError) {
             leftBehindArn = topicArn;
             warn(
-              `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${describeAwsFailure(cleanupError).detail}. On a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
+              `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${describeAwsFailure(cleanupError).detail}. In a deploy, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
             );
           }
         }

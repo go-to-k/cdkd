@@ -168,6 +168,14 @@ failed CREATE:
 | `cdkd destroy` | Deleted first, per its `DeletionPolicy`, before the journal is removed with the state. A journal destroy cannot read is warned about and removed with the state, and nothing it records is deleted. |
 | A later successful `cdkd deploy` | Deleted, per its `DeletionPolicy`, before the deploy removes the journal, but only when, after the deploy, no state record sits under its logical id, the deploy completed no operation under it, no record of the stack holds a resource of its type under its physical id, and no resource or rollback-orphan record of any other stack under the same state prefix does. A record of the stack holding that very resource tracks it, and the entry is dropped silently. Otherwise it is not deleted: the deploy warns, naming its physical id so you can delete it if it is not that record's resource, removes the entry with the journal, and exits `2`. A fix-forward that keeps the logical id under another name lands here, so the earlier attempt's resource is left for you to delete. A top-level deploy does the same for each nested stack's journal, judged by that stack's record. A journal the deploy cannot read is warned about and removed, and nothing it records is deleted. |
 
+A **replacement** whose new resource was made before the failure is journaled
+the same way, beside the replacement's failed UPDATE, and every path above acts
+on it. The state record under its logical id is then the resource the
+replacement was replacing; while that record still names the same resource, it
+does not count as an owner of the new one, and acting on the new one leaves it
+in place. A record naming anything else still skips the new resource with a
+warning.
+
 `Retain` keeps the resource in AWS and `Snapshot` takes the final snapshot, as
 in the table above, and the same ownership checks skip it with a warning. A
 delete that fails keeps the entry: the automatic rollback keeps its full
@@ -253,6 +261,13 @@ journaled pre-deploy state, and the new resource is deleted unless its own
 create-first; when a user-supplied physical name is still held by the new
 resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 
+What counts as a replacement is what the provider reported. An update applied
+in place is reverted in place even when it changed the physical id, as an SQS
+`QueuePolicy` update does when its first queue changes and an SNS `TopicPolicy`
+update does when its topics change. A journal written by an older cdkd does not
+record the provider's answer, so there a changed physical id still reads as a
+replacement.
+
 cdkd deletes the new resource first only when it can show that the new
 resource holds the name the re-create collided on:
 
@@ -274,6 +289,11 @@ resource holds the name the re-create collided on:
   setting it chose, above) and matches it
   only against the new resource's physical id. A matching recorded name is not
   enough.
+
+When the re-create itself fails after its provider made the resource, the
+rollback deletes what it made before reporting the failure, unless the old
+resource's `DeletionPolicy` is `Retain` or `Snapshot`; a resource it keeps, or
+cannot delete, is named in a warning for you to delete.
 
 A collision with anything else (a resource an earlier failed attempt left
 behind, or one created outside the stack) fails the operation instead: nothing

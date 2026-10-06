@@ -47,6 +47,12 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *     with the stream already in AWS and no state record. The journal must
  *     carry its physical id so every rollback path and `cdkd destroy` delete it
  *     (go-to-k/cdkd#4584); `ORPHAN_RETAIN=true` gives it `DeletionPolicy: Retain`.
+ *   - `ReplaceStream` — a Kinesis stream added ONLY when
+ *     `WITH_REPLACE_STREAM=true` (go-to-k/cdkd#4604). A `REPLACE_STREAM_SUFFIX`
+ *     flip replaces it, and `REPLACE_STREAM_FAIL=true` makes the NEW stream's
+ *     retention follow-up fail after `CreateStream`: the journal must name the
+ *     new stream beside the replacement's UPDATE so every rollback path
+ *     deletes it, leaving the old stream and its state record intact.
  *   - `FailingQueue` — an SQS queue with an out-of-range
  *     `messageRetentionPeriod` (valid range [60, 1209600]) added ONLY when
  *     `INJECT_FAIL=true`. AWS rejects `CreateQueue`, so the deploy fails. It
@@ -128,6 +134,21 @@ export class RollbackCommandStack extends cdk.Stack {
       if (process.env.ORPHAN_RETAIN === 'true') {
         orphanStream.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
       }
+    }
+
+    if (process.env.WITH_REPLACE_STREAM === 'true') {
+      // go-to-k/cdkd#4604: a REPLACEMENT whose new resource is created and then
+      // fails. The create-only `Name` changes with REPLACE_STREAM_SUFFIX, so
+      // the suffix flip replaces the stream (create-first: the new name
+      // differs); REPLACE_STREAM_FAIL gives the NEW stream 9000 hours, which
+      // `IncreaseStreamRetentionPeriod` rejects after `CreateStream` returned.
+      // The journal must carry the new stream so every rollback path deletes
+      // it while the old stream, still in state, stays intact.
+      new kinesis.CfnStream(this, 'ReplaceStream', {
+        name: `${this.stackName}-replace-stream-${process.env.REPLACE_STREAM_SUFFIX ?? 'a'}`,
+        shardCount: 1,
+        retentionPeriodHours: process.env.REPLACE_STREAM_FAIL === 'true' ? 9000 : 24,
+      });
     }
 
     if (process.env.WITH_SKIP_PAIR === 'true') {

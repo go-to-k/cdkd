@@ -151,7 +151,9 @@ export function isReplacementOp(op: CompletedOperation): boolean {
   return (
     op.changeType === 'UPDATE' &&
     op.previousState?.physicalId !== undefined &&
-    (op.previousState.physicalId !== op.physicalId ||
+    // go-to-k/cdkd#4615: a changed id is a replacement unless the provider
+    // said it updated in place.
+    ((op.previousState.physicalId !== op.physicalId && op.wasReplaced !== false) ||
       isTypeChangeOp(op) ||
       // Issue #3892: an equal id can still be two resources (a Glue table
       // whose id is placed by DatabaseName), and an in-place revert of such
@@ -365,8 +367,12 @@ export function classifyFailedOp(
     // is left alone and named for manual attention.
     if (op.physicalIdRecoveredFromError === false) return 'skip-failed-superseded';
     if (op.physicalIdRecoveredFromError === true) {
+      // go-to-k/cdkd#4604: a replacement's new resource shares its logical id
+      // with the resource it was replacing, so a record still naming THAT
+      // resource is no later owner of this one.
       if (current) {
-        return current.physicalId === op.physicalId ? 'skip-failed-noop' : 'skip-failed-mismatch';
+        if (current.physicalId === op.physicalId) return 'skip-failed-noop';
+        if (!isReplacedRecord(op, current)) return 'skip-failed-mismatch';
       }
       if (stateHoldsPhysicalId(stateResources, op.resourceType, op.physicalId)) {
         return 'skip-failed-noop';
@@ -413,6 +419,40 @@ export function classifyFailedOp(
   // another type's resource.
   if (isTypeChangeOp(op)) return 'skip-failed-type-change';
   return 'revert-failed-update';
+}
+
+/**
+ * Whether `op` is a proven orphan a failed replacement left
+ * (go-to-k/cdkd#4604): the record under its logical id, if any, is never its
+ * own, so an arm acting on the orphan neither reads nor drops that record.
+ */
+export function isReplacementOrphan(op: FailedOperation): boolean {
+  return op.changeType === 'CREATE' && op.replacedPhysicalId !== undefined;
+}
+
+/**
+ * Whether `record` is still the resource the replacement that left `op` was
+ * replacing — same physical id AND type — rather than anything a later
+ * operation put under the logical id.
+ */
+export function isReplacedRecord(op: FailedOperation, record: ResourceState | undefined): boolean {
+  return (
+    isReplacementOrphan(op) &&
+    record !== undefined &&
+    record.physicalId === op.replacedPhysicalId &&
+    record.resourceType === op.replacedResourceType
+  );
+}
+
+/**
+ * The state record a failed op's arms act on: none for a replacement orphan
+ * ({@link isReplacementOrphan}), whose logical id holds another resource.
+ */
+export function failedOpOwnRecord(
+  op: FailedOperation,
+  stateResources: Record<string, ResourceState>
+): ResourceState | undefined {
+  return isReplacementOrphan(op) ? undefined : stateResources[op.logicalId];
 }
 
 /** Whether any state record of `resourceType` holds `physicalId`. */
@@ -528,7 +568,10 @@ export function planFailedOps(
   return failedOps.map((op) => ({
     op,
     action: classifyFailedOp(op, stateResources),
-    effectiveProvisionedBy: effectiveProvisionedBy(stateResources[op.logicalId], op.provisionedBy),
+    effectiveProvisionedBy: effectiveProvisionedBy(
+      failedOpOwnRecord(op, stateResources),
+      op.provisionedBy
+    ),
   }));
 }
 
