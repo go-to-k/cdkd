@@ -410,9 +410,35 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(err!.code).toBe('NAMED_CREATE_COLLISION');
     expect(err!.message).toContain('kept by an earlier `cdkd destroy` under DeletionPolicy: Retain');
     const lines = err!.message.split('\n');
+    expect(lines.at(-2)).toMatch(/^CONFIRM IT IS YOURS FIRST: another stack or app may own/);
     expect(lines.at(-1)).toBe(
       "Adopt with: cdkd import MyStack --resource 'Res=/aws/lambda/MyStack-Fn'"
     );
+  });
+
+  it('withholds the adopt command for S3, whose lookup also finds another account’s bucket', async () => {
+    h.importResult = { physicalId: 'their-bucket' };
+
+    const err = await create(makeEngine(h), 'AWS::S3::Bucket', { BucketName: 'their-bucket' });
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(err!.message).toContain('already holds that name');
+    expect(err!.message).not.toContain('Adopt with:');
+  });
+
+  it('withholds the adopt command when the mask would rewrite the stack name in it', async () => {
+    h.importResult = { physicalId: THEIRS };
+
+    const err = await create(
+      makeEngine(h),
+      QUEUE,
+      { QueueName: 'q-SECRETVALUE' },
+      {},
+      'Stack-q-SECRETVALUE'
+    );
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(err!.message).not.toContain('Adopt with:');
   });
 
   it('withholds the adopt command when the holder carries a masked secret-derived name', async () => {

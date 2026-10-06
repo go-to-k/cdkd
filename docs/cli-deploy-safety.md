@@ -922,7 +922,9 @@ own, left by an earlier interrupted deploy or kept by a `cdkd destroy` under
 `DeletionPolicy: Retain`: nothing in AWS tells the two apart. Delete it, or
 adopt it with [`cdkd import`](import.md), then re-run; the error ends on the
 `cdkd import <stack> --resource <logicalId>=<physicalId>` command for the
-resource it found. When the
+resource it found — confirm the resource is yours before running it. An S3
+bucket gets no command, since the lookup also finds a bucket another account
+owns and lets you list. When the
 holder is this stack's own resource under another logical id (a construct moved
 or renamed, keeping its name), the error names that id: give the new resource
 another name, or deploy that id's removal first. A log group declared

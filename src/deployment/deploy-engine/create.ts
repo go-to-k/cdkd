@@ -440,20 +440,23 @@ async function refuseTakenCreateName(
     `if the resource is this stack's own (left by an earlier interrupted deploy, or kept by an ` +
     `earlier \`cdkd destroy\` under DeletionPolicy: Retain)`;
   // The adopt command, on a line of its own and last (the `pasteableCommand`
-  // contract). Withheld when the mask rewrote the holder: the masked spelling
-  // names no resource AWS holds.
-  const adoptable = !input.stackName.includes('~') && maskName(holderId) === holderId;
+  // contract). Withheld for S3, whose lookup (`HeadBucket`, no expected
+  // owner) also finds another account's listable bucket, and when the mask
+  // rewrites any part of the command: the masked spelling names nothing.
+  const built =
+    input.stackName.includes('~') || resourceType === 'AWS::S3::Bucket'
+      ? undefined
+      : pasteableCommand('cdkd import', [
+          { value: input.stackName, hole: 'stack' },
+          { flag: '--resource', value: `${logicalId}=${holderId}`, hole: 'logicalId=physicalId' },
+        ]);
+  const adopt =
+    built !== undefined && maskName(built.command) === built.command ? built : undefined;
   const ownRemedy = input.stackName.includes('~')
     ? `${ownCase}, delete it and re-run.`
-    : adoptable
+    : adopt !== undefined
       ? `${ownCase}, delete it, or adopt it with \`cdkd import\` using the command below and re-run.`
       : `${ownCase}, delete it or adopt it with \`cdkd import\` and re-run.`;
-  const adopt = adoptable
-    ? pasteableCommand('cdkd import', [
-        { value: input.stackName, hole: 'stack' },
-        { flag: '--resource', value: `${logicalId}=${holderId}`, hole: 'logicalId=physicalId' },
-      ])
-    : undefined;
   const holeNote =
     adopt === undefined || adopt.withheld.length === 0
       ? ''
@@ -467,6 +470,10 @@ async function refuseTakenCreateName(
       `\`cdkd destroy\` to delete. Nothing was created. Choose a name no other resource holds; ` +
       ownRemedy +
       holeNote +
-      (adopt === undefined ? '' : `\nAdopt with: ${adopt.command}`)
+      (adopt === undefined
+        ? ''
+        : `\nCONFIRM IT IS YOURS FIRST: another stack or app may own a resource of that name, ` +
+          `and adopting it hands that resource to this stack's \`cdkd destroy\`.` +
+          `\nAdopt with: ${adopt.command}`)
   );
 }
