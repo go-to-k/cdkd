@@ -57,6 +57,9 @@ const QUEUE = 'team-secret-queue';
 const URL = `https://sqs.us-east-1.amazonaws.com/123456789012/${QUEUE}`;
 const SECRETS = vi.hoisted(() => ({}) as Record<string, string>);
 SECRETS[QUEUE_REF] = QUEUE;
+const DESC_REF = '{{resolve:secretsmanager:team:SecretString:desc::}}';
+const DESC = 'team-secret-description';
+SECRETS[DESC_REF] = DESC;
 const STACK = 'orphan-mask-test';
 
 async function autoRollback(userName: string) {
@@ -174,7 +177,7 @@ describe("a deploy's automatic rollback masks a name a journaled orphan read (go
 describe("a deploy's automatic rollback masks a journaled orphan's OWN name this deploy resolved (go-to-k/cdkd#3869)", () => {
   // In memory the orphan's attempted properties are RESOLVED plaintext, so no
   // `{{resolve:` spelling marks the name: the engine's own bag and registry do.
-  async function queueRollback(queueName: string) {
+  async function queueRollback(queueName: string, extra: Record<string, unknown> = {}) {
     const lines: string[] = [];
     const provider = {
       create: vi.fn((logicalId: string) =>
@@ -184,7 +187,7 @@ describe("a deploy's automatic rollback masks a journaled orphan's OWN name this
       ),
       update: vi.fn(),
       delete: vi.fn((logicalId: string, physicalId: string) => {
-        const line = `Deleting SQS queue ${logicalId}: ${physicalId}`;
+        const line = `Deleting SQS queue ${logicalId}: ${physicalId} (${DESC})`;
         lines.push(currentLogLineMasker()?.(line) ?? line);
         return Promise.resolve(undefined);
       }),
@@ -193,7 +196,7 @@ describe("a deploy's automatic rollback masks a journaled orphan's OWN name this
       logicalId: 'Queue',
       changeType: 'CREATE',
       resourceType: 'AWS::SQS::Queue',
-      desiredProperties: { QueueName: queueName },
+      desiredProperties: { QueueName: queueName, ...extra },
       propertyChanges: [],
     } as unknown as ResourceChange;
     const engine = new DeployEngine(
@@ -240,7 +243,9 @@ describe("a deploy's automatic rollback masks a journaled orphan's OWN name this
       'us-east-1'
     );
     await engine
-      .deploy(STACK, { Resources: { Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: queueName } } } })
+      .deploy(STACK, {
+        Resources: { Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: queueName, ...extra } } },
+      })
       .catch(() => undefined);
     return { lines, provider };
   }
@@ -254,6 +259,17 @@ describe("a deploy's automatic rollback masks a journaled orphan's OWN name this
     expect(provider.delete.mock.calls.map((c) => c[1])).toEqual([URL]);
     expect(lines).toEqual([expect.stringContaining('Deleting SQS queue Queue: ')]);
     expect(lines[0]!.includes(QUEUE)).toBe(shown);
+  });
+
+  it.each([
+    ['a value this deploy resolved from a secret', DESC_REF, false],
+    ['negative control, a literal value', DESC, true],
+  ])("masks a non-name value it resolved on its delete line: %s", async (_l, desc, shown) => {
+    // Not a name: only the orphan's own resolved secrets carry it.
+    const { lines, provider } = await queueRollback(QUEUE, { Description: desc });
+    expect(provider.delete.mock.calls.map((c) => c[1])).toEqual([URL]);
+    expect(lines).toEqual([expect.stringContaining('Deleting SQS queue Queue: ')]);
+    expect(lines[0]!.includes(DESC)).toBe(shown);
   });
 });
 
