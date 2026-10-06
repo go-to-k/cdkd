@@ -82,6 +82,7 @@ describe('DriftOutcome exhaustiveness (issue #2135)', () => {
           | 'refused'
           | 'unresolvedToken'
           | 'readFailed'
+          | 'readAborted'
           | 'baselineRefused'
           | 'unreadableRecord'
           | 'unreadableMap'

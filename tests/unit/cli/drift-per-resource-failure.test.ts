@@ -1501,3 +1501,464 @@ describe('a remediation run that compared nothing does not report no drift (#220
     expect(mockSaveState).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * go-to-k/cdkd#2207. After #2151 an ACCOUNT-WIDE failure (expired credentials, a
+ * revoked role) was read once per resource, per stack, before exiting 2 anyway.
+ * The breaker stops reading a stack after `DRIFT_READ_FAILURE_BREAKER_THRESHOLD`
+ * resources in a row whose read threw.
+ *
+ * Both directions are pinned. The bound alone is satisfied by a breaker that
+ * trips on ANY failure count — which would re-introduce #2151 for the
+ * interleaved case — so every "not tripped" case asserts that each readable
+ * resource was READ and landed in `clean`.
+ *
+ * The threshold is the literal 5 here, not the exported constant: a fence that
+ * read the constant would follow it to any value, 0 included.
+ */
+describe('consecutive read failures stop reading the stack (#2207)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  // The file-level routing, put back after each case that re-routes a type.
+  const defaultGetProviderFor = mockRegistryGetProviderFor.getMockImplementation()!;
+  const reads: string[] = [];
+
+  beforeEach(() => {
+    reads.length = 0;
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
+    mockIamSend.mockReset();
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    infoSpy.mockReset();
+    debugSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+    mockListStacks.mockResolvedValue([{ stackName: 'TestStack', region: 'us-east-1' }]);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    ccRoutedTypes.clear();
+    ccRoutedTypes.add(CC_ROUTED_TYPE);
+    mockRegistryGetProviderFor.mockImplementation(defaultGetProviderFor);
+  });
+
+  /**
+   * One Lambda per character of `spec`, logical ids `R00`, `R01`, ... so the
+   * loop's sort keeps `spec` order. `B` = the READ throws (account-wide error),
+   * `G` = reads back and matches, `C` = reads back fine and the COMPARISON
+   * throws, `U` = a Cloud Control fallback with no READ handler, `Q` = a Cloud
+   * Control fallback read that returns and matches, `X` = a Cloud Control
+   * fallback read that throws (a role missing `cloudcontrol:GetResource`),
+   * `K` = a resource the registry ROUTES to the Cloud Control provider
+   * (`provisionedBy: 'cc-api'`, its own `readCurrentState`) whose read throws
+   * the same denial, `R` = the same routing, read returns and matches.
+   */
+  function stackOf(spec: string, stackName = 'TestStack'): ReturnType<typeof makeState> {
+    const resources: StackState['resources'] = {};
+    [...spec].forEach((role, i) => {
+      const id = `R${String(i).padStart(2, '0')}`;
+      resources[id] = {
+        physicalId: `phys-${id}`,
+        // `U` takes the fallback, which needs a type with no SDK read.
+        resourceType:
+          role === 'U'
+            ? 'AWS::CloudWatch::AnomalyDetector'
+            : role === 'Q' || role === 'X'
+              ? CC_READ_TYPE
+              : role === 'K' || role === 'R'
+                ? CC_ROUTED_TYPE
+                : LAMBDA,
+        properties: { MemorySize: 128, Role: role },
+      };
+    });
+    return makeState(resources, stackName);
+  }
+
+  /** A type the mocked registry gives no SDK read, so it takes the fallback. */
+  const CC_READ_TYPE = 'AWS::Logs::LogGroup';
+
+  /**
+   * A type the mocked registry routes to the Cloud Control provider, the way
+   * production routes every Cloud-Control-managed type: `provisionedBy:
+   * 'cc-api'` and a provider WITH `readCurrentState` (a Cloud Control call).
+   */
+  const CC_ROUTED_TYPE = 'AWS::Events::Archive';
+  const ccRoutedProvider = {
+    readCurrentState: async (
+      _physicalId: string,
+      logicalId: string,
+      _type: string,
+      properties: Record<string, unknown>
+    ) => {
+      reads.push(logicalId);
+      if (properties['Role'] === 'K') {
+        throw awsError('AccessDeniedException', 'not authorized to perform: cloudcontrol:GetResource');
+      }
+      return { MemorySize: 128, Role: properties['Role'] };
+    },
+  };
+  const ccRoutedTypes = new Set([CC_ROUTED_TYPE]);
+
+  function installProviders(): void {
+    mockRegistryGetProviderFor.mockImplementation((input) =>
+      ccRoutedTypes.has(input.resourceType)
+        ? { provider: ccRoutedProvider, provisionedBy: 'cc-api' }
+        : { provider: mockRegistryGetProvider(input.resourceType), provisionedBy: 'sdk' }
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === LAMBDA
+        ? {
+            readCurrentState: async (
+              _physicalId: string,
+              logicalId: string,
+              _type: string,
+              properties: Record<string, unknown>
+            ) => {
+              reads.push(logicalId);
+              if (properties['Role'] === 'B') {
+                throw awsError('ExpiredTokenException', 'The security token included in the request is expired');
+              }
+              return { MemorySize: 128, Role: properties['Role'] };
+            },
+            canonicalizeDriftProperties: (_type: string, bag: Record<string, unknown>) => {
+              if (bag['Role'] === 'C') throw new TypeError('normalizer bug');
+              return bag;
+            },
+          }
+        : {}
+    );
+    mockCcReadCurrentState.mockImplementation(async (...args: unknown[]) => {
+      const [, logicalId, type] = args as [string, string, string];
+      const properties = args[3] as Record<string, unknown>;
+      reads.push(logicalId);
+      if (type === CC_READ_TYPE) {
+        if (properties['Role'] === 'X') {
+          throw awsError('AccessDeniedException', 'not authorized to perform: cloudcontrol:GetResource');
+        }
+        return { MemorySize: 128, Role: properties['Role'] };
+      }
+      throw awsError(
+        'UnsupportedActionException',
+        'Resource type AWS::CloudWatch::AnomalyDetector does not support READ action'
+      );
+    });
+  }
+
+  type Json = Array<{
+    stack: string;
+    clean: Array<{ logicalId: string }>;
+    notSupported: Array<{ logicalId: string }>;
+    notCompared: Array<{ logicalId: string; cause: string; referencesUnresolved: boolean }>;
+  }>;
+
+  async function runJson(args = ARGS): Promise<Json> {
+    const { output } = await runDrift([...args, '--json']);
+    return JSON.parse(output) as Json;
+  }
+
+  function causes(report: Json[number]): Record<string, string> {
+    return Object.fromEntries(report.notCompared.map((n) => [n.logicalId, n.cause]));
+  }
+
+  it('a stack whose every read throws the same account-wide error is read 5 times, not once per resource, and still exits 2', async () => {
+    mockGetState.mockResolvedValue(stackOf('BBBBBBBBBB'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    // THE bound: 5 provider calls for 10 resources.
+    expect(reads).toEqual(['R00', 'R01', 'R02', 'R03', 'R04']);
+    expect(causes(report!)).toEqual({
+      R00: 'readFailed',
+      R01: 'readFailed',
+      R02: 'readFailed',
+      R03: 'readFailed',
+      R04: 'readFailed',
+      R05: 'readAborted',
+      R06: 'readAborted',
+      R07: 'readAborted',
+      R08: 'readAborted',
+      R09: 'readAborted',
+    });
+    // Nothing was compared, so `referencesUnresolved` is false for the new
+    // cause as for `readFailed`.
+    expect(report!.notCompared.every((n) => n.referencesUnresolved === false)).toBe(true);
+    // Giving up early does not turn the verdict into a pass, nor into drift.
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+    expect(exitSpy).not.toHaveBeenCalledWith(0);
+  });
+
+  it('says once why it stopped, and names the unread resources in the human report', async () => {
+    mockGetState.mockResolvedValue(stackOf('BBBBBBB'));
+    installProviders();
+
+    const { output } = await runDrift(ARGS);
+
+    const warns = warnSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(warns.filter((w) => w.includes('cdkd stops reading'))).toEqual([
+      "5 reads in a row in this stack failed through cdkd's own (SDK) resource providers — " +
+        'expired credentials, a revoked role, a permission all of them need, or a burst of ' +
+        "throttling — so cdkd stops reading this stack's resources that way, and reports each " +
+        'one left as not compared. Fix the cause, or re-run if it was throttling.',
+    ]);
+    // The failure that tripped it no longer promises the rest of the stack.
+    expect(warns.filter((w) => w.includes('cdkd goes on with the rest of this stack'))).toHaveLength(4);
+    expect(output).toContain(
+      '7 resource(s) NOT fully compared — 7 not compared AT ALL (the read or comparison failed; ' +
+        'never read, because the reads before them in the same stack kept failing):'
+    );
+    expect(output).toContain(
+      '! R05 (AWS::Lambda::Function) — cdkd never read it: 5 reads in a row earlier in this ' +
+        'stack, the same way it would have been read, failed — expired credentials, a revoked ' +
+        'role, a permission all of them need, or a burst of throttling — so cdkd stopped ' +
+        'reading that way (fix the cause, or re-run if it was throttling)'
+    );
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('INTERLEAVED failures never trip it: a readable resource between unreadable ones is read and compared (#2151)', async () => {
+    // Nine unreadable resources, more than the threshold in total, never more
+    // than four in a row.
+    mockGetState.mockResolvedValue(stackOf('BBBBGBBBBGB'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    // Every resource was read...
+    expect(reads).toHaveLength(11);
+    // ...both readable ones were compared...
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R04', 'R09']);
+    // ...and nothing was abandoned.
+    expect(Object.values(causes(report!))).not.toContain('readAborted');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('trips AT the threshold: the resource right after the fifth failure is not read', async () => {
+    mockGetState.mockResolvedValue(stackOf('BBBBBG'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    expect(reads).toEqual(['R00', 'R01', 'R02', 'R03', 'R04']);
+    expect(causes(report!)['R05']).toBe('readAborted');
+    expect(report!.clean).toEqual([]);
+  });
+
+  it('a COMPARISON that throws after a good read resets the count: the credentials work', async () => {
+    mockGetState.mockResolvedValue(stackOf('CCCCCCG'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    expect(reads).toHaveLength(7);
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R06']);
+    expect(Object.values(causes(report!)).filter((c) => c === 'readFailed')).toHaveLength(6);
+    expect(Object.values(causes(report!))).not.toContain('readAborted');
+  });
+
+  it('a comparison failure inside a run of read failures breaks the run', async () => {
+    mockGetState.mockResolvedValue(stackOf('BBBBCBBBBG'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    expect(reads).toHaveLength(10);
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R09']);
+  });
+
+  it('a type with no READ handler resets the count: that throw is about the type, not the account', async () => {
+    mockGetState.mockResolvedValue(stackOf('BBBBUBBBBG'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    expect(reads).toHaveLength(10);
+    expect(report!.notSupported.map((n) => n.logicalId)).toEqual(['R04']);
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R09']);
+  });
+
+  it('a resource that would never reach AWS keeps its own outcome after the breaker trips', async () => {
+    // Both paths tripped, so the deny-listed type (a fallback-path resource)
+    // is behind a tripped path and still reports `unsupported`.
+    const base = stackOf('BBBBBXXXXX');
+    base.state.resources['Z1Custom'] = resource('Custom::Thing', { ServiceToken: 'arn' });
+    // Deny-listed for the Cloud Control fallback: reported `unsupported`
+    // without a read, with or without the breaker.
+    base.state.resources['Z2Api'] = resource('AWS::ApiGateway::RestApi', { Name: 'api' });
+    mockGetState.mockResolvedValue(base);
+    installProviders();
+
+    const [report] = await runJson();
+
+    expect(reads).toHaveLength(10);
+    expect(Object.values(causes(report!)).filter((c) => c === 'readFailed')).toHaveLength(10);
+    expect(report!.notSupported.map((n) => n.logicalId)).toEqual(['Z2Api']);
+    expect(causes(report!)).not.toHaveProperty('Z1Custom');
+    expect(causes(report!)).not.toHaveProperty('Z2Api');
+  });
+
+  it('a Cloud Control fallback read that returns resets the count too', async () => {
+    mockGetState.mockResolvedValue(stackOf('BBBBQBBBBG'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    expect(reads).toHaveLength(10);
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R04', 'R09']);
+    expect(Object.values(causes(report!))).not.toContain('readAborted');
+  });
+
+  it('a provider read that returns resets the Cloud Control count as well (#2151 across paths)', async () => {
+    mockGetState.mockResolvedValue(stackOf('XXXXGXQ'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    expect(reads).toHaveLength(7);
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R04', 'R06']);
+    expect(Object.values(causes(report!))).not.toContain('readAborted');
+  });
+
+  it('is per READ PATH: a role missing only the Cloud Control permission still reads through the providers', async () => {
+    mockGetState.mockResolvedValue(stackOf('XXXXXGXXG'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    // Five fallback reads trip the fallback path; the provider reads go on.
+    expect(reads).toEqual(['R00', 'R01', 'R02', 'R03', 'R04', 'R05', 'R08']);
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R05', 'R08']);
+    expect(causes(report!)).toEqual({
+      R00: 'readFailed',
+      R01: 'readFailed',
+      R02: 'readFailed',
+      R03: 'readFailed',
+      R04: 'readFailed',
+      // A provider read in between resets the COUNT, but a tripped path stays
+      // tripped: otherwise every good read would buy five more failing ones.
+      R06: 'readAborted',
+      R07: 'readAborted',
+    });
+    const warns = warnSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(warns.filter((w) => w.includes('failed through the Cloud Control API'))).toHaveLength(1);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('a deny-listed type whose provider DOES read is aborted like any provider read', async () => {
+    const base = stackOf('BBBBB');
+    base.state.resources['Z2Api'] = resource('AWS::ApiGateway::RestApi', { Name: 'api' });
+    mockGetState.mockResolvedValue(base);
+    installProviders();
+    const lambdaProvider = mockRegistryGetProvider.getMockImplementation()!;
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === 'AWS::ApiGateway::RestApi'
+        ? {
+            readCurrentState: async (_p: string, logicalId: string) => {
+              reads.push(logicalId);
+              return { Name: 'api' };
+            },
+          }
+        : lambdaProvider(type)
+    );
+
+    const [report] = await runJson();
+
+    expect(reads).toHaveLength(5);
+    expect(causes(report!)['Z2Api']).toBe('readAborted');
+  });
+
+  it('once a path has tripped, a failure on the other path no longer promises the rest of the stack', async () => {
+    mockGetState.mockResolvedValue(stackOf('BBBBBX'));
+    installProviders();
+
+    await runJson();
+
+    const warns = warnSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    const fallbackFailure = warns.filter((w) => w.startsWith('R05 '));
+    expect(fallbackFailure).toHaveLength(1);
+    expect(fallbackFailure[0]).not.toContain('cdkd goes on with the rest of this stack');
+    expect(warns.filter((w) => w.includes('cdkd goes on with the rest of this stack'))).toHaveLength(4);
+  });
+
+  it('a resource ROUTED to Cloud Control counts on the Cloud Control path: its denial does not stop SDK reads', async () => {
+    mockGetState.mockResolvedValue(stackOf('KKKKKKGRG'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    // Five routed Cloud Control reads trip that path; R05 (routed) is not
+    // read, and both SDK reads after it still are.
+    expect(reads).toEqual(['R00', 'R01', 'R02', 'R03', 'R04', 'R06', 'R08']);
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R06', 'R08']);
+    expect(causes(report!)).toEqual({
+      R00: 'readFailed',
+      R01: 'readFailed',
+      R02: 'readFailed',
+      R03: 'readFailed',
+      R04: 'readFailed',
+      R05: 'readAborted',
+      R07: 'readAborted',
+    });
+    const warns = warnSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(warns.filter((w) => w.includes('cdkd stops reading'))).toEqual([
+      '5 reads in a row in this stack failed through the Cloud Control API — expired ' +
+        'credentials, a revoked role, a permission all of them need, or a burst of throttling ' +
+        "— so cdkd stops reading this stack's resources that way, and reports each one left " +
+        'as not compared. Fix the cause, or re-run if it was throttling.',
+    ]);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('routed and fallback Cloud Control reads share one path', async () => {
+    mockGetState.mockResolvedValue(stackOf('KKKXXQ'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    expect(reads).toHaveLength(5);
+    expect(causes(report!)['R05']).toBe('readAborted');
+  });
+
+  it('a DENY-LISTED type routed to Cloud Control still reads, so it is aborted once that path trips', async () => {
+    const base = stackOf('KKKKK');
+    // Same type the fallback deny-lists; routed, the provider reads it anyway.
+    ccRoutedTypes.add('AWS::ApiGateway::RestApi');
+    base.state.resources['Z2Api'] = resource('AWS::ApiGateway::RestApi', { Role: 'R' });
+    mockGetState.mockResolvedValue(base);
+    installProviders();
+
+    const [report] = await runJson();
+
+    expect(reads).toHaveLength(5);
+    expect(causes(report!)['Z2Api']).toBe('readAborted');
+  });
+
+  it('is per STACK: a later stack in an --all run is still read and compared', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'StackA', region: 'us-east-1' },
+      { stackName: 'StackB', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (stackName: string) =>
+      stackName === 'StackA' ? stackOf('BBBBBBB', 'StackA') : stackOf('G', 'StackB')
+    );
+    installProviders();
+
+    const parsed = await runJson(['--all', '--state-bucket', 'b', '--region', 'us-east-1']);
+
+    const b = parsed.find((r) => r.stack === 'StackB');
+    expect(b!.clean.map((c) => c.logicalId)).toEqual(['R00']);
+    // 5 reads in StackA, then StackB's one.
+    expect(reads).toHaveLength(6);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+});
