@@ -28,6 +28,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildDiffTree, computeStackDiff } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { hasMaskableValues } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -105,6 +106,21 @@ describe('cdkd diff --verbose masks a name derived from a secret (go-to-k/cdkd#3
     expect(lines).toContain('Ref to resource: Queue resolved to');
     expect(lines).toContain('Queue.Arn resolved to');
     expect(lines).not.toContain('sdin-diff-secret-queue');
+  });
+
+  it("keeps the reads out of the corpus a nested child inherits", async () => {
+    // `printingSecrets` is what a child's diff inherits; a needle there would
+    // change the child's export-alias preview.
+    const result = await computeStackDiff(
+      state('{{resolve:secretsmanager:sdin:SecretString:queue::}}'),
+      template('{{resolve:secretsmanager:sdin:SecretString:queue::}}'),
+      'us-east-1',
+      'S',
+      backend,
+      new DiffCalculator()
+    );
+    expect(debugLines.join('\n')).toContain('Ref to resource: Queue resolved to');
+    expect(hasMaskableValues(result.printingSecrets)).toBe(false);
   });
 
   it('negative control: an ordinary name prints as it is', async () => {
