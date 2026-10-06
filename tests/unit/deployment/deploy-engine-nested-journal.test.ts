@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { getNestedRevertRun } from '../../../src/deployment/nested-child-journal.js';
+import { settleJournaledOrphansOnSuccess } from '../../../src/deployment/rollback-executor/journaled-orphans.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import type { RollbackJournalSegment } from '../../../src/types/rollback-journal.js';
@@ -55,6 +56,12 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
     evaluateConditions: vi.fn().mockResolvedValue({}),
   })),
 }));
+
+// Pass-through spy: the real settle runs, and its arguments can be read.
+vi.mock('../../../src/deployment/rollback-executor/journaled-orphans.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../../src/deployment/rollback-executor/journaled-orphans.js')>();
+  return { ...real, settleJournaledOrphansOnSuccess: vi.fn(real.settleJournaledOrphansOnSuccess) };
+});
 
 vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
   CloudControlProvider: { isSupportedResourceType: vi.fn(() => true) },
@@ -149,6 +156,7 @@ function build(opts: {
       )
     ),
     saveState: vi.fn().mockResolvedValue('etag-1'),
+    listStacks: vi.fn().mockResolvedValue([]),
     appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
     deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
     loadRollbackJournal: vi
@@ -157,7 +165,9 @@ function build(opts: {
         Promise.resolve(
           name === stack
             ? (opts.journal ?? null)
-            : (opts.childJournal ?? {
+            : // A copy per read, as a parsed journal is: the supersede pass
+              // mutates what it reads.
+              (structuredClone(opts.childJournal) ?? {
                 segments: [{ runId: RUN, reason: 'nested-pending-parent', operations: [] }],
               })
         )
@@ -803,6 +813,120 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
 
       expect(childOrphanDeletes(h.provider)).toHaveLength(0);
       expect(h.backend.deleteRollbackJournal.mock.calls.map((c) => c[0])).toEqual([STACK]);
+      expect(result.deleteSkipped).toBe(1);
+    });
+
+    it('settles the child with its own record, an incomplete-region ctx naming it, this run and the interrupt flag', async () => {
+      const { engine } = harness();
+
+      await engine.deploy(STACK, templateOf(['Q']));
+
+      const calls = vi.mocked(settleJournaledOrphansOnSuccess).mock.calls.map((c) => c[0]);
+      const child = calls.find((a) => a.stackName === `${STACK}~Child`)!;
+      expect(child.stateResources).toEqual({ Leaf: record('Leaf') });
+      expect(child.ctx.producerRegionsIncomplete).toBe(true);
+      expect(child.ctx.nestedChildStack).toBe(`${STACK}~Child`);
+      expect(child.ctx.region).toBe(REGION);
+      expect(child.deployRunId).toBe(RUN);
+      expect(child.newerOperations).toEqual([]);
+      const root = calls.find((a) => a.stackName === STACK)!;
+      expect(root.deployRunId).toBe(RUN);
+      expect(root.newerOperations.map((op) => op.logicalId)).toEqual(['Q']);
+      expect(root.ctx.nestedChildStack).toBeUndefined();
+      for (const a of [root, child]) {
+        expect(a.isInterrupted!()).toBe(false);
+        (engine as unknown as { interrupted: boolean }).interrupted = true;
+        expect(a.isInterrupted!()).toBe(true);
+        (engine as unknown as { interrupted: boolean }).interrupted = false;
+      }
+    });
+
+    it("ownership is judged by the CHILD's record: one holding the orphan id keeps it, journal dropped", async () => {
+      const h = harness();
+      const childRecord = {
+        version: 8,
+        stackName: `${STACK}~Child`,
+        region: REGION,
+        resources: {
+          Leaf: record('Leaf'),
+          Adopted: { ...record('Adopted', 'AWS::Kinesis::Stream'), physicalId: 'child-orphan-stream' },
+        },
+        outputs: {},
+        lastModified: 0,
+      };
+      const base = h.backend.getState.getMockImplementation()! as (...a: unknown[]) => Promise<unknown>;
+      h.backend.getState.mockImplementation((name: string) =>
+        name === `${STACK}~Child` ? Promise.resolve({ state: childRecord, etag: 'c0' }) : base(name)
+      );
+
+      const result = await h.engine.deploy(STACK, templateOf(['Q']));
+
+      expect(childOrphanDeletes(h.provider)).toHaveLength(0);
+      expect(h.backend.deleteRollbackJournal.mock.calls.map((c) => c[0]).sort()).toEqual([STACK, `${STACK}~Child`]);
+      expect(result.deleteSkipped).toBe(0);
+    });
+
+    it("a rollback-orphan record in the CHILD's record owning it: not deleted", async () => {
+      const h = harness();
+      const base = h.backend.getState.getMockImplementation()! as (...a: unknown[]) => Promise<unknown>;
+      h.backend.getState.mockImplementation((name: string) =>
+        name === `${STACK}~Child`
+          ? Promise.resolve({
+              state: {
+                version: 8,
+                stackName: `${STACK}~Child`,
+                region: REGION,
+                resources: { Leaf: record('Leaf') },
+                outputs: {},
+                orphans: [
+                  {
+                    logicalId: 'Stream',
+                    orphanedAt: 1,
+                    state: { physicalId: 'retained', resourceType: 'AWS::Kinesis::Stream', properties: {} },
+                  },
+                ],
+                lastModified: 0,
+              },
+              etag: 'c0',
+            })
+          : base(name)
+      );
+
+      await h.engine.deploy(STACK, templateOf(['Q']));
+
+      expect(childOrphanDeletes(h.provider)).toHaveLength(0);
+    });
+
+    it("the parent's own record holding the child orphan id refuses the delete (bucket-wide check)", async () => {
+      const h = harness();
+      h.backend.listStacks.mockResolvedValue([
+        { stackName: STACK, region: REGION },
+        { stackName: `${STACK}~Child`, region: REGION },
+      ]);
+      const base = h.backend.getState.getMockImplementation()! as (...a: unknown[]) => Promise<unknown>;
+      h.backend.getState.mockImplementation((name: string) =>
+        name === STACK
+          ? Promise.resolve({
+              state: {
+                version: 8,
+                stackName: STACK,
+                region: REGION,
+                resources: {
+                  Child: record('Child', NESTED),
+                  Taken: { ...record('Taken', 'AWS::Kinesis::Stream'), physicalId: 'child-orphan-stream' },
+                },
+                outputs: {},
+                lastModified: 0,
+              },
+              etag: 'e0',
+            })
+          : base(name)
+      );
+
+      const result = await h.engine.deploy(STACK, templateOf(['Q']));
+
+      expect(childOrphanDeletes(h.provider)).toHaveLength(0);
+      expect(h.backend.reduceRollbackJournalToFailedOperations.mock.calls.map((c) => c[0])).toEqual([`${STACK}~Child`]);
       expect(result.deleteSkipped).toBe(1);
     });
 

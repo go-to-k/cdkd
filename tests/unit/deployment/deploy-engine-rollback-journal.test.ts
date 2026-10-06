@@ -108,6 +108,8 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         opts.currentEtag === undefined ? null : { state: currentState, etag: opts.currentEtag }
       ),
       saveState: vi.fn().mockResolvedValue('etag-1'),
+      // go-to-k/cdkd#4600: the bucket-wide ownership scan before an orphan delete.
+      listStacks: vi.fn().mockResolvedValue([]),
       ...journal,
     };
 
@@ -1629,11 +1631,21 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(superseded).toEqual(['A']);
       expect(result.deleteSkipped).toBe(1);
       const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
-      expect(warned.some((w) => w.includes('were not deleted') && w.includes('cdkd rollback journal-test'))).toBe(true);
+      const kept = warned.find((w) => w.includes('were not deleted'));
+      expect(kept).toContain('is kept with just them; the next successful deploy retries, as does:');
+      expect(kept).toContain('cdkd rollback journal-test');
     });
 
-    it('a journal rewrite that fails keeps the whole journal and marks the deploy ids superseded', async () => {
-      const engine = buildEngine({ changes: new Map([['A', makeChange('A')]]), deps: { A: [] }, currentEtag: 'e0' });
+    it('a journal rewrite that fails keeps the whole journal, marks the deploy ids but the kept one superseded, and names no rollback', async () => {
+      const fixForward = { ...makeChange('Orphan'), resourceType: 'AWS::Kinesis::Stream' } as ResourceChange;
+      const engine = buildEngine({
+        changes: new Map([
+          ['A', makeChange('A')],
+          ['Orphan', fixForward],
+        ]),
+        deps: { A: [], Orphan: [] },
+        currentEtag: 'e0',
+      });
       journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
       journal.reduceRollbackJournalToFailedOperations.mockRejectedValue(new Error('PutObject denied'));
       providerOf(engine).delete.mockImplementation((_id: string, physicalId: string) =>
@@ -1643,12 +1655,16 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       const result = await engine.deploy(stackName, template);
 
       expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
+      // Retried once before falling back.
+      expect(journal.reduceRollbackJournalToFailedOperations).toHaveBeenCalledTimes(2);
       expect(journal.markRollbackJournalSuperseded).toHaveBeenCalledWith(stackName, 'us-east-1', ['A']);
       expect(result.deleteSkipped).toBe(1);
       const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
       const kept = warned.find((w) => w.includes('were not deleted'));
-      expect(kept).toContain('is kept; the next');
+      expect(kept).toContain('is kept; the next successful deploy retries');
       expect(kept).not.toContain('with just them');
+      // The whole journal still holds superseded completed ops: no rollback.
+      expect(kept).not.toContain('cdkd rollback journal-test');
     });
 
     it('an unexpected failure acting on the journal keeps it and counts one entry', async () => {
@@ -1662,6 +1678,16 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(result.deleteSkipped).toBe(1);
     });
 
+    it('that unexpected failure also marks the deploy ids superseded', async () => {
+      const engine = buildEngine({ changes: new Map([['A', makeChange('A')]]), deps: { A: [] }, currentEtag: 'e0' });
+      journal.loadRollbackJournal.mockResolvedValue({ journalVersion: 1, segments: 'x' });
+
+      await engine.deploy(stackName, template);
+
+      expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
+      expect(journal.markRollbackJournalSuperseded).toHaveBeenCalledWith(stackName, 'us-east-1', ['A']);
+    });
+
     it('a DeletionPolicy: Retain orphan is kept in AWS and the journal is still removed', async () => {
       const engine = noChangeEngine();
       journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp({ deletionPolicy: 'Retain' })));
@@ -1673,15 +1699,159 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(result.deleteSkipped).toBe(0);
     });
 
-    it("this deploy's completed CREATE of the type supersedes the orphan: not deleted", async () => {
+    // Review C1: the deploy's own CREATEs are in the saved record, which the
+    // classifier compares by physical id; the type rule is for journal entries.
+    it("this deploy's CREATE of another resource of the type does not stop the delete", async () => {
       const kinesisA = { ...makeChange('A'), resourceType: 'AWS::Kinesis::Stream' } as ResourceChange;
       const engine = buildEngine({ changes: new Map([['A', kinesisA]]), deps: { A: [] }, currentEtag: 'e0' });
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+
+      const result = await engine.deploy(stackName, template);
+
+      expect(orphanDeletes(engine)).toHaveLength(1);
+      expect(journal.deleteRollbackJournal).toHaveBeenCalledWith(stackName, 'us-east-1');
+      expect(result.deleteSkipped).toBe(0);
+    });
+
+    it('a fix-forward re-creating the same logical id under another name deletes the orphan', async () => {
+      const fixForward = { ...makeChange('Orphan'), resourceType: 'AWS::Kinesis::Stream' } as ResourceChange;
+      const engine = buildEngine({ changes: new Map([['Orphan', fixForward]]), deps: { Orphan: [] }, currentEtag: 'e0' });
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+
+      const result = await engine.deploy(stackName, template);
+
+      // The new stream is `phys-Orphan`; only the orphan's id is deleted.
+      expect(orphanDeletes(engine)).toHaveLength(1);
+      expect(providerOf(engine).delete.mock.calls.some((c: unknown[]) => c[1] === 'phys-Orphan')).toBe(false);
+      expect(journal.deleteRollbackJournal).toHaveBeenCalledWith(stackName, 'us-east-1');
+      expect(result.deleteSkipped).toBe(0);
+    });
+
+    it('a NEWER journal segment completing a CREATE of the type still supersedes it: warned, not deleted', async () => {
+      const engine = noChangeEngine();
+      const j = journalWith(orphanOp());
+      (j.segments as unknown[]).push({
+        timestamp: 2,
+        reason: 'no-rollback-failure',
+        initialDeploy: false,
+        operations: [{ logicalId: 'Other', changeType: 'CREATE', resourceType: 'AWS::Kinesis::Stream', physicalId: 'x' }],
+      });
+      journal.loadRollbackJournal.mockResolvedValue(j);
+
+      const result = await engine.deploy(stackName, template);
+
+      expect(orphanDeletes(engine)).toHaveLength(0);
+      expect(journal.deleteRollbackJournal).toHaveBeenCalledWith(stackName, 'us-east-1');
+      expect(result.deleteSkipped).toBe(0);
+    });
+
+    it('a rollback-orphan record holding its logical id owns it: not deleted', async () => {
+      const engine = buildEngine({ changes: new Map(), deps: {}, currentEtag: 'e0' });
+      (
+        engine as unknown as { diffCalculator: { hasChanges: ReturnType<typeof vi.fn> } }
+      ).diffCalculator.hasChanges.mockReturnValue(false);
+      const backend = (engine as unknown as { stateBackend: { getState: ReturnType<typeof vi.fn> } }).stateBackend;
+      backend.getState.mockResolvedValue({
+        state: {
+          version: 8,
+          stackName,
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          orphans: [
+            {
+              logicalId: 'Orphan',
+              orphanedAt: 1,
+              state: { physicalId: 'kept-elsewhere', resourceType: 'AWS::Kinesis::Stream', properties: {} },
+            },
+          ],
+          lastModified: 0,
+        },
+        etag: 'e0',
+      });
       journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
 
       await engine.deploy(stackName, template);
 
       expect(orphanDeletes(engine)).toHaveLength(0);
-      expect(journal.deleteRollbackJournal).toHaveBeenCalledWith(stackName, 'us-east-1');
+    });
+
+    it('another stack record holding the same type and physical id refuses the delete and keeps the entry', async () => {
+      const engine = noChangeEngine();
+      const backend = (
+        engine as unknown as {
+          stateBackend: { getState: ReturnType<typeof vi.fn>; listStacks: ReturnType<typeof vi.fn> };
+        }
+      ).stateBackend;
+      backend.listStacks.mockResolvedValue([
+        { stackName, region: 'us-east-1' },
+        { stackName: 'OtherStack', region: 'eu-west-1' },
+      ]);
+      const own = backend.getState.getMockImplementation() as ((...a: unknown[]) => Promise<unknown>) | undefined;
+      backend.getState.mockImplementation((name: string, region: string) =>
+        name === 'OtherStack'
+          ? Promise.resolve({
+              state: {
+                resources: {
+                  Recreated: { physicalId: 'orphan-stream', resourceType: 'AWS::Kinesis::Stream', properties: {} },
+                },
+              },
+            })
+          : own
+            ? own(name, region)
+            : Promise.resolve(null)
+      );
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+
+      const result = await engine.deploy(stackName, template);
+
+      expect(orphanDeletes(engine)).toHaveLength(0);
+      expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
+      expect(journal.reduceRollbackJournalToFailedOperations).toHaveBeenCalledTimes(1);
+      expect(result.deleteSkipped).toBe(1);
+      const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+      expect(warned.some((w) => w.startsWith('Not deleting') && w.includes('OtherStack'))).toBe(true);
+    });
+
+    it('a state record the scan cannot read refuses the delete too (fail closed)', async () => {
+      const engine = noChangeEngine();
+      const backend = (
+        engine as unknown as {
+          stateBackend: { getState: ReturnType<typeof vi.fn>; listStacks: ReturnType<typeof vi.fn> };
+        }
+      ).stateBackend;
+      backend.listStacks.mockResolvedValue([{ stackName: 'Broken', region: 'us-east-1' }]);
+      const own = backend.getState.getMockImplementation()! as (...a: unknown[]) => Promise<unknown>;
+      backend.getState.mockImplementation((name: string, region: string) =>
+        name === 'Broken' ? Promise.reject(new Error('parse error')) : own(name, region)
+      );
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp()));
+
+      const result = await engine.deploy(stackName, template);
+
+      expect(orphanDeletes(engine)).toHaveLength(0);
+      expect(result.deleteSkipped).toBe(1);
+    });
+
+    it('a journal with no orphan never scans the bucket', async () => {
+      const engine = noChangeEngine();
+      journal.loadRollbackJournal.mockResolvedValue(journalWith({ ...orphanOp(), physicalIdRecoveredFromError: undefined }));
+
+      await engine.deploy(stackName, template);
+
+      const backend = (engine as unknown as { stateBackend: { listStacks: ReturnType<typeof vi.fn> } }).stateBackend;
+      expect(backend.listStacks).not.toHaveBeenCalled();
+    });
+
+    it('DeletionPolicy: Snapshot on a type with no final snapshot is refused: kept and counted', async () => {
+      const engine = noChangeEngine();
+      journal.loadRollbackJournal.mockResolvedValue(journalWith(orphanOp({ deletionPolicy: 'Snapshot' })));
+
+      const result = await engine.deploy(stackName, template);
+
+      expect(orphanDeletes(engine)).toHaveLength(0);
+      expect(journal.deleteRollbackJournal).not.toHaveBeenCalled();
+      expect(result.deleteSkipped).toBe(1);
     });
 
     it('a state record holding the orphan id owns it: not deleted', async () => {
@@ -1706,9 +1876,10 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       const engine = noChangeEngine();
       journal.loadRollbackJournal.mockRejectedValue(new Error('bad journalVersion'));
 
-      await engine.deploy(stackName, template).catch(() => undefined);
+      const result = await engine.deploy(stackName, template);
 
       expect(journal.deleteRollbackJournal).toHaveBeenCalledWith(stackName, 'us-east-1');
+      expect(result.deleteSkipped).toBe(0);
       const warned = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
       expect(warned.some((w) => w.includes('the successful deploy removes the journal'))).toBe(true);
     });

@@ -31,7 +31,10 @@ import {
   replayRollback,
 } from '../rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
-import { settleJournaledOrphansOnSuccess } from '../rollback-executor/journaled-orphans.js';
+import {
+  makeForeignHolderScan,
+  settleJournaledOrphansOnSuccess,
+} from '../rollback-executor/journaled-orphans.js';
 import { hasReadableOrphans } from '../../state/malformed-resources-bag.js';
 import {
   STATE_SOURCED_READBACK_RULES,
@@ -361,6 +364,9 @@ export async function settleJournalAfterSuccess(
     return 0;
   }
   let nestedLeft = 0;
+  // One bucket scan, made only when some journal holds an orphan to delete.
+  const foreignHolderFor = makeForeignHolderScan(this.stateBackend, this.stackRegion);
+  const deployRunId = this.options.eventRecorder?.runId;
   const [ownLeft] = await Promise.all([
     (async (): Promise<number> => {
       // `previousState.orphans` is the surviving set `adoptRollbackOrphans`
@@ -373,7 +379,10 @@ export async function settleJournalAfterSuccess(
         stateResources: finalResources,
         rollbackOrphans: previousState.orphans,
         newerOperations: completedOperations,
+        ...(deployRunId !== undefined && { deployRunId }),
+        foreignHolder: foreignHolderFor({ stackName, region: this.stackRegion }),
         ctx: this.rollbackExecutorContext(previousState, stackName),
+        isInterrupted: () => this.interrupted,
         logger: this.logger,
       });
       if (left > 0) return left;
@@ -405,9 +414,12 @@ export async function settleJournalAfterSuccess(
           region: this.stackRegion,
           stateResources: childState?.resources,
           rollbackOrphans: childState?.orphans,
-          // The child's own success appended its completed ops as a newer
-          // segment of its journal.
+          // The child's own success appended its completed ops as a
+          // `nested-pending-parent` segment of this run (`deployRunId`).
           newerOperations: [],
+          ...(deployRunId !== undefined && { deployRunId }),
+          foreignHolder: foreignHolderFor({ stackName: child, region: this.stackRegion }),
+          isInterrupted: () => this.interrupted,
           ctx: {
             ...this.rollbackExecutorContext(childState ?? previousState, child),
             // Its parent's reads are not in the child's record (as destroy).

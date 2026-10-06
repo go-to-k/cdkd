@@ -1399,7 +1399,13 @@ export class S3StateBackend {
     stackName: string,
     region: string,
     keep: (op: FailedOperation, segment: RollbackJournalSegment) => boolean,
-    supersededLogicalIds: readonly string[] = []
+    supersededLogicalIds: readonly string[] = [],
+    /**
+     * A kept op the caller's supersede pass demoted: it is written with
+     * `physicalIdRecoveredFromError: false`, since the evidence that demoted
+     * it may be among what this drops.
+     */
+    demote: (op: FailedOperation, segment: RollbackJournalSegment) => boolean = () => false
   ): Promise<number> {
     const journal = await this.loadRollbackJournal(stackName, region);
     if (!journal) return 0;
@@ -1407,7 +1413,13 @@ export class S3StateBackend {
     const kept: RollbackJournalSegment[] = [];
     let count = 0;
     const keptBySegment = journal.segments.map((segment) =>
-      (segment.failedOperations ?? []).filter((op) => keep(op, segment))
+      (segment.failedOperations ?? [])
+        .filter((op) => keep(op, segment))
+        .map((op) =>
+          op.physicalIdRecoveredFromError === true && demote(op, segment)
+            ? { ...op, physicalIdRecoveredFromError: false }
+            : op
+        )
     );
     // A kept op's own id is never carried: `demoteSupersededOrphans` reads a
     // segment's `supersededLogicalIds` against its own ops too, so carrying it

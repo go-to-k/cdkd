@@ -1000,6 +1000,30 @@ describe('dropNestedChildJournals — the root sweep (#3754)', () => {
     expect(beforeDelete).toHaveBeenCalledWith('Root~Child', fresh.state);
   });
 
+  it.each([
+    ['a non-object resources bag', { state: { resources: 'abc' } }],
+    ['a record naming another stack', { state: { stackName: 'Root', resources: {} } }],
+  ])('hands beforeDelete no record for %s', async (_what, body) => {
+    const t = tree();
+    const base = t.stateBackend.getState.getMockImplementation()!;
+    t.stateBackend.getState.mockImplementation(async (name: string) =>
+      name === 'Root~Child' ? body : base(name)
+    );
+    const beforeDelete = vi.fn(async () => true);
+
+    await dropNestedChildJournals({
+      stateBackend: t.stateBackend as never,
+      lockManager: t.lockManager as never,
+      parentStackName: 'Root',
+      region: REGION,
+      resources: t.resources as never,
+      logger: t.logger,
+      beforeDelete,
+    });
+
+    expect(beforeDelete).toHaveBeenCalledWith('Root~Child', undefined);
+  });
+
   it('hands beforeDelete no record when the child state cannot be read', async () => {
     const t = tree();
     const base = t.stateBackend.getState.getMockImplementation()!;
