@@ -18,6 +18,10 @@ Tests event-driven architecture: SNS topic with multiple SQS subscribers, DLQ, a
   the canonical CDK L2 / CFn spelling of the HTTP family and covers issue
   #1529: it must land under the `HTTP` attribute prefix, and no `HTTPS*`
   attribute (a name `SetTopicAttributes` rejects) may be set.
+- A `TopicPolicy` naming two topics `verify.sh` creates outside the stack
+  (`CDKD_TEST_POLICY_TOPICS=true`). The `CDKD_TEST_REMOVAL=true` redeploy
+  narrows it to the first topic and asserts the dropped topic is back on
+  SNS's default policy; the destroy asserts both are (issue #4610).
 - Dead Letter Queue
 - Lambda function triggered by primary queue
 - IAM roles/policies (auto-created)

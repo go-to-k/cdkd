@@ -176,6 +176,37 @@ export class SnsSqsEventStack extends cdk.Stack {
       }),
     });
 
+    // go-to-k/cdkd#4610: one TopicPolicy naming TWO topics, which the
+    // CDKD_TEST_REMOVAL redeploy narrows to the first. The topics are created
+    // OUTSIDE the stack by verify.sh (CDKD_TEST_POLICY_TOPICS=true), so their
+    // policy can still be read after the destroy: the narrowed-away topic and,
+    // on destroy, both must be back on SNS's default policy. Gated so a manual
+    // deploy without those topics still works.
+    if (process.env.CDKD_TEST_POLICY_TOPICS === 'true') {
+      const policyTopics = ['cdkd-sns-sqs-test-policy-a', 'cdkd-sns-sqs-test-policy-b'].map(
+        (name, i) =>
+          sns.Topic.fromTopicArn(
+            this,
+            `PolicyTopic${i}`,
+            this.formatArn({ service: 'sns', resource: name })
+          )
+      );
+      const named = removal ? policyTopics.slice(0, 1) : policyTopics;
+      new sns.TopicPolicy(this, 'MultiTopicPolicy', {
+        topics: named,
+        policyDocument: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              sid: 'CdkdIssue4610',
+              actions: ['sns:Publish'],
+              principals: [new iam.ServicePrincipal('events.amazonaws.com')],
+              resources: named.map((t) => t.topicArn),
+            }),
+          ],
+        }),
+      });
+    }
+
     // Outputs
     new cdk.CfnOutput(this, 'TopicArn', { value: topic.topicArn });
     new cdk.CfnOutput(this, 'PrimaryQueueUrl', { value: primaryQueue.queueUrl });

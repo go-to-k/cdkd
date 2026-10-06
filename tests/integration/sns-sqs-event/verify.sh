@@ -17,6 +17,11 @@
 # CFn-parity removal shape, live A/B'd 2026-08-10) instead of silently keeping
 # the old values. Then destroys and confirms a clean teardown.
 #
+# go-to-k/cdkd#4610: a TopicPolicy naming two topics this script creates
+# outside the stack. The removal redeploy narrows it to the first topic, which
+# must reset the dropped topic to SNS's default policy; the destroy must reset
+# both (SNS rejects an empty Policy, so a delete that sends one clears nothing).
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -67,6 +72,57 @@ PRIMARY_QUEUE_NAME="cdkd-sns-sqs-test-primary"
 SECONDARY_QUEUE_NAME="cdkd-sns-sqs-test-secondary"
 SSE_QUEUE_NAME="cdkd-sns-sqs-test-sse-removal"
 DS_TOPIC_NAME="cdkd-sns-sqs-test-delivery-status"
+# go-to-k/cdkd#4610: created and deleted by this script, never by the stack.
+POLICY_TOPIC_A_NAME="cdkd-sns-sqs-test-policy-a"
+POLICY_TOPIC_B_NAME="cdkd-sns-sqs-test-policy-b"
+POLICY_SID="CdkdIssue4610"
+# The stack declares the two-topic TopicPolicy only with this set.
+export CDKD_TEST_POLICY_TOPICS=true
+
+# The ARN of an SNS topic by name, or empty when there is none.
+topic_arn_by_name() {
+  local arn
+  arn=$(aws sns list-topics --region "${REGION}" \
+    --query "Topics[?ends_with(TopicArn, ':${1}')].TopicArn | [0]" --output text) || return 1
+  [ "${arn}" = "None" ] && arn=""
+  printf '%s' "${arn}"
+}
+
+# How many statements of a topic's live Policy carry POLICY_SID. A failed read
+# returns non-zero with no count, which no caller accepts as "no statement".
+policy_sid_count() {
+  local policy
+  policy=$(aws sns get-topic-attributes --topic-arn "${1}" --region "${REGION}" \
+    --query 'Attributes.Policy' --output text) || return 1
+  printf '%s' "${policy}" | jq --arg sid "${POLICY_SID}" '[.Statement[] | select(.Sid == $sid)] | length'
+}
+
+# A topic's live Policy Id (SNS's default policy carries __default_policy_ID).
+policy_id() {
+  aws sns get-topic-attributes --topic-arn "${1}" --region "${REGION}" \
+    --query 'Attributes.Policy' --output text | jq -r '.Id // empty'
+}
+
+# Wait (bounded) for a topic's policy to drop POLICY_SID, then require it gone
+# and the policy to be SNS's default; $2 names the phase in the failure.
+assert_policy_reset() {
+  local arn="$1" phase="$2" n=""
+  for _i in 1 2 3 4 5 6; do
+    n=$(policy_sid_count "${arn}") || n=""
+    [ "${n}" = "0" ] && break
+    sleep 5
+  done
+  if [ "${n}" != "0" ]; then
+    echo "FAIL: ${phase}: ${arn} still carries the ${POLICY_SID} statement (go-to-k/cdkd#4610: the TopicPolicy was not removed from it)" >&2
+    exit 1
+  fi
+  local id
+  id=$(policy_id "${arn}") || id=""
+  if [ "${id}" != "__default_policy_ID" ]; then
+    echo "FAIL: ${phase}: ${arn} policy Id is '${id}', expected SNS's default policy (__default_policy_ID)" >&2
+    exit 1
+  fi
+}
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -86,6 +142,13 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  # go-to-k/cdkd#4610: the two out-of-stack policy topics, after the state.
+  for _name in "${POLICY_TOPIC_A_NAME}" "${POLICY_TOPIC_B_NAME}"; do
+    _arn=$(topic_arn_by_name "${_name}" 2>/dev/null)
+    if [ -n "${_arn}" ]; then
+      aws sns delete-topic --topic-arn "${_arn}" --region "${REGION}" >/dev/null 2>&1
+    fi
+  done
   set -eu
 }
 
@@ -110,6 +173,13 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+
+# go-to-k/cdkd#4610: the TopicPolicy's two topics live outside the stack.
+echo "==> Creating the out-of-stack policy topics"
+POLICY_TOPIC_A_ARN=$(aws sns create-topic --name "${POLICY_TOPIC_A_NAME}" --region "${REGION}" \
+  --query 'TopicArn' --output text)
+POLICY_TOPIC_B_ARN=$(aws sns create-topic --name "${POLICY_TOPIC_B_NAME}" --region "${REGION}" \
+  --query 'TopicArn' --output text)
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
@@ -265,6 +335,15 @@ if [ -z "${DLT_ARN}" ]; then
 fi
 echo "    OK: secondary subscription RedrivePolicy.deadLetterTargetArn is set on AWS (SNS backfill CLOSED)"
 
+# --- Assertion 4: the two-topic TopicPolicy reached both topics (#4610) ---
+for _arn in "${POLICY_TOPIC_A_ARN}" "${POLICY_TOPIC_B_ARN}"; do
+  if [ "$(policy_sid_count "${_arn}")" != "1" ]; then
+    echo "FAIL: ${_arn} does not carry the ${POLICY_SID} statement after Phase 1" >&2
+    exit 1
+  fi
+done
+echo "    OK: the two-topic TopicPolicy is on both out-of-stack topics"
+
 # --- Phase 2: removal-reset redeploy (issue #1160 sqs batch) --------------
 echo "==> Phase 2: re-deploy dropping SqsManagedSseEnabled (removal reset)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -339,6 +418,16 @@ if [ "${DS_HTTP_RATE_P2}" != "0" ]; then
 fi
 echo "    OK: http/s feedback attrs reset on removal (RoleArns cleared, rate 0)"
 
+# --- Assertion 4b: the narrowed TopicPolicy left the dropped topic (#4610) --
+# Pre-fix update() wrote the new list and never touched the topic it dropped,
+# so topic B kept granting events.amazonaws.com sns:Publish.
+if [ "$(policy_sid_count "${POLICY_TOPIC_A_ARN}")" != "1" ]; then
+  echo "FAIL: ${POLICY_TOPIC_A_ARN} lost the ${POLICY_SID} statement the narrowed TopicPolicy still names" >&2
+  exit 1
+fi
+assert_policy_reset "${POLICY_TOPIC_B_ARN}" "after narrowing Topics to the first topic"
+echo "    OK: the dropped topic is back on SNS's default policy; the kept one still carries the statement"
+
 # --- Phase 3: destroy -----------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -357,6 +446,13 @@ echo "    OK: subscriptions are gone"
 
 assert_gone "delivery-status topic ${DS_TOPIC_NAME} still exists after destroy" aws sns get-topic-attributes --topic-arn "${DS_TOPIC_ARN}" --region "${REGION}"
 echo "    OK: delivery-status topic is gone"
+
+# go-to-k/cdkd#4610: the destroy resets every topic the TopicPolicy names.
+# Pre-fix delete() sent an empty Policy, which SNS rejects; the rejection
+# ("Invalid parameter") was read as already removed, so the policy stayed.
+assert_policy_reset "${POLICY_TOPIC_A_ARN}" "after destroy"
+assert_policy_reset "${POLICY_TOPIC_B_ARN}" "after destroy"
+echo "    OK: destroy reset both out-of-stack topics to SNS's default policy"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"

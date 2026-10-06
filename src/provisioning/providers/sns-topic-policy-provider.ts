@@ -2,9 +2,9 @@ import { SetTopicAttributesCommand, GetTopicAttributesCommand } from '@aws-sdk/c
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { assertRegionMatch, type DeleteContext, type RegionCheckPhase } from '../region-check.js';
 import { logicalIdShown } from '../composite-id.js';
-import { isPasteableIdent } from '../../utils/display-safe.js';
+import { isPasteableIdent, safeMsg } from '../../utils/display-safe.js';
 import {
   isPlainImportValue,
   refusalTypeShown,
@@ -20,6 +20,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  UpdateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -118,7 +119,8 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SNS topic policy ${logicalId}: ${physicalId}`);
 
@@ -146,9 +148,49 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     const policyDoc =
       typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
 
+    // go-to-k/cdkd#4610: a topic the record wrote and the new list drops keeps
+    // the old statement unless it is reset, as CloudFormation's update does.
+    // The record's id is the comma-joined set it wrote, so those are reset by
+    // name. Any other topic `previousProperties` lists — an ATTEMPTED list, as
+    // a revert of a failed update passes — is reset only while it carries that
+    // bag's document (see topicsCarryingDocument), read BEFORE the writes.
+    const mask = context?.maskSecrets ?? ((t: string) => t);
+    const written = splitTopicArns(physicalId);
+    const listedOnly = await this.topicsCarryingDocument(
+      listedTopics(previousProperties).filter(
+        (arn) => !written.includes(arn) && !topics.includes(arn)
+      ),
+      previousProperties['PolicyDocument'],
+      logicalId,
+      mask
+    );
+    const dropped = written.filter((arn) => !topics.includes(arn));
+    // A recorded segment that is not a topic ARN cannot be addressed.
+    const unaddressable = dropped.filter((arn) => !isSnsTopicArn(arn));
+    if (unaddressable.length > 0) {
+      this.logger.warn(
+        mask(
+          safeMsg`The recorded topics ${unaddressable.join(', ')} of ${logicalId} are not topic ARNs, so they are not reset: they may still carry its policy.`
+        )
+      );
+    }
+    const removed = [...dropped.filter((arn) => isSnsTopicArn(arn)), ...listedOnly];
+
     try {
       for (const topicArn of topics) {
         await this.setTopicPolicy(topicArn, policyDoc);
+      }
+
+      // Then reset the dropped ones, after the new set holds the policy.
+      for (const topicArn of removed) {
+        await this.resetTopicPolicy(
+          topicArn,
+          resourceType,
+          logicalId,
+          context?.expectedRegion,
+          'pre-update',
+          mask
+        );
       }
 
       this.logger.debug(`Successfully updated SNS topic policy ${logicalId}`);
@@ -161,6 +203,8 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
+      // The region refusal is already a complete ProvisioningError.
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update SNS topic policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -175,7 +219,11 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
   /**
    * Delete an SNS topic policy
    *
-   * Removes the policy from each topic by setting an empty policy.
+   * Resets each topic the physical id names (the comma-joined set create() /
+   * update() wrote, or a failed create's mark of the topics it reached) to
+   * the default policy SNS gives a new topic. SNS rejects an empty `Policy`
+   * (`InvalidParameter`), so a topic cannot be left without one; this is what
+   * CloudFormation's own TopicPolicy delete handler writes (go-to-k/cdkd#4610).
    */
   async delete(
     logicalId: string,
@@ -186,33 +234,23 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting SNS topic policy ${logicalId}: ${physicalId}`);
 
-    const topicArns = physicalId.split(',');
+    const topicArns = splitTopicArns(physicalId);
+    // An id naming no topic must not return normally: that reads as DELETED.
+    if (topicArns.length === 0) {
+      throw new ProvisioningError(
+        `Failed to delete SNS topic policy ${logicalId}: its physical id names no topic ARN`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
 
     for (const topicArn of topicArns) {
       try {
-        await this.setTopicPolicy(topicArn, '');
-        this.logger.debug(`Removed policy from topic ${topicArn}`);
+        await this.resetTopicPolicy(topicArn, resourceType, logicalId, context?.expectedRegion);
       } catch (error) {
-        // If the topic doesn't exist or policy is already empty, skip it
-        if (
-          error instanceof Error &&
-          (error.name === 'NotFoundException' ||
-            error.name === 'NotFound' ||
-            error.message.includes('not found') ||
-            error.message.includes('does not exist') ||
-            error.message.includes('Invalid parameter'))
-        ) {
-          const clientRegion = await getAwsClients().sns.config.region();
-          assertRegionMatch(
-            clientRegion,
-            context?.expectedRegion,
-            resourceType,
-            logicalId,
-            topicArn
-          );
-          this.logger.debug(`Topic ${topicArn} not found or policy already removed, skipping`);
-          continue;
-        }
+        // The region refusal is already a complete ProvisioningError.
+        if (error instanceof ProvisioningError) throw error;
         const cause = error instanceof Error ? error : undefined;
         throw new ProvisioningError(
           `Failed to delete SNS topic policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -225,6 +263,113 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     }
 
     this.logger.debug(`Successfully deleted SNS topic policy ${logicalId}`);
+  }
+
+  /**
+   * Remove this policy from one topic by writing the topic's default policy
+   * ({@link defaultTopicPolicy}). A topic that is gone (`NotFound`) has no
+   * policy left to remove, after the recorded-region check. Any other error
+   * — `InvalidParameter` included — is thrown: it never proves the policy
+   * is gone.
+   */
+  private async resetTopicPolicy(
+    topicArn: string,
+    resourceType: string,
+    logicalId: string,
+    expectedRegion: string | undefined,
+    phase: RegionCheckPhase = 'not-found',
+    mask: (text: string) => string = (t) => t
+  ): Promise<void> {
+    const defaultPolicy = defaultTopicPolicy(topicArn);
+    if (defaultPolicy === undefined) {
+      throw new ProvisioningError(
+        `Cannot remove SNS topic policy ${logicalId} from ${topicArn}: not an SNS topic ARN`,
+        resourceType,
+        logicalId,
+        topicArn
+      );
+    }
+    try {
+      await this.setTopicPolicy(topicArn, defaultPolicy);
+      this.logger.debug(mask(safeMsg`Reset the policy of topic ${topicArn} to the default`));
+    } catch (error) {
+      const name = (error as { name?: string } | undefined)?.name;
+      if (name === 'NotFoundException' || name === 'NotFound') {
+        const clientRegion = await getAwsClients().sns.config.region();
+        assertRegionMatch(clientRegion, expectedRegion, resourceType, logicalId, topicArn, phase);
+        this.logger.debug(mask(safeMsg`Topic ${topicArn} not found, skipping policy removal`));
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * The `candidates` (topics a bag lists that the record's id does not name)
+   * still carrying `document`, compared by content (canonical JSON). Such a
+   * list is an ATTEMPTED one (a revert of a failed update), whose entries
+   * hold `document` only where the attempt wrote it. Only the bag's own
+   * document is a reference, never a topic's live policy, so a topic another
+   * writer holds is left alone. A topic that is gone, carries another
+   * policy, or cannot be read is left alone, an unchecked one with a
+   * warning naming it.
+   */
+  private async topicsCarryingDocument(
+    candidates: readonly string[],
+    document: unknown,
+    logicalId: string,
+    mask: (text: string) => string
+  ): Promise<string[]> {
+    if (candidates.length === 0) return [];
+    let reference: string | undefined;
+    if (typeof document === 'string' && document.length > 0) reference = canonicalPolicy(document);
+    else if (document !== null && typeof document === 'object') reference = canonicalJson(document);
+    if (reference === undefined) {
+      this.logger.warn(
+        mask(
+          safeMsg`The topics ${candidates.join(', ')} listed by ${logicalId} were not checked (no policy document recorded to compare with) and may still carry its policy.`
+        )
+      );
+      return [];
+    }
+
+    const carrying: string[] = [];
+    for (const topicArn of candidates) {
+      const current = await this.readPolicyForWidening(topicArn);
+      if (current.kind === 'policy' && canonicalPolicy(current.policy) === reference) {
+        carrying.push(topicArn);
+      } else if (current.kind === 'unreadable') {
+        this.logger.warn(
+          mask(
+            safeMsg`Could not read the policy of topic ${topicArn} (${current.reason}), so it is not reset: it may still carry the policy of ${logicalId}.`
+          )
+        );
+      } else {
+        this.logger.debug(
+          mask(safeMsg`Topic ${topicArn} does not carry the policy of ${logicalId}; left as is`)
+        );
+      }
+    }
+    return carrying;
+  }
+
+  /** A topic's `Policy` for {@link topicsCarryingDocument}: held, absent (gone or empty), or unreadable. */
+  private async readPolicyForWidening(
+    topicArn: string
+  ): Promise<
+    { kind: 'policy'; policy: string } | { kind: 'none' } | { kind: 'unreadable'; reason: string }
+  > {
+    try {
+      const resp = await getAwsClients().sns.send(
+        new GetTopicAttributesCommand({ TopicArn: topicArn })
+      );
+      const policy = resp.Attributes?.['Policy'];
+      return policy ? { kind: 'policy', policy } : { kind: 'none' };
+    } catch (err) {
+      const name = (err as { name?: string }).name;
+      if (name === 'NotFoundException' || name === 'NotFound') return { kind: 'none' };
+      return { kind: 'unreadable', reason: name ?? 'error' };
+    }
   }
 
   /**
@@ -415,4 +560,87 @@ function isSnsTopicArnList(value: string): boolean {
   const segments = value.split(',');
   if (segments.length === 0) return false;
   return segments.every((s) => isSnsTopicArn(s));
+}
+
+/** The topic ARNs a physical id names. */
+function splitTopicArns(physicalId: string): string[] {
+  return physicalId.split(',').filter((arn) => arn.length > 0);
+}
+
+/** A bag's `Topics` entries that are single literal topic ARNs, deduplicated. */
+function listedTopics(bag: Record<string, unknown>): string[] {
+  const listed = bag['Topics'];
+  if (!Array.isArray(listed)) return [];
+  const out: string[] = [];
+  for (const entry of listed) {
+    if (typeof entry === 'string' && isSnsTopicArn(entry) && !out.includes(entry)) {
+      out.push(entry);
+    }
+  }
+  return out;
+}
+
+/**
+ * The policy SNS gives a new topic, which CloudFormation's TopicPolicy
+ * delete and update handlers write to remove a policy (SNS rejects an empty
+ * one): the topic owner's account may manage, subscribe to and publish to it.
+ * The account and the `Resource` come from the topic ARN; `undefined` when
+ * `topicArn` is not one.
+ */
+export function defaultTopicPolicy(topicArn: string): string | undefined {
+  if (!isSnsTopicArn(topicArn)) return undefined;
+  const account = topicArn.split(':')[4]!;
+  return JSON.stringify({
+    Version: '2008-10-17',
+    Id: '__default_policy_ID',
+    Statement: [
+      {
+        Sid: '__default_statement_ID',
+        Effect: 'Allow',
+        Principal: { AWS: '*' },
+        Action: [
+          'SNS:GetTopicAttributes',
+          'SNS:SetTopicAttributes',
+          'SNS:AddPermission',
+          'SNS:RemovePermission',
+          'SNS:DeleteTopic',
+          'SNS:Subscribe',
+          'SNS:ListSubscriptionsByTopic',
+          'SNS:Publish',
+        ],
+        Resource: topicArn,
+        Condition: { StringEquals: { 'AWS:SourceOwner': account } },
+      },
+    ],
+  });
+}
+
+/** A JSON value with object keys sorted at every depth, serialized; array order kept. */
+function canonicalJson(value: unknown): string {
+  const sortKeys = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(sortKeys);
+    if (v !== null && typeof v === 'object') {
+      // Null prototype: a `__proto__` member stays an own key and is compared.
+      const out = Object.create(null) as Record<string, unknown>;
+      for (const key of Object.keys(v).sort()) {
+        out[key] = sortKeys((v as Record<string, unknown>)[key]);
+      }
+      return out;
+    }
+    return v;
+  };
+  return JSON.stringify(sortKeys(value));
+}
+
+/**
+ * A policy string's content key: its canonical JSON, or — when it does not
+ * parse — the raw text under a prefix no canonical form can produce, so
+ * unparseable text matches only itself.
+ */
+function canonicalPolicy(text: string): string {
+  try {
+    return canonicalJson(JSON.parse(text) as unknown);
+  } catch {
+    return `raw:${text}`;
+  }
 }
