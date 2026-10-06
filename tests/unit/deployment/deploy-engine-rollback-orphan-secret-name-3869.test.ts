@@ -265,8 +265,8 @@ describe("a deploy's automatic rollback masks a journaled orphan's OWN name this
     ['a value this deploy resolved from a secret', DESC_REF, false],
     ['negative control, a literal value', DESC, true],
   ])("masks a non-name value it resolved on its delete line: %s", async (_l, desc, shown) => {
-    // Not a name: only the orphan's own resolved secrets carry it.
-    const { lines, provider } = await queueRollback(QUEUE, { Description: desc });
+    // A real non-name property (a KMS key alias here): only the orphan's own resolved secrets carry it.
+    const { lines, provider } = await queueRollback(QUEUE, { KmsMasterKeyId: desc });
     expect(provider.delete.mock.calls.map((c) => c[1])).toEqual([URL]);
     expect(lines).toEqual([expect.stringContaining('Deleting SQS queue Queue: ')]);
     expect(lines[0]!.includes(DESC)).toBe(shown);
