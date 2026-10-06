@@ -6573,6 +6573,7 @@
           "literal"
         ],
         "sns-subscription-filter": [
+          "l2",
           "literal"
         ]
       }

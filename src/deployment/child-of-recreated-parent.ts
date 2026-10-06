@@ -15,9 +15,9 @@ import { takenFnIfArms } from './recreate-target-readers.js';
  * ({@link childLostWithRecreatedParent}). A child naming SEVERAL parents
  * (`mode: 'reput'`) is updated in place instead, writing the policy to every
  * parent it names; a create without a delete would also have left the old
- * policy on a parent it dropped. Only the IAM `Policy` update removes it from
- * a dropped principal: the topic and queue policy updates never cleared a
- * dropped topic or queue, before this change or after it. A `reput` child
+ * policy on a parent it dropped. The IAM `Policy` and SQS `QueuePolicy`
+ * (go-to-k/cdkd#4594) updates remove it from a dropped principal or queue; the
+ * topic policy update does not clear a dropped topic (go-to-k/cdkd#4610). A `reput` child
  * recorded on the Cloud Control route sends nothing still, as its patch from
  * record to template is empty; all three route through their SDK providers.
  *
