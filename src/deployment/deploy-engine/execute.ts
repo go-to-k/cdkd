@@ -369,6 +369,9 @@ export async function executeDeployment(
             change.changeType === 'UPDATE' &&
             change.resourceType !== 'AWS::CloudFormation::Stack' &&
             statePhysicalId !== undefined &&
+            // False only for a running record with no physical id, where
+            // `statePhysicalId` fell back to the pre-deploy record's: no single
+            // record is then the one being replaced.
             heldRecord?.physicalId === statePhysicalId
               ? heldRecord
               : undefined;

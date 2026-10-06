@@ -1092,6 +1092,40 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
         });
         expect(lines.some((l) => /FAILED update — remote state unknown/.test(l))).toBe(false);
       });
+
+      // go-to-k/cdkd#4604: the preview keeps the record under a replacement
+      // orphan's id (the replaced resource), so the completed ops are planned
+      // against the state the replay really leaves.
+      it.each([
+        ['Delete', undefined],
+        ['Retain', 'Retain'],
+      ] as const)(
+        'previews a replacement orphan (%s) without dropping the replaced record',
+        async (_label, deletionPolicy) => {
+          installReplacementStack({
+            oldResourceRetained: false,
+            failedOperations: [
+              {
+                logicalId: 'R',
+                changeType: 'CREATE',
+                resourceType: 'AWS::SQS::Queue',
+                provisionedBy: 'sdk',
+                physicalId: 'phys-orphan',
+                physicalIdRecoveredFromError: true,
+                replacedPhysicalId: 'phys-new',
+                replacedResourceType: 'AWS::SQS::Queue',
+                ...(deletionPolicy && { deletionPolicy }),
+              },
+            ],
+          });
+          await rollbackCommand('S', { ...baseOpts, revertFailed: true }).catch(() => undefined);
+          const lines = await plannedLines();
+          if (deletionPolicy === undefined) {
+            expect(lines.some((l) => l.includes("[FAILED replacement's new resource, never recorded in state"))).toBe(true);
+          }
+          expect(reverseLine(lines)).toBeDefined();
+        }
+      );
     });
 
     it('re-adopt WITHOUT the policy still promises the delete', async () => {

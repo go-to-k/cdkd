@@ -310,6 +310,7 @@ handler takes no such snapshot and stays on Cloud Control.
 | `cdkd destroy`, `cdkd state destroy`, a deploy that removes the resource | `DeletionPolicy` |
 | A rollback of its creation (automatic, `cdkd rollback`, `--revert-failed`) | `DeletionPolicy` |
 | A replacement's delete of the old copy, or a rollback's delete of a replacement's new copy | `UpdateReplacePolicy`, whose default is `Delete` for every type |
+| A rollback's delete of a failed replacement's new copy (its create made it, then failed) | `DeletionPolicy`, journaled with it as for a failed creation |
 
 These cases still go through Cloud Control:
 

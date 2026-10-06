@@ -1244,7 +1244,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
 
     function replacingEngine(
       failure: Error,
-      opts: { noRollback?: boolean; type?: string; inPlace?: boolean } = {}
+      opts: { noRollback?: boolean; type?: string; inPlace?: boolean; prevType?: string } = {}
     ) {
       const type = opts.type ?? 'AWS::SQS::Queue';
       const change = {
@@ -1261,7 +1261,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         deps: { B: [] },
         noRollback: opts.noRollback ?? true,
         currentEtag: 'e0',
-        currentResources: { B: prevB(type) },
+        currentResources: { B: prevB(opts.prevType ?? type) },
       });
       const internals = engine as unknown as {
         stateBackend: { saveState: ReturnType<typeof vi.fn> };
@@ -1305,6 +1305,26 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         replacedResourceType: 'AWS::SQS::Queue',
       });
       expect(orphan).not.toHaveProperty('previousState');
+      // What the replay's delete hands the provider for its guard opt-ins.
+      expect(orphan['attemptedProperties']).toEqual({ p: 'new' });
+    });
+
+    // A Type change: the replaced record is the OLD type, which the classifier
+    // compares against the record still under the id.
+    it('names the replaced record by its own type across a Type change', async () => {
+      const { engine } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new'),
+        { prevType: 'AWS::SNS::Topic' }
+      );
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+        Record<string, unknown>
+      >;
+      expect(ops.find((o) => o['changeType'] === 'CREATE')).toMatchObject({
+        resourceType: 'AWS::SQS::Queue',
+        replacedPhysicalId: 'b-old',
+        replacedResourceType: 'AWS::SNS::Topic',
+      });
     });
 
     it('control: an unmarked replacement failure journals the UPDATE alone', async () => {
@@ -1355,7 +1375,12 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
   // go-to-k/cdkd#4615: the rollback reverts an in-place update in place even
   // when it changed the physical id, so the provider's answer is journaled.
   describe("journals the provider's wasReplaced on a completed UPDATE (go-to-k/cdkd#4615)", () => {
-    async function completedA(opts: { wasReplaced?: boolean; replacement?: boolean }) {
+    async function completedA(opts: {
+      wasReplaced?: boolean;
+      replacement?: boolean;
+      /** Deploy in place first on the SAME engine, then the given shape. */
+      reuse?: boolean;
+    }) {
       const changeA = {
         logicalId: 'A',
         changeType: 'UPDATE',
@@ -1393,15 +1418,20 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         physicalId: 'q2',
         ...(opts.wasReplaced !== undefined && { wasReplaced: opts.wasReplaced }),
       });
-      await expect(
-        engine.deploy(stackName, {
-          Resources: {
-            A: { Type: 'AWS::SQS::QueuePolicy', Properties: { Queues: ['q2', 'q3'] } },
-            B: { Type: 'AWS::S3::Bucket', Properties: {} },
-          },
-        })
-      ).rejects.toThrow();
-      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      const tmpl: CloudFormationTemplate = {
+        Resources: {
+          A: { Type: 'AWS::SQS::QueuePolicy', Properties: { Queues: ['q2', 'q3'] } },
+          B: { Type: 'AWS::S3::Bucket', Properties: {} },
+        },
+      };
+      if (opts.reuse) {
+        const requested = opts.replacement === true;
+        (changeA.propertyChanges as Array<{ requiresReplacement: boolean }>)[0]!.requiresReplacement = false;
+        await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+        (changeA.propertyChanges as Array<{ requiresReplacement: boolean }>)[0]!.requiresReplacement = requested;
+      }
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      const seg = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
       return seg.operations.find((o: { logicalId: string }) => o.logicalId === 'A');
     }
 
@@ -1421,6 +1451,14 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
 
     it('records nothing for the replacement arm, where the id change speaks', async () => {
       expect(await completedA({ replacement: true })).not.toHaveProperty('wasReplaced');
+    });
+
+    // A reused engine: the previous deploy's in-place answer must not ride
+    // onto this deploy's replacement, which would then be reverted in place.
+    it("does not carry a previous deploy's answer onto a reused engine's replacement", async () => {
+      expect(
+        await completedA({ wasReplaced: false, replacement: true, reuse: true })
+      ).not.toHaveProperty('wasReplaced');
     });
   });
 

@@ -145,6 +145,13 @@ describe('classifyFailedOp: a replacement orphan beside the record it replaced (
     expect(classifyFailedOp(plain, { S: res() })).toBe('skip-failed-mismatch');
   });
 
+  // A Type change: the new resource is of the template's type, the replaced
+  // record of the old one.
+  it('deletes it beside a replaced record of another type it names', () => {
+    const op = orphan({ resourceType: 'AWS::SQS::Queue', replacedResourceType: TYPE });
+    expect(classifyFailedOp(op, { S: res() })).toBe('delete-failed-create');
+  });
+
   it('plans the delete on the journaled route, not the replaced record’s', () => {
     const [item] = planFailedOps([orphan()], { S: res({ provisionedBy: 'cc-api' }) });
     expect(item!.effectiveProvisionedBy).toBe('sdk');
@@ -278,11 +285,12 @@ describe('a rollback re-create that made its resource and failed (go-to-k/cdkd#4
 
   function run(
     failure: Error,
-    opts: { prev?: Partial<ResourceState>; deleteFails?: boolean } = {}
+    opts: { prev?: Partial<ResourceState>; deleteFails?: boolean; deleteSkips?: boolean } = {}
   ) {
     const create = vi.fn().mockRejectedValue(failure);
     const del = vi.fn(async (..._args: unknown[]) => {
       if (opts.deleteFails) throw new Error('AccessDenied');
+      if (opts.deleteSkips) return { outcome: 'skipped' as const, reason: 'a guard refused' };
       return undefined;
     });
     const { ctx } = ctxWith({ create, delete: del });
@@ -311,6 +319,20 @@ describe('a rollback re-create that made its resource and failed (go-to-k/cdkd#4
     await result;
     expect(del).not.toHaveBeenCalled();
     expect(warned()).toContain('DeletionPolicy: Retain');
+  });
+
+  it('keeps it, named, under the old record’s Snapshot', async () => {
+    const { del, result } = run(madeA(), { prev: { deletionPolicy: 'Snapshot' } });
+    await result;
+    expect(del).not.toHaveBeenCalled();
+    expect(warned()).toContain('DeletionPolicy: Snapshot');
+  });
+
+  it('names it when the provider skips the delete', async () => {
+    const { del, result } = run(madeA(), { deleteSkips: true });
+    await result;
+    expect(del).toHaveBeenCalledOnce();
+    expect(warned()).toContain('could not delete');
   });
 
   it('names it when the delete fails', async () => {
@@ -379,5 +401,98 @@ describe('isReplacementOp honours the provider’s wasReplaced (go-to-k/cdkd#461
   it('still treats a Type change as a replacement', () => {
     const op = { ...policyOp(false), physicalId: 'q1', previousResourceType: 'AWS::SNS::TopicPolicy' };
     expect(isReplacementOp(op)).toBe(true);
+  });
+});
+
+describe('the delete-new-first arm deletes what its re-create made too (go-to-k/cdkd#4604)', () => {
+  const TG = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+  const TG_NAME = 'CdkdX-Tg';
+  const NEW_ARN = `arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/${TG_NAME}/0123456789abcdef`;
+  /** The SDK shape ELBv2 throws: the NAME states the collision (#3208). */
+  const collision = (): Error => {
+    const e = new Error(`A target group with the same name '${TG_NAME}' exists, but with different settings`);
+    e.name = 'DuplicateTargetGroupNameException';
+    return e;
+  };
+  const tg = (over: Partial<ResourceState> = {}): ResourceState => ({
+    physicalId: NEW_ARN,
+    resourceType: TG,
+    properties: { Name: TG_NAME },
+    attributes: {},
+    dependencies: [],
+    ...over,
+  });
+  const op = (): CompletedOperation => ({
+    logicalId: 'Tg',
+    changeType: 'UPDATE',
+    resourceType: TG,
+    physicalId: NEW_ARN,
+    previousState: tg({ physicalId: 'arn-old' }),
+  });
+
+  it('deletes the new resource first, then what the failed re-create made', async () => {
+    let calls = 0;
+    const create = vi.fn(async () => {
+      if (calls++ === 0) throw collision();
+      throw markCreatedBeforeFailure(new Error('follow-up rejected'), 'Tg', TG, 'arn-made');
+    });
+    const del = vi.fn(async (..._args: unknown[]) => undefined);
+    const { ctx } = ctxWith({ create, delete: del });
+    const result = await replayRollback([op()], { Tg: tg() }, 'CdkdX', ctx);
+    expect(result.failures).toBe(1);
+    expect(del.mock.calls.map((c) => c[1])).toEqual([NEW_ARN, 'arn-made']);
+  });
+
+  // The collision was this create's own earlier attempt's resource, which the
+  // catch just deleted: no holder proof runs, so the live new resource stays.
+  it('fails the op without deleting the new resource once its own leftover is deleted', async () => {
+    const create = vi.fn(async () => {
+      throw markCreatedBeforeFailure(collision(), 'Tg', TG, 'arn-made');
+    });
+    const del = vi.fn(async (..._args: unknown[]) => undefined);
+    const { ctx } = ctxWith({ create, delete: del });
+    const state = { Tg: tg() };
+    const result = await replayRollback([op()], state, 'CdkdX', ctx);
+    expect(result.failures).toBe(1);
+    expect(del.mock.calls.map((c) => c[1])).toEqual(['arn-made']);
+    expect(state.Tg.physicalId).toBe(NEW_ARN);
+  });
+});
+
+describe('the in-place revert of an id-changing update (go-to-k/cdkd#4615)', () => {
+  it('updates the current id back to the previous properties and restores the previous record', async () => {
+    const QP = 'AWS::SQS::QueuePolicy';
+    const prev: ResourceState = {
+      physicalId: 'q1',
+      resourceType: QP,
+      properties: { Queues: ['q1', 'q2', 'q3'] },
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'sdk',
+    };
+    const current: ResourceState = { ...prev, physicalId: 'q2', properties: { Queues: ['q2', 'q3'] } };
+    const update = vi.fn(async (..._args: unknown[]) => ({ physicalId: 'q1', wasReplaced: false }));
+    const create = vi.fn();
+    const del = vi.fn();
+    const { ctx } = ctxWith({ update, create, delete: del });
+    const state: Record<string, ResourceState> = { P: current };
+    const op: CompletedOperation = {
+      logicalId: 'P',
+      changeType: 'UPDATE',
+      resourceType: QP,
+      physicalId: 'q2',
+      provisionedBy: 'sdk',
+      properties: current.properties,
+      previousState: prev,
+      wasReplaced: false,
+    };
+
+    const result = await replayRollback([op], state, 'Stack', ctx);
+
+    expect(result.failures).toBe(0);
+    expect(create).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+    expect(update.mock.calls[0]!.slice(0, 4)).toEqual(['P', 'q2', QP, { Queues: ['q1', 'q2', 'q3'] }]);
+    expect(state['P']?.physicalId).toBe('q1');
   });
 });
