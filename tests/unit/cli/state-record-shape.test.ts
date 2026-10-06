@@ -1718,12 +1718,14 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
         ['properties', 1, 'renderStateBlock; repaired by repairRecordForTextRender'],
         [
           'resources',
-          3,
+          4,
           'renderStateBlock, repaired by repairMalformedResourcesForReadOnly; ' +
-            'repairRenderedContainers` own Object.values, guarded by isReadableBag; and ' +
-            'refreshObservedForStack, which REFUSES rather than repairing — it is the one ' +
-            'WRITER in this file, so go-to-k/cdkd#3018 gave it refuseMalformedState plus ' +
-            'refuseMalformedResourceEntries above both of its loops',
+            'repairRenderedContainers` own Object.values, guarded by isReadableBag; ' +
+            'refreshObservedForStack, which REFUSES rather than repairing — a WRITER, so ' +
+            'go-to-k/cdkd#3018 gave it refuseMalformedState plus ' +
+            'refuseMalformedResourceEntries above both of its loops; and ' +
+            "stateOrphanResources' Available-ids list, the other WRITER (go-to-k/cdkd#4602), " +
+            'below its refuseMalformedState',
         ],
       ];
 

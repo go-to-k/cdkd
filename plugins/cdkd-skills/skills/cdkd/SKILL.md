@@ -56,7 +56,7 @@ Keep these ownership rules:
 - Treat `cdkd import`, `cdkd export`, `cdkd orphan`, and `cdkd state orphan` as changes to the system of record. Explain the ownership change and obtain explicit confirmation before running them.
 - Never edit the S3 state object by hand. Use cdkd state and recovery commands.
 
-To stop managing something WITHOUT deleting it from AWS, orphan it: `cdkd orphan '<stack/ConstructPath>'` drops one resource from cdkd state (the AWS resource stays), and `cdkd state orphan '<stack>'` removes the whole stack's state record (all AWS resources stay). Remove the corresponding construct from the CDK app in the same change — otherwise the next `cdkd deploy` re-creates what the template still declares.
+To stop managing something WITHOUT deleting it from AWS, orphan it: `cdkd orphan '<stack/ConstructPath>'` drops one resource from cdkd state (the AWS resource stays), `cdkd state orphan '<stack>' --resource <logicalId>` drops one resource's record without the CDK app (also for a resource whose construct is already gone from the template), and `cdkd state orphan '<stack>'` removes the whole stack's state record (all AWS resources stay) — never run that bare form on a stack that is still deployed, since the next deploy re-creates or collides with every resource. Remove the corresponding construct from the CDK app in the same change — otherwise the next `cdkd deploy` re-creates what the template still declares.
 
 For a proposed CloudFormation migration, read the deployed CloudFormation template and compare its logical IDs with the current synthesized template so local changes do not accidentally leave retained resources unmanaged. Preview resource matching with the non-migrating form:
 

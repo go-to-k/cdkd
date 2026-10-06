@@ -144,7 +144,10 @@ describe('redactedDeleteAddressSkip', () => {
     const text = warnText();
     expect(text).toContain('Stage MyStage is recorded in state with RestApiId redacted');
     expect(text).toContain('LEFT IN PLACE');
-    expect(text).toContain("'cdkd state orphan <stack>'");
+    // No context is a deploy-side caller: the single-record form (go-to-k/cdkd#4602).
+    expect(text).toContain(
+      "drop the record with 'cdkd state orphan <stack> --stack-region <region> --resource MyStage'"
+    );
     expect(text).toContain('https://github.com/go-to-k/cdkd/issues/1762');
   });
 

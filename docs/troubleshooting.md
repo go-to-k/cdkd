@@ -160,7 +160,9 @@ LockError: Failed to acquire lock for stack MyStack (us-east-1) after 4 attempts
 > construct path and fails fast on the lock, while
 > `cdkd state orphan '<stack>'...` drops whole stack records and takes no lock
 > of its own — it refuses while one is held, and `--force` makes it delete
-> that lock, including a live one.
+> that lock, including a live one. `cdkd state orphan '<stack>' --resource
+> <logicalId>` is the exception: it drops individual entries, takes the lock
+> like `cdkd orphan`, and `--force` does not bypass a held one.
 
 > **Note:** A first `Ctrl-C` during `cdkd destroy` / `cdkd state destroy` no
 > longer strands the lock — the graceful-SIGINT handler finishes any in-flight
@@ -458,13 +460,17 @@ cdkd state resources MyStack --long   # plus dependencies and attributes
 right tool when the resource is already gone:
 
 ```bash
-cdkd state orphan MyStack --stack-region us-east-1   # whole stack record
+cdkd state orphan MyStack --stack-region us-east-1 --resource MyTable1234ABCD  # one resource, by logical id
 cdkd orphan MyStack/MyTable                          # one resource, by construct path
+cdkd state orphan MyStack --stack-region us-east-1   # whole stack record
 ```
 
 `cdkd orphan` is synth-driven and takes construct paths (repeatable, all
 referencing the same stack); `cdkd state orphan` needs no CDK app and takes
-stack names. Both accept `--dry-run`.
+stack names, plus `--resource` (repeatable) to drop single entries — the fit
+when the construct is already gone from the app. Only `cdkd orphan` accepts
+`--dry-run`. Do not drop the whole record of a stack that still has other live
+resources: the next deploy re-creates or collides with all of them.
 
 The next `cdkd deploy` then plans those resources as CREATE.
 

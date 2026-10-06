@@ -46,6 +46,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
+import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
 
 /**
  * The short `ResourceDeleteResult.reason` the no-policy-name DELETE arm
@@ -871,7 +872,13 @@ export class IAMPolicyProvider implements ResourceProvider {
         : undefined;
 
     if (!policyName && policyNameRedacted) {
-      const skip = redactedDeleteAddressSkip(this.logger, logicalId, 'IAM policy', ['PolicyName']);
+      const skip = redactedDeleteAddressSkip(
+        this.logger,
+        logicalId,
+        'IAM policy',
+        ['PolicyName'],
+        context
+      );
       if (skip) return skip;
     }
 
@@ -881,7 +888,9 @@ export class IAMPolicyProvider implements ResourceProvider {
           `properties — skipping deletion. No AWS call is issued, so the inline policy is LEFT ` +
           `ATTACHED to its roles / groups / users, UNLESS the role / group / user it is attached ` +
           `to is itself part of this stack (deleting that principal removes its inline policies, ` +
-          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). ` +
+          `and then only the cdkd record is stale — clear it with ` +
+          // go-to-k/cdkd#4602: the whole-stack form only on a stack destroy.
+          `${stateOrphanRecordRemedy(context, logicalId)}). ` +
           `Otherwise repair the physicalId in state.json and re-run, or delete the inline policy ` +
           `by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
@@ -963,9 +972,8 @@ export class IAMPolicyProvider implements ResourceProvider {
               ? `, whatever is repaired in the recorded ${plainKinds.join(' / ')}`
               : '') +
             `. Remove the inline policy from its principals by hand (a principal this stack ` +
-            `also deletes takes its inline policies with it); on cdkd destroy every other ` +
-            `resource is still deleted, so once this is the stack's last record 'cdkd state ` +
-            `orphan <stack> --stack-region <region>' clears it.`;
+            `also deletes takes its inline policies with it), then drop this record with ` +
+            `${stateOrphanRecordRemedy(context, logicalId)}.`;
       this.logger.warn(
         `The state record for IAM policy ${logicalId} holds ${malformedKinds.join(' / ')} that ` +
           `is not a list of IAM names — skipping deletion rather than guessing which principals ` +
@@ -1001,7 +1009,8 @@ export class IAMPolicyProvider implements ResourceProvider {
           `attachment, so with no principal named there is no delete to issue and the policy is ` +
           `LEFT ATTACHED wherever it is, UNLESS the role / group / user it is attached to is ` +
           `itself part of this stack (deleting that principal removes its inline policies, and ` +
-          `then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). ` +
+          `then only the cdkd record is stale — clear it with ` +
+          `${stateOrphanRecordRemedy(context, logicalId)}). ` +
           `Otherwise restore Roles / Groups / Users in state.json and re-run, or delete the ` +
           `inline policy by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
@@ -1153,7 +1162,7 @@ export class IAMPolicyProvider implements ResourceProvider {
 
       if (secretPrincipalLacksGrant) {
         this.logger.warn(
-          safeMsg`IAM policy ${logicalId}: a principal the secret's CURRENT value names does not hold this inline policy. The value may have rotated since the policy was attached, so a principal only the OLD value named may still hold it; or an earlier cdkd run already removed it there, or that principal was deleted first. The record is KEPT rather than read as deleted: delete the inline policy from any old principal by hand (the principals the current value names are done), then drop this record with 'cdkd orphan <constructPath>', or, with no CDK app, 'cdkd state orphan <stack> --stack-region <region>' once it is the stack's last record.`
+          safeMsg`IAM policy ${logicalId}: a principal the secret's CURRENT value names does not hold this inline policy. The value may have rotated since the policy was attached, so a principal only the OLD value named may still hold it; or an earlier cdkd run already removed it there, or that principal was deleted first. The record is KEPT rather than read as deleted: delete the inline policy from any old principal by hand (the principals the current value names are done), then drop this record with 'cdkd orphan <constructPath>', or, with no CDK app, ${stateOrphanRecordRemedy(context, logicalId)}.`
         );
         return { outcome: 'skipped', reason: POLICY_SECRET_PRINCIPAL_LACKS_GRANT_SKIP_REASON };
       }

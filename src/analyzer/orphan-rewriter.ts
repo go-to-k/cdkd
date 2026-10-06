@@ -144,9 +144,16 @@ export interface OrphanRewriteOptions {
  * pass `isSensitiveAttributeName` — so the name rule cannot see them. Keyed by
  * resource type, read by own key. `AWS::AppSync::ApiKey`'s `ApiKey` is the
  * `x-api-key` value itself, recorded in plaintext at create.
+ * `AWS::EC2::IpamExternalResourceVerificationToken`'s `TokenValue` is a
+ * credential Cloud Control records in plaintext (`cloud-control-provider.ts`);
+ * that type has no `getAttribute`, so every read of it reaches `--force`'s
+ * cache fallback. `AWS::IVS::StreamKey`'s `Value` is the stream key itself
+ * (Cloud-Control-routed; `docs/_generated/provider-coverage.json` lists it).
  */
 const SECRET_VALUED_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map([
   ['AWS::AppSync::ApiKey', ['ApiKey']],
+  ['AWS::EC2::IpamExternalResourceVerificationToken', ['TokenValue']],
+  ['AWS::IVS::StreamKey', ['Value']],
 ]);
 
 /**
@@ -193,8 +200,8 @@ function carriesSensitiveNamedLeaf(value: unknown): boolean {
  * - a pre-#1681 placeholder ARN (`isStalePlaceholderArnAttribute`), which the
  *   resolver heals by a re-read;
  * - a value carrying the redaction mask (`SECRET_MASK`): it is all cdkd kept of
- *   the value, and a mask must never become a sibling's property on this
- *   default path — only `--force`'s fallback may splice one, with its warning;
+ *   the value, and a mask must never become a sibling's property, on this
+ *   path or through `--force`'s fallback (go-to-k/cdkd#4602);
  * - a value carrying a `{{resolve:...}}` reference (a nested stack's redacted
  *   output, issue #2055), which the resolver re-resolves in a context this
  *   analyzer pass does not have.
@@ -271,6 +278,28 @@ function servableRecordedAttribute(
 }
 
 /**
+ * Why `--force`'s cache fallback must NOT splice `cached` for `attribute` of a
+ * `resourceType` record, or `undefined` when it may. The same classes
+ * {@link servableRecordedAttribute} refuses to serve, minus the two that are
+ * about staleness rather than secrecy (go-to-k/cdkd#4602).
+ */
+function unsplicableCachedAttribute(
+  resourceType: string,
+  attribute: string,
+  cached: unknown
+): string | undefined {
+  if (isSensitiveAttributeName(attribute)) return 'a credential-named attribute';
+  if (isCustomResourceType(resourceType)) return "a custom resource's attribute";
+  if (SECRET_VALUED_ATTRIBUTES.get(resourceType)?.includes(attribute)) {
+    return 'a secret-valued attribute';
+  }
+  if (carriesSecretMask(cached)) return `the redaction mask ('${SECRET_MASK}')`;
+  if (carriesDynamicReference(cached)) return 'an unresolved dynamic reference';
+  if (carriesSensitiveNamedLeaf(cached)) return 'a value with a credential-named field';
+  return undefined;
+}
+
+/**
  * Attribute resolver for one orphan resource: the RECORDED value when the
  * record holds a servable one ({@link servableRecordedAttribute}), otherwise a
  * live `provider.getAttribute(...)` read. Memoizes results so multiple
@@ -281,13 +310,6 @@ function servableRecordedAttribute(
  */
 class AttributeFetcher {
   private cache = new Map<string, unknown>();
-  /**
-   * Orphans whose masked-`Ref` `--force` warning has already been printed.
-   * Separate from {@link cache}, which memoizes VALUES keyed by
-   * `(orphan, attribute)`; a `Ref` has no attribute and produces no cacheable
-   * value, so sharing that map would need a sentinel key that means "warned".
-   */
-  private warnedMaskedRefs = new Set<string>();
   private logger = getLogger().child('OrphanRewriter');
   private orphans: Record<string, ResourceState>;
   private providerRegistry: ProviderRegistry;
@@ -328,24 +350,16 @@ class AttributeFetcher {
    * for an unguarded wrong value, which is a worse outcome than the one the
    * refusal exists to prevent.
    *
-   * ## The `--force` arm SUBSTITUTES THE MASK, not the physical id
+   * ## `--force` does not change that
    *
-   * `--force`'s contract is "use a possibly-wrong value rather than stranding
-   * me", so this arm still produces a value — but WHICH value is the whole
-   * finding of the issue #2847 round-2 security review, and an earlier
-   * revision of this method got it backwards by handing back the physical id.
-   * That is the unguarded-wrong-value outcome the paragraph above calls worse
-   * than the bug, reached through the one arm that skips the refusal:
-   * `cdkd orphan --force` over a CC-imported `AWS::S3Tables::Table` whose
-   * `TableName` is masked wrote `arn:aws:s3tables:…/<uuid>` into a sibling's
-   * persisted property, every later deploy shipped that ARN where a table name
-   * belongs, and export / rollback / drift / deploy all passed it.
-   *
-   * {@link SECRET_MASK} keeps the `--force` escape hatch open — the rewrite
-   * completes and the orphan leaves state — while leaving a value those four
-   * readers still catch, so the damage stays inside cdkd instead of reaching
-   * AWS. That is also what {@link cacheFallback}, this method's stated mirror,
-   * already does with a masked cached attribute; the two arms now agree.
+   * The `--force` arm used to substitute {@link SECRET_MASK} (never the
+   * physical id, which would be an unguarded wrong value: `cdkd orphan
+   * --force` over a CC-imported `AWS::S3Tables::Table` whose `TableName` is
+   * masked once wrote `arn:aws:s3tables:…/<uuid>` into a sibling). Splicing
+   * the mask is still the #1498 corrupted-write class, so since
+   * go-to-k/cdkd#4602 both arms refuse it, as {@link cacheFallback} refuses a
+   * masked cached attribute: the `Ref` stays in place and the site is reported
+   * unresolved, which `--force` lets the run complete over.
    */
   ref(orphanLogicalId: string): { ok: true; value: string } | { ok: false; reason: string } {
     if (!Object.hasOwn(this.orphans, orphanLogicalId)) {
@@ -386,32 +400,12 @@ class AttributeFetcher {
     // does not exist.
     const safeType = displaySafe(o.resourceType, { asciiOnly: true });
     const reason =
-      `state records the redaction mask ('${SECRET_MASK}') for '${maskedKey}', the key ` +
+      `the redaction mask: state records '${SECRET_MASK}' for '${maskedKey}', the key ` +
       `CloudFormation's Ref returns for ${safeType} — cdkd cannot recover it, and the ` +
       `physical id is NOT that value`;
-    if (!this.options.force) {
-      return { ok: false, reason };
-    }
-    // ONCE PER ORPHAN, matching `cacheFallback`'s memoization: N references to
-    // one masked orphan otherwise print N identical warnings, and the audit
-    // table already lists every rewritten site. Keyed on the LOGICAL ID, not a
-    // run-wide flag — two masked orphans each get their own line, and the
-    // orphan is NAMED so the two are told apart (`reason` alone renders
-    // identically for two records of the same type and key).
-    if (!this.warnedMaskedRefs.has(orphanLogicalId)) {
-      this.warnedMaskedRefs.add(orphanLogicalId);
-      this.logger.warn(
-        `--force: '${orphanLogicalId}': ${reason}. Substituting '${SECRET_MASK}' rather than ` +
-          `the physical id, which would be a wrong value no later cdkd command recognises. ` +
-          `The referring resource's ` +
-          `state row now records a value the live resource does not have: the next ` +
-          `'cdkd diff' / 'cdkd deploy' reports a spurious change there (a REPLACEMENT if the ` +
-          `property is create-only), 'cdkd rollback' refuses the record as a replay baseline, ` +
-          `and 'cdkd export' blocks it. Re-import the record that holds the mask, or fix the ` +
-          `referring property by hand.`
-      );
-    }
-    return { ok: true, value: SECRET_MASK };
+    // Refused with or without `--force` (go-to-k/cdkd#4602); the reason leads
+    // with the class, as `cacheFallback`'s refusal names its own.
+    return { ok: false, reason };
   }
 
   /**
@@ -573,89 +567,31 @@ class AttributeFetcher {
         reason: `${reason}; state.attributes cache also has no value for '${attribute}'`,
       };
     }
+    // A cached value `servableRecordedAttribute` would not serve is not
+    // spliced here either (go-to-k/cdkd#4602): the splice lands in the
+    // referring resource's PERSISTED properties and `printRewriteSummary`
+    // logs it at info, so a plaintext credential (`AWS::IAM::AccessKey`'s
+    // `SecretAccessKey`, a custom resource's `Data`, a credential-named leaf)
+    // would be written to state and printed; and `SECRET_MASK` or an
+    // unresolved `{{resolve:...}}` is not the value at all, so the next deploy
+    // would send it to AWS (the #1498 corrupted-write class). The intrinsic is
+    // left in place and the site reported unresolved, as for an empty cache.
+    const refusal = unsplicableCachedAttribute(orphan.resourceType, attribute, cached);
+    if (refusal !== undefined) {
+      this.logger.warn(
+        `--force: the cached value for ${displayIdent(orphanLogicalId)}.${displayIdent(attribute)} ` +
+          `is ${refusal}, so it is not written into the referring resource; leaving the ` +
+          `original intrinsic in place.`
+      );
+      return {
+        ok: false,
+        reason: `${reason}; the state.attributes cache holds ${refusal}, which --force does not splice`,
+      };
+    }
     this.logger.warn(
       `--force: live fetch failed for '${orphanLogicalId}.${attribute}' (${reason}); ` +
         `falling back to cached value from state.attributes.`
     );
-    // THE SECOND READER of a cached attribute that may legitimately hold an
-    // UNRESOLVED `{{resolve:...}}` expression (issue #2055). Since that fix, a
-    // nested stack's `Outputs.<Key>` attribute is stored REDACTED on purpose —
-    // `IntrinsicFunctionResolver.resolveGetAtt` re-resolves it at the read site,
-    // where the consumer's resolver context is in hand. This path has no such
-    // context (the rewriter is an analyzer-layer pass over persisted state), so
-    // it can only splice the token VERBATIM into the sibling's rewritten
-    // properties — where it would compare unequal against the desired side on
-    // every later diff, and on a rollback replay would be re-resolved against
-    // whatever that reference names at that time.
-    //
-    // `--force` is an explicit escape hatch whose whole contract is "use a
-    // possibly-stale cached value", so this does not refuse; refusing would
-    // strand a `cdkd orphan --force` that has no other way forward. It says
-    // exactly what was spliced instead, which is the part a silent fallback
-    // did not give the user.
-    if (carriesDynamicReference(cached)) {
-      this.logger.warn(
-        `--force: the cached value for '${orphanLogicalId}.${attribute}' is an UNRESOLVED ` +
-          `dynamic reference (a nested stack's redacted output, issue #2055). It is being ` +
-          `written into the referring resource's state VERBATIM — cdkd cannot re-resolve it ` +
-          `from here. Re-run without --force once the live attribute is readable, or fix the ` +
-          `referring property by hand.`
-      );
-    }
-    // THE SECOND UNRESOLVABLE CLASS, and it is not the same as the one above:
-    // a `{{resolve:...}}` token still NAMES the value, while `SECRET_MASK` is
-    // all cdkd kept of it. Nothing can re-derive it — there is no durable
-    // `NoEcho` flag (issue #2449) and no expression to re-resolve — so the
-    // literal `***` is what gets spliced into the referring resource's
-    // persisted properties, from where the next deploy sends it to AWS (the
-    // #1498 / #1501 corrupted-write class).
-    //
-    // THREE POPULATIONS reach the mask here, and the second is why this arm
-    // was added at all. Long-standing: a custom resource whose handler declared
-    // its response `NoEcho`. New with issue
-    // [#2847](https://github.com/go-to-k/cdkd/issues/2847):
-    // `CloudControlProvider.import` masks every model key it cannot certify as
-    // a read-only attribute, and that class implements NO `getAttribute`, so a
-    // Cloud-Control-routed orphan ALWAYS lands in this fallback — widening the
-    // population from "a NoEcho custom resource" to "every uncertified key of
-    // every CC-imported resource". Third (issue
-    // [#2881](https://github.com/go-to-k/cdkd/issues/2881)): an attribute
-    // echoing a property built over the `Fn::Base64` encoding of a secret
-    // (`AWS::SSM::Parameter`'s `Value`), which the deploy redacts with the
-    // mask-only needle `resolveBase64` registers (issues #2759 / #3119). The
-    // re-import remedy reaches only the second: a custom resource's `import()`
-    // records no attributes, and the SSM provider's records `Value` only for a
-    // plain literal, so the warning says which mask a re-import can clear.
-    //
-    // WARN RATHER THAN REFUSE, matching the arm above: `--force`'s whole
-    // contract is "use a possibly-stale cached value", and refusing would
-    // strand a `cdkd orphan --force` with no other way forward.
-    //
-    // WHAT HAPPENS NEXT IS STATED FROM THE READERS, not from the deploy-time
-    // refusal. An earlier revision of this warning promised that "a later
-    // 'cdkd deploy' will REFUSE that resource", and review measured that FALSE:
-    // `DeployEngine.refuseRedactedAttributeReads` reads
-    // `ResolverContext.redactedAttributeReads`, which is filled while resolving
-    // the DESIRED (template) bag, while this splice lands in the referring
-    // resource's PERSISTED properties — the CURRENT side. No deploy-path guard
-    // tests a masked current bag; `rollback-executor/replay-props.ts` says so outright at
-    // `refuseMaskedReplayBaseline` ("a patch provider comparing `***` against
-    // the desired value simply sees a change"). The readers that DO recognise
-    // it are named instead.
-    if (carriesSecretMask(cached)) {
-      this.logger.warn(
-        `--force: the cached value for '${orphanLogicalId}.${attribute}' is the REDACTION MASK ` +
-          `('${SECRET_MASK}'), not the attribute's value — cdkd redacted it into state and ` +
-          `cannot recover it. It is being written into the referring resource's state VERBATIM, ` +
-          `so that row now records a value the live resource does not have: the next ` +
-          `'cdkd diff' / 'cdkd deploy' reports a spurious change there (a REPLACEMENT if the ` +
-          `property is create-only), 'cdkd rollback' refuses the record as a replay baseline, ` +
-          `and 'cdkd export' blocks it. Re-run without --force once the live attribute is ` +
-          `readable, re-import the record that holds the mask (only for a mask 'cdkd import' ` +
-          `wrote — a re-import does not recover a NoEcho custom-resource value or the ` +
-          `Fn::Base64 encoding of a secret), or fix the referring property by hand.`
-      );
-    }
     const cacheKey = injectiveKey(orphanLogicalId, attribute);
     this.cache.set(cacheKey, cached);
     return { ok: true, value: cached, fromCache: true };

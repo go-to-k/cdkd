@@ -57,11 +57,12 @@ describe('compositeIdFormatMessage (issue #1657)', () => {
     expect(msg).toContain('LEFT IN PLACE');
     expect(msg).toContain('no AWS call is issued');
     expect(msg).toContain('state.json');
-    // Region-scoped, and honest about the whole-stack scope (go-to-k/cdkd#3996).
+    // Outside a stack destroy the single-record form (go-to-k/cdkd#4602).
     expect(msg).toContain(
-      "drop the record with 'cdkd state orphan <stack> --stack-region <region>' (which drops " +
-        'every record the stack has in that region)'
+      "drop the record with 'cdkd state orphan <stack> --stack-region <region> --resource " +
+        "MyTable', which drops only this record"
     );
+    expect(msg).toContain('never run it without --resource on a stack that is still deployed');
     // The deploy-side reachers must be named in full: the plain
     // template-removal DELETE is the MOST COMMON one and was omitted, so a
     // user hitting it read a message that did not describe their situation

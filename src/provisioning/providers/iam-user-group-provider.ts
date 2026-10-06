@@ -41,6 +41,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -1908,7 +1909,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
           `Users are both required to call RemoveUserFromGroup, so no AWS call is issued and ` +
           `the group memberships are LEFT IN PLACE, UNLESS the group or the users are ` +
           `themselves part of this stack (their own deletes remove exactly these memberships, ` +
-          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). ` +
+          `and then only the cdkd record is stale — clear it with ` +
+          // go-to-k/cdkd#4602: the whole-stack form only on a stack destroy.
+          `${stateOrphanRecordRemedy(context, logicalId)}). ` +
           `Otherwise restore the record's properties in state.json and re-run, or remove the ` +
           `users from the group by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
@@ -1924,7 +1927,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
           `call RemoveUserFromGroup, so no AWS call is issued and the group memberships are ` +
           `LEFT IN PLACE, UNLESS the group or the users are themselves part of this stack ` +
           `(their own deletes remove exactly these memberships, and then only the cdkd record ` +
-          `is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). Otherwise restore them in ` +
+          `is stale — clear it with ${stateOrphanRecordRemedy(context, logicalId)}). ` +
+          `Otherwise restore them in ` +
           `state.json and re-run, or remove the users from the group by hand. ` +
           `${DEPLOY_SKIP_CAVEAT}`
       );
@@ -1937,7 +1941,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
       this.logger,
       logicalId,
       'UserToGroupAddition',
-      redactedDeleteAddressFields({ GroupName: properties['GroupName'] })
+      redactedDeleteAddressFields({ GroupName: properties['GroupName'] }),
+      context
     );
     if (redactedGroup) return redactedGroup;
 
@@ -1995,13 +2000,12 @@ export class IAMUserGroupProvider implements ResourceProvider {
               ? '; cdkd could not resolve the reference (its region, access to it, or its value), ' +
                 'so fix that and re-run, or'
               : ':') +
-            ' cdkd will keep skipping this record. Remove the users from the group by hand; on cdkd destroy every other ' +
-            "resource is still deleted, so once this is the stack's last record " +
-            "'cdkd state orphan <stack> --stack-region <region>' clears it."
+            ' cdkd will keep skipping this record. Remove the users from the group by hand, then ' +
+            `drop this record with ${stateOrphanRecordRemedy(context, logicalId)}.`
           : 'Repair the recorded Users in state.json to a list of user names and re-run, or ' +
             'remove the users from the group by hand.';
       this.logger.warn(
-        safeMsg`The state record for UserToGroupAddition ${logicalId} holds a Users that is not a list of IAM user names — skipping deletion rather than guessing which users it names. No AWS call is issued, so the group memberships are LEFT IN PLACE, UNLESS the group or the users are themselves part of this stack (their own deletes remove exactly these memberships, and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack has in that region). ${repair} ${DEPLOY_SKIP_CAVEAT}`
+        safeMsg`The state record for UserToGroupAddition ${logicalId} holds a Users that is not a list of IAM user names — skipping deletion rather than guessing which users it names. No AWS call is issued, so the group memberships are LEFT IN PLACE, UNLESS the group or the users are themselves part of this stack (their own deletes remove exactly these memberships, and then only the cdkd record is stale — clear it with ${stateOrphanRecordRemedy(context, logicalId)}). ${repair} ${DEPLOY_SKIP_CAVEAT}`
       );
       return { outcome: 'skipped', reason: MEMBERSHIP_MALFORMED_USERS_SKIP_REASON };
     }
@@ -2064,7 +2068,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
 
       if (secretUserNotMember) {
         this.logger.warn(
-          safeMsg`UserToGroupAddition ${logicalId}: a user the secret's CURRENT value names is not in the group. The value may have rotated since the membership was added, so a user only the OLD value named may still be a member; or an earlier cdkd run already removed it, or that user was deleted first. The record is KEPT rather than read as deleted: remove any old user from the group by hand (the users the current value names are done), then drop this record with 'cdkd orphan <constructPath>', or, with no CDK app, 'cdkd state orphan <stack> --stack-region <region>' once it is the stack's last record.`
+          safeMsg`UserToGroupAddition ${logicalId}: a user the secret's CURRENT value names is not in the group. The value may have rotated since the membership was added, so a user only the OLD value named may still be a member; or an earlier cdkd run already removed it, or that user was deleted first. The record is KEPT rather than read as deleted: remove any old user from the group by hand (the users the current value names are done), then drop this record with 'cdkd orphan <constructPath>', or, with no CDK app, ${stateOrphanRecordRemedy(context, logicalId)}.`
         );
         return { outcome: 'skipped', reason: MEMBERSHIP_SECRET_USER_NOT_MEMBER_SKIP_REASON };
       }

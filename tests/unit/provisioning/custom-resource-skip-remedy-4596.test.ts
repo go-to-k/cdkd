@@ -123,9 +123,18 @@ const DEPLOY_CONTEXTS: Array<[string, DeleteContext | undefined]> = [
   ['stackDestroy: false', { stackDestroy: false }],
 ];
 
-const DESTROY_REMEDY = "'cdkd state orphan <stack> --stack-region <region>'";
-const DEPLOY_PROHIBITION =
-  "Do NOT run 'cdkd state orphan <stack>' on a stack that is still deployed to clear this record";
+// go-to-k/cdkd#4602: the destroy form keeps the whole-stack command with the
+// single-record alternative; every other phase names only the single-record
+// form, whose own sentence warns off the bare one.
+const DESTROY_REMEDY =
+  "'cdkd state orphan <stack> --stack-region <region>', which drops every record the stack " +
+  "still has in that region, not just this one (add '--resource CrResource' to drop only this one)";
+const DEPLOY_REMEDY =
+  'For a resource removed from the template, to give up on the delete and stop tracking it, ' +
+  "drop the record with 'cdkd state orphan <stack> --stack-region <region> --resource " +
+  "CrResource', which drops only this record — never run it without --resource on a stack that " +
+  'is still deployed';
+const BARE_FORM = "'cdkd state orphan <stack> --stack-region <region>',";
 
 const warnings = (): string => warnSpy.mock.calls.map((call) => String(call[0])).join('\n');
 const occurrences = (text: string, needle: string): number => text.split(needle).length - 1;
@@ -158,8 +167,7 @@ describe('CustomResourceProvider.delete skip remedy by phase (go-to-k/cdkd#4596)
       expect(result).toEqual({ outcome: 'skipped', reason });
       const text = warnings();
       expect(text).toContain(DESTROY_REMEDY);
-      expect(text).toContain('drops EVERY record for the stack in that region');
-      expect(text).not.toContain(DEPLOY_PROHIBITION);
+      expect(text).not.toContain(DEPLOY_REMEDY);
       // Deploy-only advice has no place on a destroy, which has no such flag.
       expect(text).not.toContain('--allow-unaddressed');
       expect(text).not.toContain('ALSO reached from cdkd deploy');
@@ -182,9 +190,10 @@ describe('CustomResourceProvider.delete skip remedy by phase (go-to-k/cdkd#4596)
         expect(result).toEqual({ outcome: 'skipped', reason });
         const text = warnings();
         expect(text).not.toContain(DESTROY_REMEDY);
+        expect(text).not.toContain(BARE_FORM);
         expect(text).not.toContain("clear the stack's records");
-        expect(text).toContain(DEPLOY_PROHIBITION);
-        // The prohibition is the ONLY mention of the command.
+        expect(text).toContain(DEPLOY_REMEDY);
+        // The single-record drop is the ONLY mention of the command.
         expect(occurrences(text, 'cdkd state orphan')).toBe(1);
         expect(text).toContain('re-deploy');
         expect(text).toContain("'cdkd deploy --allow-unaddressed' exits 0");

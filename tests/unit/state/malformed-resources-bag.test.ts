@@ -7714,14 +7714,38 @@ describe('a file hosting BOTH a read-only view and a writer refuses per FLOW', (
           'state.ts is no longer mixed and belongs in REFUSE above.'
       ).toHaveLength(1);
     }
-    // The file's only LITERAL `saveState` is in this flow, which is the other
-    // half of "mixed": a second one elsewhere in the file would be a writer
-    // inheriting the read-only repair above it, with nothing here to notice.
-    // Deliberately narrower than "state.ts does not write anywhere else" —
-    // `cdkd state destroy` writes through `runDestroyForStack`, in another
-    // module, and no grep over this file can see that.
-    expect(src.match(/saveState\(/g) ?? []).toHaveLength(1);
+    // The file's LITERAL `saveState`s are in this flow and in
+    // `stateOrphanResources` (`state orphan --resource`, go-to-k/cdkd#4602),
+    // which is the other half of "mixed": a third one elsewhere in the file
+    // would be a writer inheriting the read-only repair above it, with nothing
+    // here to notice. Deliberately narrower than "state.ts does not write
+    // anywhere else" — `cdkd state destroy` writes through
+    // `runDestroyForStack`, in another module, and no grep over this file can
+    // see that.
+    expect(src.match(/saveState\(/g) ?? []).toHaveLength(2);
     expect(body.match(/saveState\(/g) ?? []).toHaveLength(1);
+    const orphanBody = flow(src, 'async function stateOrphanResources(');
+    expect(orphanBody.match(/saveState\(/g) ?? []).toHaveLength(1);
+    // The second writer refuses at the load, above its save, and repairs nothing.
+    const orphanSave = orphanBody.indexOf('saveState(');
+    for (const refusal of [
+      'refuseMalformedState(',
+      'refuseMalformedOutputs(',
+      'refuseMalformedResourceEntriesForOrphan(',
+      'refuseMalformedResourcePropertiesForOrphan(',
+      'refuseMalformedResourceAttributesForOrphan(',
+      'refuseMalformedOrphansForOrphan(',
+    ]) {
+      const at = orphanBody.indexOf(refusal);
+      expect(at, `stateOrphanResources no longer calls ${refusal}`).toBeGreaterThan(-1);
+      expect(at).toBeLessThan(orphanSave);
+    }
+    for (const repair of [
+      'repairMalformedResourcesForReadOnly',
+      'repairMalformedResourceEntriesForReadOnly',
+    ]) {
+      expect(orphanBody.includes(repair), `stateOrphanResources calls ${repair}`).toBe(false);
+    }
   });
 
   it('src/cli/commands/drift.ts — the mode decides, and the decision is made beside the flags', () => {

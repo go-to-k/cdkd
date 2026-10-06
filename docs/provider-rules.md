@@ -1045,10 +1045,14 @@ spelling the branches downstream use so a null-valued list cannot slip past.
 **"LEFT IN PLACE" is false when the parent is in the same stack.** The destroy
 keeps going after a skip, and `deleteGroup` / `deleteUser` remove exactly those
 memberships, a deleted Lambda function drops its whole resource policy, a
-deleted IAM role drops its inline policies. Qualify the wording and name
-`cdkd state orphan '<stack>'`; do not copy the qualifier onto an arm where it is
-false (a layer version and a Custom Resource's external side effects are undone
-by nothing).
+deleted IAM role drops its inline policies. Qualify the wording and name the
+command that drops the record through `stateOrphanRecordRemedy`
+(`src/provisioning/state-orphan-remedy.ts`): `cdkd state orphan '<stack>'` only
+on a stack destroy, `--resource <logicalId>` everywhere else, since on a deployed
+stack the whole-stack form drops every live record
+([#4602](https://github.com/go-to-k/cdkd/issues/4602)). Do not copy the
+qualifier onto an arm where it is false (a layer version and a Custom
+Resource's external side effects are undone by nothing).
 
 **"Repair state.json and re-run" holds on destroy AND on the deploy engine's
 template-removal DELETE** — both keep the record (issue
@@ -1949,12 +1953,16 @@ it substitutes the orphan's **recorded** attribute instead wherever cdkd's own
 when the record lacks it or holds a value that cannot be spliced (a
 redaction mask, a `{{resolve:...}}` reference, a stale placeholder ARN, a VPC's
 `Ipv6CidrBlocks`, an impossible empty value). A credential-named attribute
-(`SecretAccessKey`), an AppSync API key's `ApiKey`, a value holding a
+(`SecretAccessKey`), a known secret-valued attribute (an AppSync API key's
+`ApiKey`, an IPAM verification token's `TokenValue`, an IVS stream key's
+`Value`), a value holding a
 credential-named key, and any custom-resource attribute are never taken from
 the record, since the value may be a plaintext secret. A live read that fails
 or answers nothing leaves the reference unresolvable without `--force`, as it
 always did, so a provider without `getAttribute` gets nothing from the record
-either. A live
+either. `--force`'s cached fallback does not splice those secret classes
+either, nor a mask or a `{{resolve:...}}` reference: the reference stays
+unresolved ([#4602](https://github.com/go-to-k/cdkd/issues/4602)). A live
 read addresses the resource by its recorded name, so after the resource was
 deleted and another one took that name it describes the newcomer; the recorded
 value is the one cdkd's own `Fn::GetAtt` resolution would choose. A recorded
