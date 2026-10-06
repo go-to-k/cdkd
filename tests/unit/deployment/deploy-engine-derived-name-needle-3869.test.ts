@@ -267,7 +267,10 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
   it("a replacement's `Deleting old <id>` line withholds the old id", async () => {
     const template = primeRoleUpdate(REF);
     const change = (
-      (await diffCalculator.calculateDiff!()) as Map<string, ResourceChange>
+      (await (diffCalculator.calculateDiff as unknown as () => Promise<unknown>)()) as Map<
+        string,
+        ResourceChange
+      >
     ).get('Role')!;
     change.propertyChanges = [
       { path: 'RoleName', oldValue: REF, newValue: `${REF}x`, requiresReplacement: true },
