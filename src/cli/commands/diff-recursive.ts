@@ -1651,9 +1651,9 @@ export async function computeStackDiff(
   const splitPieces: RecordedSecretValues = new Map();
   // go-to-k/cdkd#3869: what a `Ref` / `Fn::GetAtt` read from a resource NAMED
   // from a secret, recorded by the resolver as print-only needles. A bag of
-  // its OWN, like `splitPieces`: this node's masker reads it, and its corpus
-  // (a nested child's inherited bag) leaves it out, so no child's export
-  // preview changes.
+  // its OWN, read only by the resolver's render mask: the bags above feed this
+  // node's corpus (a nested child's inherited bag), where a needle would move
+  // a child's export preview.
   const derivedNames: RecordedSecretValues = new Map();
   const splitDelimiters = literalSplitDelimitersOf(
     template,
@@ -1689,7 +1689,7 @@ export async function computeStackDiff(
   const outputsPassSecrets: RecordedSecretValues = new Map();
   const printing = createDiffPrintingMasker(
     [diffSecrets, inheritedForResolver, outputsPassSecrets],
-    [splitPieces, derivedNames]
+    [splitPieces]
   );
   const maskForLog: MaskerFn = printing.mask;
 
