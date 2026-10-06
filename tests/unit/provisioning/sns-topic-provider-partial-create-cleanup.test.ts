@@ -43,6 +43,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-provider.js';
+import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
@@ -406,6 +407,67 @@ describe('SNSTopicProvider partial-create cleanup (Issue #376)', () => {
       const msg = String(warnSpy.mock.calls[0][0]);
       expectWithheld(msg, 'aws sns delete-topic');
       expect(msg).not.toContain('s3cr3t');
+    });
+  });
+
+  // go-to-k/cdkd#4583: a topic this create made and left behind is named for
+  // `cdkd rollback --revert-failed`; one it cleaned up, or one that held the
+  // name before, is not.
+  describe('createdBeforeFailure mark (go-to-k/cdkd#4583)', () => {
+    const props = { TopicName: 'MyTopic', DataProtectionPolicy: { Name: 'p' } };
+    async function failure(): Promise<unknown> {
+      return provider.create('MyTopic', RESOURCE_TYPE, props).then(
+        () => expect.fail('create resolved'),
+        (e: unknown) => e
+      );
+    }
+
+    it('marks the topic ARN when the wiring fails and the cleanup delete fails', async () => {
+      mockSend.mockResolvedValueOnce({ TopicArn: TOPIC_ARN });
+      mockSend.mockRejectedValueOnce(new Error('wiring boom'));
+      mockSend.mockRejectedValueOnce(new Error('DeleteTopic boom'));
+      expect(createdBeforeFailure(await failure(), 'MyTopic', RESOURCE_TYPE)).toBe(TOPIC_ARN);
+    });
+
+    it('does not mark when the cleanup delete succeeded', async () => {
+      mockSend.mockResolvedValueOnce({ TopicArn: TOPIC_ARN });
+      mockSend.mockRejectedValueOnce(new Error('wiring boom'));
+      mockSend.mockResolvedValueOnce({});
+      const error = await failure();
+      // The cleanup delete was really sent, so the undefined is the cleanup's.
+      const deleteCall = mockSend.mock.calls.find(
+        (c) => c[0].constructor.name === 'DeleteTopicCommand'
+      );
+      expect(deleteCall?.[0].input).toEqual({ TopicArn: TOPIC_ARN });
+      expect(createdBeforeFailure(error, 'MyTopic', RESOURCE_TYPE)).toBeUndefined();
+    });
+
+    it('does not mark a topic that held the name before (cleanup skipped)', async () => {
+      ownershipSend.mockImplementation(async (command: { constructor: { name: string } }) =>
+        command.constructor.name === 'GetCallerIdentityCommand'
+          ? { Account: '123456789012', Arn: 'arn:aws:iam::123456789012:user/u' }
+          : { Attributes: { TopicArn: TOPIC_ARN } }
+      );
+      mockSend.mockResolvedValueOnce({ TopicArn: TOPIC_ARN });
+      mockSend.mockRejectedValueOnce(new Error('wiring boom'));
+      const error = await failure();
+      // The wiring call was reached (so the undefined is the held skip's, not an
+      // earlier refusal's), and the held topic was never deleted.
+      const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      const wiring = mockSend.mock.calls.find(
+        (c) => c[0].constructor.name === 'SetTopicAttributesCommand'
+      );
+      expect(wiring?.[0].input).toMatchObject({
+        TopicArn: TOPIC_ARN,
+        AttributeName: 'DataProtectionPolicy',
+      });
+      expect(names).not.toContain('DeleteTopicCommand');
+      expect(createdBeforeFailure(error, 'MyTopic', RESOURCE_TYPE)).toBeUndefined();
+    });
+
+    it('does not mark when CreateTopic itself fails', async () => {
+      mockSend.mockRejectedValueOnce(new Error('CreateTopic boom'));
+      expect(createdBeforeFailure(await failure(), 'MyTopic', RESOURCE_TYPE)).toBeUndefined();
     });
   });
 });

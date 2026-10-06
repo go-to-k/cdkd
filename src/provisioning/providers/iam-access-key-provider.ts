@@ -22,7 +22,7 @@ import {
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type { CreateContext, UpdateContext } from '../../types/resource.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 import type {
   ResourceProvider,
@@ -216,6 +216,9 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     const attemptStartMs = Date.now() - CREATE_DATE_SKEW_MARGIN_MS;
     const baseline = await this.tryListAccessKeyIds(userName, logicalId, log);
 
+    // go-to-k/cdkd#4583: the key id CreateAccessKey returned, while no cleanup
+    // has deleted that key. Only the id is ever marked, never the secret.
+    let leftBehindKeyId: string | undefined;
     try {
       const response = await this.iamClient.send(
         new CreateAccessKeyCommand({ UserName: userName })
@@ -223,6 +226,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
 
       const accessKeyId = response.AccessKey?.AccessKeyId;
       const secretAccessKey = response.AccessKey?.SecretAccessKey;
+      leftBehindKeyId = accessKeyId;
       if (!accessKeyId || !secretAccessKey) {
         // A partial response with an AccessKeyId means a real key WAS minted —
         // clean it up best-effort before failing, or the retry / next deploy
@@ -232,6 +236,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
             await this.iamClient.send(
               new DeleteAccessKeyCommand({ UserName: userName, AccessKeyId: accessKeyId })
             );
+            leftBehindKeyId = undefined;
           } catch (cleanupError) {
             log.warn(
               `Failed to clean up IAM access key ${logicalId} (${v(accessKeyId)}) minted by a partial CreateAccessKey response: ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
@@ -255,6 +260,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
             await this.iamClient.send(
               new DeleteAccessKeyCommand({ UserName: userName, AccessKeyId: accessKeyId })
             );
+            leftBehindKeyId = undefined;
             log.debug(
               `Cleaned up partially-created IAM access key ${logicalId} (${v(accessKeyId)}) after status wiring failure`
             );
@@ -289,9 +295,18 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     } catch (error) {
       // Still under the user lock: whatever appeared since `baseline` did so
       // during THIS attempt, and no sibling create could have run inside it.
-      await this.deleteOrphanFromFailedAttempt(userName, logicalId, baseline, attemptStartMs, log);
+      const reconciled = await this.deleteOrphanFromFailedAttempt(
+        userName,
+        logicalId,
+        baseline,
+        attemptStartMs,
+        log
+      );
+      if (leftBehindKeyId !== undefined && reconciled.has(leftBehindKeyId)) {
+        leftBehindKeyId = undefined;
+      }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         error,
         (text) =>
@@ -303,6 +318,10 @@ export class IAMAccessKeyProvider implements ResourceProvider {
             cause
           )
       );
+      if (leftBehindKeyId !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindKeyId);
+      }
+      throw thrown;
     }
   }
 
@@ -377,6 +396,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
    *
    * @param baseline `undefined` when the pre-create read failed, which disarms
    * the reconcile entirely — see {@link IAMAccessKeyProvider.tryListAccessKeyIds}.
+   * @returns the key ids this reconcile deleted.
    */
   private async deleteOrphanFromFailedAttempt(
     userName: string,
@@ -384,15 +404,16 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     baseline: ReadonlySet<string> | undefined,
     attemptStartMs: number,
     log: MaskedLogSinks
-  ): Promise<void> {
+  ): Promise<ReadonlySet<string>> {
     const { value: v } = log;
     const aws = pasteableAwsCommand(log.mask);
+    const deleted = new Set<string>();
     if (baseline === undefined) {
-      return;
+      return deleted;
     }
     const current = await this.tryListAccessKeyMetadata(userName, logicalId, log);
     if (!current) {
-      return;
+      return deleted;
     }
     for (const key of current) {
       const accessKeyId = key.accessKeyId;
@@ -415,12 +436,14 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         await this.iamClient.send(
           new DeleteAccessKeyCommand({ UserName: userName, AccessKeyId: accessKeyId })
         );
+        deleted.add(accessKeyId);
       } catch (error) {
         log.warn(
           `Failed to delete the orphaned IAM access key ${v(accessKeyId)} for user ${v(userName)}: ${v(describeAwsFailure(error).detail)}. Manual deletion may be required: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
         );
       }
     }
+    return deleted;
   }
 
   /**

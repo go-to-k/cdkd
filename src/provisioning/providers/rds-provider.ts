@@ -23,6 +23,7 @@ import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -619,6 +620,9 @@ export class RDSProvider implements ResourceProvider {
       (properties['DBClusterIdentifier'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 63, lowercase: true });
 
+    // go-to-k/cdkd#4583: true while a cluster THIS create made is left in AWS
+    // (CreateDBCluster returned and the self-cleanup below did not delete it).
+    let clusterLeftBehind = false;
     try {
       const serverlessV2Config = properties['ServerlessV2ScalingConfiguration'] as
         | { MinCapacity?: number; MaxCapacity?: number }
@@ -679,6 +683,7 @@ export class RDSProvider implements ResourceProvider {
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
+      clusterLeftBehind = true;
 
       const cluster = response.DBCluster;
       if (!cluster) {
@@ -751,6 +756,7 @@ export class RDSProvider implements ResourceProvider {
               SkipFinalSnapshot: true,
             })
           );
+          clusterLeftBehind = false;
           this.logger.debug(
             `Delete requested for partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) after wiring failure (not waiting for deleted state)`
           );
@@ -764,21 +770,28 @@ export class RDSProvider implements ResourceProvider {
             ? aws`aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; `
             : aws``;
           this.logger.warn(
-            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${describeAwsFailure(cleanupError).detail}. THE CLUSTER IS STILL RUNNING AND BILLING. Manual cleanup required: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
+            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${describeAwsFailure(cleanupError).detail}. THE CLUSTER IS STILL RUNNING AND BILLING. On a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
           );
         }
         throw innerError;
       }
     } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        dbClusterIdentifier,
-        cause
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to create DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              dbClusterIdentifier,
+              error instanceof Error ? error : undefined
+            );
+      // go-to-k/cdkd#4583: name the cluster still in AWS for the failed-CREATE
+      // journal; never before CreateDBCluster returned (another owner's name).
+      if (clusterLeftBehind) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, dbClusterIdentifier);
+      }
+      throw thrown;
     }
   }
 
@@ -1127,6 +1140,8 @@ export class RDSProvider implements ResourceProvider {
       (properties['DBInstanceIdentifier'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 63, lowercase: true });
 
+    // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
+    let instanceCreated = false;
     try {
       // #609 — `MasterUserSecret` `{ KmsKeyId }` → scalar
       // `MasterUserSecretKmsKeyId` (same flip as the DBCluster path).
@@ -1208,6 +1223,7 @@ export class RDSProvider implements ResourceProvider {
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
+      instanceCreated = true;
 
       const instance = response.DBInstance;
       if (!instance) {
@@ -1233,15 +1249,22 @@ export class RDSProvider implements ResourceProvider {
         }),
       };
     } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        dbInstanceIdentifier,
-        cause
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to create DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              dbInstanceIdentifier,
+              error instanceof Error ? error : undefined
+            );
+      // go-to-k/cdkd#4583: the instance exists and no state record will hold
+      // it; never before CreateDBInstance returned (another owner's name).
+      if (instanceCreated) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, dbInstanceIdentifier);
+      }
+      throw thrown;
     }
   }
 

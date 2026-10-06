@@ -37,6 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
+import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
 const BUCKET = 'my-globally-unique-bucket';
@@ -605,6 +606,73 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
         (c) => c[0].constructor.name === 'CreateBucketCommand'
       );
       expect(created?.[0].input).not.toHaveProperty('CreateBucketConfiguration');
+    });
+  });
+
+  // go-to-k/cdkd#4583: only a bucket the pre-flight proved absent is named for
+  // `cdkd rollback --revert-failed`; the us-east-1 legacy 200 over an existing
+  // bucket, or an unanswered probe, must never mark it.
+  describe('createdBeforeFailure mark (go-to-k/cdkd#4583)', () => {
+    async function failure(): Promise<unknown> {
+      return provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS).then(
+        () => expect.fail('create resolved'),
+        (e: unknown) => e
+      );
+    }
+
+    it('does not mark a pre-existing bucket adopted through the legacy 200', async () => {
+      mockSend.mockResolvedValueOnce({}); // pre-flight: it exists, in us-east-1
+      mockSend.mockResolvedValueOnce({}); // CreateBucket: legacy 200
+      mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
+
+      const error = await failure();
+
+      // The wiring call was reached, so the undefined below is the adopt gate.
+      expect(sentCommands()).toEqual([
+        'GetBucketLocationCommand',
+        'CreateBucketCommand',
+        'PutBucketVersioningCommand',
+      ]);
+      expect(createdBeforeFailure(error, 'MyBucket', RESOURCE_TYPE)).toBeUndefined();
+    });
+
+    it('does not mark when the probe could not answer (cleanup withheld)', async () => {
+      mockSend.mockRejectedValueOnce(accessDenied());
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
+
+      const error = await failure();
+
+      expect(sentCommands()).toEqual([
+        'GetBucketLocationCommand',
+        'CreateBucketCommand',
+        'PutBucketVersioningCommand',
+      ]);
+      expect(createdBeforeFailure(error, 'MyBucket', RESOURCE_TYPE)).toBeUndefined();
+    });
+
+    it('marks the bucket it created when the cleanup delete fails', async () => {
+      mockSend.mockRejectedValueOnce(realNoSuchBucket()); // pre-flight: the name is free
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
+      mockSend.mockRejectedValueOnce(new Error('DeleteBucket boom'));
+
+      const error = await failure();
+
+      expect(sentCommands()).toContain('DeleteBucketCommand');
+      expect(createdBeforeFailure(error, 'MyBucket', RESOURCE_TYPE)).toBe(BUCKET);
+    });
+
+    it('does not mark the bucket it created when the cleanup delete succeeded', async () => {
+      mockSend.mockRejectedValueOnce(realNoSuchBucket());
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
+      mockSend.mockResolvedValueOnce({});
+
+      const error = await failure();
+
+      expect(sentCommands()).toContain('DeleteBucketCommand');
+      expect(createdBeforeFailure(error, 'MyBucket', RESOURCE_TYPE)).toBeUndefined();
     });
   });
 });

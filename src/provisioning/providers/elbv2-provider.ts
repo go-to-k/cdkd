@@ -87,7 +87,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
@@ -911,6 +911,9 @@ export class ELBv2Provider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
+    // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
+    // delete the load balancer this call created (never one that held the name).
+    let leftBehindArn: string | undefined;
     try {
       const lbName = sentElbv2Name(properties, logicalId);
 
@@ -1119,6 +1122,7 @@ export class ELBv2Provider implements ResourceProvider {
               `Cleaned up partially-created LoadBalancer ${logicalId} (${lbArn}) after wiring failure`
             );
           } catch (cleanupError) {
+            leftBehindArn = lbArn;
             this.logger.warn(
               // Masked for uniformity with the sibling lines in this same `try`
               // (issue #2063), matching the Listener / TargetGroup create paths.
@@ -1146,7 +1150,7 @@ export class ELBv2Provider implements ResourceProvider {
       // NON-RETRYABLE `CreateLoadBalancer` rejection — nothing on this path
       // goes through `withRetry`, so there is no give-up summary behind it.
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -1158,6 +1162,10 @@ export class ELBv2Provider implements ResourceProvider {
             cause
           )
       );
+      if (leftBehindArn !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindArn);
+      }
+      throw thrown;
     }
   }
 
@@ -1711,6 +1719,9 @@ export class ELBv2Provider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
+    // delete the target group this call created (never one that held the name).
+    let leftBehindArn: string | undefined;
     try {
       const matcher = properties['Matcher'] as { HttpCode?: string; GrpcCode?: string } | undefined;
 
@@ -1830,6 +1841,7 @@ export class ELBv2Provider implements ResourceProvider {
               `Cleaned up partially-created TargetGroup ${logicalId} (${tgArn}) after wiring failure`
             );
           } catch (cleanupError) {
+            leftBehindArn = tgArn;
             this.logger.warn(
               // Masked for uniformity with the sibling lines in this same `try`
               // (issue #2050). The cleanup call carries only a physical ARN, so a
@@ -1854,7 +1866,7 @@ export class ELBv2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -1866,6 +1878,10 @@ export class ELBv2Provider implements ResourceProvider {
             cause
           )
       );
+      if (leftBehindArn !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindArn);
+      }
+      throw thrown;
     }
   }
 
@@ -2167,6 +2183,32 @@ export class ELBv2Provider implements ResourceProvider {
 
   // ─── AWS::ElasticLoadBalancingV2::Listener ─────────────────────────
 
+  /**
+   * Does a listener already sit on `port` of `loadBalancerArn`? The listener
+   * twin of the by-name lookups (go-to-k/cdkd#4403): a listener has no name,
+   * and its port is what CreateListener hands an existing listener back on.
+   * Pages through every listener; a page loop that does not end throws, so
+   * the caller reads it as `unknown`.
+   */
+  private async listenerPortHeld(
+    loadBalancerArn: string,
+    port: number | undefined
+  ): Promise<boolean> {
+    let marker: string | undefined;
+    for (let page = 0; page < 100; page++) {
+      const response = await this.getClient().send(
+        new DescribeListenersCommand({
+          LoadBalancerArn: loadBalancerArn,
+          ...(marker !== undefined && { Marker: marker }),
+        })
+      );
+      if ((response.Listeners ?? []).some((l) => l.Port === port)) return true;
+      if (!response.NextMarker) return false;
+      marker = response.NextMarker;
+    }
+    throw new Error('DescribeListeners did not finish paging');
+  }
+
   private async createListener(
     logicalId: string,
     resourceType: string,
@@ -2177,6 +2219,9 @@ export class ELBv2Provider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
+    // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
+    // delete the listener this call created.
+    let leftBehindArn: string | undefined;
     try {
       const defaultActions = this.convertActions(
         properties['DefaultActions'] as Array<Record<string, unknown>> | undefined
@@ -2189,6 +2234,22 @@ export class ELBv2Provider implements ResourceProvider {
       const mutualAuth = properties['MutualAuthentication'] as
         | MutualAuthenticationAttributes
         | undefined;
+
+      // Whether the cleanup below may delete what CreateListener returns: on
+      // identical settings it hands back the listener already on this port
+      // (go-to-k/cdkd#4403). Asked only when a wiring step can fail.
+      const listenerAttributes = this.normalizeAttributes(properties['ListenerAttributes']);
+      const heldBefore: NameHeldBefore =
+        listenerAttributes.length > 0
+          ? await nameHeldBefore(
+              () =>
+                this.listenerPortHeld(
+                  properties['LoadBalancerArn'] as string,
+                  properties['Port'] !== undefined ? Number(properties['Port']) : undefined
+                ),
+              (error) => hasErrorName(error, ['LoadBalancerNotFoundException'])
+            )
+          : 'free';
 
       const response = await this.getClient().send(
         new CreateListenerCommand({
@@ -2224,7 +2285,6 @@ export class ELBv2Provider implements ResourceProvider {
       // `DeleteListener` before re-throwing the original error (atomicity),
       // mirroring the LoadBalancer create path above.
       try {
-        const listenerAttributes = this.normalizeAttributes(properties['ListenerAttributes']);
         if (listenerAttributes.length > 0) {
           // Interruptible (issue #2053): without the watch a Ctrl-C here sits
           // out the whole backoff schedule before anything responds.
@@ -2262,9 +2322,8 @@ export class ELBv2Provider implements ResourceProvider {
         // opposite — "a Ctrl-C must not delete what the user just made" — was
         // written here first and is WRONG, because it assumes this listener is
         // tracked. It is not: `create()` is throwing, so `newResources[logicalId]`
-        // is never set, the rollback journal records `physicalId: undefined`,
-        // and `rollback-executor.ts` classifies it `skip-failed-unknown`.
-        // NOTHING holds this ARN.
+        // is never set, and only a cleanup that FAILS below marks the ARN for
+        // the rollback journal (go-to-k/cdkd#4583). Nothing else holds it.
         //
         // So the choice is not "delete vs preserve" but "delete vs ORPHAN
         // FOREVER". A preserved listener fails the next deploy with
@@ -2276,6 +2335,20 @@ export class ELBv2Provider implements ResourceProvider {
         // The handle is printed BEFORE the delete is attempted, at default
         // verbosity, so a process that dies mid-cleanup still leaves the user
         // something to act on. Silent orphan is the one unacceptable outcome.
+        if (heldBefore !== 'free') {
+          this.logger.warn(
+            maskerOrIdentity(maskSecrets)(
+              skippedCleanupText(
+                heldBefore,
+                `Listener ${logicalId} (${listenerArn})`,
+                pasteableAwsCommand(
+                  maskSecrets
+                )`aws elbv2 delete-listener --listener-arn ${listenerArn}`.render()
+              )
+            )
+          );
+          throw markAuxiliaryFailure(innerError, logicalId);
+        }
         if (isInterruptedWaitError(innerError)) {
           // Routed through the masked sink like every other line in this catch.
           // The three interpolated values are safe on their own — an AWS-minted
@@ -2287,8 +2360,8 @@ export class ELBv2Provider implements ResourceProvider {
               `Interrupted after creating Listener ${logicalId} (${listenerArn}) but before its ` +
                 `attributes were applied. Nothing in cdkd state refers to it, so cdkd is deleting ` +
                 `it now — left behind it would fail the next deploy with DuplicateListener and ` +
-                `neither rollback nor destroy could reach it. If that delete does not complete, ` +
-                `remove it manually: ${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-listener --listener-arn ${listenerArn}`.render()}`
+                `destroy could not reach it. If that delete fails, on a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; ` +
+                `otherwise remove it yourself: ${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-listener --listener-arn ${listenerArn}`.render()}`
             )
           );
         }
@@ -2298,12 +2371,14 @@ export class ELBv2Provider implements ResourceProvider {
             `Cleaned up partially-created Listener ${logicalId} (${listenerArn}) after attributes-wiring failure`
           );
         } catch (cleanupError) {
+          leftBehindArn = listenerArn;
           this.logger.warn(
             // Masked for the same reason as the TargetGroup cleanup above
             // (issue #2050).
             `Failed to clean up partially-created Listener ${logicalId} (${listenerArn}): ` +
-              `${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be ` +
-              `required before the next deploy: ` +
+              `${this.maskErrorMessage(cleanupError, maskSecrets)}. On a first-time create the failed deploy's rollback ` +
+              `journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself ` +
+              `before the next deploy: ` +
               `${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-listener --listener-arn ${listenerArn}`.render()}`
           );
         }
@@ -2323,7 +2398,7 @@ export class ELBv2Provider implements ResourceProvider {
       // classifier walks it for `$metadata`, so only the human-readable
       // message is masked.
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2335,6 +2410,10 @@ export class ELBv2Provider implements ResourceProvider {
             cause
           )
       );
+      if (leftBehindArn !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindArn);
+      }
+      throw thrown;
     }
   }
 

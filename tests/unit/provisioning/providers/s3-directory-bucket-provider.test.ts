@@ -74,10 +74,10 @@ describe('S3DirectoryBucketProvider', () => {
 
   describe('create', () => {
     it('should create a directory bucket and return physicalId and Arn', async () => {
-      // CreateBucketCommand succeeds, then GetCallerIdentity for buildAttributes
+      // GetCallerIdentity for the ARN first (#4583), then CreateBucketCommand
       mockSend
-        .mockResolvedValueOnce({}) // CreateBucketCommand
-        .mockResolvedValueOnce({ Account: '123456789012' }); // GetCallerIdentityCommand
+        .mockResolvedValueOnce({ Account: '123456789012' }) // GetCallerIdentityCommand (resolved before CreateBucket, #4583)
+        .mockResolvedValueOnce({}); // CreateBucketCommand
 
       const result = await provider.create(
         'DirectoryBucket',
@@ -95,8 +95,8 @@ describe('S3DirectoryBucketProvider', () => {
       });
 
       expect(mockSend).toHaveBeenCalledTimes(2);
-      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(CreateBucketCommand);
-      expect(mockSend.mock.calls[0][0].input).toEqual({
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(CreateBucketCommand);
+      expect(mockSend.mock.calls[1][0].input).toEqual({
         Bucket: 'my-bucket--use1-az4--x-s3',
         CreateBucketConfiguration: {
           Bucket: {
@@ -113,8 +113,8 @@ describe('S3DirectoryBucketProvider', () => {
 
     it('should auto-generate bucket name when BucketName is not provided', async () => {
       mockSend
-        .mockResolvedValueOnce({}) // CreateBucketCommand
-        .mockResolvedValueOnce({ Account: '123456789012' }); // STS GetCallerIdentity
+        .mockResolvedValueOnce({ Account: '123456789012' }) // GetCallerIdentityCommand (resolved before CreateBucket, #4583)
+        .mockResolvedValueOnce({}); // CreateBucketCommand
 
       const result = await provider.create('DirectoryBucket', 'AWS::S3Express::DirectoryBucket', {
         DataRedundancy: 'SingleAvailabilityZone',
@@ -526,8 +526,8 @@ describe('S3DirectoryBucketProvider', () => {
         AvailabilityZones: [{ ZoneId: azId, ZoneName: `${region}c` }],
       });
       mockSend
-        .mockResolvedValueOnce({}) // CreateBucketCommand
-        .mockResolvedValueOnce({ Account: '123456789012' }); // GetCallerIdentityCommand
+        .mockResolvedValueOnce({ Account: '123456789012' }) // GetCallerIdentityCommand (resolved before CreateBucket, #4583)
+        .mockResolvedValueOnce({}); // CreateBucketCommand
 
       const result = await provider.create('DirectoryBucket', 'AWS::S3Express::DirectoryBucket', {
         BucketName: `my-bucket--${azId}--x-s3`,

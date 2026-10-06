@@ -45,6 +45,7 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
@@ -176,65 +177,73 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     let vpcId: string | undefined;
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     let status: string | undefined;
-    while (Date.now() < deadline) {
-      try {
-        // NOTE: filter by DBProxyEndpointName only — passing both
-        // `DBProxyName` AND `DBProxyEndpointName` returned an empty array
-        // during the create poll on real AWS (eventual-consistency-window
-        // bug observed 2026-05-16 rds-aurora integ). The endpoint name is
-        // already a unique identifier per region.
-        const describe = await client.send(
-          new DescribeDBProxyEndpointsCommand({
-            DBProxyEndpointName: dbProxyEndpointName,
-          })
-        );
-        const ep = describe.DBProxyEndpoints?.[0];
-        status = ep?.Status;
-        this.logger.debug(
-          `DBProxyEndpoint ${dbProxyEndpointName} poll: status=${status ?? 'not-yet-visible'}`
-        );
-        if (status === 'available') {
-          endpoint = ep?.Endpoint;
-          arn = ep?.DBProxyEndpointArn;
-          isDefault = ep?.IsDefault;
-          vpcId = ep?.VpcId;
-          break;
-        }
-        if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
-          throw new ProvisioningError(
-            `DBProxyEndpoint ${dbProxyEndpointName} entered terminal failure state: ${status}`,
-            resourceType,
-            logicalId,
-            dbProxyEndpointName
+    try {
+      while (Date.now() < deadline) {
+        try {
+          // NOTE: filter by DBProxyEndpointName only — passing both
+          // `DBProxyName` AND `DBProxyEndpointName` returned an empty array
+          // during the create poll on real AWS (eventual-consistency-window
+          // bug observed 2026-05-16 rds-aurora integ). The endpoint name is
+          // already a unique identifier per region.
+          const describe = await client.send(
+            new DescribeDBProxyEndpointsCommand({
+              DBProxyEndpointName: dbProxyEndpointName,
+            })
           );
-        }
-      } catch (error) {
-        if (
-          error instanceof DBProxyEndpointNotFoundFault ||
-          error instanceof DBProxyNotFoundFault
-        ) {
-          // Not yet visible — keep polling.
-        } else if (error instanceof ProvisioningError) {
-          throw error;
-        } else {
-          throw this.wrapError(
-            error,
-            'CREATE (poll)',
-            resourceType,
-            logicalId,
-            dbProxyEndpointName
+          const ep = describe.DBProxyEndpoints?.[0];
+          status = ep?.Status;
+          this.logger.debug(
+            `DBProxyEndpoint ${dbProxyEndpointName} poll: status=${status ?? 'not-yet-visible'}`
           );
+          if (status === 'available') {
+            endpoint = ep?.Endpoint;
+            arn = ep?.DBProxyEndpointArn;
+            isDefault = ep?.IsDefault;
+            vpcId = ep?.VpcId;
+            break;
+          }
+          if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
+            throw new ProvisioningError(
+              `DBProxyEndpoint ${dbProxyEndpointName} entered terminal failure state: ${status}`,
+              resourceType,
+              logicalId,
+              dbProxyEndpointName
+            );
+          }
+        } catch (error) {
+          if (
+            error instanceof DBProxyEndpointNotFoundFault ||
+            error instanceof DBProxyNotFoundFault
+          ) {
+            // Not yet visible — keep polling.
+          } else if (error instanceof ProvisioningError) {
+            throw error;
+          } else {
+            throw this.wrapError(
+              error,
+              'CREATE (poll)',
+              resourceType,
+              logicalId,
+              dbProxyEndpointName
+            );
+          }
         }
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
       }
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    }
-    if (!endpoint || !arn) {
-      throw new ProvisioningError(
-        `Timed out waiting for DBProxyEndpoint ${dbProxyEndpointName} to become available (last status: ${status ?? 'unknown'})`,
-        resourceType,
-        logicalId,
-        dbProxyEndpointName
-      );
+      if (!endpoint || !arn) {
+        throw new ProvisioningError(
+          `Timed out waiting for DBProxyEndpoint ${dbProxyEndpointName} to become available (last status: ${status ?? 'unknown'})`,
+          resourceType,
+          logicalId,
+          dbProxyEndpointName
+        );
+      }
+    } catch (error) {
+      // go-to-k/cdkd#4583: CreateDBProxyEndpoint returned, so the endpoint
+      // exists under `dbProxyEndpointName` (the id delete() takes); name it
+      // for --revert-failed.
+      markCreatedBeforeFailure(error, logicalId, resourceType, dbProxyEndpointName);
+      throw error;
     }
 
     return {

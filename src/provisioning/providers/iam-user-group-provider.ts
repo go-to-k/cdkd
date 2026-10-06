@@ -52,7 +52,7 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import {
   onlySecretDerived,
   readPrincipalLists,
@@ -491,6 +491,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4583: set once CreateUser returns; cleared when the
+    // partial-create cleanup deleted the user, so only a left-behind one is marked.
+    let leftBehind = false;
     try {
       const createParams: {
         UserName: string;
@@ -509,6 +512,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       }
 
       const response = await this.iamClient.send(new CreateUserCommand(createParams));
+      leftBehind = true;
 
       // CreateUserCommand has succeeded — AWS has now committed the User
       // (and the inline `Tags` from `createParams` if any). Every
@@ -616,6 +620,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
             if (!(err instanceof NoSuchEntityException)) throw err;
           }
           await this.iamClient.send(new DeleteUserCommand({ UserName: userName }));
+          leftBehind = false;
           log.debug(
             `Cleaned up partially-created IAM user ${logicalId} (${v(userName)}) after wiring failure`
           );
@@ -647,7 +652,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         error,
         (text) =>
@@ -659,6 +664,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
             cause
           )
       );
+      if (leftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, userName);
+      throw thrown;
     }
   }
 
@@ -1260,6 +1267,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
       { maxLength: GROUP_NAME_MAX_LENGTH }
     );
 
+    // go-to-k/cdkd#4583: set once CreateGroup returns; cleared when the
+    // partial-create cleanup deleted the group, so only a left-behind one is marked.
+    let leftBehind = false;
     try {
       const createParams: {
         GroupName: string;
@@ -1273,6 +1283,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       }
 
       const response = await this.iamClient.send(new CreateGroupCommand(createParams));
+      leftBehind = true;
 
       // CreateGroupCommand has succeeded — AWS has now committed the
       // Group. Every subsequent call wires sub-resources onto it
@@ -1326,6 +1337,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
           await this.detachAllGroupPolicies(groupName, log);
           await this.deleteAllGroupInlinePolicies(groupName, log);
           await this.iamClient.send(new DeleteGroupCommand({ GroupName: groupName }));
+          leftBehind = false;
           log.debug(
             `Cleaned up partially-created IAM group ${logicalId} (${v(groupName)}) after wiring failure`
           );
@@ -1357,7 +1369,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         error,
         (text) =>
@@ -1369,6 +1381,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
             cause
           )
       );
+      if (leftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, groupName);
+      throw thrown;
     }
   }
 

@@ -20,6 +20,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -422,6 +423,8 @@ export class ElastiCacheProvider implements ResourceProvider {
       (properties['ClusterName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 40, lowercase: true });
 
+    // go-to-k/cdkd#4583: set once CreateCacheCluster returned (no self-cleanup).
+    let clusterCreated = false;
     try {
       await this.getClient().send(
         new CreateCacheClusterCommand({
@@ -460,6 +463,7 @@ export class ElastiCacheProvider implements ResourceProvider {
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
+      clusterCreated = true;
 
       this.logger.debug(`Successfully created CacheCluster ${logicalId}: ${cacheClusterId}`);
 
@@ -496,15 +500,22 @@ export class ElastiCacheProvider implements ResourceProvider {
         attributes,
       };
     } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create CacheCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        cacheClusterId,
-        cause
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to create CacheCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              cacheClusterId,
+              error instanceof Error ? error : undefined
+            );
+      // go-to-k/cdkd#4583: the cluster exists and no state record will hold
+      // it; never before CreateCacheCluster returned (another owner's name).
+      if (clusterCreated) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, cacheClusterId);
+      }
+      throw thrown;
     }
   }
 

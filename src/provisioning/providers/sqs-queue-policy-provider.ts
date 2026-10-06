@@ -26,6 +26,7 @@ import type {
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 /**
  * AWS SQS Queue Policy Provider
@@ -75,6 +76,9 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4583: the queue URLs whose SetQueueAttributes returned —
+    // exactly the queues this create wrote its policy onto.
+    const applied: string[] = [];
     try {
       // Serialize policy document
       const policyDoc =
@@ -91,6 +95,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
             },
           })
         );
+        applied.push(queueUrl);
       }
 
       this.logger.debug(`Successfully created SQS queue policy ${logicalId}`);
@@ -102,13 +107,20 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         queues[0],
         cause
       );
+      // go-to-k/cdkd#4583: name exactly the written queues, comma-joined (a
+      // form delete() takes), so --revert-failed clears no queue this create
+      // never wrote. Queue URLs carry no comma (queue names: [A-Za-z0-9_-]).
+      if (applied.length > 0) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, applied.join(','));
+      }
+      throw thrown;
     }
   }
 
@@ -194,45 +206,53 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting SQS queue policy ${logicalId}: ${physicalId}`);
 
-    try {
-      // Remove the policy by setting it to empty
-      await this.sqsClient.send(
-        new SetQueueAttributesCommand({
-          QueueUrl: physicalId,
-          Attributes: {
-            Policy: '',
-          },
-        })
-      );
+    // A state record holds one queue URL (create()'s return). A failed
+    // create's journaled id (go-to-k/cdkd#4583) is the comma-joined URLs it
+    // wrote; clear exactly those. The list comes from the id, never from
+    // properties, so no queue this create never wrote is touched.
+    const queueUrls = physicalId.split(',');
 
-      this.logger.debug(`Successfully deleted SQS queue policy ${logicalId}`);
-    } catch (error) {
-      // Check if queue doesn't exist
-      if (
-        error instanceof Error &&
-        (error.name === 'QueueDoesNotExist' || error.message.includes('does not exist'))
-      ) {
-        const clientRegion = await this.sqsClient.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
+    for (const queueUrl of queueUrls) {
+      try {
+        // Remove the policy by setting it to empty
+        await this.sqsClient.send(
+          new SetQueueAttributesCommand({
+            QueueUrl: queueUrl,
+            Attributes: {
+              Policy: '',
+            },
+          })
+        );
+      } catch (error) {
+        // Check if queue doesn't exist
+        if (
+          error instanceof Error &&
+          (error.name === 'QueueDoesNotExist' || error.message.includes('does not exist'))
+        ) {
+          const clientRegion = await this.sqsClient.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            queueUrl
+          );
+          this.logger.debug(`Queue ${queueUrl} does not exist, skipping policy deletion`);
+          continue;
+        }
+
+        const cause = error instanceof Error ? error : undefined;
+        throw new ProvisioningError(
+          `Failed to delete SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
           resourceType,
           logicalId,
-          physicalId
+          physicalId,
+          cause
         );
-        this.logger.debug(`Queue ${physicalId} does not exist, skipping policy deletion`);
-        return;
       }
-
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
-      );
     }
+
+    this.logger.debug(`Successfully deleted SQS queue policy ${logicalId}`);
   }
 
   /**

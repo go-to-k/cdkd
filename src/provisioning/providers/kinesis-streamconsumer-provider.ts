@@ -41,6 +41,7 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 /**
  * The stream ARN and consumer name a consumer ARN carries
@@ -142,6 +143,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
 
     const tagMap = tagListToMap(tagList);
 
+    let createdArn: string | undefined;
     try {
       const resp = await this.getClient().send(
         new RegisterStreamConsumerCommand({
@@ -162,6 +164,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
 
       // Poll until ACTIVE.
       const consumerArn = consumer.ConsumerARN;
+      createdArn = consumerArn;
       await this.waitForConsumerActive(consumerArn);
 
       this.logger.debug(`Successfully registered Kinesis stream consumer ${logicalId}`);
@@ -180,15 +183,20 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
         },
       };
     } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to register Kinesis stream consumer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        consumerName,
-        cause
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to register Kinesis stream consumer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              consumerName,
+              error instanceof Error ? error : undefined
+            );
+      // go-to-k/cdkd#4583: the consumer exists once RegisterStreamConsumer
+      // returned its ARN (the id delete() takes); name it for --revert-failed.
+      if (createdArn) markCreatedBeforeFailure(thrown, logicalId, resourceType, createdArn);
+      throw thrown;
     }
   }
 

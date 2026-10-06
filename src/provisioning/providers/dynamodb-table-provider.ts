@@ -47,7 +47,7 @@ import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -2014,11 +2014,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // returning its physicalId — the deploy engine can't roll it back, so
       // best-effort delete it here to avoid an orphan + a "Table already
       // exists" failure on the next deploy attempt.
+      let tableLeftBehind = false;
       if (tableCreated) {
         try {
           await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
           debug(`Rolled back partially-created DynamoDB table ${tableName}`);
         } catch (cleanupError) {
+          tableLeftBehind = true;
           warn(
             `Failed to roll back partially-created DynamoDB table ${tableName}: ${
               describeAwsFailure(cleanupError).detail
@@ -2027,17 +2029,20 @@ export class DynamoDBTableProvider implements ResourceProvider {
         }
         markAuxiliaryFailure(error, logicalId);
       }
-      if (error instanceof ProvisioningError) {
-        throw error;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create DynamoDB table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        tableName,
-        cause
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to create DynamoDB table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              tableName,
+              error instanceof Error ? error : undefined
+            );
+      // go-to-k/cdkd#4583: the rollback DeleteTable failed, so the table this
+      // call created is left behind — let `rollback --revert-failed` delete it.
+      if (tableLeftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, tableName);
+      throw thrown;
     }
   }
 

@@ -40,7 +40,7 @@ import {
 } from '../tag-list.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import type {
   ResourceProvider,
@@ -332,6 +332,9 @@ export class SSMParameterProvider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4583: set once PutParameter (Overwrite: false) returns;
+    // cleared when the cleanup deleted the parameter.
+    let leftBehind = false;
     try {
       const putParams: import('@aws-sdk/client-ssm').PutParameterCommandInput = {
         Name: name,
@@ -354,6 +357,7 @@ export class SSMParameterProvider implements ResourceProvider {
       }
 
       await this.ssmClient.send(new PutParameterCommand(putParams));
+      leftBehind = true;
 
       // PutParameter has succeeded (Overwrite: false, so AWS has committed
       // a new parameter — not an idempotent pre-existing-resource path).
@@ -377,6 +381,7 @@ export class SSMParameterProvider implements ResourceProvider {
       } catch (innerError) {
         try {
           await this.ssmClient.send(new DeleteParameterCommand({ Name: name }));
+          leftBehind = false;
           debug(
             `Cleaned up partially-created SSM parameter ${displaySafe(logicalId)} (${displaySafe(mask(name))}) after wiring failure`
           );
@@ -407,8 +412,8 @@ export class SSMParameterProvider implements ResourceProvider {
             maskSecrets: mask,
           });
           const manualStep = deleteCommand
-            ? `Manual deletion may be required before the next deploy: ${deleteCommand}`
-            : 'Manual deletion may be required before the next deploy, via the console: the ' +
+            ? `On a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${deleteCommand}`
+            : "On a first-time create the failed deploy's rollback journal records it for `cdkd rollback --revert-failed`; otherwise delete it yourself before the next deploy, via the console: the " +
               'parameter name cannot be reproduced safely on a command line: a command naming ' +
               'the sanitized form would delete a DIFFERENT parameter, and one naming a name ' +
               'that is not inert unquoted could run part of it as shell.';
@@ -456,7 +461,7 @@ export class SSMParameterProvider implements ResourceProvider {
       // so the engine is not the only boundary. The `cause` stays unmasked,
       // and a message the mask changed is stamped so the retry classifiers
       // read that chain (`wrapMaskedError`, issue #4244).
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         mask,
         error,
         (text) =>
@@ -468,6 +473,9 @@ export class SSMParameterProvider implements ResourceProvider {
             cause
           )
       );
+      // A non-enumerable symbol, never part of the message.
+      if (leftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, name);
+      throw thrown;
     }
   }
 

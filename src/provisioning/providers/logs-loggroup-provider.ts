@@ -66,7 +66,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 /**
  * Whether a raw `RetentionInDays` is CloudFormation's spelling of "no
@@ -329,6 +329,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
     // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
+    // go-to-k/cdkd#4583: set once THIS call created the log group (never on the
+    // ResourceAlreadyExists adoption); cleared when the cleanup deleted it.
+    let leftBehind = false;
     try {
       const createParams: import('@aws-sdk/client-cloudwatch-logs').CreateLogGroupCommandInput = {
         logGroupName,
@@ -361,6 +364,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       try {
         await this.logsClient.send(new CreateLogGroupCommand(createParams));
         createdNewLogGroup = true;
+        leftBehind = true;
       } catch (createError) {
         if (createError instanceof ResourceAlreadyExistsException) {
           this.logger.debug(`Log group ${logGroupName} already exists, using existing`);
@@ -525,6 +529,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
         if (createdNewLogGroup) {
           try {
             await this.logsClient.send(new DeleteLogGroupCommand({ logGroupName }));
+            leftBehind = false;
             this.logger.debug(
               `Cleaned up partially-created log group ${displaySafe(logicalId)} (${displaySafe(logGroupName)}) after wiring failure`
             );
@@ -549,8 +554,8 @@ export class LogsLogGroupProvider implements ResourceProvider {
               maskSecrets: mask,
             });
             const manualStep = deleteCommand
-              ? `Manual deletion may be required before the next deploy: ${deleteCommand}`
-              : 'Manual deletion may be required before the next deploy, via the console: the log ' +
+              ? `On a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${deleteCommand}`
+              : "On a first-time create the failed deploy's rollback journal records it for `cdkd rollback --revert-failed`; otherwise delete it yourself before the next deploy, via the console: the log " +
                 'group name cannot be reproduced safely on a command line.';
             this.logger.warn(
               mask(
@@ -580,7 +585,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // CreateLogGroup sends the resolved tag values, which an AWS error can
       // echo: the message goes through the operation's masker.
       const mask = maskerOrIdentity(context?.maskSecrets);
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         mask,
         error,
         (text) =>
@@ -592,6 +597,8 @@ export class LogsLogGroupProvider implements ResourceProvider {
             cause
           )
       );
+      if (leftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, logGroupName);
+      throw thrown;
     }
   }
 

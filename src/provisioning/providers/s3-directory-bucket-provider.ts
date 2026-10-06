@@ -299,6 +299,11 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     const includeTags = tags.length > 0;
 
     try {
+      // Resolved BEFORE CreateBucket (go-to-k/cdkd#4583): the STS account
+      // lookup is the only call that could otherwise fail after the bucket
+      // exists, leaving a bucket no state record names.
+      const attributes = await this.buildAttributes(bucketName);
+
       await this.s3Client.send(
         new CreateBucketCommand({
           Bucket: bucketName,
@@ -316,8 +321,6 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
         })
       );
       this.logger.debug(`Created S3 Express Directory Bucket: ${bucketName}`);
-
-      const attributes = await this.buildAttributes(bucketName);
 
       return {
         physicalId: bucketName,

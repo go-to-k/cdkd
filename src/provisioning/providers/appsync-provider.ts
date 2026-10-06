@@ -102,7 +102,7 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { injectiveKey } from '../../state/record-keys.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import {
   AmbiguousCreateLatch,
   RecentIdSet,
@@ -2943,6 +2943,7 @@ export class AppSyncProvider implements ResourceProvider {
         }),
       };
     } catch (error) {
+      let apiLeftBehind = false;
       if (createdApiId) {
         // The API itself was created: a later "already exists" is an
         // auxiliary call's, not this API's collision (#3826).
@@ -2951,6 +2952,7 @@ export class AppSyncProvider implements ResourceProvider {
           await this.getClient().send(new DeleteGraphqlApiCommand({ apiId: createdApiId }));
           this.logger.debug(`Rolled back partially-created GraphQL API ${createdApiId}`);
         } catch (rollbackError) {
+          apiLeftBehind = true;
           this.logger.warn(
             `Failed to roll back partially-created GraphQL API ${createdApiId}: ${
               describeAwsFailure(rollbackError).detail
@@ -2959,13 +2961,19 @@ export class AppSyncProvider implements ResourceProvider {
         }
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create GraphQL API ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         undefined,
         cause
       );
+      // go-to-k/cdkd#4583: the rollback delete failed, so this API has no state
+      // record; name it for the failed-CREATE journal.
+      if (apiLeftBehind && createdApiId) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdApiId);
+      }
+      throw thrown;
     }
   }
 

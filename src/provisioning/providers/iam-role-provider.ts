@@ -38,7 +38,7 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import type {
   CreateContext,
@@ -187,6 +187,9 @@ export class IAMRoleProvider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4583: set once CreateRole returns; cleared when the
+    // partial-create cleanup deleted the role, so only a left-behind one is marked.
+    let leftBehind = false;
     try {
       // Serialize policy document
       const policyDocument =
@@ -221,6 +224,7 @@ export class IAMRoleProvider implements ResourceProvider {
       }
 
       const response = await this.iamClient.send(new CreateRoleCommand(createParams));
+      leftBehind = true;
 
       log.debug(`Created IAM role: ${v(roleName)}`);
 
@@ -288,6 +292,7 @@ export class IAMRoleProvider implements ResourceProvider {
           await this.detachAllManagedPolicies(roleName, log);
           await this.deleteAllInlinePolicies(roleName, log);
           await this.iamClient.send(new DeleteRoleCommand({ RoleName: roleName }));
+          leftBehind = false;
           log.debug(
             `Cleaned up partially-created IAM role ${logicalId} (${v(roleName)}) after wiring failure`
           );
@@ -327,18 +332,18 @@ export class IAMRoleProvider implements ResourceProvider {
       // Issue #2177: the AWS message is masked RAW before interpolation. The
       // cause stays unmasked: a masked message is stamped so the retry
       // classifiers read the chain (`wrapMaskedError`, issue #4244).
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create IAM role ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            roleName,
-            cause
-          )
-      );
+      throw this.wrapMaskedError(log.mask, error, (text) => {
+        const built = new ProvisioningError(
+          `Failed to create IAM role ${logicalId}: ${text}`,
+          resourceType,
+          logicalId,
+          roleName,
+          cause
+        );
+        return leftBehind
+          ? markCreatedBeforeFailure(built, logicalId, resourceType, roleName)
+          : built;
+      });
     }
   }
 

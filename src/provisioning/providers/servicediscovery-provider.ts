@@ -68,7 +68,7 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 /**
  * Reset targets for a REMOVED `Properties.DnsProperties.SOA.TTL` (issue
@@ -412,6 +412,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     // the deploy engine doesn't fall back to CC API on this resource type.
     const inputProperties = this.extractSoaTtlProperties(properties);
 
+    // go-to-k/cdkd#4583: set once the create operation has SUCCEEDED; a failure
+    // after it (the ARN lookup) leaves this namespace with no state record.
+    let createdNamespaceId: string | undefined;
     try {
       const response = await client.send(
         new CreatePrivateDnsNamespaceCommand({
@@ -435,6 +438,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         resourceType,
         maskSecrets
       );
+      // pollOperation falls back to the operation id when AWS names no namespace;
+      // that is not an id delete() can take, so leave it unmarked.
+      if (namespaceId !== operationId) createdNamespaceId = namespaceId;
 
       // Build ARN
       const arn = await this.buildNamespaceArn(namespaceId);
@@ -449,25 +455,31 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         },
       };
     } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       // `cause` carries the ORIGINAL error untouched (issue #2063): the
       // classifier walks it for `$metadata`, so only the human-readable
-      // message is masked. The `ProvisioningError` passthrough above is why
+      // message is masked. The `ProvisioningError` passthrough below is why
       // {@link pollOperation} masks its OWN message rather than relying on
       // this line — a FAILED-operation error re-throws here untouched.
-      throw this.wrapMaskedError(
-        maskerOrIdentity(maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create private DNS namespace ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : this.wrapMaskedError(
+              maskerOrIdentity(maskSecrets),
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create private DNS namespace ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  undefined,
+                  cause
+                )
+            );
+      if (createdNamespaceId) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdNamespaceId);
+      }
+      throw thrown;
     }
   }
 
@@ -675,6 +687,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4583: set once the create operation has SUCCEEDED; a failure
+    // after it (the ARN lookup) leaves this namespace with no state record.
+    let createdNamespaceId: string | undefined;
     try {
       const response = await client.send(
         new CreateHttpNamespaceCommand({
@@ -695,6 +710,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         resourceType,
         maskSecrets
       );
+      // pollOperation falls back to the operation id when AWS names no namespace;
+      // that is not an id delete() can take, so leave it unmarked.
+      if (namespaceId !== operationId) createdNamespaceId = namespaceId;
       const arn = await this.resolveNamespaceArn(namespaceId);
 
       this.logger.debug(`Successfully created HTTP namespace ${logicalId}: ${namespaceId}`);
@@ -707,20 +725,26 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         },
       };
     } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        maskerOrIdentity(maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create HTTP namespace ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : this.wrapMaskedError(
+              maskerOrIdentity(maskSecrets),
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create HTTP namespace ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  undefined,
+                  cause
+                )
+            );
+      if (createdNamespaceId) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdNamespaceId);
+      }
+      throw thrown;
     }
   }
 
@@ -835,6 +859,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     // TTL is applied instead of AWS's default.
     const inputProperties = this.extractSoaTtlProperties(properties);
 
+    // go-to-k/cdkd#4583: set once the create operation has SUCCEEDED; a failure
+    // after it (the ARN lookup) leaves this namespace with no state record.
+    let createdNamespaceId: string | undefined;
     try {
       const response = await client.send(
         new CreatePublicDnsNamespaceCommand({
@@ -856,6 +883,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         resourceType,
         maskSecrets
       );
+      // pollOperation falls back to the operation id when AWS names no namespace;
+      // that is not an id delete() can take, so leave it unmarked.
+      if (namespaceId !== operationId) createdNamespaceId = namespaceId;
 
       // PublicDnsNamespace exposes `HostedZoneId` as a CFn attribute (AWS
       // creates a public Route 53 hosted zone alongside the namespace);
@@ -893,20 +923,26 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         },
       };
     } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        maskerOrIdentity(maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create public DNS namespace ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : this.wrapMaskedError(
+              maskerOrIdentity(maskSecrets),
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create public DNS namespace ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  undefined,
+                  cause
+                )
+            );
+      if (createdNamespaceId) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdNamespaceId);
+      }
+      throw thrown;
     }
   }
 
@@ -1031,6 +1067,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       );
     }
 
+    let leftBehindServiceId: string | undefined;
     try {
       const response = await client.send(
         new CreateServiceCommand({
@@ -1052,6 +1089,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         throw new Error('CreateService did not return Service ID');
       }
       const serviceId = service.Id;
+      // go-to-k/cdkd#4583: AWS holds this service; cleared once the cleanup deletes it.
+      leftBehindServiceId = serviceId;
 
       this.logger.debug(
         `Successfully created service discovery service ${logicalId}: ${serviceId}`
@@ -1098,8 +1137,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         // An interrupt takes the SAME cleanup as any other attributes-wiring
         // failure — see the twin arm in `elbv2-provider.ts` for the full
         // argument. In short: `create()` is throwing, so nothing in cdkd state
-        // ever holds this service id, and the choice is "delete vs orphan
-        // forever" rather than "delete vs preserve".
+        // ever holds this service id (only a FAILED cleanup marks it for the
+        // rollback journal, go-to-k/cdkd#4583), and the choice is "delete vs
+        // orphan" rather than "delete vs preserve".
         //
         // The Cloud Map case is the WORSE of the two, which is why the note is
         // not simply a cross-reference: an orphaned service also blocks
@@ -1119,13 +1159,14 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
                 `but before its ServiceAttributes were applied. Nothing in cdkd state refers to ` +
                 `it, so cdkd is deleting it now — left behind it would fail the next deploy on a ` +
                 `name collision AND block deletion of its namespace with ResourceInUse. If that ` +
-                `delete does not complete, remove it manually: ` +
+                `delete fails, on a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise remove it yourself: ` +
                 `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
             )
           );
         }
         try {
           await client.send(new DeleteServiceCommand({ Id: serviceId }));
+          leftBehindServiceId = undefined;
           this.logger.debug(
             `Cleaned up partially-created ServiceDiscovery Service ${logicalId} (${serviceId}) after ServiceAttributes wiring failure`
           );
@@ -1138,8 +1179,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
             // beside masked ones is what a later author copies.
             `Failed to clean up partially-created ServiceDiscovery Service ${logicalId} ` +
               `(${serviceId}) after ServiceAttributes wiring failure: ` +
-              `${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be ` +
-              `required before the next deploy: ` +
+              `${this.maskErrorMessage(cleanupError, maskSecrets)}. On a first-time create the failed deploy's rollback ` +
+              `journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself ` +
+              `before the next deploy: ` +
               `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
           );
         }
@@ -1161,7 +1203,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       // classifier walks it for `$metadata`, so only the human-readable
       // message is masked.
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -1173,6 +1215,10 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
             cause
           )
       );
+      if (leftBehindServiceId) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindServiceId);
+      }
+      throw thrown;
     }
   }
 

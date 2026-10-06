@@ -172,7 +172,7 @@ import {
   type PasteableAwsCommand,
 } from '../replacement-protection-advice.js';
 import { displayIdent, safeMsg } from '../../utils/display-safe.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import {
   isRedactedRecordedValue,
   REDACTED_DELETE_ADDRESS_SKIP_REASON,
@@ -1317,6 +1317,9 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
+    // delete the VPC this call created.
+    let leftBehindId: string | undefined;
     try {
       const createClient = await this.getCreateClient();
       // Issue #2080: after an earlier ambiguous attempt, name the VPC it may
@@ -1409,6 +1412,7 @@ export class EC2Provider implements ResourceProvider {
             `Cleaned up partially-created VPC ${logicalId} (${vpcId}) after wiring failure`
           );
         } catch (cleanupError) {
+          leftBehindId = vpcId;
           this.logger.warn(
             `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-vpc --vpc-id ${vpcId}`.render()}`
           );
@@ -1438,13 +1442,17 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create VPC ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         undefined,
         cause
       );
+      if (leftBehindId !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindId);
+      }
+      throw thrown;
     }
   }
 
@@ -1673,6 +1681,9 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
+    // delete the subnet this call created.
+    let leftBehindId: string | undefined;
     try {
       const createClient = await this.getCreateClient();
       // Issue #2080: after an earlier ambiguous attempt, name the subnet it
@@ -1736,6 +1747,7 @@ export class EC2Provider implements ResourceProvider {
             `Cleaned up partially-created Subnet ${logicalId} (${subnetId}) after wiring failure`
           );
         } catch (cleanupError) {
+          leftBehindId = subnetId;
           this.logger.warn(
             `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-subnet --subnet-id ${subnetId}`.render()}`
           );
@@ -1756,13 +1768,17 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create Subnet ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         undefined,
         cause
       );
+      if (leftBehindId !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindId);
+      }
+      throw thrown;
     }
   }
 
@@ -2193,6 +2209,7 @@ export class EC2Provider implements ResourceProvider {
     // Set once the create call returns: a later failure is an auxiliary
     // call's (the association), not this address's (#3826).
     let created = false;
+    let createdId: string | undefined;
     try {
       const input: AllocateAddressCommandInput = {
         Domain: requireConfigString(
@@ -2223,6 +2240,14 @@ export class EC2Provider implements ResourceProvider {
       created = true;
       allocationId = response.AllocationId!;
       publicIp = response.PublicIp!;
+      // go-to-k/cdkd#4583: the id delete() takes, should a later call fail.
+      // `deleteEip` also accepts a bare allocation id, the fallback if the
+      // composite fence ever refused.
+      try {
+        createdId = this.eipPhysicalId(logicalId, publicIp, allocationId);
+      } catch {
+        createdId = allocationId;
+      }
       ec2IdsCreatedByThisProcess.add(allocationId);
 
       await this.applyTags(allocationId, desiredTags, logicalId);
@@ -2266,13 +2291,18 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       if (created) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create EIP ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         undefined,
         cause
       );
+      // No cleanup releases the address on a later failure (go-to-k/cdkd#4583).
+      if (createdId !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdId);
+      }
+      throw thrown;
     }
 
     // The second of the two sites whose segments only exist after the AWS
@@ -2638,6 +2668,9 @@ export class EC2Provider implements ResourceProvider {
       logicalId,
     });
 
+    // go-to-k/cdkd#4583: the gateway once CreateNatGateway returned; a later
+    // failure leaves it in place on purpose (see the token note above).
+    let createdId: string | undefined;
     try {
       const response = await this.ec2Client.send(
         new CreateNatGatewayCommand({
@@ -2657,6 +2690,7 @@ export class EC2Provider implements ResourceProvider {
         })
       );
       const natGatewayId = response.NatGateway!.NatGatewayId!;
+      createdId = natGatewayId;
 
       // Apply tags via the post-create CreateTags API to match the
       // pattern used by sibling EC2 helpers (Subnet / IGW / RouteTable).
@@ -2708,13 +2742,17 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create NatGateway ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         undefined,
         cause
       );
+      if (createdId !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdId);
+      }
+      throw thrown;
     }
   }
 
@@ -3377,6 +3415,9 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
+    // delete the group this call created.
+    let leftBehindId: string | undefined;
     try {
       // Issue #2080: no idempotency token, but a replay COLLIDES on the group
       // name (`InvalidGroup.Duplicate`) rather than duplicating; the create
@@ -3467,6 +3508,7 @@ export class EC2Provider implements ResourceProvider {
             `Cleaned up partially-created SecurityGroup ${logicalId} (${groupId}) after wiring failure`
           );
         } catch (cleanupError) {
+          leftBehindId = groupId;
           this.logger.warn(
             `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-security-group --group-id ${groupId}`.render()}`
           );
@@ -3487,13 +3529,17 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create SecurityGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         undefined,
         cause
       );
+      if (leftBehindId !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindId);
+      }
+      throw thrown;
     }
   }
 
@@ -4928,6 +4974,9 @@ export class EC2Provider implements ResourceProvider {
       replayWarn(this.logger, context)
     );
 
+    // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
+    // terminate the instance this call launched.
+    let leftBehindId: string | undefined;
     try {
       const securityGroupIds = properties['SecurityGroupIds'] as string[] | undefined;
       const securityGroups = properties['SecurityGroups'] as string[] | undefined;
@@ -5175,6 +5224,7 @@ export class EC2Provider implements ResourceProvider {
             `Terminate requested for partially-created EC2 Instance ${logicalId} (${instanceId}) after wiring failure (not waiting for terminated state)`
           );
         } catch (cleanupError) {
+          leftBehindId = instanceId;
           this.logger.warn(
             `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): ${describeAwsFailure(cleanupError).detail}. THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 terminate-instances --instance-ids ${instanceId}`.render()}`
           );
@@ -5184,15 +5234,20 @@ export class EC2Provider implements ResourceProvider {
         throw markAuxiliaryFailure(innerError, logicalId);
       }
     } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create EC2 Instance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to create EC2 Instance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              undefined,
+              error instanceof Error ? error : undefined
+            );
+      if (leftBehindId !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindId);
+      }
+      throw thrown;
     }
   }
 

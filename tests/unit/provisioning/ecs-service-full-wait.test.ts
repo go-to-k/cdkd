@@ -49,6 +49,13 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ECSProvider, settleRolloutDelays } from '../../../src/provisioning/providers/ecs-provider.js';
+
+// The by-name lookup before a --full-wait CreateService (go-to-k/cdkd#4403):
+// the name is free.
+vi.spyOn(
+  ECSProvider.prototype as unknown as { serviceNameHeld(): Promise<boolean> },
+  'serviceNameHeld'
+).mockResolvedValue(false);
 import {
   setResolvedResourceTimeouts,
   clearResolvedResourceTimeouts,

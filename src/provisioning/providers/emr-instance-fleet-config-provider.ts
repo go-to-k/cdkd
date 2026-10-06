@@ -41,6 +41,7 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 /**
  * Default polling budget for an instance fleet reaching RUNNING. Adding a
@@ -292,6 +293,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
 
     this.logger.debug(`Adding EMR instance fleet ${logicalId} to cluster ${clusterId}`);
 
+    let createdFleetId: string | undefined;
     try {
       const fleet = this.toInstanceFleetConfig(properties);
       // Issue #2080: after an earlier ambiguous attempt, name the instance fleet
@@ -355,6 +357,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       }
       const fleetId = response.InstanceFleetId;
       if (fleetId) fleetsCreatedByThisProcess.add(fleetId);
+      createdFleetId = fleetId;
       if (!fleetId) {
         throw new ProvisioningError(
           `EMR AddInstanceFleet for ${logicalId} returned no instance fleet id`,
@@ -377,15 +380,20 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       this.logger.debug(`Successfully added EMR instance fleet ${logicalId}: ${fleetId}`);
       return { physicalId: fleetId, attributes: { Id: fleetId } };
     } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to add EMR instance fleet ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to add EMR instance fleet ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              undefined,
+              error instanceof Error ? error : undefined
+            );
+      // go-to-k/cdkd#4583: the fleet exists once AddInstanceFleet returned its
+      // id (the id delete() takes); name it for --revert-failed.
+      if (createdFleetId) markCreatedBeforeFailure(thrown, logicalId, resourceType, createdFleetId);
+      throw thrown;
     }
   }
 

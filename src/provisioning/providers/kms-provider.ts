@@ -43,7 +43,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { createHash } from 'node:crypto';
 import {
   AMBIGUOUS_LATCH_TTL_MS,
@@ -366,17 +366,23 @@ export class KMSProvider implements ResourceProvider {
         const aws = pasteableAwsCommand();
         const region = await this.regionArg(aws);
         this.logger.warn(
-          safeMsg`KMS key ${createdKeyId} was created for ${logicalId}, but a follow-up call failed. A retry of this create reuses that key instead of creating another, so do not delete it while the deploy is still retrying. Only if the deploy then FAILS is the key left unrecorded in cdkd state; delete it then with: ${aws`aws kms schedule-key-deletion --key-id ${createdKeyId}${region} --pending-window-in-days 7`.render()}`
+          safeMsg`KMS key ${createdKeyId} was created for ${logicalId}, but a follow-up call failed. A retry of this create reuses that key instead of creating another, so do not delete it while the deploy is still retrying. If the deploy then FAILS on a first-time create, its rollback journal records the key for \`cdkd rollback --revert-failed\` to schedule its deletion; otherwise schedule it yourself with: ${aws`aws kms schedule-key-deletion --key-id ${createdKeyId}${region} --pending-window-in-days 7`.render()}`
         );
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create KMS Key ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         undefined,
         cause
       );
+      // go-to-k/cdkd#4583: the key (this create's own, or one an earlier attempt
+      // of it minted and this one resumed) is left behind; name it for the journal.
+      if (createdKeyId !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdKeyId);
+      }
+      throw thrown;
     }
   }
 

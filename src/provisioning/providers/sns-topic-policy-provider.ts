@@ -22,6 +22,7 @@ import type {
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 /**
  * AWS SNS Topic Policy Provider
@@ -74,9 +75,12 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     const policyDoc =
       typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
 
+    // go-to-k/cdkd#4583: the topics whose policy this create already wrote.
+    const applied: string[] = [];
     try {
       for (const topicArn of topics) {
         await this.setTopicPolicy(topicArn, policyDoc);
+        applied.push(topicArn);
       }
 
       this.logger.debug(`Successfully created SNS topic policy ${logicalId}`);
@@ -89,14 +93,20 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create SNS topic policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         undefined,
-        cause
+        error instanceof Error ? error : undefined
       );
+      // go-to-k/cdkd#4583: name ONLY the topics already written, in the
+      // comma-joined form delete() takes, so --revert-failed never clears the
+      // policy of a topic this create did not reach.
+      if (applied.length > 0) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, applied.join(','));
+      }
+      throw thrown;
     }
   }
 

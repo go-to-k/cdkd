@@ -20,6 +20,7 @@ import { generateResourceName } from '../resource-name.js';
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
+  type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { readPrincipalLists, recordedPrincipalsRepair } from '../iam-policy-targets.js';
@@ -28,7 +29,9 @@ import {
   resolveSecretDerivedPrincipals,
 } from '../secret-principal-resolution.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { injectiveKey } from '../../state/record-keys.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type {
   CreateContext,
   InlinePolicyPrincipalKind,
@@ -118,6 +121,13 @@ interface PolicyTargetLists {
 }
 
 type PolicyTargetKind = 'Roles' | 'Groups' | 'Users';
+
+/** The principals a `create()` put the inline policy on, per kind. */
+interface AttachedPrincipals {
+  roles: string[];
+  groups: string[];
+  users: string[];
+}
 
 /** The kinds of one bag that are present but not a list of IAM names. */
 interface MalformedPolicyTargets {
@@ -338,6 +348,9 @@ export class IAMPolicyProvider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4583: the principals whose Put*Policy RETURNED, the only
+    // ones a failed create may detach the policy from again.
+    const attached: AttachedPrincipals = { roles: [], groups: [], users: [] };
     try {
       // Serialize policy document
       const policyDoc =
@@ -354,6 +367,7 @@ export class IAMPolicyProvider implements ResourceProvider {
               PolicyDocument: policyDoc,
             })
           );
+          attached.roles.push(roleName);
           log.debug(`Attached inline policy ${v(policyName)} to role ${v(roleName)}`);
         }
       }
@@ -368,6 +382,7 @@ export class IAMPolicyProvider implements ResourceProvider {
               PolicyDocument: policyDoc,
             })
           );
+          attached.groups.push(groupName);
           log.debug(`Attached inline policy ${v(policyName)} to group ${v(groupName)}`);
         }
       }
@@ -382,6 +397,7 @@ export class IAMPolicyProvider implements ResourceProvider {
               PolicyDocument: policyDoc,
             })
           );
+          attached.users.push(userName);
           log.debug(`Attached inline policy ${v(policyName)} to user ${v(userName)}`);
         }
       }
@@ -399,8 +415,20 @@ export class IAMPolicyProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
+      // go-to-k/cdkd#4583: detach the policy from exactly the principals this
+      // create attached it to. It is NOT marked for --revert-failed: delete()
+      // walks every recorded principal, including one this create never
+      // reached that may hold a same-named inline policy from elsewhere.
+      await this.detachPartialPolicy(logicalId, policyName, attached, log, context?.maskSecrets);
+      // AWS's own error text quotes the principal it refused, so every listed
+      // principal name is a needle for the thrown message as well.
+      const errorSinks = withDerivedNameMasks(
+        this.logger,
+        log,
+        [...(roles ?? []), ...(groups ?? []), ...(users ?? [])].map((n) => [n, n] as const)
+      );
       throw this.wrapMaskedError(
-        log.mask,
+        errorSinks.mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -410,6 +438,83 @@ export class IAMPolicyProvider implements ResourceProvider {
             policyName,
             cause
           )
+      );
+    }
+  }
+
+  /**
+   * Remove the inline policy a failed `create()` attached, from the principals
+   * whose put returned and no other (go-to-k/cdkd#4583). A principal that no
+   * longer has it (NoSuchEntity) is clean. One the delete fails on is named in
+   * a warning with its pasteable command; nothing is thrown, so the create's
+   * own failure stays the error.
+   */
+  private async detachPartialPolicy(
+    logicalId: string,
+    policyName: string,
+    attached: AttachedPrincipals,
+    sinks: MaskedLogSinks,
+    maskSecrets: MaskerFn | undefined
+  ): Promise<void> {
+    const aws = pasteableAwsCommand(maskSecrets);
+    // Each value masked RAW before interpolation: a short secret-derived name
+    // falls below the whole-line masker's substring floor. The principal names
+    // are needles too, since AWS's own error text quotes them
+    // ("... on resource: role <name>").
+    const log = withDerivedNameMasks(
+      this.logger,
+      sinks,
+      [...attached.roles, ...attached.groups, ...attached.users].map((n) => [n, n] as const)
+    );
+    const { value: v } = log;
+    const steps: Array<{ what: string; send: () => Promise<unknown>; command: string }> = [
+      ...attached.roles.map((name) => ({
+        what: `role ${v(name)}`,
+        send: () =>
+          this.iamClient.send(
+            new DeleteRolePolicyCommand({ RoleName: name, PolicyName: policyName })
+          ),
+        command:
+          aws`aws iam delete-role-policy --role-name ${name} --policy-name ${policyName}`.render(),
+      })),
+      ...attached.groups.map((name) => ({
+        what: `group ${v(name)}`,
+        send: () =>
+          this.iamClient.send(
+            new DeleteGroupPolicyCommand({ GroupName: name, PolicyName: policyName })
+          ),
+        command:
+          aws`aws iam delete-group-policy --group-name ${name} --policy-name ${policyName}`.render(),
+      })),
+      ...attached.users.map((name) => ({
+        what: `user ${v(name)}`,
+        send: () =>
+          this.iamClient.send(
+            new DeleteUserPolicyCommand({ UserName: name, PolicyName: policyName })
+          ),
+        command:
+          aws`aws iam delete-user-policy --user-name ${name} --policy-name ${policyName}`.render(),
+      })),
+    ];
+    const failed: string[] = [];
+    for (const step of steps) {
+      try {
+        await step.send();
+        log.debug(
+          `Detached inline policy ${v(policyName)} from ${step.what} after the create failed`
+        );
+      } catch (error) {
+        if (error instanceof NoSuchEntityException) continue;
+        failed.push(
+          `${step.what} (${log.mask(describeAwsFailure(error).detail)}): ${step.command}`
+        );
+      }
+    }
+    if (failed.length > 0) {
+      log.warn(
+        `Failed to detach the partially-created IAM policy ${logicalId} (${v(policyName)}) after ` +
+          `its create failed; cdkd has no record of it, so it stays attached and granting until ` +
+          `it is removed by hand: ${failed.join('; ')}`
       );
     }
   }

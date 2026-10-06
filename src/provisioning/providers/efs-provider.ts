@@ -78,7 +78,7 @@ import {
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
 
 /**
@@ -626,6 +626,7 @@ export class EFSProvider implements ResourceProvider {
     // / BackupPolicy / FileSystemPolicy / FileSystemProtection) best-effort
     // rolls back the just-created file system rather than orphaning it.
     let fileSystemId: string | undefined;
+    let fileSystemLeftBehind = false;
 
     try {
       const created = await this.sendCreateFileSystem(logicalId, resourceType, reservation, {
@@ -698,6 +699,7 @@ export class EFSProvider implements ResourceProvider {
           this.unconfirmedCreationTokens.delete(creationToken);
           log.debug(`Rolled back partially-created EFS FileSystem ${fileSystemId}`);
         } catch (cleanupError) {
+          fileSystemLeftBehind = true;
           log.warn(
             `Failed to roll back partially-created EFS FileSystem ${fileSystemId}: ${
               describeAwsFailure(cleanupError).detail
@@ -705,20 +707,28 @@ export class EFSProvider implements ResourceProvider {
           );
         }
       }
-      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create EFS FileSystem ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : this.wrapMaskedError(
+              log.mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create EFS FileSystem ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  undefined,
+                  cause
+                )
+            );
+      // go-to-k/cdkd#4583: the rollback delete failed, so this file system has no
+      // state record; name it for the failed-CREATE journal.
+      if (fileSystemLeftBehind && fileSystemId !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, fileSystemId);
+      }
+      throw thrown;
     }
   }
 
@@ -1193,6 +1203,9 @@ export class EFSProvider implements ResourceProvider {
 
     const securityGroups = properties['SecurityGroups'] as string[] | undefined;
 
+    // go-to-k/cdkd#4583: set once CreateMountTarget returned; nothing below
+    // deletes it, so a failed wait leaves it with no state record.
+    let createdMountTargetId: string | undefined;
     try {
       const response = await this.getClient().send(
         new CreateMountTargetCommand({
@@ -1203,6 +1216,7 @@ export class EFSProvider implements ResourceProvider {
       );
 
       const mountTargetId = response.MountTargetId!;
+      createdMountTargetId = mountTargetId;
       log.debug(
         `Created EFS MountTarget ${logicalId}: ${mountTargetId}, waiting for available state`
       );
@@ -1217,22 +1231,26 @@ export class EFSProvider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
-      if (error instanceof ProvisioningError) {
-        throw error;
-      }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create EFS MountTarget ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : this.wrapMaskedError(
+              log.mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create EFS MountTarget ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  undefined,
+                  cause
+                )
+            );
+      if (createdMountTargetId) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdMountTargetId);
+      }
+      throw thrown;
     }
   }
 

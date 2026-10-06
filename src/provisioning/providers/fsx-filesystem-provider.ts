@@ -44,6 +44,7 @@ import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { earliestDefined, reserveStackCreateToken } from './create-token-ledger.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.js';
@@ -601,28 +602,37 @@ export class FSxFileSystemProvider implements ResourceProvider {
       // Best-effort delete it here. `fileSystemId` is set only once the
       // returned file system passed the creation-time check above, so this
       // never deletes one FSx handed back from before this create.
+      // go-to-k/cdkd#4583: the id of a file system this create made and could
+      // not delete, named for the failed-CREATE journal.
+      let survivorId: string | undefined;
       if (fileSystemId !== undefined) {
         try {
           await this.getClient().send(new DeleteFileSystemCommand({ FileSystemId: fileSystemId }));
           this.createTokenFirstSentAt.delete(clientRequestToken);
           this.logger.warn(`Rolled back partially-created FSx FileSystem ${fileSystemId}`);
         } catch (cleanupError) {
+          survivorId = fileSystemId;
           this.logger.warn(
             `Failed to roll back partially-created FSx FileSystem ${fileSystemId}: ${
               describeAwsFailure(cleanupError).detail
-            } — delete it manually to stop billing`
+            } — on a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself to stop billing`
           );
         }
       }
-      if (error instanceof ProvisioningError) throw error;
+      if (error instanceof ProvisioningError) {
+        if (survivorId !== undefined) {
+          markCreatedBeforeFailure(error, logicalId, resourceType, survivorId);
+        }
+        throw error;
+      }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create FSx FileSystem ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
-      );
+      const message = `Failed to create FSx FileSystem ${logicalId}: ${error instanceof Error ? error.message : String(error)}`;
+      if (survivorId !== undefined) {
+        const thrown = new ProvisioningError(message, resourceType, logicalId, undefined, cause);
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, survivorId);
+        throw thrown;
+      }
+      throw new ProvisioningError(message, resourceType, logicalId, undefined, cause);
     }
   }
 

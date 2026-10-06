@@ -463,6 +463,37 @@ const CASES: Case[] = [
     },
   },
   {
+    // go-to-k/cdkd#4583: the port already had a listener before the create
+    // (CreateListener is idempotent), so the wiring failure skips the cleanup
+    // and throws through its own mark site.
+    name: 'elbv2 AWS::ElasticLoadBalancingV2::Listener (port held before the create)',
+    provider: () => new ELBv2Provider(),
+    resourceType: 'AWS::ElasticLoadBalancingV2::Listener',
+    properties: {
+      LoadBalancerArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/lb/1',
+      Port: 80,
+      Protocol: 'HTTP',
+      DefaultActions: [{ Type: 'fixed-response', FixedResponseConfig: { StatusCode: '200' } }],
+      ListenerAttributes: [{ Key: 'routing.http.response.server.enabled', Value: 'false' }],
+    },
+    clients: [ElasticLoadBalancingV2Client],
+    main: 'CreateListenerCommand',
+    aux: 'ModifyListenerAttributesCommand',
+    responses: {
+      DescribeListenersCommand: {
+        Listeners: [
+          {
+            Port: 80,
+            ListenerArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/lb/1/2',
+          },
+        ],
+      },
+      CreateListenerCommand: {
+        Listeners: [{ ListenerArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/lb/1/2' }],
+      },
+    },
+  },
+  {
     name: 'eventbridge-rule AWS::Events::Rule',
     provider: () => new EventBridgeRuleProvider(),
     resourceType: 'AWS::Events::Rule',

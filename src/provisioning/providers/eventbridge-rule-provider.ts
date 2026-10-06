@@ -38,7 +38,7 @@ import {
   skippedCleanupText,
   type NameHeldBefore,
 } from './create-ownership.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 /**
  * Target definition from CloudFormation AWS::Events::Rule
@@ -242,6 +242,9 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       generateResourceName(logicalId, { maxLength: 64 });
     const targets = properties['Targets'] as RuleTarget[] | undefined;
 
+    // go-to-k/cdkd#4583: the ARN of a rule this create made and the wiring
+    // cleanup failed to delete, for the failed-CREATE journal mark.
+    let leftLiveArn: string | undefined;
     try {
       // Whether the cleanup below may delete the rule: PutRule OVERWRITES a
       // rule that already held the name on that bus (go-to-k/cdkd#4403).
@@ -384,6 +387,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
               `Cleaned up partially-created EventBridge rule ${logicalId} (${ruleName}) after wiring failure`
             );
           } catch (cleanupError) {
+            leftLiveArn = ruleArn;
             this.logger.warn(
               mask(
                 // When RemoveTargets already succeeded, the listing is `[]` and the
@@ -412,13 +416,16 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create EventBridge rule ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         ruleName,
         cause
       );
+      // Only a rule the name was free for: a held one is not ours to delete.
+      if (leftLiveArn) markCreatedBeforeFailure(thrown, logicalId, resourceType, leftLiveArn);
+      throw thrown;
     }
   }
 

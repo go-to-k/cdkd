@@ -58,7 +58,7 @@ import {
   pasteableAwsCommand,
   WITHHELD_AWS_COMMAND,
 } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
@@ -1007,7 +1007,11 @@ export class ASGProvider implements ResourceProvider {
         groupName,
         cause
       );
-      throw survivorNote === undefined ? failure : markNonRetryable(failure);
+      if (survivorNote === undefined) throw failure;
+      // go-to-k/cdkd#4583: the retire could not remove the group this call
+      // created, so name it for the failed-CREATE journal.
+      markCreatedBeforeFailure(markNonRetryable(failure), logicalId, resourceType, groupName);
+      throw failure;
     }
   }
 
@@ -1097,8 +1101,8 @@ export class ASGProvider implements ResourceProvider {
         : `cdkd could not delete it`;
       return maskSecrets(
         `The group was created, and ${outcome} (` +
-          `${describeAwsFailure(cleanupError).detail}); it is not recorded in state, so delete ` +
-          `it before the next deploy: ` +
+          `${describeAwsFailure(cleanupError).detail}); on a first-time create the failed deploy's rollback journal records ` +
+          `it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ` +
           pasteableAwsCommand(
             maskSecrets
           )`aws autoscaling delete-auto-scaling-group --auto-scaling-group-name ${groupName} --force-delete`.render()

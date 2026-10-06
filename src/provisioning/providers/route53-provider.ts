@@ -29,7 +29,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, isAwsAuthoredFailure } from '../../utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markNameCollision } from '../../deployment/retryable-errors.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   isPlainImportValue,
@@ -512,6 +512,10 @@ export class Route53Provider implements ResourceProvider {
     // call's (AssociateVPCWithHostedZone, UpdateHostedZoneFeatures) or cdkd's
     // own, so every one is marked (#3826, #3877).
     let zoneCreated = false;
+    // go-to-k/cdkd#4583: the zone id once known, and whether the Accelerated
+    // Recovery arm's rollback deleted it, for the failed-CREATE journal mark.
+    let createdZoneId: string | undefined;
+    let zoneRolledBack = false;
     try {
       const hostedZoneConfig = properties['HostedZoneConfig'] as
         | Record<string, unknown>
@@ -582,6 +586,7 @@ export class Route53Provider implements ResourceProvider {
 
       // Extract zone ID without /hostedzone/ prefix
       const zoneId = hostedZone.Id.replace('/hostedzone/', '');
+      createdZoneId = zoneId;
 
       // Associate additional VPCs (index 1+) after creation
       if (vpcs && vpcs.length > 1) {
@@ -642,6 +647,7 @@ export class Route53Provider implements ResourceProvider {
             // would leak the zone if the UHF rollback skipped this step.
             await this.deleteQueryLoggingConfigForZone(zoneId, logicalId);
             await this.getClient().send(new DeleteHostedZoneCommand({ Id: zoneId }));
+            zoneRolledBack = true;
             // Released only after the delete SUCCEEDED, and the ORDER is what
             // matters here rather than the release itself. Route 53 does not
             // retain a DELETED zone's caller reference, so reusing one whose
@@ -690,15 +696,22 @@ export class Route53Provider implements ResourceProvider {
       // BEFORE the rethrow: the Accelerated Recovery arm throws its own
       // ProvisioningError, which must carry the mark too.
       if (zoneCreated) markAuxiliaryFailure(error, logicalId);
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to create hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              undefined,
+              error instanceof Error ? error : undefined
+            );
+      // go-to-k/cdkd#4583: the zone (created, or adopted by caller reference
+      // from this create's own earlier attempt) is live with no state record.
+      if (createdZoneId !== undefined && !zoneRolledBack) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdZoneId);
+      }
+      throw thrown;
     }
   }
 

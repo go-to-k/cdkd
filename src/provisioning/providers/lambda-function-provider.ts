@@ -57,7 +57,7 @@ import {
   markRedactedCause,
 } from '../../deployment/retryable-errors.js';
 import { generateResourceName } from '../resource-name.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   CreateContext,
@@ -709,6 +709,10 @@ export class LambdaFunctionProvider implements ResourceProvider {
     // Set once CreateFunction returns: every failure after it is an auxiliary
     // call's and must not classify as this function's name collision (#3826).
     let functionCreated = false;
+    // go-to-k/cdkd#4583: the created function's name, and whether a post-create
+    // call's atomicity cleanup deleted it, for the failed-CREATE journal mark.
+    let createdFunctionName: string | undefined;
+    const postCreateCleanup = { deleted: false };
     try {
       // Build tags map from CDK tag format [{Key, Value}]
       const tags: Record<string, string> | undefined = properties['Tags']
@@ -764,6 +768,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
       const response = await this.lambdaClient.send(new CreateFunctionCommand(createParams));
       functionCreated = true;
+      createdFunctionName = response.FunctionName || functionName;
 
       // RecursiveLoop is a post-create control-plane prop: AWS sets it via
       // a SEPARATE `PutFunctionRecursionConfig` API, NOT on `CreateFunction`.
@@ -798,6 +803,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             resourceType,
             functionName,
             log,
+            cleanup: postCreateCleanup,
           }
         );
       }
@@ -829,6 +835,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             resourceType,
             functionName,
             log,
+            cleanup: postCreateCleanup,
           }
         );
       }
@@ -878,6 +885,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             resourceType,
             functionName,
             log,
+            cleanup: postCreateCleanup,
           }
         );
       }
@@ -912,7 +920,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // classifiers read the chain (`wrapMaskedError`).
       // A non-Error throw still gets a cause, so a stamp has a chain to read.
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log,
         error,
         (text) =>
@@ -924,6 +932,12 @@ export class LambdaFunctionProvider implements ResourceProvider {
             cause ?? new Error(String(error))
           )
       );
+      // go-to-k/cdkd#4583: the function is live with no state record unless a
+      // post-create call's atomicity cleanup deleted it.
+      if (createdFunctionName !== undefined && !postCreateCleanup.deleted) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdFunctionName);
+      }
+      throw thrown;
     }
   }
 
@@ -979,6 +993,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
       functionName: string;
       /** The create operation's sinks (issue #2177): every line below goes through them. */
       log: MaskedLogSinks;
+      /** Set `deleted` once the atomicity cleanup's DeleteFunction succeeded (#4583). */
+      cleanup: { deleted: boolean };
     }
   ): Promise<void> {
     const { log } = ctx;
@@ -1048,6 +1064,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
           }
         }
       }
+      if (cleanupFailure === undefined) ctx.cleanup.deleted = true;
       if (cleanupFailure !== undefined) {
         // `error` has no sink of its own: the finished line goes through the
         // same masker. The classifier above read the RAW text.

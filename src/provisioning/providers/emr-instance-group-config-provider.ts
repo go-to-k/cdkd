@@ -42,6 +42,7 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 /**
  * Default polling budget for an instance group reaching RUNNING. Adding a
@@ -237,6 +238,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
 
     this.logger.debug(`Adding EMR instance group ${logicalId} to cluster ${jobFlowId}`);
 
+    let createdGroupId: string | undefined;
     try {
       const group = this.toInstanceGroupConfig(properties);
       // Issue #2080: after an earlier ambiguous attempt, name the instance group
@@ -300,6 +302,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       }
       const groupId = response.InstanceGroupIds?.[0];
       if (groupId) groupsCreatedByThisProcess.add(groupId);
+      createdGroupId = groupId;
       if (!groupId) {
         throw new ProvisioningError(
           `EMR AddInstanceGroups for ${logicalId} returned no instance group id`,
@@ -319,15 +322,20 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       this.logger.debug(`Successfully added EMR instance group ${logicalId}: ${groupId}`);
       return { physicalId: groupId, attributes: { Id: groupId, InstanceGroupId: groupId } };
     } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to add EMR instance group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
-      );
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to add EMR instance group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              undefined,
+              error instanceof Error ? error : undefined
+            );
+      // go-to-k/cdkd#4583: the group exists once AddInstanceGroups returned its
+      // id (the id delete() takes); name it for --revert-failed.
+      if (createdGroupId) markCreatedBeforeFailure(thrown, logicalId, resourceType, createdGroupId);
+      throw thrown;
     }
   }
 

@@ -74,7 +74,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import {
   ProtectionFlipRegistry,
   deleteWithProtectionCompensation,
@@ -2032,6 +2032,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // about to throw without returning its physicalId — the deploy engine
       // can't roll it back, so best-effort delete it here to avoid an orphan
       // pool + a name-collision on the next deploy attempt.
+      let poolLeftBehind = false;
       if (createdUserPoolId) {
         // The pool itself was created: an "already exists" from here is an
         // auxiliary call's, not this pool's name collision (#3826).
@@ -2040,19 +2041,26 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           await this.getClient().send(new DeleteUserPoolCommand({ UserPoolId: createdUserPoolId }));
           this.logger.debug(`Rolled back partially-created Cognito User Pool ${createdUserPoolId}`);
         } catch (rollbackError) {
+          poolLeftBehind = true;
           this.logger.warn(
             `Failed to roll back partially-created Cognito User Pool ${createdUserPoolId}: ${describeAwsFailure(rollbackError).detail}`
           );
         }
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const thrown = new ProvisioningError(
         `Failed to create Cognito User Pool ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         poolName,
         cause
       );
+      // go-to-k/cdkd#4583: the rollback delete failed, so this pool has no state
+      // record; name it for the failed-CREATE journal.
+      if (poolLeftBehind && createdUserPoolId) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdUserPoolId);
+      }
+      throw thrown;
     }
   }
 

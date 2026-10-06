@@ -53,6 +53,7 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 /**
  * `true` for `undefined` / `null` (ABSENT, the empty list) or a list of tag
@@ -184,6 +185,9 @@ export class FirehoseProvider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4583: the stream's name once CreateDeliveryStream returned
+    // (no self-cleanup), so a later failure can name it for rollback.
+    let createdStreamName: string | undefined;
     try {
       const input: CreateDeliveryStreamCommandInput = {
         DeliveryStreamName: deliveryStreamName || logicalId,
@@ -443,6 +447,7 @@ export class FirehoseProvider implements ResourceProvider {
         input.DeliveryStreamName ||
         response.DeliveryStreamARN?.split('/').pop() ||
         '';
+      createdStreamName = physicalId;
       const arn = response.DeliveryStreamARN;
 
       this.logger.debug(
@@ -460,17 +465,22 @@ export class FirehoseProvider implements ResourceProvider {
         },
       };
     } catch (error) {
-      if (error instanceof ProvisioningError) {
-        throw error;
+      const thrown =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to create Firehose delivery stream ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              undefined,
+              error instanceof Error ? error : undefined
+            );
+      // go-to-k/cdkd#4583: the stream exists and no state record will hold it;
+      // never before CreateDeliveryStream returned (another owner's name).
+      if (createdStreamName !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdStreamName);
       }
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Firehose delivery stream ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
-      );
+      throw thrown;
     }
   }
 
