@@ -371,8 +371,12 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
     expect(keyFailure!.error!.message!.includes(USER)).toBe(shown);
   });
 
-  it('keeps an event physicalId FIELD exact', async () => {
-    providerDelete.mockImplementation(logging(false));
+  it('keeps an event physicalId FIELD exact while its reason is masked', async () => {
+    // A RESOURCE_SKIPPED event carries both: the masker runs on it (no early
+    // return), and must leave the identity field alone.
+    providerDelete.mockImplementation((_id: string, physicalId: string) =>
+      Promise.resolve({ outcome: 'skipped', reason: `handler did not confirm ${physicalId}` })
+    );
     await runDestroyForStack(
       'TestStack',
       stateOf({
@@ -386,7 +390,11 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
       }),
       ctx()
     );
-    const succeeded = events.filter((e) => e.eventType === 'RESOURCE_SUCCEEDED');
-    expect(succeeded).toEqual([expect.objectContaining({ logicalId: 'Queue', physicalId: URL })]);
+    const skipped = events.filter((e) => e.eventType === 'RESOURCE_SKIPPED');
+    expect(skipped).toHaveLength(1);
+    // Premise: the masker ran on this event.
+    expect(skipped[0]!.reason).toContain('handler did not confirm ');
+    expect(skipped[0]!.reason!.includes(NAME)).toBe(false);
+    expect(skipped[0]!.physicalId).toBe(URL);
   });
 });

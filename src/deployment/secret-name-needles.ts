@@ -263,10 +263,16 @@ export function journaledOrphanPrintingBag(
  * the printing bags bound where it is recorded (go-to-k/cdkd#3869): the events
  * store is DURABLE, so a name the log lines beside it withhold must not land
  * there one statement later. The `physicalId` FIELD stays exact: it is the
- * identity a cleanup needs, and `state.json` records it too. A message marked
- * `ownLines` is one of the replay's own refusals, already masked at
- * construction bar its pasteable commands, which a short needle must not cut.
- * Identity when nothing is bound.
+ * identity a cleanup needs, and `state.json` records it too. Identity when
+ * nothing is bound.
+ *
+ * The `ownLines` exemption is DEFENSIVE: no path this masker serves can carry
+ * such a message today. Own-remedy refusals come only from the completed-op
+ * arms, and the failed-op replay and the destroy runner raise none. It keeps
+ * a replay refusal's pasteable commands, masked at construction, from being
+ * cut by a short needle. Wiring one through here must re-evaluate it: the op
+ * masker that built the message does not hold a name the entry READ from a
+ * sibling, which this exemption would then let through.
  */
 export function maskEventTextWithBoundBags<
   T extends { error?: { message?: string; ownLines?: boolean }; reason?: string },
