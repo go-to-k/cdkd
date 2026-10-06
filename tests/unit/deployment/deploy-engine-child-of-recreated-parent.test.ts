@@ -215,6 +215,15 @@ describe('DeployEngine - a child stored inside a parent recreated under the same
     expect(saved('Perm')?.physicalId).toBe('Perm-new');
   });
 
+  // go-to-k/cdkd#4604: both arms deleted (or lost) the old resource before
+  // the create — the recreated function, and the permission that went with it.
+  it('records each resource whose old copy was gone before its create', async () => {
+    const engine = makeEngine();
+    await engine.deploy(STACK, template());
+    const gone = (engine as unknown as { oldDeletedBeforeCreate: Set<string> }).oldDeletedBeforeCreate;
+    expect([...gone].sort()).toEqual(['Fn', 'Perm']);
+  });
+
   it('leaves alone a reader that is not stored inside the function', async () => {
     await makeEngine().deploy(STACK, template());
     for (const p of [sdk, cc]) {

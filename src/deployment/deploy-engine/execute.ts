@@ -38,6 +38,13 @@ import { isRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import { createdBeforeFailure } from '../../provisioning/auxiliary-failure.js';
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 
+/** go-to-k/cdkd#4604: types whose replacement's new resource is never journaled (see execute). */
+const NO_REPLACEMENT_ORPHAN_TYPES: ReadonlySet<string> = new Set([
+  'AWS::CloudFormation::Stack',
+  'AWS::SQS::QueuePolicy',
+  'AWS::SNS::TopicPolicy',
+]);
+
 declare module '../deploy-engine.js' {
   interface DeployEngine {
     /** @internal */
@@ -329,6 +336,38 @@ export async function executeDeployment(
             change.changeType === 'CREATE' && statePhysicalId === undefined
               ? createdBeforeFailure(provisionError, logicalId, change.resourceType)
               : undefined;
+          // go-to-k/cdkd#4604: the same proof on a REPLACEMENT — the UPDATE
+          // above names the resource being replaced, and the new one its
+          // create made is recorded nowhere else. Journaled beside it as a
+          // proven orphan of the same logical id, naming the replaced record
+          // so the classifier does not read that record as a later owner.
+          // Not on a nested-stack row: a grandchild stack sharing its logical
+          // id and type marks its own create, which its own journal records,
+          // and this row's replacement keeps its physical id. Not on a policy
+          // attachment whose id is its comma-joined targets: a new id can
+          // share targets with the replaced record, so deleting it would clear
+          // the old one's (neither type is replaced today).
+          const heldRecord = newResources[logicalId] ?? previousState;
+          const replaced =
+            change.changeType === 'UPDATE' &&
+            !NO_REPLACEMENT_ORPHAN_TYPES.has(change.resourceType) &&
+            statePhysicalId !== undefined &&
+            statePhysicalId !== '' &&
+            // False only for a running record with no physical id, where
+            // `statePhysicalId` fell back to the pre-deploy record's: no single
+            // record is then the one being replaced.
+            heldRecord?.physicalId === statePhysicalId
+              ? heldRecord
+              : undefined;
+          const replacementCreatedId = replaced
+            ? createdBeforeFailure(provisionError, logicalId, change.resourceType)
+            : undefined;
+          const orphanedBy =
+            replaced !== undefined &&
+            replacementCreatedId !== undefined &&
+            replacementCreatedId !== replaced.physicalId
+              ? { record: replaced, createdId: replacementCreatedId }
+              : undefined;
           failedOperations.push({
             logicalId,
             changeType: change.changeType as 'CREATE' | 'UPDATE',
@@ -352,10 +391,41 @@ export async function executeDeployment(
             // (`priorAttemptsInJournal`), and `--revert-failed` reverts an
             // UPDATE FROM it — both would then act on a resource the
             // refusal found belonging to someone else.
+            // The UPDATE says so itself, so it never reads as a revert of
+            // the old resource even once its orphan's entry is gone (an
+            // interrupted rollback can settle one and not the other).
+            ...(orphanedBy !== undefined && {
+              replacementOrphaned: this.oldDeletedBeforeCreate.has(logicalId)
+                ? ('delete-first' as const)
+                : ('create-first' as const),
+            }),
             ...(!refused && {
               attemptedProperties: this.attemptedResolvedProps.get(logicalId),
             }),
           });
+          if (orphanedBy !== undefined) {
+            failedOperations.push({
+              logicalId,
+              changeType: 'CREATE',
+              resourceType: change.resourceType,
+              provisionedBy: 'sdk',
+              physicalId: orphanedBy.createdId,
+              physicalIdRecoveredFromError: true,
+              deletionPolicy: journaledOrphanPolicy(
+                this.extractTemplateAttributes(template, logicalId).deletionPolicy
+              ),
+              replacedPhysicalId: orphanedBy.record.physicalId,
+              replacedResourceType: orphanedBy.record.resourceType,
+              // The replacement deleted the old resource before its create:
+              // the record names a resource that is gone.
+              ...(this.oldDeletedBeforeCreate.has(logicalId) && {
+                replacedResourceDeleted: true,
+              }),
+              ...(!refused && {
+                attemptedProperties: this.attemptedResolvedProps.get(logicalId),
+              }),
+            });
+          }
           throw provisionError;
         }
 
@@ -385,6 +455,13 @@ export async function executeDeployment(
           ...(change.changeType === 'UPDATE' && {
             oldResourceRetained: this.retainedOldOnReplacement.has(logicalId),
           }),
+          // go-to-k/cdkd#4615: the provider's own answer, where an `update()`
+          // gave one; absent, the rollback infers a replacement from a changed
+          // physical id, as it does for a journal an older binary wrote.
+          ...(change.changeType === 'UPDATE' &&
+            this.updateWasReplaced.has(logicalId) && {
+              wasReplaced: this.updateWasReplaced.get(logicalId),
+            }),
           // Issue #2668: `resourceType` above is the TEMPLATE's type, so
           // on a Type change the journal would otherwise name only the
           // NEW one and the rollback would re-create the OLD resource
@@ -833,7 +910,10 @@ export async function executeDeployment(
         if (
           autoRollbackJournaled &&
           this.options.parentStackInfo === undefined &&
-          failedOperations.some((op) => op.changeType !== 'DELETE')
+          // What the replay left, not every failed op: one it settled (a
+          // replacement's UPDATE warned about with its orphan) is gone, and a
+          // `--revert-failed` would only repeat its warning.
+          rollbackResult.remainingFailedOps.some((op) => op.changeType !== 'DELETE')
         ) {
           this.logger.warn(
             safeMsg`The record of the operation that failed is kept too. Revert it with: ${

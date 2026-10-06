@@ -161,7 +161,7 @@ function manualBucketDeletionClause(
   // `journaled`: create() marked the bucket (go-to-k/cdkd#4583), so the failed
   // deploy's rollback journal names it; the manual command is the fallback.
   const lead = journaled
-    ? "On a first-time create the failed deploy's rollback journal records the bucket for `cdkd rollback --revert-failed`; " +
+    ? "Outside a rollback's re-create, the failed deploy's rollback journal records the bucket for `cdkd rollback --revert-failed`; " +
       'otherwise delete it yourself before the next deploy'
     : 'Manual deletion may be required before the next deploy';
   return command

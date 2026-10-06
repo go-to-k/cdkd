@@ -434,7 +434,10 @@ describe('the rollback reverse-replacement arm does not delete the live new stre
 
     // THE DISCRIMINATOR, asserted first so a regression fails HERE: before
     // #3972 the collision arm deleted `stream-new`.
-    expect(del).not.toHaveBeenCalled();
+    expect(del.mock.calls.map((c) => c[1])).not.toContain('stream-new');
+    // go-to-k/cdkd#4604: attempt 1 made `stream` before failing, and nothing
+    // else records it, so the re-create's failure deletes it.
+    expect(del.mock.calls.map((c) => c[1])).toEqual(['stream']);
     // Reached the shape under test: created, throttled, replayed, collided.
     expect(sent.filter((c) => c === 'CreateStreamCommand')).toHaveLength(2);
     expect(result.failures).toBe(1);

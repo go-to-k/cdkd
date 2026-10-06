@@ -715,6 +715,7 @@ export async function updateInPlace(
             )
           );
         }
+        this.oldDeletedBeforeCreate.add(logicalId);
       }
       // Set only on the retain arm; drives the `partial` outcome below.
       let retainedSurvivorReason: string | undefined;
@@ -1080,6 +1081,9 @@ export async function updateInPlace(
     }
   }
 
+  // go-to-k/cdkd#4615: journaled on the completed op, so a rollback reverts an
+  // in-place update in place even when it changed the physical id.
+  this.updateWasReplaced.set(logicalId, result.wasReplaced === true);
   if (result.wasReplaced) {
     // go-to-k/cdkd#3869: the NEW id, judged with this deploy's bag, before
     // the line names it (the old one was judged before the body ran).

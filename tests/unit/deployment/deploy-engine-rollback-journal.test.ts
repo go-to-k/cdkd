@@ -1284,6 +1284,364 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     });
   });
 
+  // go-to-k/cdkd#4604: a replacement runs the same `create()`, journaled as an
+  // UPDATE naming the OLD resource; the new one its create made is journaled
+  // beside it as a proven orphan of the same logical id.
+  describe('a replacement whose new resource was made and then failed (go-to-k/cdkd#4604)', () => {
+    const prevB = (type = 'AWS::SQS::Queue'): ResourceState => ({
+      physicalId: 'b-old',
+      resourceType: type,
+      properties: { p: 'old' },
+      attributes: {},
+      dependencies: [],
+    });
+    const replaceTemplate = (type = 'AWS::SQS::Queue', policy?: 'Retain'): CloudFormationTemplate => ({
+      Resources: { B: { Type: type, Properties: { p: 'new' }, ...(policy && { DeletionPolicy: policy }) } },
+    });
+
+    function replacingEngine(
+      failure: Error,
+      opts: {
+        noRollback?: boolean;
+        type?: string;
+        inPlace?: boolean;
+        prevType?: string;
+        prevPhysicalId?: string;
+      } = {}
+    ) {
+      const type = opts.type ?? 'AWS::SQS::Queue';
+      const change = {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: type,
+        desiredProperties: { p: 'new' },
+        propertyChanges: [
+          { path: 'p', oldValue: 'old', newValue: 'new', requiresReplacement: opts.inPlace !== true },
+        ],
+      } as unknown as ResourceChange;
+      const engine = buildEngine({
+        changes: new Map([['B', change]]),
+        deps: { B: [] },
+        noRollback: opts.noRollback ?? true,
+        currentEtag: 'e0',
+        currentResources: {
+          B: {
+            ...prevB(opts.prevType ?? type),
+            ...(opts.prevPhysicalId !== undefined && { physicalId: opts.prevPhysicalId }),
+          },
+        },
+      });
+      const internals = engine as unknown as {
+        stateBackend: { saveState: ReturnType<typeof vi.fn> };
+        providerRegistry: {
+          getProviderFor: () => {
+            provider: { create: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+          };
+        };
+      };
+      const provider = internals.providerRegistry.getProviderFor().provider;
+      provider.create.mockRejectedValue(failure);
+      return { engine, provider, saveState: internals.stateBackend.saveState };
+    }
+
+    async function failedOpsOf(failure: Error, opts: { type?: string; policy?: 'Retain' } = {}) {
+      const { engine } = replacingEngine(failure, opts);
+      await expect(engine.deploy(stackName, replaceTemplate(opts.type, opts.policy))).rejects.toThrow();
+      return journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+        Record<string, unknown>
+      >;
+    }
+
+    it('journals the new resource beside the UPDATE, naming the replaced record', async () => {
+      const ops = await failedOpsOf(
+        markCreatedBeforeFailure(new Error('follow-up rejected'), 'B', 'AWS::SQS::Queue', 'b-new'),
+        { policy: 'Retain' }
+      );
+      expect(ops).toHaveLength(2);
+      const update = ops.find((o) => o['changeType'] === 'UPDATE')!;
+      expect(update['physicalId']).toBe('b-old');
+      // Self-contained: it never reads as a revert, even without the orphan.
+      expect(update['replacementOrphaned']).toBe('create-first');
+      expect(update).not.toHaveProperty('replacedPhysicalId');
+      const orphan = ops.find((o) => o['changeType'] === 'CREATE')!;
+      expect(orphan).toMatchObject({
+        logicalId: 'B',
+        resourceType: 'AWS::SQS::Queue',
+        provisionedBy: 'sdk',
+        physicalId: 'b-new',
+        physicalIdRecoveredFromError: true,
+        deletionPolicy: 'Retain',
+        replacedPhysicalId: 'b-old',
+        replacedResourceType: 'AWS::SQS::Queue',
+      });
+      expect(orphan).not.toHaveProperty('previousState');
+      // What the replay's delete hands the provider for its guard opt-ins.
+      expect(orphan['attemptedProperties']).toEqual({ p: 'new' });
+    });
+
+    // A Type change: the replaced record is the OLD type, which the classifier
+    // compares against the record still under the id.
+    it('names the replaced record by its own type across a Type change', async () => {
+      const { engine } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new'),
+        { prevType: 'AWS::SNS::Topic' }
+      );
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+        Record<string, unknown>
+      >;
+      expect(ops.find((o) => o['changeType'] === 'CREATE')).toMatchObject({
+        resourceType: 'AWS::SQS::Queue',
+        replacedPhysicalId: 'b-old',
+        replacedResourceType: 'AWS::SNS::Topic',
+      });
+    });
+
+    it('control: an unmarked replacement failure journals the UPDATE alone', async () => {
+      const ops = await failedOpsOf(
+        new ProvisioningError('rejected', 'AWS::SQS::Queue', 'B', 'someone-elses')
+      );
+      expect(ops.map((o) => o['changeType'])).toEqual(['UPDATE']);
+    });
+
+    // An equal id names the resource state already records; deleting it from
+    // a journal entry would destroy what the record tracks.
+    it('journals nothing beside the UPDATE for a mark naming the replaced id', async () => {
+      const ops = await failedOpsOf(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-old')
+      );
+      expect(ops.map((o) => o['changeType'])).toEqual(['UPDATE']);
+    });
+
+    // Delete-first (the update-unsupported fallback): the replacement deleted
+    // the old resource before its create, which the orphan says.
+    it('marks the orphan when the replacement deleted the old resource first', async () => {
+      const { engine, provider } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new'),
+        { inPlace: true }
+      );
+      // Cloud Control's `UnsupportedActionException`: the auto-fallback that
+      // deletes the old resource and then creates (no name change).
+      (provider as unknown as { update: ReturnType<typeof vi.fn> }).update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[1])).toEqual(['b-old']);
+      const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+        Record<string, unknown>
+      >;
+      expect(ops.find((o) => o['changeType'] === 'CREATE')).toMatchObject({
+        physicalId: 'b-new',
+        replacedPhysicalId: 'b-old',
+        replacedResourceDeleted: true,
+      });
+      expect(ops.find((o) => o['changeType'] === 'UPDATE')).toMatchObject({
+        replacementOrphaned: 'delete-first',
+      });
+    });
+
+    // The automatic rollback warns about the delete-first UPDATE itself and
+    // settles it with its orphan: no `--revert-failed` hint, which would only
+    // repeat that warning.
+    it('names no --revert-failed after warning about a delete-first replacement', async () => {
+      const { engine, provider } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new'),
+        { inPlace: true, noRollback: false }
+      );
+      (provider as unknown as { update: ReturnType<typeof vi.fn> }).update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      const warn = vi.mocked(getLogger().warn);
+      warn.mockClear();
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => l.includes('its replacement deleted the old resource'))).toBe(true);
+      expect(lines.some((l) => l.includes('--revert-failed'))).toBe(false);
+    });
+
+    // A reused engine: the previous deploy's delete-first must not mark this
+    // deploy's create-first orphan.
+    it("does not carry a previous deploy's delete-first onto a reused engine", async () => {
+      const { engine, provider } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new'),
+        { inPlace: true }
+      );
+      (provider as unknown as { update: ReturnType<typeof vi.fn> }).update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      const internals = engine as unknown as {
+        diffCalculator: { calculateDiff: () => Promise<Map<string, ResourceChange>> };
+      };
+      const change = [...(await internals.diffCalculator.calculateDiff()).values()][0]!;
+      (change.propertyChanges as Array<{ requiresReplacement: boolean }>)[0]!.requiresReplacement = true;
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      const ops = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2].failedOperations as Array<
+        Record<string, unknown>
+      >;
+      expect(ops.find((o) => o['changeType'] === 'CREATE')).not.toHaveProperty('replacedResourceDeleted');
+      expect(ops.find((o) => o['changeType'] === 'UPDATE')).toMatchObject({
+        replacementOrphaned: 'create-first',
+      });
+    });
+
+    it('control: a create-first replacement does not mark it', async () => {
+      const ops = await failedOpsOf(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new')
+      );
+      expect(ops.find((o) => o['changeType'] === 'CREATE')).not.toHaveProperty(
+        'replacedResourceDeleted'
+      );
+    });
+
+    // A policy attachment's id is its comma-joined targets, which a new id
+    // can share with the replaced record's.
+    it('journals nothing beside a QueuePolicy or TopicPolicy replacement', async () => {
+      for (const type of ['AWS::SQS::QueuePolicy', 'AWS::SNS::TopicPolicy']) {
+        const ops = await failedOpsOf(markCreatedBeforeFailure(new Error('x'), 'B', type, 'q2'), { type });
+        expect(ops.map((o) => o['changeType']), type).toEqual(['UPDATE']);
+      }
+    });
+
+    // A record with an empty id names no resource; a replacedPhysicalId of ''
+    // would also make the journal unreadable.
+    it('journals nothing beside a replaced record with an empty physical id', async () => {
+      const { engine } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new'),
+        { prevPhysicalId: '' }
+      );
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      const ops = (journal.appendRollbackJournalSegment.mock.calls[0]?.[2].failedOperations ?? []) as Array<
+        Record<string, unknown>
+      >;
+      expect(ops.some((o) => o['changeType'] === 'CREATE')).toBe(false);
+    });
+
+    // A grandchild stack can share a nested-stack row's logical id and type;
+    // its mark rides the child deploy's failure out of the row's `update()`,
+    // and is its own journal's, never this row's.
+    it('journals nothing beside a nested-stack row', async () => {
+      const type = 'AWS::CloudFormation::Stack';
+      const failure = markCreatedBeforeFailure(new Error('x'), 'B', type, 'grandchild-arn');
+      const { engine, provider } = replacingEngine(failure, { type, inPlace: true });
+      (provider as unknown as { update: ReturnType<typeof vi.fn> }).update.mockRejectedValue(failure);
+      await expect(engine.deploy(stackName, replaceTemplate(type))).rejects.toThrow();
+      const segment = journal.appendRollbackJournalSegment.mock.calls[0]?.[2];
+      const ops = (segment?.failedOperations ?? []) as Array<Record<string, unknown>>;
+      expect(ops.some((o) => o['physicalId'] === 'grandchild-arn')).toBe(false);
+    });
+
+    // The automatic rollback deletes the new resource and leaves the replaced
+    // record, which still names the live old resource, in state.
+    it('the automatic rollback deletes the new resource and keeps the old record', async () => {
+      const { engine, provider, saveState } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::SQS::Queue', 'b-new'),
+        { noRollback: false }
+      );
+      await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      const deleted = provider.delete.mock.calls.map((c: unknown[]) => c[1]);
+      expect(deleted).toEqual(['b-new']);
+      const saved = saveState.mock.calls.at(-1)![2] as StackState;
+      expect(saved.resources['B']?.physicalId).toBe('b-old');
+      // The failed UPDATE settles with its orphan: no failed-only segment is
+      // kept for a later `--revert-failed` to force-revert the old resource.
+      expect(journal.appendRollbackJournalSegment.mock.calls.map((c) => c[2].reason)).toEqual([
+        'auto-rollback-started',
+      ]);
+      expect(journal.popRollbackJournalSegment).toHaveBeenCalled();
+    });
+  });
+
+  // go-to-k/cdkd#4615: the rollback reverts an in-place update in place even
+  // when it changed the physical id, so the provider's answer is journaled.
+  describe("journals the provider's wasReplaced on a completed UPDATE (go-to-k/cdkd#4615)", () => {
+    async function completedA(opts: {
+      wasReplaced?: boolean;
+      replacement?: boolean;
+      /** Deploy in place first on the SAME engine, then the given shape. */
+      reuse?: boolean;
+    }) {
+      const changeA = {
+        logicalId: 'A',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SQS::QueuePolicy',
+        desiredProperties: { Queues: ['q2', 'q3'] },
+        propertyChanges: [
+          { path: 'Queues', oldValue: ['q1'], newValue: ['q2', 'q3'], requiresReplacement: opts.replacement === true },
+        ],
+      } as unknown as ResourceChange;
+      const engine = buildEngine({
+        changes: new Map([
+          ['A', changeA],
+          ['B', makeChange('B')],
+        ]),
+        deps: { A: [], B: ['A'] },
+        failOn: new Set(['B']),
+        noRollback: true,
+        currentEtag: 'e0',
+        currentResources: {
+          A: {
+            physicalId: 'q1',
+            resourceType: 'AWS::SQS::QueuePolicy',
+            properties: { Queues: ['q1', 'q2', 'q3'] },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { update: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.update.mockResolvedValue({
+        physicalId: 'q2',
+        ...(opts.wasReplaced !== undefined && { wasReplaced: opts.wasReplaced }),
+      });
+      const tmpl: CloudFormationTemplate = {
+        Resources: {
+          A: { Type: 'AWS::SQS::QueuePolicy', Properties: { Queues: ['q2', 'q3'] } },
+          B: { Type: 'AWS::S3::Bucket', Properties: {} },
+        },
+      };
+      if (opts.reuse) {
+        const requested = opts.replacement === true;
+        (changeA.propertyChanges as Array<{ requiresReplacement: boolean }>)[0]!.requiresReplacement = false;
+        await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+        (changeA.propertyChanges as Array<{ requiresReplacement: boolean }>)[0]!.requiresReplacement = requested;
+      }
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      const seg = journal.appendRollbackJournalSegment.mock.calls.at(-1)![2];
+      return seg.operations.find((o: { logicalId: string }) => o.logicalId === 'A');
+    }
+
+    it('records false for an in-place update that moved the physical id', async () => {
+      const op = await completedA({ wasReplaced: false });
+      expect(op.physicalId).toBe('q2');
+      expect(op.wasReplaced).toBe(false);
+    });
+
+    it('records false when the provider left the answer out', async () => {
+      expect((await completedA({})).wasReplaced).toBe(false);
+    });
+
+    it('records true when the provider replaced', async () => {
+      expect((await completedA({ wasReplaced: true })).wasReplaced).toBe(true);
+    });
+
+    it('records nothing for the replacement arm, where the id change speaks', async () => {
+      expect(await completedA({ replacement: true })).not.toHaveProperty('wasReplaced');
+    });
+
+    // A reused engine: the previous deploy's in-place answer must not ride
+    // onto this deploy's replacement, which would then be reverted in place.
+    it("does not carry a previous deploy's answer onto a reused engine's replacement", async () => {
+      expect(
+        await completedA({ wasReplaced: false, replacement: true, reuse: true })
+      ).not.toHaveProperty('wasReplaced');
+    });
+  });
+
   it("keeps a nested-stack row's attempted bag when only a CHILD resource's error is marked (go-to-k/cdkd#4355)", async () => {
     // The parent AWS::CloudFormation::Stack row fails because a child resource
     // refused; the child's mark must not strip the parent row's evidence.

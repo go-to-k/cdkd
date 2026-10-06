@@ -10,22 +10,21 @@ paths:
 Both arms live in the `reverse-replacement` branch
 (`deployment/rollback-executor/replay-reverse-replacement.ts`): create-first,
 and the delete-new-first fallback the name-collision catch routes to.
-**`effectiveProperties` is honoured**
-(#1682): `create()` gets
+**`effectiveProperties` is honoured** (#1682): `create()` gets
 `previousState.properties`; a RETURNED bag replaces the record's `properties`
 wholesale, reporting none keeps it. Do not re-narrow that result type. Its
-`attributes` are recorded too, after its `NoEcho` declaration is registered
-(`recordNoEchoAttributeValues`, go-to-k/cdkd#4434) — the UPDATE arms'
-`recordAfterRollbackUpdate` does the same with an update's.
+`attributes` are recorded too, after its `NoEcho` is registered
+(`recordNoEchoAttributeValues`, #4434), as `recordAfterRollbackUpdate` does
+for an update's.
 
 **When the ROUTING DECISION is `cc-api`, both arms run the bag through
-`applyDefaultNameForFallback`**
-(#3199), filling a
+`applyDefaultNameForFallback`** (#3199), filling a
 `FALLBACK_NAME_RULES` name the recorded bag leaves unset exactly as
 `preparePropertiesForCcApi` does at the engine's three create sites;
 otherwise the replay is a FOURTH create site sending no name and AWS mints a
-random one. The arm is picked by a CHANGED PHYSICAL ID (or a changed `Type`,
-where the fill keys on the OLD type), so a create-only edit
+random one. The arm is picked by a CHANGED PHYSICAL ID not journaled
+`wasReplaced: false` (#4615) or a changed `Type` (fill keyed on the OLD
+type), so a create-only edit
 on a type whose id is NOT its name lands here nameless; a handler REJECTING a
 nameless create then fails the replay, and the delete-new-first arm has already
 dropped it.

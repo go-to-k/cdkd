@@ -728,6 +728,26 @@ export class DeployEngine {
   updatesThatSentNothing = new Set<string>();
 
   /**
+   * go-to-k/cdkd#4615: the provider's `wasReplaced` answer for each UPDATE
+   * that ran through a provider `update()`, journaled on its completed op. An
+   * in-place update may still change the physical id (an SQS QueuePolicy's is
+   * its first queue), and only this answer tells the rollback to revert it in
+   * place instead of re-creating the old one and deleting the "new" one.
+   * Cleared per `deploy()`.
+   */
+  /** @internal */
+  updateWasReplaced = new Map<string, boolean>();
+
+  /**
+   * go-to-k/cdkd#4604: logical ids whose replacement deleted (or found gone)
+   * the old resource BEFORE its create ran. A replacement orphan journaled for
+   * one says so, so a rollback warns that the old resource is gone instead of
+   * settling the failed UPDATE as a no-op. Cleared per `deploy()`.
+   */
+  /** @internal */
+  oldDeletedBeforeCreate = new Set<string>();
+
+  /**
    * The pre-deploy state records, as loaded — the #1852 heal's eligibility
    * baseline. A record is healed only while it is still the one this deploy
    * LOADED (same physical id, same `attributes` object): once a provider has
@@ -891,6 +911,8 @@ export class DeployEngine {
     this.recreatedUnderSameId = new Set();
     this.restoredLostChildren = new Set();
     this.updatesThatSentNothing = new Set();
+    this.updateWasReplaced = new Map();
+    this.oldDeletedBeforeCreate = new Set();
     // Issue #1852: per-deploy, like every bag above — a reused engine must not
     // serve last deploy's read, nor persist it against today's records.
     this.healBaseline = {};

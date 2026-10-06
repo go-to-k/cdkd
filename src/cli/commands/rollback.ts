@@ -51,6 +51,8 @@ import {
   planFailedOps,
   demoteSupersededOrphans,
   isJournaledOrphan,
+  isReplacementOrphan,
+  replacementNeverSwapped,
   producerRegionsFromState,
   resolveReplacementOldType,
   type FailedOperation,
@@ -541,10 +543,19 @@ function displacedOpLabel(
  * The failed ops a segment's replay acts on: all of them under
  * `--revert-failed`, otherwise only the journaled proven failed-CREATE
  * orphans (go-to-k/cdkd#4584) — a plain rollback that popped the segment
- * without them would drop the only record of a live resource.
+ * without them would drop the only record of a live resource — and the failed
+ * UPDATE of a replacement whose orphan is among them (go-to-k/cdkd#4604): it
+ * settles with the orphan, and left alone in a kept segment a later
+ * `--revert-failed` would force-revert the resource the replacement never
+ * wrote to.
  */
 function failedOpsToReplay(ops: FailedOperation[], revertFailed: boolean): FailedOperation[] {
-  return revertFailed ? ops : ops.filter(isJournaledOrphan);
+  return revertFailed
+    ? ops
+    : ops.filter(
+        (op) =>
+          isJournaledOrphan(op) || (op.changeType === 'UPDATE' && replacementNeverSwapped(op, ops))
+      );
 }
 
 /**
@@ -562,7 +573,10 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
       // go-to-k/cdkd#1710: a proven orphan has no state record, so the journal
       // is the only source of what is deleted — name it (masked) at the prompt.
       return op.physicalIdRecoveredFromError === true
-        ? `  - delete   ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) [FAILED create, never recorded in state: ` +
+        ? `  - delete   ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) [FAILED ` +
+            // go-to-k/cdkd#4604: the record under this id is the replaced one.
+            (isReplacementOrphan(op) ? "replacement's new resource" : 'create') +
+            `, never recorded in state: ` +
             `${displacedPhysicalIdShown(op, getLogger()) ?? 'a physical id'}]`
         : `  - delete   ${safe(op.logicalId)} (${safe(op.resourceType)}) [FAILED create]`;
     case 'delete-failed-create-with-final-snapshot':
@@ -577,6 +591,13 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed CREATE recorded no physical id`;
     case 'skip-failed-noop':
       return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed ${safe(op.changeType)} left nothing to revert`;
+    case 'skip-failed-replaced-deleted':
+      // go-to-k/cdkd#4604: named (masked) like the skips around it.
+      return (
+        `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
+        `— failed replacement deleted the old resource ${displacedPhysicalIdShown(op, getLogger()) ?? 'a physical id'} ` +
+        `before its create failed; nothing to revert, state still records it`
+      );
     case 'skip-failed-superseded':
       // go-to-k/cdkd#1710: named (masked) like the mismatch below.
       return (
@@ -1738,13 +1759,14 @@ function applyFailedPlanToPreview(
         ) {
           break;
         }
-        delete previewState[op.logicalId];
+        if (!isReplacementOrphan(op)) delete previewState[op.logicalId];
         break;
       case 'delete-failed-create':
       // Retain-orphan drops the record too (issue #1362) — the resource
-      // stops being cdkd-managed either way.
+      // stops being cdkd-managed either way. Not a replacement orphan's
+      // (go-to-k/cdkd#4604): the record under its id is the replaced resource.
       case 'orphan-failed-create-retain':
-        delete previewState[op.logicalId];
+        if (!isReplacementOrphan(op)) delete previewState[op.logicalId];
         break;
       case 'revert-failed-update':
         if (op.previousState) previewState[op.logicalId] = op.previousState;

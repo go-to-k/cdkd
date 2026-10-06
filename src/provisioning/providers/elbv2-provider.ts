@@ -2360,7 +2360,7 @@ export class ELBv2Provider implements ResourceProvider {
               `Interrupted after creating Listener ${logicalId} (${listenerArn}) but before its ` +
                 `attributes were applied. Nothing in cdkd state refers to it, so cdkd is deleting ` +
                 `it now — left behind it would fail the next deploy with DuplicateListener and ` +
-                `destroy could not reach it. If that delete fails, on a first-time create the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; ` +
+                `destroy could not reach it. If that delete fails, outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; ` +
                 `otherwise remove it yourself: ${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-listener --listener-arn ${listenerArn}`.render()}`
             )
           );
@@ -2376,7 +2376,7 @@ export class ELBv2Provider implements ResourceProvider {
             // Masked for the same reason as the TargetGroup cleanup above
             // (issue #2050).
             `Failed to clean up partially-created Listener ${logicalId} (${listenerArn}): ` +
-              `${this.maskErrorMessage(cleanupError, maskSecrets)}. On a first-time create the failed deploy's rollback ` +
+              `${this.maskErrorMessage(cleanupError, maskSecrets)}. Outside a rollback's re-create, the failed deploy's rollback ` +
               `journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself ` +
               `before the next deploy: ` +
               `${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-listener --listener-arn ${listenerArn}`.render()}`

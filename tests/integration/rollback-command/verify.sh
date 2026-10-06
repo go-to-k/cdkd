@@ -60,6 +60,21 @@
 #         first stream in a warning without deleting it, and drops the
 #         journal; the fixture deletes that stream, and a plain deploy then
 #         removes the fix-forward one.
+#   PHASE P (a replacement whose NEW resource was created, then failed,
+#   go-to-k/cdkd#4604):
+#     P0. Deploy with WITH_REPLACE_STREAM=true: ReplaceStream `-replace-stream-a`.
+#     P1. Flip REPLACE_STREAM_SUFFIX=b with REPLACE_STREAM_FAIL=true under
+#         --no-rollback: the replacement creates `-replace-stream-b`, whose
+#         retention follow-up fails. Both streams exist, state still records
+#         `-a`, and the journal carries `-b` as a proven orphan naming `-a` as
+#         the replaced record.
+#     P2. `cdkd rollback --force --revert-failed`: exit 0, `-b` gone, `-a`
+#         ACTIVE and still in state (the failed UPDATE is a no-op, never a
+#         force-revert of `-a`), journal gone.
+#     P3. The same deploy with the automatic rollback: `-b` deleted, `-a`
+#         ACTIVE and still in state, journal gone (the failed UPDATE settles
+#         with its orphan: the old stream was never written to).
+#     P4. A plain deploy without WITH_REPLACE_STREAM removes `-a`; journal gone.
 #   PHASE S (a SKIPPED rollback op on the automatic path, go-to-k/cdkd#3338):
 #     S1. Deploy with WITH_SKIP_PAIR=true (clean): SkipBucket + SkipDoomed.
 #         Put one object into SkipBucket (no autoDeleteObjects).
@@ -142,6 +157,9 @@ SKIP_DOOMED_NAME="${STACK}-skip-doomed"
 ORPHAN_STREAM_NAME="${STACK}-orphan-stream"
 # PHASE O step O8's fix-forward stream (ORPHAN_FIX_FORWARD=true).
 FIX_FORWARD_STREAM_NAME="${STACK}-orphan-stream-b"
+# PHASE P's replaced stream (suffix a) and the replacement's new one (suffix b).
+REPLACE_STREAM_A_NAME="${STACK}-replace-stream-a"
+REPLACE_STREAM_B_NAME="${STACK}-replace-stream-b"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/rollback-command"
@@ -285,6 +303,9 @@ aggressive_cleanup() {
   # PHASE O's stream is the resource the phase deliberately orphans.
   delete_orphan_stream || echo "[verify] cleanup: ${ORPHAN_STREAM_NAME} may still exist -- delete it by hand"
   delete_orphan_stream "${FIX_FORWARD_STREAM_NAME}" || echo "[verify] cleanup: ${FIX_FORWARD_STREAM_NAME} may still exist -- delete it by hand"
+  for name in "${REPLACE_STREAM_A_NAME}" "${REPLACE_STREAM_B_NAME}"; do
+    delete_orphan_stream "${name}" || echo "[verify] cleanup: ${name} may still exist -- delete it by hand"
+  done
   # PHASE S's bucket holds an object on purpose; empty it before the delete.
   aws s3 rm "s3://${SKIP_BUCKET_NAME}" --recursive >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -1023,6 +1044,148 @@ wait_orphan_stream_gone "${FIX_FORWARD_STREAM_NAME}"
 assert_gone "${FIX_FORWARD_STREAM_NAME} still exists after the deploy that removed it" \
   aws kinesis describe-stream-summary --stream-name "${FIX_FORWARD_STREAM_NAME}" --region "${REGION}"
 echo "[verify] step O8 ok: the fix-forward named the earlier stream, exited 2 and dropped the journal; the stream was removed by hand"
+
+# ---------------------------------------------------------------------------
+# PHASE P: a replacement whose NEW resource was created, then failed
+# (go-to-k/cdkd#4604)
+# ---------------------------------------------------------------------------
+# PREMISE for each failing arm: both streams exist, state still records the
+# replaced `-a`, and the newest journal segment carries `-b` as a proven orphan
+# naming `-a`. Before #4604 the segment held only the UPDATE, naming `-a`.
+assert_replacement_orphan_journaled() { # usage: assert_replacement_orphan_journaled "<when>"
+  local when="$1" body op name pid
+  for name in "${REPLACE_STREAM_A_NAME}" "${REPLACE_STREAM_B_NAME}"; do
+    if ! aws kinesis describe-stream-summary --stream-name "${name}" --region "${REGION}" >/dev/null; then
+      echo "[verify] FAIL: ${name} does not exist ${when} -- the replacement never reached CreateStream"
+      exit 1
+    fi
+  done
+  pid="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.ReplaceStream.physicalId // "<absent>"')"
+  if [ "${pid}" != "${REPLACE_STREAM_A_NAME}" ]; then
+    echo "[verify] FAIL: state records ReplaceStream as ${pid} ${when} (expected the replaced ${REPLACE_STREAM_A_NAME})"
+    exit 1
+  fi
+  if ! body="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)"; then
+    echo "[verify] FAIL: no rollback journal ${when}"
+    exit 1
+  fi
+  if ! op="$(printf '%s' "${body}" | jq -c '[.segments[-1].failedOperations[]? | select(.logicalId == "ReplaceStream" and .changeType == "CREATE")] | first // empty')"; then
+    echo "[verify] FAIL: could not parse the rollback journal ${when}"
+    exit 1
+  fi
+  if [ -z "${op}" ] \
+    || [ "$(printf '%s' "${op}" | jq -r '.physicalId // "<absent>"')" != "${REPLACE_STREAM_B_NAME}" ] \
+    || [ "$(printf '%s' "${op}" | jq -r '.physicalIdRecoveredFromError // "<absent>"')" != "true" ] \
+    || [ "$(printf '%s' "${op}" | jq -r '.replacedPhysicalId // "<absent>"')" != "${REPLACE_STREAM_A_NAME}" ] \
+    || [ "$(printf '%s' "${op}" | jq -r '.replacedResourceType // "<absent>"')" != "AWS::Kinesis::Stream" ] \
+    || [ "$(printf '%s' "${op}" | jq -r '.deletionPolicy // "<absent>"')" != "Delete" ]; then
+    echo "[verify] FAIL: the journal does not carry the replacement's new stream as a proven orphan ${when} (op: ${op:-<none>})"
+    echo "         (before go-to-k/cdkd#4604 only the UPDATE naming ${REPLACE_STREAM_A_NAME} was journaled)"
+    exit 1
+  fi
+  echo "[verify] ${REPLACE_STREAM_B_NAME} is journaled beside the replacement ${when}"
+}
+
+# The verdict after each rollback arm: `-b` gone, `-a` live and still in state,
+# journal gone.
+assert_replacement_rolled_back() { # usage: assert_replacement_rolled_back "<arm>"
+  local arm="$1" pid status
+  wait_orphan_stream_gone "${REPLACE_STREAM_B_NAME}"
+  assert_gone "${REPLACE_STREAM_B_NAME} still exists after ${arm}" \
+    aws kinesis describe-stream-summary --stream-name "${REPLACE_STREAM_B_NAME}" --region "${REGION}"
+  if ! status="$(aws kinesis describe-stream-summary --stream-name "${REPLACE_STREAM_A_NAME}" --region "${REGION}" \
+    --query 'StreamDescriptionSummary.StreamStatus' --output text)"; then
+    echo "[verify] FAIL: the replaced ${REPLACE_STREAM_A_NAME} is gone after ${arm}"
+    exit 1
+  fi
+  if [ "${status}" != "ACTIVE" ]; then
+    echo "[verify] FAIL: the replaced ${REPLACE_STREAM_A_NAME} is ${status} after ${arm} (expected ACTIVE)"
+    exit 1
+  fi
+  pid="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.ReplaceStream.physicalId // "<absent>"')"
+  if [ "${pid}" != "${REPLACE_STREAM_A_NAME}" ]; then
+    echo "[verify] FAIL: state records ReplaceStream as ${pid} after ${arm} (expected ${REPLACE_STREAM_A_NAME})"
+    exit 1
+  fi
+  # The failed UPDATE settles with its orphan (the old stream was never
+  # written to), so nothing is kept for --revert-failed either.
+  if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+    echo "[verify] FAIL: rollback journal still present after ${arm}"
+    exit 1
+  fi
+}
+
+echo "[verify] step P0: deploy ${STACK} with WITH_REPLACE_STREAM=true (clean, ${REPLACE_STREAM_A_NAME})"
+for name in "${REPLACE_STREAM_A_NAME}" "${REPLACE_STREAM_B_NAME}"; do
+  if ! delete_orphan_stream "${name}"; then
+    echo "[verify] FAIL: a leftover ${name} could not be removed before PHASE P"
+    exit 1
+  fi
+done
+WITH_REPLACE_STREAM=true ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
+
+echo "[verify] step P1: replace ReplaceStream (suffix b, failing retention) under --no-rollback (expect FAILURE)"
+# --force-stateful-recreation: AWS::Kinesis::Stream is a stateful type.
+set +e
+WITH_REPLACE_STREAM=true REPLACE_STREAM_SUFFIX=b REPLACE_STREAM_FAIL=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback --force-stateful-recreation \
+  > /tmp/rollback-cmd-replace-orphan.log 2>&1
+P1_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-replace-orphan.log || true
+if [ "${P1_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: the failing replacement deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+assert_replacement_orphan_journaled "after the --no-rollback replacement"
+
+echo "[verify] step P2: cdkd rollback ${STACK} --force --revert-failed (expect exit 0, ${REPLACE_STREAM_B_NAME} deleted)"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --revert-failed > /tmp/rollback-cmd-replace-orphan-rb.log 2>&1
+P2_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-replace-orphan-rb.log || true
+if [ "${P2_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: --revert-failed rollback of the failed replacement exited ${P2_RC} (output above)"
+  exit 1
+fi
+if ! grep -q 'deleting partially-created ReplaceStream' /tmp/rollback-cmd-replace-orphan-rb.log; then
+  echo "[verify] FAIL: the rollback did not delete the replacement's new ReplaceStream (output above)"
+  exit 1
+fi
+assert_replacement_rolled_back "the --revert-failed rollback"
+echo "[verify] step P2 ok: the new stream deleted, the replaced one intact and in state, journal gone"
+
+echo "[verify] step P3: the same replacement with the automatic rollback (expect FAILURE, ${REPLACE_STREAM_B_NAME} deleted)"
+set +e
+WITH_REPLACE_STREAM=true REPLACE_STREAM_SUFFIX=b REPLACE_STREAM_FAIL=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --force-stateful-recreation \
+  > /tmp/rollback-cmd-replace-orphan-auto.log 2>&1
+P3_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-replace-orphan-auto.log || true
+if [ "${P3_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: the failing replacement deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+if ! grep -q 'deleting partially-created ReplaceStream' /tmp/rollback-cmd-replace-orphan-auto.log; then
+  echo "[verify] FAIL: the automatic rollback did not delete the replacement's new ReplaceStream (output above)"
+  echo "         (before go-to-k/cdkd#4604 nothing recorded it, so nothing deleted it)"
+  exit 1
+fi
+assert_replacement_rolled_back "the automatic rollback"
+echo "[verify] step P3 ok: the automatic rollback deleted the new stream; the replaced one is intact and in state"
+
+echo "[verify] step P4: deploy without WITH_REPLACE_STREAM (removes ${REPLACE_STREAM_A_NAME})"
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the successful deploy of step P4"
+  exit 1
+fi
+wait_orphan_stream_gone "${REPLACE_STREAM_A_NAME}"
+assert_gone "${REPLACE_STREAM_A_NAME} still exists after the deploy that removed it" \
+  aws kinesis describe-stream-summary --stream-name "${REPLACE_STREAM_A_NAME}" --region "${REGION}"
+echo "[verify] step P4 ok: ${REPLACE_STREAM_A_NAME} removed"
 
 # ---------------------------------------------------------------------------
 # PHASE S: a SKIPPED rollback op on the automatic path (go-to-k/cdkd#3338)
