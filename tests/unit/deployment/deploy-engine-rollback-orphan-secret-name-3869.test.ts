@@ -39,7 +39,10 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
         return Promise.resolve(out);
       }
     ),
-    resolveParameters: vi.fn().mockReturnValue({}),
+    // Each declared parameter binds its Default.
+    resolveParameters: vi.fn((tpl: { Parameters?: Record<string, { Default?: unknown }> }) =>
+      Object.fromEntries(Object.entries(tpl?.Parameters ?? {}).map(([k, v]) => [k, v.Default]))
+    ),
     evaluateConditions: vi.fn().mockResolvedValue({}),
   })),
 }));
@@ -251,5 +254,99 @@ describe("a deploy's automatic rollback masks a journaled orphan's OWN name this
     expect(provider.delete.mock.calls.map((c) => c[1])).toEqual([URL]);
     expect(lines).toEqual([expect.stringContaining('Deleting SQS queue Queue: ')]);
     expect(lines[0]!.includes(QUEUE)).toBe(shown);
+  });
+});
+
+describe("a deploy's automatic rollback judges a journaled orphan WITH its recovered id (go-to-k/cdkd#3869)", () => {
+  // An IAM managed policy whose `Path` is a `NoEcho` parameter's value: the
+  // path is no name key, and only the WHOLE id carries it, so the arm needs
+  // the recovered id the registry entry made before the create did not have.
+  const PATH = '/team-secret-path/';
+  const ARN = `arn:aws:iam::123456789012:policy${PATH}OrphanPolicy`;
+  async function policyRollback(noEcho: boolean) {
+    const lines: string[] = [];
+    const provider = {
+      create: vi.fn((logicalId: string) =>
+        Promise.reject(
+          markCreatedBeforeFailure(new Error('follow-up rejected'), logicalId, 'AWS::IAM::ManagedPolicy', ARN)
+        )
+      ),
+      update: vi.fn(),
+      delete: vi.fn((logicalId: string, physicalId: string) => {
+        const line = `Deleting managed policy ${logicalId}: ${physicalId}`;
+        lines.push(currentLogLineMasker()?.(line) ?? line);
+        return Promise.resolve(undefined);
+      }),
+    };
+    const change = {
+      logicalId: 'Policy',
+      changeType: 'CREATE',
+      resourceType: 'AWS::IAM::ManagedPolicy',
+      desiredProperties: { Path: PATH, PolicyDocument: {} },
+      propertyChanges: [],
+    } as unknown as ResourceChange;
+    const engine = new DeployEngine(
+      {
+        getState: vi.fn().mockResolvedValue({
+          state: { version: 8, stackName: STACK, region: 'us-east-1', resources: {}, outputs: {}, lastModified: 1 },
+          etag: 'e0',
+        }),
+        saveState: vi.fn().mockResolvedValue('etag-1'),
+        listStacks: vi.fn().mockResolvedValue([]),
+        appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
+        deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
+        loadRollbackJournal: vi.fn().mockResolvedValue(null),
+        markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
+        popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
+        reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
+        dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
+      } as never,
+      {
+        acquireLockWithRetry: vi.fn().mockResolvedValue(true),
+        releaseLock: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      {
+        buildGraph: vi.fn().mockReturnValue({}),
+        getExecutionLevels: vi.fn().mockReturnValue([['Policy']]),
+        getDirectDependencies: vi.fn(() => []),
+      } as never,
+      {
+        calculateDiff: vi.fn().mockResolvedValue(new Map([['Policy', change]])),
+        hasChanges: vi.fn().mockReturnValue(true),
+        filterByType: vi.fn((changes: Map<string, ResourceChange>, type: string) =>
+          [...changes.values()].filter((c) => c.changeType === type)
+        ),
+      } as never,
+      {
+        getProvider: vi.fn().mockReturnValue(provider),
+        getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
+        getRegisteredTypes: vi.fn().mockReturnValue([]),
+        getCloudControlProvider: vi.fn(),
+        validateResourceTypes: vi.fn(),
+        validateResourceProperties: vi.fn(),
+      } as never,
+      { concurrency: 4, noRollback: false, roleArn: 'arn:aws:iam::1:role/r' },
+      'us-east-1'
+    );
+    await engine
+      .deploy(STACK, {
+        Parameters: { SecretPath: { Type: 'String', Default: PATH, ...(noEcho && { NoEcho: true }) } },
+        Resources: {
+          Policy: { Type: 'AWS::IAM::ManagedPolicy', Properties: { Path: PATH, PolicyDocument: {} } },
+        },
+      } as unknown as CloudFormationTemplate)
+      .catch(() => undefined);
+    return { lines, provider };
+  }
+
+  it.each([
+    ['a Path that is a NoEcho value', true, false],
+    ['negative control, an ordinary parameter', false, true],
+  ])("on its provider's delete line: %s", async (_l, noEcho, shown) => {
+    const { lines, provider } = await policyRollback(noEcho);
+    // Premise: the rollback deleted the proven orphan and logged its line.
+    expect(provider.delete.mock.calls.map((c) => c[1])).toEqual([ARN]);
+    expect(lines).toEqual([expect.stringContaining('Deleting managed policy Policy: ')]);
+    expect(lines[0]!.includes(PATH)).toBe(shown);
   });
 });

@@ -33,7 +33,11 @@ import {
 } from '../rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
-import { maskEventTextWithBoundBags, secretNamesReadBy } from '../secret-name-needles.js';
+import {
+  maskEventTextWithBoundBags,
+  secretNameNeedlesOf,
+  secretNamesReadBy,
+} from '../secret-name-needles.js';
 import {
   makeForeignHolderScan,
   settleJournaledOrphansOnSuccess,
@@ -213,12 +217,6 @@ export async function adoptRollbackOrphans(
 }
 
 /**
- * Perform best-effort rollback of completed operations (issue #1183:
- * extracted into `rollback-executor.ts` so the standalone `cdkd rollback`
- * command drives identical semantics). Thin wrapper that builds the
- * executor context from the engine's collaborators and delegates.
- */
-/**
  * The PRINTING bag the automatic rollback replays its journaled orphans under
  * (go-to-k/cdkd#3869). Unlike `cdkd rollback`'s, the ops and records here are
  * IN MEMORY, so a name this deploy resolved is plaintext and no `{{resolve:`
@@ -248,12 +246,36 @@ function orphanReplayPrintingBag(
     );
     for (const needle of names) recordLogOnlyValue(read, needle);
   }
+  // The orphan's own record WITH its recovered id: the registry entry
+  // `create.ts` made had no id yet, so its id-needing arms (an IAM `Path`'s
+  // whole id, a needle embedded in the id) never fired.
+  const own: RecordedSecretValues = new Map();
+  for (const op of orphanOps) {
+    const needles = secretNameNeedlesOf(
+      op.logicalId,
+      {
+        resourceType: op.resourceType,
+        physicalId: op.physicalId,
+        properties: op.attemptedProperties,
+      },
+      engine.namingSecretsFor(op.logicalId),
+      { embedded: engine.perResourceSecrets.get(op.logicalId) }
+    );
+    for (const needle of needles ?? []) recordLogOnlyValue(own, needle);
+  }
   return unionOfSecretBags([
     ...orphanOps.map((op) => engine.printingSecretsFor(op.logicalId)),
+    own,
     read,
   ]);
 }
 
+/**
+ * Perform best-effort rollback of completed operations (issue #1183:
+ * extracted into `rollback-executor.ts` so the standalone `cdkd rollback`
+ * command drives identical semantics). Thin wrapper that builds the
+ * executor context from the engine's collaborators and delegates.
+ */
 export async function performRollback(
   this: DeployEngine,
   completedOperations: CompletedOperation[],
