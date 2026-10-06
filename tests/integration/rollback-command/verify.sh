@@ -48,11 +48,16 @@
 #         automatic rollback keeps the stream in AWS; the fixture deletes it.
 #     O5. --no-rollback again, then a PLAIN `cdkd rollback --force`: exit 0,
 #         the stream is gone, journal gone.
-#     O6. --no-rollback again, then a deploy WITHOUT INJECT_ORPHAN_CREATE
-#         (go-to-k/cdkd#4600): it succeeds, deletes the stream before it drops
-#         the journal, and the journal is gone.
-#     O7. The same with ORPHAN_RETAIN=true: the successful deploy keeps the
-#         stream in AWS and still drops the journal; the fixture deletes it.
+#     O6. --no-rollback again, then a deploy WITHOUT INJECT_ORPHAN_CREATE and
+#         with a Marker change (go-to-k/cdkd#4600): it succeeds, deletes the
+#         stream before it drops the journal, the journal is gone and no state
+#         row names the stream; a plain deploy restores Marker.
+#     O7. The same with ORPHAN_RETAIN=true (a no-change deploy): the
+#         successful deploy keeps the stream in AWS and still drops the
+#         journal; the fixture deletes it.
+#     O8. The fix-forward: --no-rollback, then a deploy keeping OrphanStream
+#         under another name (ORPHAN_FIX_FORWARD=true) succeeds, deletes the
+#         first stream and keeps its own; a plain deploy then removes it.
 #   PHASE S (a SKIPPED rollback op on the automatic path, go-to-k/cdkd#3338):
 #     S1. Deploy with WITH_SKIP_PAIR=true (clean): SkipBucket + SkipDoomed.
 #         Put one object into SkipBucket (no autoDeleteObjects).
@@ -133,6 +138,8 @@ INIT_MARKER_NAME="${INIT_STACK}-marker"
 INIT_FAILING_QUEUE_NAME="${INIT_STACK}-failing-queue"
 SKIP_DOOMED_NAME="${STACK}-skip-doomed"
 ORPHAN_STREAM_NAME="${STACK}-orphan-stream"
+# PHASE O step O8's fix-forward stream (ORPHAN_FIX_FORWARD=true).
+FIX_FORWARD_STREAM_NAME="${STACK}-orphan-stream-b"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/rollback-command"
@@ -193,10 +200,10 @@ state_has_resource() { # usage: state_has_resource <state-key> <logical-id>
 # --- Delete PHASE O's stream and wait until it is gone. A stream still
 # CREATING / UPDATING refuses DeleteStream with ResourceInUseException, so that
 # one is retried rather than swallowed. Returns non-zero if it is still there. ---
-delete_orphan_stream() {
-  local out i
+delete_orphan_stream() { # usage: delete_orphan_stream [<stream name>]
+  local stream="${1:-${ORPHAN_STREAM_NAME}}" out i
   for i in $(seq 1 36); do
-    if out="$(aws kinesis delete-stream --stream-name "${ORPHAN_STREAM_NAME}" --enforce-consumer-deletion \
+    if out="$(aws kinesis delete-stream --stream-name "${stream}" --enforce-consumer-deletion \
       --region "${REGION}" 2>&1)"; then
       break
     fi
@@ -207,22 +214,22 @@ delete_orphan_stream() {
   # Only ResourceNotFoundException is "gone"; any other probe failure is
   # retried and, if it persists, reported rather than read as gone.
   for i in $(seq 1 36); do
-    if ! out="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" \
+    if ! out="$(aws kinesis describe-stream-summary --stream-name "${stream}" \
       --region "${REGION}" 2>&1)"; then
       grep -q 'ResourceNotFoundException' <<<"${out}" && return 0
     fi
     sleep 5
   done
-  echo "[verify] ${ORPHAN_STREAM_NAME} not confirmed gone: ${out}" >&2
+  echo "[verify] ${stream} not confirmed gone: ${out}" >&2
   return 1
 }
 
 # DeleteStream is asynchronous: the stream sits in DELETING before it is gone.
 # Waits up to ~150s; the caller's assert_gone is the verdict.
-wait_orphan_stream_gone() {
-  local _i
+wait_orphan_stream_gone() { # usage: wait_orphan_stream_gone [<stream name>]
+  local _i stream="${1:-${ORPHAN_STREAM_NAME}}"
   for _i in $(seq 1 30); do
-    gone_probe aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" && return 0
+    gone_probe aws kinesis describe-stream-summary --stream-name "${stream}" --region "${REGION}" && return 0
     sleep 5
   done
   return 0
@@ -275,6 +282,7 @@ aggressive_cleanup() {
   done
   # PHASE O's stream is the resource the phase deliberately orphans.
   delete_orphan_stream || echo "[verify] cleanup: ${ORPHAN_STREAM_NAME} may still exist -- delete it by hand"
+  delete_orphan_stream "${FIX_FORWARD_STREAM_NAME}" || echo "[verify] cleanup: ${FIX_FORWARD_STREAM_NAME} may still exist -- delete it by hand"
   # PHASE S's bucket holds an object on purpose; empty it before the delete.
   aws s3 rm "s3://${SKIP_BUCKET_NAME}" --recursive >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -858,7 +866,10 @@ if [ "${O6_RC}" -eq 0 ]; then
 fi
 assert_orphan_stream_journaled "after the --no-rollback deploy of step O6"
 set +e
-${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-orphan-success-2.log 2>&1
+# A CHANGES deploy (Marker's value moves), so the settle runs on the path that
+# also saves new state; step O7's runs on the no-change path.
+MARKER_VALUE=vO6 \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-orphan-success-2.log 2>&1
 O6_DEPLOY_RC=$?
 set -e
 sed 's/^/  /' /tmp/rollback-cmd-orphan-success-2.log || true
@@ -878,7 +889,17 @@ if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNA
   echo "[verify] FAIL: rollback journal still present after the successful deploy"
   exit 1
 fi
-echo "[verify] step O6 ok: the successful deploy deleted the stream, journal gone"
+if [ "$(state_has_resource "${STATE_KEY}" OrphanStream)" != "false" ]; then
+  echo "[verify] FAIL: state records OrphanStream after the successful deploy (expected no record)"
+  exit 1
+fi
+if [ "$(ssm_value "${MARKER_NAME}")" != "vO6" ]; then
+  echo "[verify] FAIL: step O6's deploy did not apply its change (Marker is not vO6)"
+  exit 1
+fi
+# Back to the baseline the later phases start from.
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
+echo "[verify] step O6 ok: the successful (changes) deploy deleted the stream, journal gone"
 
 echo "[verify] step O7: the same with ORPHAN_RETAIN=true (the successful deploy KEEPS the stream)"
 set +e
@@ -919,7 +940,64 @@ if ! delete_orphan_stream; then
   echo "[verify] FAIL: the retained ${ORPHAN_STREAM_NAME} could not be removed after step O7"
   exit 1
 fi
+if [ "$(state_has_resource "${STATE_KEY}" OrphanStream)" != "false" ]; then
+  echo "[verify] FAIL: state records OrphanStream after the Retain settle (expected no record)"
+  exit 1
+fi
 echo "[verify] step O7 ok: the Retain stream was kept (then removed by the fixture), journal gone"
+
+# go-to-k/cdkd#4600 review: the fix-forward. The redeploy keeps the logical id
+# under another name, so its own CREATE of the type must not stop the orphan's
+# delete: the new stream is judged by physical id against the saved state.
+echo "[verify] step O8: --no-rollback with INJECT_ORPHAN_CREATE, then the fix-forward (same logical id, another name)"
+if ! delete_orphan_stream "${FIX_FORWARD_STREAM_NAME}"; then
+  echo "[verify] FAIL: a leftover ${FIX_FORWARD_STREAM_NAME} could not be removed before step O8"
+  exit 1
+fi
+set +e
+INJECT_ORPHAN_CREATE=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-ff.log 2>&1
+O8_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-ff.log || true
+if [ "${O8_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
+  exit 1
+fi
+assert_orphan_stream_journaled "after the --no-rollback deploy of step O8"
+set +e
+INJECT_ORPHAN_CREATE=true ORPHAN_FIX_FORWARD=true \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-orphan-ff-2.log 2>&1
+O8_DEPLOY_RC=$?
+set -e
+sed 's/^/  /' /tmp/rollback-cmd-orphan-ff-2.log || true
+if [ "${O8_DEPLOY_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: the fix-forward deploy exited ${O8_DEPLOY_RC} (expected 0 -- output above)"
+  exit 1
+fi
+if ! grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-ff-2.log; then
+  echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanStream (output above)"
+  exit 1
+fi
+wait_orphan_stream_gone
+assert_gone "the earlier attempt's ${ORPHAN_STREAM_NAME} still exists after the fix-forward deploy" \
+  aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: rollback journal still present after the fix-forward deploy"
+  exit 1
+fi
+FF_PID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.OrphanStream.physicalId // "<absent>"')"
+if [ "${FF_PID}" != "${FIX_FORWARD_STREAM_NAME}" ]; then
+  echo "[verify] FAIL: state records OrphanStream as ${FF_PID} (expected the fix-forward ${FIX_FORWARD_STREAM_NAME})"
+  exit 1
+fi
+# The fix-forward stream is a normal state resource: the next plain deploy
+# removes it from the template and deletes it.
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
+wait_orphan_stream_gone "${FIX_FORWARD_STREAM_NAME}"
+assert_gone "${FIX_FORWARD_STREAM_NAME} still exists after the deploy that removed it" \
+  aws kinesis describe-stream-summary --stream-name "${FIX_FORWARD_STREAM_NAME}" --region "${REGION}"
+echo "[verify] step O8 ok: the fix-forward deleted the earlier stream and kept its own, journal gone"
 
 # ---------------------------------------------------------------------------
 # PHASE S: a SKIPPED rollback op on the automatic path (go-to-k/cdkd#3338)

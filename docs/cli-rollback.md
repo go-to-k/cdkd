@@ -166,15 +166,20 @@ failed CREATE:
 | `--no-rollback` failure | Nothing is deleted; the journal keeps the entry for a later `cdkd rollback`. |
 | `cdkd rollback`, with or without `--revert-failed` | Deleted, per its `DeletionPolicy`. Other failed operations still need the flag. |
 | `cdkd destroy` | Deleted first, per its `DeletionPolicy`, before the journal is removed with the state. A journal destroy cannot read is warned about and removed with the state, and nothing it records is deleted. |
-| A later successful `cdkd deploy` | Deleted, per its `DeletionPolicy`, before the deploy removes the journal; the deploy's own completed CREATE of its type counts as a newer entry. A top-level deploy does the same for each nested stack's journal. A journal the deploy cannot read is warned about and removed, and nothing it records is deleted. |
+| A later successful `cdkd deploy` | Deleted, per its `DeletionPolicy`, before the deploy removes the journal. The deploy's own resources are judged by physical id against the saved state, so a fix-forward that re-creates the same logical id under another name still deletes the orphan. It is not deleted while any other state record in the bucket (another stack, a nested stack of the same tree, the same stack in another region) holds a resource of its type under its physical id, or while such a record cannot be read: the entry is kept, warned about, and the deploy exits `2`. A top-level deploy does the same for each nested stack's journal, judged by that stack's record. A journal the deploy cannot read is warned about and removed, and nothing it records is deleted. |
 
 `Retain` keeps the resource in AWS and `Snapshot` takes the final snapshot, as
-in the table above, and the same ownership checks skip it with a warning. A
+in the table above, and the same ownership checks skip it with a warning. On a
+successful deploy such a skipped entry (one a newer journal entry or a
+rollback-orphan record may own) is counted as handled: the warning names it,
+the journal is dropped, and the deploy exits `0`. A
 delete that fails keeps the entry: the automatic rollback keeps its full
 segment, `cdkd destroy` keeps the state and the journal for a re-run, and a
 successful deploy keeps the journal (reduced to that entry where it can), warns, and exits `2`
-(`--allow-unaddressed` exits `0`); the next successful deploy or a plain
-`cdkd rollback` retries it.
+(`--allow-unaddressed` exits `0`); the next successful deploy retries it, and so
+does a plain `cdkd rollback` once the journal is reduced (the warning prints the
+command only then: a whole journal still holds operations the deploy
+superseded, which a rollback would replay over it).
 
 ## Known limitations
 
