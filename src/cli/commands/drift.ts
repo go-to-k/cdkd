@@ -4043,8 +4043,8 @@ async function runDriftForStack(
         if (breakerTripped) {
           logger.warn(
             safeMsg`${DRIFT_READ_FAILURE_BREAKER_THRESHOLD} reads in a row in this stack failed ` +
-              safeMsg`${DRIFT_READ_PATH_LABELS[readPath]}, which looks account-wide (expired ` +
-              `credentials, a revoked role, an account-wide throttle) or like a permission all ` +
+              safeMsg`${DRIFT_READ_PATH_LABELS[readPath]}, which looks account-wide ` +
+              `(expired credentials, a revoked role, an account-wide throttle) or like a permission all ` +
               `of them need — cdkd stops reading this stack's resources that way, and reports ` +
               `each one left as not compared. Fix the cause and re-run.`
           );
