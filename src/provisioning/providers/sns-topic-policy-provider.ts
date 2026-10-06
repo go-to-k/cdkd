@@ -17,6 +17,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
@@ -26,6 +27,26 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { attemptedPolicyDocument, policyContentKey } from '../policy-document-content.js';
+
+/**
+ * The skip reasons of a failed create's delete (go-to-k/cdkd#4612): a failure
+ * not known to be permanent, so the entry is kept and a re-run checks again.
+ */
+export const TOPIC_POLICY_UNREADABLE_SKIP_REASON =
+  'the policy of a topic it wrote could not be read, so whether that topic still carries it is unknown';
+export const TOPIC_POLICY_UNRESOLVED_DOCUMENT_SKIP_REASON =
+  'the policy document it attempted could not be resolved right now to compare its topics with';
+
+/**
+ * What a failed create's delete reports (`leftInPlace`, go-to-k/cdkd#4612)
+ * when it settles the entry without resetting every topic: one carries another
+ * policy, or the attempted document is known never to be comparable.
+ */
+export const TOPIC_POLICY_MISMATCH_LEFT_REASON =
+  'a topic it wrote carries a policy that does not match the document it attempted, so that topic was not reset';
+export const TOPIC_POLICY_NOT_COMPARED_LEFT_REASON =
+  'the document it attempted is missing, masked, or references a secret that does not exist or cannot be used, so none of its topics was reset';
 
 /**
  * AWS SNS Topic Policy Provider
@@ -242,8 +263,17 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting SNS topic policy ${logicalId}: ${physicalId}`);
+    if (context?.failedCreateOrphan === true) {
+      return this.deleteFailedCreateOrphan(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        context
+      );
+    }
 
     const named = splitTopicArns(physicalId);
     // An empty id records no write at all: refuse it rather than widen it to
@@ -306,6 +336,152 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     }
 
     this.logger.debug(`Successfully deleted SNS topic policy ${logicalId}`);
+  }
+
+  /**
+   * go-to-k/cdkd#4612: the delete of a proven failed create's journal entry,
+   * whose physical id is exactly the topics it wrote (go-to-k/cdkd#4583).
+   * SetTopicAttributes REPLACES a topic's policy, so each topic is reset to
+   * its default only while its live policy equals, by content, the attempted
+   * document: whoever wrote before this create was already replaced. A topic
+   * already on its default policy, or gone, needs nothing. A topic carrying
+   * anything else is left, named in a warning, and the result reports
+   * `leftInPlace`; so is one a TopicPolicy of this very deploy wrote
+   * (`writtenThisRun`), which is not read back while it may be stale. The
+   * attempted bag is the journal's, secret references redacted, so it is
+   * re-resolved first (`attemptedPolicyDocument`). The entry is kept
+   * (`skipped`) unless a failure is KNOWN to be permanent: a missing or masked
+   * document, or a secret that does not exist or whose reference cdkd refuses
+   * settles the entry with every topic named and nothing reset
+   * (`leftInPlace`). An unreadable topic policy, and any other resolution
+   * failure (credentials, access, throttling), keeps it. Both documents are
+   * compared in IAM-equivalent form (`policyContentKey`).
+   *
+   * Residual: a stale read of a DIFFERENT policy the topic held before the
+   * create (the automatic rollback reads it about a second after the write)
+   * reports a mismatch, leaving the failed document with a warning and exit 2.
+   */
+  private async deleteFailedCreateOrphan(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown> | undefined,
+    context: DeleteContext
+  ): Promise<void | ResourceDeleteResult> {
+    const named = splitTopicArns(physicalId);
+    if (named.length === 0) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Failed to delete SNS topic policy ${logicalId}: its physical id names no topic`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    const resolve = context.resolveAttemptedProperties;
+    const attempted = await attemptedPolicyDocument(
+      properties?.['PolicyDocument'],
+      resolve && (async () => (await resolve())?.['PolicyDocument'])
+    );
+    if (attempted.kind === 'retry') {
+      this.logger.warn(
+        safeMsg`The policy document ${logicalId} attempted could not be resolved (${attempted.errorName}), so no topic it wrote is reset; the entry is kept for a re-run once that is fixed.`
+      );
+      return { outcome: 'skipped', reason: TOPIC_POLICY_UNRESOLVED_DOCUMENT_SKIP_REASON };
+    }
+    if (attempted.kind === 'unusable') {
+      // Known never to compare: settle the entry, naming every topic for a
+      // check by hand, rather than keep it forever.
+      this.logger.warn(
+        safeMsg`${logicalId} is not reset on any topic it wrote (${attempted.why}); check each by hand and reset its policy where it still grants what ${logicalId} declared: ${named.join(', ')}.`
+      );
+      return { outcome: 'deleted', leftInPlace: TOPIC_POLICY_NOT_COMPARED_LEFT_REASON };
+    }
+    const document = attempted.document;
+    // IAM-equivalent spellings folded (a bare account id and its root ARN).
+    const reference = policyContentKey(document);
+    // A topic a TopicPolicy of this very deploy wrote: a read may still
+    // return the failed create's document, so it is never read back here.
+    const fresh = new Set(
+      (context.writtenThisRun ?? []).flatMap((r) =>
+        r.resourceType === resourceType && typeof r.physicalId === 'string'
+          ? [
+              ...splitTopicArns(r.physicalId),
+              ...listedTopics(
+                r.properties !== null && typeof r.properties === 'object'
+                  ? (r.properties as Record<string, unknown>)
+                  : {}
+              ),
+            ]
+          : []
+      )
+    );
+    let unreadable = false;
+    let mismatched = false;
+    for (const topicArn of named) {
+      if (fresh.has(topicArn)) {
+        mismatched = true;
+        this.logger.warn(
+          safeMsg`Topic ${topicArn} was written by a TopicPolicy of this deploy, so it is not reset: its policy may not read back current yet; if it still grants what ${logicalId} declared, reset it manually.`
+        );
+        continue;
+      }
+      const current = await this.readPolicyForWidening(topicArn);
+      if (current.kind === 'gone') {
+        // A topic that is gone has no policy left, once the client is proven
+        // to be in the recorded region (resetTopicPolicy's contract).
+        const clientRegion = await getAwsClients().sns.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context.expectedRegion,
+          resourceType,
+          logicalId,
+          topicArn,
+          'not-found'
+        );
+        this.logger.debug(safeMsg`Topic ${topicArn} does not exist; nothing to reset`);
+        continue;
+      }
+      if (current.kind === 'unreadable') {
+        unreadable = true;
+        this.logger.warn(
+          safeMsg`Could not read the policy of topic ${topicArn} (${current.reason}), so it is not reset: it may still carry the policy of ${logicalId}.`
+        );
+        continue;
+      }
+      const live = current.kind === 'none' ? undefined : policyContentKey(current.policy);
+      // No policy read back is reset too: right after the create wrote it
+      // (the automatic rollback) a stale read can still show nothing, and the
+      // reset writes only the default.
+      if (live === undefined || live === reference) {
+        try {
+          await this.resetTopicPolicy(topicArn, resourceType, logicalId, context.expectedRegion);
+        } catch (error) {
+          if (error instanceof ProvisioningError) throw error;
+          throw new ProvisioningError(
+            `Failed to delete SNS topic policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          );
+        }
+        continue;
+      }
+      const defaultPolicy = defaultTopicPolicy(topicArn);
+      if (defaultPolicy !== undefined && live === policyContentKey(defaultPolicy)) {
+        this.logger.debug(safeMsg`Topic ${topicArn} already carries its default policy`);
+        continue;
+      }
+      mismatched = true;
+      this.logger.warn(
+        safeMsg`Topic ${topicArn} carries a policy that does not match the document ${logicalId} attempted (a later write, or AWS stored it in another form), so it is not reset; if it still grants what ${logicalId} declared, reset it manually.`
+      );
+    }
+    if (unreadable) return { outcome: 'skipped', reason: TOPIC_POLICY_UNREADABLE_SKIP_REASON };
+    if (mismatched) return { outcome: 'deleted', leftInPlace: TOPIC_POLICY_MISMATCH_LEFT_REASON };
+    return undefined;
   }
 
   /**
@@ -396,11 +572,14 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     return carrying;
   }
 
-  /** A topic's `Policy` for {@link topicsCarryingDocument}: held, absent (gone or empty), or unreadable. */
+  /** A topic's `Policy` for {@link topicsCarryingDocument}: held, empty, gone, or unreadable. */
   private async readPolicyForWidening(
     topicArn: string
   ): Promise<
-    { kind: 'policy'; policy: string } | { kind: 'none' } | { kind: 'unreadable'; reason: string }
+    | { kind: 'policy'; policy: string }
+    | { kind: 'none' }
+    | { kind: 'gone' }
+    | { kind: 'unreadable'; reason: string }
   > {
     try {
       const resp = await getAwsClients().sns.send(
@@ -410,7 +589,7 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
       return policy ? { kind: 'policy', policy } : { kind: 'none' };
     } catch (err) {
       const name = (err as { name?: string }).name;
-      if (name === 'NotFoundException' || name === 'NotFound') return { kind: 'none' };
+      if (name === 'NotFoundException' || name === 'NotFound') return { kind: 'gone' };
       return { kind: 'unreadable', reason: name ?? 'error' };
     }
   }

@@ -383,6 +383,15 @@ export type ResourceDeleteResult =
       /** cdkd addressed the resource — identical to returning `void`. */
       readonly outcome: 'deleted';
       /**
+       * Part of what the resource wrote was deliberately LEFT, because cdkd
+       * could not prove it was still the resource's own (go-to-k/cdkd#4612: a
+       * failed `AWS::SQS::QueuePolicy`'s queue now carrying another policy).
+       * One plain-prose line, never a physical id. A caller that reads it
+       * warns and counts it toward exit 2; one that does not reads the
+       * outcome as `'deleted'`, as before.
+       */
+      readonly leftInPlace?: string;
+      /**
        * Pre-flight safety guards that could not reach a verdict on this
        * operation. See {@link IndeterminateGuard}.
        */

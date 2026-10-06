@@ -64,6 +64,16 @@ export function deleteSkipReason(result: void | ResourceDeleteResult): string | 
 }
 
 /**
+ * The `leftInPlace` line of a delete that addressed its resource but left part
+ * of it (go-to-k/cdkd#4612), or `undefined`.
+ */
+export function deleteLeftInPlace(result: void | ResourceDeleteResult): string | undefined {
+  if (result === undefined || result.outcome !== 'deleted') return undefined;
+  const left = result.leftInPlace;
+  return typeof left === 'string' && left.length > 0 ? left : undefined;
+}
+
+/**
  * Stand-in for a `'skipped'` outcome whose producer supplied no `reason`.
  *
  * Deliberately says the cause is unknown rather than inventing one: the line
