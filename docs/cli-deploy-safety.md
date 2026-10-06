@@ -918,8 +918,13 @@ A plain create of one of these types with an explicit name looks the name up
 too. When a resource already holds it, or the lookup cannot run, the deploy
 fails with `NAMED_CREATE_COLLISION` and nothing is created, as
 CloudFormation's create fails with "already exists". This holds even when the resource is this stack's
-own, left by an earlier interrupted deploy: nothing in AWS tells the two apart.
-Delete it, or adopt it with [`cdkd import`](import.md), then re-run. When the
+own, left by an earlier interrupted deploy or kept by a `cdkd destroy` under
+`DeletionPolicy: Retain`: nothing in AWS tells the two apart. Delete it, or
+adopt it with [`cdkd import`](import.md), then re-run; the error ends on the
+`cdkd import <stack> --resource <logicalId>=<physicalId>` command for the
+resource it found — confirm the resource is yours before running it. An S3
+bucket gets no command, since the lookup also finds a bucket another account
+owns and lets you list. When the
 holder is this stack's own resource under another logical id (a construct moved
 or renamed, keeping its name), the error names that id: give the new resource
 another name, or deploy that id's removal first. A log group declared

@@ -7,6 +7,7 @@ import { acceptedCreateOnlyDropsField } from './record-shape.js';
 import { displayAwsMessage, displaySafe } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
+import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import {
@@ -440,16 +441,44 @@ async function refuseTakenCreateName(
   // A nested-stack child (`<parent>~<logicalId>`) cannot be a `cdkd import`
   // target: import resolves top-level stacks from the assembly only, the
   // reason `orphanedNameCollisionAdvice` withholds the command there too.
+  const ownCase =
+    `if the resource is this stack's own (left by an earlier interrupted deploy, or kept by an ` +
+    `earlier \`cdkd destroy\` under DeletionPolicy: Retain)`;
+  // The adopt command, on a line of its own and last (the `pasteableCommand`
+  // contract). Withheld for S3, whose lookup (`HeadBucket`, no expected
+  // owner) also finds another account's listable bucket, and when the mask
+  // rewrites any part of the command: the masked spelling names nothing.
+  const built =
+    input.stackName.includes('~') || resourceType === 'AWS::S3::Bucket'
+      ? undefined
+      : pasteableCommand('cdkd import', [
+          { value: input.stackName, hole: 'stack' },
+          { flag: '--resource', value: `${logicalId}=${holderId}`, hole: 'logicalId=physicalId' },
+        ]);
+  const adopt =
+    built !== undefined && maskName(built.command) === built.command ? built : undefined;
   const ownRemedy = input.stackName.includes('~')
-    ? `if the resource is this stack's own, left by an earlier interrupted deploy, delete it ` +
-      `and re-run.`
-    : `if the resource is this stack's own, left by an earlier interrupted deploy, delete it ` +
-      `or adopt it with \`cdkd import\` and re-run.`;
+    ? `${ownCase}, delete it and re-run.`
+    : adopt !== undefined
+      ? `${ownCase}, delete it, or adopt it with \`cdkd import\` using the command below and re-run.`
+      : `${ownCase}, delete it or adopt it with \`cdkd import\` and re-run.`;
+  const holeNote =
+    adopt === undefined || adopt.withheld.length === 0
+      ? ''
+      : ` The command below prints a quoted hole in place of a value cdkd will not name on a ` +
+        `command line; replace it whole, quotes included, with your stack name or ` +
+        `'<logicalId>=<physicalId>', shell-quoted.`;
   return refuse(
     `${subject} is created with ${named}, and an existing resource ` +
       `(${shown(holderId)}) already holds that name. Since ${adoptsText}, ` +
       `creating it would take that resource over and record it as this stack's, for a later ` +
       `\`cdkd destroy\` to delete. Nothing was created. Choose a name no other resource holds; ` +
-      ownRemedy
+      ownRemedy +
+      holeNote +
+      (adopt === undefined
+        ? ''
+        : `\nCONFIRM IT IS YOURS FIRST: another stack or app may own a resource of that name, ` +
+          `and adopting it hands that resource to this stack's \`cdkd destroy\`.` +
+          `\nAdopt with: ${adopt.command}`)
   );
 }
