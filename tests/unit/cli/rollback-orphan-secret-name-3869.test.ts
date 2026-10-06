@@ -45,7 +45,7 @@ import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 const REF = '{{resolve:secretsmanager:team:SecretString:user::}}';
 const USER = 'team-secret-user';
 
-function install(userName: string, failedOperations?: unknown[]): void {
+function install(userName: string, failedOperations?: unknown[], segments?: unknown[]): void {
   setupMock.mockResolvedValue({
     stateBackend: {
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
@@ -74,7 +74,7 @@ function install(userName: string, failedOperations?: unknown[]): void {
         journalVersion: 1,
         stackName: 'S',
         region: 'us-east-1',
-        segments: [
+        segments: segments ?? [
           {
             timestamp: 1,
             reason: 'no-rollback-failure',
@@ -182,5 +182,58 @@ describe("cdkd rollback masks a journaled orphan's OWN secret-derived name (go-t
     expect(provider.delete.mock.calls.map((c) => c[1])).toEqual([URL]);
     expect(lines).toEqual([expect.stringContaining('Deleting SQS queue Queue: ')]);
     expect(lines[0]!.includes(QUEUE)).toBe(shown);
+  });
+});
+
+describe('cdkd rollback masks a name an orphan read from an orphan in ANOTHER segment (go-to-k/cdkd#3869)', () => {
+  const lines: string[] = [];
+  beforeEach(() => {
+    lines.length = 0;
+    events.length = 0;
+    provider.delete.mockReset().mockImplementation((logicalId: string, physicalId: string) => {
+      if (logicalId === 'Key') {
+        const line = `Deleting access key ${physicalId} of user ${USER}`;
+        lines.push(currentLogLineMasker()?.(line) ?? line);
+      }
+      return Promise.resolve(undefined);
+    });
+  });
+
+  it.each([
+    ['a secret-named user orphan', REF, false],
+    ['negative control, an ordinary user name', 'plain-user-name', true],
+  ])('%s', async (_l, userName, shown) => {
+    // Two failed deploys: the older journaled a user named from a secret, the
+    // newer an access key for it. The key's segment replays first, before the
+    // user's, and no state record holds the user: one bag spans the batch.
+    const segment = (timestamp: number, op: Record<string, unknown>) => ({
+      timestamp,
+      reason: 'no-rollback-failure',
+      initialDeploy: false,
+      operations: [],
+      failedOperations: [
+        { changeType: 'CREATE', provisionedBy: 'sdk', physicalIdRecoveredFromError: true, ...op },
+      ],
+    });
+    install('unused-state-user', undefined, [
+      segment(1, {
+        logicalId: 'Orphaned',
+        resourceType: 'AWS::IAM::User',
+        physicalId: USER,
+        attemptedProperties: { UserName: userName },
+      }),
+      segment(2, {
+        logicalId: 'Key',
+        resourceType: 'AWS::IAM::AccessKey',
+        physicalId: 'AKIAEXAMPLEKEY',
+        attemptedProperties: { UserName: USER },
+      }),
+    ]);
+    await rollbackCommand('S', { statePrefix: 'cdkd', verbose: false, force: true }).catch(
+      () => undefined
+    );
+    // Premise: the key's delete ran and logged its line.
+    expect(lines).toEqual([expect.stringContaining('Deleting access key AKIAEXAMPLEKEY of user ')]);
+    expect(lines[0]!.includes(USER)).toBe(shown);
   });
 });

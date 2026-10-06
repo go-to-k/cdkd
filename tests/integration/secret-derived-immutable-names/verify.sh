@@ -828,7 +828,7 @@ echo "==> Step 6c: the same orphan, deleted by a plain cdkd rollback from the jo
 orphan_deploy_failing
 set +e
 node "${LOCAL_DIST}" rollback "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" \
-  --force --verbose > "${ORPHAN_LOG}" 2>&1
+  --stack-region "${REGION}" --force --verbose > "${ORPHAN_LOG}" 2>&1
 ORPHAN_ROLLBACK_RC=$?
 set -e
 if [ "${ORPHAN_ROLLBACK_RC}" -ne 0 ]; then

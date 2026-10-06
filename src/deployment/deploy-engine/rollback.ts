@@ -47,6 +47,7 @@ import {
   type RecordedSecretValues,
   STATE_SOURCED_READBACK_RULES,
   markSameGenerationBag,
+  maskSecretsInText,
   recordLogOnlyValue,
   redactSecretsForState,
   scrubResourceRecord,
@@ -192,7 +193,21 @@ export async function adoptRollbackOrphans(
   // where it builds the string, because `cdkd diff` consumes the same lines
   // (go-to-k/cdkd#3642). Only the `Adopting` line below is built HERE, so it
   // is the one this method sanitizes.
-  for (const notice of plan.notices) this.logger.info(notice);
+  // go-to-k/cdkd#3869: these lines are logged before provisioning binds any
+  // printing bag, so a record named from a secret (its name still a
+  // `{{resolve:` reference) masks its id spellings here. One log-only bag over
+  // every record: a line names one record, and a sibling's needle only
+  // over-masks. The refusals are not masked: they carry the commands to run.
+  const named: RecordedSecretValues = new Map();
+  for (const entry of records) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const { logicalId, state } = entry as { logicalId?: unknown; state?: unknown };
+    if (typeof logicalId !== 'string' || state === null || typeof state !== 'object') continue;
+    for (const needle of secretNameNeedlesOf(logicalId, state, undefined) ?? []) {
+      recordLogOnlyValue(named, needle);
+    }
+  }
+  for (const notice of plan.notices) this.logger.info(maskSecretsInText(notice, named));
 
   if (plan.refusals.length > 0) {
     throw new Error(
@@ -205,7 +220,7 @@ export async function adoptRollbackOrphans(
     currentState.resources[logicalId] = record;
     this.logger.info(
       `Adopting ${displayIdent(logicalId)} (${displayIdent(record.resourceType)}) left in AWS ` +
-        `by an earlier rollback as ${displaySafe(record.physicalId)}`
+        `by an earlier rollback as ${displaySafe(maskSecretsInText(record.physicalId, named))}`
     );
   }
   // Assigned unconditionally when there WERE records, so an adopted or
