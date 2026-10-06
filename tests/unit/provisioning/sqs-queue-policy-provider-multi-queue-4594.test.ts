@@ -152,6 +152,63 @@ describe('SQSQueuePolicyProvider records the written set beside a stable id (#45
     }
   });
 
+  it('an update that changes the first queue is journaled wasReplaced:false and reverted in place (#4615)', async () => {
+    // [Q1, Q2] -> [Q3, Q2] moves the id from Q1 to Q3; before #4615 the
+    // changed id read as a replacement, whose delete(newId) would also clear
+    // Q2 through the written-set attribute.
+    const prevState: ResourceState = {
+      physicalId: Q1,
+      resourceType: TYPE,
+      properties: { Queues: [Q1, Q2], PolicyDocument: DOC },
+      attributes: written(Q1, Q2),
+    };
+    const result = await provider().update(
+      'P',
+      Q1,
+      TYPE,
+      { Queues: [Q3, Q2], PolicyDocument: NEW_DOC },
+      prevState.properties!,
+      { recordedAttributes: prevState.attributes }
+    );
+    expect(result).toEqual({ physicalId: Q3, wasReplaced: false, attributes: written(Q3, Q2) });
+    const op: CompletedOperation = {
+      logicalId: 'P',
+      changeType: 'UPDATE',
+      resourceType: TYPE,
+      previousState: prevState,
+      physicalId: result.physicalId,
+      wasReplaced: result.wasReplaced,
+      properties: { Queues: [Q3, Q2], PolicyDocument: NEW_DOC },
+    };
+    const current: ResourceState = {
+      physicalId: result.physicalId,
+      resourceType: TYPE,
+      properties: op.properties!,
+      attributes: result.attributes!,
+    };
+    expect(classifyRollbackOp(op, { P: current }, new Set())).toBe('revert');
+
+    // The in-place revert: desired = the previous record, previous = the
+    // current one. Q2 stays in both lists and keeps the policy; only Q3,
+    // which the update added, is cleared.
+    mockSend.mockClear();
+    const reverted = await provider().update(
+      'P',
+      Q3,
+      TYPE,
+      { Queues: [Q1, Q2], PolicyDocument: DOC },
+      { Queues: [Q3, Q2], PolicyDocument: NEW_DOC },
+      { recordedAttributes: written(Q3, Q2), replayingState: true }
+    );
+    expect(setCalls()).toEqual([
+      [Q1, DOC_JSON],
+      [Q2, DOC_JSON],
+      [Q3, ''],
+    ]);
+    expect(getReads()).toEqual([]);
+    expect(reverted.physicalId).toBe(Q1);
+  });
+
   it("the rollback revert of a grow clears only the queue the grow added", async () => {
     // The revert arm: desired = the previous record, previous = the current one.
     await provider().update(
