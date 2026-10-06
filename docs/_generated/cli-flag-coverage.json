@@ -438,6 +438,8 @@
         "s3-lifecycle",
         "secret-derived-immutable-names",
         "secrets-dynamic-ref",
+        "sns-sqs-event",
+        "sns-subscription-filter",
         "type-change-replacement"
       ]
     },
@@ -1814,7 +1816,10 @@
     "--assume-role-policy-document",
     "--attribute",
     "--attribute-definitions",
+    "--attribute-name",
     "--attribute-names",
+    "--attribute-value",
+    "--attributes",
     "--authorizer-id",
     "--auto",
     "--auto-scaling-group-name",

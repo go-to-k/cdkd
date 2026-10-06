@@ -110,6 +110,7 @@ import {
 } from './rollback-executor/replay-retry.js';
 import type { ReplayOpScope } from './rollback-executor/replay-scope.js';
 import { safeMsg } from '../utils/display-safe.js';
+import { deleteLeftInPlace } from './delete-outcome.js';
 import {
   replayDelete,
   replayOrphanFlag,
@@ -582,6 +583,7 @@ async function replayFailedOperationsUnbound(
     interrupted: false,
     remainingFailedOps: [],
     orphaned: [],
+    leftInPlace: 0,
   };
   const { logger } = ctx;
   // Re-resolves redacted `{{resolve:secretsmanager:...}}` expressions to the
@@ -872,6 +874,15 @@ async function replayFailedOperationsUnbound(
               // Issue #4157; as on the completed-CREATE arm, the record names
               // `op.physicalId` here.
               recordedAttributes: failedCreateRecord?.attributes,
+              // go-to-k/cdkd#4612: a proven orphan, never a record's own delete.
+              // The bag is the journal's, secrets redacted: a provider that
+              // compares it with AWS re-resolves it through this, lazily.
+              ...(op.physicalIdRecoveredFromError === true && {
+                failedCreateOrphan: true,
+                resolveAttemptedProperties: () =>
+                  resolveReplayProps(op.attemptedProperties, resolver, secrets, ctx, op.logicalId),
+                ...(ctx.writtenThisRun !== undefined && { writtenThisRun: ctx.writtenThisRun }),
+              }),
             }
           );
           // Issue #1762: the partially-created resource is still there, so
@@ -891,6 +902,16 @@ async function replayFailedOperationsUnbound(
               mask,
             }
           );
+          // go-to-k/cdkd#4612: the provider deleted it but left a part it
+          // could not prove was still its own: warned, counted (exit 2).
+          const leftInPlace = deleteLeftInPlace(failedCreateDelete);
+          if (leftInPlace !== undefined) {
+            logger.warn(
+              safeMsg`  Rollback: deleted partially-created ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) only in part — ${leftInPlace}; manual attention may be required`
+            );
+            result.warnings++;
+            result.leftInPlace++;
+          }
           if (!isReplacementOrphan(op)) delete stateResources[op.logicalId];
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({

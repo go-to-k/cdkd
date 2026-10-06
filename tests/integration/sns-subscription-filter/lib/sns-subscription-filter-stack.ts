@@ -22,6 +22,12 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * from both. The two queues are RETAINED, so verify.sh can read their `Policy`
  * attribute after the destroy (and deletes them itself).
  *
+ * go-to-k/cdkd#4612: two more RETAINED queues, C and D. `overlapfail` adds a
+ * QueuePolicy over [C, D, a queue that does not exist]: it writes C and D,
+ * then fails, and is journaled under `C,D` (deployed with --no-rollback).
+ * `overlapown` adds another QueuePolicy over [C]. Deleting the failed entry
+ * must clear only the queues still carrying its document (verify.sh 1d).
+ *
  * covers: AWS::SNS::Subscription
  * covers: AWS::SNS::Topic
  * covers: AWS::SQS::Queue
@@ -75,6 +81,71 @@ export class SnsSubscriptionFilterStack extends cdk.Stack {
         conditions: { ArnEquals: { 'aws:SourceArn': topic.topicArn } },
       }),
     );
+
+    // go-to-k/cdkd#4612: the shared-queue arm.
+    const modes = (process.env.CDKD_TEST_UPDATE ?? '').split(',');
+    const overlapQueueC = new sqs.Queue(this, 'OverlapQueueC', {
+      queueName: 'cdkd-sns-filter-overlap-c',
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+    const overlapQueueD = new sqs.Queue(this, 'OverlapQueueD', {
+      queueName: 'cdkd-sns-filter-overlap-d',
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+    // Each statement names ONE queue ARN: SQS rejected this document when its
+    // two statements each named both queues ("Each statement in the policy
+    // should have exactly one resource"). The same document goes to both
+    // queues, so one queue's policy names the other's ARN, as
+    // MultiQueuePolicy's does (Phase 1 shows SQS accepts that).
+    const sendStatement = (sid: string, queue: sqs.IQueue = overlapQueueC): Record<string, unknown> => ({
+      Sid: sid,
+      Effect: 'Allow',
+      Principal: { Service: 'sns.amazonaws.com' },
+      Action: 'sqs:SendMessage',
+      Resource: queue.queueArn,
+      Condition: { ArnEquals: { 'aws:SourceArn': topic.topicArn } },
+    });
+    // allow-mode-gated-drop: its CREATE always fails, so no record exists for a later deploy to delete.
+    if (modes.includes('overlapfail')) {
+      new sqs.CfnQueuePolicy(this, 'OverlapFailPolicy', {
+        queues: [
+          overlapQueueC.queueUrl,
+          overlapQueueD.queueUrl,
+          // No such queue: SetQueueAttributes fails after C and D were written.
+          `https://sqs.${this.region}.${this.urlSuffix}/${this.account}/cdkd-sns-filter-overlap-missing`,
+        ],
+        policyDocument: {
+          Version: '2012-10-17',
+          Statement: [
+            sendStatement('OverlapFail'),
+            sendStatement('OverlapFailD', overlapQueueD),
+            // A RAW account-id principal (L1, so CDK does not rewrite it):
+            // SQS stores it as its root ARN; the failed entry's delete must
+            // still match it (an IAM-equivalent compare). verify.sh notes it.
+            {
+              Sid: 'RawAccount',
+              Effect: 'Allow',
+              Principal: { AWS: this.account },
+              Action: 'sqs:GetQueueAttributes',
+              Resource: overlapQueueC.queueArn,
+            },
+          ],
+        },
+      });
+    }
+    if (modes.includes('overlapown')) {
+      new sqs.CfnQueuePolicy(this, 'OverlapOwnPolicy', {
+        queues: [overlapQueueC.queueUrl],
+        // `overlapownv2` changes the document, so the update rewrites C.
+        policyDocument: {
+          Version: '2012-10-17',
+          Statement: [
+            sendStatement('OverlapOwn'),
+            ...(modes.includes('overlapownv2') ? [sendStatement('OverlapOwnV2')] : []),
+          ],
+        },
+      });
+    }
 
     new cdk.CfnOutput(this, 'TopicArn', { value: topic.topicArn });
     new cdk.CfnOutput(this, 'QueueUrl', { value: queue.queueUrl });

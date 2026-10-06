@@ -134,6 +134,11 @@ import {
 } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { getCurrentProducerRegions } from '../../../src/deployment/producer-regions-scope.js';
+import {
+  ReplayResolvers,
+  resolveLeafByRegion,
+} from '../../../src/deployment/rollback-executor/replay-secrets.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const CONSUMER_REGION = 'ap-northeast-1';
 const PRODUCER_REGION = 'eu-west-1';
@@ -1167,6 +1172,33 @@ describe('INCOMPLETE producer-region evidence: a nested child whose parent is un
     expect((thrown as { code?: string }).code).toBe('ROLLBACK_SECRET_REGION_AMBIGUOUS');
     expect(String((thrown as Error).message)).toContain(SECRET_NAME);
     expect(() => refuseUnprovenReplaySecret(NAME_EXPR, 'P', 'Idp', makeCtx({}, []))).not.toThrow();
+  });
+
+  // go-to-k/cdkd#4612: the two refusals share a code; only the one a re-run
+  // cannot change (a foreign producer region on record) is marked
+  // non-retryable, which a failed-CREATE orphan's delete reads as permanent.
+  it('marks the ambiguous refusal non-retryable and leaves the nested-child one unmarked', async () => {
+    const ctx = makeCtx({}, [PRODUCER_REGION]);
+    let ambiguous: unknown;
+    try {
+      await resolveLeafByRegion(NAME_EXPR, 'P', 'Idp', ctx, new ReplayResolvers(ctx.region), {
+        template: { Resources: {} },
+        resources: {},
+      });
+    } catch (error) {
+      ambiguous = error;
+    }
+    expect((ambiguous as { code?: string }).code).toBe('ROLLBACK_SECRET_REGION_AMBIGUOUS');
+    expect(isMarkedNonRetryable(ambiguous)).toBe(true);
+
+    let unknown: unknown;
+    try {
+      refuseUnprovenReplaySecret(`a-${NAME_EXPR}`, 'P', 'Idp', { ...makeCtx({}, []), producerRegionsIncomplete: true });
+    } catch (error) {
+      unknown = error;
+    }
+    expect((unknown as { code?: string }).code).toBe('ROLLBACK_SECRET_REGION_AMBIGUOUS');
+    expect(isMarkedNonRetryable(unknown)).toBe(false);
   });
 
   it('--revert-failed refuses it too', async () => {

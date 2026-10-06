@@ -22,6 +22,12 @@
 # must reset the dropped topic to SNS's default policy; the destroy must reset
 # both (SNS rejects an empty Policy, so a delete that sends one clears nothing).
 #
+# go-to-k/cdkd#4612 (Phase 2b): a TopicPolicy over two more out-of-stack
+# topics, C and D, and a missing one fails under --no-rollback after writing C
+# and D. A write from outside cdkd then replaces D's policy, and
+# `cdkd rollback --revert-failed` must reset C (still the failed document) to
+# SNS's default and leave D's, exiting 2.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -76,6 +82,9 @@ DS_TOPIC_NAME="cdkd-sns-sqs-test-delivery-status"
 POLICY_TOPIC_A_NAME="cdkd-sns-sqs-test-policy-a"
 POLICY_TOPIC_B_NAME="cdkd-sns-sqs-test-policy-b"
 POLICY_SID="CdkdIssue4610"
+ORPHAN_TOPIC_C_NAME="cdkd-sns-sqs-test-orphan-c"
+ORPHAN_TOPIC_D_NAME="cdkd-sns-sqs-test-orphan-d"
+JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
 # The stack declares the two-topic TopicPolicy only with this set.
 export CDKD_TEST_POLICY_TOPICS=true
 
@@ -171,9 +180,10 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null 2>&1 || true
   fi
-  # go-to-k/cdkd#4610: the two out-of-stack policy topics, after the state.
-  for _name in "${POLICY_TOPIC_A_NAME}" "${POLICY_TOPIC_B_NAME}"; do
+  # go-to-k/cdkd#4610 / #4612: the out-of-stack policy topics, after the state.
+  for _name in "${POLICY_TOPIC_A_NAME}" "${POLICY_TOPIC_B_NAME}" "${ORPHAN_TOPIC_C_NAME}" "${ORPHAN_TOPIC_D_NAME}"; do
     _arn=$(topic_arn_by_name "${_name}" 2>/dev/null)
     if [ -n "${_arn}" ]; then
       if ! _err=$(aws sns delete-topic --topic-arn "${_arn}" --region "${REGION}" 2>&1 >/dev/null); then
@@ -486,6 +496,96 @@ if [ "${_a_shape}" != "true" ]; then
 fi
 assert_policy_reset "${POLICY_TOPIC_B_ARN}" "after narrowing Topics to the first topic" "${POLICY_B_BASELINE}"
 echo "    OK: the dropped topic is back on SNS's default policy; the kept one still carries the statement"
+
+# --- Phase 2b: a failed TopicPolicy's topics are reset by content (#4612) ---
+# "true" when a topic's live Policy has a statement with Sid $2 (bounded wait
+# for $3 = "present" or a steady "present" over three reads for "steady").
+topic_has_sid() {
+  local policy
+  policy=$(aws sns get-topic-attributes --topic-arn "${1}" --region "${REGION}" \
+    --query 'Attributes.Policy' --output text) || return 1
+  printf '%s' "${policy}" | jq -r --arg sid "${2}" '[.Statement[]?.Sid] | index($sid) != null'
+}
+assert_topic_sid() { # usage: assert_topic_sid <arn> <sid> <phase>
+  local got=""
+  for _i in 1 2 3 4 5 6; do
+    got=$(topic_has_sid "${1}" "${2}") || got=""
+    [ "${got}" = "true" ] && return 0
+    sleep 5
+  done
+  echo "FAIL: ${3}: ${1} does not carry the ${2} statement" >&2
+  exit 1
+}
+echo "==> Phase 2b: a TopicPolicy over C, D and a missing topic fails (--no-rollback)"
+ORPHAN_TOPIC_C_ARN=$(aws sns create-topic --name "${ORPHAN_TOPIC_C_NAME}" --region "${REGION}" \
+  --query 'TopicArn' --output text)
+ORPHAN_TOPIC_D_ARN=$(aws sns create-topic --name "${ORPHAN_TOPIC_D_NAME}" --region "${REGION}" \
+  --query 'TopicArn' --output text)
+ORPHAN_C_BASELINE=$(policy_canonical "${ORPHAN_TOPIC_C_ARN}")
+if [ -z "${ORPHAN_C_BASELINE}" ]; then
+  echo "FAIL: could not read the default policy of ${ORPHAN_TOPIC_C_ARN}" >&2
+  exit 1
+fi
+# "does not exist" is retried by the default schedule (about 47s, each attempt
+# rewriting C and D) before the create gives up.
+set +e
+CDKD_TEST_FAILING_TOPIC_POLICY=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback
+RC=$?
+set -e
+if [ "${RC}" -eq 0 ]; then
+  echo "FAIL: Phase 2b: the deploy succeeded; FailingTopicPolicy names a topic that does not exist" >&2
+  exit 1
+fi
+# PREMISE: the failed create wrote C and D, and the journal holds it, proven,
+# under exactly those two topics.
+assert_topic_sid "${ORPHAN_TOPIC_C_ARN}" CdkdIssue4612 "Phase 2b after the failed deploy"
+assert_topic_sid "${ORPHAN_TOPIC_D_ARN}" CdkdIssue4612 "Phase 2b after the failed deploy"
+if ! JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - 2>&1); then
+  echo "FAIL: Phase 2b: no rollback journal to read at ${JOURNAL_KEY}: ${JOURNAL}" >&2
+  exit 1
+fi
+JOURNALED=$(printf '%s' "${JOURNAL}" | jq -r '[.segments[].failedOperations[]?
+  | select(.logicalId == "FailingTopicPolicy") | select(.physicalIdRecoveredFromError == true) | .physicalId][0]')
+if [ "${JOURNALED}" != "${ORPHAN_TOPIC_C_ARN},${ORPHAN_TOPIC_D_ARN}" ]; then
+  echo "FAIL: Phase 2b: the journal does not hold FailingTopicPolicy, proven, under C,D (got: ${JOURNALED})" >&2
+  exit 1
+fi
+# A writer outside cdkd replaces D's policy.
+OUTSIDE_POLICY=$(jq -cn --arg t "${ORPHAN_TOPIC_D_ARN}" \
+  '{Version: "2012-10-17", Statement: [{Sid: "OutsideWriter", Effect: "Allow", Principal: {Service: "s3.amazonaws.com"}, Action: "sns:Publish", Resource: $t}]}')
+aws sns set-topic-attributes --topic-arn "${ORPHAN_TOPIC_D_ARN}" --region "${REGION}" \
+  --attribute-name Policy --attribute-value "${OUTSIDE_POLICY}"
+assert_topic_sid "${ORPHAN_TOPIC_D_ARN}" OutsideWriter "Phase 2b after the outside write"
+set +e
+node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --force --revert-failed
+RC=$?
+set -e
+if [ "${RC}" -ne 2 ]; then
+  echo "FAIL: Phase 2b: cdkd rollback exited ${RC}; expected 2 (D left in place, warned)" >&2
+  exit 1
+fi
+# C carried the failed document: back on SNS's default. D carries the outside
+# write: left (before the fix the rollback reset it too).
+for _i in 1 2 3 4 5 6; do
+  [ "$(policy_canonical "${ORPHAN_TOPIC_C_ARN}")" = "${ORPHAN_C_BASELINE}" ] && break
+  sleep 5
+done
+if [ "$(policy_canonical "${ORPHAN_TOPIC_C_ARN}")" != "${ORPHAN_C_BASELINE}" ]; then
+  echo "FAIL: Phase 2b: ${ORPHAN_TOPIC_C_ARN} is not back on SNS's default policy after cdkd rollback" >&2
+  exit 1
+fi
+for _i in 1 2 3; do
+  if [ "$(topic_has_sid "${ORPHAN_TOPIC_D_ARN}" OutsideWriter)" != "true" ]; then
+    echo "FAIL: Phase 2b: ${ORPHAN_TOPIC_D_ARN} lost the outside write on read ${_i} after cdkd rollback" >&2
+    exit 1
+  fi
+  sleep 5
+done
+assert_gone "Phase 2b: the journal ${JOURNAL_KEY} still exists after cdkd rollback" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
+echo "    OK: the rollback reset C to its default and left the outside write on D"
 
 # --- Phase 3: destroy -----------------------------------------------------
 echo "==> Phase 3: destroy"

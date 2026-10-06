@@ -18367,10 +18367,13 @@
             "AWS::SNS::TopicPolicy"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
+            "delete",
+            "deleteFailedCreateOrphan",
             "update"
           ]
         },
@@ -18610,11 +18613,13 @@
             "AWS::SQS::QueuePolicy"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
             "delete",
+            "deleteFailedCreateOrphan",
             "update"
           ]
         },

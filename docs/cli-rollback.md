@@ -177,6 +177,29 @@ does not count as an owner of the new one, and acting on the new one leaves it
 in place. A record naming anything else still skips the new resource with a
 warning.
 
+An `AWS::SQS::QueuePolicy` or `AWS::SNS::TopicPolicy` that wrote its
+policy to some queues or topics and then failed is journaled under exactly
+those queues or topics. When any path above deletes it, each queue is cleared, and each topic
+reset to SNS's default policy, only while its policy still matches, by
+content, the document the failed create attempted (secret references in it
+are resolved first). A topic already on its default policy needs nothing. A
+queue or topic whose policy was replaced by a different policy is left as it
+is, with a warning naming it, and the rollback or deploy exits `2`;
+`cdkd destroy` warns only. A successful deploy also leaves, the same way, a
+queue or topic that one of its own policies just wrote, because the service
+can still return the old policy for a while (SQS documents up to 60 seconds).
+A queue or topic that reads back with no policy at all is cleared. The
+comparison treats some IAM-equivalent spellings as equal (a bare account id
+and its root ARN, a one-element list and its value, a `"*"` principal and
+`{"AWS": "*"}`): SQS stores a bare account-id principal as
+`arn:aws:iam::<id>:root`. When the document is missing or masked, or a
+secret it references does not exist or cdkd refuses it for good, nothing is
+cleared, the warning lists every queue or topic to check by hand, and the
+entry is settled with exit `2`. Any other failure to read a policy or
+resolve a secret (credentials, access, throttling, the network, an ambiguous
+reference region in a nested stack's replay) keeps the entry, and the delete
+counts as failed, for a re-run once that is fixed.
+
 `Retain` keeps the resource in AWS and `Snapshot` takes the final snapshot, as
 in the table above, and the same ownership checks skip it with a warning. A
 delete that fails keeps the entry: the automatic rollback keeps its full

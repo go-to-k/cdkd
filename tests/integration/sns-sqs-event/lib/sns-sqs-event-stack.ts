@@ -214,6 +214,34 @@ export class SnsSqsEventStack extends cdk.Stack {
       });
     }
 
+    // go-to-k/cdkd#4612: a TopicPolicy over two more out-of-stack topics and
+    // one that does not exist, deployed with --no-rollback: it writes the two,
+    // then fails, and is journaled under them. verify.sh then checks that the
+    // rollback resets only the topic still carrying its document.
+    if (process.env.CDKD_TEST_FAILING_TOPIC_POLICY === 'true') {
+      const topicArn = (name: string): string => this.formatArn({ service: 'sns', resource: name });
+      new sns.CfnTopicPolicy(this, 'FailingTopicPolicy', {
+        topics: [
+          topicArn('cdkd-sns-sqs-test-orphan-c'),
+          topicArn('cdkd-sns-sqs-test-orphan-d'),
+          // No such topic: SetTopicAttributes fails after C and D were written.
+          topicArn('cdkd-sns-sqs-test-orphan-missing'),
+        ],
+        policyDocument: {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Sid: 'CdkdIssue4612',
+              Effect: 'Allow',
+              Principal: { Service: 'events.amazonaws.com' },
+              Action: 'sns:Publish',
+              Resource: '*',
+            },
+          ],
+        },
+      });
+    }
+
     // Outputs
     new cdk.CfnOutput(this, 'TopicArn', { value: topic.topicArn });
     new cdk.CfnOutput(this, 'PrimaryQueueUrl', { value: primaryQueue.queueUrl });
