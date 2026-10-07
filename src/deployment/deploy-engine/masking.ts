@@ -20,7 +20,6 @@ import {
   carriesSecretMask,
   createUnionSecretMasker,
   hasMaskableValues,
-  inheritedParameterExpression,
   literalSplitDelimitersOf,
   maskSecretsInError,
   maskSecretsInText,
@@ -29,6 +28,7 @@ import {
   recordLogOnlyValue,
   recordNoEchoAttributeValues,
   recordRecoverableMaskedOutput,
+  redactInheritedParameterValue,
   redactSecretsForState,
   unionOfSecretBags,
 } from '../secret-redaction.js';
@@ -180,12 +180,11 @@ export function redactParametersForDiff(
     // onto its OWN expression; without the same answer here the losing
     // parameter's desired side would carry the SURVIVOR's expression forever
     // and its resource would report a spurious UPDATE on every deploy.
-    // `undefined` whenever the parent could not certify one, which falls back
-    // to the value scan below — the pre-#2291 behaviour, expression-collapsed
-    // but consistent with what a pre-#2291 persist side wrote.
-    out[name] =
-      inheritedParameterExpression(inherited, name, value) ??
-      redactSecretsForState(value, inherited);
+    // An uncertified value falls back to a value scan of the PARENT bag
+    // inside `redactInheritedParameterValue`, the ONE function the persist
+    // side's `{Ref: <Param>}` arm also calls (issue #2349), so the two sides
+    // cannot scan different bags.
+    out[name] = redactInheritedParameterValue(inherited, name, value);
   }
   return out;
 }

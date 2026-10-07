@@ -16,6 +16,7 @@ import {
 import { positionByCrossStackSource } from './certified-positions.js';
 import { positionByParameterPlaceholders } from './placeholder-positions.js';
 import { positionListByCrossStackSource, identityKeyFor } from './identity-keys.js';
+import { positionByInheritedParameter } from './nested-stack.js';
 import {
   carriesSecretMask,
   isKnownSecretExpression,
@@ -42,8 +43,12 @@ import {
  * record — which already holds the expressions — redacts it with no secret
  * fetch and no value matching.
  *
- * A source leaf that is an intrinsic OBJECT has no string to copy, so it goes
- * through four positioning passes before the value scan, in this order:
+ * A source leaf that is an intrinsic OBJECT has no string to copy. A
+ * nested-stack child's `{Ref: <Param>}` leaf whose parameter carried an
+ * inherited secret into this resource is answered first, as the diff side
+ * binds that parameter ({@link positionByInheritedParameter}, issue #2349).
+ * Any other goes through four positioning passes before the value scan, in
+ * this order:
  *
  * - {@link positionByCrossStackSource} (issue #2059), for the two CROSS-STACK
  *   spellings `Fn::ImportValue` / `Fn::GetStackOutput`. Those carry no text
@@ -166,6 +171,16 @@ export function redactByPath(
     // its own `(bag, secrets)`, at its early returns or inside the shared
     // bound helper — so a secret embedded beside the token is still redacted.
     return positionByEmbeddedSpan(bag, source, secrets, bagIsSameGeneration);
+  }
+  if ((typeof bag === 'string' || Array.isArray(bag)) && isPlainObject(source)) {
+    // A nested-stack child leaf spelled `{Ref: <Param>}` that this resource's
+    // resolution read with an inherited secret in it (issue #2349): persisted
+    // as the DIFF side binds that parameter, from the same function and the
+    // same PARENT bag, ahead of the arms below. Their fall-through scans the
+    // CHILD bag, whose slot holds whichever parameter's expression resolved
+    // last, while the diff side scans the parent's.
+    const inherited = positionByInheritedParameter(bag, source, secrets);
+    if (inherited !== undefined) return inherited;
   }
   if (typeof bag === 'string' && isPlainObject(source)) {
     // The source leaf is an intrinsic OBJECT, so there is no string to copy —

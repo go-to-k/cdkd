@@ -110,6 +110,8 @@ export {
   recordNestedStackParameterExpressions,
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,
+  recordInheritedParameterRead,
+  redactInheritedParameterValue,
 } from './secret-redaction/nested-stack.js';
 export {
   MIN_NEEDLE_LENGTH,
