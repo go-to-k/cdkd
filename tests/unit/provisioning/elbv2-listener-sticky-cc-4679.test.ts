@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 // go-to-k/cdkd#4679: a listener first deployed while tagged was routed through
-// Cloud Control and recorded `provisionedBy: 'cc-api'`. #2085 moved NEW tagged
+// Cloud Control and recorded `provisionedBy: 'cc-api'`. #4673 moved NEW tagged
 // listeners to the SDK provider, but the sticky rule kept the existing record on
 // Cloud Control, whose update leaves a removed ListenerAttributes key live. The
 // listener is now an 'sdk-coverage' sticky exemption: the deploy that drops the

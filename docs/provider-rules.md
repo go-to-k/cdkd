@@ -2517,7 +2517,11 @@ To admit a type:
 
 Use `mode: 'cc-broken'` **only** when Cloud Control genuinely cannot manage the
 type (its escape is unconditional and ignores `--pin-cc-api`). A type that
-works on Cloud Control and is only slower is `'sdk-coverage'`.
+works on Cloud Control and is only slower is `'sdk-coverage'`, and so is one
+whose Cloud Control defect only a mutating deploy reaches, since that deploy is
+the one that flips the record (`AWS::ElasticLoadBalancingV2::Listener`: Cloud
+Control leaves a removed `ListenerAttributes` key at its old value, issue
+[#4679](https://github.com/go-to-k/cdkd/issues/4679)).
 
 ## Logging
 

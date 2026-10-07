@@ -13,9 +13,9 @@ replace resources auto-routed before it landed.
 satisfy: **the SDK provider addresses the resource by the SAME physicalId Cloud
 Control stored.** It is EMPIRICAL and false in
 general, so each entry names an integ fixture that saw it live, and
-`sticky-exempt-registry.test.ts` rejects one whose fixture has no ledger row. Comparing ids is NOT sufficient (a user-named resource keeps
-its id across a replacement), so the fixture asserts an unmanaged subscription
-survives.
+`sticky-exempt-registry.test.ts` rejects one whose fixture has no ledger row. Equal ids alone prove nothing (a user-named resource keeps
+its id across a replacement): the fixture needs a witness, an unmanaged child
+that survives or an AWS-minted id the flip keeps.
 
 `cc-broken` (Cloud Control cannot manage the type) escapes UNCONDITIONALLY, with
 `--pin-cc-api` ignored, since a pin re-pins the resource to the handler that
@@ -25,8 +25,8 @@ cannot address it. `sdk-coverage` escapes CONDITIONALLY, via
 1. `forceCcApi` returns false. `--recreate-via-cc-api` sets it, load-bearing: it
    passes `provisionedBy: 'cc-api'` as a HINT the exemption would read back,
    making that request a no-op.
-2. **No properties, no flip** — which keeps destroy, rollback deletes and
-   observed re-derivation conservative with no special case each; an
+2. **No properties, no flip** — keeping destroy, rollback deletes and
+   observed re-derivation conservative with no special case; an
    absent RECORDED bag is UNKNOWN, not empty.
 3. **BOTH bags free of actionable silent drops.** The desired bag alone fails
    the REMOVAL deploy: a property applied under Cloud Control then dropped from
@@ -34,5 +34,4 @@ cannot address it. `sdk-coverage` escapes CONDITIONALLY, via
    that deploy to the SDK provider, which cannot unset it. Cloud Control clears
    it and the NEXT deploy flips.
 
-Rule 2 FALLS THROUGH to rules 3-7 rather than returning an SDK provider, so an
-unregistered type falls back to CC.
+Rule 2 FALLS THROUGH to rules 3-7, so an unregistered type falls back to CC.

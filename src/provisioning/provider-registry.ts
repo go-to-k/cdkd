@@ -166,10 +166,13 @@ export interface AutoRouteHit {
  *   keeping existing state pinned to cc-api keeps a live bug alive. The
  *   fall-through is UNCONDITIONAL: no property check, and `forceCcApi` is
  *   ignored, because pinning here would be pinning to the broken handler.
- * - `'sdk-coverage'` -- CC routing WORKS, it is merely slower; the SDK
- *   provider has since been backfilled (issue #609) to cover the properties
- *   this resource actually uses. The fall-through is CONDITIONAL on that being
- *   true of the resource in hand, and suppressible with `forceCcApi`.
+ * - `'sdk-coverage'` -- CC routing WORKS, at least until a mutating deploy;
+ *   the SDK provider has since been backfilled (issue #609) to cover the
+ *   properties this resource actually uses. The fall-through is CONDITIONAL on
+ *   that being true of the resource in hand, and suppressible with
+ *   `forceCcApi`. A CC defect that only a mutating deploy reaches fits here
+ *   too, since that deploy is the one that flips the record (the listener's
+ *   removed `ListenerAttributes` key, issue #4679).
  */
 export type StickyExemptMode = 'cc-broken' | 'sdk-coverage';
 

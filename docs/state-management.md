@@ -674,8 +674,9 @@ conditional the escape is:
   update fails validation) and `AWS::Pipes::Pipe` (a Cloud Control UPDATE
   cannot change a stream or broker source's write-only `SourceParameters`)
   are the members today.
-- **`'sdk-coverage'`** — Cloud Control manages the type correctly and is merely
-  slower; cdkd has since gained full property coverage. The escape is
+- **`'sdk-coverage'`** — Cloud Control manages the type, apart from at most a
+  defect that only an update reaches, and is slower; cdkd has since gained full
+  property coverage. The escape is
   conditional on **this resource**: it happens only on a mutating deploy where
   neither the template's property bag nor the recorded one carries a property
   cdkd would silently drop. Reading the recorded bag too is what keeps a
