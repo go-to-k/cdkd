@@ -31,9 +31,10 @@
 #      piece, is refused (#4049). The nested SplitChild receives the same value
 #      as its CommaDelimitedList ListIn: the parent row persists it as `***`,
 #      its `Resolved Ref to parameter: ListIn` line prints neither element,
-#      and AWS and its own state.json hold the first (a PINNED bound: the CDK
-#      child declares no NoEcho and an element is a log-only piece). No later
-#      phase prints a piece.
+#      AWS holds the first, and its own state.json `***` with the position
+#      named in `noEchoLeaves` (the parent fills ListIn from a NoEcho source,
+#      so the child positions it, #4043 review round 9). No later phase
+#      prints a piece.
 #   1b. Redeploy unchanged (#4043 Phase B): the readback finds the value AWS
 #      holds, so neither SSM parameter is updated (LastModifiedDate unchanged);
 #      `cdkd diff --fail` exits 0; `cdkd drift --json` exits 0 and reports
@@ -663,13 +664,17 @@ fi
 P1_CHILD_STATE=$(mktemp)
 SCRATCH_FILES+=("${P1_CHILD_STATE}")
 aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" "${P1_CHILD_STATE}" --quiet
-# The CDK child declares no NoEcho, but a list element that is a piece of the
-# parent's NoEcho PARAMETER value is a fresh mask-only needle of the child
-# resource's bag (#4043), so the child's record holds the mask. By coordinate:
-# the child declares no position, so no noEchoLeaves is required there.
+# The CDK child declares no NoEcho, but the parent fills ListIn from its
+# NoEcho parameter, so the child positions ListIn like a NoEcho parameter
+# (#4043 review round 9): the record holds the mask, named by coordinate.
 P1_CHILD_PERSISTED=$(jq -r '.resources.SplitChildConsumer.properties.Value // "<absent>"' "${P1_CHILD_STATE}")
 if [ "${P1_CHILD_PERSISTED}" != '***' ]; then
   echo "FAIL: SplitChild's state.json does not hold the list element as the mask (issue #4043)" >&2
+  exit 1
+fi
+P1_CHILD_LEAVES=$(jq -c '.resources.SplitChildConsumer.noEchoLeaves // "<absent>"' "${P1_CHILD_STATE}")
+if [ "${P1_CHILD_LEAVES}" != '[["Value"]]' ]; then
+  echo "FAIL: SplitChild's record does not name its NoEcho position (got ${P1_CHILD_LEAVES}; issue #4043 review round 9)" >&2
   exit 1
 fi
 if grep -qF -- "${SPLIT_A}" "${P1_CHILD_STATE}" || grep -qF -- "${SPLIT_B}" "${P1_CHILD_STATE}"; then

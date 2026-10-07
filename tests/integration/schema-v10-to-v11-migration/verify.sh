@@ -53,7 +53,12 @@
 #   7d the same deploy with --allow-unaddressed exits 0; still skipped.
 #   7e `cdkd state orphan --resource ParamCr` drops the record (it manages
 #      nothing beyond the marker it never wrote).
-#   8  destroy; every resource and the state file are gone.
+#   7f re-add ParamCr (CDKD_V11_PARAM_CR stays 1 from here on, through the
+#      destroy), so phase 8 exercises the `cdkd destroy` arm of the skip.
+#   8  destroy: the first one exits 2 with ParamCr's delete skipped, its
+#      record kept with `***` and the marker never written; `state orphan
+#      --resource ParamCr`; the second destroy exits 0, and every resource and
+#      the state file are gone.
 #   9  every object version written since phase 3 is scanned for the values,
 #      then every version under the stack prefix is purged and asserted gone.
 #
@@ -754,7 +759,9 @@ run_cdkd_rc 2 "v11 deploy removing ParamCr" "${LOCAL_DIST}" deploy "${STACK}" \
 # Two independent markers: the provider's skip line, and the deploy's
 # unaddressed summary.
 assert_log_has "ParamCr delete skip" "Custom resource ${PARAM_CR_ID} is recorded in state with Token holding the '***' mask"
-assert_log_has "ParamCr delete skip (summary)" "unaddressed"
+# The deploy's own summary wording: the skip line above already contains
+# '--allow-unaddressed', so a bare "unaddressed" would match it.
+assert_log_has "ParamCr delete skip (summary)" "resource(s) unaddressed, so they may still exist"
 assert_log_has_no_tokens "v11 deploy removing ParamCr"
 fetch_state "v11 deploy removing ParamCr"
 assert_eq "v11 deploy removing ParamCr: the record is KEPT with the mask" \
@@ -788,6 +795,20 @@ assert_eq "after state orphan: ${PARAM_CR_ID} is no longer recorded" \
   "$(state_field ".resources[\"${PARAM_CR_ID}\"] // \"absent\"")" "absent"
 
 # ---------------------------------------------------------------------------
+echo "==> Phase 7f: re-add ParamCr for the destroy arm of the skip"
+# ---------------------------------------------------------------------------
+# The token stays set from here on: phase 8's destroy must meet ParamCr.
+export CDKD_V11_PARAM_CR="1"
+run_cdkd ok "v11 deploy re-adding ParamCr" "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+fetch_state "v11 deploy re-adding ParamCr"
+assert_eq "v11 deploy re-adding ParamCr: ${PARAM_CR_ID}.properties.Token" \
+  "$(state_field ".resources[\"${PARAM_CR_ID}\"].properties.Token // \"<absent>\"")" "${SECRET_MASK}"
+assert_gone "the delete marker ${MARKER_PARAM_NAME} exists before the destroy" \
+  aws ssm get-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}"
+pass "no delete marker before the destroy"
+
+# ---------------------------------------------------------------------------
 echo "==> Phase 8: destroy"
 # ---------------------------------------------------------------------------
 # The custom-resource handler and its role, by TYPE (CDK hashes their ids).
@@ -796,6 +817,23 @@ CR_ROLE_NAME="$(state_field '[.resources[] | select(.resourceType == "AWS::IAM::
 [ -n "${CR_HANDLER_NAME}" ] || fail "no AWS::Lambda::Function record before destroy"
 [ -n "${CR_ROLE_NAME}" ] || fail "no AWS::IAM::Role record before destroy"
 pass "the custom-resource handler and its role are recorded before destroy"
+# The stack-destroy arm of the custom-resource skip (stackDestroy: the record
+# is KEPT and the run exits 2, as CloudFormation leaves DELETE_FAILED).
+run_cdkd_rc 2 "v11 destroy with ParamCr" "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+assert_log_has "destroy: ParamCr delete skip" "Custom resource ${PARAM_CR_ID} is recorded in state with Token holding the '***' mask"
+assert_log_has "destroy: ParamCr delete skip (record kept)" "cdkd is KEEPING the state record and the run exits non-zero"
+assert_log_has_no_tokens "v11 destroy with ParamCr"
+fetch_state "v11 destroy with ParamCr"
+assert_eq "v11 destroy with ParamCr: the record is KEPT with the mask" \
+  "$(state_field ".resources[\"${PARAM_CR_ID}\"].properties.Token // \"<absent>\"")" "${SECRET_MASK}"
+assert_gone "the destroy's skipped delete reached the handler (marker ${MARKER_PARAM_NAME} written)" \
+  aws ssm get-parameter --region "${REGION}" --name "${MARKER_PARAM_NAME}"
+pass "the destroy's skipped delete never reached the handler"
+# The remedy the skip names: drop the record (ParamCr manages nothing beyond
+# the marker it never wrote), then the destroy completes.
+run_cdkd ok "state orphan --resource ${PARAM_CR_ID} after the destroy" "${LOCAL_DIST}" state orphan "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --resource "${PARAM_CR_ID}" --yes
 run_cdkd ok "v11 destroy" "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" \
@@ -849,8 +887,8 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-if [ "${ASSERTIONS_RUN:-0}" -ne 111 ]; then
-  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 111 — a block was skipped," >&2
+if [ "${ASSERTIONS_RUN:-0}" -ne 121 ]; then
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 121 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi

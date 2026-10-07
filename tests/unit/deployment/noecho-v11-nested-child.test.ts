@@ -66,6 +66,7 @@ const REGION = 'us-east-1';
 const STACK = 'Parent~Child';
 const TOKEN = 'nested-noecho-token-r9';
 const SHORT = 'abc';
+const PLAIN = 'plain-parent-value-r10';
 const SERVICE_TOKEN = 'arn:aws:lambda:us-east-1:123456789012:function:h';
 
 type Provider = Record<string, ReturnType<typeof vi.fn>>;
@@ -140,6 +141,8 @@ describe('DeployEngine - a nested child fed a parent NoEcho value (review round 
         captureObservedState: false,
         parameters,
         inheritedSecrets: inherited,
+        // What `NestedStackProvider` hands the child off the same bag.
+        passedNoEchoParameters: passedNoEchoParametersOf(inherited),
         parentStackInfo: { parentStack: 'Parent', parentLogicalId: 'Child', parentRegion: REGION },
       } as never,
       REGION,
@@ -175,14 +178,31 @@ describe('DeployEngine - a nested child fed a parent NoEcho value (review round 
           attributes: {},
           dependencies: [],
         },
+        PlainReader: {
+          physicalId: '/app/plain',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Name: '/app/plain', Type: 'String', Value: PLAIN },
+          attributes: {},
+          dependencies: [],
+        },
       },
-      outputs: { TokenOut: TOKEN, ShortOut: SHORT },
+      outputs: { TokenOut: TOKEN, ShortOut: SHORT, PlainOut: PLAIN },
       lastModified: 0,
     };
     stateBackend.getState!.mockResolvedValue({ state, etag: 'e' });
     const template = {
-      Parameters: { Token: { Type: 'String' }, ShortParam: { Type: 'String' } },
+      Parameters: {
+        Token: { Type: 'String' },
+        ShortParam: { Type: 'String' },
+        PlainParam: { Type: 'String' },
+      },
       Resources: {
+        // The over-mask control (review round 10): filled from a PLAIN parent
+        // parameter, so it is not positioned.
+        PlainReader: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: '/app/plain', Type: 'String', Value: { Ref: 'PlainParam' } },
+        },
         Reader: {
           Type: 'AWS::SSM::Parameter',
           Properties: { Name: '/app/p', Type: 'String', Value: { Ref: 'Token' } },
@@ -195,10 +215,15 @@ describe('DeployEngine - a nested child fed a parent NoEcho value (review round 
       Outputs: {
         TokenOut: { Value: { Ref: 'Token' } },
         ShortOut: { Value: { Ref: 'ShortParam' } },
+        PlainOut: { Value: { Ref: 'PlainParam' } },
       },
     } as unknown as CloudFormationTemplate;
 
-    await makeEngine(inheritedFor({ Token: TOKEN, ShortParam: SHORT }), { Token: TOKEN, ShortParam: SHORT }).deploy(
+    await makeEngine(inheritedFor({ Token: TOKEN, ShortParam: SHORT }), {
+      Token: TOKEN,
+      ShortParam: SHORT,
+      PlainParam: PLAIN,
+    }).deploy(
       STACK,
       template
     );
@@ -214,13 +239,20 @@ describe('DeployEngine - a nested child fed a parent NoEcho value (review round 
     expect(saved.resources['Reader']!.noEchoLeaves).toEqual([['Value']]);
     expect(saved.resources['Short']!.properties['Value']).toBe('***');
     expect(saved.resources['Short']!.noEchoLeaves).toEqual([['Value']]);
+    expect(saved.resources['PlainReader']!.properties['Value']).toBe(PLAIN);
+    expect(saved.resources['PlainReader']!.noEchoLeaves ?? []).toEqual([]);
+    expect(saved.outputs['PlainOut']).toBe(PLAIN);
     // The child's success segment carries its pre-deploy outputs, which the
     // parent's revert restores (nested-child-journal.ts): masked by position.
     const segments = stateBackend.appendRollbackJournalSegment!.mock.calls.map(
       (c) => c[2] as { previousOutputs?: { outputs?: Record<string, unknown> } }
     );
     const previous = segments.find((segment) => segment.previousOutputs !== undefined);
-    expect(previous?.previousOutputs?.outputs).toEqual({ TokenOut: '***', ShortOut: '***' });
+    expect(previous?.previousOutputs?.outputs).toEqual({
+      TokenOut: '***',
+      ShortOut: '***',
+      PlainOut: PLAIN,
+    });
     expect(JSON.stringify(segments)).not.toContain(TOKEN);
   });
 

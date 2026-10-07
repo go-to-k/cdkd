@@ -62,7 +62,7 @@ import { withProducerRegions } from '../producer-regions-scope.js';
 import { promoteRecreateTargets, recreateTargetIdsFor } from '../recreate-target-promotion.js';
 import { refuseStatefulReplacedReaders } from '../recreate-target-readers.js';
 import { markNonRetryable } from '../retryable-errors.js';
-import { hasMaskableValues, passedNoEchoParametersOf } from '../secret-redaction.js';
+import { hasMaskableValues } from '../secret-redaction.js';
 import {
   findNestedStackTypeChanges,
   renderNestedStackTypeChangeRefusal,
@@ -373,7 +373,7 @@ export async function doDeployWithPrefetch(
     // here on (every save, the journal, the outputs pass).
     this.inheritedNoEchoParameters = new Set([
       ...(this.freshNoEchoParameters(parameterValues) ?? []),
-      ...(passedNoEchoParametersOf(this.options.inheritedSecrets) ?? []),
+      ...(this.options.passedNoEchoParameters ?? []),
     ]);
     // go-to-k/cdkd#4451: a masked property with no fingerprint (every one an
     // older cdkd recorded) takes today's template's, which is what this

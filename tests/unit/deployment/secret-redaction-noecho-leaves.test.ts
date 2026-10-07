@@ -13,6 +13,8 @@ import {
   readsNoEchoSource,
   witnessNormalize,
   type NoEchoPositionSources,
+  recordPassedNoEchoParameters,
+  passedNoEchoParametersOf,
 } from '../../../src/deployment/secret-redaction.js';
 
 /**
@@ -270,5 +272,16 @@ describe('noEchoOutputsComparison', () => {
     const out = compare({ Out: SECRET_MASK }, { Out: 'handler-made-1' });
     expect(out.desired).toEqual({ Out: SECRET_MASK });
     expect(out.masked).toEqual(['Out']);
+  });
+});
+
+describe('recordPassedNoEchoParameters (review round 9/10)', () => {
+  it('records the row keys that read a NoEcho source, and clears the entry on a later empty recording', () => {
+    const bag = new Map<string, string>();
+    const sources = { parameters: new Set(['Pw']) };
+    recordPassedNoEchoParameters(bag, { A: { Ref: 'Pw' }, B: { Ref: 'Plain' } }, sources);
+    expect([...(passedNoEchoParametersOf(bag) ?? [])]).toEqual(['A']);
+    recordPassedNoEchoParameters(bag, { B: { Ref: 'Plain' } }, sources);
+    expect(passedNoEchoParametersOf(bag)).toBeUndefined();
   });
 });

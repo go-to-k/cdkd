@@ -396,6 +396,25 @@ describe('rollback executor — recordedAttributes on every delete arm (#4157)',
     expect(contextOf(del)['recordedNoEchoLeaves']).toEqual([['Cfg', 'Pw']]);
   });
 
+  it('--revert-failed partially-created delete with NO *** in the journal bag: no recordedNoEchoLeaves (round 10 negative)', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ delete: del });
+    const failed: FailedOperation[] = [
+      {
+        logicalId: 'Cr',
+        changeType: 'CREATE',
+        resourceType: 'Custom::Thing',
+        physicalId: 'cr-1',
+        attemptedProperties: { ServiceToken: 'arn:aws:lambda:us-east-1:1:function:h', Cfg: { Pw: 'x' } },
+        physicalIdRecoveredFromError: true,
+      },
+    ];
+
+    await replayFailedOperations(failed, {}, 'S', ctx, {});
+
+    expect(contextOf(del)['recordedNoEchoLeaves']).toBeUndefined();
+  });
+
   it('--revert-failed partially-created delete: the record naming the op id', async () => {
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ delete: del });

@@ -211,7 +211,10 @@ export interface DeleteContext {
    * coordinates at which its `properties` hold `***` for a `NoEcho` parameter
    * value. Threaded beside `recordedAttributes` by every `delete()` caller.
    * A custom resource reads it to refuse sending the mask to its handler as a
-   * `Delete` request's `ResourceProperties`. ABSENT means none recorded.
+   * `Delete` request's `ResourceProperties`. ABSENT means none recorded. The
+   * CALLER decides the coordinates: a record's own field, except a failed
+   * CREATE's rollback delete, whose journal bag has no list, so every
+   * whole-`***` leaf of it counts there.
    */
   recordedNoEchoLeaves?: readonly (readonly (string | number)[])[] | undefined;
 

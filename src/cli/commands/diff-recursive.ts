@@ -877,6 +877,12 @@ export interface StackDiffResult {
   resolvedParameters: Record<string, unknown> | undefined;
   conditions: Record<string, boolean> | undefined;
   /**
+   * {@link conditions} without the ones this diff could not decide (a FALSE
+   * fallback), the verdicts a `NoEcho` position may narrow an `Fn::If` by
+   * (go-to-k/cdkd#4043): an unknown one is read as both branches.
+   */
+  knownConditions: Record<string, boolean> | undefined;
+  /**
    * What this node knows for certain (go-to-k/cdkd#4479): the parameters whose
    * bound value the next deploy binds too, and the conditions whose verdict
    * comes from those alone. A nested child's row is classified against it
@@ -2439,6 +2445,12 @@ export async function computeStackDiff(
     printingSecrets,
     resolvedParameters: mergedParameters,
     conditions,
+    knownConditions:
+      conditions === undefined
+        ? undefined
+        : Object.fromEntries(
+            Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
+          ),
     trust: {
       parameters: trustedParameters,
       conditions: trustedConditions,
@@ -3222,6 +3234,7 @@ export async function buildDiffTree(args: {
     printingSecrets,
     resolvedParameters,
     conditions,
+    knownConditions,
     trust,
   } = stackDiff;
   // The SAME state the diff read. `collectCcApiRoutes` reads `provisionedBy`
@@ -3358,7 +3371,9 @@ export async function buildDiffTree(args: {
     const childNoEchoParameters = noEchoFedChildParameters(
       resource,
       new Set([...noEchoParameterNamesOf(effectiveTemplate), ...(inheritedNoEchoParameters ?? [])]),
-      conditions,
+      // Only the verdicts this diff knows (review round 10): an `Fn::If` on an
+      // unknown one counts both branches, as at every other NoEcho site.
+      knownConditions,
       stateAfterAdoption.resources
     );
     const childParameters = await resolveChildStackParameters(

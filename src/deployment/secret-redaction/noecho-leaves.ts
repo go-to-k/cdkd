@@ -762,12 +762,15 @@ export function recordPassedNoEchoParameters(
   parameters: unknown,
   sources: NoEchoPositionSources | undefined
 ): void {
-  if (sources === undefined || parameters === null || typeof parameters !== 'object') return;
   const names = new Set<string>();
-  for (const [name, value] of Object.entries(parameters as Record<string, unknown>)) {
-    if (readsNoEchoSource(value, sources)) names.add(name);
+  if (sources !== undefined && parameters !== null && typeof parameters === 'object') {
+    for (const [name, value] of Object.entries(parameters as Record<string, unknown>)) {
+      if (readsNoEchoSource(value, sources)) names.add(name);
+    }
   }
+  // An empty set clears what an earlier recording on this bag left.
   if (names.size > 0) passedNoEchoParameters.set(bag, names);
+  else passedNoEchoParameters.delete(bag);
 }
 
 /** The names {@link recordPassedNoEchoParameters} recorded on `bag`. */

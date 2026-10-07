@@ -981,6 +981,13 @@ count as a change for `--fail`.
   either side and without affecting the exit code. `cdkd drift --accept` /
   `--revert`, `cdkd rollback` and `cdkd export` still refuse a masked value, as
   they do for a custom-resource one.
+- The observed baseline (captured at the start of a `cdkd deploy`, or by
+  `cdkd state refresh-observed`) is masked at every position where the
+  record holds `***`, named in `noEchoLeaves` or not. A leaf that is `***`
+  for another reason (a custom resource's `NoEcho` value) is masked there
+  too, so `cdkd drift` can report it as drift until the next deploy captures
+  the baseline again. This errs toward hiding a value, never toward storing
+  one.
 - `cdkd import` and `cdkd scrub` store `***` for a `NoEcho` value they resolve
   (the template's `Default`, whole or embedded), but do not write
   `noEchoLeaves`, and leave a value shorter than 4 characters, a number, or a
@@ -1008,10 +1015,10 @@ count as a change for `--fail`.
 
 - A value shorter than 4 characters, or a number, that reaches state other
   than at a position the template names: embedded in a longer string read
-  through a declared attribute, or inherited by a CDK nested stack's child
-  (whose parameters are never `NoEcho`), including one element of a list the
-  child receives from a parent's `NoEcho` value. An element of 4 or more
-  characters is stored as `***`.
+  through a declared attribute, or reaching a nested stack's child other than
+  through a row parameter the parent fills from a `NoEcho` source (such a
+  parameter is positioned like a `NoEcho` one, a list's elements included). A
+  value of 4 or more characters is stored as `***` wherever it lands.
 - A record the template no longer names (as the same logical id and type),
   such as a resource being deleted, an orphan record, or the previous copy of
   a resource whose type changed, which the rollback journal saves: the

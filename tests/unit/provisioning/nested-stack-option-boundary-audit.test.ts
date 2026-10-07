@@ -65,6 +65,7 @@ const AUDITED_MEMBERS = [
   'assetRedirect',
   'inheritedSecrets',
   'passedParameterClasses', // overwritten from THIS row's bag: absent unless the parent recorded it (#4543)
+  'passedNoEchoParameters', // overwritten from THIS row's bag, ungated (#4043)
   'inheritedProducerRegions', // overwritten by the spread site with THIS parent's evidence (#4174)
   'replace',
   'forceStatefulRecreation',

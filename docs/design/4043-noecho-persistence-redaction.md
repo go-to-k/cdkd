@@ -500,14 +500,17 @@ inherits it through `redactOutputs`.
   (`intrinsic-function-resolver.ts:4567`) records it into each consuming child
   resource's bag, and `carryFreshNoEchoMark` (`secret-redaction.ts:941`) keeps
   it fresh. A CDK-synthesized child's parameter declaration never says
-  `NoEcho`, so that child has no positional arm. A hand-authored child that
-  declares `NoEcho: true` gets one. A child list parameter
-  (`CommaDelimitedList`) receives the value split, so no element equals the
-  whole value: each element that is a piece of a parent `NoEcho` PARAMETER
-  value is recorded as a fresh mask-only needle of the parameter class in the
-  consuming child resource's bag, from 4 characters (added in the Phase B
-  review). An inherited value or element shorter than 4 characters therefore
-  stays in the clear in the child's record: the floor residual of section 3.3.
+  `NoEcho`, so the parent records which row parameters it fills from a
+  `NoEcho` source and hands the names to the child engine, which positions
+  them as `NoEcho` parameters (review round 9/10, section 9 decision 8). A
+  hand-authored child that declares `NoEcho: true` is positioned by its own
+  declaration. A child list parameter (`CommaDelimitedList`) receives the
+  value split, so no element equals the whole value: each element that is a
+  piece of a parent `NoEcho` PARAMETER value is also recorded as a fresh
+  mask-only needle of the parameter class in the consuming child resource's
+  bag, from 4 characters (added in the Phase B review). A value under 4
+  characters stays in the clear in the child's record only where no position
+  names it: the floor residual of section 3.3.
 
 ### 4.8 Other readers of `***`
 

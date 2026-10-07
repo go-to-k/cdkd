@@ -999,7 +999,12 @@ async function replayFailedOperationsUnbound(
               // go-to-k/cdkd#4043: where the bag holds a NoEcho mask. The
               // journal records no coordinates, and its bag is masked by
               // position, so every whole-`***` leaf of it counts (review
-              // round 9 n1): a custom resource's handler must not get it.
+              // round 9 n1): the caller decides the coordinates, and this
+              // caller has no list. Only `CustomResourceProvider` reads the
+              // field, and a custom resource reaches this arm only through a
+              // record naming the op's physical id (it never marks
+              // `createdBeforeFailure`), so this is a fail-safe, not a path
+              // a handler is known to take (review round 10).
               recordedNoEchoLeaves: nonEmptyOrUndefined([
                 ...maskedLeafCoordinatesOf(op.attemptedProperties ?? {}),
                 ...(failedCreateRecord?.noEchoLeaves ?? []),
