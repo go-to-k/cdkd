@@ -358,6 +358,9 @@ sed 's/^/  /' "${FF_LOG}"
 # clear the protection on and delete a load balancer no later check reached.
 ORPHAN_LB_ARN="$(sed -n 's/.*Failed to clean up partially-created LoadBalancer OrphanLb (\(arn:[^)]*\)).*/\1/p' "${FF_LOG}" | head -1)"
 if [ "${LB_FAIL_RC}" -eq 0 ]; then
+  # Then state holds a deletion-protected OrphanLb, which the trap's destroy
+  # (no --remove-protection) cannot delete: hand its ARN to the trap first.
+  ORPHAN_LB_ARN="$(state_physical_id OrphanLb || true)"
   echo "FAIL: the OrphanLb injection deploy unexpectedly SUCCEEDED (SetSecurityGroups should reject the malformed enforce flag)" >&2
   exit 1
 fi

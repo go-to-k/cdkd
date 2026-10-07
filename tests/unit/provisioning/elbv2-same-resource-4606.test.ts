@@ -184,6 +184,18 @@ describe.each(KINDS)('ELBv2Provider.isSameResource for $type (go-to-k/cdkd#4606)
     await expect(provider.isSameResource(a, { physicalId: b }, type, CTX)).rejects.toThrow(other);
   });
 
+  // Gone is read from the error NAME only: message text saying "not found"
+  // under another name is no proof, and 'different' would delete the resource.
+  it('an error of another name whose message says not found throws, never reads as gone', async () => {
+    live(kind, {
+      [a]: awsError('ValidationError', 'One or more resources not found; does not exist'),
+      [b]: 'live',
+    });
+    await expect(provider.isSameResource(a, { physicalId: b }, type, CTX)).rejects.toThrow(
+      'One or more resources not found'
+    );
+  });
+
   it.each([
     ['no resource', []],
     ['two resources', [b, a]],
