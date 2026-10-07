@@ -288,6 +288,7 @@
         "raw-cfn-conditions-params",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
@@ -433,6 +434,7 @@
         "import-retain-destroy",
         "lambda-url-authtype-replay",
         "nested-stack-rollback",
+        "rds-fix-forward-orphan",
         "remove-protection-journaled-orphan",
         "rollback-command",
         "rollback-cross-region-secret",
@@ -659,6 +661,7 @@
         "raw-cfn-conditions-params",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
@@ -998,6 +1001,7 @@
         "raw-cfn-conditions-params",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
@@ -1122,6 +1126,7 @@
       "flag": "--resource-timeout",
       "integs": [
         "docdb-neptune",
+        "rds-fix-forward-orphan",
         "remove-protection"
       ]
     },
@@ -1132,6 +1137,7 @@
         "fsx-lustre",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
+        "rds-fix-forward-orphan",
         "remove-protection-compensation",
         "rollback-command"
       ]
@@ -1151,6 +1157,7 @@
         "deletion-policy-snapshot-heavy",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "rollback-deletion-policy-snapshot"
       ]
@@ -1368,6 +1375,7 @@
         "raw-cfn-conditions-params",
         "rds-aurora",
         "rds-dbinstance-backfill",
+        "rds-fix-forward-orphan",
         "rds-full-stack",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
@@ -2002,6 +2010,7 @@
     "--logical-resource-id",
     "--long",
     "--max-items",
+    "--max-records",
     "--max-results",
     "--max-time",
     "--message",

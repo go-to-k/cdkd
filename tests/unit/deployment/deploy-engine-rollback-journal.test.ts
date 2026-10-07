@@ -1052,9 +1052,20 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       async function journaledFor(
         type: string,
         id: string,
-        opts: { policy?: 'Retain'; interruptByUser?: boolean; read?: () => Promise<unknown> } = {}
+        opts: {
+          policy?: 'Retain';
+          interruptByUser?: boolean;
+          read?: () => Promise<unknown>;
+          markedIdentity?: string;
+        } = {}
       ) {
-        const failure = markCreatedBeforeFailure(new ProvisioningError('rejected', type, 'B', id), 'B', type, id);
+        const failure = markCreatedBeforeFailure(
+          new ProvisioningError('rejected', type, 'B', id),
+          'B',
+          type,
+          id,
+          opts.markedIdentity
+        );
         const tmpl: CloudFormationTemplate = {
           Resources: { B: { Type: type, Properties: {}, ...(opts.policy && { DeletionPolicy: opts.policy }) } },
         };
@@ -1119,6 +1130,47 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         } finally {
           vi.useRealTimers();
         }
+      });
+
+      // A provider that took the token from its create response carries it
+      // on the mark: journaled with no live read, which the failure being
+      // journaled (a describe that cannot run) often fails too.
+      it('journals the mark-carried token without a read, even once the user interrupted', async () => {
+        for (const interruptByUser of [false, true]) {
+          journal.appendRollbackJournalSegment.mockClear();
+          const { op, read } = await journaledFor('AWS::RDS::DBInstance', 'orphan-db', {
+            markedIdentity: 'db-CREATED',
+            read: async () => 'db-LIVE',
+            interruptByUser,
+          });
+          expect(op.physicalIdRecoveredFromError).toBe(true);
+          expect(op.createdResourceIdentity).toBe('db-CREATED');
+          expect(read).not.toHaveBeenCalled();
+        }
+      });
+
+      it('journals no mark-carried token for a Retain orphan or a type that needs none', async () => {
+        for (const [type, id, policy] of [
+          ['AWS::RDS::DBInstance', 'orphan-db', 'Retain'],
+          ['AWS::EC2::VPC', 'vpc-0123456789abcdef0', undefined],
+        ] as const) {
+          journal.appendRollbackJournalSegment.mockClear();
+          const { op, read } = await journaledFor(type, id, {
+            markedIdentity: 'tok',
+            ...(policy && { policy }),
+          });
+          expect(op.physicalIdRecoveredFromError).toBe(true);
+          expect(op).not.toHaveProperty('createdResourceIdentity');
+          expect(read).not.toHaveBeenCalled();
+        }
+      });
+
+      it('falls back to the bounded live read when the mark carries no token', async () => {
+        const { op, read } = await journaledFor('AWS::RDS::DBInstance', 'orphan-db', {
+          read: async () => 'db-LIVE',
+        });
+        expect(read).toHaveBeenCalledTimes(1);
+        expect(op.createdResourceIdentity).toBe('db-LIVE');
       });
 
       it('journals no token for a provider without resourceIdentity', async () => {

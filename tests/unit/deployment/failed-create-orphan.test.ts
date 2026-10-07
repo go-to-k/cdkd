@@ -11,6 +11,7 @@ import { priorAttemptsInJournal } from '../../../src/deployment/prior-attempt-sc
 import {
   carryCreatedBeforeFailure,
   createdBeforeFailure,
+  createdResourceIdentityBeforeFailure,
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../../../src/provisioning/auxiliary-failure.js';
@@ -159,6 +160,52 @@ describe('carryCreatedBeforeFailure (go-to-k/cdkd#1710)', () => {
   it('adds nothing when the earlier error carries no mark', () => {
     const second = carryCreatedBeforeFailure(new Error('a'), new Error('b'));
     expect(createdBeforeFailure(second, 'S', 'T')).toBeUndefined();
+  });
+});
+
+// go-to-k/cdkd#4655: a provider may carry its create response's identity
+// token on the mark, which the deploy engine journals without a live read.
+describe('the mark\'s optional createdResourceIdentity (go-to-k/cdkd#4655)', () => {
+  it('reads it back under the same anchor as the physical id', () => {
+    const e = markCreatedBeforeFailure(new Error('x'), 'S', 'T', 's-1', 'tok-1');
+    expect(createdBeforeFailure(e, 'S', 'T')).toBe('s-1');
+    expect(createdResourceIdentityBeforeFailure(e, 'S', 'T')).toBe('tok-1');
+    // Another logical id or type: neither is read.
+    expect(createdResourceIdentityBeforeFailure(e, 'Other', 'T')).toBeUndefined();
+    expect(createdResourceIdentityBeforeFailure(e, 'S', 'Other')).toBeUndefined();
+  });
+
+  it('is absent when the marker passed none or an empty one; the mark itself stands', () => {
+    for (const e of [
+      markCreatedBeforeFailure(new Error('x'), 'S', 'T', 's-1'),
+      markCreatedBeforeFailure(new Error('x'), 'S', 'T', 's-1', ''),
+    ]) {
+      expect(createdBeforeFailure(e, 'S', 'T')).toBe('s-1');
+      expect(createdResourceIdentityBeforeFailure(e, 'S', 'T')).toBeUndefined();
+    }
+  });
+
+  it('the reader drops an identity that is not a non-empty string, keeping the mark', () => {
+    for (const bad of [42, '', null, { a: 1 }]) {
+      const e = new Error('x');
+      Object.defineProperty(e, Symbol.for('cdkd.createdBeforeFailure'), {
+        value: Object.freeze({
+          logicalId: 'S',
+          resourceType: 'T',
+          physicalId: 's-1',
+          createdResourceIdentity: bad,
+        }),
+      });
+      expect(createdBeforeFailure(e, 'S', 'T')).toBe('s-1');
+      expect(createdResourceIdentityBeforeFailure(e, 'S', 'T')).toBeUndefined();
+    }
+  });
+
+  it('rides along when a retry carries the earlier attempt\'s mark onto the later error', () => {
+    const first = markCreatedBeforeFailure(new Error('describe denied'), 'S', 'T', 's-1', 'tok-1');
+    const second = carryCreatedBeforeFailure(first, new Error('AlreadyExists'));
+    expect(createdBeforeFailure(second, 'S', 'T')).toBe('s-1');
+    expect(createdResourceIdentityBeforeFailure(second, 'S', 'T')).toBe('tok-1');
   });
 });
 
